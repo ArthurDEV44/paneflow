@@ -4,6 +4,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
 import { ZerolagInputAddon } from "xterm-zerolag-input";
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalPaneProps {
@@ -119,11 +120,12 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
     fitAddon.fit();
 
     // ── Forward keyboard input to the PTY backend ────────────────────
+    // Use fire-and-forget Tauri events instead of invoke() for input.
+    // invoke() is request-response (3-7ms measured), emit() is one-way (~1ms).
     const term = terminal;
+    const paneId = props.paneId;
     term.onData((data: string) => {
-      invoke("write_pty", { paneId: props.paneId, data }).catch((err) => {
-        console.error("write_pty failed:", err);
-      });
+      emit("pty-input", { pane_id: paneId, data });
     });
 
     // ── ResizeObserver for auto-fit ──────────────────────────────────
@@ -150,9 +152,11 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
     const onEvent = new Channel<TerminalEvent>();
     onEvent.onmessage = (event: TerminalEvent) => {
       if (event.type === "Data") {
-        // Decode base64 → Uint8Array → xterm.js write
+        const t0 = performance.now();
         const bytes = decodeBase64(event.data);
         term.write(bytes);
+        const dt = performance.now() - t0;
+        if (dt > 2) console.warn(`[perf] decode+write: ${dt.toFixed(1)}ms (${event.data.length} b64 chars)`);
       } else if (event.type === "Exit") {
         term.writeln(`\r\n[Process exited with code ${event.code}]`);
       }
