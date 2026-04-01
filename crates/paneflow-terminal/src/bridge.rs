@@ -129,126 +129,105 @@ impl PtyBridge {
         let emulator = TerminalEmulator::new(rows, cols);
         self.emulators.lock().await.insert(pane_id, emulator);
 
-        // Create a shutdown channel. When the sender is dropped the receiver
-        // resolves, which signals the reader task to stop.
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        // Create a shutdown channel.
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
 
         self.handles
             .lock()
             .await
             .insert(pane_id, PaneHandle { _shutdown_tx: shutdown_tx });
 
-        // Clone Arcs for the reader task.
-        let emulators = Arc::clone(&self.emulators);
-        let pane_id_str = pane_id.to_string();
-
-        // Spawn the blocking reader in a dedicated thread.
-        tokio::task::spawn(async move {
-            let result = Self::reader_loop(
-                reader,
-                pane_id,
-                pane_id_str.clone(),
-                emulators,
-                event_tx.clone(),
-                &mut shutdown_rx,
-            )
-            .await;
-
-            // Emit an exit event. The exit code comes from the reader loop
-            // (0 on clean EOF, -1 on error).
-            let code = match result {
-                Ok(()) => 0,
-                Err(_) => -1,
-            };
-            let _ = event_tx.send(TerminalEvent::Exit {
-                pane_id: pane_id_str,
-                code,
-            });
-        });
+        // Start the reader thread + async forwarder.
+        Self::start_reader(
+            reader,
+            pane_id,
+            pane_id.to_string(),
+            Arc::clone(&self.emulators),
+            event_tx,
+            shutdown_rx,
+        );
 
         Ok(())
     }
 
-    /// Internal: blocking read loop executed inside `spawn_blocking`.
-    /// Reads 4 KB chunks from the PTY, batches them at ~16 ms, processes
-    /// through the emulator, then sends events.
-    async fn reader_loop(
-        reader: Box<dyn Read + Send>,
+    /// Spawn a dedicated blocking thread that reads PTY output and forwards
+    /// raw bytes to the async event channel. A separate async task then
+    /// processes bytes through the emulator and forwards to the frontend.
+    ///
+    /// Architecture (low-latency):
+    /// - ONE persistent blocking thread per pane (no per-read spawn_blocking)
+    /// - Raw bytes sent immediately via channel (no sleep)
+    /// - Emulator processing is done on the async side
+    fn start_reader(
+        mut reader: Box<dyn Read + Send>,
         pane_id: Uuid,
         pane_id_str: String,
         emulators: Arc<Mutex<HashMap<Uuid, TerminalEmulator>>>,
         event_tx: mpsc::UnboundedSender<TerminalEvent>,
-        shutdown_rx: &mut mpsc::Receiver<()>,
-    ) -> std::result::Result<(), ()> {
-        // Wrap the reader in a std::sync::Mutex so it can be shared with
-        // spawn_blocking without unsafe code. Only one blocking task runs
-        // at a time, so contention is not an issue.
-        let reader = Arc::new(std::sync::Mutex::new(reader));
+        mut shutdown_rx: mpsc::Receiver<()>,
+    ) {
+        // Channel from the blocking reader thread to the async forwarder.
+        let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-        loop {
-            // Check for shutdown signal (non-blocking).
-            if shutdown_rx.try_recv().is_ok() {
-                tracing::debug!(pane_id = %pane_id, "reader task: shutdown signal received");
-                return Ok(());
-            }
-
-            // Read a chunk from the PTY in a blocking context.
-            let reader_clone = Arc::clone(&reader);
-            let read_result = tokio::task::spawn_blocking(move || {
-                let mut buf = vec![0u8; 4096];
-                let mut guard = reader_clone.lock().expect("reader mutex poisoned");
-                match guard.read(&mut buf) {
-                    Ok(0) => Ok(None),
+        // Blocking reader thread — reads from PTY as fast as possible.
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,       // EOF
                     Ok(n) => {
-                        buf.truncate(n);
-                        Ok(Some(buf))
-                    }
-                    Err(e) => Err(e),
-                }
-            })
-            .await;
-
-            match read_result {
-                Ok(Ok(Some(bytes))) => {
-                    // Process through the emulator.
-                    {
-                        let mut ems = emulators.lock().await;
-                        if let Some(emu) = ems.get_mut(&pane_id) {
-                            emu.process_bytes(&bytes);
+                        if raw_tx.send(buf[..n].to_vec()).is_err() {
+                            break; // receiver dropped
                         }
                     }
-
-                    // Send to the frontend.
-                    if event_tx
-                        .send(TerminalEvent::Data {
-                            pane_id: pane_id_str.clone(),
-                            bytes,
-                        })
-                        .is_err()
-                    {
-                        tracing::debug!(pane_id = %pane_id, "reader task: event channel closed");
-                        return Ok(());
-                    }
-
-                    // Yield briefly (~16 ms) to batch output and avoid
-                    // overwhelming the frontend with tiny fragments.
-                    tokio::time::sleep(std::time::Duration::from_millis(16)).await;
-                }
-                Ok(Ok(None)) => {
-                    // EOF — child process closed its stdout.
-                    tracing::debug!(pane_id = %pane_id, "reader task: EOF");
-                    return Ok(());
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!(pane_id = %pane_id, error = %e, "reader task: read error");
-                    return Err(());
-                }
-                Err(e) => {
-                    tracing::warn!(pane_id = %pane_id, error = %e, "reader task: spawn_blocking panicked");
-                    return Err(());
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
                 }
             }
-        }
+        });
+
+        // Async forwarder — processes bytes through emulator and sends events.
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    bytes = raw_rx.recv() => {
+                        match bytes {
+                            Some(bytes) => {
+                                // Process through the emulator.
+                                {
+                                    let mut ems = emulators.lock().await;
+                                    if let Some(emu) = ems.get_mut(&pane_id) {
+                                        emu.process_bytes(&bytes);
+                                    }
+                                }
+
+                                // Forward to the frontend immediately.
+                                if event_tx
+                                    .send(TerminalEvent::Data {
+                                        pane_id: pane_id_str.clone(),
+                                        bytes,
+                                    })
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            None => break, // reader thread exited
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        tracing::debug!(pane_id = %pane_id, "reader task: shutdown");
+                        break;
+                    }
+                }
+            }
+
+            // Emit exit event.
+            let _ = event_tx.send(TerminalEvent::Exit {
+                pane_id: pane_id_str,
+                code: 0,
+            });
+        });
     }
 
     /// Write input bytes to the PTY for a given pane.
