@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicosResworktauri-apps/tauri/dev/crates/tauri-cli/schema.json",
+  "identifier": "default",
+  "description": "Default capability for PaneFlow",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open"
+  ]
+}
