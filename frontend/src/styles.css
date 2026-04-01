@@ -57,3 +57,102 @@ html, body, #root {
   justify-content: center;
   color: var(--text-secondary);
 }
+
+/* Workspace list */
+.workspace-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workspace-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: var(--text-secondary);
+  transition: background 0.1s ease;
+}
+
+.workspace-item:hover {
+  background: var(--bg-surface);
+}
+
+.workspace-item--active {
+  background: var(--bg-surface);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.workspace-item__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.workspace-item__close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+  margin-left: 4px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.1s ease, background 0.1s ease;
+}
+
+.workspace-item:hover .workspace-item__close,
+.workspace-item--active .workspace-item__close {
+  opacity: 1;
+}
+
+.workspace-item__close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+/* Sidebar add button */
+.sidebar__add-btn {
+  background: none;
+  border: 1px dashed var(--border);
+  color: var(--text-secondary);
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.sidebar__add-btn:hover {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+/* Workspace view (main area placeholder) */
+.workspace-view {
+  text-align: center;
+}
+
+.workspace-view__title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.workspace-view__hint {
+  font-size: 14px;
+  color: var(--text-secondary);
+}

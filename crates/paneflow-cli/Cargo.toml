@@ -15,5 +15,6 @@ tokio.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
+libc = "0.2"
 
 [dev-dependencies]
