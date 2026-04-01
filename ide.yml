@@ -1,0 +1,11 @@
+name: paneflow
+
+# before: npm install  # optional pre-launch hook
+
+rows:
+  - size: 100%
+    panes:
+      - title: Claude 1
+        command: clear
+      - title: Claude 2
+        command: clear && cc
