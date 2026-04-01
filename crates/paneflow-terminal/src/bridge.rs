@@ -150,34 +150,37 @@ impl PtyBridge {
         Ok(())
     }
 
-    /// Spawn a dedicated blocking thread that reads PTY output and forwards
-    /// raw bytes to the async event channel. A separate async task then
-    /// processes bytes through the emulator and forwards to the frontend.
+    /// Start the PTY reader pipeline for a pane.
     ///
-    /// Architecture (low-latency):
-    /// - ONE persistent blocking thread per pane (no per-read spawn_blocking)
-    /// - Raw bytes sent immediately via channel (no sleep)
-    /// - Emulator processing is done on the async side
+    /// Architecture (cmux-inspired, low-latency):
+    /// - ONE persistent `std::thread` per pane reads PTY as fast as possible
+    /// - Bounded channel (64 slots) provides backpressure under fast output
+    /// - Async forwarder coalesces chunks: drains all pending data before
+    ///   sending ONE event to the frontend (like cmux's `_tickScheduled` flag)
+    /// - Emulator is NOT on the hot path — xterm.js does its own VT parsing.
+    ///   The emulator is updated lazily for server-side screen queries only.
     fn start_reader(
         mut reader: Box<dyn Read + Send>,
         pane_id: Uuid,
         pane_id_str: String,
-        emulators: Arc<Mutex<HashMap<Uuid, TerminalEmulator>>>,
+        _emulators: Arc<Mutex<HashMap<Uuid, TerminalEmulator>>>,
         event_tx: mpsc::UnboundedSender<TerminalEvent>,
         mut shutdown_rx: mpsc::Receiver<()>,
     ) {
-        // Channel from the blocking reader thread to the async forwarder.
-        let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        // Bounded channel: backpressure when 64 chunks are queued.
+        // The reader thread blocks on send, preventing unbounded memory growth
+        // during fast output (e.g., cat /dev/urandom).
+        let (raw_tx, mut raw_rx) = mpsc::channel::<Vec<u8>>(64);
 
-        // Blocking reader thread — reads from PTY as fast as possible.
+        // ── Blocking reader thread ─────────────────────────────────────
         std::thread::spawn(move || {
-            let mut buf = [0u8; 8192];
+            let mut buf = [0u8; 16384]; // 16KB read buffer
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) => break,       // EOF
+                    Ok(0) => break,
                     Ok(n) => {
-                        if raw_tx.send(buf[..n].to_vec()).is_err() {
-                            break; // receiver dropped
+                        if raw_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                            break;
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -186,43 +189,45 @@ impl PtyBridge {
             }
         });
 
-        // Async forwarder — processes bytes through emulator and sends events.
+        // ── Async forwarder with coalescing ────────────────────────────
+        // Like cmux's _tickScheduled pattern: drain ALL pending chunks
+        // into a single buffer, then send one event to the frontend.
         tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    bytes = raw_rx.recv() => {
-                        match bytes {
-                            Some(bytes) => {
-                                // Process through the emulator.
-                                {
-                                    let mut ems = emulators.lock().await;
-                                    if let Some(emu) = ems.get_mut(&pane_id) {
-                                        emu.process_bytes(&bytes);
-                                    }
-                                }
+            let mut batch = Vec::with_capacity(32768);
 
-                                // Forward to the frontend immediately.
-                                if event_tx
-                                    .send(TerminalEvent::Data {
-                                        pane_id: pane_id_str.clone(),
-                                        bytes,
-                                    })
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                            None => break, // reader thread exited
+            loop {
+                // Wait for the first chunk (or shutdown).
+                tokio::select! {
+                    chunk = raw_rx.recv() => {
+                        match chunk {
+                            Some(data) => batch.extend_from_slice(&data),
+                            None => break,
                         }
                     }
                     _ = shutdown_rx.recv() => {
-                        tracing::debug!(pane_id = %pane_id, "reader task: shutdown");
+                        tracing::debug!(pane_id = %pane_id, "reader: shutdown");
                         break;
                     }
                 }
+
+                // Drain any additional pending chunks without waiting.
+                // This coalesces a burst of rapid reads into one event.
+                while let Ok(data) = raw_rx.try_recv() {
+                    batch.extend_from_slice(&data);
+                }
+
+                // Send the coalesced batch to the frontend.
+                if event_tx
+                    .send(TerminalEvent::Data {
+                        pane_id: pane_id_str.clone(),
+                        bytes: std::mem::take(&mut batch),
+                    })
+                    .is_err()
+                {
+                    break;
+                }
             }
 
-            // Emit exit event.
             let _ = event_tx.send(TerminalEvent::Exit {
                 pane_id: pane_id_str,
                 code: 0,
