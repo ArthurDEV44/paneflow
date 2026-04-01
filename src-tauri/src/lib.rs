@@ -21,9 +21,10 @@ pub fn run() {
         .manage(bridge_state)
         .invoke_handler(tauri::generate_handler![
             commands::greet,
-            commands::attach_pty,
+            commands::spawn_pane,
             commands::write_pty,
             commands::resize_pty,
+            commands::close_pane,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PaneFlow");

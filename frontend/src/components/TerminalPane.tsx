@@ -2,7 +2,7 @@ import { type Component, onMount, onCleanup, createEffect } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalPaneProps {
@@ -36,16 +36,21 @@ const DARK_THEME = {
   brightWhite: "#a6adc8",
 } as const;
 
-/**
- * TerminalPane renders a single xterm.js terminal with WebGL acceleration.
- *
- * Input captured by the terminal is forwarded to the Tauri backend via
- * `invoke("write_pty")`. Container resize is observed so the terminal
- * stays fitted and the backend is notified via `invoke("resize_pty")`.
- *
- * PTY output will be wired through `terminal.write(data)` by a future
- * story that connects the Tauri Channel-based attach_pty flow.
- */
+/** Terminal events streamed from the Rust backend via Tauri Channel. */
+interface TerminalEventData {
+  type: "Data";
+  pane_id: string;
+  bytes: number[];
+}
+
+interface TerminalEventExit {
+  type: "Exit";
+  pane_id: string;
+  code: number;
+}
+
+type TerminalEvent = TerminalEventData | TerminalEventExit;
+
 const TerminalPane: Component<TerminalPaneProps> = (props) => {
   let containerRef: HTMLDivElement | undefined;
   let terminal: Terminal | undefined;
@@ -58,7 +63,8 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
     // ── Create Terminal ──────────────────────────────────────────────
     terminal = new Terminal({
       theme: DARK_THEME,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
+      fontFamily:
+        "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
       fontSize: 14,
       lineHeight: 1.2,
       cursorBlink: true,
@@ -92,7 +98,8 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
     fitAddon.fit();
 
     // ── Forward keyboard input to the PTY backend ────────────────────
-    terminal.onData((data: string) => {
+    const term = terminal;
+    term.onData((data: string) => {
       const encoder = new TextEncoder();
       const bytes = Array.from(encoder.encode(data));
       invoke("write_pty", { paneId: props.paneId, bytes }).catch((err) => {
@@ -102,10 +109,7 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
 
     // ── ResizeObserver for auto-fit ──────────────────────────────────
     resizeObserver = new ResizeObserver(() => {
-      if (!fitAddon || !terminal) return;
-
-      // requestAnimationFrame avoids layout thrashing when the browser
-      // fires multiple resize observations in quick succession.
+      if (!fitAddon || !term) return;
       requestAnimationFrame(() => {
         fitAddon!.fit();
         const dims = fitAddon!.proposeDimensions();
@@ -122,9 +126,38 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
     });
     resizeObserver.observe(containerRef);
 
+    // ── Spawn PTY and attach output channel ─────────────────────────
+    // Create a Tauri Channel to receive PTY output from the backend.
+    const onEvent = new Channel<TerminalEvent>();
+    onEvent.onmessage = (event: TerminalEvent) => {
+      if (event.type === "Data") {
+        // Convert the byte array back to a Uint8Array and write to xterm.js
+        const bytes = new Uint8Array(event.bytes);
+        term.write(bytes);
+      } else if (event.type === "Exit") {
+        term.writeln(`\r\n[Process exited with code ${event.code}]`);
+      }
+    };
+
+    // Get initial dimensions from the fit addon.
+    const dims = fitAddon.proposeDimensions();
+    const rows = dims?.rows ?? 24;
+    const cols = dims?.cols ?? 80;
+
+    // Spawn the PTY process on the backend, passing the channel for output.
+    invoke("spawn_pane", {
+      paneId: props.paneId,
+      rows,
+      cols,
+      channel: onEvent,
+    }).catch((err) => {
+      console.error("spawn_pane failed:", err);
+      term.writeln(`\r\n[Failed to start shell: ${err}]`);
+    });
+
     // ── Apply initial focus state ────────────────────────────────────
     if (props.isFocused) {
-      terminal.focus();
+      term.focus();
     }
   });
 
@@ -140,6 +173,8 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
 
   onCleanup(() => {
     resizeObserver?.disconnect();
+    // Tell the backend to kill the PTY process.
+    invoke("close_pane", { paneId: props.paneId }).catch(() => {});
     terminal?.dispose();
   });
 
@@ -147,15 +182,3 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
 };
 
 export default TerminalPane;
-
-/**
- * Utility handle exposed for parent components that need to push PTY
- * output into the terminal. Usage:
- *
- *   const ref = getTerminalHandle(paneId);
- *   ref?.write(data);
- *
- * This will be consumed by the attach_pty channel integration in a
- * future story.
- */
-export type TerminalHandle = Pick<Terminal, "write">;
