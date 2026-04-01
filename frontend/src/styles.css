@@ -156,3 +156,20 @@ html, body, #root {
   font-size: 14px;
   color: var(--text-secondary);
 }
+
+/* Terminal pane */
+.terminal-pane {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+.terminal-pane .xterm {
+  width: 100%;
+  height: 100%;
+}
+
+.terminal-pane .xterm-viewport {
+  overflow-y: auto;
+}
