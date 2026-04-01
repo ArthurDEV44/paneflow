@@ -1,0 +1,29 @@
+{
+  "name": "paneflow-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 1420",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "solid-js": "^1.9",
+    "@xterm/xterm": "^5.5",
+    "@xterm/addon-webgl": "^0.18",
+    "@xterm/addon-fit": "^0.10"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "typescript": "^5.6",
+    "vite": "^6",
+    "vite-plugin-solid": "^2.10",
+    "@typescript-eslint/parser": "^8",
+    "@typescript-eslint/eslint-plugin": "^8",
+    "eslint": "^9",
+    "eslint-plugin-solid": "^0.14"
+  }
+}

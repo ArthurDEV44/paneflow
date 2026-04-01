@@ -1,0 +1,17 @@
+[package]
+name = "paneflow-config"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+paneflow-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+notify = "7"
+dirs = "6"
+
+[dev-dependencies]
+tempfile = "3"
