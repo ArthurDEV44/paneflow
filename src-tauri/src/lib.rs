@@ -1,7 +1,6 @@
 mod commands;
 
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use paneflow_terminal::bridge::PtyBridge;
 
@@ -14,7 +13,7 @@ pub fn run() {
         )
         .init();
 
-    let bridge_state: commands::BridgeState = Arc::new(Mutex::new(PtyBridge::new()));
+    let bridge_state: commands::BridgeState = Arc::new(PtyBridge::new());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
