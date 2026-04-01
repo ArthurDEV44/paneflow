@@ -1,14 +1,32 @@
 import type { Component } from "solid-js";
+import { Show } from "solid-js";
+import Sidebar from "./components/Sidebar";
+import { workspaceState } from "./stores/workspace";
+
+const WorkspaceView: Component = () => {
+  const selected = () =>
+    workspaceState.workspaces.find((ws) => ws.id === workspaceState.selectedId);
+
+  return (
+    <div class="workspace-view">
+      <Show when={selected()} fallback={<p>No workspace selected</p>}>
+        {(ws) => (
+          <>
+            <h1 class="workspace-view__title">{ws().title}</h1>
+            <p class="workspace-view__hint">Terminal panes will render here</p>
+          </>
+        )}
+      </Show>
+    </div>
+  );
+};
 
 const App: Component = () => {
   return (
     <div class="app">
-      <div class="sidebar">
-        <h2>PaneFlow</h2>
-        <p>Workspaces will appear here</p>
-      </div>
+      <Sidebar />
       <div class="main-area">
-        <p>Terminal panes will render here</p>
+        <WorkspaceView />
       </div>
     </div>
   );
