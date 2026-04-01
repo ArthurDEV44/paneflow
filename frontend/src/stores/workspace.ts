@@ -32,7 +32,9 @@ export interface WorkspaceState {
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-function createLeaf(): SplitNode {
+type LeafNode = SplitNode & { type: "leaf" };
+
+function createLeaf(): LeafNode {
   return { type: "leaf", paneId: crypto.randomUUID() };
 }
 
@@ -124,31 +126,6 @@ function collectPaneIds(tree: SplitNode): string[] {
     return [tree.paneId];
   }
   return [...collectPaneIds(tree.first), ...collectPaneIds(tree.second)];
-}
-
-/**
- * Find the parent split of a pane (for resizing).
- * Returns the path to enable updating the ratio.
- */
-function findParentPath(
-  tree: SplitNode,
-  targetPaneId: string,
-): string[] | null {
-  if (tree.type === "leaf") {
-    return tree.paneId === targetPaneId ? [] : null;
-  }
-
-  const firstPath = findParentPath(tree.first, targetPaneId);
-  if (firstPath !== null) {
-    return ["first", ...firstPath];
-  }
-
-  const secondPath = findParentPath(tree.second, targetPaneId);
-  if (secondPath !== null) {
-    return ["second", ...secondPath];
-  }
-
-  return null;
 }
 
 // ── Store ───────────────────────────────────────────────────────────────
