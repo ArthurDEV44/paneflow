@@ -103,9 +103,9 @@ These commands must pass for every user story:
 - `cargo check --workspace` - Rust compilation succeeds
 - `cargo clippy --workspace -- -D warnings` - No clippy warnings
 - `cargo test --workspace` - All Rust tests pass
-- `cd frontend && pnpm typecheck` - TypeScript/SolidJS type checking passes
-- `cd frontend && pnpm lint` - ESLint passes
-- `cd frontend && pnpm build` - Frontend builds successfully
+- `cd frontend && bun typecheck` - TypeScript/SolidJS type checking passes
+- `cd frontend && bun lint` - ESLint passes
+- `cd frontend && bun run build` - Frontend builds successfully
 
 For UI stories, additional gates:
 - Verify terminal renders correctly in Tauri window (manual: type commands, see output)
