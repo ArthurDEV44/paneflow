@@ -57,13 +57,11 @@ const App: Component = () => {
             </div>
           }
         >
-          {(ws) => (
-            <SplitLayout
-              node={ws().splitTree}
-              workspaceId={ws().id}
-              focusedPaneId={ws().focusedPaneId}
-            />
-          )}
+          <SplitLayout
+            node={selectedWorkspace()!.splitTree}
+            workspaceId={workspaceState.selectedId!}
+            focusedPaneId={selectedWorkspace()!.focusedPaneId}
+          />
         </Show>
       </div>
     </div>
