@@ -40,7 +40,7 @@ const DARK_THEME = {
 interface TerminalEventData {
   type: "Data";
   pane_id: string;
-  bytes: number[];
+  data: string; // base64-encoded bytes
 }
 
 interface TerminalEventExit {
@@ -50,6 +50,16 @@ interface TerminalEventExit {
 }
 
 type TerminalEvent = TerminalEventData | TerminalEventExit;
+
+/** Decode a base64 string to Uint8Array. */
+function decodeBase64(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    bytes[i] = bin.charCodeAt(i);
+  }
+  return bytes;
+}
 
 const TerminalPane: Component<TerminalPaneProps> = (props) => {
   let containerRef: HTMLDivElement | undefined;
@@ -98,11 +108,11 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
     fitAddon.fit();
 
     // ── Forward keyboard input to the PTY backend ────────────────────
+    // Send the string directly — no TextEncoder/Array.from overhead.
+    // The Rust side receives it as a String and calls .as_bytes().
     const term = terminal;
     term.onData((data: string) => {
-      const encoder = new TextEncoder();
-      const bytes = Array.from(encoder.encode(data));
-      invoke("write_pty", { paneId: props.paneId, bytes }).catch((err) => {
+      invoke("write_pty", { paneId: props.paneId, data }).catch((err) => {
         console.error("write_pty failed:", err);
       });
     });
@@ -131,8 +141,8 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
     const onEvent = new Channel<TerminalEvent>();
     onEvent.onmessage = (event: TerminalEvent) => {
       if (event.type === "Data") {
-        // Convert the byte array back to a Uint8Array and write to xterm.js
-        const bytes = new Uint8Array(event.bytes);
+        // Decode base64 → Uint8Array → xterm.js write
+        const bytes = decodeBase64(event.data);
         term.write(bytes);
       } else if (event.type === "Exit") {
         term.writeln(`\r\n[Process exited with code ${event.code}]`);

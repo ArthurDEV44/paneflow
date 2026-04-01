@@ -72,16 +72,18 @@ pub async fn spawn_pane(
     Ok(())
 }
 
-/// Send input bytes to the PTY for a given pane.
+/// Send input to the PTY for a given pane.
+/// Accepts a string directly — avoids JSON array serialization overhead
+/// that Vec<u8> would incur ([104,101,108,108,111] vs "hello").
 #[tauri::command]
 pub async fn write_pty(
     state: tauri::State<'_, BridgeState>,
     pane_id: String,
-    bytes: Vec<u8>,
+    data: String,
 ) -> Result<(), BridgeError> {
     let id = parse_pane_id(&pane_id)?;
     let bridge = state.lock().await;
-    bridge.write_pane(id, &bytes).await
+    bridge.write_pane(id, data.as_bytes()).await
 }
 
 /// Resize the PTY and terminal emulator for a given pane.
