@@ -11,10 +11,11 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
-    "solid-js": "^1.9",
-    "@xterm/xterm": "^5.5",
+    "@xterm/addon-fit": "^0.10",
     "@xterm/addon-webgl": "^0.18",
-    "@xterm/addon-fit": "^0.10"
+    "@xterm/xterm": "^5.5",
+    "solid-js": "^1.9",
+    "xterm-zerolag-input": "^0.1.4"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

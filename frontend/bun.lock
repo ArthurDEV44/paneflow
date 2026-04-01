@@ -10,6 +10,7 @@
         "@xterm/addon-webgl": "^0.18",
         "@xterm/xterm": "^5.5",
         "solid-js": "^1.9",
+        "xterm-zerolag-input": "^0.1.4",
       },
       "devDependencies": {
         "@tauri-apps/cli": "^2",
@@ -493,6 +494,8 @@
     "which": ["which@2.0.2", "", { "dependencies": { "isexe": "^2.0.0" }, "bin": { "node-which": "./bin/node-which" } }, "sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA=="],
 
     "word-wrap": ["word-wrap@1.2.5", "", {}, "sha512-BN22B5eaMMI9UMtjrGd5g5eCYPpCPDUy0FJXbYsaT5zYxjFOckS53SQDE3pWkVoWpHXVb3BrYcEN4Twa55B5cA=="],
+
+    "xterm-zerolag-input": ["xterm-zerolag-input@0.1.4", "", {}, "sha512-ZXUE3wydfEoz+ITGS92jbGE+6ZNpuDeeV76U1Ph53CzDS+jmxtR6duTXm/VCmiJW3YFF62ou2Cpt/RHixl5VkQ=="],
 
     "yallist": ["yallist@3.1.1", "", {}, "sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g=="],
 

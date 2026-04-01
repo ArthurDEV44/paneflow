@@ -2,6 +2,7 @@ import { type Component, onMount, onCleanup, createEffect } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
+import { ZerolagInputAddon } from "xterm-zerolag-input";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import "@xterm/xterm/css/xterm.css";
 
@@ -104,12 +105,20 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
       );
     }
 
+    // ── Zero-lag input overlay ─────────────────────────────────────
+    // Renders typed characters as a DOM overlay IMMEDIATELY, before the
+    // PTY round-trip completes. The overlay is removed once the real
+    // echo arrives from the shell. Hides the ~1-2ms Tauri IPC latency.
+    try {
+      terminal.loadAddon(new ZerolagInputAddon());
+    } catch (err) {
+      console.warn("ZerolagInput addon failed:", err);
+    }
+
     // Initial fit after the terminal is mounted and rendered.
     fitAddon.fit();
 
     // ── Forward keyboard input to the PTY backend ────────────────────
-    // Send the string directly — no TextEncoder/Array.from overhead.
-    // The Rust side receives it as a String and calls .as_bytes().
     const term = terminal;
     term.onData((data: string) => {
       invoke("write_pty", { paneId: props.paneId, data }).catch((err) => {
