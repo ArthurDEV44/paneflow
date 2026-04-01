@@ -5,10 +5,12 @@ import { FitAddon } from "@xterm/addon-fit";
 import { ZerolagInputAddon } from "xterm-zerolag-input";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
+import { closePane } from "../stores/workspace";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalPaneProps {
   paneId: string;
+  workspaceId: string;
   isFocused: boolean;
 }
 
@@ -63,6 +65,50 @@ function decodeBase64(b64: string): Uint8Array {
   return bytes;
 }
 
+// ---------------------------------------------------------------------------
+// Chunked output writer — prevents large writes from blocking keyboard events
+// ---------------------------------------------------------------------------
+
+/** Max bytes to write to xterm.js before yielding to the event loop. */
+const OUTPUT_CHUNK_SIZE = 4096;
+
+/**
+ * Queued, chunked writer for xterm.js.
+ *
+ * Small payloads (≤ CHUNK_SIZE) are written directly (fast path for keystroke
+ * echo). Larger payloads are split into chunks with `setTimeout(0)` yields
+ * between them so the browser event loop can process pending keyboard events.
+ */
+function createOutputWriter(term: Terminal) {
+  const queue: Uint8Array[] = [];
+  let draining = false;
+
+  function drain() {
+    if (queue.length === 0) {
+      draining = false;
+      return;
+    }
+    draining = true;
+    const chunk = queue.shift()!;
+    // Use xterm.js write callback as backpressure signal, then yield.
+    term.write(chunk, () => setTimeout(drain, 0));
+  }
+
+  return (data: Uint8Array) => {
+    if (data.length <= OUTPUT_CHUNK_SIZE && !draining) {
+      // Fast path — small payload, nothing queued → write immediately.
+      term.write(data);
+      return;
+    }
+
+    // Split into chunks and enqueue.
+    for (let i = 0; i < data.length; i += OUTPUT_CHUNK_SIZE) {
+      queue.push(data.subarray(i, Math.min(i + OUTPUT_CHUNK_SIZE, data.length)));
+    }
+    if (!draining) drain();
+  };
+}
+
 const TerminalPane: Component<TerminalPaneProps> = (props) => {
   let containerRef: HTMLDivElement | undefined;
   let terminal: Terminal | undefined;
@@ -82,7 +128,7 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
       cursorBlink: true,
       cursorStyle: "block",
       allowProposedApi: true,
-      scrollback: 10_000,
+      scrollback: 5_000,
     });
 
     // ── Fit Addon ────────────────────────────────────────────────────
@@ -149,16 +195,14 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
 
     // ── Spawn PTY and attach output channel ─────────────────────────
     // Create a Tauri Channel to receive PTY output from the backend.
+    // Uses chunked writer to avoid blocking keyboard events during heavy output.
+    const writeOutput = createOutputWriter(term);
     const onEvent = new Channel<TerminalEvent>();
     onEvent.onmessage = (event: TerminalEvent) => {
       if (event.type === "Data") {
-        const t0 = performance.now();
-        const bytes = decodeBase64(event.data);
-        term.write(bytes);
-        const dt = performance.now() - t0;
-        if (dt > 2) console.warn(`[perf] decode+write: ${dt.toFixed(1)}ms (${event.data.length} b64 chars)`);
+        writeOutput(decodeBase64(event.data));
       } else if (event.type === "Exit") {
-        term.writeln(`\r\n[Process exited with code ${event.code}]`);
+        closePane(props.workspaceId, props.paneId);
       }
     };
 

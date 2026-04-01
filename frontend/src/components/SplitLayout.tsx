@@ -50,6 +50,7 @@ const LeafPane: Component<LeafPaneProps> = (props) => {
     >
       <TerminalPane
         paneId={props.node.paneId}
+        workspaceId={props.workspaceId}
         isFocused={props.focusedPaneId === props.node.paneId}
       />
     </div>
