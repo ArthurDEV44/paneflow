@@ -43,12 +43,11 @@ interface LeafPaneProps {
 }
 
 const LeafPane: Component<LeafPaneProps> = (props) => {
-  const handleFocus = () => {
-    focusPane(props.workspaceId, props.node.paneId);
-  };
-
   return (
-    <div class="split-leaf" onMouseDown={handleFocus}>
+    <div
+      class="split-leaf"
+      onMouseDown={() => focusPane(props.workspaceId, props.node.paneId)}
+    >
       <TerminalPane
         paneId={props.node.paneId}
         isFocused={props.focusedPaneId === props.node.paneId}

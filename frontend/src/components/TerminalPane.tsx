@@ -155,9 +155,22 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
       term.writeln(`\r\n[Failed to start shell: ${err}]`);
     });
 
-    // ── Apply initial focus state ────────────────────────────────────
+    // ── Focus handling ──────────────────────────────────────────────
+    // Click anywhere in the container to force focus on xterm.js.
+    // This is critical: xterm.js needs its internal textarea focused
+    // to capture keyboard input, and in Tauri WebViews the initial
+    // focus may not stick.
+    containerRef.addEventListener("mousedown", () => {
+      // Use a microtask so the mousedown event finishes propagating
+      // (allowing split-leaf click-to-focus to work) before we grab focus.
+      queueMicrotask(() => term.focus());
+    });
+
+    // Initial focus with a delay — the WebView may not be ready immediately.
     if (props.isFocused) {
       term.focus();
+      // Retry after a short delay in case the WebView wasn't ready.
+      setTimeout(() => term.focus(), 100);
     }
   });
 
@@ -173,12 +186,11 @@ const TerminalPane: Component<TerminalPaneProps> = (props) => {
 
   onCleanup(() => {
     resizeObserver?.disconnect();
-    // Tell the backend to kill the PTY process.
     invoke("close_pane", { paneId: props.paneId }).catch(() => {});
     terminal?.dispose();
   });
 
-  return <div ref={containerRef} class="terminal-pane" />;
+  return <div ref={containerRef} class="terminal-pane" tabIndex={-1} />;
 };
 
 export default TerminalPane;
