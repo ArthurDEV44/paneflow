@@ -5,6 +5,7 @@
 //! `tokio::task::spawn_blocking`), batched at ~16 ms intervals, and forwarded
 //! through a caller-supplied callback.
 
+use base64::Engine;
 use crate::emulator::TerminalEmulator;
 use crate::pty_manager::{PtyError, PtyManager};
 use std::collections::HashMap;
@@ -22,8 +23,10 @@ use uuid::Uuid;
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type")]
 pub enum TerminalEvent {
-    /// Raw bytes received from the PTY.
-    Data { pane_id: String, bytes: Vec<u8> },
+    /// Base64-encoded bytes from the PTY.
+    /// Using base64 instead of a JSON number array avoids ~5x serialization
+    /// overhead (e.g. "hello" = "aGVsbG8=" vs [104,101,108,108,111]).
+    Data { pane_id: String, data: String },
     /// The child process has exited.
     Exit { pane_id: String, code: i32 },
 }
@@ -168,13 +171,13 @@ impl PtyBridge {
         mut shutdown_rx: mpsc::Receiver<()>,
     ) {
         // Bounded channel: backpressure when 64 chunks are queued.
-        // The reader thread blocks on send, preventing unbounded memory growth
-        // during fast output (e.g., cat /dev/urandom).
         let (raw_tx, mut raw_rx) = mpsc::channel::<Vec<u8>>(64);
 
         // ── Blocking reader thread ─────────────────────────────────────
+        // Small buffer (4KB) like Ghostty's 1KB — returns faster for
+        // single-keystroke echo, fits L1 cache.
         std::thread::spawn(move || {
-            let mut buf = [0u8; 16384]; // 16KB read buffer
+            let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -216,11 +219,13 @@ impl PtyBridge {
                     batch.extend_from_slice(&data);
                 }
 
-                // Send the coalesced batch to the frontend.
+                // Base64-encode and send the coalesced batch.
+                let encoded = base64::engine::general_purpose::STANDARD
+                    .encode(std::mem::take(&mut batch));
                 if event_tx
                     .send(TerminalEvent::Data {
                         pane_id: pane_id_str.clone(),
-                        bytes: std::mem::take(&mut batch),
+                        data: encoded,
                     })
                     .is_err()
                 {

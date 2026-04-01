@@ -12,6 +12,7 @@ tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+base64 = "0.22"
 portable-pty = "0.9"
 alacritty_terminal = "0.26.0-rc1"
 vte = "0.13"
