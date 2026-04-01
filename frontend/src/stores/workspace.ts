@@ -21,6 +21,8 @@ export interface Workspace {
   title: string;
   customTitle?: string;
   workingDirectory: string;
+  isPinned: boolean;
+  color?: string;
   splitTree: SplitNode;
   focusedPaneId: string | null;
 }
@@ -44,6 +46,7 @@ function createDefaultWorkspace(): Workspace {
     id: crypto.randomUUID(),
     title: "Workspace 1",
     workingDirectory: "~",
+    isPinned: false,
     splitTree: leaf,
     focusedPaneId: leaf.paneId,
   };
@@ -156,6 +159,7 @@ export function addWorkspace(): void {
     id: crypto.randomUUID(),
     title: nextTitle(),
     workingDirectory: "~",
+    isPinned: false,
     splitTree: leaf,
     focusedPaneId: leaf.paneId,
   };
@@ -352,6 +356,73 @@ export function focusPane(workspaceId: string, paneId: string): void {
       draft.workspaces[wsIdx].focusedPaneId = paneId;
     }),
   );
+}
+
+// ── Workspace Metadata Operations ──────────────────────────────────────
+
+export function renameWorkspace(id: string, newTitle: string): void {
+  const wsIdx = state.workspaces.findIndex((ws) => ws.id === id);
+  if (wsIdx === -1) return;
+  const trimmed = newTitle.trim();
+  if (!trimmed) return;
+  setState(
+    produce((draft) => {
+      draft.workspaces[wsIdx].customTitle = trimmed;
+    }),
+  );
+}
+
+export function clearCustomTitle(id: string): void {
+  const wsIdx = state.workspaces.findIndex((ws) => ws.id === id);
+  if (wsIdx === -1) return;
+  setState(
+    produce((draft) => {
+      draft.workspaces[wsIdx].customTitle = undefined;
+    }),
+  );
+}
+
+export function togglePin(id: string): void {
+  const wsIdx = state.workspaces.findIndex((ws) => ws.id === id);
+  if (wsIdx === -1) return;
+  setState(
+    produce((draft) => {
+      draft.workspaces[wsIdx].isPinned = !draft.workspaces[wsIdx].isPinned;
+    }),
+  );
+}
+
+export function setWorkspaceColor(id: string, color: string | undefined): void {
+  const wsIdx = state.workspaces.findIndex((ws) => ws.id === id);
+  if (wsIdx === -1) return;
+  setState(
+    produce((draft) => {
+      draft.workspaces[wsIdx].color = color;
+    }),
+  );
+}
+
+export function closeOtherWorkspaces(id: string): void {
+  const kept = state.workspaces.filter((ws) => ws.id === id || ws.isPinned);
+  if (kept.length === 0) return;
+  setState("workspaces", kept);
+  setState("selectedId", id);
+}
+
+export function selectWorkspaceByIndex(index: number): void {
+  if (index >= 0 && index < state.workspaces.length) {
+    setState("selectedId", state.workspaces[index].id);
+  }
+}
+
+/** Get display title: custom title > generated title */
+export function displayTitle(ws: Workspace): string {
+  return ws.customTitle || ws.title;
+}
+
+/** Count panes in a workspace's split tree */
+export function paneCount(ws: Workspace): number {
+  return collectPaneIds(ws.splitTree).length;
 }
 
 // ── Export ───────────────────────────────────────────────────────────────
