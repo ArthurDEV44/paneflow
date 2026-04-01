@@ -17,6 +17,11 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex as TokioMutex};
 use uuid::Uuid;
 
+/// Max bytes per output batch sent to the frontend.
+/// Keeps individual `term.write()` calls small so the JS event loop
+/// can process keyboard events between chunks.
+const MAX_BATCH_BYTES: usize = 32 * 1024;
+
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
@@ -245,8 +250,10 @@ impl PtyBridge {
         });
 
         // Async coalescing forwarder.
+        // Coalesces burst output but caps each batch at MAX_BATCH_BYTES
+        // so the frontend JS event loop isn't blocked by huge term.write() calls.
         tokio::spawn(async move {
-            let mut batch = Vec::with_capacity(32768);
+            let mut batch = Vec::with_capacity(MAX_BATCH_BYTES);
 
             loop {
                 tokio::select! {
@@ -259,22 +266,28 @@ impl PtyBridge {
                     _ = shutdown_rx.recv() => break,
                 }
 
-                // Drain all pending — coalesce burst output.
-                while let Ok(data) = raw_rx.try_recv() {
-                    batch.extend_from_slice(&data);
+                // Drain pending chunks, but respect the batch size cap.
+                while batch.len() < MAX_BATCH_BYTES {
+                    match raw_rx.try_recv() {
+                        Ok(data) => batch.extend_from_slice(&data),
+                        Err(_) => break,
+                    }
                 }
 
-                let encoded = base64::engine::general_purpose::STANDARD
-                    .encode(std::mem::take(&mut batch));
-                if event_tx
-                    .send(TerminalEvent::Data {
-                        pane_id: pane_id_str.clone(),
-                        data: encoded,
-                    })
-                    .is_err()
-                {
-                    break;
+                // Send in MAX_BATCH_BYTES-sized chunks.
+                for chunk in batch.chunks(MAX_BATCH_BYTES) {
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);
+                    if event_tx
+                        .send(TerminalEvent::Data {
+                            pane_id: pane_id_str.clone(),
+                            data: encoded,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
+                batch.clear();
             }
 
             let _ = event_tx.send(TerminalEvent::Exit {
