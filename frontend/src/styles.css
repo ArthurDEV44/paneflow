@@ -53,9 +53,10 @@ html, body, #root {
 .main-area {
   flex: 1;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: stretch;
+  justify-content: stretch;
   color: var(--text-secondary);
+  overflow: hidden;
 }
 
 /* Workspace list */
@@ -172,4 +173,62 @@ html, body, #root {
 
 .terminal-pane .xterm-viewport {
   overflow-y: auto;
+}
+
+/* ── Split Layout ──────────────────────────────────────────────────── */
+
+.split-container {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+.split-container--horizontal {
+  flex-direction: row;
+}
+
+.split-container--vertical {
+  flex-direction: column;
+}
+
+.split-child {
+  overflow: hidden;
+  min-width: 80px;
+  min-height: 80px;
+  flex-shrink: 1;
+  flex-grow: 0;
+}
+
+.split-leaf {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.split-divider {
+  flex-shrink: 0;
+  flex-grow: 0;
+  background: var(--border);
+  transition: background 0.15s ease;
+  z-index: 1;
+}
+
+.split-divider--horizontal {
+  width: var(--divider-width);
+  cursor: col-resize;
+}
+
+.split-divider--vertical {
+  height: var(--divider-width);
+  cursor: row-resize;
+}
+
+.split-divider:hover,
+.split-container--dragging .split-divider {
+  background: var(--accent);
+}
+
+/* Prevent pointer events on terminal iframes/canvases while dragging */
+.split-container--dragging .split-child {
+  pointer-events: none;
 }
