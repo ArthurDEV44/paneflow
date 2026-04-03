@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use iced::futures::SinkExt;
 
-use iced::widget::{button, column, container, horizontal_space, mouse_area, row, scrollable, text, Canvas};
+use iced::widget::{button, column, container, horizontal_space, mouse_area, row, scrollable, text};
 use iced::{Color, Element, Length, Size, Subscription, Task, Theme};
 use paneflow_config::loader::load_config;
 use paneflow_config::schema::PaneFlowConfig;
@@ -24,7 +24,7 @@ use paneflow_core::split_tree::{Direction, SplitTree};
 use paneflow_core::tab_manager::TabManager;
 use paneflow_core::workspace::Workspace;
 use paneflow_terminal::bridge::{PtyBridge, TerminalEvent};
-use renderer::TerminalCanvas;
+// renderer module kept for CellData/TerminalGrid types used by terminal.rs
 use terminal::TerminalState;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -94,6 +94,9 @@ pub struct PaneFlowApp {
     event_tx: mpsc::UnboundedSender<TerminalEvent>,
     event_rx: Arc<std::sync::Mutex<Option<mpsc::UnboundedReceiver<TerminalEvent>>>>,
     terminal_states: HashMap<Uuid, TerminalState>,
+    /// Cached terminal line strings — rebuilt in update(), read in view().
+    /// Avoids expensive to_grid() + Canvas rendering on every frame.
+    cached_lines: HashMap<Uuid, Vec<String>>,
     pane_exit_codes: HashMap<Uuid, i32>,
     config: PaneFlowConfig,
     // US-013: Pane zoom
@@ -190,6 +193,7 @@ impl PaneFlowApp {
             event_tx,
             event_rx,
             terminal_states,
+            cached_lines: HashMap::new(),
             pane_exit_codes: HashMap::new(),
             config,
             zoomed_pane: None,
@@ -299,6 +303,16 @@ impl PaneFlowApp {
             Message::PtyOutput { pane_id, data } => {
                 if let Some(state) = self.terminal_states.get_mut(&pane_id) {
                     state.process_bytes(&data);
+                    // Rebuild cached lines so view() is instant
+                    let grid = state.to_grid();
+                    let lines: Vec<String> = (0..grid.rows)
+                        .map(|row| {
+                            (0..grid.cols)
+                                .map(|col| grid.cell(row, col).character)
+                                .collect::<String>()
+                        })
+                        .collect();
+                    self.cached_lines.insert(pane_id, lines);
                 }
             }
             Message::PtyExited { pane_id, code } => {
@@ -910,7 +924,6 @@ impl PaneFlowApp {
         let is_focused = self.focused_pane == Some(pane_id);
 
         let content: Element<'_, Message> = if let Some(exit_code) = self.pane_exit_codes.get(&pane_id) {
-            // Exited pane
             container(
                 text(format!("[Process exited with code {exit_code}]"))
                     .size(14)
@@ -920,19 +933,24 @@ impl PaneFlowApp {
             .height(Length::Fill)
             .center(Length::Fill)
             .into()
-        } else if let Some(state) = self.terminal_states.get(&pane_id) {
-            let grid = state.to_grid();
-            // Active terminal — render via Canvas (US-004)
-            Canvas::new(TerminalCanvas {
-                grid,
-                font_size: self.config.font.size,
-                focused: is_focused,
-            })
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        } else if let Some(lines) = self.cached_lines.get(&pane_id) {
+            // Native text rendering — uses iced's optimized cosmic-text pipeline
+            let font_size = self.config.font.size;
+            let fg = Color::from_rgb(0.8, 0.84, 0.96);
+            let mut term_col = column![].spacing(0);
+            for line in lines {
+                term_col = term_col.push(
+                    text(line.as_str())
+                        .size(font_size)
+                        .font(iced::Font::MONOSPACE)
+                        .color(fg),
+                );
+            }
+            scrollable(term_col)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
         } else {
-            // Loading state
             container(
                 text("Starting terminal...")
                     .size(14)
