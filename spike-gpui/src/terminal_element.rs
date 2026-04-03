@@ -28,20 +28,6 @@ use crate::terminal::{SpikeTermSize, ZedListener};
 const FONT_SIZE: f32 = 14.0;
 const FONT_FAMILY: &str = "monospace";
 
-// Catppuccin Mocha palette (hardcoded until theme engine in US-013)
-const BG_COLOR: Rgba = Rgba {
-    r: 0.118,
-    g: 0.118,
-    b: 0.180,
-    a: 1.0,
-}; // #1e1e2e
-const FG_COLOR: Rgba = Rgba {
-    r: 0.804,
-    g: 0.839,
-    b: 0.957,
-    a: 1.0,
-}; // #cdd6f4
-
 // ---------------------------------------------------------------------------
 // Layout types
 // ---------------------------------------------------------------------------
@@ -172,8 +158,8 @@ impl TerminalElement {
         cx: &mut App,
     ) -> LayoutState {
         let dims = Self::measure_cell(window, cx);
-        let background_color: Hsla = BG_COLOR.into();
-        let default_fg: Hsla = FG_COLOR.into();
+        let theme = crate::theme::default_theme();
+        let background_color = theme.background;
         let default_bg = background_color;
 
         // Compute desired terminal grid size from pixel bounds
@@ -181,7 +167,7 @@ impl TerminalElement {
         let desired_rows = (bounds.size.height / dims.line_height).floor() as usize;
 
         // Snapshot the grid and cursor under lock to minimize FairMutex hold time.
-        let cursor_color = named_color(NamedColor::Cursor, default_fg, default_bg);
+        let cursor_color = theme.cursor;
         let (cells, cursor_snapshot): (Vec<_>, Option<CursorInfo>) = {
             let mut term = self.term.lock();
             // Resize the terminal grid if bounds have changed
@@ -254,8 +240,8 @@ impl TerminalElement {
             }
 
             // Compute colors
-            let mut fg = convert_color(*cell_fg, default_fg, default_bg);
-            let mut bg = convert_color(*cell_bg, default_fg, default_bg);
+            let mut fg = convert_color(*cell_fg, &theme);
+            let mut bg = convert_color(*cell_bg, &theme);
 
             // Handle inverse video
             if flags.contains(CellFlags::INVERSE) {
@@ -722,52 +708,49 @@ impl IntoElement for TerminalElement {
 // Color conversion
 // ---------------------------------------------------------------------------
 
-fn convert_color(color: AnsiColor, default_fg: Hsla, default_bg: Hsla) -> Hsla {
+fn convert_color(color: AnsiColor, theme: &crate::theme::TerminalTheme) -> Hsla {
     match color {
-        AnsiColor::Named(name) => named_color(name, default_fg, default_bg),
+        AnsiColor::Named(name) => named_color(name, theme),
         AnsiColor::Spec(rgb) => rgb_to_hsla(rgb.r, rgb.g, rgb.b),
-        AnsiColor::Indexed(i) => indexed_color(i, default_fg, default_bg),
+        AnsiColor::Indexed(i) => indexed_color(i, theme),
     }
 }
 
-fn named_color(name: NamedColor, default_fg: Hsla, default_bg: Hsla) -> Hsla {
-    // Catppuccin Mocha palette.
-    // Note: bright variants intentionally match normal variants — this is how
-    // Catppuccin defines them. The theme engine (US-013) will allow distinct values.
+fn named_color(name: NamedColor, theme: &crate::theme::TerminalTheme) -> Hsla {
     match name {
-        NamedColor::Black => rgb_to_hsla(0x45, 0x47, 0x5a),
-        NamedColor::Red => rgb_to_hsla(0xf3, 0x8b, 0xa8),
-        NamedColor::Green => rgb_to_hsla(0xa6, 0xe3, 0xa1),
-        NamedColor::Yellow => rgb_to_hsla(0xf9, 0xe2, 0xaf),
-        NamedColor::Blue => rgb_to_hsla(0x89, 0xb4, 0xfa),
-        NamedColor::Magenta => rgb_to_hsla(0xf5, 0xc2, 0xe7),
-        NamedColor::Cyan => rgb_to_hsla(0x94, 0xe2, 0xd5),
-        NamedColor::White => rgb_to_hsla(0xba, 0xc2, 0xde),
-        NamedColor::BrightBlack => rgb_to_hsla(0x58, 0x5b, 0x70),
-        NamedColor::BrightRed => rgb_to_hsla(0xf3, 0x8b, 0xa8),
-        NamedColor::BrightGreen => rgb_to_hsla(0xa6, 0xe3, 0xa1),
-        NamedColor::BrightYellow => rgb_to_hsla(0xf9, 0xe2, 0xaf),
-        NamedColor::BrightBlue => rgb_to_hsla(0x89, 0xb4, 0xfa),
-        NamedColor::BrightMagenta => rgb_to_hsla(0xf5, 0xc2, 0xe7),
-        NamedColor::BrightCyan => rgb_to_hsla(0x94, 0xe2, 0xd5),
-        NamedColor::BrightWhite => rgb_to_hsla(0xa6, 0xad, 0xc8),
-        NamedColor::Foreground | NamedColor::BrightForeground => default_fg,
-        NamedColor::Background => default_bg,
-        NamedColor::DimBlack => rgb_to_hsla(0x33, 0x35, 0x44),
-        NamedColor::DimRed => rgb_to_hsla(0xb3, 0x67, 0x7e),
-        NamedColor::DimGreen => rgb_to_hsla(0x7b, 0xaa, 0x78),
-        NamedColor::DimYellow => rgb_to_hsla(0xb9, 0xa8, 0x82),
-        NamedColor::DimBlue => rgb_to_hsla(0x66, 0x87, 0xba),
-        NamedColor::DimMagenta => rgb_to_hsla(0xb5, 0x90, 0xab),
-        NamedColor::DimCyan => rgb_to_hsla(0x6e, 0xa9, 0x9e),
-        NamedColor::DimWhite => rgb_to_hsla(0x8b, 0x91, 0xa6),
-        NamedColor::DimForeground => rgb_to_hsla(0x8b, 0x91, 0xa6),
-        NamedColor::Cursor => rgb_to_hsla(0xf5, 0xe0, 0xdc),
+        NamedColor::Black => theme.black,
+        NamedColor::Red => theme.red,
+        NamedColor::Green => theme.green,
+        NamedColor::Yellow => theme.yellow,
+        NamedColor::Blue => theme.blue,
+        NamedColor::Magenta => theme.magenta,
+        NamedColor::Cyan => theme.cyan,
+        NamedColor::White => theme.white,
+        NamedColor::BrightBlack => theme.bright_black,
+        NamedColor::BrightRed => theme.bright_red,
+        NamedColor::BrightGreen => theme.bright_green,
+        NamedColor::BrightYellow => theme.bright_yellow,
+        NamedColor::BrightBlue => theme.bright_blue,
+        NamedColor::BrightMagenta => theme.bright_magenta,
+        NamedColor::BrightCyan => theme.bright_cyan,
+        NamedColor::BrightWhite => theme.bright_white,
+        NamedColor::Foreground | NamedColor::BrightForeground => theme.foreground,
+        NamedColor::Background => theme.ansi_background,
+        NamedColor::DimBlack => theme.dim_black,
+        NamedColor::DimRed => theme.dim_red,
+        NamedColor::DimGreen => theme.dim_green,
+        NamedColor::DimYellow => theme.dim_yellow,
+        NamedColor::DimBlue => theme.dim_blue,
+        NamedColor::DimMagenta => theme.dim_magenta,
+        NamedColor::DimCyan => theme.dim_cyan,
+        NamedColor::DimWhite => theme.dim_white,
+        NamedColor::DimForeground => theme.dim_foreground,
+        NamedColor::Cursor => theme.cursor,
     }
 }
 
 /// Convert the xterm-256color indexed palette to HSLA.
-fn indexed_color(i: u8, default_fg: Hsla, default_bg: Hsla) -> Hsla {
+fn indexed_color(i: u8, theme: &crate::theme::TerminalTheme) -> Hsla {
     if i < 16 {
         // Standard 16 colors — map to named
         return named_color(
@@ -790,8 +773,7 @@ fn indexed_color(i: u8, default_fg: Hsla, default_bg: Hsla) -> Hsla {
                 15 => NamedColor::BrightWhite,
                 _ => unreachable!(),
             },
-            default_fg,
-            default_bg,
+            theme,
         );
     }
 
