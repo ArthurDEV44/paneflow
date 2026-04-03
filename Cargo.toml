@@ -6,7 +6,7 @@ members = [
     "crates/paneflow-ipc",
     "crates/paneflow-config",
     "crates/paneflow-cli",
-    "src-tauri",
+    "crates/paneflow-app",
 ]
 
 [workspace.package]

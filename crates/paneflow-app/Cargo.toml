@@ -1,19 +1,24 @@
 [package]
-name = "paneflow-terminal"
+name = "paneflow-app"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "paneflow-app"
+path = "src/main.rs"
+
 [dependencies]
 paneflow-core.workspace = true
+paneflow-terminal.workspace = true
+paneflow-ipc.workspace = true
+paneflow-config.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 anyhow.workspace = true
-portable-pty = "0.9"
-alacritty_terminal = "0.26.0-rc1"
-vte = "0.13"
 
-[dev-dependencies]
+iced = { version = "0.13", features = ["wgpu", "tokio"] }

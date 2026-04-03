@@ -7,7 +7,6 @@
 //! - Base64-encoded output to avoid JSON number array overhead
 //! - Bounded channel for backpressure under fast output
 
-use base64::Engine;
 use crate::emulator::TerminalEmulator;
 use crate::pty_manager::{PtyError, PtyManager};
 use std::collections::HashMap;
@@ -26,11 +25,12 @@ const MAX_BATCH_BYTES: usize = 32 * 1024;
 // Events
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(tag = "type")]
+#[derive(Debug, Clone)]
 pub enum TerminalEvent {
-    Data { pane_id: String, data: String },
-    Exit { pane_id: String, code: i32 },
+    /// Raw PTY output bytes (no base64 encoding — direct in-process use).
+    Data { pane_id: Uuid, data: Vec<u8> },
+    /// PTY process exited with the given status code.
+    Exit { pane_id: Uuid, code: i32 },
 }
 
 // ---------------------------------------------------------------------------
@@ -229,10 +229,9 @@ impl PtyBridge {
         event_tx: mpsc::UnboundedSender<TerminalEvent>,
         mut shutdown_rx: mpsc::Receiver<()>,
     ) {
-        let pane_id_str = pane_id.to_string();
         let (raw_tx, mut raw_rx) = mpsc::channel::<Vec<u8>>(64);
 
-        // Blocking reader thread.
+        // Blocking reader thread (dedicated OS thread per pane — US-008).
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
@@ -250,8 +249,8 @@ impl PtyBridge {
         });
 
         // Async coalescing forwarder.
-        // Coalesces burst output but caps each batch at MAX_BATCH_BYTES
-        // so the frontend JS event loop isn't blocked by huge term.write() calls.
+        // Coalesces burst output and caps each batch at MAX_BATCH_BYTES.
+        // Raw bytes are sent directly — no base64 encoding (v2: in-process use).
         tokio::spawn(async move {
             let mut batch = Vec::with_capacity(MAX_BATCH_BYTES);
 
@@ -274,13 +273,12 @@ impl PtyBridge {
                     }
                 }
 
-                // Send in MAX_BATCH_BYTES-sized chunks.
+                // Send raw bytes in MAX_BATCH_BYTES-sized chunks.
                 for chunk in batch.chunks(MAX_BATCH_BYTES) {
-                    let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);
                     if event_tx
                         .send(TerminalEvent::Data {
-                            pane_id: pane_id_str.clone(),
-                            data: encoded,
+                            pane_id,
+                            data: chunk.to_vec(),
                         })
                         .is_err()
                     {
@@ -291,7 +289,7 @@ impl PtyBridge {
             }
 
             let _ = event_tx.send(TerminalEvent::Exit {
-                pane_id: pane_id_str,
+                pane_id,
                 code: 0,
             });
         });
