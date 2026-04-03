@@ -67,6 +67,9 @@ pub struct TerminalState {
     notifier: Notifier,
     events_rx: UnboundedReceiver<AlacEvent>,
     pub exited: Option<i32>,
+    /// Set when PTY output has been processed (Wakeup event received).
+    /// Cleared after cx.notify() triggers a repaint.
+    pub dirty: bool,
 }
 
 impl TerminalState {
@@ -120,20 +123,26 @@ impl TerminalState {
             notifier: Notifier(pty_tx),
             events_rx,
             exited: None,
+            dirty: true, // Force initial render
         })
     }
 
-    /// Drain alacritty events (ChildExit, Wakeup, etc.)
+    /// Drain alacritty events. Sets `dirty = true` when PTY output was processed.
     pub fn sync(&mut self) {
         while let Ok(event) = self.events_rx.try_recv() {
             match event {
+                AlacEvent::Wakeup => {
+                    self.dirty = true;
+                }
                 AlacEvent::ChildExit(status) => {
                     self.exited = Some(status);
+                    self.dirty = true;
                 }
                 AlacEvent::Exit => {
-                    self.exited = Some(-1); // EventLoop shutdown, not a child signal
+                    self.exited = Some(-1);
+                    self.dirty = true;
                 }
-                _ => {} // Wakeup, Bell, Title, etc. — handled later
+                _ => {} // Bell, Title, ClipboardStore, etc.
             }
         }
     }
@@ -168,14 +177,19 @@ impl TerminalView {
         let terminal = TerminalState::new().expect("Failed to create terminal");
         let focus_handle = cx.focus_handle();
 
-        // Periodic sync: request repaint every 4ms
+        // Demand-driven sync: poll for new PTY events every 4ms,
+        // but only trigger repaint when dirty (new output received).
+        // Idle terminal = zero repaints, zero CPU.
         cx.spawn(async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
             loop {
                 smol::Timer::after(std::time::Duration::from_millis(4)).await;
                 let result = cx.update(|cx| {
                     this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
                         view.terminal.sync();
-                        cx.notify();
+                        if view.terminal.dirty {
+                            view.terminal.dirty = false;
+                            cx.notify();
+                        }
                     })
                 });
                 if result.is_err() {
@@ -192,6 +206,10 @@ impl TerminalView {
                     .await;
                 let result = cx.update(|cx| {
                     this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
+                        // Skip blink repaints when process has exited
+                        if view.terminal.exited.is_some() {
+                            return;
+                        }
                         view.cursor_visible = !view.cursor_visible;
                         cx.notify();
                     })
