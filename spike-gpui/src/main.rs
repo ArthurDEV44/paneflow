@@ -1,21 +1,23 @@
 //! PaneFlow v2 — GPUI Native Terminal Multiplexer
 //!
-//! App shell with sidebar + main content area.
-//! Terminal cells rendered via TerminalElement with GPUI's Element trait.
+//! App shell with sidebar workspace list + main content area.
 
 mod keys;
 mod split;
 mod terminal;
 mod terminal_element;
+mod workspace;
 
 use gpui::{
-    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, Focusable, IntoElement,
-    KeyBinding, Render, Styled, Window, WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, rgb, size, App, Bounds, ClickEvent, Context, Focusable,
+    InteractiveElement, IntoElement, KeyBinding, Render, SharedString, Styled, Window, WindowBounds,
+    WindowOptions,
 };
 use gpui_platform::application;
 
-use crate::split::{FocusDirection, SplitDirection, SplitNode};
+use crate::split::{FocusDirection, SplitDirection};
 use crate::terminal::TerminalView;
+use crate::workspace::Workspace;
 
 // ---------------------------------------------------------------------------
 // Actions
@@ -30,7 +32,18 @@ actions!(
         FocusLeft,
         FocusRight,
         FocusUp,
-        FocusDown
+        FocusDown,
+        NewWorkspace,
+        NextWorkspace,
+        SelectWorkspace1,
+        SelectWorkspace2,
+        SelectWorkspace3,
+        SelectWorkspace4,
+        SelectWorkspace5,
+        SelectWorkspace6,
+        SelectWorkspace7,
+        SelectWorkspace8,
+        SelectWorkspace9
     ]
 );
 
@@ -39,26 +52,67 @@ actions!(
 // ---------------------------------------------------------------------------
 
 struct PaneFlowApp {
-    root: Option<SplitNode>,
+    workspaces: Vec<Workspace>,
+    active_idx: usize,
 }
 
 impl PaneFlowApp {
     fn new(cx: &mut Context<Self>) -> Self {
-        let terminal_view = cx.new(TerminalView::new);
+        let terminal = cx.new(TerminalView::new);
+        let ws = Workspace::new("Terminal 1", terminal);
         Self {
-            root: Some(SplitNode::Leaf(terminal_view)),
+            workspaces: vec![ws],
+            active_idx: 0,
         }
     }
 
+    fn active_workspace(&self) -> Option<&Workspace> {
+        debug_assert!(
+            self.workspaces.is_empty() || self.active_idx < self.workspaces.len(),
+            "active_idx out of bounds"
+        );
+        self.workspaces.get(self.active_idx)
+    }
+
+    fn active_workspace_mut(&mut self) -> Option<&mut Workspace> {
+        self.workspaces.get_mut(self.active_idx)
+    }
+
+    fn select_workspace(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if idx < self.workspaces.len() && idx != self.active_idx {
+            self.active_idx = idx;
+            self.workspaces[idx].focus_first(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn create_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        const MAX_WORKSPACES: usize = 20;
+        if self.workspaces.len() >= MAX_WORKSPACES {
+            return;
+        }
+        let n = self.workspaces.len() + 1;
+        let terminal = cx.new(TerminalView::new);
+        let ws = Workspace::new(format!("Terminal {n}"), terminal);
+        self.workspaces.push(ws);
+        self.active_idx = self.workspaces.len() - 1;
+        self.workspaces[self.active_idx].focus_first(window, cx);
+        cx.notify();
+    }
+
+    // --- Split/close/focus handlers (operate on active workspace) ---
+
     fn split(&mut self, direction: SplitDirection, window: &mut Window, cx: &mut Context<Self>) {
         const MAX_PANES: usize = 32;
-        if let Some(root) = &self.root
+        if let Some(ws) = self.active_workspace()
+            && let Some(root) = &ws.root
             && root.leaf_count() >= MAX_PANES
         {
             return;
         }
         let new_terminal = cx.new(TerminalView::new);
-        if let Some(root) = &mut self.root
+        if let Some(ws) = self.active_workspace_mut()
+            && let Some(root) = &mut ws.root
             && root.split_at_focused(direction, new_terminal.clone(), window, cx)
         {
             new_terminal.read(cx).focus_handle(cx).focus(window, cx);
@@ -66,34 +120,20 @@ impl PaneFlowApp {
         cx.notify();
     }
 
-    fn handle_split_h(
-        &mut self,
-        _: &SplitHorizontally,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.split(SplitDirection::Horizontal, window, cx);
+    fn handle_split_h(&mut self, _: &SplitHorizontally, w: &mut Window, cx: &mut Context<Self>) {
+        self.split(SplitDirection::Horizontal, w, cx);
+    }
+    fn handle_split_v(&mut self, _: &SplitVertically, w: &mut Window, cx: &mut Context<Self>) {
+        self.split(SplitDirection::Vertical, w, cx);
     }
 
-    fn handle_split_v(
-        &mut self,
-        _: &SplitVertically,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.split(SplitDirection::Vertical, window, cx);
-    }
-
-    fn handle_close_pane(
-        &mut self,
-        _: &ClosePane,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(root) = self.root.take() {
+    fn handle_close_pane(&mut self, _: &ClosePane, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ws) = self.active_workspace_mut()
+            && let Some(root) = ws.root.take()
+        {
             let (new_root, _closed) = root.close_focused(window, cx);
-            self.root = new_root;
-            if let Some(ref root) = self.root {
+            ws.root = new_root;
+            if let Some(ref root) = ws.root {
                 root.focus_first(window, cx);
             }
         }
@@ -101,7 +141,9 @@ impl PaneFlowApp {
     }
 
     fn handle_focus(&mut self, dir: FocusDirection, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(root) = &self.root {
+        if let Some(ws) = self.active_workspace()
+            && let Some(root) = &ws.root
+        {
             root.focus_in_direction(dir, window, cx);
         }
         cx.notify();
@@ -119,24 +161,202 @@ impl PaneFlowApp {
     fn handle_focus_down(&mut self, _: &FocusDown, w: &mut Window, cx: &mut Context<Self>) {
         self.handle_focus(FocusDirection::Down, w, cx);
     }
+
+    fn handle_new_workspace(&mut self, _: &NewWorkspace, w: &mut Window, cx: &mut Context<Self>) {
+        self.create_workspace(w, cx);
+    }
+
+    fn handle_next_workspace(
+        &mut self,
+        _: &NextWorkspace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.workspaces.is_empty() {
+            let next = (self.active_idx + 1) % self.workspaces.len();
+            self.select_workspace(next, window, cx);
+        }
+    }
+
+    fn handle_select_ws(
+        &mut self,
+        idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_workspace(idx, window, cx);
+    }
+
+    // Macro-like handlers for Ctrl+1-9
+    fn handle_ws1(&mut self, _: &SelectWorkspace1, w: &mut Window, cx: &mut Context<Self>) {
+        self.handle_select_ws(0, w, cx);
+    }
+    fn handle_ws2(&mut self, _: &SelectWorkspace2, w: &mut Window, cx: &mut Context<Self>) {
+        self.handle_select_ws(1, w, cx);
+    }
+    fn handle_ws3(&mut self, _: &SelectWorkspace3, w: &mut Window, cx: &mut Context<Self>) {
+        self.handle_select_ws(2, w, cx);
+    }
+    fn handle_ws4(&mut self, _: &SelectWorkspace4, w: &mut Window, cx: &mut Context<Self>) {
+        self.handle_select_ws(3, w, cx);
+    }
+    fn handle_ws5(&mut self, _: &SelectWorkspace5, w: &mut Window, cx: &mut Context<Self>) {
+        self.handle_select_ws(4, w, cx);
+    }
+    fn handle_ws6(&mut self, _: &SelectWorkspace6, w: &mut Window, cx: &mut Context<Self>) {
+        self.handle_select_ws(5, w, cx);
+    }
+    fn handle_ws7(&mut self, _: &SelectWorkspace7, w: &mut Window, cx: &mut Context<Self>) {
+        self.handle_select_ws(6, w, cx);
+    }
+    fn handle_ws8(&mut self, _: &SelectWorkspace8, w: &mut Window, cx: &mut Context<Self>) {
+        self.handle_select_ws(7, w, cx);
+    }
+    fn handle_ws9(&mut self, _: &SelectWorkspace9, w: &mut Window, cx: &mut Context<Self>) {
+        self.handle_select_ws(8, w, cx);
+    }
+
+    // --- Sidebar rendering ---
+
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut sidebar = div()
+            .w(px(220.))
+            .flex_shrink_0()
+            .h_full()
+            .bg(rgb(0x181825))
+            .border_r_1()
+            .border_color(rgb(0x313244))
+            .flex()
+            .flex_col();
+
+        // Header
+        sidebar = sidebar.child(
+            div()
+                .p_3()
+                .child(
+                    div()
+                        .text_color(rgb(0xcdd6f4))
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .child("PaneFlow"),
+                ),
+        );
+
+        // Workspace list
+        let mut list = div().flex_1().overflow_hidden().flex().flex_col();
+
+        for (i, ws) in self.workspaces.iter().enumerate() {
+            let is_active = i == self.active_idx;
+            let bg = if is_active {
+                rgb(0x313244) // Surface0 — highlighted
+            } else {
+                rgb(0x181825) // Mantle — default
+            };
+
+            let title = ws.title.clone();
+            let cwd_display = ws
+                .cwd
+                .rsplit('/')
+                .next()
+                .unwrap_or(&ws.cwd)
+                .to_string();
+            let pane_count = ws.pane_count();
+
+            let idx = i;
+            list = list.child(
+                div()
+                    .id(SharedString::from(format!("ws-{i}")))
+                    .px_3()
+                    .py_1()
+                    .bg(bg)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(0x45475a)))
+                    .on_click(cx.listener(move |this, _e: &ClickEvent, window, cx| {
+                        this.select_workspace(idx, window, cx);
+                    }))
+                    .child(
+                        div()
+                            .text_color(rgb(0xcdd6f4))
+                            .text_sm()
+                            .font_weight(if is_active {
+                                gpui::FontWeight::BOLD
+                            } else {
+                                gpui::FontWeight::NORMAL
+                            })
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_color(rgb(0x6c7086))
+                                    .text_xs()
+                                    .child(cwd_display),
+                            )
+                            .child(
+                                div()
+                                    .text_color(rgb(0x6c7086))
+                                    .text_xs()
+                                    .child(format!("{pane_count} pane{}", if pane_count != 1 { "s" } else { "" })),
+                            ),
+                    ),
+            );
+        }
+
+        sidebar = sidebar.child(list);
+
+        // "+" button at bottom
+        sidebar = sidebar.child(
+            div()
+                .p_2()
+                .border_t_1()
+                .border_color(rgb(0x313244))
+                .child(
+                    div()
+                        .id("new-workspace-btn")
+                        .px_3()
+                        .py_1()
+                        .text_color(rgb(0x89b4fa))
+                        .text_sm()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgb(0x313244)))
+                        .rounded_md()
+                        .text_center()
+                        .on_click(cx.listener(|this, _e: &ClickEvent, window, cx| {
+                            this.create_workspace(window, cx);
+                        }))
+                        .child("+ New Workspace"),
+                ),
+        );
+
+        sidebar
+    }
 }
 
 impl Render for PaneFlowApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let main_content = if let Some(root) = &self.root {
-            root.render(window, cx)
+        let main_content = if let Some(ws) = self.active_workspace() {
+            if let Some(root) = &ws.root {
+                root.render(window, cx)
+            } else {
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size_full()
+                    .child(div().text_color(rgb(0x6c7086)).child("No terminal panes open"))
+                    .into_any_element()
+            }
         } else {
-            // Empty state — no terminal panes
             div()
                 .flex()
                 .items_center()
                 .justify_center()
                 .size_full()
-                .child(
-                    div()
-                        .text_color(rgb(0x6c7086))
-                        .child("No terminal panes open"),
-                )
+                .child(div().text_color(rgb(0x6c7086)).child("No workspaces"))
                 .into_any_element()
         };
 
@@ -151,24 +371,19 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_focus_right))
             .on_action(cx.listener(Self::handle_focus_up))
             .on_action(cx.listener(Self::handle_focus_down))
-            // Sidebar — 220px fixed width
-            .child(
-                div()
-                    .w(px(220.))
-                    .flex_shrink_0()
-                    .h_full()
-                    .bg(rgb(0x181825))
-                    .border_r_1()
-                    .border_color(rgb(0x313244))
-                    .p_3()
-                    .child(
-                        div()
-                            .text_color(rgb(0xcdd6f4))
-                            .text_sm()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .child("PaneFlow"),
-                    ),
-            )
+            .on_action(cx.listener(Self::handle_new_workspace))
+            .on_action(cx.listener(Self::handle_next_workspace))
+            .on_action(cx.listener(Self::handle_ws1))
+            .on_action(cx.listener(Self::handle_ws2))
+            .on_action(cx.listener(Self::handle_ws3))
+            .on_action(cx.listener(Self::handle_ws4))
+            .on_action(cx.listener(Self::handle_ws5))
+            .on_action(cx.listener(Self::handle_ws6))
+            .on_action(cx.listener(Self::handle_ws7))
+            .on_action(cx.listener(Self::handle_ws8))
+            .on_action(cx.listener(Self::handle_ws9))
+            // Sidebar
+            .child(self.render_sidebar(cx))
             // Main content area
             .child(
                 div()
@@ -189,15 +404,25 @@ fn main() {
     env_logger::init();
 
     application().run(|cx: &mut App| {
-        // Register keybindings
         cx.bind_keys([
             KeyBinding::new("ctrl-shift-d", SplitHorizontally, None),
             KeyBinding::new("ctrl-shift-e", SplitVertically, None),
             KeyBinding::new("ctrl-shift-w", ClosePane, None),
+            KeyBinding::new("ctrl-shift-n", NewWorkspace, None),
+            KeyBinding::new("ctrl-tab", NextWorkspace, None),
             KeyBinding::new("alt-left", FocusLeft, None),
             KeyBinding::new("alt-right", FocusRight, None),
             KeyBinding::new("alt-up", FocusUp, None),
             KeyBinding::new("alt-down", FocusDown, None),
+            KeyBinding::new("ctrl-1", SelectWorkspace1, None),
+            KeyBinding::new("ctrl-2", SelectWorkspace2, None),
+            KeyBinding::new("ctrl-3", SelectWorkspace3, None),
+            KeyBinding::new("ctrl-4", SelectWorkspace4, None),
+            KeyBinding::new("ctrl-5", SelectWorkspace5, None),
+            KeyBinding::new("ctrl-6", SelectWorkspace6, None),
+            KeyBinding::new("ctrl-7", SelectWorkspace7, None),
+            KeyBinding::new("ctrl-8", SelectWorkspace8, None),
+            KeyBinding::new("ctrl-9", SelectWorkspace9, None),
         ]);
 
         let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
@@ -215,11 +440,8 @@ fn main() {
             },
             |window, cx| {
                 let view = cx.new(PaneFlowApp::new);
-                // Focus the first terminal pane
                 view.update(cx, |app, cx| {
-                    if let Some(root) = &app.root {
-                        root.focus_first(window, cx);
-                    }
+                    app.workspaces[0].focus_first(window, cx);
                 });
                 view
             },
