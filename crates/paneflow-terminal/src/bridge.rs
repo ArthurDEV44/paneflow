@@ -1,11 +1,12 @@
-//! Async PTY I/O bridge.
+//! Async PTY I/O bridge (US-008, US-011).
 //!
-//! Architecture (Ghostty-inspired):
+//! Architecture (Ghostty/cmux-inspired):
 //! - Per-pane writer handles behind `std::sync::Mutex` (no global lock for writes)
-//! - Dedicated OS thread per pane for blocking PTY reads
-//! - Coalescing forwarder: drains all pending chunks before sending one event
-//! - Base64-encoded output to avoid JSON number array overhead
-//! - Bounded channel for backpressure under fast output
+//! - Dedicated OS thread per pane for blocking PTY reads (4 KiB buffer)
+//! - Coalescing forwarder: drains all pending chunks via try_recv() loop (tick batching)
+//! - Raw byte output — no encoding overhead (v2: in-process rendering)
+//! - Bounded channel (capacity 64) for backpressure under fast output
+//! - MAX_BATCH_BYTES (32 KiB) cap per tick for responsiveness during heavy output
 
 use crate::emulator::TerminalEmulator;
 use crate::pty_manager::{PtyError, PtyManager};
@@ -16,9 +17,9 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex as TokioMutex};
 use uuid::Uuid;
 
-/// Max bytes per output batch sent to the frontend.
-/// Keeps individual `term.write()` calls small so the JS event loop
-/// can process keyboard events between chunks.
+/// Max bytes per output batch per tick (US-011).
+/// Caps processing per coalescing cycle so the event loop can handle
+/// keyboard events between chunks during heavy output (e.g. cat /dev/urandom).
 const MAX_BATCH_BYTES: usize = 32 * 1024;
 
 // ---------------------------------------------------------------------------
