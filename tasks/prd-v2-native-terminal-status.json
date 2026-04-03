@@ -1,0 +1,80 @@
+{
+  "prd": {
+    "file": "tasks/prd-v2-native-terminal.md",
+    "title": "PaneFlow v2 — Full Native Rust Terminal Multiplexer",
+    "created_at": "2026-04-03",
+    "status": "IN_PROGRESS"
+  },
+  "epics": [
+    {
+      "id": "EP-001",
+      "title": "Native Window & UI Shell",
+      "status": "IN_REVIEW",
+      "priority": "P0",
+      "stories_total": 3,
+      "stories_done": 3
+    },
+    {
+      "id": "EP-002",
+      "title": "GPU Terminal Renderer",
+      "status": "IN_REVIEW",
+      "priority": "P0",
+      "stories_total": 4,
+      "stories_done": 4
+    },
+    {
+      "id": "EP-003",
+      "title": "PTY Bridge & Zero-Latency Input",
+      "status": "IN_REVIEW",
+      "priority": "P0",
+      "stories_total": 4,
+      "stories_done": 4
+    },
+    {
+      "id": "EP-004",
+      "title": "Split Pane Tiling Engine",
+      "status": "IN_REVIEW",
+      "priority": "P0",
+      "stories_total": 3,
+      "stories_done": 3
+    },
+    {
+      "id": "EP-005",
+      "title": "Workspace & State Management",
+      "status": "IN_REVIEW",
+      "priority": "P1",
+      "stories_total": 3,
+      "stories_done": 3
+    },
+    {
+      "id": "EP-006",
+      "title": "IPC, CLI & Config",
+      "status": "IN_REVIEW",
+      "priority": "P1",
+      "stories_total": 3,
+      "stories_done": 3
+    }
+  ],
+  "stories": [
+    { "id": "US-001", "title": "Native Window with iced Application Shell", "epic": "EP-001", "status": "IN_REVIEW", "priority": "P0", "size": "M", "blocked_by": [], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-002", "title": "Sidebar Widget with Workspace List", "epic": "EP-001", "status": "IN_REVIEW", "priority": "P0", "size": "M", "blocked_by": ["US-001"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-003", "title": "Command Palette Overlay", "epic": "EP-001", "status": "IN_REVIEW", "priority": "P1", "size": "M", "blocked_by": ["US-002"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-004", "title": "WGPU Glyph Atlas and Text Renderer", "epic": "EP-002", "status": "IN_REVIEW", "priority": "P0", "size": "L", "blocked_by": ["US-001"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-005", "title": "alacritty_terminal Grid Integration", "epic": "EP-002", "status": "IN_REVIEW", "priority": "P0", "size": "M", "blocked_by": ["US-004"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-006", "title": "Cursor Rendering", "epic": "EP-002", "status": "IN_REVIEW", "priority": "P0", "size": "S", "blocked_by": ["US-005"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-007", "title": "Selection and Clipboard Support", "epic": "EP-002", "status": "IN_REVIEW", "priority": "P0", "size": "M", "blocked_by": ["US-005"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-008", "title": "PTY Spawn with Per-Pane I/O Threads", "epic": "EP-003", "status": "IN_REVIEW", "priority": "P0", "size": "M", "blocked_by": [], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-009", "title": "Zero-IPC Keystroke Path", "epic": "EP-003", "status": "IN_REVIEW", "priority": "P0", "size": "M", "blocked_by": ["US-008"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-010", "title": "Demand-Driven Rendering Pipeline", "epic": "EP-003", "status": "IN_REVIEW", "priority": "P0", "size": "L", "blocked_by": ["US-008", "US-005"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-011", "title": "Coalesced Output Pipeline with Tick Batching", "epic": "EP-003", "status": "IN_REVIEW", "priority": "P0", "size": "M", "blocked_by": ["US-010"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-012", "title": "Binary Tree Split Layout", "epic": "EP-004", "status": "IN_REVIEW", "priority": "P0", "size": "M", "blocked_by": ["US-001"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-013", "title": "Pane Zoom and Equalize", "epic": "EP-004", "status": "IN_REVIEW", "priority": "P1", "size": "S", "blocked_by": ["US-012"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-014", "title": "Drag-to-Resize Split Dividers", "epic": "EP-004", "status": "IN_REVIEW", "priority": "P1", "size": "S", "blocked_by": ["US-012"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-015", "title": "Multi-Workspace Model with Tab Switching", "epic": "EP-005", "status": "IN_REVIEW", "priority": "P0", "size": "M", "blocked_by": ["US-002", "US-012"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-016", "title": "Session Persistence", "epic": "EP-005", "status": "IN_REVIEW", "priority": "P1", "size": "M", "blocked_by": ["US-015"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-017", "title": "Notification System (Bell Detection and Badges)", "epic": "EP-005", "status": "IN_REVIEW", "priority": "P1", "size": "M", "blocked_by": ["US-015"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-018", "title": "Unix Socket Server (V2 JSON-RPC)", "epic": "EP-006", "status": "IN_REVIEW", "priority": "P0", "size": "M", "blocked_by": ["US-015"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-019", "title": "CLI Binary", "epic": "EP-006", "status": "IN_REVIEW", "priority": "P1", "size": "S", "blocked_by": ["US-018"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-020", "title": "JSON Config with Hot-Reload", "epic": "EP-006", "status": "IN_REVIEW", "priority": "P1", "size": "S", "blocked_by": ["US-001"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null }
+  ]
+}
