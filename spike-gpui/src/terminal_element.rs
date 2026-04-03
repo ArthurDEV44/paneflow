@@ -8,7 +8,7 @@ use std::sync::Arc;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::Term;
-use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
+use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor};
 
 use gpui::{
     fill, px, relative, App, Bounds, ContentMask, Element, ElementId, Font, FontStyle, FontWeight,
@@ -65,9 +65,18 @@ struct LayoutRect {
     color: Hsla,
 }
 
+struct CursorInfo {
+    line: i32,
+    col: usize,
+    shape: CursorShape,
+    color: Hsla,
+    wide: bool,
+}
+
 pub struct LayoutState {
     batched_runs: Vec<BatchedTextRun>,
     rects: Vec<LayoutRect>,
+    cursor: Option<CursorInfo>,
     dimensions: CellDimensions,
     background_color: Hsla,
 }
@@ -91,11 +100,21 @@ struct CellStyle {
 
 pub struct TerminalElement {
     term: Arc<FairMutex<Term<ZedListener>>>,
+    cursor_visible: bool,
+    focused: bool,
 }
 
 impl TerminalElement {
-    pub fn new(term: Arc<FairMutex<Term<ZedListener>>>) -> Self {
-        Self { term }
+    pub fn new(
+        term: Arc<FairMutex<Term<ZedListener>>>,
+        cursor_visible: bool,
+        focused: bool,
+    ) -> Self {
+        Self {
+            term,
+            cursor_visible,
+            focused,
+        }
     }
 
     fn base_font() -> Font {
@@ -147,15 +166,35 @@ impl TerminalElement {
         let default_fg: Hsla = FG_COLOR.into();
         let default_bg = background_color;
 
-        // Snapshot the grid under lock to minimize FairMutex hold time.
-        // The PTY write thread (alacritty EventLoop) is blocked while we hold this lock.
-        let cells: Vec<_> = {
+        // Snapshot the grid and cursor under lock to minimize FairMutex hold time.
+        let cursor_color = named_color(NamedColor::Cursor, default_fg, default_bg);
+        let (cells, cursor_snapshot): (Vec<_>, Option<CursorInfo>) = {
             let term = self.term.lock();
             let content = term.renderable_content();
-            content
+            let cursor =
+                if matches!(content.cursor.shape, CursorShape::Hidden) || !self.cursor_visible {
+                    None
+                } else {
+                    let shape = if !self.focused {
+                        CursorShape::HollowBlock
+                    } else {
+                        content.cursor.shape
+                    };
+                    let cursor_cell = &term.grid()[content.cursor.point];
+                    let wide = cursor_cell.flags.contains(CellFlags::WIDE_CHAR);
+                    Some(CursorInfo {
+                        line: content.cursor.point.line.0,
+                        col: content.cursor.point.column.0,
+                        shape,
+                        color: cursor_color,
+                        wide,
+                    })
+                };
+            let cells = content
                 .display_iter
                 .map(|ic| (ic.point, ic.cell.c, ic.cell.fg, ic.cell.bg, ic.cell.flags))
-                .collect()
+                .collect();
+            (cells, cursor)
         };
 
         let mut batch = BatchAccumulator::new();
@@ -280,6 +319,7 @@ impl TerminalElement {
         LayoutState {
             batched_runs: batch.runs,
             rects,
+            cursor: cursor_snapshot,
             dimensions: dims,
             background_color,
         }
@@ -490,6 +530,111 @@ impl Element for TerminalElement {
                     window,
                     cx,
                 );
+            }
+
+            // 4. Paint cursor
+            if let Some(cursor) = &layout.cursor {
+                let cx_ = origin.x + cell_width * cursor.col as f32;
+                let cy = origin.y + line_height * cursor.line as f32;
+                let cw = if cursor.wide {
+                    cell_width * 2.0
+                } else {
+                    cell_width
+                };
+                let ch = line_height;
+                let color = cursor.color;
+
+                match cursor.shape {
+                    CursorShape::Block => {
+                        let cursor_bounds = Bounds::new(
+                            Point { x: cx_, y: cy },
+                            gpui::Size {
+                                width: cw,
+                                height: ch,
+                            },
+                        );
+                        window.paint_quad(fill(cursor_bounds, color));
+                    }
+                    CursorShape::Beam => {
+                        let beam_width = px(2.0);
+                        let cursor_bounds = Bounds::new(
+                            Point { x: cx_, y: cy },
+                            gpui::Size {
+                                width: beam_width,
+                                height: ch,
+                            },
+                        );
+                        window.paint_quad(fill(cursor_bounds, color));
+                    }
+                    CursorShape::Underline => {
+                        let underline_height = px(2.0);
+                        let cursor_bounds = Bounds::new(
+                            Point {
+                                x: cx_,
+                                y: cy + ch - underline_height,
+                            },
+                            gpui::Size {
+                                width: cw,
+                                height: underline_height,
+                            },
+                        );
+                        window.paint_quad(fill(cursor_bounds, color));
+                    }
+                    CursorShape::HollowBlock => {
+                        let t = px(1.5);
+                        // Top edge
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                Point { x: cx_, y: cy },
+                                gpui::Size {
+                                    width: cw,
+                                    height: t,
+                                },
+                            ),
+                            color,
+                        ));
+                        // Bottom edge
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                Point {
+                                    x: cx_,
+                                    y: cy + ch - t,
+                                },
+                                gpui::Size {
+                                    width: cw,
+                                    height: t,
+                                },
+                            ),
+                            color,
+                        ));
+                        // Left edge
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                Point { x: cx_, y: cy },
+                                gpui::Size {
+                                    width: t,
+                                    height: ch,
+                                },
+                            ),
+                            color,
+                        ));
+                        // Right edge
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                Point {
+                                    x: cx_ + cw - t,
+                                    y: cy,
+                                },
+                                gpui::Size {
+                                    width: t,
+                                    height: ch,
+                                },
+                            ),
+                            color,
+                        ));
+                    }
+                    CursorShape::Hidden => {} // Already filtered in build_layout
+                }
             }
         });
     }

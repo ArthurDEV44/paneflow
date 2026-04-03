@@ -144,9 +144,12 @@ impl TerminalState {
 // Terminal View — GPUI Render impl
 // ---------------------------------------------------------------------------
 
+const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
+
 pub struct TerminalView {
     terminal: TerminalState,
     focus_handle: FocusHandle,
+    cursor_visible: bool,
 }
 
 impl TerminalView {
@@ -154,7 +157,7 @@ impl TerminalView {
         let terminal = TerminalState::new().expect("Failed to create terminal");
         let focus_handle = cx.focus_handle();
 
-        // Periodic sync: pull PTY output into terminal grid, request repaint
+        // Periodic sync: request repaint every 4ms
         cx.spawn(async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
             loop {
                 smol::Timer::after(std::time::Duration::from_millis(4)).await;
@@ -171,9 +174,28 @@ impl TerminalView {
         })
         .detach();
 
+        // Cursor blink timer: toggle visibility every 530ms
+        cx.spawn(async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            loop {
+                smol::Timer::after(std::time::Duration::from_millis(CURSOR_BLINK_INTERVAL_MS))
+                    .await;
+                let result = cx.update(|cx| {
+                    this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
+                        view.cursor_visible = !view.cursor_visible;
+                        cx.notify();
+                    })
+                });
+                if result.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         Self {
             terminal,
             focus_handle,
+            cursor_visible: true,
         }
     }
 
@@ -183,6 +205,9 @@ impl TerminalView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
+        // Reset cursor blink on keystroke — cursor should be visible while typing
+        self.cursor_visible = true;
+
         let keystroke = &event.keystroke;
 
         // Regular character input via key_char
@@ -264,8 +289,10 @@ impl gpui::Focusable for TerminalView {
 }
 
 impl Render for TerminalView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let terminal_element = TerminalElement::new(self.terminal.term.clone());
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let focused = self.focus_handle.is_focused(window);
+        let terminal_element =
+            TerminalElement::new(self.terminal.term.clone(), self.cursor_visible, focused);
 
         div()
             .id("terminal-view")
