@@ -6,6 +6,7 @@ mod keys;
 mod split;
 mod terminal;
 mod terminal_element;
+pub mod theme;
 mod workspace;
 
 use gpui::{
