@@ -234,7 +234,37 @@ pub fn solarized_dark() -> TerminalTheme {
     }
 }
 
-/// Get the default theme.
-pub fn default_theme() -> TerminalTheme {
+/// Look up a bundled theme by name (case-insensitive).
+pub fn theme_by_name(name: &str) -> Option<TerminalTheme> {
+    let name_lower = name.to_lowercase();
+    THEMES
+        .iter()
+        .find(|(n, _)| n.to_lowercase() == name_lower)
+        .map(|(_, f)| f())
+}
+
+/// Read the theme name from `~/.config/paneflow/config.json`.
+/// Returns None if the file doesn't exist or is invalid JSON.
+fn read_config_theme_name() -> Option<String> {
+    let config_path = dirs::config_dir()?.join("paneflow").join("config.json");
+    let content = std::fs::read_to_string(config_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    json.get("theme")?.as_str().map(String::from)
+}
+
+/// Get the active theme — reads from config if available, falls back to Catppuccin Mocha.
+pub fn active_theme() -> TerminalTheme {
+    if let Some(name) = read_config_theme_name() {
+        if let Some(theme) = theme_by_name(&name) {
+            return theme;
+        }
+        log::warn!("Unknown theme '{}', using default", name);
+    }
     catppuccin_mocha()
+}
+
+/// Get the config file modification time for change detection.
+pub fn config_mtime() -> Option<std::time::SystemTime> {
+    let config_path = dirs::config_dir()?.join("paneflow").join("config.json");
+    std::fs::metadata(config_path).ok()?.modified().ok()
 }

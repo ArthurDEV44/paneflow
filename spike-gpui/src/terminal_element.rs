@@ -158,7 +158,7 @@ impl TerminalElement {
         cx: &mut App,
     ) -> LayoutState {
         let dims = Self::measure_cell(window, cx);
-        let theme = crate::theme::default_theme();
+        let theme = crate::theme::active_theme();
         let background_color = theme.background;
         let default_bg = background_color;
 
