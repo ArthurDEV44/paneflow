@@ -26,14 +26,37 @@ impl shader::Primitive for TerminalPrimitive {
         format: wgpu::TextureFormat,
         storage: &mut shader::Storage,
         bounds: &Rectangle,
-        _viewport: &shader::Viewport,
+        viewport: &shader::Viewport,
     ) {
+        // Use physical pixel size for correct NDC on HiDPI displays
+        let scale = viewport.scale_factor() as f32;
+        let physical_w = bounds.width * scale;
+        let physical_h = bounds.height * scale;
+
         if !storage.has::<TerminalPipeline>() {
+            tracing::info!(
+                format = ?format,
+                font_size = self.font_size,
+                "GPU pipeline: creating TerminalPipeline"
+            );
             storage.store(TerminalPipeline::new(device, queue, format, self.font_size));
+            tracing::info!("GPU pipeline: created successfully");
         }
 
         let pipeline = storage.get_mut::<TerminalPipeline>().unwrap();
-        pipeline.update(device, queue, &self.grid, [bounds.width, bounds.height]);
+
+        tracing::debug!(
+            grid_rows = self.grid.rows,
+            grid_cols = self.grid.cols,
+            bounds_w = bounds.width,
+            bounds_h = bounds.height,
+            physical_w,
+            physical_h,
+            scale,
+            "GPU prepare: updating pipeline"
+        );
+
+        pipeline.update(device, queue, &self.grid, [physical_w, physical_h]);
     }
 
     fn render(
@@ -44,7 +67,18 @@ impl shader::Primitive for TerminalPrimitive {
         clip_bounds: &Rectangle<u32>,
     ) {
         if let Some(pipeline) = storage.get::<TerminalPipeline>() {
+            tracing::debug!(
+                clip_x = clip_bounds.x,
+                clip_y = clip_bounds.y,
+                clip_w = clip_bounds.width,
+                clip_h = clip_bounds.height,
+                bg_count = pipeline.bg_count(),
+                glyph_count = pipeline.glyph_count(),
+                "GPU render: issuing draw calls"
+            );
             pipeline.render(encoder, target, *clip_bounds);
+        } else {
+            tracing::warn!("GPU render: no pipeline in storage — skipping");
         }
     }
 }

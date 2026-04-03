@@ -68,15 +68,16 @@ struct SessionWorkspace {
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 fn main() -> iced::Result {
-    // Fix wgpu surface creation panic on Wayland (wgpu#6159, iced#1618):
-    // Some compositors (GNOME/Mutter) fail dmabuf import, leaving the surface
-    // with zero supported present modes. The GL backend and Fifo present mode
-    // are the most reliable workaround across affected Wayland compositors.
-    if std::env::var("WGPU_BACKEND").is_err() {
-        unsafe { std::env::set_var("WGPU_BACKEND", "gl") };
-    }
+    // Wayland present mode fix (wgpu#6159): AutoVsync panics on empty surface
+    // capabilities. Fifo is universally supported.
     if std::env::var("ICED_PRESENT_MODE").is_err() {
         unsafe { std::env::set_var("ICED_PRESENT_MODE", "fifo") };
+    }
+
+    // GL backend: required on GNOME/Mutter Wayland (Vulkan dmabuf import fails).
+    // Note: iced Shader widget doesn't work on GL — use TerminalView fallback.
+    if std::env::var("WGPU_BACKEND").is_err() {
+        unsafe { std::env::set_var("WGPU_BACKEND", "gl") };
     }
 
     tracing_subscriber::fmt()
@@ -244,7 +245,11 @@ impl PaneFlowApp {
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sidebar_dragging: false,
             bell_animations: HashMap::new(),
-            use_gpu_renderer: true, // GPU shader pipeline (EP-003) — instanced WGPU draws
+            // GPU Shader widget requires Vulkan — GL backend doesn't call prepare/render.
+            // Auto-detect: enable only if not on GL backend.
+            use_gpu_renderer: std::env::var("WGPU_BACKEND")
+                .map(|b| !b.eq_ignore_ascii_case("gl"))
+                .unwrap_or(true),
             window_size: (1280.0, 720.0), // initial estimate, updated on first WindowResized
         };
 
@@ -346,9 +351,21 @@ impl PaneFlowApp {
 
             // ── Terminal events ──────────────────────────────────────────
             Message::PtyOutput { pane_id, data } => {
+                tracing::debug!(
+                    %pane_id,
+                    bytes = data.len(),
+                    has_state = self.terminal_states.contains_key(&pane_id),
+                    "PtyOutput received"
+                );
                 if let Some(state) = self.terminal_states.get_mut(&pane_id) {
                     state.process_bytes(&data);
                     let new_grid = state.to_grid();
+                    tracing::debug!(
+                        rows = new_grid.rows,
+                        cols = new_grid.cols,
+                        non_space = new_grid.cells.iter().filter(|c| c.character != ' ' && c.character != '\0').count(),
+                        "Grid rebuilt"
+                    );
 
                     // US-010: Track dirty rows by comparing old vs new grid
                     let dirty = self.dirty_rows.entry(pane_id).or_default();
@@ -488,11 +505,9 @@ impl PaneFlowApp {
         let content_h = (win_h - TAB_BAR_HEIGHT).max(1.0);
 
         let font_size = self.config.font.clamped_size();
-        let cell_w = font_size * 0.6;
-        let cell_h = font_size * 1.2;
-        // Terminal pane padding: [2, 4] → 4px vertical, 8px horizontal
-        let pad_h = 8.0;
-        let pad_w = 8.0;
+        let m = terminal_widget::cell_metrics(font_size);
+        let cell_w = m.cell_w;
+        let cell_h = m.cell_h;
 
         let Some(ws_id) = self.tab_manager.selected_id else {
             return Task::none();
@@ -506,10 +521,8 @@ impl PaneFlowApp {
         let mut resize_tasks = Vec::new();
 
         for (pane_id, rect) in layout {
-            let pane_w = (rect.width as f32 - pad_w).max(cell_w);
-            let pane_h = (rect.height as f32 - pad_h).max(cell_h);
-            let new_cols = (pane_w / cell_w).floor().max(1.0) as u16;
-            let new_rows = (pane_h / cell_h).floor().max(1.0) as u16;
+            let new_cols = (rect.width as f32 / cell_w).floor().max(1.0) as u16;
+            let new_rows = (rect.height as f32 / cell_h).floor().max(1.0) as u16;
 
             if let Some(state) = self.terminal_states.get_mut(&pane_id) {
                 let old_cols = state.cols() as u16;
@@ -1233,6 +1246,15 @@ impl PaneFlowApp {
     fn view_terminal_pane(&self, pane_id: Uuid) -> Element<'_, Message> {
         let t = &self.ui_theme;
         let _is_focused = self.focused_pane == Some(pane_id);
+        let has_grid = self.cached_grids.contains_key(&pane_id);
+        let has_exit = self.pane_exit_codes.contains_key(&pane_id);
+        tracing::info!(
+            %pane_id,
+            has_grid,
+            has_exit,
+            gpu = self.use_gpu_renderer,
+            "view_terminal_pane"
+        );
 
         let content: Element<'_, Message> = if let Some(exit_code) = self.pane_exit_codes.get(&pane_id) {
             container(
@@ -1246,6 +1268,11 @@ impl PaneFlowApp {
             .into()
         } else if let Some(grid) = self.cached_grids.get(&pane_id) {
             if self.use_gpu_renderer {
+                tracing::info!(
+                    grid_cells = grid.cells.len(),
+                    non_space = grid.cells.iter().filter(|c| c.character != ' ').count(),
+                    "Shader widget CREATED"
+                );
                 // US-009: GPU Shader widget — instanced WGPU draws via glyph atlas
                 Shader::new(TerminalShaderProgram {
                     grid: grid.clone(),

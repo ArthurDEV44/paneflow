@@ -31,8 +31,10 @@ pub struct UiTheme {
     /// Scrim color for modal overlays
     pub scrim: Color,
     /// Focus border color (derived from accent)
+    #[allow(dead_code)]
     pub focus_border: Color,
     /// Terminal pane background
+    #[allow(dead_code)]
     pub terminal_bg: Color,
 }
 

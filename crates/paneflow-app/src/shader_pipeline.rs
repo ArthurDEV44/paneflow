@@ -365,6 +365,24 @@ impl TerminalPipeline {
 
         self.bg_count = bg_instances.len() as u32;
         self.glyph_count = glyph_instances.len() as u32;
+
+        tracing::debug!(
+            bg_count = self.bg_count,
+            glyph_count = self.glyph_count,
+            cell_w = cell_w,
+            cell_h = cell_h,
+            viewport = ?viewport,
+            grid = %format!("{}x{}", grid.cols, grid.rows),
+            "GPU update: instance buffers uploaded"
+        );
+    }
+
+    pub fn bg_count(&self) -> u32 {
+        self.bg_count
+    }
+
+    pub fn glyph_count(&self) -> u32 {
+        self.glyph_count
     }
 
     /// Issue draw calls for background and glyph passes.
@@ -374,6 +392,10 @@ impl TerminalPipeline {
         target: &wgpu::TextureView,
         clip: iced::Rectangle<u32>,
     ) {
+        if self.bg_count == 0 && self.glyph_count == 0 {
+            tracing::warn!("GPU render: zero instances — nothing to draw");
+            return;
+        }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("terminal_render_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

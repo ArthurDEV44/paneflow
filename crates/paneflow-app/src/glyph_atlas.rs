@@ -231,6 +231,12 @@ impl GlyphAtlas {
 
         let cell_w = self.font_size * 0.6; // monospace approximation
         let cell_h = self.font_size * 1.2;
+        tracing::info!(
+            cell_w,
+            cell_h,
+            font_size = self.font_size,
+            "GlyphAtlas: cell metrics computed"
+        );
         self.cell_metrics = Some((cell_w, cell_h));
         (cell_w, cell_h)
     }
