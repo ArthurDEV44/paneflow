@@ -167,7 +167,7 @@ impl Drop for TerminalState {
 const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 
 pub struct TerminalView {
-    terminal: TerminalState,
+    pub terminal: TerminalState,
     focus_handle: FocusHandle,
     cursor_visible: bool,
 }
