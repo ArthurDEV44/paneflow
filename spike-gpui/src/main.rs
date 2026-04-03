@@ -3,6 +3,7 @@
 //! App shell with sidebar + main content area.
 //! Terminal cells rendered via TerminalElement with GPUI's Element trait.
 
+mod keys;
 mod terminal;
 mod terminal_element;
 

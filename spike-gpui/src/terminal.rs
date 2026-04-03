@@ -216,79 +216,47 @@ impl TerminalView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        // Reset cursor blink on keystroke — cursor should be visible while typing
+        #[cfg(debug_assertions)]
+        let _start = if std::env::var("PANEFLOW_LATENCY_PROBE").is_ok() {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        // Reset cursor blink on keystroke
         self.cursor_visible = true;
 
         let keystroke = &event.keystroke;
 
-        // Regular character input via key_char
-        if let Some(key_char) = &keystroke.key_char {
-            self.terminal.write_to_pty(key_char.clone().into_bytes());
-            return;
-        }
+        // Get current TermMode for key mapping (APP_CURSOR, etc.)
+        let term_guard = self.terminal.term.lock();
+        let mode = *term_guard.mode();
+        drop(term_guard);
 
-        let key = keystroke.key.as_str();
-        let ctrl = keystroke.modifiers.control;
-        let shift = keystroke.modifiers.shift;
-
-        // Control characters
-        if ctrl {
-            let byte = match key {
-                "a" => Some(0x01u8),
-                "b" => Some(0x02),
-                "c" => Some(0x03),
-                "d" => Some(0x04),
-                "e" => Some(0x05),
-                "f" => Some(0x06),
-                "h" => Some(0x08),
-                "k" => Some(0x0b),
-                "l" => Some(0x0c),
-                "n" => Some(0x0e),
-                "p" => Some(0x10),
-                "r" => Some(0x12),
-                "u" => Some(0x15),
-                "w" => Some(0x17),
-                "z" => Some(0x1a),
-                _ => None,
-            };
-            if let Some(b) = byte {
-                self.terminal.write_to_pty(vec![b]);
-                return;
+        // Try the key mapping module first (handles ctrl, special keys, modifiers)
+        if let Some(seq) = crate::keys::to_esc_str(keystroke, &mode) {
+            match seq {
+                Cow::Borrowed(s) => {
+                    // Zero allocation — static byte slice
+                    self.terminal.write_to_pty(Cow::Borrowed(s.as_bytes()));
+                }
+                Cow::Owned(s) => {
+                    // One allocation for modifier combos
+                    self.terminal.write_to_pty(s.into_bytes());
+                }
             }
+        } else if let Some(key_char) = &keystroke.key_char {
+            // Printable character input — single allocation (String → Vec<u8>)
+            self.terminal
+                .write_to_pty(key_char.as_bytes().to_vec());
         }
 
-        // Special keys → ANSI escape sequences
-        let esc: Option<&[u8]> = match key {
-            "enter" => Some(b"\r"),
-            "tab" => Some(b"\t"),
-            "escape" => Some(b"\x1b"),
-            "backspace" => Some(b"\x7f"),
-            "delete" => Some(b"\x1b[3~"),
-            "up" => Some(b"\x1b[A"),
-            "down" => Some(b"\x1b[B"),
-            "right" => Some(b"\x1b[C"),
-            "left" => Some(b"\x1b[D"),
-            "home" => Some(b"\x1b[H"),
-            "end" => Some(b"\x1b[F"),
-            "pageup" => Some(b"\x1b[5~"),
-            "pagedown" => Some(b"\x1b[6~"),
-            "space" => Some(b" "),
-            _ => None,
-        };
-
-        if let Some(seq) = esc {
-            self.terminal.write_to_pty(seq.to_vec());
-            return;
-        }
-
-        // Regular single character
-        if key.len() == 1 && !ctrl {
-            let ch = if shift {
-                key.to_uppercase()
-            } else {
-                key.to_string()
-            };
-            self.terminal.write_to_pty(ch.into_bytes());
+        #[cfg(debug_assertions)]
+        if let Some(start) = _start {
+            let elapsed = start.elapsed();
+            if elapsed.as_micros() > 100 {
+                log::warn!("keystroke→PTY latency: {:?}", elapsed);
+            }
         }
     }
 }
