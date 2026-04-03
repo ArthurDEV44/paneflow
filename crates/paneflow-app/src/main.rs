@@ -8,6 +8,7 @@
 // US-020: JSON config with hot-reload
 
 mod renderer;
+mod terminal;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -21,7 +22,8 @@ use paneflow_core::split_tree::{Direction, SplitTree};
 use paneflow_core::tab_manager::TabManager;
 use paneflow_core::workspace::Workspace;
 use paneflow_terminal::bridge::{PtyBridge, TerminalEvent};
-use renderer::{TerminalCanvas, TerminalGrid};
+use renderer::TerminalCanvas;
+use terminal::TerminalState;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -62,9 +64,14 @@ pub struct PaneFlowApp {
     pty_bridge: Arc<PtyBridge>,
     focused_pane: Option<Uuid>,
     event_tx: mpsc::UnboundedSender<TerminalEvent>,
-    terminal_grids: HashMap<Uuid, TerminalGrid>,
+    terminal_states: HashMap<Uuid, TerminalState>,
     pane_exit_codes: HashMap<Uuid, i32>,
     config: PaneFlowConfig,
+    // US-013: Pane zoom
+    zoomed_pane: Option<Uuid>,
+    // US-003: Command palette
+    palette_open: bool,
+    palette_query: String,
 }
 
 // ─── Messages ────────────────────────────────────────────────────────────────
@@ -85,6 +92,17 @@ pub enum Message {
     PtyOutput { pane_id: Uuid, data: Vec<u8> },
     PtyExited { pane_id: Uuid, code: i32 },
     PtySpawned(Uuid),
+
+    // Pane zoom (US-013)
+    ToggleZoom,
+
+    // Command palette (US-003)
+    TogglePalette,
+    PaletteInput(String),
+    PaletteExecute(String),
+
+    // Split resize (US-014)
+    ResizeSplit { pane_id: Uuid, new_ratio: f64 },
 
     // Keyboard (US-009)
     KeyPressed(iced::keyboard::Key, iced::keyboard::Modifiers),
@@ -112,8 +130,8 @@ impl PaneFlowApp {
 
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
 
-        let mut terminal_grids = HashMap::new();
-        terminal_grids.insert(pane_id, TerminalGrid::new(DEFAULT_COLS as usize, DEFAULT_ROWS as usize));
+        let mut terminal_states = HashMap::new();
+        terminal_states.insert(pane_id, TerminalState::new(DEFAULT_COLS, DEFAULT_ROWS));
 
         let app = Self {
             tab_manager,
@@ -121,9 +139,12 @@ impl PaneFlowApp {
             pty_bridge: Arc::new(PtyBridge::new()),
             focused_pane: Some(pane_id),
             event_tx,
-            terminal_grids,
+            terminal_states,
             pane_exit_codes: HashMap::new(),
             config,
+            zoomed_pane: None,
+            palette_open: false,
+            palette_query: String::new(),
         };
 
         // Spawn initial PTY
@@ -160,7 +181,7 @@ impl PaneFlowApp {
                     let panes = tree.all_panes();
                     let bridge = self.pty_bridge.clone();
                     for pane_id in &panes {
-                        self.terminal_grids.remove(pane_id);
+                        self.terminal_states.remove(pane_id);
                         self.pane_exit_codes.remove(pane_id);
                         let bridge = bridge.clone();
                         let pid = *pane_id;
@@ -182,12 +203,44 @@ impl PaneFlowApp {
                 self.focused_pane = Some(pane_id);
             }
 
+            // ── Zoom (US-013) ────────────────────────────────────────────
+            Message::ToggleZoom => {
+                if self.zoomed_pane.is_some() {
+                    self.zoomed_pane = None;
+                } else {
+                    self.zoomed_pane = self.focused_pane;
+                }
+            }
+
+            // ── Command palette (US-003) ─────────────────────────────────
+            Message::TogglePalette => {
+                self.palette_open = !self.palette_open;
+                if !self.palette_open {
+                    self.palette_query.clear();
+                }
+            }
+            Message::PaletteInput(query) => {
+                self.palette_query = query;
+            }
+            Message::PaletteExecute(command) => {
+                self.palette_open = false;
+                self.palette_query.clear();
+                return self.execute_command(&command);
+            }
+
+            // ── Split resize (US-014) ────────────────────────────────────
+            Message::ResizeSplit { pane_id, new_ratio } => {
+                if let Some(ws_id) = self.tab_manager.selected_id {
+                    if let Some(tree) = self.split_trees.get_mut(&ws_id) {
+                        let _ = tree.resize(pane_id, new_ratio);
+                    }
+                }
+            }
+
             // ── Terminal events ──────────────────────────────────────────
             Message::PtyOutput { pane_id, data } => {
-                // Feed raw bytes to terminal grid (basic processing for now)
-                // Full alacritty_terminal integration in US-005 (Wave 3)
-                if let Some(grid) = self.terminal_grids.get_mut(&pane_id) {
-                    process_raw_bytes(grid, &data);
+                if let Some(state) = self.terminal_states.get_mut(&pane_id) {
+                    state.process_bytes(&data);
                 }
             }
             Message::PtyExited { pane_id, code } => {
@@ -223,7 +276,7 @@ impl PaneFlowApp {
         self.tab_manager.add_workspace(ws);
         self.split_trees.insert(ws_id, SplitTree::new(pane_id));
         self.focused_pane = Some(pane_id);
-        self.terminal_grids.insert(pane_id, TerminalGrid::new(DEFAULT_COLS as usize, DEFAULT_ROWS as usize));
+        self.terminal_states.insert(pane_id, TerminalState::new(DEFAULT_COLS, DEFAULT_ROWS));
 
         self.spawn_pty(pane_id, Some(cwd))
     }
@@ -238,9 +291,9 @@ impl PaneFlowApp {
         match tree.split(focused, direction) {
             Ok(new_pane_id) => {
                 self.focused_pane = Some(new_pane_id);
-                self.terminal_grids.insert(
+                self.terminal_states.insert(
                     new_pane_id,
-                    TerminalGrid::new(DEFAULT_COLS as usize, DEFAULT_ROWS as usize),
+                    TerminalState::new(DEFAULT_COLS, DEFAULT_ROWS),
                 );
                 let cwd = std::env::current_dir().ok();
                 self.spawn_pty(new_pane_id, cwd)
@@ -258,7 +311,7 @@ impl PaneFlowApp {
 
         match tree.close(pane_id) {
             Ok(()) => {
-                self.terminal_grids.remove(&pane_id);
+                self.terminal_states.remove(&pane_id);
                 self.pane_exit_codes.remove(&pane_id);
 
                 // Update focus to first remaining pane
@@ -295,6 +348,40 @@ impl PaneFlowApp {
         )
     }
 
+    // ── Command execution (US-003) ─────────────────────────────────────
+
+    fn execute_command(&mut self, command: &str) -> Task<Message> {
+        match command {
+            "new_workspace" | "New Workspace" => self.create_workspace(),
+            "split_horizontal" | "Split Horizontal" => self.split_focused_pane(Direction::Horizontal),
+            "split_vertical" | "Split Vertical" => self.split_focused_pane(Direction::Vertical),
+            "close_pane" | "Close Pane" => {
+                if let Some(id) = self.focused_pane {
+                    self.close_pane(id)
+                } else {
+                    Task::none()
+                }
+            }
+            "toggle_zoom" | "Toggle Zoom" => {
+                if self.zoomed_pane.is_some() {
+                    self.zoomed_pane = None;
+                } else {
+                    self.zoomed_pane = self.focused_pane;
+                }
+                Task::none()
+            }
+            "equalize" | "Equalize Splits" => {
+                if let Some(ws_id) = self.tab_manager.selected_id {
+                    if let Some(tree) = self.split_trees.get_mut(&ws_id) {
+                        equalize_splits(tree);
+                    }
+                }
+                Task::none()
+            }
+            _ => Task::none(),
+        }
+    }
+
     // ── Keyboard handling (US-009) ───────────────────────────────────────
 
     fn handle_keyboard(
@@ -309,8 +396,44 @@ impl PaneFlowApp {
         let shift = modifiers.shift();
         let ctrl_shift = ctrl && shift;
 
+        // If palette is open, route Escape to close it
+        if self.palette_open {
+            if matches!(key, Key::Named(Named::Escape)) {
+                self.palette_open = false;
+                self.palette_query.clear();
+                return Task::none();
+            }
+            return Task::none(); // Palette handles its own input
+        }
+
         // App shortcuts take priority over terminal input
         match &key {
+            // Ctrl+Shift+P: toggle command palette (US-003)
+            Key::Character(c) if ctrl_shift && c.as_str() == "P" => {
+                self.palette_open = !self.palette_open;
+                if !self.palette_open {
+                    self.palette_query.clear();
+                }
+                return Task::none();
+            }
+            // Ctrl+Shift+Z: toggle zoom (US-013)
+            Key::Character(c) if ctrl_shift && c.as_str() == "Z" => {
+                if self.zoomed_pane.is_some() {
+                    self.zoomed_pane = None;
+                } else {
+                    self.zoomed_pane = self.focused_pane;
+                }
+                return Task::none();
+            }
+            // Ctrl+Shift+=: equalize splits (US-013)
+            Key::Character(c) if ctrl_shift && c.as_str() == "=" => {
+                if let Some(ws_id) = self.tab_manager.selected_id {
+                    if let Some(tree) = self.split_trees.get_mut(&ws_id) {
+                        equalize_splits(tree);
+                    }
+                }
+                return Task::none();
+            }
             // Ctrl+Shift+N: new workspace
             Key::Character(c) if ctrl_shift && c.as_str() == "N" => {
                 return self.create_workspace();
@@ -392,7 +515,15 @@ impl PaneFlowApp {
     fn view(&self) -> Element<'_, Message> {
         let sidebar = self.view_sidebar();
         let main_content = self.view_main_content();
-        row![sidebar, main_content].into()
+        let base = row![sidebar, main_content];
+
+        // Command palette overlay (US-003)
+        if self.palette_open {
+            let palette = self.view_command_palette();
+            iced::widget::stack![base, palette].into()
+        } else {
+            base.into()
+        }
     }
 
     // ── Sidebar (US-002) ─────────────────────────────────────────────────
@@ -505,7 +636,10 @@ impl PaneFlowApp {
     // ── Main content area ────────────────────────────────────────────────
 
     fn view_main_content(&self) -> Element<'_, Message> {
-        let content = if let Some(ws_id) = self.tab_manager.selected_id {
+        // US-013: If a pane is zoomed, render only that pane
+        let content = if let Some(zoomed_id) = self.zoomed_pane {
+            self.view_terminal_pane(zoomed_id)
+        } else if let Some(ws_id) = self.tab_manager.selected_id {
             if let Some(tree) = self.split_trees.get(&ws_id) {
                 self.view_split_tree(tree)
             } else {
@@ -594,7 +728,8 @@ impl PaneFlowApp {
             .height(Length::Fill)
             .center(Length::Fill)
             .into()
-        } else if let Some(grid) = self.terminal_grids.get(&pane_id) {
+        } else if let Some(state) = self.terminal_states.get(&pane_id) {
+            let grid = state.to_grid();
             // Active terminal — render via Canvas (US-004)
             Canvas::new(TerminalCanvas {
                 grid,
@@ -659,6 +794,81 @@ impl PaneFlowApp {
             .width(Length::Fill)
             .height(Length::Fill)
             .center(Length::Fill)
+            .into()
+    }
+
+    // ── Command palette (US-003) ───────────────────────────────────────
+
+    fn view_command_palette(&self) -> Element<'_, Message> {
+        let commands = [
+            "New Workspace",
+            "Split Horizontal",
+            "Split Vertical",
+            "Close Pane",
+            "Toggle Zoom",
+            "Equalize Splits",
+        ];
+
+        // Filter commands by query
+        let filtered: Vec<&&str> = if self.palette_query.is_empty() {
+            commands.iter().collect()
+        } else {
+            let q = self.palette_query.to_lowercase();
+            commands
+                .iter()
+                .filter(|cmd| cmd.to_lowercase().contains(&q))
+                .collect()
+        };
+
+        let mut command_list = column![].spacing(2);
+        for cmd in filtered {
+            let cmd_str = cmd.to_string();
+            let item = mouse_area(
+                container(text(*cmd).size(14).color(Color::WHITE))
+                    .padding([8, 16])
+                    .width(Length::Fill)
+                    .style(|_theme: &Theme| container::Style {
+                        background: Some(iced::Background::Color(Color::from_rgb(
+                            0.15, 0.15, 0.18,
+                        ))),
+                        ..Default::default()
+                    }),
+            )
+            .on_press(Message::PaletteExecute(cmd_str));
+            command_list = command_list.push(item);
+        }
+
+        let input = iced::widget::text_input("Type a command...", &self.palette_query)
+            .on_input(Message::PaletteInput)
+            .size(16)
+            .padding(12);
+
+        let palette = container(
+            column![input, scrollable(command_list).height(300)]
+                .spacing(4)
+                .width(500),
+        )
+        .padding(8)
+        .style(|_theme: &Theme| container::Style {
+            background: Some(iced::Background::Color(Color::from_rgb(0.12, 0.12, 0.15))),
+            border: iced::Border {
+                color: Color::from_rgb(0.3, 0.3, 0.35),
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            ..Default::default()
+        });
+
+        // Center the palette in the window
+        container(container(palette).center_x(Length::Fill))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding([40, 0])
+            .center_x(Length::Fill)
+            .style(|_theme: &Theme| container::Style {
+                background: Some(iced::Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.4))),
+                ..Default::default()
+            })
             .into()
     }
 
@@ -741,64 +951,19 @@ fn key_to_bytes(key: &iced::keyboard::Key, modifiers: &iced::keyboard::Modifiers
     }
 }
 
-// ─── Basic byte processing (placeholder until US-005 wires alacritty_terminal) ──
+// ─── Split equalization (US-013) ─────────────────────────────────────────────
 
-fn process_raw_bytes(grid: &mut TerminalGrid, data: &[u8]) {
-    for &byte in data {
-        match byte {
-            // Newline
-            b'\n' => {
-                grid.cursor_row += 1;
-                if grid.cursor_row >= grid.rows {
-                    // Scroll: shift all rows up by one
-                    let cols = grid.cols;
-                    grid.cells.drain(..cols);
-                    grid.cells.extend(
-                        std::iter::repeat_n(renderer::CellData::default(), cols),
-                    );
-                    grid.cursor_row = grid.rows - 1;
-                }
-            }
-            // Carriage return
-            b'\r' => {
-                grid.cursor_col = 0;
-            }
-            // Backspace
-            0x08 => {
-                if grid.cursor_col > 0 {
-                    grid.cursor_col -= 1;
-                }
-            }
-            // Bell — ignore for now (US-017)
-            0x07 => {}
-            // Escape — skip escape sequences for now (US-005 handles properly)
-            0x1b => {}
-            // Tab
-            b'\t' => {
-                let next_tab = (grid.cursor_col + 8) & !7;
-                grid.cursor_col = next_tab.min(grid.cols - 1);
-            }
-            // Printable ASCII and UTF-8 start bytes
-            byte if byte >= 0x20 => {
-                if grid.cursor_col < grid.cols && grid.cursor_row < grid.rows {
-                    let cell = grid.cell_mut(grid.cursor_row, grid.cursor_col);
-                    cell.character = byte as char;
-                    grid.cursor_col += 1;
-                    if grid.cursor_col >= grid.cols {
-                        grid.cursor_col = 0;
-                        grid.cursor_row += 1;
-                        if grid.cursor_row >= grid.rows {
-                            let cols = grid.cols;
-                            grid.cells.drain(..cols);
-                            grid.cells.extend(
-                                std::iter::repeat_n(renderer::CellData::default(), cols),
-                            );
-                            grid.cursor_row = grid.rows - 1;
-                        }
-                    }
-                }
-            }
-            _ => {} // Ignore other control characters
-        }
+fn equalize_splits(tree: &mut SplitTree) {
+    if let SplitTree::Split {
+        ratio,
+        first,
+        second,
+        ..
+    } = tree
+    {
+        *ratio = 0.5;
+        equalize_splits(first);
+        equalize_splits(second);
     }
 }
+

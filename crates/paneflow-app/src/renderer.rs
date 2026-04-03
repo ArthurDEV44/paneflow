@@ -76,13 +76,13 @@ impl TerminalGrid {
 /// iced Canvas program that renders a terminal grid.
 /// Uses instanced colored-quad drawing for backgrounds and fill_text for glyphs,
 /// both GPU-accelerated through iced's WGPU renderer.
-pub struct TerminalCanvas<'a> {
-    pub grid: &'a TerminalGrid,
+pub struct TerminalCanvas {
+    pub grid: TerminalGrid,
     pub font_size: f32,
     pub focused: bool,
 }
 
-impl<Message> canvas::Program<Message> for TerminalCanvas<'_> {
+impl<Message> canvas::Program<Message> for TerminalCanvas {
     type State = ();
 
     fn draw(
