@@ -36,6 +36,21 @@ const MIN_PANE_SIZE: f32 = 80.0;
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_COLS: u16 = 80;
 
+// ─── Session types (US-016) ──────────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SessionData {
+    workspaces: Vec<SessionWorkspace>,
+    selected_index: Option<usize>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SessionWorkspace {
+    title: String,
+    working_directory: std::path::PathBuf,
+    split_tree: Option<SplitTree>,
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 fn main() -> iced::Result {
@@ -72,6 +87,12 @@ pub struct PaneFlowApp {
     // US-003: Command palette
     palette_open: bool,
     palette_query: String,
+    // US-006: Cursor state
+    cursor_blink_visible: bool,
+    // US-017: Notification badges
+    unread_counts: HashMap<Uuid, u32>,
+    // US-016: Session persistence
+    last_typing_activity: std::time::Instant,
 }
 
 // ─── Messages ────────────────────────────────────────────────────────────────
@@ -103,6 +124,19 @@ pub enum Message {
 
     // Split resize (US-014)
     ResizeSplit { pane_id: Uuid, new_ratio: f64 },
+
+    // Cursor blink (US-006)
+    CursorBlink,
+
+    // Clipboard (US-007)
+    Copy,
+    Paste,
+
+    // Session (US-016)
+    SaveSession,
+
+    // Notification (US-017)
+    BellReceived(Uuid),
 
     // Keyboard (US-009)
     KeyPressed(iced::keyboard::Key, iced::keyboard::Modifiers),
@@ -145,6 +179,9 @@ impl PaneFlowApp {
             zoomed_pane: None,
             palette_open: false,
             palette_query: String::new(),
+            cursor_blink_visible: true,
+            unread_counts: HashMap::new(),
+            last_typing_activity: std::time::Instant::now(),
         };
 
         // Spawn initial PTY
@@ -157,6 +194,9 @@ impl PaneFlowApp {
             },
             Message::PtySpawned,
         );
+
+        // US-018: Start IPC socket server in background
+        start_ipc_server();
 
         (app, spawn_task)
     }
@@ -171,6 +211,8 @@ impl PaneFlowApp {
                     let panes = tree.all_panes();
                     self.focused_pane = panes.first().copied();
                 }
+                // US-017: Clear notification badge on workspace select
+                self.unread_counts.remove(&id);
             }
             Message::CreateWorkspace => {
                 return self.create_workspace();
@@ -250,8 +292,45 @@ impl PaneFlowApp {
                 tracing::info!(%pane_id, "PTY spawned");
             }
 
+            // ── Cursor blink (US-006) ────────────────────────────────────
+            Message::CursorBlink => {
+                self.cursor_blink_visible = !self.cursor_blink_visible;
+            }
+
+            // ── Clipboard (US-007) ───────────────────────────────────────
+            Message::Copy => {
+                // Copy selected text (selection not yet implemented — US-007)
+                // Will use arboard crate for system clipboard access
+            }
+            Message::Paste => {
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    if let Ok(text) = clipboard.get_text() {
+                        if let Some(pane_id) = self.focused_pane {
+                            let _ = self.pty_bridge.write_pane(pane_id, text.as_bytes());
+                        }
+                    }
+                }
+            }
+
+            // ── Session persistence (US-016) ─────────────────────────────
+            Message::SaveSession => {
+                // Defer save if typing was recent (2s quiet period)
+                if self.last_typing_activity.elapsed() >= std::time::Duration::from_secs(2) {
+                    self.save_session();
+                }
+            }
+
+            // ── Notifications (US-017) ───────────────────────────────────
+            Message::BellReceived(ws_id) => {
+                // Only badge non-focused workspaces
+                if self.tab_manager.selected_id != Some(ws_id) {
+                    *self.unread_counts.entry(ws_id).or_insert(0) += 1;
+                }
+            }
+
             // ── Keyboard (US-009) ────────────────────────────────────────
             Message::KeyPressed(key, modifiers) => {
+                self.last_typing_activity = std::time::Instant::now();
                 return self.handle_keyboard(key, modifiers);
             }
 
@@ -434,6 +513,22 @@ impl PaneFlowApp {
                 }
                 return Task::none();
             }
+            // Ctrl+Shift+C: copy (US-007)
+            Key::Character(c) if ctrl_shift && c.as_str() == "C" => {
+                // Selection copy — will be wired when selection is implemented
+                return Task::none();
+            }
+            // Ctrl+Shift+V: paste (US-007)
+            Key::Character(c) if ctrl_shift && c.as_str() == "V" => {
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    if let Ok(paste_text) = clipboard.get_text() {
+                        if let Some(pane_id) = self.focused_pane {
+                            let _ = self.pty_bridge.write_pane(pane_id, paste_text.as_bytes());
+                        }
+                    }
+                }
+                return Task::none();
+            }
             // Ctrl+Shift+N: new workspace
             Key::Character(c) if ctrl_shift && c.as_str() == "N" => {
                 return self.create_workspace();
@@ -507,7 +602,59 @@ impl PaneFlowApp {
     // ── Subscriptions ────────────────────────────────────────────────────
 
     fn subscription(&self) -> Subscription<Message> {
-        iced::keyboard::on_key_press(|key, modifiers| Some(Message::KeyPressed(key, modifiers)))
+        let keyboard =
+            iced::keyboard::on_key_press(|key, modifiers| Some(Message::KeyPressed(key, modifiers)));
+
+        // US-006: Cursor blink timer (530ms interval)
+        let cursor_blink = iced::time::every(std::time::Duration::from_millis(530))
+            .map(|_| Message::CursorBlink);
+
+        // US-016: Session autosave timer (8 seconds, matching cmux)
+        let session_save = iced::time::every(std::time::Duration::from_secs(8))
+            .map(|_| Message::SaveSession);
+
+        Subscription::batch([keyboard, cursor_blink, session_save])
+    }
+
+    // ── Session persistence (US-016) ─────────────────────────────────────
+
+    fn save_session(&self) {
+        let session = SessionData {
+            workspaces: self
+                .tab_manager
+                .workspaces()
+                .iter()
+                .map(|ws| SessionWorkspace {
+                    title: ws.display_title().to_string(),
+                    working_directory: ws.working_directory.clone(),
+                    split_tree: self.split_trees.get(&ws.id).cloned(),
+                })
+                .collect(),
+            selected_index: self
+                .tab_manager
+                .selected_id
+                .and_then(|id| {
+                    self.tab_manager
+                        .workspaces()
+                        .iter()
+                        .position(|ws| ws.id == id)
+                }),
+        };
+
+        // Atomic write: write to temp file, then rename
+        if let Some(data_dir) = dirs::data_dir() {
+            let session_dir = data_dir.join("paneflow");
+            let _ = std::fs::create_dir_all(&session_dir);
+            let session_path = session_dir.join("session.json");
+            let tmp_path = session_dir.join("session.json.tmp");
+
+            if let Ok(json) = serde_json::to_string_pretty(&session) {
+                if std::fs::write(&tmp_path, &json).is_ok() {
+                    let _ = std::fs::rename(&tmp_path, &session_path);
+                    tracing::debug!("session saved");
+                }
+            }
+        }
     }
 
     // ── View ─────────────────────────────────────────────────────────────
@@ -600,10 +747,21 @@ impl PaneFlowApp {
 
         let title = ws.display_title().to_string();
         let ws_id = ws.id;
+        let unread = self.unread_counts.get(&ws.id).copied().unwrap_or(0);
+
+        // US-017: Title with notification badge
+        let title_el: Element<'a, Message> = if unread > 0 {
+            text(format!("{title} ({unread})"))
+                .size(14)
+                .color(title_color)
+                .into()
+        } else {
+            text(title).size(14).color(title_color).into()
+        };
 
         let item_content = column![
             row![
-                text(title).size(14).color(title_color),
+                title_el,
                 horizontal_space(),
                 text(format!("{pane_count}"))
                     .size(11)
@@ -965,5 +1123,41 @@ fn equalize_splits(tree: &mut SplitTree) {
         equalize_splits(first);
         equalize_splits(second);
     }
+}
+
+// ─── IPC socket server (US-018) ─────────────────────────────────────────────
+
+fn start_ipc_server() {
+    use paneflow_ipc::dispatcher::Dispatcher;
+    use paneflow_ipc::handlers::{register_handlers, AppState};
+    use paneflow_ipc::server::SocketServer;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(AppState::new()));
+    let mut dispatcher = Dispatcher::new();
+    register_handlers(&mut dispatcher, state);
+
+    let dispatcher = Arc::new(dispatcher);
+    let handler = move |msg: String| {
+        let d = dispatcher.clone();
+        Box::pin(async move { d.dispatch(&msg).await }) as std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
+    };
+
+    let handler = Arc::new(handler);
+
+    tokio::spawn(async move {
+        match SocketServer::new(handler) {
+            Ok(server) => {
+                tracing::info!(path = %server.socket_path().display(), "IPC server starting");
+                if let Err(e) = server.run().await {
+                    tracing::error!("IPC server error: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("IPC server failed to start: {e}");
+            }
+        }
+    });
 }
 
