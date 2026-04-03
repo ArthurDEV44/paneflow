@@ -113,7 +113,7 @@ impl TerminalState {
         let content = self.term.renderable_content();
 
         // Extract cursor position
-        grid.cursor_row = content.cursor.point.line.0 as usize;
+        grid.cursor_row = content.cursor.point.line.0.max(0) as usize;
         grid.cursor_col = content.cursor.point.column.0;
         grid.cursor_visible = true;
 

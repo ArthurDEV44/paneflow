@@ -1,0 +1,67 @@
+{
+  "prd": {
+    "file": "tasks/prd-v2-ui-polish.md",
+    "title": "PaneFlow v2 — UI Polish & Custom Shader Terminal Renderer",
+    "created_at": "2026-04-03",
+    "status": "IN_REVIEW"
+  },
+  "epics": [
+    {
+      "id": "EP-001",
+      "title": "Colored Terminal Rendering (rich_text Path)",
+      "status": "IN_REVIEW",
+      "priority": "P0",
+      "stories_total": 2,
+      "stories_done": 2
+    },
+    {
+      "id": "EP-002",
+      "title": "Sidebar Polish (cmux Design Language)",
+      "status": "IN_REVIEW",
+      "priority": "P0",
+      "stories_total": 4,
+      "stories_done": 4
+    },
+    {
+      "id": "EP-003",
+      "title": "Custom WGPU Shader Terminal Renderer",
+      "status": "IN_REVIEW",
+      "priority": "P1",
+      "stories_total": 4,
+      "stories_done": 4
+    },
+    {
+      "id": "EP-004",
+      "title": "Tab Bar and Layout Refinements",
+      "status": "IN_REVIEW",
+      "priority": "P1",
+      "stories_total": 3,
+      "stories_done": 3
+    },
+    {
+      "id": "EP-005",
+      "title": "Theme and Color System",
+      "status": "IN_REVIEW",
+      "priority": "P1",
+      "stories_total": 2,
+      "stories_done": 2
+    }
+  ],
+  "stories": [
+    { "id": "US-001", "title": "Wire CellData Colors to rich_text Spans", "epic": "EP-001", "status": "IN_REVIEW", "priority": "P0", "size": "M", "blocked_by": [], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-002", "title": "Cursor Rendering in rich_text Path", "epic": "EP-001", "status": "IN_REVIEW", "priority": "P0", "size": "S", "blocked_by": ["US-001"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-003", "title": "Rounded Tab Items with Accent Selection", "epic": "EP-002", "status": "IN_REVIEW", "priority": "P0", "size": "M", "blocked_by": [], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-004", "title": "Circle Notification Badges", "epic": "EP-002", "status": "IN_REVIEW", "priority": "P0", "size": "S", "blocked_by": ["US-003"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-005", "title": "Typography and Visual Hierarchy", "epic": "EP-002", "status": "IN_REVIEW", "priority": "P1", "size": "S", "blocked_by": ["US-003"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-006", "title": "Tab Close Button on Hover", "epic": "EP-002", "status": "IN_REVIEW", "priority": "P1", "size": "S", "blocked_by": ["US-003"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-007", "title": "Glyph Atlas with cosmic-text + etagere", "epic": "EP-003", "status": "IN_REVIEW", "priority": "P1", "size": "L", "blocked_by": [], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-008", "title": "WGSL Background + Glyph Shaders", "epic": "EP-003", "status": "IN_REVIEW", "priority": "P1", "size": "L", "blocked_by": ["US-007"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-009", "title": "iced Shader Widget Integration", "epic": "EP-003", "status": "IN_REVIEW", "priority": "P1", "size": "M", "blocked_by": ["US-008"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-010", "title": "Dirty-Cell Tracking and Incremental Updates", "epic": "EP-003", "status": "IN_REVIEW", "priority": "P1", "size": "M", "blocked_by": ["US-009"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-011", "title": "Horizontal Tab Bar", "epic": "EP-004", "status": "IN_REVIEW", "priority": "P1", "size": "M", "blocked_by": [], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-012", "title": "Refined Split Dividers", "epic": "EP-004", "status": "IN_REVIEW", "priority": "P2", "size": "S", "blocked_by": [], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-013", "title": "Sidebar Drag-to-Resize", "epic": "EP-004", "status": "IN_REVIEW", "priority": "P2", "size": "S", "blocked_by": [], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-014", "title": "Centralized Color Theme", "epic": "EP-005", "status": "IN_REVIEW", "priority": "P1", "size": "M", "blocked_by": [], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null },
+    { "id": "US-015", "title": "Notification Ring Animation", "epic": "EP-005", "status": "IN_REVIEW", "priority": "P2", "size": "M", "blocked_by": ["US-014"], "started_at": "2026-04-03", "completed_at": "2026-04-03", "reviewed_at": null }
+  ]
+}

@@ -22,6 +22,9 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 
 iced = { version = "0.13", features = ["wgpu", "tokio", "canvas"] }
+cosmic-text = "0.12"
+etagere = "0.2"
+bytemuck = { version = "1", features = ["derive"] }
 alacritty_terminal = "0.26.0-rc1"
 vte = "0.13"
 nucleo = "0.5"

@@ -7,8 +7,12 @@
 // US-012: Binary tree split layout
 // US-020: JSON config with hot-reload
 
+mod glyph_atlas;
 mod renderer;
+mod shader_pipeline;
+mod shader_renderer;
 mod terminal;
+mod theme;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,8 +20,8 @@ use std::sync::Arc;
 
 use iced::futures::SinkExt;
 
-use iced::widget::{button, column, container, horizontal_space, mouse_area, row, scrollable, text};
-use iced::{Color, Element, Length, Size, Subscription, Task, Theme};
+use iced::widget::{button, column, container, horizontal_space, hover, mouse_area, rich_text, row, scrollable, shader::Shader, span, text};
+use iced::{Color, Element, Font, Length, Size, Subscription, Task, Theme};
 use paneflow_config::loader::load_config;
 use paneflow_config::schema::PaneFlowConfig;
 use paneflow_core::split_tree::{Direction, SplitTree};
@@ -26,13 +30,16 @@ use paneflow_core::workspace::Workspace;
 use paneflow_terminal::bridge::{PtyBridge, TerminalEvent};
 // renderer module kept for CellData/TerminalGrid types used by terminal.rs
 use terminal::TerminalState;
+use theme::UiTheme;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const SIDEBAR_WIDTH: f32 = 220.0;
-const DIVIDER_WIDTH: f32 = 4.0;
+const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
+const MIN_SIDEBAR_WIDTH: f32 = 180.0;
+const MAX_SIDEBAR_WIDTH: f32 = 600.0;
+const DIVIDER_WIDTH: f32 = 2.0;
 #[allow(dead_code)] // Used in US-014 (drag-to-resize)
 const MIN_PANE_SIZE: f32 = 80.0;
 const DEFAULT_ROWS: u16 = 24;
@@ -44,6 +51,8 @@ const DEFAULT_COLS: u16 = 80;
 struct SessionData {
     workspaces: Vec<SessionWorkspace>,
     selected_index: Option<usize>,
+    #[serde(default)]
+    sidebar_width: Option<f32>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -94,11 +103,14 @@ pub struct PaneFlowApp {
     event_tx: mpsc::UnboundedSender<TerminalEvent>,
     event_rx: Arc<std::sync::Mutex<Option<mpsc::UnboundedReceiver<TerminalEvent>>>>,
     terminal_states: HashMap<Uuid, TerminalState>,
-    /// Cached terminal line strings — rebuilt in update(), read in view().
-    /// Avoids expensive to_grid() + Canvas rendering on every frame.
-    cached_lines: HashMap<Uuid, Vec<String>>,
+    /// Cached terminal grids — rebuilt in update(), read in view().
+    cached_grids: HashMap<Uuid, renderer::TerminalGrid>,
+    /// US-010: Dirty row tracking — set of changed rows per pane
+    dirty_rows: HashMap<Uuid, std::collections::HashSet<usize>>,
     pane_exit_codes: HashMap<Uuid, i32>,
     config: PaneFlowConfig,
+    // US-014: Centralized UI theme
+    ui_theme: UiTheme,
     // US-013: Pane zoom
     zoomed_pane: Option<Uuid>,
     // US-003: Command palette
@@ -110,6 +122,13 @@ pub struct PaneFlowApp {
     unread_counts: HashMap<Uuid, u32>,
     // US-016: Session persistence
     last_typing_activity: std::time::Instant,
+    // US-013: Sidebar drag-to-resize
+    sidebar_width: f32,
+    sidebar_dragging: bool,
+    // US-015: Bell ring animation
+    bell_animations: HashMap<Uuid, std::time::Instant>,
+    // US-009: GPU shader renderer (falls back to rich_text if false or init fails)
+    use_gpu_renderer: bool,
 }
 
 // ─── Messages ────────────────────────────────────────────────────────────────
@@ -161,6 +180,14 @@ pub enum Message {
     // Config (US-020)
     ConfigChanged(PaneFlowConfig),
 
+    // Bell animation tick (US-015)
+    BellAnimationTick,
+
+    // Sidebar resize (US-013)
+    SidebarDragStart,
+    SidebarDragEnd,
+    SidebarDragMove(f32), // absolute x position
+
     // Internal
     Noop,
 }
@@ -170,6 +197,7 @@ pub enum Message {
 impl PaneFlowApp {
     fn new() -> (Self, Task<Message>) {
         let config = load_config();
+        let ui_theme = UiTheme::new(config.accent_color.as_deref());
         let mut tab_manager = TabManager::new();
         let cwd = std::env::current_dir().unwrap_or_else(|_| "/tmp".into());
         let ws = Workspace::new("default", &cwd);
@@ -193,15 +221,21 @@ impl PaneFlowApp {
             event_tx,
             event_rx,
             terminal_states,
-            cached_lines: HashMap::new(),
+            cached_grids: HashMap::new(),
+            dirty_rows: HashMap::new(),
             pane_exit_codes: HashMap::new(),
             config,
+            ui_theme,
             zoomed_pane: None,
             palette_open: false,
             palette_query: String::new(),
             cursor_blink_visible: true,
             unread_counts: HashMap::new(),
             last_typing_activity: std::time::Instant::now(),
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            sidebar_dragging: false,
+            bell_animations: HashMap::new(),
+            use_gpu_renderer: true,
         };
 
         // Spawn initial PTY
@@ -282,7 +316,7 @@ impl PaneFlowApp {
                 }
             }
             Message::PaletteInput(query) => {
-                self.palette_query = query;
+                self.palette_query = query.chars().take(256).collect();
             }
             Message::PaletteExecute(command) => {
                 self.palette_open = false;
@@ -303,16 +337,41 @@ impl PaneFlowApp {
             Message::PtyOutput { pane_id, data } => {
                 if let Some(state) = self.terminal_states.get_mut(&pane_id) {
                     state.process_bytes(&data);
-                    // Rebuild cached lines so view() is instant
-                    let grid = state.to_grid();
-                    let lines: Vec<String> = (0..grid.rows)
-                        .map(|row| {
-                            (0..grid.cols)
-                                .map(|col| grid.cell(row, col).character)
-                                .collect::<String>()
-                        })
-                        .collect();
-                    self.cached_lines.insert(pane_id, lines);
+                    let new_grid = state.to_grid();
+
+                    // US-010: Track dirty rows by comparing old vs new grid
+                    let dirty = self.dirty_rows.entry(pane_id).or_default();
+                    if let Some(old_grid) = self.cached_grids.get(&pane_id) {
+                        if old_grid.rows == new_grid.rows && old_grid.cols == new_grid.cols {
+                            for row in 0..new_grid.rows {
+                                let base = row * new_grid.cols;
+                                let new_row = &new_grid.cells[base..base + new_grid.cols];
+                                let old_row = &old_grid.cells[base..base + old_grid.cols];
+                                // Compare raw cell data
+                                if new_row.iter().zip(old_row.iter()).any(|(n, o)| {
+                                    n.character != o.character
+                                        || n.fg != o.fg
+                                        || n.bg != o.bg
+                                        || n.bold != o.bold
+                                        || n.italic != o.italic
+                                }) {
+                                    dirty.insert(row);
+                                }
+                            }
+                        } else {
+                            // Grid size changed — mark all dirty
+                            for row in 0..new_grid.rows {
+                                dirty.insert(row);
+                            }
+                        }
+                    } else {
+                        // First grid — all rows are dirty
+                        for row in 0..new_grid.rows {
+                            dirty.insert(row);
+                        }
+                    }
+
+                    self.cached_grids.insert(pane_id, new_grid);
                 }
             }
             Message::PtyExited { pane_id, code } => {
@@ -351,11 +410,25 @@ impl PaneFlowApp {
             }
 
             // ── Notifications (US-017) ───────────────────────────────────
-            Message::BellReceived(ws_id) => {
-                // Only badge non-focused workspaces
-                if self.tab_manager.selected_id != Some(ws_id) {
-                    *self.unread_counts.entry(ws_id).or_insert(0) += 1;
+            Message::BellReceived(pane_id) => {
+                // Badge the workspace containing this pane (if not focused)
+                if let Some(ws_id) = self.workspace_for_pane(pane_id) {
+                    if self.tab_manager.selected_id != Some(ws_id) {
+                        *self.unread_counts.entry(ws_id).or_insert(0) += 1;
+                    }
                 }
+                // US-015: Trigger bell ring animation on non-focused panes (coalesce rapid bells)
+                if self.focused_pane != Some(pane_id) {
+                    self.bell_animations
+                        .entry(pane_id)
+                        .or_insert_with(std::time::Instant::now);
+                }
+            }
+
+            Message::BellAnimationTick => {
+                // Remove completed bell animations (0.9s duration)
+                self.bell_animations
+                    .retain(|_, start| start.elapsed().as_secs_f32() < 0.9);
             }
 
             // ── Keyboard (US-009) ────────────────────────────────────────
@@ -367,7 +440,21 @@ impl PaneFlowApp {
             // ── Config (US-020) ──────────────────────────────────────────
             Message::ConfigChanged(config) => {
                 tracing::info!("config reloaded");
+                self.ui_theme = UiTheme::new(config.accent_color.as_deref());
                 self.config = config;
+            }
+
+            // ── Sidebar resize (US-013) ─────────────────────────────────
+            Message::SidebarDragStart => {
+                self.sidebar_dragging = true;
+            }
+            Message::SidebarDragEnd => {
+                self.sidebar_dragging = false;
+            }
+            Message::SidebarDragMove(x) => {
+                if self.sidebar_dragging {
+                    self.sidebar_width = x.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                }
             }
 
             Message::Noop => {}
@@ -661,10 +748,42 @@ impl PaneFlowApp {
             }),
         );
 
-        Subscription::batch([keyboard, pty_events])
+        // US-015: Bell animation tick (60fps while animations are active)
+        let bell_tick = if self.bell_animations.is_empty() {
+            Subscription::none()
+        } else {
+            iced::time::every(std::time::Duration::from_millis(16))
+                .map(|_| Message::BellAnimationTick)
+        };
+
+        // US-013: Track mouse for sidebar drag-to-resize
+        let mouse_events = if self.sidebar_dragging {
+            iced::event::listen_with(|event, _status, _id| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::SidebarDragMove(position.x))
+                }
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Left,
+                )) => Some(Message::SidebarDragEnd),
+                _ => None,
+            })
+        } else {
+            Subscription::none()
+        };
+
+        Subscription::batch([keyboard, pty_events, mouse_events, bell_tick])
     }
 
     // ── Session persistence (US-016) ─────────────────────────────────────
+
+    fn workspace_for_pane(&self, pane_id: Uuid) -> Option<Uuid> {
+        for (ws_id, tree) in &self.split_trees {
+            if tree.all_panes().contains(&pane_id) {
+                return Some(*ws_id);
+            }
+        }
+        None
+    }
 
     fn save_session(&self) {
         let session = SessionData {
@@ -687,6 +806,7 @@ impl PaneFlowApp {
                         .iter()
                         .position(|ws| ws.id == id)
                 }),
+            sidebar_width: Some(self.sidebar_width),
         };
 
         // Atomic write: write to temp file, then rename
@@ -710,7 +830,20 @@ impl PaneFlowApp {
     fn view(&self) -> Element<'_, Message> {
         let sidebar = self.view_sidebar();
         let main_content = self.view_main_content();
-        let base = row![sidebar, main_content];
+
+        // US-013: Drag handle between sidebar and content
+        let divider_color = self.ui_theme.divider;
+        let drag_handle = mouse_area(
+            container(iced::widget::Space::new(4, Length::Fill))
+                .style(move |_theme: &Theme| container::Style {
+                    background: Some(iced::Background::Color(divider_color)),
+                    ..Default::default()
+                }),
+        )
+        .on_press(Message::SidebarDragStart)
+        .on_release(Message::SidebarDragEnd);
+
+        let base = row![sidebar, drag_handle, main_content];
 
         // Command palette overlay (US-003)
         if self.palette_open {
@@ -724,12 +857,17 @@ impl PaneFlowApp {
     // ── Sidebar (US-002) ─────────────────────────────────────────────────
 
     fn view_sidebar(&self) -> Element<'_, Message> {
-        let header = container(text("PaneFlow").size(18).color(Color::WHITE)).padding([12, 16]);
+        let t = &self.ui_theme;
+        let header = container(text("PaneFlow").size(18).color(t.text_primary)).padding([12, 16]);
 
         let label = container(
             text("WORKSPACES")
-                .size(11)
-                .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                .size(10)
+                .font(Font {
+                    weight: iced::font::Weight::Semibold,
+                    ..Font::DEFAULT
+                })
+                .color(t.text_muted),
         )
         .padding([4, 16]);
 
@@ -739,15 +877,16 @@ impl PaneFlowApp {
         }
 
         // "+" button (US-002)
+        let surface = t.surface;
         let add_button = container(
             button(text("+").size(16).color(Color::WHITE).center())
                 .width(Length::Fill)
                 .on_press(Message::CreateWorkspace)
-                .style(|_theme: &Theme, _status| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.15, 0.15, 0.18))),
+                .style(move |_theme: &Theme, _status| button::Style {
+                    background: Some(iced::Background::Color(surface)),
                     text_color: Color::WHITE,
                     border: iced::Border {
-                        radius: 4.0.into(),
+                        radius: 6.0.into(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -762,22 +901,24 @@ impl PaneFlowApp {
             add_button,
         ];
 
+        let sidebar_bg = t.sidebar_bg;
         container(sidebar_body)
-            .width(SIDEBAR_WIDTH as u16)
+            .width(Length::Fixed(self.sidebar_width))
             .height(Length::Fill)
-            .style(|_theme: &Theme| container::Style {
-                background: Some(iced::Background::Color(Color::from_rgb(0.11, 0.11, 0.13))),
+            .style(move |_theme: &Theme| container::Style {
+                background: Some(iced::Background::Color(sidebar_bg)),
                 ..Default::default()
             })
             .into()
     }
 
     fn view_workspace_item<'a>(&self, ws: &Workspace) -> Element<'a, Message> {
+        let t = &self.ui_theme;
         let is_selected = self.tab_manager.selected_id == Some(ws.id);
         let title_color = if is_selected {
             Color::WHITE
         } else {
-            Color::from_rgb(0.7, 0.7, 0.7)
+            t.text_primary
         };
 
         let pane_count = self
@@ -797,44 +938,128 @@ impl PaneFlowApp {
         let ws_id = ws.id;
         let unread = self.unread_counts.get(&ws.id).copied().unwrap_or(0);
 
-        // US-017: Title with notification badge
+        // US-004: Notification badge (circle) or plain title
         let title_el: Element<'a, Message> = if unread > 0 {
-            text(format!("{title} ({unread})"))
-                .size(14)
+            let badge_label = if unread > 99 {
+                "99+".to_string()
+            } else {
+                unread.to_string()
+            };
+            let badge_color = if is_selected {
+                t.accent_muted()
+            } else {
+                t.accent
+            };
+            let badge = container(
+                text(badge_label)
+                    .size(9)
+                    .font(Font {
+                        weight: iced::font::Weight::Semibold,
+                        ..Font::DEFAULT
+                    })
+                    .color(Color::WHITE)
+                    .center(),
+            )
+            .width(16)
+            .height(16)
+            .center(Length::Shrink)
+            .style(move |_theme: &Theme| container::Style {
+                background: Some(iced::Background::Color(badge_color)),
+                border: iced::Border {
+                    radius: 8.0.into(), // 50% of 16px = circle
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            row![
+                badge,
+                text(title)
+                    .size(12.5)
+                    .font(Font {
+                        weight: iced::font::Weight::Semibold,
+                        ..Font::DEFAULT
+                    })
+                    .color(title_color),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center)
+            .into()
+        } else {
+            text(title)
+                .size(12.5)
+                .font(Font {
+                    weight: iced::font::Weight::Semibold,
+                    ..Font::DEFAULT
+                })
                 .color(title_color)
                 .into()
-        } else {
-            text(title).size(14).color(title_color).into()
         };
 
+        let secondary_color = t.text_secondary;
         let item_content = column![
             row![
                 title_el,
                 horizontal_space(),
                 text(format!("{pane_count}"))
-                    .size(11)
-                    .color(Color::from_rgb(0.4, 0.4, 0.4)),
-            ],
-            text(dir_name)
-                .size(11)
-                .color(Color::from_rgb(0.4, 0.4, 0.4)),
+                    .size(10)
+                    .color(secondary_color),
+            ]
+            .align_y(iced::Alignment::Center),
+            text(dir_name).size(10).color(secondary_color),
         ]
         .spacing(2)
-        .padding([8, 16]);
+        .padding([8, 10]);
 
         let bg = if is_selected {
-            Color::from_rgb(0.2, 0.2, 0.25)
+            t.accent
         } else {
             Color::TRANSPARENT
         };
 
-        // Clickable workspace item (US-002)
-        let styled_item = container(item_content).style(move |_theme: &Theme| container::Style {
-            background: Some(iced::Background::Color(bg)),
-            ..Default::default()
-        });
+        // US-003: Rounded tab with accent selection + US-006: hover close button
+        let styled_item = container(item_content)
+            .width(Length::Fill)
+            .style(move |_theme: &Theme| container::Style {
+                background: Some(iced::Background::Color(bg)),
+                border: iced::Border {
+                    radius: 6.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
 
-        mouse_area(styled_item)
+        // US-006: Close button overlay on hover (trailing position)
+        let close_overlay = row![
+            horizontal_space(),
+            button(
+                text("x")
+                    .size(9)
+                    .font(Font {
+                        weight: iced::font::Weight::Medium,
+                        ..Font::DEFAULT
+                    })
+                    .color(title_color)
+                    .center(),
+            )
+            .width(16)
+            .height(16)
+            .on_press(Message::CloseWorkspace(ws_id))
+            .style(move |_theme: &Theme, _status| button::Style {
+                background: Some(iced::Background::Color(Color::TRANSPARENT)),
+                text_color: title_color,
+                ..Default::default()
+            })
+            .padding(0),
+        ]
+        .align_y(iced::Alignment::Center)
+        .padding([8, 10]);
+
+        let hoverable = hover(styled_item, close_overlay);
+
+        // Wrap in 6pt horizontal margin from sidebar edge
+        let margined = container(hoverable).padding([0, 6]);
+
+        mouse_area(margined)
             .on_press(Message::SelectWorkspace(ws_id))
             .into()
     }
@@ -855,14 +1080,135 @@ impl PaneFlowApp {
             self.view_empty_state()
         };
 
-        container(content)
+        // US-011: Horizontal tab bar above content
+        let tab_bar = self.view_tab_bar();
+
+        let content_bg = self.ui_theme.content_bg;
+        container(column![tab_bar, content])
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(|_theme: &Theme| container::Style {
-                background: Some(iced::Background::Color(Color::from_rgb(0.06, 0.06, 0.08))),
+            .style(move |_theme: &Theme| container::Style {
+                background: Some(iced::Background::Color(content_bg)),
                 ..Default::default()
             })
             .into()
+    }
+
+    // ── Tab bar (US-011) ────────────────────────────────────────────────
+
+    fn view_tab_bar(&self) -> Element<'_, Message> {
+        let t = &self.ui_theme;
+
+        let panes: Vec<Uuid> = if let Some(ws_id) = self.tab_manager.selected_id {
+            self.split_trees
+                .get(&ws_id)
+                .map(|tree| tree.all_panes())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        if panes.is_empty() {
+            return iced::widget::Space::new(Length::Fill, 0).into();
+        }
+
+        let accent = t.accent;
+        let surface = t.surface;
+        let text_primary = t.text_primary;
+        let text_secondary = t.text_secondary;
+
+        let mut tabs = row![].spacing(0);
+        for (i, pane_id) in panes.iter().enumerate() {
+            let is_active = self.focused_pane == Some(*pane_id);
+            let has_exited = self.pane_exit_codes.contains_key(pane_id);
+
+            let label = if has_exited {
+                format!("exited #{}", i + 1)
+            } else {
+                format!("shell #{}", i + 1)
+            };
+
+            let tab_text_color = if is_active { text_primary } else { text_secondary };
+            let pid = *pane_id;
+
+            // Tab content: label + hover close button
+            let tab_label = text(label)
+                .size(11)
+                .font(Font {
+                    weight: if is_active {
+                        iced::font::Weight::Semibold
+                    } else {
+                        iced::font::Weight::Normal
+                    },
+                    ..Font::DEFAULT
+                })
+                .color(tab_text_color);
+
+            let close_btn = button(
+                text("x").size(9).color(text_secondary).center(),
+            )
+            .width(14)
+            .height(14)
+            .on_press(Message::ClosePane(pid))
+            .style(move |_theme: &Theme, _status| button::Style {
+                background: Some(iced::Background::Color(Color::TRANSPARENT)),
+                text_color: text_secondary,
+                ..Default::default()
+            })
+            .padding(0);
+
+            let tab_content = row![tab_label, close_btn]
+                .spacing(6)
+                .align_y(iced::Alignment::Center);
+
+            // Bottom accent underline for active tab
+            let bottom_border = if is_active {
+                iced::Border {
+                    color: accent,
+                    width: 2.0,
+                    radius: 0.0.into(),
+                }
+            } else {
+                iced::Border::default()
+            };
+
+            let tab = mouse_area(
+                container(tab_content)
+                    .padding([6, 12])
+                    .style(move |_theme: &Theme| container::Style {
+                        background: Some(iced::Background::Color(if is_active {
+                            surface
+                        } else {
+                            Color::TRANSPARENT
+                        })),
+                        border: bottom_border,
+                        ..Default::default()
+                    }),
+            )
+            .on_press(Message::FocusPane(pid));
+
+            tabs = tabs.push(tab);
+        }
+
+        let bar_bg = t.sidebar_bg;
+        let divider_color = t.divider;
+        // Tab bar container — 30px height matching cmux
+        column![
+            container(scrollable(tabs).direction(scrollable::Direction::Horizontal(Default::default())))
+                .width(Length::Fill)
+                .height(30)
+                .style(move |_theme: &Theme| container::Style {
+                    background: Some(iced::Background::Color(bar_bg)),
+                    ..Default::default()
+                }),
+            // Subtle divider below tab bar
+            container(iced::widget::Space::new(Length::Fill, Length::Fixed(1.0)))
+                .style(move |_theme: &Theme| container::Style {
+                    background: Some(iced::Background::Color(divider_color)),
+                    ..Default::default()
+                }),
+        ]
+        .into()
     }
 
     // ── Split tree rendering (US-012) ────────────────────────────────────
@@ -876,7 +1222,7 @@ impl PaneFlowApp {
                 first,
                 second,
             } => {
-                let first_portion = (*ratio * 100.0) as u16;
+                let first_portion = (ratio.clamp(0.0, 1.0) * 100.0) as u16;
                 let second_portion = 100 - first_portion;
                 let first_el = self.view_split_tree(first);
                 let second_el = self.view_split_tree(second);
@@ -886,9 +1232,10 @@ impl PaneFlowApp {
                     Direction::Horizontal => (Length::Fixed(DIVIDER_WIDTH), Length::Fill),
                     Direction::Vertical => (Length::Fill, Length::Fixed(DIVIDER_WIDTH)),
                 };
+                let divider_color = self.ui_theme.divider;
                 let divider = container(iced::widget::Space::new(div_w, div_h))
-                .style(|_theme: &Theme| container::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.2, 0.2, 0.24))),
+                .style(move |_theme: &Theme| container::Style {
+                    background: Some(iced::Background::Color(divider_color)),
                     ..Default::default()
                 });
 
@@ -921,40 +1268,133 @@ impl PaneFlowApp {
     // ── Terminal pane (US-004) ────────────────────────────────────────────
 
     fn view_terminal_pane(&self, pane_id: Uuid) -> Element<'_, Message> {
+        let t = &self.ui_theme;
         let is_focused = self.focused_pane == Some(pane_id);
 
         let content: Element<'_, Message> = if let Some(exit_code) = self.pane_exit_codes.get(&pane_id) {
             container(
                 text(format!("[Process exited with code {exit_code}]"))
                     .size(14)
-                    .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                    .color(t.text_muted),
             )
             .width(Length::Fill)
             .height(Length::Fill)
             .center(Length::Fill)
             .into()
-        } else if let Some(lines) = self.cached_lines.get(&pane_id) {
-            // Native text rendering — uses iced's optimized cosmic-text pipeline
-            let font_size = self.config.font.size;
-            let fg = Color::from_rgb(0.8, 0.84, 0.96);
+        } else if let Some(grid) = self.cached_grids.get(&pane_id) {
+            // US-009: GPU shader path (preferred) or US-001 rich_text fallback
+            if self.use_gpu_renderer {
+                let program = shader_renderer::TerminalShaderProgram {
+                    grid: grid.clone(),
+                    font_size: self.config.font.clamped_size(),
+                };
+                Shader::new(program)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
+            } else {
+            // US-001: rich_text rendering with per-cell ANSI colors
+            let font_size = self.config.font.clamped_size();
+            let default_bg = renderer::CellData::default().bg;
             let mut term_col = column![].spacing(0);
-            for line in lines {
-                term_col = term_col.push(
-                    text(line.as_str())
+
+            for row in 0..grid.rows {
+                let mut spans = Vec::new();
+                let mut col = 0;
+                while col < grid.cols {
+                    let cell = grid.cell(row, col);
+                    // Start a color run
+                    let (mut fg, mut bg) = (cell.fg, cell.bg);
+                    let bold = cell.bold;
+                    let italic = cell.italic;
+                    let underline = cell.underline;
+                    let strikethrough = cell.strikethrough;
+
+                    // US-002: Cursor rendering — invert colors at cursor position
+                    let is_cursor = grid.cursor_visible
+                        && row == grid.cursor_row
+                        && col == grid.cursor_col
+                        && self.cursor_blink_visible;
+                    if is_cursor {
+                        std::mem::swap(&mut fg, &mut bg);
+                        if bg == default_bg {
+                            bg = Color::from_rgb(0.8, 0.84, 0.96);
+                        }
+                    }
+
+                    let run_fg = fg;
+                    let run_bg = bg;
+                    let run_bold = bold;
+                    let run_italic = italic;
+                    let run_ul = underline;
+                    let run_st = strikethrough;
+                    let mut run = String::new();
+                    run.push(cell.character);
+                    col += 1;
+
+                    // Merge consecutive cells with same style (skip cursor cell — always single)
+                    if !is_cursor {
+                        while col < grid.cols {
+                            let c = grid.cell(row, col);
+                            let c_is_cursor = grid.cursor_visible
+                                && row == grid.cursor_row
+                                && col == grid.cursor_col
+                                && self.cursor_blink_visible;
+                            if c_is_cursor || c.fg != run_fg || c.bg != run_bg
+                                || c.bold != run_bold || c.italic != run_italic
+                                || c.underline != run_ul || c.strikethrough != run_st
+                            {
+                                break;
+                            }
+                            run.push(c.character);
+                            col += 1;
+                        }
+                    }
+
+                    let font = match (run_bold, run_italic) {
+                        (true, true) => Font {
+                            weight: iced::font::Weight::Bold,
+                            style: iced::font::Style::Italic,
+                            ..Font::MONOSPACE
+                        },
+                        (true, false) => Font {
+                            weight: iced::font::Weight::Bold,
+                            ..Font::MONOSPACE
+                        },
+                        (false, true) => Font {
+                            style: iced::font::Style::Italic,
+                            ..Font::MONOSPACE
+                        },
+                        _ => Font::MONOSPACE,
+                    };
+
+                    let mut s = span(run)
+                        .color(run_fg)
                         .size(font_size)
-                        .font(iced::Font::MONOSPACE)
-                        .color(fg),
-                );
+                        .font(font);
+                    if run_bg != default_bg {
+                        s = s.background(iced::Background::Color(run_bg));
+                    }
+                    if run_ul {
+                        s = s.underline(true);
+                    }
+                    if run_st {
+                        s = s.strikethrough(true);
+                    }
+                    spans.push(s);
+                }
+                term_col = term_col.push(rich_text(spans));
             }
             scrollable(term_col)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into()
+            } // end rich_text fallback else
         } else {
             container(
                 text("Starting terminal...")
                     .size(14)
-                    .color(Color::from_rgb(0.4, 0.4, 0.4)),
+                    .color(t.text_secondary),
             )
             .width(Length::Fill)
             .height(Length::Fill)
@@ -964,17 +1404,18 @@ impl PaneFlowApp {
 
         // Focus border for selected pane
         let border_color = if is_focused {
-            Color::from_rgb(0.537, 0.706, 0.980) // blue accent
+            t.focus_border
         } else {
             Color::TRANSPARENT
         };
 
+        let terminal_bg = t.terminal_bg;
         // Clickable to focus (US-012)
         let pane = container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(move |_theme: &Theme| container::Style {
-                background: Some(iced::Background::Color(Color::from_rgb(0.06, 0.06, 0.08))),
+                background: Some(iced::Background::Color(terminal_bg)),
                 border: iced::Border {
                     color: border_color,
                     width: if is_focused { 1.0 } else { 0.0 },
@@ -983,19 +1424,55 @@ impl PaneFlowApp {
                 ..Default::default()
             });
 
-        mouse_area(pane)
+        // US-015: Bell ring animation overlay
+        let bell_ring: Element<'_, Message> =
+            if let Some(start) = self.bell_animations.get(&pane_id) {
+                let elapsed = start.elapsed().as_secs_f32();
+                // Pulse pattern: 0→1→0→1→0 over 0.9s (2 flashes)
+                let opacity = if elapsed < 0.9 {
+                    let phase = (elapsed / 0.225).fract();
+                    if phase < 0.5 {
+                        phase * 2.0
+                    } else {
+                        2.0 - phase * 2.0
+                    }
+                } else {
+                    0.0
+                };
+                let accent = t.accent;
+                let ring_color = Color::from_rgba(accent.r, accent.g, accent.b, opacity * 0.8);
+                container(iced::widget::Space::new(Length::Fill, Length::Fill))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(move |_theme: &Theme| container::Style {
+                        border: iced::Border {
+                            color: ring_color,
+                            width: 2.5,
+                            radius: 6.0.into(),
+                        },
+                        ..Default::default()
+                    })
+                    .into()
+            } else {
+                iced::widget::Space::new(0, 0).into()
+            };
+
+        let pane_with_ring = iced::widget::stack![pane, bell_ring];
+
+        mouse_area(pane_with_ring)
             .on_press(Message::FocusPane(pane_id))
             .into()
     }
 
     fn view_empty_state(&self) -> Element<'_, Message> {
+        let t = &self.ui_theme;
         let placeholder = column![
             text("No terminal panes")
                 .size(20)
-                .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                .color(t.text_secondary),
             text("Press Ctrl+Shift+N to create a workspace")
                 .size(14)
-                .color(Color::from_rgb(0.4, 0.4, 0.4)),
+                .color(t.text_muted),
         ]
         .spacing(8)
         .align_x(iced::Alignment::Center);
@@ -1010,6 +1487,7 @@ impl PaneFlowApp {
     // ── Command palette (US-003) ───────────────────────────────────────
 
     fn view_command_palette(&self) -> Element<'_, Message> {
+        let t = &self.ui_theme;
         let commands = [
             "New Workspace",
             "Split Horizontal",
@@ -1030,6 +1508,7 @@ impl PaneFlowApp {
                 .collect()
         };
 
+        let surface = t.surface;
         let mut command_list = column![].spacing(2);
         for cmd in filtered {
             let cmd_str = cmd.to_string();
@@ -1037,10 +1516,8 @@ impl PaneFlowApp {
                 container(text(*cmd).size(14).color(Color::WHITE))
                     .padding([8, 16])
                     .width(Length::Fill)
-                    .style(|_theme: &Theme| container::Style {
-                        background: Some(iced::Background::Color(Color::from_rgb(
-                            0.15, 0.15, 0.18,
-                        ))),
+                    .style(move |_theme: &Theme| container::Style {
+                        background: Some(iced::Background::Color(surface)),
                         ..Default::default()
                     }),
             )
@@ -1053,16 +1530,18 @@ impl PaneFlowApp {
             .size(16)
             .padding(12);
 
+        let overlay_bg = t.overlay_bg;
+        let border_color = t.border;
         let palette = container(
             column![input, scrollable(command_list).height(300)]
                 .spacing(4)
                 .width(500),
         )
         .padding(8)
-        .style(|_theme: &Theme| container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.12, 0.12, 0.15))),
+        .style(move |_theme: &Theme| container::Style {
+            background: Some(iced::Background::Color(overlay_bg)),
             border: iced::Border {
-                color: Color::from_rgb(0.3, 0.3, 0.35),
+                color: border_color,
                 width: 1.0,
                 radius: 8.0.into(),
             },
@@ -1070,13 +1549,14 @@ impl PaneFlowApp {
         });
 
         // Center the palette in the window
+        let scrim = t.scrim;
         container(container(palette).center_x(Length::Fill))
             .width(Length::Fill)
             .height(Length::Fill)
             .padding([40, 0])
             .center_x(Length::Fill)
-            .style(|_theme: &Theme| container::Style {
-                background: Some(iced::Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.4))),
+            .style(move |_theme: &Theme| container::Style {
+                background: Some(iced::Background::Color(scrim)),
                 ..Default::default()
             })
             .into()

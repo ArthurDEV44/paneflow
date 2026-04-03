@@ -20,6 +20,8 @@ pub struct PaneFlowConfig {
     /// Number of scrollback lines per terminal pane (default 4000).
     #[serde(default = "default_scrollback")]
     pub scrollback_lines: u32,
+    /// UI accent color as hex string (e.g. "0091ff"). Default: cmux blue.
+    pub accent_color: Option<String>,
 }
 
 fn default_scrollback() -> u32 {
@@ -35,6 +37,7 @@ impl Default for PaneFlowConfig {
             font: FontConfig::default(),
             colors: ColorTheme::default(),
             scrollback_lines: default_scrollback(),
+            accent_color: None,
         }
     }
 }
@@ -47,6 +50,13 @@ pub struct FontConfig {
     pub family: Option<String>,
     /// Font size in points (default 14.0).
     pub size: f32,
+}
+
+impl FontConfig {
+    /// Clamped font size (6.0..=72.0).
+    pub fn clamped_size(&self) -> f32 {
+        self.size.clamp(6.0, 72.0)
+    }
 }
 
 impl Default for FontConfig {
