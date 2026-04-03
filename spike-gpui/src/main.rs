@@ -1,23 +1,32 @@
 //! PaneFlow v2 — GPUI Native Terminal Multiplexer
 //!
 //! App shell with sidebar + main content area.
-//! Terminal rendering and PTY integration are added in subsequent stories (US-002, US-004).
+//! Terminal cells rendered via TerminalElement with GPUI's Element trait.
+
+mod terminal;
+mod terminal_element;
 
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, Context, IntoElement, Render, Styled, Window,
-    WindowBounds, WindowOptions,
+    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, Focusable, IntoElement, Render,
+    Styled, Window, WindowBounds, WindowOptions,
 };
 use gpui_platform::application;
+
+use crate::terminal::TerminalView;
 
 // ---------------------------------------------------------------------------
 // Root application view
 // ---------------------------------------------------------------------------
 
-struct PaneFlowApp;
+struct PaneFlowApp {
+    pub terminal_view: Entity<TerminalView>,
+}
 
 impl PaneFlowApp {
-    fn new(_cx: &mut Context<Self>) -> Self {
-        Self
+    fn new(cx: &mut Context<Self>) -> Self {
+        let terminal_view = cx.new(TerminalView::new);
+        // Focus the terminal on startup
+        Self { terminal_view }
     }
 }
 
@@ -45,20 +54,13 @@ impl Render for PaneFlowApp {
                             .child("PaneFlow"),
                     ),
             )
-            // Main content area — flexible
+            // Main content area — terminal
             .child(
                 div()
                     .flex_1()
                     .h_full()
                     .bg(rgb(0x1e1e2e))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_color(rgb(0x6c7086))
-                            .child("No terminal panes open"),
-                    ),
+                    .child(self.terminal_view.clone()),
             )
     }
 }
@@ -84,7 +86,12 @@ fn main() {
                 app_id: Some("paneflow".into()),
                 ..Default::default()
             },
-            |_window, cx| cx.new(PaneFlowApp::new),
+            |window, cx| {
+                let view = cx.new(PaneFlowApp::new);
+                let focus = view.read(cx).terminal_view.read(cx).focus_handle(cx);
+                focus.focus(window, cx);
+                view
+            },
         );
 
         match window_result {
