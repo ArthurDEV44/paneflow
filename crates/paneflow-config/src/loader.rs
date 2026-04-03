@@ -567,6 +567,7 @@ mod tests {
                 workspace: None,
                 command: Some("echo hello".to_string()),
             }],
+            ..Default::default()
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();

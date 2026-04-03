@@ -21,4 +21,4 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
 
-iced = { version = "0.13", features = ["wgpu", "tokio"] }
+iced = { version = "0.13", features = ["wgpu", "tokio", "canvas"] }

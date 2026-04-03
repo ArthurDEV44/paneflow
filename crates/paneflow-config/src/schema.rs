@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Top-level PaneFlow configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct PaneFlowConfig {
     /// Key-action shortcut mappings (e.g. "ctrl+t" -> "new_tab").
@@ -13,6 +13,90 @@ pub struct PaneFlowConfig {
     pub default_shell: Option<String>,
     /// Workspace command definitions (cmux-compatible format).
     pub commands: Vec<CommandDefinition>,
+    /// Font settings for the terminal renderer (US-020).
+    pub font: FontConfig,
+    /// Terminal color theme — 16 ANSI colors + foreground/background (US-020).
+    pub colors: ColorTheme,
+    /// Number of scrollback lines per terminal pane (default 4000).
+    #[serde(default = "default_scrollback")]
+    pub scrollback_lines: u32,
+}
+
+fn default_scrollback() -> u32 {
+    4000
+}
+
+impl Default for PaneFlowConfig {
+    fn default() -> Self {
+        Self {
+            shortcuts: HashMap::new(),
+            default_shell: None,
+            commands: Vec::new(),
+            font: FontConfig::default(),
+            colors: ColorTheme::default(),
+            scrollback_lines: default_scrollback(),
+        }
+    }
+}
+
+/// Font configuration for terminal rendering.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct FontConfig {
+    /// Font family name. `None` uses system monospace font.
+    pub family: Option<String>,
+    /// Font size in points (default 14.0).
+    pub size: f32,
+}
+
+impl Default for FontConfig {
+    fn default() -> Self {
+        Self {
+            family: None,
+            size: 14.0,
+        }
+    }
+}
+
+/// Terminal color theme with 16 ANSI colors and foreground/background.
+/// Colors are 6-digit hex strings (e.g. "cdd6f4").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ColorTheme {
+    pub foreground: String,
+    pub background: String,
+    /// 16 ANSI colors: [black, red, green, yellow, blue, magenta, cyan, white,
+    ///                   bright_black, bright_red, bright_green, bright_yellow,
+    ///                   bright_blue, bright_magenta, bright_cyan, bright_white]
+    pub ansi: Vec<String>,
+}
+
+impl Default for ColorTheme {
+    fn default() -> Self {
+        // Catppuccin Mocha palette
+        Self {
+            foreground: "cdd6f4".into(),
+            background: "1e1e2e".into(),
+            ansi: vec![
+                "45475a".into(), // black
+                "f38ba8".into(), // red
+                "a6e3a1".into(), // green
+                "f9e2af".into(), // yellow
+                "89b4fa".into(), // blue
+                "f5c2e7".into(), // magenta
+                "94e2d5".into(), // cyan
+                "bac2de".into(), // white
+                "585b70".into(), // bright black
+                "f38ba8".into(), // bright red
+                "a6e3a1".into(), // bright green
+                "f9e2af".into(), // bright yellow
+                "89b4fa".into(), // bright blue
+                "f5c2e7".into(), // bright magenta
+                "94e2d5".into(), // bright cyan
+                "a6adc8".into(), // bright white
+            ],
+        }
+    }
 }
 
 /// A single command definition, compatible with the cmux workspace format.
