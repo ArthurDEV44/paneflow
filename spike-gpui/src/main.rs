@@ -14,14 +14,25 @@ use gpui::{
 };
 use gpui_platform::application;
 
-use crate::split::{SplitDirection, SplitNode};
+use crate::split::{FocusDirection, SplitDirection, SplitNode};
 use crate::terminal::TerminalView;
 
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
 
-actions!(paneflow, [SplitHorizontally, SplitVertically, ClosePane]);
+actions!(
+    paneflow,
+    [
+        SplitHorizontally,
+        SplitVertically,
+        ClosePane,
+        FocusLeft,
+        FocusRight,
+        FocusUp,
+        FocusDown
+    ]
+);
 
 // ---------------------------------------------------------------------------
 // Root application view
@@ -82,12 +93,31 @@ impl PaneFlowApp {
         if let Some(root) = self.root.take() {
             let (new_root, _closed) = root.close_focused(window, cx);
             self.root = new_root;
-            // Focus the first remaining pane
             if let Some(ref root) = self.root {
                 root.focus_first(window, cx);
             }
         }
         cx.notify();
+    }
+
+    fn handle_focus(&mut self, dir: FocusDirection, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(root) = &self.root {
+            root.focus_in_direction(dir, window, cx);
+        }
+        cx.notify();
+    }
+
+    fn handle_focus_left(&mut self, _: &FocusLeft, w: &mut Window, cx: &mut Context<Self>) {
+        self.handle_focus(FocusDirection::Left, w, cx);
+    }
+    fn handle_focus_right(&mut self, _: &FocusRight, w: &mut Window, cx: &mut Context<Self>) {
+        self.handle_focus(FocusDirection::Right, w, cx);
+    }
+    fn handle_focus_up(&mut self, _: &FocusUp, w: &mut Window, cx: &mut Context<Self>) {
+        self.handle_focus(FocusDirection::Up, w, cx);
+    }
+    fn handle_focus_down(&mut self, _: &FocusDown, w: &mut Window, cx: &mut Context<Self>) {
+        self.handle_focus(FocusDirection::Down, w, cx);
     }
 }
 
@@ -117,6 +147,10 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_split_h))
             .on_action(cx.listener(Self::handle_split_v))
             .on_action(cx.listener(Self::handle_close_pane))
+            .on_action(cx.listener(Self::handle_focus_left))
+            .on_action(cx.listener(Self::handle_focus_right))
+            .on_action(cx.listener(Self::handle_focus_up))
+            .on_action(cx.listener(Self::handle_focus_down))
             // Sidebar — 220px fixed width
             .child(
                 div()
@@ -160,6 +194,10 @@ fn main() {
             KeyBinding::new("ctrl-shift-d", SplitHorizontally, None),
             KeyBinding::new("ctrl-shift-e", SplitVertically, None),
             KeyBinding::new("ctrl-shift-w", ClosePane, None),
+            KeyBinding::new("alt-left", FocusLeft, None),
+            KeyBinding::new("alt-right", FocusRight, None),
+            KeyBinding::new("alt-up", FocusUp, None),
+            KeyBinding::new("alt-down", FocusDown, None),
         ]);
 
         let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);

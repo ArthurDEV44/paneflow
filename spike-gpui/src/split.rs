@@ -67,7 +67,18 @@ impl SplitNode {
     pub fn render(&self, window: &Window, cx: &App) -> AnyElement {
         match self {
             SplitNode::Leaf(terminal) => {
-                div().size_full().child(terminal.clone()).into_any_element()
+                let focused = terminal.read(cx).focus_handle(cx).is_focused(window);
+                let border_color = if focused {
+                    rgb(0x89b4fa) // Catppuccin Blue — accent for focused pane
+                } else {
+                    rgb(0x1e1e2e) // Match background — invisible border
+                };
+                div()
+                    .size_full()
+                    .border_2()
+                    .border_color(border_color)
+                    .child(terminal.clone())
+                    .into_any_element()
             }
 
             SplitNode::Split {
@@ -137,6 +148,7 @@ impl SplitNode {
                             // The ratio change is proportional to pixel delta / container
                             // Approximate container size — for precise drag, a custom Element
                             // with real bounds would be needed. CSS min_w/min_h is the true guard.
+                            // TODO: use actual element bounds for precise drag
                             let container_estimate = 800.0_f32;
                             let new_ratio =
                                 (start_r + delta / container_estimate).clamp(MIN_RATIO, MAX_RATIO);
@@ -293,7 +305,7 @@ impl SplitNode {
         }
     }
 
-    /// Focus the first leaf in the tree.
+    /// Focus the first (leftmost/topmost) leaf in the tree.
     pub fn focus_first(&self, window: &mut Window, cx: &mut App) {
         match self {
             SplitNode::Leaf(terminal) => {
@@ -304,4 +316,109 @@ impl SplitNode {
             }
         }
     }
+
+    /// Focus the last (rightmost/bottommost) leaf in the tree.
+    pub fn focus_last(&self, window: &mut Window, cx: &mut App) {
+        match self {
+            SplitNode::Leaf(terminal) => {
+                terminal.read(cx).focus_handle(cx).focus(window, cx);
+            }
+            SplitNode::Split { second, .. } => {
+                second.focus_last(window, cx);
+            }
+        }
+    }
+
+    /// Move focus in the given direction. Returns true if focus was moved.
+    ///
+    /// Algorithm: recurse to find the focused leaf. At each ancestor Split,
+    /// check if the direction is compatible and the focused leaf is on the
+    /// correct side. If so, focus the nearest-edge leaf of the opposite child.
+    pub fn focus_in_direction(
+        &self,
+        dir: FocusDirection,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> FocusNav {
+        match self {
+            SplitNode::Leaf(terminal) => {
+                if terminal.read(cx).focus_handle(cx).is_focused(window) {
+                    FocusNav::FocusedHere
+                } else {
+                    FocusNav::NotHere
+                }
+            }
+            SplitNode::Split {
+                direction,
+                first,
+                second,
+                ..
+            } => {
+                // Try first child
+                match first.focus_in_direction(dir, window, cx) {
+                    FocusNav::Moved => return FocusNav::Moved,
+                    FocusNav::FocusedHere => {
+                        // can_move_from_first only matches Right/Down
+                        if can_move_from_first(*direction, dir) {
+                            second.focus_first(window, cx);
+                            return FocusNav::Moved;
+                        }
+                        return FocusNav::FocusedHere;
+                    }
+                    FocusNav::NotHere => {}
+                }
+
+                // Try second child
+                match second.focus_in_direction(dir, window, cx) {
+                    FocusNav::Moved => FocusNav::Moved,
+                    FocusNav::FocusedHere => {
+                        // can_move_from_second only matches Left/Up
+                        if can_move_from_second(*direction, dir) {
+                            first.focus_last(window, cx);
+                            FocusNav::Moved
+                        } else {
+                            FocusNav::FocusedHere
+                        }
+                    }
+                    FocusNav::NotHere => FocusNav::NotHere,
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Focus navigation types
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+pub enum FocusDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+pub enum FocusNav {
+    NotHere,
+    FocusedHere,
+    Moved,
+}
+
+/// Can we move from the first child in the given direction at this split?
+fn can_move_from_first(split_dir: SplitDirection, focus_dir: FocusDirection) -> bool {
+    matches!(
+        (split_dir, focus_dir),
+        (SplitDirection::Vertical, FocusDirection::Right)
+            | (SplitDirection::Horizontal, FocusDirection::Down)
+    )
+}
+
+/// Can we move from the second child in the given direction at this split?
+fn can_move_from_second(split_dir: SplitDirection, focus_dir: FocusDirection) -> bool {
+    matches!(
+        (split_dir, focus_dir),
+        (SplitDirection::Vertical, FocusDirection::Left)
+            | (SplitDirection::Horizontal, FocusDirection::Up)
+    )
 }
