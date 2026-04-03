@@ -54,6 +54,17 @@ struct SessionWorkspace {
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 fn main() -> iced::Result {
+    // Fix wgpu surface creation panic on Wayland (wgpu#6159, iced#1618):
+    // Some compositors (GNOME/Mutter) fail dmabuf import, leaving the surface
+    // with zero supported present modes. The GL backend and Fifo present mode
+    // are the most reliable workaround across affected Wayland compositors.
+    if std::env::var("WGPU_BACKEND").is_err() {
+        unsafe { std::env::set_var("WGPU_BACKEND", "gl") };
+    }
+    if std::env::var("ICED_PRESENT_MODE").is_err() {
+        unsafe { std::env::set_var("ICED_PRESENT_MODE", "fifo") };
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
