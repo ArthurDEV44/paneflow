@@ -14,6 +14,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use iced::futures::SinkExt;
+
 use iced::widget::{button, column, container, horizontal_space, mouse_area, row, scrollable, text, Canvas};
 use iced::{Color, Element, Length, Size, Subscription, Task, Theme};
 use paneflow_config::loader::load_config;
@@ -90,6 +92,7 @@ pub struct PaneFlowApp {
     pty_bridge: Arc<PtyBridge>,
     focused_pane: Option<Uuid>,
     event_tx: mpsc::UnboundedSender<TerminalEvent>,
+    event_rx: Arc<std::sync::Mutex<Option<mpsc::UnboundedReceiver<TerminalEvent>>>>,
     terminal_states: HashMap<Uuid, TerminalState>,
     pane_exit_codes: HashMap<Uuid, i32>,
     config: PaneFlowConfig,
@@ -173,7 +176,8 @@ impl PaneFlowApp {
         let pane_id = Uuid::new_v4();
         let split_trees = HashMap::from([(ws_id, SplitTree::new(pane_id))]);
 
-        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let event_rx = Arc::new(std::sync::Mutex::new(Some(event_rx)));
 
         let mut terminal_states = HashMap::new();
         terminal_states.insert(pane_id, TerminalState::new(DEFAULT_COLS, DEFAULT_ROWS));
@@ -184,6 +188,7 @@ impl PaneFlowApp {
             pty_bridge: Arc::new(PtyBridge::new()),
             focused_pane: Some(pane_id),
             event_tx,
+            event_rx,
             terminal_states,
             pane_exit_codes: HashMap::new(),
             config,
@@ -613,7 +618,36 @@ impl PaneFlowApp {
     // ── Subscriptions ────────────────────────────────────────────────────
 
     fn subscription(&self) -> Subscription<Message> {
-        iced::keyboard::on_key_press(|key, modifiers| Some(Message::KeyPressed(key, modifiers)))
+        let keyboard =
+            iced::keyboard::on_key_press(|key, modifiers| Some(Message::KeyPressed(key, modifiers)));
+
+        // PTY event stream: drains the bridge's output channel and dispatches
+        // PtyOutput/PtyExited messages to update(). The receiver is taken once
+        // on first subscription run and the stream lives for the app's lifetime.
+        let rx_arc = self.event_rx.clone();
+        let pty_events = Subscription::run_with_id(
+            "pty-events",
+            iced::stream::channel(100, move |mut output| async move {
+                let receiver = rx_arc.lock().unwrap().take();
+                if let Some(mut rx) = receiver {
+                    while let Some(event) = rx.recv().await {
+                        let msg = match event {
+                            TerminalEvent::Data { pane_id, data } => {
+                                Message::PtyOutput { pane_id, data }
+                            }
+                            TerminalEvent::Exit { pane_id, code } => {
+                                Message::PtyExited { pane_id, code }
+                            }
+                        };
+                        if output.send(msg).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }),
+        );
+
+        Subscription::batch([keyboard, pty_events])
     }
 
     // ── Session persistence (US-016) ─────────────────────────────────────
