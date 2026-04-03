@@ -12,6 +12,7 @@ mod renderer;
 mod shader_pipeline;
 mod shader_renderer;
 mod terminal;
+mod terminal_widget;
 mod theme;
 
 use std::collections::HashMap;
@@ -20,8 +21,9 @@ use std::sync::Arc;
 
 use iced::futures::SinkExt;
 
-use iced::widget::{button, column, container, horizontal_space, hover, mouse_area, rich_text, row, scrollable, shader::Shader, span, text};
+use iced::widget::{button, column, container, horizontal_space, hover, mouse_area, row, scrollable, text, Shader};
 use iced::{Color, Element, Font, Length, Size, Subscription, Task, Theme};
+use shader_renderer::TerminalShaderProgram;
 use paneflow_config::loader::load_config;
 use paneflow_config::schema::PaneFlowConfig;
 use paneflow_core::split_tree::{Direction, SplitTree};
@@ -44,6 +46,7 @@ const DIVIDER_WIDTH: f32 = 2.0;
 const MIN_PANE_SIZE: f32 = 80.0;
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_COLS: u16 = 80;
+const TAB_BAR_HEIGHT: f32 = 0.0; // tab bar removed — sidebar is the navigation
 
 // ─── Session types (US-016) ──────────────────────────────────────────────────
 
@@ -127,8 +130,11 @@ pub struct PaneFlowApp {
     sidebar_dragging: bool,
     // US-015: Bell ring animation
     bell_animations: HashMap<Uuid, std::time::Instant>,
-    // US-009: GPU shader renderer (falls back to rich_text if false or init fails)
+    // US-009: GPU shader renderer (EP-003 future work)
+    #[allow(dead_code)]
     use_gpu_renderer: bool,
+    // Dynamic terminal resize: track window size to compute pane dimensions
+    window_size: (f32, f32),
 }
 
 // ─── Messages ────────────────────────────────────────────────────────────────
@@ -188,6 +194,9 @@ pub enum Message {
     SidebarDragEnd,
     SidebarDragMove(f32), // absolute x position
 
+    // Window resize → recalculate terminal dimensions
+    WindowResized(f32, f32),
+
     // Internal
     Noop,
 }
@@ -235,7 +244,8 @@ impl PaneFlowApp {
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sidebar_dragging: false,
             bell_animations: HashMap::new(),
-            use_gpu_renderer: true,
+            use_gpu_renderer: true, // GPU shader pipeline (EP-003) — instanced WGPU draws
+            window_size: (1280.0, 720.0), // initial estimate, updated on first WindowResized
         };
 
         // Spawn initial PTY
@@ -331,6 +341,7 @@ impl PaneFlowApp {
                         let _ = tree.resize(pane_id, new_ratio);
                     }
                 }
+                return self.recalculate_pane_sizes();
             }
 
             // ── Terminal events ──────────────────────────────────────────
@@ -379,6 +390,7 @@ impl PaneFlowApp {
             }
             Message::PtySpawned(pane_id) => {
                 tracing::info!(%pane_id, "PTY spawned");
+                return self.recalculate_pane_sizes();
             }
 
             // ── Cursor blink (US-006) ────────────────────────────────────
@@ -454,12 +466,70 @@ impl PaneFlowApp {
             Message::SidebarDragMove(x) => {
                 if self.sidebar_dragging {
                     self.sidebar_width = x.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                    return self.recalculate_pane_sizes();
                 }
+            }
+
+            Message::WindowResized(w, h) => {
+                self.window_size = (w, h);
+                return self.recalculate_pane_sizes();
             }
 
             Message::Noop => {}
         }
         Task::none()
+    }
+
+    // ── Dynamic terminal resize ────────────────────────────────────────────
+
+    fn recalculate_pane_sizes(&mut self) -> Task<Message> {
+        let (win_w, win_h) = self.window_size;
+        let content_w = (win_w - self.sidebar_width - 4.0).max(1.0); // 4px drag handle
+        let content_h = (win_h - TAB_BAR_HEIGHT).max(1.0);
+
+        let font_size = self.config.font.clamped_size();
+        let cell_w = font_size * 0.6;
+        let cell_h = font_size * 1.2;
+        // Terminal pane padding: [2, 4] → 4px vertical, 8px horizontal
+        let pad_h = 8.0;
+        let pad_w = 8.0;
+
+        let Some(ws_id) = self.tab_manager.selected_id else {
+            return Task::none();
+        };
+        let Some(tree) = self.split_trees.get(&ws_id) else {
+            return Task::none();
+        };
+
+        let layout = tree.layout(content_w as f64, content_h as f64);
+        let bridge = self.pty_bridge.clone();
+        let mut resize_tasks = Vec::new();
+
+        for (pane_id, rect) in layout {
+            let pane_w = (rect.width as f32 - pad_w).max(cell_w);
+            let pane_h = (rect.height as f32 - pad_h).max(cell_h);
+            let new_cols = (pane_w / cell_w).floor().max(1.0) as u16;
+            let new_rows = (pane_h / cell_h).floor().max(1.0) as u16;
+
+            if let Some(state) = self.terminal_states.get_mut(&pane_id) {
+                let old_cols = state.cols() as u16;
+                let old_rows = state.rows() as u16;
+                if new_cols != old_cols || new_rows != old_rows {
+                    state.resize(new_cols, new_rows);
+                    let b = bridge.clone();
+                    resize_tasks.push(Task::perform(
+                        async move { b.resize_pane(pane_id, new_rows, new_cols).await },
+                        |_| Message::Noop,
+                    ));
+                }
+            }
+        }
+
+        if resize_tasks.is_empty() {
+            Task::none()
+        } else {
+            Task::batch(resize_tasks)
+        }
     }
 
     // ── Workspace operations ─────────────────────────────────────────────
@@ -492,7 +562,9 @@ impl PaneFlowApp {
                     TerminalState::new(DEFAULT_COLS, DEFAULT_ROWS),
                 );
                 let cwd = std::env::current_dir().ok();
-                self.spawn_pty(new_pane_id, cwd)
+                let spawn = self.spawn_pty(new_pane_id, cwd);
+                let resize = self.recalculate_pane_sizes();
+                Task::batch([spawn, resize])
             }
             Err(e) => {
                 tracing::warn!("split failed: {e}");
@@ -771,7 +843,18 @@ impl PaneFlowApp {
             Subscription::none()
         };
 
-        Subscription::batch([keyboard, pty_events, mouse_events, bell_tick])
+        // Window open + resize → recalculate terminal dimensions
+        let window_resize = iced::event::listen_with(|event, _status, _id| match event {
+            iced::Event::Window(iced::window::Event::Resized(size)) => {
+                Some(Message::WindowResized(size.width, size.height))
+            }
+            iced::Event::Window(iced::window::Event::Opened { size, .. }) => {
+                Some(Message::WindowResized(size.width, size.height))
+            }
+            _ => None,
+        });
+
+        Subscription::batch([keyboard, pty_events, mouse_events, bell_tick, window_resize])
     }
 
     // ── Session persistence (US-016) ─────────────────────────────────────
@@ -1080,11 +1163,8 @@ impl PaneFlowApp {
             self.view_empty_state()
         };
 
-        // US-011: Horizontal tab bar above content
-        let tab_bar = self.view_tab_bar();
-
         let content_bg = self.ui_theme.content_bg;
-        container(column![tab_bar, content])
+        container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(move |_theme: &Theme| container::Style {
@@ -1092,123 +1172,6 @@ impl PaneFlowApp {
                 ..Default::default()
             })
             .into()
-    }
-
-    // ── Tab bar (US-011) ────────────────────────────────────────────────
-
-    fn view_tab_bar(&self) -> Element<'_, Message> {
-        let t = &self.ui_theme;
-
-        let panes: Vec<Uuid> = if let Some(ws_id) = self.tab_manager.selected_id {
-            self.split_trees
-                .get(&ws_id)
-                .map(|tree| tree.all_panes())
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        if panes.is_empty() {
-            return iced::widget::Space::new(Length::Fill, 0).into();
-        }
-
-        let accent = t.accent;
-        let surface = t.surface;
-        let text_primary = t.text_primary;
-        let text_secondary = t.text_secondary;
-
-        let mut tabs = row![].spacing(0);
-        for (i, pane_id) in panes.iter().enumerate() {
-            let is_active = self.focused_pane == Some(*pane_id);
-            let has_exited = self.pane_exit_codes.contains_key(pane_id);
-
-            let label = if has_exited {
-                format!("exited #{}", i + 1)
-            } else {
-                format!("shell #{}", i + 1)
-            };
-
-            let tab_text_color = if is_active { text_primary } else { text_secondary };
-            let pid = *pane_id;
-
-            // Tab content: label + hover close button
-            let tab_label = text(label)
-                .size(11)
-                .font(Font {
-                    weight: if is_active {
-                        iced::font::Weight::Semibold
-                    } else {
-                        iced::font::Weight::Normal
-                    },
-                    ..Font::DEFAULT
-                })
-                .color(tab_text_color);
-
-            let close_btn = button(
-                text("x").size(9).color(text_secondary).center(),
-            )
-            .width(14)
-            .height(14)
-            .on_press(Message::ClosePane(pid))
-            .style(move |_theme: &Theme, _status| button::Style {
-                background: Some(iced::Background::Color(Color::TRANSPARENT)),
-                text_color: text_secondary,
-                ..Default::default()
-            })
-            .padding(0);
-
-            let tab_content = row![tab_label, close_btn]
-                .spacing(6)
-                .align_y(iced::Alignment::Center);
-
-            // Bottom accent underline for active tab
-            let bottom_border = if is_active {
-                iced::Border {
-                    color: accent,
-                    width: 2.0,
-                    radius: 0.0.into(),
-                }
-            } else {
-                iced::Border::default()
-            };
-
-            let tab = mouse_area(
-                container(tab_content)
-                    .padding([6, 12])
-                    .style(move |_theme: &Theme| container::Style {
-                        background: Some(iced::Background::Color(if is_active {
-                            surface
-                        } else {
-                            Color::TRANSPARENT
-                        })),
-                        border: bottom_border,
-                        ..Default::default()
-                    }),
-            )
-            .on_press(Message::FocusPane(pid));
-
-            tabs = tabs.push(tab);
-        }
-
-        let bar_bg = t.sidebar_bg;
-        let divider_color = t.divider;
-        // Tab bar container — 30px height matching cmux
-        column![
-            container(scrollable(tabs).direction(scrollable::Direction::Horizontal(Default::default())))
-                .width(Length::Fill)
-                .height(30)
-                .style(move |_theme: &Theme| container::Style {
-                    background: Some(iced::Background::Color(bar_bg)),
-                    ..Default::default()
-                }),
-            // Subtle divider below tab bar
-            container(iced::widget::Space::new(Length::Fill, Length::Fixed(1.0)))
-                .style(move |_theme: &Theme| container::Style {
-                    background: Some(iced::Background::Color(divider_color)),
-                    ..Default::default()
-                }),
-        ]
-        .into()
     }
 
     // ── Split tree rendering (US-012) ────────────────────────────────────
@@ -1269,7 +1232,7 @@ impl PaneFlowApp {
 
     fn view_terminal_pane(&self, pane_id: Uuid) -> Element<'_, Message> {
         let t = &self.ui_theme;
-        let is_focused = self.focused_pane == Some(pane_id);
+        let _is_focused = self.focused_pane == Some(pane_id);
 
         let content: Element<'_, Message> = if let Some(exit_code) = self.pane_exit_codes.get(&pane_id) {
             container(
@@ -1282,114 +1245,24 @@ impl PaneFlowApp {
             .center(Length::Fill)
             .into()
         } else if let Some(grid) = self.cached_grids.get(&pane_id) {
-            // US-009: GPU shader path (preferred) or US-001 rich_text fallback
             if self.use_gpu_renderer {
-                let program = shader_renderer::TerminalShaderProgram {
+                // US-009: GPU Shader widget — instanced WGPU draws via glyph atlas
+                Shader::new(TerminalShaderProgram {
                     grid: grid.clone(),
                     font_size: self.config.font.clamped_size(),
-                };
-                Shader::new(program)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into()
-            } else {
-            // US-001: rich_text rendering with per-cell ANSI colors
-            let font_size = self.config.font.clamped_size();
-            let default_bg = renderer::CellData::default().bg;
-            let mut term_col = column![].spacing(0);
-
-            for row in 0..grid.rows {
-                let mut spans = Vec::new();
-                let mut col = 0;
-                while col < grid.cols {
-                    let cell = grid.cell(row, col);
-                    // Start a color run
-                    let (mut fg, mut bg) = (cell.fg, cell.bg);
-                    let bold = cell.bold;
-                    let italic = cell.italic;
-                    let underline = cell.underline;
-                    let strikethrough = cell.strikethrough;
-
-                    // US-002: Cursor rendering — invert colors at cursor position
-                    let is_cursor = grid.cursor_visible
-                        && row == grid.cursor_row
-                        && col == grid.cursor_col
-                        && self.cursor_blink_visible;
-                    if is_cursor {
-                        std::mem::swap(&mut fg, &mut bg);
-                        if bg == default_bg {
-                            bg = Color::from_rgb(0.8, 0.84, 0.96);
-                        }
-                    }
-
-                    let run_fg = fg;
-                    let run_bg = bg;
-                    let run_bold = bold;
-                    let run_italic = italic;
-                    let run_ul = underline;
-                    let run_st = strikethrough;
-                    let mut run = String::new();
-                    run.push(cell.character);
-                    col += 1;
-
-                    // Merge consecutive cells with same style (skip cursor cell — always single)
-                    if !is_cursor {
-                        while col < grid.cols {
-                            let c = grid.cell(row, col);
-                            let c_is_cursor = grid.cursor_visible
-                                && row == grid.cursor_row
-                                && col == grid.cursor_col
-                                && self.cursor_blink_visible;
-                            if c_is_cursor || c.fg != run_fg || c.bg != run_bg
-                                || c.bold != run_bold || c.italic != run_italic
-                                || c.underline != run_ul || c.strikethrough != run_st
-                            {
-                                break;
-                            }
-                            run.push(c.character);
-                            col += 1;
-                        }
-                    }
-
-                    let font = match (run_bold, run_italic) {
-                        (true, true) => Font {
-                            weight: iced::font::Weight::Bold,
-                            style: iced::font::Style::Italic,
-                            ..Font::MONOSPACE
-                        },
-                        (true, false) => Font {
-                            weight: iced::font::Weight::Bold,
-                            ..Font::MONOSPACE
-                        },
-                        (false, true) => Font {
-                            style: iced::font::Style::Italic,
-                            ..Font::MONOSPACE
-                        },
-                        _ => Font::MONOSPACE,
-                    };
-
-                    let mut s = span(run)
-                        .color(run_fg)
-                        .size(font_size)
-                        .font(font);
-                    if run_bg != default_bg {
-                        s = s.background(iced::Background::Color(run_bg));
-                    }
-                    if run_ul {
-                        s = s.underline(true);
-                    }
-                    if run_st {
-                        s = s.strikethrough(true);
-                    }
-                    spans.push(s);
-                }
-                term_col = term_col.push(rich_text(spans));
-            }
-            scrollable(term_col)
+                })
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into()
-            } // end rich_text fallback else
+            } else {
+                // Fallback: custom widget with fill_quad + fill_text (CPU path)
+                terminal_widget::TerminalView::new(
+                    grid,
+                    self.config.font.clamped_size(),
+                    self.cursor_blink_visible,
+                )
+                .into()
+            }
         } else {
             container(
                 text("Starting terminal...")
@@ -1402,25 +1275,13 @@ impl PaneFlowApp {
             .into()
         };
 
-        // Focus border for selected pane
-        let border_color = if is_focused {
-            t.focus_border
-        } else {
-            Color::TRANSPARENT
-        };
-
-        let terminal_bg = t.terminal_bg;
-        // Clickable to focus (US-012)
+        // Use the CellData default bg so inter-line gaps are invisible
+        let cell_bg = renderer::CellData::default().bg;
         let pane = container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(move |_theme: &Theme| container::Style {
-                background: Some(iced::Background::Color(terminal_bg)),
-                border: iced::Border {
-                    color: border_color,
-                    width: if is_focused { 1.0 } else { 0.0 },
-                    radius: 0.0.into(),
-                },
+                background: Some(iced::Background::Color(cell_bg)),
                 ..Default::default()
             });
 
