@@ -4,39 +4,119 @@
 //! Terminal cells rendered via TerminalElement with GPUI's Element trait.
 
 mod keys;
+mod split;
 mod terminal;
 mod terminal_element;
 
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, Focusable, IntoElement, Render,
-    Styled, Window, WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, Focusable, IntoElement,
+    KeyBinding, Render, Styled, Window, WindowBounds, WindowOptions,
 };
 use gpui_platform::application;
 
+use crate::split::{SplitDirection, SplitNode};
 use crate::terminal::TerminalView;
+
+// ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
+
+actions!(paneflow, [SplitHorizontally, SplitVertically, ClosePane]);
 
 // ---------------------------------------------------------------------------
 // Root application view
 // ---------------------------------------------------------------------------
 
 struct PaneFlowApp {
-    pub terminal_view: Entity<TerminalView>,
+    root: Option<SplitNode>,
 }
 
 impl PaneFlowApp {
     fn new(cx: &mut Context<Self>) -> Self {
         let terminal_view = cx.new(TerminalView::new);
-        // Focus the terminal on startup
-        Self { terminal_view }
+        Self {
+            root: Some(SplitNode::Leaf(terminal_view)),
+        }
+    }
+
+    fn split(&mut self, direction: SplitDirection, window: &mut Window, cx: &mut Context<Self>) {
+        const MAX_PANES: usize = 32;
+        if let Some(root) = &self.root
+            && root.leaf_count() >= MAX_PANES
+        {
+            return;
+        }
+        let new_terminal = cx.new(TerminalView::new);
+        if let Some(root) = &mut self.root
+            && root.split_at_focused(direction, new_terminal.clone(), window, cx)
+        {
+            new_terminal.read(cx).focus_handle(cx).focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn handle_split_h(
+        &mut self,
+        _: &SplitHorizontally,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.split(SplitDirection::Horizontal, window, cx);
+    }
+
+    fn handle_split_v(
+        &mut self,
+        _: &SplitVertically,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.split(SplitDirection::Vertical, window, cx);
+    }
+
+    fn handle_close_pane(
+        &mut self,
+        _: &ClosePane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(root) = self.root.take() {
+            let (new_root, _closed) = root.close_focused(window, cx);
+            self.root = new_root;
+            // Focus the first remaining pane
+            if let Some(ref root) = self.root {
+                root.focus_first(window, cx);
+            }
+        }
+        cx.notify();
     }
 }
 
 impl Render for PaneFlowApp {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let main_content = if let Some(root) = &self.root {
+            root.render(window, cx)
+        } else {
+            // Empty state — no terminal panes
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size_full()
+                .child(
+                    div()
+                        .text_color(rgb(0x6c7086))
+                        .child("No terminal panes open"),
+                )
+                .into_any_element()
+        };
+
         div()
             .flex()
             .flex_row()
             .size_full()
+            .on_action(cx.listener(Self::handle_split_h))
+            .on_action(cx.listener(Self::handle_split_v))
+            .on_action(cx.listener(Self::handle_close_pane))
             // Sidebar — 220px fixed width
             .child(
                 div()
@@ -55,13 +135,14 @@ impl Render for PaneFlowApp {
                             .child("PaneFlow"),
                     ),
             )
-            // Main content area — terminal
+            // Main content area
             .child(
                 div()
                     .flex_1()
                     .h_full()
                     .bg(rgb(0x1e1e2e))
-                    .child(self.terminal_view.clone()),
+                    .overflow_hidden()
+                    .child(main_content),
             )
     }
 }
@@ -74,6 +155,13 @@ fn main() {
     env_logger::init();
 
     application().run(|cx: &mut App| {
+        // Register keybindings
+        cx.bind_keys([
+            KeyBinding::new("ctrl-shift-d", SplitHorizontally, None),
+            KeyBinding::new("ctrl-shift-e", SplitVertically, None),
+            KeyBinding::new("ctrl-shift-w", ClosePane, None),
+        ]);
+
         let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
 
         let window_result = cx.open_window(
@@ -89,8 +177,12 @@ fn main() {
             },
             |window, cx| {
                 let view = cx.new(PaneFlowApp::new);
-                let focus = view.read(cx).terminal_view.read(cx).focus_handle(cx);
-                focus.focus(window, cx);
+                // Focus the first terminal pane
+                view.update(cx, |app, cx| {
+                    if let Some(root) = &app.root {
+                        root.focus_first(window, cx);
+                    }
+                });
                 view
             },
         );
