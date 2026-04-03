@@ -2,6 +2,7 @@
 //!
 //! App shell with sidebar workspace list + main content area.
 
+mod ipc;
 mod keys;
 mod split;
 mod terminal;
@@ -16,9 +17,19 @@ use gpui::{
 };
 use gpui_platform::application;
 
-use crate::split::{FocusDirection, SplitDirection};
+use crate::split::{FocusDirection, SplitDirection, SplitNode};
 use crate::terminal::TerminalView;
 use crate::workspace::Workspace;
+
+/// Write text to the first leaf terminal's PTY in a split tree.
+fn send_text_to_first_leaf(node: &SplitNode, text: &str, cx: &App) {
+    match node {
+        SplitNode::Leaf(terminal) => {
+            terminal.read(cx).terminal.write_to_pty(text.as_bytes().to_vec());
+        }
+        SplitNode::Split { first, .. } => send_text_to_first_leaf(first, text, cx),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Actions
@@ -59,6 +70,7 @@ struct PaneFlowApp {
     renaming_idx: Option<usize>,
     rename_text: String,
     last_config_mtime: Option<std::time::SystemTime>,
+    ipc_rx: std::sync::mpsc::Receiver<ipc::IpcRequest>,
 }
 
 impl PaneFlowApp {
@@ -66,6 +78,23 @@ impl PaneFlowApp {
         let terminal = cx.new(TerminalView::new);
         let ws = Workspace::new("Terminal 1", terminal);
         let last_config_mtime = crate::theme::config_mtime();
+        let ipc_rx = ipc::start_server();
+
+        // Poll IPC requests every 10ms
+        cx.spawn(async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            loop {
+                smol::Timer::after(std::time::Duration::from_millis(10)).await;
+                let result = cx.update(|cx| {
+                    this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                        app.process_ipc_requests(cx);
+                    })
+                });
+                if result.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
 
         // Poll config file for theme changes every 500ms
         cx.spawn(async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
@@ -93,6 +122,125 @@ impl PaneFlowApp {
             renaming_idx: None,
             rename_text: String::new(),
             last_config_mtime,
+            ipc_rx,
+        }
+    }
+
+    fn process_ipc_requests(&mut self, cx: &mut Context<Self>) {
+        while let Ok(req) = self.ipc_rx.try_recv() {
+            let result = self.handle_ipc(&req.method, &req.params, cx);
+            let _ = req.response_tx.send(result);
+        }
+    }
+
+    fn handle_ipc(
+        &mut self,
+        method: &str,
+        params: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) -> serde_json::Value {
+        match method {
+            "workspace.list" => {
+                let list: Vec<_> = self
+                    .workspaces
+                    .iter()
+                    .enumerate()
+                    .map(|(i, ws)| {
+                        serde_json::json!({
+                            "index": i,
+                            "title": ws.title,
+                            "cwd": ws.cwd,
+                            "panes": ws.pane_count(),
+                            "active": i == self.active_idx,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({"workspaces": list})
+            }
+            "workspace.current" => {
+                if let Some(ws) = self.active_workspace() {
+                    serde_json::json!({
+                        "index": self.active_idx,
+                        "title": ws.title,
+                        "cwd": ws.cwd,
+                        "panes": ws.pane_count(),
+                    })
+                } else {
+                    serde_json::json!(null)
+                }
+            }
+            "workspace.create" => {
+                let name = params
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("Terminal");
+                let terminal = cx.new(TerminalView::new);
+                let ws = Workspace::new(name, terminal);
+                self.workspaces.push(ws);
+                let idx = self.workspaces.len() - 1;
+                cx.notify();
+                serde_json::json!({"index": idx, "title": name})
+            }
+            "workspace.select" => {
+                let idx = params
+                    .get("index")
+                    .and_then(|i| i.as_u64())
+                    .unwrap_or(0) as usize;
+                if idx < self.workspaces.len() {
+                    self.active_idx = idx;
+                    cx.notify();
+                    serde_json::json!({"selected": idx})
+                } else {
+                    serde_json::json!({"error": "Index out of bounds"})
+                }
+            }
+            "workspace.close" => {
+                if self.workspaces.len() <= 1 {
+                    serde_json::json!({"error": "Cannot close last workspace"})
+                } else {
+                    let idx = params
+                        .get("index")
+                        .and_then(|i| i.as_u64())
+                        .map(|i| i as usize)
+                        .unwrap_or(self.active_idx);
+                    if idx < self.workspaces.len() {
+                        self.workspaces.remove(idx);
+                        if self.active_idx >= self.workspaces.len() {
+                            self.active_idx = self.workspaces.len() - 1;
+                        }
+                        cx.notify();
+                        serde_json::json!({"closed": idx})
+                    } else {
+                        serde_json::json!({"error": "Index out of bounds"})
+                    }
+                }
+            }
+            "surface.list" => {
+                let count = self
+                    .active_workspace()
+                    .map_or(0, |ws| ws.pane_count());
+                serde_json::json!({"pane_count": count, "workspace": self.active_idx})
+            }
+            "surface.send_text" => {
+                let text = params
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("");
+                if text.is_empty() {
+                    return serde_json::json!({"error": "Missing 'text' parameter"});
+                }
+                // Write to the focused terminal's PTY in the active workspace
+                if let Some(ws) = self.active_workspace()
+                    && let Some(root) = &ws.root
+                {
+                    send_text_to_first_leaf(root, text, cx);
+                    return serde_json::json!({"sent": true, "length": text.len()});
+                }
+                serde_json::json!({"error": "No active terminal"})
+            }
+            _ => {
+                serde_json::json!({"error": format!("Unknown method: {method}")})
+            }
         }
     }
 
