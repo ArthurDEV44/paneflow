@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::Term;
@@ -16,7 +17,7 @@ use gpui::{
     SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window,
 };
 
-use crate::terminal::ZedListener;
+use crate::terminal::{SpikeTermSize, ZedListener};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -43,9 +44,9 @@ const FG_COLOR: Rgba = Rgba {
 // Layout types
 // ---------------------------------------------------------------------------
 
-struct CellDimensions {
-    cell_width: Pixels,
-    line_height: Pixels,
+pub struct CellDimensions {
+    pub cell_width: Pixels,
+    pub line_height: Pixels,
 }
 
 struct BatchedTextRun {
@@ -79,6 +80,7 @@ pub struct LayoutState {
     cursor: Option<CursorInfo>,
     dimensions: CellDimensions,
     background_color: Hsla,
+    exited: Option<i32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +104,7 @@ pub struct TerminalElement {
     term: Arc<FairMutex<Term<ZedListener>>>,
     cursor_visible: bool,
     focused: bool,
+    exited: Option<i32>,
 }
 
 impl TerminalElement {
@@ -109,11 +112,13 @@ impl TerminalElement {
         term: Arc<FairMutex<Term<ZedListener>>>,
         cursor_visible: bool,
         focused: bool,
+        exited: Option<i32>,
     ) -> Self {
         Self {
             term,
             cursor_visible,
             focused,
+            exited,
         }
     }
 
@@ -131,7 +136,7 @@ impl TerminalElement {
         px(FONT_SIZE)
     }
 
-    fn measure_cell(window: &mut Window, _cx: &mut App) -> CellDimensions {
+    pub fn measure_cell(window: &mut Window, _cx: &mut App) -> CellDimensions {
         let font = Self::base_font();
         let font_size = Self::font_size();
         let run = TextRun {
@@ -157,7 +162,7 @@ impl TerminalElement {
 
     fn build_layout(
         &self,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         window: &mut Window,
         cx: &mut App,
     ) -> LayoutState {
@@ -166,10 +171,26 @@ impl TerminalElement {
         let default_fg: Hsla = FG_COLOR.into();
         let default_bg = background_color;
 
+        // Compute desired terminal grid size from pixel bounds
+        let desired_cols = (bounds.size.width / dims.cell_width).floor() as usize;
+        let desired_rows = (bounds.size.height / dims.line_height).floor() as usize;
+
         // Snapshot the grid and cursor under lock to minimize FairMutex hold time.
         let cursor_color = named_color(NamedColor::Cursor, default_fg, default_bg);
         let (cells, cursor_snapshot): (Vec<_>, Option<CursorInfo>) = {
-            let term = self.term.lock();
+            let mut term = self.term.lock();
+            // Resize the terminal grid if bounds have changed
+            let current_cols = term.columns();
+            let current_rows = term.screen_lines();
+            if desired_cols > 0
+                && desired_rows > 0
+                && (current_cols != desired_cols || current_rows != desired_rows)
+            {
+                term.resize(SpikeTermSize {
+                    columns: desired_cols,
+                    screen_lines: desired_rows,
+                });
+            }
             let content = term.renderable_content();
             let cursor =
                 if matches!(content.cursor.shape, CursorShape::Hidden) || !self.cursor_visible {
@@ -322,6 +343,7 @@ impl TerminalElement {
             cursor: cursor_snapshot,
             dimensions: dims,
             background_color,
+            exited: self.exited,
         }
     }
 }
@@ -635,6 +657,38 @@ impl Element for TerminalElement {
                     }
                     CursorShape::Hidden => {} // Already filtered in build_layout
                 }
+            }
+
+            // 5. Paint exit overlay if process has exited
+            if let Some(code) = layout.exited {
+                let msg = format!("[Process exited with code {code}]");
+                let exit_fg = rgb_to_hsla(0x6c, 0x70, 0x86); // Overlay6
+                let run = TextRun {
+                    len: msg.len(),
+                    font: Self::base_font(),
+                    color: exit_fg,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window.text_system().shape_line(
+                    SharedString::from(msg),
+                    font_size,
+                    &[run],
+                    None,
+                );
+                // Center the message in the terminal bounds
+                let text_width = shaped.width();
+                let x = origin.x + (bounds.size.width - text_width) * 0.5;
+                let y = origin.y + (bounds.size.height - line_height) * 0.5;
+                let _ = shaped.paint(
+                    Point { x, y },
+                    line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
             }
         });
     }
