@@ -58,17 +58,41 @@ struct PaneFlowApp {
     active_idx: usize,
     renaming_idx: Option<usize>,
     rename_text: String,
+    last_config_mtime: Option<std::time::SystemTime>,
 }
 
 impl PaneFlowApp {
     fn new(cx: &mut Context<Self>) -> Self {
         let terminal = cx.new(TerminalView::new);
         let ws = Workspace::new("Terminal 1", terminal);
+        let last_config_mtime = crate::theme::config_mtime();
+
+        // Poll config file for theme changes every 500ms
+        cx.spawn(async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            loop {
+                smol::Timer::after(std::time::Duration::from_millis(500)).await;
+                let result = cx.update(|cx| {
+                    this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                        let current_mtime = crate::theme::config_mtime();
+                        if current_mtime != app.last_config_mtime {
+                            app.last_config_mtime = current_mtime;
+                            cx.notify(); // Trigger repaint with new theme
+                        }
+                    })
+                });
+                if result.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         Self {
             workspaces: vec![ws],
             active_idx: 0,
             renaming_idx: None,
             rename_text: String::new(),
+            last_config_mtime,
         }
     }
 
