@@ -7,12 +7,13 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use alacritty_terminal::event::{Event as AlacEvent, EventListener, Notify, WindowSize};
-use alacritty_terminal::event_loop::{EventLoop as AlacEventLoop, Notifier};
+use alacritty_terminal::event_loop::{EventLoop as AlacEventLoop, Msg, Notifier};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::{Config as TermConfig, TermMode};
+use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::tty;
 use alacritty_terminal::Term;
+
 
 use gpui::{
     div, prelude::*, App, Context, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
@@ -27,9 +28,9 @@ use crate::terminal_element::TerminalElement;
 // Dimensions adapter
 // ---------------------------------------------------------------------------
 
-struct SpikeTermSize {
-    columns: usize,
-    screen_lines: usize,
+pub struct SpikeTermSize {
+    pub columns: usize,
+    pub screen_lines: usize,
 }
 
 impl Dimensions for SpikeTermSize {
@@ -64,10 +65,8 @@ impl EventListener for ZedListener {
 pub struct TerminalState {
     pub term: Arc<FairMutex<Term<ZedListener>>>,
     notifier: Notifier,
-    _events_rx: UnboundedReceiver<AlacEvent>,
-    _mode: TermMode,
-    _cols: usize,
-    _rows: usize,
+    events_rx: UnboundedReceiver<AlacEvent>,
+    pub exited: Option<i32>,
 }
 
 impl TerminalState {
@@ -119,18 +118,24 @@ impl TerminalState {
         Ok(Self {
             term,
             notifier: Notifier(pty_tx),
-            _events_rx: events_rx,
-            _mode: TermMode::empty(),
-            _cols: cols,
-            _rows: rows,
+            events_rx,
+            exited: None,
         })
     }
 
-    /// Triggers a repaint. The actual grid read happens in TerminalElement::build_layout
-    /// to avoid double-locking the FairMutex.
+    /// Drain alacritty events (ChildExit, Wakeup, etc.)
     pub fn sync(&mut self) {
-        // No-op — repaint is requested by cx.notify() in the timer callback.
-        // The term lock is acquired only once per frame, in TerminalElement::build_layout.
+        while let Ok(event) = self.events_rx.try_recv() {
+            match event {
+                AlacEvent::ChildExit(status) => {
+                    self.exited = Some(status);
+                }
+                AlacEvent::Exit => {
+                    self.exited = Some(-1); // EventLoop shutdown, not a child signal
+                }
+                _ => {} // Wakeup, Bell, Title, etc. — handled later
+            }
+        }
     }
 
     pub fn write_to_pty(&self, input: impl Into<Cow<'static, [u8]>>) {
@@ -138,6 +143,12 @@ impl TerminalState {
     }
 
 
+}
+
+impl Drop for TerminalState {
+    fn drop(&mut self) {
+        let _ = self.notifier.0.send(Msg::Shutdown);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -291,8 +302,12 @@ impl gpui::Focusable for TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
-        let terminal_element =
-            TerminalElement::new(self.terminal.term.clone(), self.cursor_visible, focused);
+        let terminal_element = TerminalElement::new(
+            self.terminal.term.clone(),
+            self.cursor_visible,
+            focused,
+            self.terminal.exited,
+        );
 
         div()
             .id("terminal-view")
