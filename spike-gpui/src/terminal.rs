@@ -64,7 +64,7 @@ impl EventListener for ZedListener {
 
 pub struct TerminalState {
     pub term: Arc<FairMutex<Term<ZedListener>>>,
-    notifier: Notifier,
+    pub notifier: Notifier,
     events_rx: UnboundedReceiver<AlacEvent>,
     pub exited: Option<i32>,
     /// Set when PTY output has been processed (Wakeup event received).
@@ -290,6 +290,7 @@ impl Render for TerminalView {
         let focused = self.focus_handle.is_focused(window);
         let terminal_element = TerminalElement::new(
             self.terminal.term.clone(),
+            Notifier(self.terminal.notifier.0.clone()),
             self.cursor_visible,
             focused,
             self.terminal.exited,
