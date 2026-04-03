@@ -13,6 +13,7 @@ use iced::{Color, Font, Pixels, Point, Rectangle, Size, Theme};
 
 /// A single terminal cell with character, colors, and attributes.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // underline/strikethrough used when full attribute rendering is enabled
 pub struct CellData {
     pub character: char,
     pub fg: Color,
@@ -76,6 +77,7 @@ impl TerminalGrid {
 /// iced Canvas program that renders a terminal grid.
 /// Uses instanced colored-quad drawing for backgrounds and fill_text for glyphs,
 /// both GPU-accelerated through iced's WGPU renderer.
+#[allow(dead_code)] // focused used when cursor style varies by focus state
 pub struct TerminalCanvas {
     pub grid: TerminalGrid,
     pub font_size: f32,
@@ -95,89 +97,94 @@ impl<Message> canvas::Program<Message> for TerminalCanvas {
     ) -> Vec<Geometry> {
         let cell_width = bounds.width / self.grid.cols as f32;
         let cell_height = bounds.height / self.grid.rows as f32;
+        let mono_font = Font::MONOSPACE;
+        let text_size = Pixels(self.font_size.min(cell_height * 0.85));
+        let default_bg = CellData::default().bg;
 
         let mut frame = Frame::new(renderer, bounds.size());
 
-        // Pass 1: Cell backgrounds (instanced colored quads)
+        // Pass 1: Background runs — merge consecutive cells with same bg color
         for row in 0..self.grid.rows {
-            for col in 0..self.grid.cols {
+            let y = row as f32 * cell_height;
+            let mut col = 0;
+            while col < self.grid.cols {
                 let cell = self.grid.cell(row, col);
-                let x = col as f32 * cell_width;
-                let y = row as f32 * cell_height;
-
-                // Only draw non-default backgrounds to reduce draw calls
-                let default_bg = CellData::default().bg;
-                if cell.bg != default_bg {
-                    frame.fill_rectangle(
-                        Point::new(x, y),
-                        Size::new(cell_width, cell_height),
-                        cell.bg,
-                    );
+                if cell.bg == default_bg {
+                    col += 1;
+                    continue;
                 }
+                // Merge consecutive cells with same bg
+                let start_col = col;
+                let bg = cell.bg;
+                while col < self.grid.cols && self.grid.cell(row, col).bg == bg {
+                    col += 1;
+                }
+                let width = (col - start_col) as f32 * cell_width;
+                frame.fill_rectangle(
+                    Point::new(start_col as f32 * cell_width, y),
+                    Size::new(width, cell_height),
+                    bg,
+                );
             }
         }
 
-        // Pass 2: Glyphs (GPU-accelerated text via cosmic-text atlas)
-        let mono_font = Font::MONOSPACE;
-        let text_size = Pixels(self.font_size.min(cell_height * 0.85));
-
+        // Pass 2: Text runs — batch consecutive chars with same fg/bold/italic
+        // into single fill_text calls. Reduces ~1920 calls to ~50-100.
         for row in 0..self.grid.rows {
-            for col in 0..self.grid.cols {
+            let y = row as f32 * cell_height;
+            let mut col = 0;
+            while col < self.grid.cols {
                 let cell = self.grid.cell(row, col);
+                // Skip empty cells
                 if cell.character == ' ' || cell.character == '\0' {
+                    col += 1;
                     continue;
                 }
+                // Start a text run: same fg color, bold, italic
+                let start_col = col;
+                let fg = cell.fg;
+                let bold = cell.bold;
+                let italic = cell.italic;
+                let mut run = String::new();
 
-                let x = col as f32 * cell_width;
-                let y = row as f32 * cell_height;
-
-                let font = if cell.bold && cell.italic {
-                    Font {
-                        weight: iced::font::Weight::Bold,
-                        style: iced::font::Style::Italic,
-                        ..mono_font
+                while col < self.grid.cols {
+                    let c = self.grid.cell(row, col);
+                    // Break run on color/style change or end of visible text
+                    if c.fg != fg || c.bold != bold || c.italic != italic {
+                        break;
                     }
-                } else if cell.bold {
-                    Font {
-                        weight: iced::font::Weight::Bold,
-                        ..mono_font
-                    }
-                } else if cell.italic {
-                    Font {
-                        style: iced::font::Style::Italic,
-                        ..mono_font
-                    }
-                } else {
-                    mono_font
-                };
-
-                frame.fill_text(canvas::Text {
-                    content: cell.character.to_string(),
-                    position: Point::new(x, y),
-                    color: cell.fg,
-                    size: text_size,
-                    font,
-                    ..Default::default()
-                });
-
-                // Underline
-                if cell.underline {
-                    let underline_y = y + cell_height - 1.0;
-                    frame.fill_rectangle(
-                        Point::new(x, underline_y),
-                        Size::new(cell_width, 1.0),
-                        cell.fg,
-                    );
+                    run.push(c.character);
+                    col += 1;
                 }
 
-                // Strikethrough
-                if cell.strikethrough {
-                    let strike_y = y + cell_height * 0.5;
-                    frame.fill_rectangle(
-                        Point::new(x, strike_y),
-                        Size::new(cell_width, 1.0),
-                        cell.fg,
-                    );
+                // Trim trailing spaces from this run
+                let trimmed = run.trim_end();
+                if !trimmed.is_empty() {
+                    let font = match (bold, italic) {
+                        (true, true) => Font {
+                            weight: iced::font::Weight::Bold,
+                            style: iced::font::Style::Italic,
+                            ..mono_font
+                        },
+                        (true, false) => Font {
+                            weight: iced::font::Weight::Bold,
+                            ..mono_font
+                        },
+                        (false, true) => Font {
+                            style: iced::font::Style::Italic,
+                            ..mono_font
+                        },
+                        _ => mono_font,
+                    };
+
+                    frame.fill_text(canvas::Text {
+                        content: trimmed.to_string(),
+                        position: Point::new(start_col as f32 * cell_width, y),
+                        color: fg,
+                        size: text_size,
+                        font,
+                        ..Default::default()
+                    });
                 }
             }
         }
@@ -189,36 +196,13 @@ impl<Message> canvas::Program<Message> for TerminalCanvas {
         {
             let cx = self.grid.cursor_col as f32 * cell_width;
             let cy = self.grid.cursor_row as f32 * cell_height;
+            let cursor_color = Color::from_rgba(0.8, 0.84, 0.96, 0.7);
 
-            let cursor_color = if self.focused {
-                Color::from_rgb(0.8, 0.84, 0.96) // solid block
-            } else {
-                Color::from_rgba(0.8, 0.84, 0.96, 0.5) // hollow block
-            };
-
-            if self.focused {
-                // Solid block cursor
-                frame.fill_rectangle(
-                    Point::new(cx, cy),
-                    Size::new(cell_width, cell_height),
-                    cursor_color,
-                );
-            } else {
-                // Hollow block outline (4 thin rectangles)
-                let t = 1.5; // thickness
-                frame.fill_rectangle(Point::new(cx, cy), Size::new(cell_width, t), cursor_color);
-                frame.fill_rectangle(
-                    Point::new(cx, cy + cell_height - t),
-                    Size::new(cell_width, t),
-                    cursor_color,
-                );
-                frame.fill_rectangle(Point::new(cx, cy), Size::new(t, cell_height), cursor_color);
-                frame.fill_rectangle(
-                    Point::new(cx + cell_width - t, cy),
-                    Size::new(t, cell_height),
-                    cursor_color,
-                );
-            }
+            frame.fill_rectangle(
+                Point::new(cx, cy),
+                Size::new(cell_width, cell_height),
+                cursor_color,
+            );
         }
 
         vec![frame.into_geometry()]

@@ -613,18 +613,7 @@ impl PaneFlowApp {
     // ── Subscriptions ────────────────────────────────────────────────────
 
     fn subscription(&self) -> Subscription<Message> {
-        let keyboard =
-            iced::keyboard::on_key_press(|key, modifiers| Some(Message::KeyPressed(key, modifiers)));
-
-        // US-006: Cursor blink timer (530ms interval)
-        let cursor_blink = iced::time::every(std::time::Duration::from_millis(530))
-            .map(|_| Message::CursorBlink);
-
-        // US-016: Session autosave timer (8 seconds, matching cmux)
-        let session_save = iced::time::every(std::time::Duration::from_secs(8))
-            .map(|_| Message::SaveSession);
-
-        Subscription::batch([keyboard, cursor_blink, session_save])
+        iced::keyboard::on_key_press(|key, modifiers| Some(Message::KeyPressed(key, modifiers)))
     }
 
     // ── Session persistence (US-016) ─────────────────────────────────────
