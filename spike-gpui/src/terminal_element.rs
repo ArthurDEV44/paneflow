@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use alacritty_terminal::event::WindowSize;
+use alacritty_terminal::event_loop::{Msg, Notifier};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags as CellFlags;
@@ -102,6 +104,7 @@ struct CellStyle {
 
 pub struct TerminalElement {
     term: Arc<FairMutex<Term<ZedListener>>>,
+    notifier: Notifier,
     cursor_visible: bool,
     focused: bool,
     exited: Option<i32>,
@@ -110,12 +113,14 @@ pub struct TerminalElement {
 impl TerminalElement {
     pub fn new(
         term: Arc<FairMutex<Term<ZedListener>>>,
+        notifier: Notifier,
         cursor_visible: bool,
         focused: bool,
         exited: Option<i32>,
     ) -> Self {
         Self {
             term,
+            notifier,
             cursor_visible,
             focused,
             exited,
@@ -190,6 +195,13 @@ impl TerminalElement {
                     columns: desired_cols,
                     screen_lines: desired_rows,
                 });
+                // Notify PTY EventLoop to send SIGWINCH to the child process
+                let _ = self.notifier.0.send(Msg::Resize(WindowSize {
+                    num_cols: desired_cols as u16,
+                    num_lines: desired_rows as u16,
+                    cell_width: dims.cell_width.as_f32() as u16,
+                    cell_height: dims.line_height.as_f32() as u16,
+                }));
             }
             let content = term.renderable_content();
             let cursor =
