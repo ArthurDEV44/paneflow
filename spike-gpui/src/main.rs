@@ -34,6 +34,7 @@ actions!(
         FocusUp,
         FocusDown,
         NewWorkspace,
+        CloseWorkspace,
         NextWorkspace,
         SelectWorkspace1,
         SelectWorkspace2,
@@ -54,6 +55,8 @@ actions!(
 struct PaneFlowApp {
     workspaces: Vec<Workspace>,
     active_idx: usize,
+    renaming_idx: Option<usize>,
+    rename_text: String,
 }
 
 impl PaneFlowApp {
@@ -63,6 +66,8 @@ impl PaneFlowApp {
         Self {
             workspaces: vec![ws],
             active_idx: 0,
+            renaming_idx: None,
+            rename_text: String::new(),
         }
     }
 
@@ -164,6 +169,37 @@ impl PaneFlowApp {
 
     fn handle_new_workspace(&mut self, _: &NewWorkspace, w: &mut Window, cx: &mut Context<Self>) {
         self.create_workspace(w, cx);
+    }
+
+    fn handle_close_workspace(
+        &mut self,
+        _: &CloseWorkspace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Guard: don't close the last workspace
+        if self.workspaces.len() <= 1 {
+            return;
+        }
+        // Remove the active workspace — Drop on SplitNode sends Msg::Shutdown to PTYs
+        self.workspaces.remove(self.active_idx);
+        // Clamp active_idx
+        if self.active_idx >= self.workspaces.len() {
+            self.active_idx = self.workspaces.len() - 1;
+        }
+        self.workspaces[self.active_idx].focus_first(window, cx);
+        cx.notify();
+    }
+
+    fn commit_rename(&mut self) {
+        if let Some(idx) = self.renaming_idx.take() {
+            let text = std::mem::take(&mut self.rename_text);
+            if !text.is_empty()
+                && let Some(ws) = self.workspaces.get_mut(idx)
+            {
+                ws.title = text;
+            }
+        }
     }
 
     fn handle_next_workspace(
@@ -271,10 +307,29 @@ impl PaneFlowApp {
                     .bg(bg)
                     .cursor_pointer()
                     .hover(|s| s.bg(rgb(0x45475a)))
-                    .on_click(cx.listener(move |this, _e: &ClickEvent, window, cx| {
-                        this.select_workspace(idx, window, cx);
+                    .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                        let is_double = matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2);
+                        if is_double {
+                            // Double-click → start rename
+                            this.rename_text = this.workspaces[idx].title.clone();
+                            this.renaming_idx = Some(idx);
+                        } else {
+                            this.commit_rename();
+                            this.select_workspace(idx, window, cx);
+                        }
+                        cx.notify();
                     }))
-                    .child(
+                    .child(if self.renaming_idx == Some(i) {
+                        // Inline rename mode — show current text with visual cue
+                        div()
+                            .text_color(rgb(0xcdd6f4))
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .bg(rgb(0x45475a))
+                            .px_1()
+                            .rounded_sm()
+                            .child(format!("{}|", self.rename_text))
+                    } else {
                         div()
                             .text_color(rgb(0xcdd6f4))
                             .text_sm()
@@ -283,8 +338,8 @@ impl PaneFlowApp {
                             } else {
                                 gpui::FontWeight::NORMAL
                             })
-                            .child(title),
-                    )
+                            .child(title)
+                    })
                     .child(
                         div()
                             .flex()
@@ -372,6 +427,7 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_focus_up))
             .on_action(cx.listener(Self::handle_focus_down))
             .on_action(cx.listener(Self::handle_new_workspace))
+            .on_action(cx.listener(Self::handle_close_workspace))
             .on_action(cx.listener(Self::handle_next_workspace))
             .on_action(cx.listener(Self::handle_ws1))
             .on_action(cx.listener(Self::handle_ws2))
@@ -409,6 +465,7 @@ fn main() {
             KeyBinding::new("ctrl-shift-e", SplitVertically, None),
             KeyBinding::new("ctrl-shift-w", ClosePane, None),
             KeyBinding::new("ctrl-shift-n", NewWorkspace, None),
+            KeyBinding::new("ctrl-shift-q", CloseWorkspace, None),
             KeyBinding::new("ctrl-tab", NextWorkspace, None),
             KeyBinding::new("alt-left", FocusLeft, None),
             KeyBinding::new("alt-right", FocusRight, None),
