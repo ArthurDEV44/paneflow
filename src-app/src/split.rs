@@ -11,6 +11,8 @@ use gpui::{
     ParentElement, Styled, Window, canvas, div, px, rgb,
 };
 
+use paneflow_config::schema::{LayoutNode, SurfaceDefinition};
+
 use crate::pane::Pane;
 
 // ---------------------------------------------------------------------------
@@ -929,6 +931,54 @@ impl LayoutTree {
                     }
                 }
                 FocusNav::NotHere
+            }
+        }
+    }
+
+    /// Serialize the layout tree to a `LayoutNode` (config schema type).
+    ///
+    /// Each leaf produces a `LayoutNode::Pane` with a single `SurfaceDefinition`
+    /// containing the terminal's OSC title as `name`. Each container produces a
+    /// `LayoutNode::Split` with per-child `ratios` and recursive children.
+    pub fn serialize(&self, cx: &App) -> LayoutNode {
+        match self {
+            LayoutTree::Leaf(pane) => {
+                let pane_ref = pane.read(cx);
+                let title = if pane_ref.tabs.is_empty() {
+                    None
+                } else {
+                    let t = pane_ref.active_terminal().read(cx).terminal.title.clone();
+                    if t.is_empty() { None } else { Some(t) }
+                };
+                LayoutNode::Pane {
+                    surfaces: vec![SurfaceDefinition {
+                        surface_type: Some("terminal".to_string()),
+                        name: title,
+                        command: None,
+                        cwd: None,
+                        env: None,
+                        focus: None,
+                    }],
+                }
+            }
+            LayoutTree::Container {
+                direction,
+                children,
+                ..
+            } => {
+                let dir_str = match direction {
+                    SplitDirection::Horizontal => "horizontal",
+                    SplitDirection::Vertical => "vertical",
+                };
+                let ratios: Vec<f64> = children.iter().map(|c| c.ratio.get() as f64).collect();
+                let child_nodes: Vec<LayoutNode> =
+                    children.iter().map(|c| c.node.serialize(cx)).collect();
+                LayoutNode::Split {
+                    direction: dir_str.to_string(),
+                    ratio: None,
+                    ratios: Some(ratios),
+                    children: child_nodes,
+                }
             }
         }
     }

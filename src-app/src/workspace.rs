@@ -1,5 +1,7 @@
 //! Workspace — a named collection of terminal panes with a split layout.
 
+use paneflow_config::schema::LayoutNode;
+
 use crate::pane::Pane;
 use crate::split::LayoutTree;
 use gpui::{App, Entity, Window};
@@ -111,5 +113,14 @@ impl Workspace {
         if let Some(root) = &self.root {
             root.focus_first(window, cx);
         }
+    }
+
+    /// Serialize the workspace layout to a `LayoutNode`.
+    ///
+    /// When zoomed, serializes the saved (un-zoomed) layout so that the full
+    /// pane arrangement is captured rather than just the single zoomed pane.
+    pub fn serialize_layout(&self, cx: &App) -> Option<LayoutNode> {
+        let tree = self.saved_layout.as_ref().or(self.root.as_ref())?;
+        Some(tree.serialize(cx))
     }
 }
