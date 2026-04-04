@@ -10,14 +10,14 @@ use alacritty_terminal::event_loop::{Msg, Notifier};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::Term;
+use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor};
 
 use gpui::{
-    fill, px, relative, App, Bounds, ContentMask, Element, ElementId, Font, FontStyle, FontWeight,
-    GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, Rgba,
-    SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window,
+    App, Bounds, ContentMask, Element, ElementId, Font, FontStyle, FontWeight, GlobalElementId,
+    Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, Rgba, SharedString,
+    StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window, fill, px, relative,
 };
 
 use crate::terminal::{SpikeTermSize, ZedListener};

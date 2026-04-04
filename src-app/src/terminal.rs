@@ -6,6 +6,7 @@
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
+use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event as AlacEvent, EventListener, Notify, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop as AlacEventLoop, Msg, Notifier};
 use alacritty_terminal::grid::{Dimensions, Scroll as AlacScroll};
@@ -15,15 +16,14 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::tty;
-use alacritty_terminal::Term;
 
 use gpui::{
-    div, prelude::*, App, ClipboardItem, Context, FocusHandle, InteractiveElement, IntoElement,
+    App, ClipboardItem, Context, EventEmitter, FocusHandle, InteractiveElement, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render,
-    ScrollWheelEvent, Styled, Window,
+    ScrollWheelEvent, Styled, Window, div, prelude::*,
 };
 
-use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
+use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
 use crate::terminal_element::TerminalElement;
 
@@ -82,6 +82,8 @@ pub struct TerminalState {
     pub notifier: Notifier,
     events_rx: UnboundedReceiver<AlacEvent>,
     pub exited: Option<i32>,
+    /// Terminal title set via OSC 0/2 escape sequences (e.g. shell prompt, Claude Code).
+    pub title: String,
     /// Set when PTY output has been processed (Wakeup event received).
     /// Cleared after cx.notify() triggers a repaint.
     pub dirty: bool,
@@ -93,7 +95,7 @@ pub struct TerminalState {
 }
 
 impl TerminalState {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(working_directory: Option<std::path::PathBuf>) -> anyhow::Result<Self> {
         let (events_tx, events_rx) = unbounded();
         let listener = ZedListener(events_tx.clone());
 
@@ -111,9 +113,11 @@ impl TerminalState {
 
         // Create PTY
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let cwd = working_directory
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let pty_config = tty::Options {
             shell: Some(tty::Shell::new(shell, vec![])),
-            working_directory: Some(std::env::current_dir().unwrap_or_else(|_| "/".into())),
+            working_directory: Some(cwd),
             drain_on_exit: false,
             env: std::collections::HashMap::new(),
         };
@@ -127,13 +131,8 @@ impl TerminalState {
 
         let pty = tty::new(&pty_config, window_size, 0)?;
 
-        let event_loop = AlacEventLoop::new(
-            term.clone(),
-            ZedListener(events_tx),
-            pty,
-            false,
-            false,
-        )?;
+        let event_loop =
+            AlacEventLoop::new(term.clone(), ZedListener(events_tx), pty, false, false)?;
 
         let pty_tx = event_loop.channel();
         let _io_thread = event_loop.spawn();
@@ -143,6 +142,7 @@ impl TerminalState {
             notifier: Notifier(pty_tx),
             events_rx,
             exited: None,
+            title: String::from("Terminal"),
             dirty: true, // Force initial render
             #[cfg(debug_assertions)]
             last_keystroke_at: None,
@@ -164,7 +164,13 @@ impl TerminalState {
                     self.exited = Some(-1);
                     self.dirty = true;
                 }
-                _ => {} // Bell, Title, ClipboardStore, etc.
+                AlacEvent::Title(t) => {
+                    self.title = t;
+                }
+                AlacEvent::ResetTitle => {
+                    self.title = String::from("Terminal");
+                }
+                _ => {} // Bell, ClipboardStore, etc.
             }
         }
     }
@@ -172,8 +178,6 @@ impl TerminalState {
     pub fn write_to_pty(&self, input: impl Into<Cow<'static, [u8]>>) {
         self.notifier.notify(input);
     }
-
-
 }
 
 impl Drop for TerminalState {
@@ -206,51 +210,66 @@ pub struct TerminalView {
 
 impl TerminalView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let terminal = TerminalState::new().expect("Failed to create terminal");
+        Self::with_cwd(None, cx)
+    }
+
+    pub fn with_cwd(cwd: Option<std::path::PathBuf>, cx: &mut Context<Self>) -> Self {
+        let terminal = TerminalState::new(cwd).expect("Failed to create terminal");
         let focus_handle = cx.focus_handle();
 
         // Demand-driven sync: poll for new PTY events every 4ms,
         // but only trigger repaint when dirty (new output received).
         // Idle terminal = zero repaints, zero CPU.
-        cx.spawn(async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            loop {
-                smol::Timer::after(std::time::Duration::from_millis(4)).await;
-                let result = cx.update(|cx| {
-                    this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
-                        view.terminal.sync();
-                        if view.terminal.dirty {
-                            view.terminal.dirty = false;
-                            cx.notify();
-                        }
-                    })
-                });
-                if result.is_err() {
-                    break;
+        cx.spawn(
+            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                loop {
+                    smol::Timer::after(std::time::Duration::from_millis(4)).await;
+                    let result = cx.update(|cx| {
+                        this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
+                            let old_title = view.terminal.title.clone();
+                            view.terminal.sync();
+                            if view.terminal.exited.is_some() {
+                                cx.emit(TerminalEvent::ChildExited);
+                            }
+                            if view.terminal.title != old_title {
+                                cx.emit(TerminalEvent::TitleChanged);
+                            }
+                            if view.terminal.dirty {
+                                view.terminal.dirty = false;
+                                cx.notify();
+                            }
+                        })
+                    });
+                    if result.is_err() {
+                        break;
+                    }
                 }
-            }
-        })
+            },
+        )
         .detach();
 
         // Cursor blink timer: toggle visibility every 530ms
-        cx.spawn(async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            loop {
-                smol::Timer::after(std::time::Duration::from_millis(CURSOR_BLINK_INTERVAL_MS))
-                    .await;
-                let result = cx.update(|cx| {
-                    this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
-                        // Skip blink repaints when process has exited
-                        if view.terminal.exited.is_some() {
-                            return;
-                        }
-                        view.cursor_visible = !view.cursor_visible;
-                        cx.notify();
-                    })
-                });
-                if result.is_err() {
-                    break;
+        cx.spawn(
+            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                loop {
+                    smol::Timer::after(std::time::Duration::from_millis(CURSOR_BLINK_INTERVAL_MS))
+                        .await;
+                    let result = cx.update(|cx| {
+                        this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
+                            // Skip blink repaints when process has exited
+                            if view.terminal.exited.is_some() {
+                                return;
+                            }
+                            view.cursor_visible = !view.cursor_visible;
+                            cx.notify();
+                        })
+                    });
+                    if result.is_err() {
+                        break;
+                    }
                 }
-            }
-        })
+            },
+        )
         .detach();
 
         Self {
@@ -302,8 +321,7 @@ impl TerminalView {
             }
         } else if let Some(key_char) = &keystroke.key_char {
             // Printable character input — single allocation (String → Vec<u8>)
-            self.terminal
-                .write_to_pty(key_char.as_bytes().to_vec());
+            self.terminal.write_to_pty(key_char.as_bytes().to_vec());
         }
 
         #[cfg(debug_assertions)]
@@ -505,6 +523,16 @@ impl TerminalView {
         cx.notify();
     }
 }
+
+/// Events emitted by TerminalView to its parent (Pane).
+pub enum TerminalEvent {
+    /// The shell process exited (e.g. user typed `exit`).
+    ChildExited,
+    /// The terminal title changed (via OSC 0/2 escape sequence).
+    TitleChanged,
+}
+
+impl EventEmitter<TerminalEvent> for TerminalView {}
 
 impl gpui::Focusable for TerminalView {
     fn focus_handle(&self, _cx: &App) -> gpui::FocusHandle {

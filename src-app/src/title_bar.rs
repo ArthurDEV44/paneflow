@@ -1,7 +1,7 @@
 use gpui::{
-    div, prelude::*, px, rgb, svg, AnyElement, Context, Decorations, IntoElement, MouseButton,
-    Pixels, Render, Styled, Window, WindowButton, WindowButtonLayout, WindowControlArea,
-    WindowControls,
+    AnyElement, Context, Decorations, IntoElement, MouseButton, Pixels, Render, Styled, Window,
+    WindowButton, WindowButtonLayout, WindowControlArea, WindowControls, div, prelude::*, px, rgb,
+    svg,
 };
 
 /// Maximum workspace name display length before truncation.
