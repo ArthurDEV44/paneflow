@@ -7,8 +7,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::*, px, rgb, AnyElement, App, Entity, Focusable, InteractiveElement, IntoElement,
-    MouseButton, Styled, Window,
+    AnyElement, App, Entity, Focusable, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Styled, Window, canvas, div, px, rgb,
 };
 
 use crate::pane::Pane;
@@ -53,6 +53,9 @@ pub enum LayoutTree {
         direction: SplitDirection,
         children: Vec<LayoutChild>,
         drag: Rc<Cell<Option<DragState>>>,
+        /// Actual main-axis pixel size of this container, captured each frame
+        /// via canvas() prepaint. Used for pixel-accurate drag-to-resize.
+        container_size: Rc<Cell<f32>>,
     },
 }
 
@@ -120,6 +123,7 @@ impl LayoutTree {
                 },
             ],
             drag: Rc::new(Cell::new(None)),
+            container_size: Rc::new(Cell::new(0.0)),
         }
     }
 
@@ -132,25 +136,29 @@ impl LayoutTree {
                 direction,
                 children,
                 drag,
+                container_size,
             } => {
                 let dir = *direction;
 
                 // Build container with drag tracking
                 let drag_move = drag.clone();
+                let size_for_drag = container_size.clone();
                 let child_ratios: Vec<Rc<Cell<f32>>> =
                     children.iter().map(|c| c.ratio.clone()).collect();
 
                 let mut container = div().flex().size_full().overflow_hidden().on_mouse_move(
                     move |e, _window, _cx| {
                         if let Some(ds) = drag_move.get() {
+                            let csize = size_for_drag.get();
+                            if csize <= 0.0 {
+                                return;
+                            }
                             let current_pos = match dir {
                                 SplitDirection::Horizontal => e.position.y.as_f32(),
                                 SplitDirection::Vertical => e.position.x.as_f32(),
                             };
                             let delta = current_pos - ds.start_pos;
-                            // TODO(US-007): replace 800px estimate with actual container bounds
-                            let container_estimate = 800.0_f32;
-                            let ratio_delta = delta / container_estimate;
+                            let ratio_delta = delta / csize;
                             let new_before =
                                 (ds.start_ratio_before + ratio_delta).clamp(MIN_RATIO, MAX_RATIO);
                             let new_after =
@@ -181,6 +189,31 @@ impl LayoutTree {
                     SplitDirection::Horizontal => container.flex_col(),
                     SplitDirection::Vertical => container.flex_row(),
                 };
+
+                // Capture actual container bounds each frame via canvas prepaint.
+                // The canvas fills the container (absolute + size_full) so it
+                // receives the parent's bounds without affecting flex layout.
+                let size_capture = container_size.clone();
+                let drag_cancel = drag.clone();
+                container = container.child(
+                    canvas(
+                        move |bounds, _window, _cx| {
+                            let main_axis: f32 = match dir {
+                                SplitDirection::Horizontal => bounds.size.height.into(),
+                                SplitDirection::Vertical => bounds.size.width.into(),
+                            };
+                            let prev = size_capture.get();
+                            size_capture.set(main_axis);
+                            // Cancel drag if container was resized (window resize)
+                            if prev > 0.0 && (prev - main_axis).abs() > 1.0 {
+                                drag_cancel.set(None);
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                );
 
                 // Render children with dividers between adjacent pairs
                 for (i, child) in children.iter().enumerate() {
@@ -395,6 +428,7 @@ impl LayoutTree {
                 direction,
                 children,
                 drag,
+                container_size,
             } => {
                 let mut new_children = Vec::with_capacity(children.len());
                 let mut closed = false;
@@ -439,6 +473,7 @@ impl LayoutTree {
                             direction,
                             children: new_children,
                             drag,
+                            container_size,
                         }),
                         false,
                         None,
@@ -481,6 +516,7 @@ impl LayoutTree {
                                 direction,
                                 children: new_children,
                                 drag,
+                                container_size,
                             }),
                             true,
                             focus_neighbor,
@@ -527,6 +563,7 @@ impl LayoutTree {
                 direction,
                 children,
                 drag,
+                container_size,
             } => {
                 let mut new_children = Vec::with_capacity(children.len());
                 let mut removed_ratio = 0.0_f32;
@@ -558,6 +595,7 @@ impl LayoutTree {
                             direction,
                             children: new_children,
                             drag,
+                            container_size,
                         })
                     }
                 }
