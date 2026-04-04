@@ -78,7 +78,8 @@ actions!(
         CloseWindow,
         ToggleZoom,
         LayoutEvenHorizontal,
-        LayoutEvenVertical
+        LayoutEvenVertical,
+        LayoutMainVertical
     ]
 );
 
@@ -667,6 +668,46 @@ impl PaneFlowApp {
         );
     }
 
+    fn handle_layout_main_v(
+        &mut self,
+        _: &LayoutMainVertical,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Exit zoom if active
+        if let Some(ws) = self.active_workspace_mut()
+            && ws.is_zoomed()
+        {
+            if let Some(saved) = ws.saved_layout.take() {
+                ws.root = Some(saved);
+            }
+        }
+
+        let Some(ws) = self.active_workspace() else {
+            return;
+        };
+        let Some(root) = &ws.root else { return };
+
+        if root.leaf_count() <= 1 {
+            return;
+        }
+
+        // The main pane is the focused one, or the first leaf
+        let main_pane = root
+            .focused_pane(window, cx)
+            .or_else(|| root.first_leaf())
+            .unwrap();
+
+        let panes = root.collect_leaves();
+        let others: Vec<_> = panes.into_iter().filter(|p| *p != main_pane).collect();
+
+        let ws = self.active_workspace_mut().unwrap();
+        drop(ws.root.take());
+        ws.root = LayoutTree::main_vertical(main_pane.clone(), others);
+        main_pane.read(cx).focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
     fn handle_new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ws) = self.active_workspace()
             && let Some(root) = &ws.root
@@ -1139,6 +1180,7 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_toggle_zoom))
             .on_action(cx.listener(Self::handle_layout_even_h))
             .on_action(cx.listener(Self::handle_layout_even_v))
+            .on_action(cx.listener(Self::handle_layout_main_v))
             .on_action(cx.listener(Self::handle_ws1))
             .on_action(cx.listener(Self::handle_ws2))
             .on_action(cx.listener(Self::handle_ws3))
@@ -1217,6 +1259,7 @@ fn main() {
                 KeyBinding::new("ctrl-shift-z", ToggleZoom, None),
                 KeyBinding::new("ctrl-alt-1", LayoutEvenHorizontal, None),
                 KeyBinding::new("ctrl-alt-2", LayoutEvenVertical, None),
+                KeyBinding::new("ctrl-alt-3", LayoutMainVertical, None),
             ]);
 
             let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
