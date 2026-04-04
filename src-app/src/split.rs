@@ -60,13 +60,25 @@ const MIN_RATIO: f32 = 0.1;
 const MAX_RATIO: f32 = 0.9;
 const DIVIDER_PX: f32 = 4.0;
 
-/// Re-normalize ratios so they sum to 1.0.
+/// Re-normalize ratios so they sum to 1.0 (proportional scaling).
 fn normalize_ratios(children: &[LayoutChild]) {
     let sum: f32 = children.iter().map(|c| c.ratio.get()).sum();
     if sum > 0.0 && (sum - 1.0).abs() > f32::EPSILON {
         for child in children {
             child.ratio.set(child.ratio.get() / sum);
         }
+    }
+}
+
+/// Redistribute a removed child's ratio equally among remaining children.
+/// Each sibling gets `removed_ratio / num_remaining` added to its current ratio.
+fn redistribute_equal(children: &[LayoutChild], removed_ratio: f32) {
+    if children.is_empty() {
+        return;
+    }
+    let share = removed_ratio / children.len() as f32;
+    for child in children {
+        child.ratio.set(child.ratio.get() + share);
     }
 }
 
@@ -361,14 +373,22 @@ impl LayoutTree {
         }
     }
 
-    /// Close the focused pane. Consumes self and returns the surviving tree (if any).
-    pub fn close_focused(self, window: &Window, cx: &App) -> (Option<LayoutTree>, bool) {
+    /// Close the focused pane. Consumes self and returns:
+    /// - `tree`: the surviving layout (None if the last pane was closed)
+    /// - `closed`: whether a pane was actually closed
+    /// - `focus_neighbor`: the pane that should receive focus (previous sibling,
+    ///    or next sibling if the closed pane was first)
+    pub fn close_focused(
+        self,
+        window: &Window,
+        cx: &App,
+    ) -> (Option<LayoutTree>, bool, Option<Entity<Pane>>) {
         match self {
             LayoutTree::Leaf(pane) => {
                 if pane.read(cx).focus_handle(cx).is_focused(window) {
-                    (None, true)
+                    (None, true, None)
                 } else {
-                    (Some(LayoutTree::Leaf(pane)), false)
+                    (Some(LayoutTree::Leaf(pane)), false, None)
                 }
             }
             LayoutTree::Container {
@@ -378,23 +398,31 @@ impl LayoutTree {
             } => {
                 let mut new_children = Vec::with_capacity(children.len());
                 let mut closed = false;
+                let mut closed_idx: Option<usize> = None;
+                let mut removed_ratio = 0.0_f32;
+                let mut focus_neighbor: Option<Entity<Pane>> = None;
 
-                for child in children {
+                for (i, child) in children.into_iter().enumerate() {
                     if closed {
                         new_children.push(child);
                         continue;
                     }
-                    let (new_node, was_closed) = child.node.close_focused(window, cx);
+                    let (new_node, was_closed, nested_focus) = child.node.close_focused(window, cx);
                     if was_closed {
                         closed = true;
+                        closed_idx = Some(i);
+                        // Propagate focus neighbor from deeper levels
+                        focus_neighbor = nested_focus;
                         if let Some(node) = new_node {
                             new_children.push(LayoutChild {
                                 node,
                                 ratio: child.ratio,
                                 computed_size: child.computed_size,
                             });
+                        } else {
+                            // Direct child leaf was removed — record its ratio
+                            removed_ratio = child.ratio.get();
                         }
-                        // else: child was the focused leaf — removed entirely
                     } else {
                         new_children.push(LayoutChild {
                             node: new_node
@@ -413,21 +441,41 @@ impl LayoutTree {
                             drag,
                         }),
                         false,
+                        None,
                     );
                 }
 
                 // Cancel any in-progress drag before structural changes
                 drag.set(None);
 
+                // Determine focus neighbor when a direct child was removed
+                // (only if no nested focus was already determined)
+                if focus_neighbor.is_none() {
+                    if let Some(idx) = closed_idx {
+                        // Prefer previous sibling, fall back to next
+                        if idx > 0 {
+                            focus_neighbor =
+                                new_children.get(idx - 1).and_then(|c| c.node.last_leaf());
+                        } else {
+                            focus_neighbor = new_children.first().and_then(|c| c.node.first_leaf());
+                        }
+                    }
+                }
+
                 match new_children.len() {
-                    0 => (None, true),
+                    0 => (None, true, None),
                     1 => {
-                        // Collapse single-child container (AC-6)
+                        // Collapse single-child container
                         let child = new_children.into_iter().next().unwrap();
-                        (Some(child.node), true)
+                        (Some(child.node), true, focus_neighbor)
                     }
                     _ => {
-                        normalize_ratios(&new_children);
+                        // Redistribute removed child's ratio equally
+                        if removed_ratio > 0.0 {
+                            redistribute_equal(&new_children, removed_ratio);
+                        } else {
+                            normalize_ratios(&new_children);
+                        }
                         (
                             Some(LayoutTree::Container {
                                 direction,
@@ -435,6 +483,7 @@ impl LayoutTree {
                                 drag,
                             }),
                             true,
+                            focus_neighbor,
                         )
                     }
                 }
@@ -480,6 +529,7 @@ impl LayoutTree {
                 drag,
             } => {
                 let mut new_children = Vec::with_capacity(children.len());
+                let mut removed_ratio = 0.0_f32;
                 for child in children {
                     if let Some(node) = child.node.remove_pane(target) {
                         new_children.push(LayoutChild {
@@ -487,6 +537,8 @@ impl LayoutTree {
                             ratio: child.ratio,
                             computed_size: child.computed_size,
                         });
+                    } else {
+                        removed_ratio += child.ratio.get();
                     }
                 }
 
@@ -497,7 +549,11 @@ impl LayoutTree {
                     0 => None,
                     1 => Some(new_children.into_iter().next().unwrap().node),
                     _ => {
-                        normalize_ratios(&new_children);
+                        if removed_ratio > 0.0 {
+                            redistribute_equal(&new_children, removed_ratio);
+                        } else {
+                            normalize_ratios(&new_children);
+                        }
                         Some(LayoutTree::Container {
                             direction,
                             children: new_children,
@@ -553,6 +609,26 @@ impl LayoutTree {
                 if let Some(last) = children.last() {
                     last.node.focus_last(window, cx);
                 }
+            }
+        }
+    }
+
+    /// Return the first (leftmost/topmost) leaf entity without focusing it.
+    pub fn first_leaf(&self) -> Option<Entity<Pane>> {
+        match self {
+            LayoutTree::Leaf(pane) => Some(pane.clone()),
+            LayoutTree::Container { children, .. } => {
+                children.first().and_then(|c| c.node.first_leaf())
+            }
+        }
+    }
+
+    /// Return the last (rightmost/bottommost) leaf entity without focusing it.
+    pub fn last_leaf(&self) -> Option<Entity<Pane>> {
+        match self {
+            LayoutTree::Leaf(pane) => Some(pane.clone()),
+            LayoutTree::Container { children, .. } => {
+                children.last().and_then(|c| c.node.last_leaf())
             }
         }
     }

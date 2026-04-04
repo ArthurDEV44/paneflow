@@ -507,12 +507,36 @@ impl PaneFlowApp {
         if let Some(ws) = self.active_workspace_mut()
             && let Some(root) = ws.root.take()
         {
-            let (new_root, _closed) = root.close_focused(window, cx);
+            let (new_root, _closed, focus_target) = root.close_focused(window, cx);
             ws.root = new_root;
-            if let Some(ref root) = ws.root {
-                root.focus_first(window, cx);
+
+            if ws.root.is_some() {
+                // Focus the neighbor of the closed pane (previous sibling, or next)
+                if let Some(target) = focus_target {
+                    target.read(cx).focus_handle(cx).focus(window, cx);
+                } else if let Some(ref root) = ws.root {
+                    root.focus_first(window, cx);
+                }
             }
         }
+
+        // Destroy workspace if its root is now empty (last pane was closed)
+        if let Some(ws) = self.active_workspace()
+            && ws.root.is_none()
+        {
+            if self.workspaces.len() > 1 {
+                self.close_workspace_at(self.active_idx, window, cx);
+            } else {
+                // Last workspace: spawn a fresh pane instead of destroying
+                let terminal = cx.new(TerminalView::new);
+                let new_pane = self.create_pane(terminal, cx);
+                if let Some(ws) = self.active_workspace_mut() {
+                    ws.root = Some(LayoutTree::Leaf(new_pane));
+                }
+                self.workspaces[self.active_idx].focus_first(window, cx);
+            }
+        }
+
         cx.notify();
     }
 
