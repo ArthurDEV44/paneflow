@@ -1,0 +1,31 @@
+[package]
+name = "paneflow-app"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "paneflow-gpui"
+path = "src/main.rs"
+
+[dependencies]
+# GPUI framework (path to local Zed monorepo)
+gpui = { path = "/home/arthur/dev/zed/crates/gpui" }
+gpui_platform = { path = "/home/arthur/dev/zed/crates/gpui_platform", features = ["wayland", "x11"] }
+collections = { path = "/home/arthur/dev/zed/crates/collections" }
+
+# Alacritty terminal (Zed's fork)
+alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "9d9640d4" }
+
+# Internal crates
+paneflow-config = { path = "../crates/paneflow-config" }
+
+# Standard deps
+anyhow = "1.0.86"
+futures = "0.3"
+log = { version = "0.4.16", features = ["kv_unstable_serde", "serde"] }
+env_logger = "0.11"
+serde = { version = "1.0.221", features = ["derive"] }
+serde_json = "1.0"
+dirs = "5.0"
+smol = "2.0"
+libc = "0.2"

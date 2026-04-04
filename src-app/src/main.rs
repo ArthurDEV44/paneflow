@@ -12,8 +12,8 @@ mod workspace;
 
 use gpui::{
     actions, div, prelude::*, px, rgb, size, App, Bounds, ClickEvent, Context, Focusable,
-    InteractiveElement, IntoElement, KeyBinding, Render, SharedString, Styled, Window, WindowBounds,
-    WindowOptions,
+    InteractiveElement, IntoElement, KeyBinding, Render, SharedString, Styled, Window,
+    WindowBounds, WindowDecorations, WindowOptions,
 };
 use gpui_platform::application;
 
@@ -269,8 +269,13 @@ impl PaneFlowApp {
                     return serde_json::json!({"error": "Maximum pane count reached"});
                 }
                 let new_terminal = cx.new(TerminalView::new);
-                let ws = self.active_workspace_mut().unwrap();
-                ws.root.as_mut().unwrap().split_first_leaf(direction, new_terminal);
+                let Some(ws) = self.active_workspace_mut() else {
+                    return serde_json::json!({"error": "No active workspace"});
+                };
+                let Some(root) = ws.root.as_mut() else {
+                    return serde_json::json!({"error": "Workspace has no root"});
+                };
+                root.split_first_leaf(direction, new_terminal);
                 let panes = ws.pane_count();
                 cx.notify();
                 serde_json::json!({"split": true, "direction": dir_str, "panes": panes})
@@ -667,7 +672,12 @@ impl Render for PaneFlowApp {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    env_logger::init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(
+            "info,wgpu_hal=off,wgpu_core=warn,naga=warn,zbus=warn,tracing::span=warn",
+        ),
+    )
+    .init();
 
     application().run(|cx: &mut App| {
         cx.bind_keys([
@@ -702,8 +712,10 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(800.0), px(500.0))),
+                window_decorations: Some(WindowDecorations::Client),
                 titlebar: Some(gpui::TitlebarOptions {
                     title: Some("PaneFlow".into()),
+                    appears_transparent: true,
                     ..Default::default()
                 }),
                 app_id: Some("paneflow".into()),
