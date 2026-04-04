@@ -79,7 +79,8 @@ actions!(
         ToggleZoom,
         LayoutEvenHorizontal,
         LayoutEvenVertical,
-        LayoutMainVertical
+        LayoutMainVertical,
+        LayoutTiled
     ]
 );
 
@@ -708,6 +709,15 @@ impl PaneFlowApp {
         cx.notify();
     }
 
+    fn handle_layout_tiled(
+        &mut self,
+        _: &LayoutTiled,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_layout_preset(|panes| LayoutTree::tiled(panes), window, cx);
+    }
+
     fn handle_new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ws) = self.active_workspace()
             && let Some(root) = &ws.root
@@ -1181,6 +1191,7 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_layout_even_h))
             .on_action(cx.listener(Self::handle_layout_even_v))
             .on_action(cx.listener(Self::handle_layout_main_v))
+            .on_action(cx.listener(Self::handle_layout_tiled))
             .on_action(cx.listener(Self::handle_ws1))
             .on_action(cx.listener(Self::handle_ws2))
             .on_action(cx.listener(Self::handle_ws3))
@@ -1260,6 +1271,7 @@ fn main() {
                 KeyBinding::new("ctrl-alt-1", LayoutEvenHorizontal, None),
                 KeyBinding::new("ctrl-alt-2", LayoutEvenVertical, None),
                 KeyBinding::new("ctrl-alt-3", LayoutMainVertical, None),
+                KeyBinding::new("ctrl-alt-4", LayoutTiled, None),
             ]);
 
             let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);

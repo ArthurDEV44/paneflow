@@ -743,6 +743,61 @@ impl LayoutTree {
         })
     }
 
+    /// Build a tiled grid layout. Uses tmux's algorithm: increment rows and
+    /// columns alternately until `rows * cols >= N`. Each row is a Vertical
+    /// container; rows are stacked in a Horizontal container.
+    /// Returns `None` for empty, `Leaf` for single.
+    pub fn tiled(panes: Vec<Entity<Pane>>) -> Option<Self> {
+        match panes.len() {
+            0 => return None,
+            1 => return Some(LayoutTree::Leaf(panes.into_iter().next().unwrap())),
+            _ => {}
+        }
+
+        let n = panes.len();
+        // tmux algorithm: increment rows and cols alternately until rows*cols >= n
+        let mut rows = 1usize;
+        let mut cols = 1usize;
+        while rows * cols < n {
+            if cols <= rows {
+                cols += 1;
+            } else {
+                rows += 1;
+            }
+        }
+
+        // Distribute panes across rows
+        let row_ratio = 1.0 / rows as f32;
+        let mut pane_iter = panes.into_iter();
+        let mut row_children: Vec<LayoutChild> = Vec::with_capacity(rows);
+
+        for r in 0..rows {
+            // Last row may have fewer panes
+            let panes_in_row = if r < rows - 1 {
+                cols
+            } else {
+                n - cols * (rows - 1)
+            };
+
+            let row_panes: Vec<Entity<Pane>> = pane_iter.by_ref().take(panes_in_row).collect();
+            let row_tree = LayoutTree::from_panes_equal(SplitDirection::Vertical, row_panes)
+                .expect("row is non-empty");
+
+            row_children.push(LayoutChild {
+                node: row_tree,
+                ratio: Rc::new(Cell::new(row_ratio)),
+                computed_size: Rc::new(Cell::new(0.0)),
+            });
+        }
+
+        Some(LayoutTree::Container {
+            direction: SplitDirection::Horizontal,
+            children: row_children,
+            drag: Rc::new(Cell::new(None)),
+            container_size: Rc::new(Cell::new(0.0)),
+        })
+    }
+
     /// Maximum depth of the tree (leaf = 0, container with leaves = 1).
     pub fn depth(&self) -> usize {
         match self {
