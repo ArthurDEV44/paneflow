@@ -1,0 +1,172 @@
+{
+  "prd": {
+    "file": "tasks/prd-v2-title-bar.md",
+    "title": "PaneFlow v2 — Custom Title Bar with Window Controls",
+    "created_at": "2026-04-04",
+    "status": "DONE"
+  },
+  "epics": [
+    {
+      "id": "EP-001",
+      "title": "CSD Foundation & Window Controls",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 6,
+      "stories_done": 6
+    },
+    {
+      "id": "EP-002",
+      "title": "Title Bar Polish & Settings",
+      "status": "DONE",
+      "priority": "P1",
+      "stories_total": 6,
+      "stories_done": 6
+    }
+  ],
+  "stories": [
+    {
+      "id": "US-001",
+      "title": "Enable Client-Side Decorations mode",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-04",
+      "completed_at": "2026-04-04",
+      "reviewed_at": "2026-04-04"
+    },
+    {
+      "id": "US-002",
+      "title": "Create title bar module with basic layout",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": ["US-001"],
+      "started_at": "2026-04-04",
+      "completed_at": "2026-04-04",
+      "reviewed_at": "2026-04-04"
+    },
+    {
+      "id": "US-003",
+      "title": "Render Linux CSD window control buttons",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": ["US-002"],
+      "started_at": "2026-04-04",
+      "completed_at": "2026-04-04",
+      "reviewed_at": "2026-04-04"
+    },
+    {
+      "id": "US-004",
+      "title": "Drag-to-move window via title bar",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": ["US-002"],
+      "started_at": "2026-04-04",
+      "completed_at": "2026-04-04",
+      "reviewed_at": "2026-04-04"
+    },
+    {
+      "id": "US-005",
+      "title": "Double-click title bar to maximize/restore",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "XS",
+      "blocked_by": ["US-004"],
+      "started_at": "2026-04-04",
+      "completed_at": "2026-04-04",
+      "reviewed_at": "2026-04-04"
+    },
+    {
+      "id": "US-006",
+      "title": "Read button layout from desktop environment",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": ["US-003"],
+      "started_at": "2026-04-04",
+      "completed_at": "2026-04-04",
+      "reviewed_at": "2026-04-04"
+    },
+    {
+      "id": "US-007",
+      "title": "Title bar theming (active/inactive backgrounds)",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": ["US-002"],
+      "started_at": "2026-04-04",
+      "completed_at": "2026-04-04",
+      "reviewed_at": "2026-04-04"
+    },
+    {
+      "id": "US-008",
+      "title": "CSD rounded corners with tiling awareness",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": ["US-001"],
+      "started_at": "2026-04-04",
+      "completed_at": "2026-04-04",
+      "reviewed_at": "2026-04-04"
+    },
+    {
+      "id": "US-009",
+      "title": "Right-click window menu on title bar",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "XS",
+      "blocked_by": ["US-002"],
+      "started_at": "2026-04-04",
+      "completed_at": "2026-04-04",
+      "reviewed_at": "2026-04-04"
+    },
+    {
+      "id": "US-010",
+      "title": "window_decorations setting (CSD/SSD toggle)",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": ["US-001"],
+      "started_at": "2026-04-04",
+      "completed_at": "2026-04-04",
+      "reviewed_at": "2026-04-04"
+    },
+    {
+      "id": "US-011",
+      "title": "Title bar integration with sidebar collapse",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": ["US-002"],
+      "started_at": "2026-04-04",
+      "completed_at": "2026-04-04",
+      "reviewed_at": "2026-04-04"
+    },
+    {
+      "id": "US-012",
+      "title": "Window control button window_control_area hitboxes",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "XS",
+      "blocked_by": ["US-003"],
+      "started_at": "2026-04-04",
+      "completed_at": "2026-04-04",
+      "reviewed_at": "2026-04-04"
+    }
+  ]
+}
