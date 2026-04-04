@@ -16,6 +16,7 @@ alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev 
 
 # Standard deps
 anyhow = "1.0.86"
+clap = { version = "4.5", features = ["derive"] }
 futures = "0.3"
 log = { version = "0.4.16", features = ["kv_unstable_serde", "serde"] }
 env_logger = "0.11"
@@ -30,6 +31,14 @@ async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd
 calloop = { git = "https://github.com/zed-industries/calloop" }
 notify = { git = "https://github.com/zed-industries/notify.git", rev = "ce58c24cad542c28e04ced02e20325a4ec28a31d" }
 notify-types = { git = "https://github.com/zed-industries/notify.git", rev = "ce58c24cad542c28e04ced02e20325a4ec28a31d" }
+
+[[bin]]
+name = "paneflow"
+path = "src/bin/paneflow.rs"
+
+[[bin]]
+name = "paneflow-spike-gpui"
+path = "src/main.rs"
 
 [profile.release]
 lto = "thin"

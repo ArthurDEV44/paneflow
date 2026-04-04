@@ -226,6 +226,24 @@ impl SplitNode {
         }
     }
 
+    /// Split the first (leftmost/topmost) leaf in the given direction.
+    /// Used by the IPC handler where no Window/focus context is available.
+    pub fn split_first_leaf(
+        &mut self,
+        direction: SplitDirection,
+        new_terminal: Entity<TerminalView>,
+    ) {
+        match self {
+            SplitNode::Leaf(_) => {
+                let old = std::mem::replace(self, SplitNode::Leaf(new_terminal.clone()));
+                *self = SplitNode::new_split(direction, old, SplitNode::Leaf(new_terminal));
+            }
+            SplitNode::Split { first, .. } => {
+                first.split_first_leaf(direction, new_terminal);
+            }
+        }
+    }
+
     /// Close the focused pane. Consumes self and returns the surviving tree (if any).
     pub fn close_focused(self, window: &Window, cx: &App) -> (Option<SplitNode>, bool) {
         match self {
