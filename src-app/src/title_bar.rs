@@ -1,6 +1,6 @@
 use gpui::{
     div, prelude::*, px, rgb, svg, AnyElement, Context, Decorations, IntoElement, MouseButton,
-    Render, Styled, Window, WindowButton, WindowButtonLayout, WindowControls,
+    Pixels, Render, Styled, Window, WindowButton, WindowButtonLayout, WindowControls,
 };
 
 /// Maximum workspace name display length before truncation.
@@ -21,6 +21,7 @@ fn default_button_layout() -> WindowButtonLayout {
 pub struct TitleBar {
     should_move: bool,
     pub workspace_name: Option<String>,
+    pub sidebar_width: Pixels,
 }
 
 impl TitleBar {
@@ -28,6 +29,7 @@ impl TitleBar {
         Self {
             should_move: false,
             workspace_name: None,
+            sidebar_width: px(220.),
         }
     }
 }
@@ -63,13 +65,15 @@ impl Render for TitleBar {
             None
         };
 
-        // --- Center: app title + workspace name (fills remaining space) ---
-        let mut title = div()
-            .flex_1()
+        // --- Left section: "PaneFlow" brand, fixed width aligned with sidebar ---
+        let brand = div()
+            .w(self.sidebar_width)
+            .flex_shrink_0()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(8.))
+            .pl_3()
+            .overflow_x_hidden()
             .child(
                 div()
                     .text_color(rgb(0xcdd6f4))
@@ -77,6 +81,14 @@ impl Render for TitleBar {
                     .font_weight(gpui::FontWeight::BOLD)
                     .child("PaneFlow"),
             );
+
+        // --- Right section: workspace name (fills remaining space) ---
+        let mut content = div()
+            .flex_1()
+            .flex()
+            .flex_row()
+            .items_center()
+            .overflow_x_hidden();
 
         if let Some(name) = &self.workspace_name {
             let display_name = if name.chars().count() > MAX_WORKSPACE_NAME_LEN {
@@ -86,14 +98,12 @@ impl Render for TitleBar {
                 name.clone()
             };
 
-            title = title
-                .child(div().text_color(rgb(0x6c7086)).text_sm().child("\u{2014}"))
-                .child(
-                    div()
-                        .text_color(rgb(0xa6adc8))
-                        .text_sm()
-                        .child(display_name),
-                );
+            content = content.child(
+                div()
+                    .text_color(rgb(0xa6adc8))
+                    .text_sm()
+                    .child(display_name),
+            );
         }
 
         let csd_rounding = px(10.);
@@ -106,7 +116,7 @@ impl Render for TitleBar {
             .w_full()
             .h(height)
             .bg(bg_color)
-            .px(px(12.));
+            .pr(px(12.));
 
         // CSD rounded corners with tiling awareness
         if let Decorations::Client { tiling } = decorations {
@@ -159,7 +169,8 @@ impl Render for TitleBar {
                 })
             })
             .children(left_controls)
-            .child(title)
+            .child(brand)
+            .child(content)
             .children(right_controls)
     }
 }

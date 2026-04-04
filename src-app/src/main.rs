@@ -70,6 +70,9 @@ actions!(
 // Root application view
 // ---------------------------------------------------------------------------
 
+/// Sidebar width in pixels — shared between sidebar and title bar for alignment.
+const SIDEBAR_WIDTH: f32 = 220.;
+
 struct PaneFlowApp {
     workspaces: Vec<Workspace>,
     active_idx: usize,
@@ -476,7 +479,7 @@ impl PaneFlowApp {
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut sidebar = div()
-            .w(px(220.))
+            .w(px(SIDEBAR_WIDTH))
             .flex_shrink_0()
             .h_full()
             .bg(rgb(0x181825))
@@ -639,6 +642,7 @@ impl Render for PaneFlowApp {
         let ws_name = self.active_workspace().map(|ws| ws.title.clone());
         self.title_bar.update(cx, |tb, _| {
             tb.workspace_name = ws_name;
+            tb.sidebar_width = px(SIDEBAR_WIDTH);
         });
 
         div()
