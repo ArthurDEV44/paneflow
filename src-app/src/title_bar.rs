@@ -37,6 +37,14 @@ impl Render for TitleBar {
         let height = (1.75 * window.rem_size()).max(px(34.));
         let is_csd = matches!(window.window_decorations(), Decorations::Client { .. });
 
+        // --- Title bar background from theme, switching on window focus ---
+        let theme = crate::theme::active_theme();
+        let bg_color = if window.is_window_active() {
+            theme.title_bar_background
+        } else {
+            theme.title_bar_inactive_background
+        };
+
         // --- Read DE button layout ---
         let layout = cx.button_layout().unwrap_or_else(default_button_layout);
         let is_maximized = window.is_maximized();
@@ -94,7 +102,7 @@ impl Render for TitleBar {
             .items_center()
             .w_full()
             .h(height)
-            .bg(rgb(0x181825))
+            .bg(bg_color)
             .border_b_1()
             .border_color(rgb(0x313244))
             .px(px(12.))
