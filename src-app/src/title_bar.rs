@@ -1,6 +1,7 @@
 use gpui::{
     div, prelude::*, px, rgb, svg, AnyElement, Context, Decorations, IntoElement, MouseButton,
-    Pixels, Render, Styled, Window, WindowButton, WindowButtonLayout, WindowControls,
+    Pixels, Render, Styled, Window, WindowButton, WindowButtonLayout, WindowControlArea,
+    WindowControls,
 };
 
 /// Maximum workspace name display length before truncation.
@@ -110,6 +111,7 @@ impl Render for TitleBar {
 
         let mut bar = div()
             .id("title-bar")
+            .window_control_area(WindowControlArea::Drag)
             .flex()
             .flex_row()
             .items_center()
@@ -231,10 +233,17 @@ fn render_window_button(
         WindowButton::Close => "icons/generic_close.svg",
     };
 
+    let control_area = match button {
+        WindowButton::Minimize => WindowControlArea::Min,
+        WindowButton::Maximize => WindowControlArea::Max,
+        WindowButton::Close => WindowControlArea::Close,
+    };
+
     let element_id = format!("{id}-{side}");
 
     div()
         .id(gpui::SharedString::from(element_id))
+        .window_control_area(control_area)
         .flex()
         .items_center()
         .justify_center()
