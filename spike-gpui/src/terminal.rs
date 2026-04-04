@@ -25,6 +25,18 @@ use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use crate::terminal_element::TerminalElement;
 
 // ---------------------------------------------------------------------------
+// Debug latency probes — zero overhead in release builds
+// ---------------------------------------------------------------------------
+
+/// Check once whether PANEFLOW_LATENCY_PROBE=1 is set.
+/// Cached in a OnceLock so the env var is read only on first call.
+#[cfg(debug_assertions)]
+pub(crate) fn probe_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("PANEFLOW_LATENCY_PROBE").as_deref() == Ok("1"))
+}
+
+// ---------------------------------------------------------------------------
 // Dimensions adapter
 // ---------------------------------------------------------------------------
 
@@ -70,6 +82,11 @@ pub struct TerminalState {
     /// Set when PTY output has been processed (Wakeup event received).
     /// Cleared after cx.notify() triggers a repaint.
     pub dirty: bool,
+    /// Timestamp of the most recent keystroke, used by latency probes
+    /// to measure total keystroke-to-pixel time. Debug builds only.
+    /// Note: on rapid keystrokes before a render frame, earlier timestamps are overwritten.
+    #[cfg(debug_assertions)]
+    pub(crate) last_keystroke_at: Option<std::time::Instant>,
 }
 
 impl TerminalState {
@@ -124,6 +141,8 @@ impl TerminalState {
             events_rx,
             exited: None,
             dirty: true, // Force initial render
+            #[cfg(debug_assertions)]
+            last_keystroke_at: None,
         })
     }
 
@@ -235,7 +254,7 @@ impl TerminalView {
         _cx: &mut Context<Self>,
     ) {
         #[cfg(debug_assertions)]
-        let _start = if std::env::var("PANEFLOW_LATENCY_PROBE").is_ok() {
+        let _probe_start = if probe_enabled() {
             Some(std::time::Instant::now())
         } else {
             None
@@ -270,10 +289,15 @@ impl TerminalView {
         }
 
         #[cfg(debug_assertions)]
-        if let Some(start) = _start {
+        if let Some(start) = _probe_start {
             let elapsed = start.elapsed();
-            if elapsed.as_micros() > 100 {
-                log::warn!("keystroke→PTY latency: {:?}", elapsed);
+            // Store timestamp for total keystroke→pixel measurement in paint()
+            self.terminal.last_keystroke_at = Some(start);
+            if elapsed.as_millis() > 1 {
+                log::warn!(
+                    "[latency] keystroke→PTY: {:.2}ms",
+                    elapsed.as_secs_f64() * 1000.0
+                );
             }
         }
     }
@@ -288,12 +312,17 @@ impl gpui::Focusable for TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
+        #[cfg(debug_assertions)]
+        let keystroke_at = self.terminal.last_keystroke_at.take();
+
         let terminal_element = TerminalElement::new(
             self.terminal.term.clone(),
             Notifier(self.terminal.notifier.0.clone()),
             self.cursor_visible,
             focused,
             self.terminal.exited,
+            #[cfg(debug_assertions)]
+            keystroke_at,
         );
 
         div()
