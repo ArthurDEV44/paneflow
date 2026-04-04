@@ -19,6 +19,9 @@ alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev 
 # Internal crates
 paneflow-config = { path = "../crates/paneflow-config" }
 
+# File system watcher (OS-native: inotify/FSEvents/ReadDirectoryChanges)
+notify = "7"
+
 # Standard deps
 anyhow = "1.0.86"
 futures = "0.3"
