@@ -711,6 +711,38 @@ impl LayoutTree {
         }
     }
 
+    /// Build a "main-vertical" layout: one main pane at 60% width on the left,
+    /// remaining panes stacked vertically on the right at 40%.
+    /// `main_pane` is placed first. Returns `None` for empty, `Leaf` for single.
+    pub fn main_vertical(main_pane: Entity<Pane>, others: Vec<Entity<Pane>>) -> Option<Self> {
+        if others.is_empty() {
+            return Some(LayoutTree::Leaf(main_pane));
+        }
+
+        // Right side: stack remaining panes with equal ratios (Horizontal = top/bottom)
+        let right = LayoutTree::from_panes_equal(SplitDirection::Horizontal, others)
+            .expect("others is non-empty");
+
+        // Outer: Vertical (side by side) — main 60%, right panel 40%
+        Some(LayoutTree::Container {
+            direction: SplitDirection::Vertical,
+            children: vec![
+                LayoutChild {
+                    node: LayoutTree::Leaf(main_pane),
+                    ratio: Rc::new(Cell::new(0.6)),
+                    computed_size: Rc::new(Cell::new(0.0)),
+                },
+                LayoutChild {
+                    node: right,
+                    ratio: Rc::new(Cell::new(0.4)),
+                    computed_size: Rc::new(Cell::new(0.0)),
+                },
+            ],
+            drag: Rc::new(Cell::new(None)),
+            container_size: Rc::new(Cell::new(0.0)),
+        })
+    }
+
     /// Maximum depth of the tree (leaf = 0, container with leaves = 1).
     pub fn depth(&self) -> usize {
         match self {
