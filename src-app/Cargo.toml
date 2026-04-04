@@ -30,3 +30,6 @@ dirs = "5.0"
 rust-embed = { version = "8.11", features = ["include-exclude"] }
 smol = "2.0"
 libc = "0.2"
+
+[dev-dependencies]
+gpui = { path = "/home/arthur/dev/zed/crates/gpui", features = ["test-support"] }
