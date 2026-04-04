@@ -243,13 +243,10 @@ pub fn theme_by_name(name: &str) -> Option<TerminalTheme> {
         .map(|(_, f)| f())
 }
 
-/// Read the theme name from `~/.config/paneflow/config.json`.
-/// Returns None if the file doesn't exist or is invalid JSON.
+/// Read the theme name from the PaneFlow config file.
+/// Returns None if the file doesn't exist or has no theme set.
 fn read_config_theme_name() -> Option<String> {
-    let config_path = dirs::config_dir()?.join("paneflow").join("config.json");
-    let content = std::fs::read_to_string(config_path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-    json.get("theme")?.as_str().map(String::from)
+    paneflow_config::loader::load_config().theme
 }
 
 /// Get the active theme — reads from config if available, falls back to Catppuccin Mocha.
@@ -265,6 +262,6 @@ pub fn active_theme() -> TerminalTheme {
 
 /// Get the config file modification time for change detection.
 pub fn config_mtime() -> Option<std::time::SystemTime> {
-    let config_path = dirs::config_dir()?.join("paneflow").join("config.json");
+    let config_path = paneflow_config::loader::config_path()?;
     std::fs::metadata(config_path).ok()?.modified().ok()
 }
