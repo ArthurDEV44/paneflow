@@ -76,7 +76,8 @@ actions!(
         ScrollPageUp,
         ScrollPageDown,
         CloseWindow,
-        ToggleZoom
+        ToggleZoom,
+        LayoutEvenHorizontal
     ]
 );
 
@@ -600,6 +601,58 @@ impl PaneFlowApp {
         cx.notify();
     }
 
+    /// Apply a layout preset: collect all panes, rebuild tree with the given factory.
+    fn apply_layout_preset(
+        &mut self,
+        build: impl FnOnce(Vec<Entity<Pane>>) -> Option<LayoutTree>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Exit zoom if active
+        if let Some(ws) = self.active_workspace_mut()
+            && ws.is_zoomed()
+        {
+            if let Some(saved) = ws.saved_layout.take() {
+                ws.root = Some(saved);
+            }
+        }
+
+        let Some(ws) = self.active_workspace_mut() else {
+            return;
+        };
+        let Some(root) = ws.root.take() else { return };
+        let panes = root.collect_leaves();
+
+        // No-op for single pane
+        if panes.len() <= 1 {
+            ws.root = Some(root);
+            return;
+        }
+
+        // Rebuild tree and focus first pane
+        // (root is consumed by collect_leaves moving entities out — but collect_leaves
+        //  clones Entity refs, so root is still valid. We drop it explicitly.)
+        drop(root);
+        ws.root = build(panes);
+        if let Some(ref r) = ws.root {
+            r.focus_first(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn handle_layout_even_h(
+        &mut self,
+        _: &LayoutEvenHorizontal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_layout_preset(
+            |panes| LayoutTree::from_panes_equal(SplitDirection::Vertical, panes),
+            window,
+            cx,
+        );
+    }
+
     fn handle_new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ws) = self.active_workspace()
             && let Some(root) = &ws.root
@@ -1070,6 +1123,7 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_close_workspace))
             .on_action(cx.listener(Self::handle_next_workspace))
             .on_action(cx.listener(Self::handle_toggle_zoom))
+            .on_action(cx.listener(Self::handle_layout_even_h))
             .on_action(cx.listener(Self::handle_ws1))
             .on_action(cx.listener(Self::handle_ws2))
             .on_action(cx.listener(Self::handle_ws3))
@@ -1146,6 +1200,7 @@ fn main() {
                 KeyBinding::new("shift-pageup", ScrollPageUp, Some("Terminal")),
                 KeyBinding::new("shift-pagedown", ScrollPageDown, Some("Terminal")),
                 KeyBinding::new("ctrl-shift-z", ToggleZoom, None),
+                KeyBinding::new("ctrl-alt-1", LayoutEvenHorizontal, None),
             ]);
 
             let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
