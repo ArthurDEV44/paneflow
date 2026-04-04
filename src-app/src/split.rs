@@ -674,6 +674,43 @@ impl LayoutTree {
         }
     }
 
+    /// Collect all leaf pane entities in left-to-right (top-to-bottom) order.
+    pub fn collect_leaves(&self) -> Vec<Entity<Pane>> {
+        match self {
+            LayoutTree::Leaf(pane) => vec![pane.clone()],
+            LayoutTree::Container { children, .. } => children
+                .iter()
+                .flat_map(|c| c.node.collect_leaves())
+                .collect(),
+        }
+    }
+
+    /// Build a flat container with all panes at equal ratios in the given direction.
+    /// Returns `None` for empty, `Leaf` for single pane, `Container` for 2+.
+    pub fn from_panes_equal(direction: SplitDirection, panes: Vec<Entity<Pane>>) -> Option<Self> {
+        match panes.len() {
+            0 => None,
+            1 => Some(LayoutTree::Leaf(panes.into_iter().next().unwrap())),
+            n => {
+                let ratio = 1.0 / n as f32;
+                let children = panes
+                    .into_iter()
+                    .map(|pane| LayoutChild {
+                        node: LayoutTree::Leaf(pane),
+                        ratio: Rc::new(Cell::new(ratio)),
+                        computed_size: Rc::new(Cell::new(0.0)),
+                    })
+                    .collect();
+                Some(LayoutTree::Container {
+                    direction,
+                    children,
+                    drag: Rc::new(Cell::new(None)),
+                    container_size: Rc::new(Cell::new(0.0)),
+                })
+            }
+        }
+    }
+
     /// Maximum depth of the tree (leaf = 0, container with leaves = 1).
     pub fn depth(&self) -> usize {
         match self {
