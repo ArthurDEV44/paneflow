@@ -4,20 +4,23 @@
 //! The TerminalView creates a TerminalElement for cell-by-cell rendering.
 
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event as AlacEvent, EventListener, Notify, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop as AlacEventLoop, Msg, Notifier};
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Column as GridCol, Line as GridLine, Point as AlacPoint, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Config as TermConfig;
+use alacritty_terminal::term::TermMode;
 use alacritty_terminal::tty;
 use alacritty_terminal::Term;
 
-
 use gpui::{
-    div, prelude::*, App, Context, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
-    Render, Styled, Window,
+    div, prelude::*, App, ClipboardItem, Context, FocusHandle, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, Styled,
+    Window,
 };
 
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
@@ -189,6 +192,14 @@ pub struct TerminalView {
     pub terminal: TerminalState,
     focus_handle: FocusHandle,
     cursor_visible: bool,
+    /// Track mouse button state for drag selection
+    selecting: bool,
+    /// Last known cell dimensions (from TerminalElement::measure_cell)
+    cell_width: gpui::Pixels,
+    line_height: gpui::Pixels,
+    /// Element origin in window coordinates — set by TerminalElement::paint(),
+    /// read by mouse handlers for pixel→grid conversion.
+    element_origin: Arc<Mutex<gpui::Point<gpui::Pixels>>>,
 }
 
 impl TerminalView {
@@ -244,6 +255,10 @@ impl TerminalView {
             terminal,
             focus_handle,
             cursor_visible: true,
+            selecting: false,
+            cell_width: gpui::px(8.0),
+            line_height: gpui::px(16.0),
+            element_origin: Arc::new(Mutex::new(gpui::Point::default())),
         }
     }
 
@@ -301,6 +316,144 @@ impl TerminalView {
             }
         }
     }
+
+    // --- Pixel → grid coordinate conversion ---
+
+    fn pixel_to_grid(&self, pos: gpui::Point<gpui::Pixels>) -> (AlacPoint, Side) {
+        let origin = *self.element_origin.lock().unwrap();
+        let relative_x = (pos.x - origin.x).max(gpui::px(0.0));
+        let relative_y = (pos.y - origin.y).max(gpui::px(0.0));
+
+        let col_f = relative_x / self.cell_width;
+        let half_cell = self.cell_width / 2.0;
+        let cell_x = relative_x % self.cell_width;
+        let side = if cell_x > half_cell {
+            Side::Right
+        } else {
+            Side::Left
+        };
+
+        let term = self.terminal.term.lock();
+        let max_col = term.columns().saturating_sub(1);
+        let max_line = term.screen_lines().saturating_sub(1) as i32;
+        let display_offset = term.grid().display_offset();
+        drop(term);
+
+        let col = (col_f as usize).min(max_col);
+        let line = ((relative_y / self.line_height) as i32).min(max_line);
+
+        (
+            AlacPoint::new(GridLine(line - display_offset as i32), GridCol(col)),
+            side,
+        )
+    }
+
+    // --- Mouse selection handlers ---
+
+    fn handle_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button != MouseButton::Left {
+            return;
+        }
+
+        let (point, side) = self.pixel_to_grid(event.position);
+
+        let selection_type = match event.click_count {
+            1 => SelectionType::Simple,
+            2 => SelectionType::Semantic,
+            3 => SelectionType::Lines,
+            _ => return,
+        };
+
+        let selection = Selection::new(selection_type, point, side);
+        let mut term = self.terminal.term.lock();
+        term.selection = Some(selection);
+        drop(term);
+
+        self.selecting = true;
+        cx.notify();
+    }
+
+    fn handle_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.selecting {
+            return;
+        }
+
+        let (point, side) = self.pixel_to_grid(event.position);
+
+        let mut term = self.terminal.term.lock();
+        if let Some(ref mut selection) = term.selection {
+            selection.update(point, side);
+        }
+        drop(term);
+
+        cx.notify();
+    }
+
+    fn handle_mouse_up(
+        &mut self,
+        event: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button != MouseButton::Left {
+            return;
+        }
+        self.selecting = false;
+
+        // Clear empty selections (single click without drag)
+        let mut term = self.terminal.term.lock();
+        if let Some(ref sel) = term.selection
+            && sel.is_empty()
+        {
+            term.selection = None;
+        }
+        drop(term);
+
+        cx.notify();
+    }
+
+    // --- Clipboard handlers ---
+
+    fn handle_copy(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let term = self.terminal.term.lock();
+        if let Some(text) = term.selection_to_string() {
+            drop(term);
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    fn handle_paste(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(item) = cx.read_from_clipboard()
+            && let Some(text) = item.text()
+        {
+            let mode = {
+                let term = self.terminal.term.lock();
+                *term.mode()
+            };
+            let paste_text = if mode.contains(TermMode::BRACKETED_PASTE) {
+                // Strip ESC and C1 control chars (U+0080..U+009F) to prevent
+                // bracketed paste escape and CSI injection
+                let sanitized: String = text
+                    .chars()
+                    .filter(|&c| c != '\x1b' && !(('\u{0080}'..='\u{009f}').contains(&c)))
+                    .collect();
+                format!("\x1b[200~{sanitized}\x1b[201~")
+            } else {
+                text.replace("\r\n", "\r").replace('\n', "\r")
+            };
+            self.terminal.write_to_pty(paste_text.into_bytes());
+        }
+    }
 }
 
 impl gpui::Focusable for TerminalView {
@@ -312,6 +465,12 @@ impl gpui::Focusable for TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
+
+        // Update cell dimensions for mouse → grid mapping
+        let dims = TerminalElement::measure_cell(window, cx);
+        self.cell_width = dims.cell_width;
+        self.line_height = dims.line_height;
+
         #[cfg(debug_assertions)]
         let keystroke_at = self.terminal.last_keystroke_at.take();
 
@@ -321,6 +480,7 @@ impl Render for TerminalView {
             self.cursor_visible,
             focused,
             self.terminal.exited,
+            self.element_origin.clone(),
             #[cfg(debug_assertions)]
             keystroke_at,
         );
@@ -330,6 +490,15 @@ impl Render for TerminalView {
             .key_context("Terminal")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
+            .on_mouse_move(cx.listener(Self::handle_mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_mouse_up))
+            .on_action(cx.listener(|this, _: &crate::TerminalCopy, window, cx| {
+                this.handle_copy(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::TerminalPaste, window, cx| {
+                this.handle_paste(window, cx);
+            }))
             .size_full()
             .child(terminal_element)
     }
