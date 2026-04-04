@@ -27,7 +27,7 @@ use crate::terminal::{SpikeTermSize, ZedListener};
 // ---------------------------------------------------------------------------
 
 const FONT_SIZE: f32 = 14.0;
-const FONT_FAMILY: &str = "monospace";
+const FONT_FAMILY: &str = "Noto Sans Mono";
 
 // ---------------------------------------------------------------------------
 // Layout types
@@ -146,20 +146,12 @@ impl TerminalElement {
     pub fn measure_cell(window: &mut Window, _cx: &mut App) -> CellDimensions {
         let font = Self::base_font();
         let font_size = Self::font_size();
-        let run = TextRun {
-            len: "M".len(),
-            font,
-            color: Hsla::default(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let shaped =
-            window
-                .text_system()
-                .shape_line(SharedString::from("M"), font_size, &[run], None);
-        let cell_width = shaped.width();
-        // Line height = font_size * 1.4 (standard monospace ratio)
+        let font_id = window.text_system().resolve_font(&font);
+        let cell_width = window
+            .text_system()
+            .advance(font_id, font_size, 'm')
+            .unwrap()
+            .width;
         let line_height = px(FONT_SIZE * 1.4);
         CellDimensions {
             cell_width,

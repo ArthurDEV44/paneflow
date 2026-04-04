@@ -259,7 +259,9 @@ fn render_window_button(
             match button {
                 WindowButton::Minimize => window.minimize_window(),
                 WindowButton::Maximize => window.zoom_window(),
-                WindowButton::Close => cx.quit(),
+                WindowButton::Close => {
+                    window.dispatch_action(Box::new(crate::CloseWindow), cx);
+                }
             }
         })
         .child(

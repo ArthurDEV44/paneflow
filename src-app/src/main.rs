@@ -62,7 +62,8 @@ actions!(
         TerminalCopy,
         TerminalPaste,
         ScrollPageUp,
-        ScrollPageDown
+        ScrollPageDown,
+        CloseWindow
     ]
 );
 
@@ -668,6 +669,9 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_ws7))
             .on_action(cx.listener(Self::handle_ws8))
             .on_action(cx.listener(Self::handle_ws9))
+            .on_action(cx.listener(|_this: &mut Self, _: &CloseWindow, _window, cx| {
+                cx.quit();
+            }))
             // Title bar (Entity with drag-to-move support)
             .child(self.title_bar.clone())
             // Sidebar + main content area

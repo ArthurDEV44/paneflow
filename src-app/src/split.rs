@@ -67,18 +67,7 @@ impl SplitNode {
     pub fn render(&self, window: &Window, cx: &App) -> AnyElement {
         match self {
             SplitNode::Leaf(terminal) => {
-                let focused = terminal.read(cx).focus_handle(cx).is_focused(window);
-                let border_color = if focused {
-                    rgb(0x89b4fa) // Catppuccin Blue — accent for focused pane
-                } else {
-                    rgb(0x1e1e2e) // Match background — invisible border
-                };
-                div()
-                    .size_full()
-                    .border_2()
-                    .border_color(border_color)
-                    .child(terminal.clone())
-                    .into_any_element()
+                div().size_full().child(terminal.clone()).into_any_element()
             }
 
             SplitNode::Split {
