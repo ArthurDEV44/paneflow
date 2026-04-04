@@ -58,7 +58,9 @@ actions!(
         SelectWorkspace8,
         SelectWorkspace9,
         TerminalCopy,
-        TerminalPaste
+        TerminalPaste,
+        ScrollPageUp,
+        ScrollPageDown
     ]
 );
 
@@ -690,6 +692,8 @@ fn main() {
             KeyBinding::new("ctrl-9", SelectWorkspace9, None),
             KeyBinding::new("ctrl-shift-c", TerminalCopy, Some("Terminal")),
             KeyBinding::new("ctrl-shift-v", TerminalPaste, Some("Terminal")),
+            KeyBinding::new("shift-pageup", ScrollPageUp, Some("Terminal")),
+            KeyBinding::new("shift-pagedown", ScrollPageDown, Some("Terminal")),
         ]);
 
         let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
