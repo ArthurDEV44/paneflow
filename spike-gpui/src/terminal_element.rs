@@ -3,11 +3,12 @@
 //! Renders terminal cells from alacritty_terminal as batched text runs with
 //! full ANSI color support, cell attributes, and background quads.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::WindowSize;
 use alacritty_terminal::event_loop::{Msg, Notifier};
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::Term;
@@ -65,6 +66,7 @@ struct CursorInfo {
 pub struct LayoutState {
     batched_runs: Vec<BatchedTextRun>,
     rects: Vec<LayoutRect>,
+    selection_rects: Vec<LayoutRect>,
     cursor: Option<CursorInfo>,
     dimensions: CellDimensions,
     background_color: Hsla,
@@ -94,6 +96,8 @@ pub struct TerminalElement {
     cursor_visible: bool,
     focused: bool,
     exited: Option<i32>,
+    /// Shared origin — updated in paint() so mouse handlers know the element position.
+    element_origin: Arc<Mutex<Point<Pixels>>>,
     /// Timestamp of the keystroke that triggered this render, for latency measurement.
     #[cfg(debug_assertions)]
     last_keystroke_at: Option<std::time::Instant>,
@@ -106,6 +110,7 @@ impl TerminalElement {
         cursor_visible: bool,
         focused: bool,
         exited: Option<i32>,
+        element_origin: Arc<Mutex<Point<Pixels>>>,
         #[cfg(debug_assertions)] last_keystroke_at: Option<std::time::Instant>,
     ) -> Self {
         Self {
@@ -114,6 +119,7 @@ impl TerminalElement {
             cursor_visible,
             focused,
             exited,
+            element_origin,
             #[cfg(debug_assertions)]
             last_keystroke_at,
         }
@@ -172,9 +178,20 @@ impl TerminalElement {
         let desired_cols = (bounds.size.width / dims.cell_width).floor() as usize;
         let desired_rows = (bounds.size.height / dims.line_height).floor() as usize;
 
-        // Snapshot the grid and cursor under lock to minimize FairMutex hold time.
+        // Snapshot the grid, cursor, and selection under lock to minimize FairMutex hold time.
         let cursor_color = theme.cursor;
-        let (cells, cursor_snapshot): (Vec<_>, Option<CursorInfo>) = {
+        let selection_color = Hsla {
+            h: 0.58,
+            s: 0.6,
+            l: 0.5,
+            a: 0.35,
+        }; // Semi-transparent blue highlight
+
+        let (cells, cursor_snapshot, selection_range): (
+            Vec<_>,
+            Option<CursorInfo>,
+            Option<SelectionRange>,
+        ) = {
             let mut term = self.term.lock();
             // Resize the terminal grid if bounds have changed
             let current_cols = term.columns();
@@ -196,6 +213,11 @@ impl TerminalElement {
                 }));
             }
             let content = term.renderable_content();
+            let sel_range = content.selection.as_ref().map(|sel| SelectionRange {
+                start: sel.start,
+                end: sel.end,
+                is_block: sel.is_block,
+            });
             let cursor =
                 if matches!(content.cursor.shape, CursorShape::Hidden) || !self.cursor_visible {
                     None
@@ -219,7 +241,7 @@ impl TerminalElement {
                 .display_iter
                 .map(|ic| (ic.point, ic.cell.c, ic.cell.fg, ic.cell.bg, ic.cell.flags))
                 .collect();
-            (cells, cursor)
+            (cells, cursor, sel_range)
         };
 
         let mut batch = BatchAccumulator::new();
@@ -341,9 +363,54 @@ impl TerminalElement {
             rects.push(rect);
         }
 
+        // Build selection highlight rects from the SelectionRange
+        let mut selection_rects = Vec::new();
+        if let Some(sel) = &selection_range {
+            let start = sel.start;
+            let end = sel.end;
+            let num_cols = desired_cols.max(1);
+
+            if start.line == end.line {
+                // Single-line selection
+                selection_rects.push(LayoutRect {
+                    line: start.line.0,
+                    col: start.column.0,
+                    num_cols: end.column.0.saturating_sub(start.column.0) + 1,
+                    color: selection_color,
+                });
+            } else {
+                // Multi-line: first line from start.col to end of line
+                selection_rects.push(LayoutRect {
+                    line: start.line.0,
+                    col: start.column.0,
+                    num_cols: num_cols.saturating_sub(start.column.0),
+                    color: selection_color,
+                });
+                // Middle full lines
+                let mut line = start.line.0 + 1;
+                while line < end.line.0 {
+                    selection_rects.push(LayoutRect {
+                        line,
+                        col: 0,
+                        num_cols,
+                        color: selection_color,
+                    });
+                    line += 1;
+                }
+                // Last line from col 0 to end.col
+                selection_rects.push(LayoutRect {
+                    line: end.line.0,
+                    col: 0,
+                    num_cols: end.column.0 + 1,
+                    color: selection_color,
+                });
+            }
+        }
+
         LayoutState {
             batched_runs: batch.runs,
             rects,
+            selection_rects,
             cursor: cursor_snapshot,
             dimensions: dims,
             background_color,
@@ -513,6 +580,8 @@ impl Element for TerminalElement {
         };
 
         let origin = bounds.origin;
+        // Store origin for mouse → grid coordinate conversion in TerminalView
+        *self.element_origin.lock().unwrap() = origin;
         let cell_width = layout.dimensions.cell_width;
         let line_height = layout.dimensions.line_height;
         let font_size = Self::font_size();
@@ -524,6 +593,21 @@ impl Element for TerminalElement {
 
             // 2. Paint per-cell background rects
             for rect in &layout.rects {
+                let x = origin.x + cell_width * rect.col as f32;
+                let y = origin.y + line_height * rect.line as f32;
+                let w = cell_width * rect.num_cols as f32;
+                let rect_bounds = Bounds::new(
+                    Point { x, y },
+                    gpui::Size {
+                        width: w,
+                        height: line_height,
+                    },
+                );
+                window.paint_quad(fill(rect_bounds, rect.color));
+            }
+
+            // 2b. Paint selection highlight rects (semi-transparent overlay)
+            for rect in &layout.selection_rects {
                 let x = origin.x + cell_width * rect.col as f32;
                 let y = origin.y + line_height * rect.line as f32;
                 let w = cell_width * rect.num_cols as f32;
