@@ -47,6 +47,37 @@ pub struct LayoutChild {
     pub computed_size: Rc<Cell<f32>>,
 }
 
+impl LayoutChild {
+    /// Maximum pixels this child can yield if shrunk along `dir`.
+    /// Uses `computed_size` (the child's actual pixel size from layout).
+    pub fn resize_check(&self, dir: SplitDirection) -> f32 {
+        match &self.node {
+            LayoutTree::Leaf(_) => (self.computed_size.get() - MIN_PANE_SIZE).max(0.0),
+            LayoutTree::Container { direction, .. } => {
+                if *direction == dir {
+                    // Same direction: children can shrink independently
+                    if let LayoutTree::Container { children, .. } = &self.node {
+                        children.iter().map(|c| c.resize_check(dir)).sum()
+                    } else {
+                        0.0
+                    }
+                } else {
+                    // Cross direction: limited by tightest child
+                    if let LayoutTree::Container { children, .. } = &self.node {
+                        children
+                            .iter()
+                            .map(|c| c.resize_check(dir))
+                            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub enum LayoutTree {
     Leaf(Entity<Pane>),
     Container {
@@ -59,9 +90,9 @@ pub enum LayoutTree {
     },
 }
 
-const MIN_RATIO: f32 = 0.1;
-const MAX_RATIO: f32 = 0.9;
 const DIVIDER_PX: f32 = 4.0;
+/// Minimum pane size in pixels. No pane may be resized below this.
+const MIN_PANE_SIZE: f32 = 80.0;
 
 /// Re-normalize ratios so they sum to 1.0 (proportional scaling).
 fn normalize_ratios(children: &[LayoutChild]) {
@@ -93,6 +124,7 @@ fn redistribute_equal(children: &[LayoutChild], removed_ratio: f32) {
 fn insert_sibling(children: &mut Vec<LayoutChild>, idx: usize, new_pane: Entity<Pane>) {
     debug_assert!(idx < children.len(), "insert_sibling: idx out of bounds");
     let old_ratio = children[idx].ratio.get();
+    debug_assert!(old_ratio.is_finite(), "insert_sibling: ratio is NaN/inf");
     let half = old_ratio / 2.0;
     children[idx].ratio.set(half);
     children.insert(
@@ -159,10 +191,15 @@ impl LayoutTree {
                             };
                             let delta = current_pos - ds.start_pos;
                             let ratio_delta = delta / csize;
-                            let new_before =
-                                (ds.start_ratio_before + ratio_delta).clamp(MIN_RATIO, MAX_RATIO);
-                            let new_after =
-                                (ds.start_ratio_after - ratio_delta).clamp(MIN_RATIO, MAX_RATIO);
+
+                            // Pixel-based constraint: each child must stay >= MIN_PANE_SIZE.
+                            // The pair's combined ratio is fixed; clamp so neither goes below min.
+                            let pair_sum = ds.start_ratio_before + ds.start_ratio_after;
+                            let min_r = MIN_PANE_SIZE / csize;
+                            let new_before = (ds.start_ratio_before + ratio_delta)
+                                .clamp(min_r, pair_sum - min_r);
+                            let new_after = pair_sum - new_before;
+
                             if let Some(r) = child_ratios.get(ds.divider_idx) {
                                 r.set(new_before);
                             }
@@ -619,6 +656,37 @@ impl LayoutTree {
             LayoutTree::Leaf(_) => 0,
             LayoutTree::Container { children, .. } => {
                 1 + children.iter().map(|c| c.node.depth()).max().unwrap_or(0)
+            }
+        }
+    }
+
+    /// Compute the maximum pixels this subtree can yield if shrunk along `dir`.
+    ///
+    /// For accurate leaf results, use `LayoutChild::resize_check()` instead —
+    /// it has access to the leaf's `computed_size`. This method returns 0.0
+    /// for bare Leaf nodes (they lack size context at the LayoutTree level).
+    ///
+    /// - **Same-direction container:** sum of children's resize_check (all shrink independently)
+    /// - **Cross-direction container:** min of children's resize_check (tightest constraint)
+    pub fn resize_check(&self, dir: SplitDirection) -> f32 {
+        match self {
+            LayoutTree::Leaf(_) => 0.0,
+            LayoutTree::Container {
+                direction,
+                children,
+                ..
+            } => {
+                if *direction == dir {
+                    // Same direction: all children can yield space independently
+                    children.iter().map(|c| c.resize_check(dir)).sum()
+                } else {
+                    // Cross direction: limited by the tightest child
+                    children
+                        .iter()
+                        .map(|c| c.resize_check(dir))
+                        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                        .unwrap_or(0.0)
+                }
             }
         }
     }
