@@ -4,6 +4,7 @@
 //! with a direction (horizontal/vertical) and per-child flex ratios.
 
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use gpui::{
@@ -978,6 +979,55 @@ impl LayoutTree {
                     ratio: None,
                     ratios: Some(ratios),
                     children: child_nodes,
+                }
+            }
+        }
+    }
+
+    /// Rebuild a `LayoutTree` from a `LayoutNode` (config schema).
+    ///
+    /// Panes are consumed from `panes` in left-to-right order for each leaf.
+    /// When `panes` is exhausted, `spawn` is called to create new panes.
+    pub fn from_layout_node(
+        node: &LayoutNode,
+        panes: &mut VecDeque<Entity<Pane>>,
+        spawn: &mut impl FnMut() -> Entity<Pane>,
+    ) -> Self {
+        match node {
+            LayoutNode::Pane { .. } => {
+                let pane = panes.pop_front().unwrap_or_else(|| spawn());
+                LayoutTree::Leaf(pane)
+            }
+            LayoutNode::Split {
+                direction,
+                children,
+                ..
+            } => {
+                let dir = match direction.as_str() {
+                    "vertical" => SplitDirection::Vertical,
+                    _ => SplitDirection::Horizontal,
+                };
+                let resolved = node.resolved_ratios();
+                let child_trees: Vec<LayoutChild> = children
+                    .iter()
+                    .enumerate()
+                    .map(|(i, child_node)| {
+                        let ratio = resolved
+                            .get(i)
+                            .copied()
+                            .unwrap_or(1.0 / children.len() as f64);
+                        LayoutChild {
+                            node: LayoutTree::from_layout_node(child_node, panes, spawn),
+                            ratio: Rc::new(Cell::new(ratio as f32)),
+                            computed_size: Rc::new(Cell::new(0.0)),
+                        }
+                    })
+                    .collect();
+                LayoutTree::Container {
+                    direction: dir,
+                    children: child_trees,
+                    drag: Rc::new(Cell::new(None)),
+                    container_size: Rc::new(Cell::new(0.0)),
                 }
             }
         }
