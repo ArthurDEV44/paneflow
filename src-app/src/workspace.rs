@@ -62,6 +62,85 @@ impl GitDiffStats {
     }
 }
 
+/// Read up to `limit` bytes from a file, returning the content as a `String`.
+/// Prevents unbounded reads from malicious or corrupted files.
+fn read_capped(path: &std::path::Path, limit: u64) -> std::io::Result<String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let mut content = String::new();
+    file.take(limit).read_to_string(&mut content)?;
+    Ok(content)
+}
+
+/// Detect the current git branch for a working directory.
+///
+/// Walks up from `cwd` to find the nearest `.git` directory or worktree file,
+/// then reads `HEAD` directly (no subprocess). Returns `(branch_name, is_git_repo)`.
+/// - Normal branch: `("main", true)`
+/// - Detached HEAD: `("(abc1234)", true)`
+/// - Not a git repo: `("", false)`
+///
+/// Only `refs/heads/` branches are resolved; tags and remote refs return empty.
+pub fn detect_branch(cwd: &str) -> (String, bool) {
+    // Walk up the directory tree to find .git (mirrors how git itself resolves)
+    let mut search_dir = std::path::Path::new(cwd);
+    let git_path = loop {
+        let candidate = search_dir.join(".git");
+        if candidate.exists() {
+            break candidate;
+        }
+        match search_dir.parent() {
+            Some(parent) => search_dir = parent,
+            None => return (String::new(), false),
+        }
+    };
+
+    // Resolve HEAD path — .git may be a directory or a worktree file
+    let head_path = if git_path.is_file() {
+        // Worktree: .git is a file containing "gitdir: <path>"
+        let content = match read_capped(&git_path, 512) {
+            Ok(c) => c,
+            Err(_) => return (String::new(), false),
+        };
+        let gitdir = match content.trim().strip_prefix("gitdir: ") {
+            Some(path) => path.to_owned(),
+            None => return (String::new(), false),
+        };
+        let gitdir_path = if std::path::Path::new(&gitdir).is_absolute() {
+            std::path::PathBuf::from(&gitdir)
+        } else {
+            git_path
+                .parent()
+                .unwrap_or(std::path::Path::new(cwd))
+                .join(&gitdir)
+        };
+        gitdir_path.join("HEAD")
+    } else if git_path.is_dir() {
+        git_path.join("HEAD")
+    } else {
+        return (String::new(), false);
+    };
+
+    let content = match read_capped(&head_path, 512) {
+        Ok(c) => c,
+        Err(_) => return (String::new(), false),
+    };
+    let content = content.trim();
+
+    if let Some(branch) = content.strip_prefix("ref: refs/heads/") {
+        (branch.to_string(), true)
+    } else if content.chars().all(|c| c.is_ascii_hexdigit())
+        && (content.len() == 40 || content.len() == 64)
+    {
+        // Detached HEAD — raw SHA-1 (40 chars) or SHA-256 (64 chars)
+        let short = &content[..7];
+        (format!("({short})"), true)
+    } else {
+        // Unrecognized format (tag ref, remote ref, corrupted) — git repo but branch unknown
+        (String::new(), true)
+    }
+}
+
 pub struct Workspace {
     pub title: String,
     /// Working directory at creation time. Does not update when the shell `cd`s.
@@ -72,6 +151,10 @@ pub struct Workspace {
     pub saved_layout: Option<LayoutTree>,
     /// Cached git diff stats, refreshed by a background poller.
     pub git_stats: GitDiffStats,
+    /// Current git branch name. Empty string when not a git repo or branch unknown.
+    pub git_branch: String,
+    /// Whether this workspace's CWD is inside a git repository.
+    pub is_git_repo: bool,
 }
 
 impl Workspace {
@@ -80,24 +163,30 @@ impl Workspace {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "~".into());
         let git_stats = GitDiffStats::from_cwd(&cwd);
+        let (git_branch, is_git_repo) = detect_branch(&cwd);
         Self {
             title: title.into(),
             cwd,
             root: Some(LayoutTree::Leaf(pane)),
             saved_layout: None,
             git_stats,
+            git_branch,
+            is_git_repo,
         }
     }
 
     pub fn with_cwd(title: impl Into<String>, cwd: std::path::PathBuf, pane: Entity<Pane>) -> Self {
         let cwd_str = cwd.display().to_string();
         let git_stats = GitDiffStats::from_cwd(&cwd_str);
+        let (git_branch, is_git_repo) = detect_branch(&cwd_str);
         Self {
             title: title.into(),
             cwd: cwd_str,
             root: Some(LayoutTree::Leaf(pane)),
             saved_layout: None,
             git_stats,
+            git_branch,
+            is_git_repo,
         }
     }
 
@@ -122,5 +211,139 @@ impl Workspace {
     pub fn serialize_layout(&self, cx: &App) -> Option<LayoutNode> {
         let tree = self.saved_layout.as_ref().or(self.root.as_ref())?;
         Some(tree.serialize(cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_branch_normal_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        let (branch, is_repo) = detect_branch(dir.path().to_str().unwrap());
+        assert_eq!(branch, "main");
+        assert!(is_repo);
+    }
+
+    #[test]
+    fn detect_branch_feature_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+        std::fs::write(
+            git_dir.join("HEAD"),
+            "ref: refs/heads/feature/JIRA-123-oauth\n",
+        )
+        .unwrap();
+
+        let (branch, is_repo) = detect_branch(dir.path().to_str().unwrap());
+        assert_eq!(branch, "feature/JIRA-123-oauth");
+        assert!(is_repo);
+    }
+
+    #[test]
+    fn detect_branch_detached_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+        std::fs::write(
+            git_dir.join("HEAD"),
+            "96fa6899ea34697257e84865fefc56beb42d6390\n",
+        )
+        .unwrap();
+
+        let (branch, is_repo) = detect_branch(dir.path().to_str().unwrap());
+        assert_eq!(branch, "(96fa689)");
+        assert!(is_repo);
+    }
+
+    #[test]
+    fn detect_branch_not_a_git_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        // No .git directory
+
+        let (branch, is_repo) = detect_branch(dir.path().to_str().unwrap());
+        assert_eq!(branch, "");
+        assert!(!is_repo);
+    }
+
+    #[test]
+    fn detect_branch_worktree_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // Simulate a worktree: .git is a file pointing to a gitdir
+        let worktree_git_dir = dir.path().join("worktree_git");
+        std::fs::create_dir(&worktree_git_dir).unwrap();
+        std::fs::write(worktree_git_dir.join("HEAD"), "ref: refs/heads/wt-branch\n").unwrap();
+
+        let work_dir = dir.path().join("work");
+        std::fs::create_dir(&work_dir).unwrap();
+        std::fs::write(
+            work_dir.join(".git"),
+            format!("gitdir: {}\n", worktree_git_dir.display()),
+        )
+        .unwrap();
+
+        let (branch, is_repo) = detect_branch(work_dir.to_str().unwrap());
+        assert_eq!(branch, "wt-branch");
+        assert!(is_repo);
+    }
+
+    #[test]
+    fn detect_branch_nonexistent_directory() {
+        let (branch, is_repo) = detect_branch("/nonexistent/path/that/does/not/exist");
+        assert_eq!(branch, "");
+        assert!(!is_repo);
+    }
+
+    #[test]
+    fn detect_branch_worktree_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        // Simulate a worktree with a relative gitdir path
+        let worktree_git_dir = dir
+            .path()
+            .join("main_repo")
+            .join(".git")
+            .join("worktrees")
+            .join("wt1");
+        std::fs::create_dir_all(&worktree_git_dir).unwrap();
+        std::fs::write(
+            worktree_git_dir.join("HEAD"),
+            "ref: refs/heads/relative-wt\n",
+        )
+        .unwrap();
+
+        let work_dir = dir.path().join("wt1");
+        std::fs::create_dir(&work_dir).unwrap();
+        // Relative path from work_dir/.git to the worktree git dir
+        std::fs::write(
+            work_dir.join(".git"),
+            "gitdir: ../main_repo/.git/worktrees/wt1\n",
+        )
+        .unwrap();
+
+        let (branch, is_repo) = detect_branch(work_dir.to_str().unwrap());
+        assert_eq!(branch, "relative-wt");
+        assert!(is_repo);
+    }
+
+    #[test]
+    fn detect_branch_subdirectory_of_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/develop\n").unwrap();
+
+        // Create a subdirectory without its own .git
+        let sub_dir = dir.path().join("src").join("module");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+
+        let (branch, is_repo) = detect_branch(sub_dir.to_str().unwrap());
+        assert_eq!(branch, "develop");
+        assert!(is_repo);
     }
 }
