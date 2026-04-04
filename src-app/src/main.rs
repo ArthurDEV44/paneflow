@@ -8,6 +8,7 @@ mod split;
 mod terminal;
 mod terminal_element;
 pub mod theme;
+mod title_bar;
 mod workspace;
 
 use gpui::{
@@ -630,9 +631,11 @@ impl Render for PaneFlowApp {
                 .into_any_element()
         };
 
+        let workspace_name = self.active_workspace().map(|ws| ws.title.as_str());
+
         div()
             .flex()
-            .flex_row()
+            .flex_col()
             .size_full()
             .on_action(cx.listener(Self::handle_split_h))
             .on_action(cx.listener(Self::handle_split_v))
@@ -653,16 +656,24 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_ws7))
             .on_action(cx.listener(Self::handle_ws8))
             .on_action(cx.listener(Self::handle_ws9))
-            // Sidebar
-            .child(self.render_sidebar(cx))
-            // Main content area
+            // Title bar
+            .child(title_bar::render(workspace_name, window))
+            // Sidebar + main content area
             .child(
                 div()
+                    .flex()
+                    .flex_row()
                     .flex_1()
-                    .h_full()
-                    .bg(rgb(0x1e1e2e))
                     .overflow_hidden()
-                    .child(main_content),
+                    .child(self.render_sidebar(cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .bg(rgb(0x1e1e2e))
+                            .overflow_hidden()
+                            .child(main_content),
+                    ),
             )
     }
 }
