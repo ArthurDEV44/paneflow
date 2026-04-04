@@ -2,6 +2,7 @@
 //!
 //! App shell with sidebar workspace list + main content area.
 
+mod assets;
 mod ipc;
 mod keys;
 mod split;
@@ -690,7 +691,7 @@ fn main() {
     )
     .init();
 
-    application().run(|cx: &mut App| {
+    application().with_assets(assets::Assets).run(|cx: &mut App| {
         cx.bind_keys([
             KeyBinding::new("ctrl-shift-d", SplitHorizontally, None),
             KeyBinding::new("ctrl-shift-e", SplitVertically, None),
