@@ -571,11 +571,11 @@ impl PaneFlowApp {
 
         if ws.is_zoomed() {
             // Un-zoom: restore the saved layout
-            // Remember the zoomed pane so we can re-focus it after restore
             let zoomed_pane = ws.root.as_ref().and_then(|r| r.first_leaf());
             if let Some(saved) = ws.saved_layout.take() {
                 ws.root = Some(saved);
                 if let Some(pane) = zoomed_pane {
+                    pane.update(cx, |p, _| p.zoomed = false);
                     pane.read(cx).focus_handle(cx).focus(window, cx);
                 }
             }
@@ -583,7 +583,6 @@ impl PaneFlowApp {
             // Zoom: save the full tree, replace root with the focused pane
             let Some(root) = &ws.root else { return };
 
-            // No-op for single-pane workspaces
             if root.leaf_count() <= 1 {
                 return;
             }
@@ -592,7 +591,7 @@ impl PaneFlowApp {
                 return;
             };
 
-            // Save the current layout and replace with a single zoomed leaf
+            focused.update(cx, |p, _| p.zoomed = true);
             let full_tree = ws.root.take().unwrap();
             ws.saved_layout = Some(full_tree);
             ws.root = Some(LayoutTree::Leaf(focused.clone()));

@@ -68,6 +68,8 @@ pub enum PaneEvent {
 pub struct Pane {
     pub tabs: Vec<Entity<TerminalView>>,
     pub selected_idx: usize,
+    /// Set to true when the workspace is zoomed on this pane.
+    pub zoomed: bool,
 }
 
 impl EventEmitter<PaneEvent> for Pane {}
@@ -79,6 +81,7 @@ impl Pane {
         Self {
             tabs: vec![terminal],
             selected_idx: 0,
+            zoomed: false,
         }
     }
 
@@ -336,7 +339,7 @@ impl Pane {
         tabs_area = tabs_area.child(tabs_row);
 
         // End section: action buttons with left border separator (Zed pattern)
-        let end_section = div()
+        let mut end_section = div()
             .flex()
             .flex_none()
             .flex_row()
@@ -345,7 +348,26 @@ impl Pane {
             .px(px(SECTION_PX))
             .gap(px(TAB_GAP))
             .border_b_1()
-            .border_color(rgb(TAB_BORDER))
+            .border_color(rgb(TAB_BORDER));
+
+        // Zoom indicator badge
+        if self.zoomed {
+            end_section = end_section.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .px(px(4.))
+                    .h(px(18.))
+                    .rounded(px(3.))
+                    .bg(rgb(0x89b4fa)) // Catppuccin Mocha Blue
+                    .text_size(px(10.))
+                    .text_color(rgb(0x1e1e2e)) // Base (dark on blue)
+                    .child("Z"),
+            );
+        }
+
+        end_section = end_section
             // New terminal tab
             .child(Self::action_button(
                 "pane-btn-new-tab",
