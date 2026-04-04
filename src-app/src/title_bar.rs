@@ -1,65 +1,101 @@
 use gpui::{
-    div, prelude::*, px, rgb, svg, App, Decorations, IntoElement, MouseButton, Styled, Window,
+    div, prelude::*, px, rgb, svg, App, Context, Decorations, IntoElement, MouseButton, Render,
+    Styled, Window,
 };
 
 /// Maximum workspace name display length before truncation.
 const MAX_WORKSPACE_NAME_LEN: usize = 40;
 
-/// Render the PaneFlow title bar with window controls.
-///
-/// Height follows Zed's formula: `(1.75 * rem_size).max(34px)`.
-/// Window control buttons are only rendered in CSD mode.
-pub fn render(workspace_name: Option<&str>, window: &Window) -> impl IntoElement {
-    let height = (1.75 * window.rem_size()).max(px(34.));
+pub struct TitleBar {
+    should_move: bool,
+    pub workspace_name: Option<String>,
+}
 
-    // --- Left side: app title + workspace name ---
-    let mut title = div().flex().flex_row().items_center().gap(px(8.)).child(
-        div()
-            .text_color(rgb(0xcdd6f4))
-            .text_sm()
-            .font_weight(gpui::FontWeight::BOLD)
-            .child("PaneFlow"),
-    );
+impl TitleBar {
+    pub fn new(_cx: &mut Context<Self>) -> Self {
+        Self {
+            should_move: false,
+            workspace_name: None,
+        }
+    }
+}
 
-    if let Some(name) = workspace_name {
-        let display_name = if name.chars().count() > MAX_WORKSPACE_NAME_LEN {
-            let truncated: String = name.chars().take(MAX_WORKSPACE_NAME_LEN).collect();
-            format!("{truncated}...")
+impl Render for TitleBar {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let height = (1.75 * window.rem_size()).max(px(34.));
+
+        // --- Left side: app title + workspace name ---
+        let mut title = div().flex().flex_row().items_center().gap(px(8.)).child(
+            div()
+                .text_color(rgb(0xcdd6f4))
+                .text_sm()
+                .font_weight(gpui::FontWeight::BOLD)
+                .child("PaneFlow"),
+        );
+
+        if let Some(name) = &self.workspace_name {
+            let display_name = if name.chars().count() > MAX_WORKSPACE_NAME_LEN {
+                let truncated: String = name.chars().take(MAX_WORKSPACE_NAME_LEN).collect();
+                format!("{truncated}...")
+            } else {
+                name.clone()
+            };
+
+            title = title
+                .child(div().text_color(rgb(0x6c7086)).text_sm().child("\u{2014}"))
+                .child(
+                    div()
+                        .text_color(rgb(0xa6adc8))
+                        .text_sm()
+                        .child(display_name),
+                );
+        }
+
+        // --- Right side: window control buttons (CSD only) ---
+        let is_csd = matches!(window.window_decorations(), Decorations::Client { .. });
+        let controls = if is_csd {
+            Some(render_window_controls(window))
         } else {
-            name.to_string()
+            None
         };
 
-        title = title
-            .child(div().text_color(rgb(0x6c7086)).text_sm().child("\u{2014}"))
-            .child(
-                div()
-                    .text_color(rgb(0xa6adc8))
-                    .text_sm()
-                    .child(display_name),
-            );
+        div()
+            .id("title-bar")
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .h(height)
+            .bg(rgb(0x181825))
+            .border_b_1()
+            .border_color(rgb(0x313244))
+            .px(px(12.))
+            // Drag-to-move state machine
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| {
+                    this.should_move = true;
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| {
+                    this.should_move = false;
+                }),
+            )
+            .on_mouse_down_out(cx.listener(|this, _, _, _| {
+                this.should_move = false;
+            }))
+            .on_mouse_move(cx.listener(|this, _, window, _| {
+                if this.should_move {
+                    this.should_move = false;
+                    window.start_window_move();
+                }
+            }))
+            .child(title)
+            .children(controls)
     }
-
-    // --- Right side: window control buttons (CSD only) ---
-    let is_csd = matches!(window.window_decorations(), Decorations::Client { .. });
-    let controls = if is_csd {
-        Some(render_window_controls(window))
-    } else {
-        None
-    };
-
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .w_full()
-        .h(height)
-        .bg(rgb(0x181825))
-        .border_b_1()
-        .border_color(rgb(0x313244))
-        .px(px(12.))
-        .child(title)
-        .children(controls)
 }
 
 /// Render close/minimize/maximize buttons for Linux CSD.
@@ -119,8 +155,8 @@ fn window_control_button(
         .h(px(22.))
         .rounded_sm()
         .cursor_pointer()
-        .hover(|s| s.bg(rgb(0x45475a))) // ghost_element_hover
-        .active(|s| s.bg(rgb(0x585b70))) // ghost_element_active
+        .hover(|s| s.bg(rgb(0x45475a)))
+        .active(|s| s.bg(rgb(0x585b70)))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |e, window, cx| {
             cx.stop_propagation();

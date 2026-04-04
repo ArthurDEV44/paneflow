@@ -13,8 +13,8 @@ mod title_bar;
 mod workspace;
 
 use gpui::{
-    actions, div, prelude::*, px, rgb, size, App, Bounds, ClickEvent, Context, Focusable,
-    InteractiveElement, IntoElement, KeyBinding, Render, SharedString, Styled, Window,
+    actions, div, prelude::*, px, rgb, size, App, Bounds, ClickEvent, Context, Entity,
+    Focusable, InteractiveElement, IntoElement, KeyBinding, Render, SharedString, Styled, Window,
     WindowBounds, WindowDecorations, WindowOptions,
 };
 use gpui_platform::application;
@@ -77,12 +77,14 @@ struct PaneFlowApp {
     rename_text: String,
     last_config_mtime: Option<std::time::SystemTime>,
     ipc_rx: std::sync::mpsc::Receiver<ipc::IpcRequest>,
+    title_bar: Entity<title_bar::TitleBar>,
 }
 
 impl PaneFlowApp {
     fn new(cx: &mut Context<Self>) -> Self {
         let terminal = cx.new(TerminalView::new);
         let ws = Workspace::new("Terminal 1", terminal);
+        let title_bar = cx.new(title_bar::TitleBar::new);
         let last_config_mtime = crate::theme::config_mtime();
         let ipc_rx = ipc::start_server();
 
@@ -129,6 +131,7 @@ impl PaneFlowApp {
             rename_text: String::new(),
             last_config_mtime,
             ipc_rx,
+            title_bar,
         }
     }
 
@@ -632,7 +635,11 @@ impl Render for PaneFlowApp {
                 .into_any_element()
         };
 
-        let workspace_name = self.active_workspace().map(|ws| ws.title.as_str());
+        // Update title bar with current workspace name
+        let ws_name = self.active_workspace().map(|ws| ws.title.clone());
+        self.title_bar.update(cx, |tb, _| {
+            tb.workspace_name = ws_name;
+        });
 
         div()
             .flex()
@@ -657,8 +664,8 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_ws7))
             .on_action(cx.listener(Self::handle_ws8))
             .on_action(cx.listener(Self::handle_ws9))
-            // Title bar
-            .child(title_bar::render(workspace_name, window))
+            // Title bar (Entity with drag-to-move support)
+            .child(self.title_bar.clone())
             // Sidebar + main content area
             .child(
                 div()
