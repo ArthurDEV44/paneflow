@@ -4,6 +4,7 @@
 //! Each connection reads newline-delimited JSON-RPC requests and writes responses.
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -56,6 +57,9 @@ pub fn start_server() -> mpsc::Receiver<IpcRequest> {
                     return;
                 }
             };
+
+            // Restrict socket to owner-only access
+            let _ = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600));
 
             log::info!("IPC server listening on {}", socket_path.display());
 
@@ -115,7 +119,7 @@ fn handle_connection(stream: UnixStream, request_tx: mpsc::Sender<IpcRequest>) {
                                 "system.ping", "system.capabilities", "system.identify",
                                 "workspace.list", "workspace.create", "workspace.select",
                                 "workspace.close", "workspace.current",
-                                "surface.list", "surface.send_text"
+                                "surface.list", "surface.send_text", "surface.split"
                             ]
                         }, "id": id})
                     }

@@ -229,6 +229,10 @@ impl PaneFlowApp {
                 if text.is_empty() {
                     return serde_json::json!({"error": "Missing 'text' parameter"});
                 }
+                const MAX_TEXT_LEN: usize = 64 * 1024; // 64 KiB
+                if text.len() > MAX_TEXT_LEN {
+                    return serde_json::json!({"error": "Text exceeds 64 KiB limit"});
+                }
                 // Write to the focused terminal's PTY in the active workspace
                 if let Some(ws) = self.active_workspace()
                     && let Some(root) = &ws.root
@@ -237,6 +241,35 @@ impl PaneFlowApp {
                     return serde_json::json!({"sent": true, "length": text.len()});
                 }
                 serde_json::json!({"error": "No active terminal"})
+            }
+            "surface.split" => {
+                let dir_str = params
+                    .get("direction")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("");
+                let direction = match dir_str {
+                    "horizontal" => SplitDirection::Horizontal,
+                    "vertical" => SplitDirection::Vertical,
+                    _ => {
+                        return serde_json::json!({"error": "Missing or invalid 'direction' parameter (use \"horizontal\" or \"vertical\")"});
+                    }
+                };
+                const MAX_PANES: usize = 32;
+                let Some(ws) = self.active_workspace() else {
+                    return serde_json::json!({"error": "No active workspace"});
+                };
+                let Some(root) = &ws.root else {
+                    return serde_json::json!({"error": "No active workspace"});
+                };
+                if root.leaf_count() >= MAX_PANES {
+                    return serde_json::json!({"error": "Maximum pane count reached"});
+                }
+                let new_terminal = cx.new(TerminalView::new);
+                let ws = self.active_workspace_mut().unwrap();
+                ws.root.as_mut().unwrap().split_first_leaf(direction, new_terminal);
+                let panes = ws.pane_count();
+                cx.notify();
+                serde_json::json!({"split": true, "direction": dir_str, "panes": panes})
             }
             _ => {
                 serde_json::json!({"error": format!("Unknown method: {method}")})
