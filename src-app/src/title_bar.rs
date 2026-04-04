@@ -1,10 +1,22 @@
 use gpui::{
-    div, prelude::*, px, rgb, svg, App, Context, Decorations, IntoElement, MouseButton, Render,
-    Styled, Window,
+    div, prelude::*, px, rgb, svg, AnyElement, Context, Decorations, IntoElement, MouseButton,
+    Render, Styled, Window, WindowButton, WindowButtonLayout, WindowControls,
 };
 
 /// Maximum workspace name display length before truncation.
 const MAX_WORKSPACE_NAME_LEN: usize = 40;
+
+/// Default button layout when the DE doesn't provide one.
+fn default_button_layout() -> WindowButtonLayout {
+    WindowButtonLayout {
+        left: [None, None, None],
+        right: [
+            Some(WindowButton::Minimize),
+            Some(WindowButton::Maximize),
+            Some(WindowButton::Close),
+        ],
+    }
+}
 
 pub struct TitleBar {
     should_move: bool,
@@ -23,15 +35,39 @@ impl TitleBar {
 impl Render for TitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let height = (1.75 * window.rem_size()).max(px(34.));
+        let is_csd = matches!(window.window_decorations(), Decorations::Client { .. });
 
-        // --- Left side: app title + workspace name ---
-        let mut title = div().flex().flex_row().items_center().gap(px(8.)).child(
-            div()
-                .text_color(rgb(0xcdd6f4))
-                .text_sm()
-                .font_weight(gpui::FontWeight::BOLD)
-                .child("PaneFlow"),
-        );
+        // --- Read DE button layout ---
+        let layout = cx.button_layout().unwrap_or_else(default_button_layout);
+        let is_maximized = window.is_maximized();
+        let supported = window.window_controls();
+
+        let left_controls = if is_csd {
+            render_button_group("l", &layout.left, is_maximized, &supported)
+        } else {
+            None
+        };
+
+        let right_controls = if is_csd {
+            render_button_group("r", &layout.right, is_maximized, &supported)
+        } else {
+            None
+        };
+
+        // --- Center: app title + workspace name (fills remaining space) ---
+        let mut title = div()
+            .flex_1()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                div()
+                    .text_color(rgb(0xcdd6f4))
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child("PaneFlow"),
+            );
 
         if let Some(name) = &self.workspace_name {
             let display_name = if name.chars().count() > MAX_WORKSPACE_NAME_LEN {
@@ -51,20 +87,11 @@ impl Render for TitleBar {
                 );
         }
 
-        // --- Right side: window control buttons (CSD only) ---
-        let is_csd = matches!(window.window_decorations(), Decorations::Client { .. });
-        let controls = if is_csd {
-            Some(render_window_controls(window))
-        } else {
-            None
-        };
-
         div()
             .id("title-bar")
             .flex()
             .flex_row()
             .items_center()
-            .justify_between()
             .w_full()
             .h(height)
             .bg(rgb(0x181825))
@@ -98,61 +125,72 @@ impl Render for TitleBar {
                     window.zoom_window();
                 }
             })
+            .children(left_controls)
             .child(title)
-            .children(controls)
+            .children(right_controls)
     }
 }
 
-/// Render close/minimize/maximize buttons for Linux CSD.
-fn render_window_controls(window: &Window) -> impl IntoElement {
-    let is_maximized = window.is_maximized();
-    let supported = window.window_controls();
+/// Render a group of window control buttons for one side (left or right).
+///
+/// Returns `None` if no buttons are active on this side (all slots are `None`
+/// or all are filtered out by the compositor's supported controls).
+fn render_button_group(
+    side: &'static str,
+    buttons: &[Option<WindowButton>; 3],
+    is_maximized: bool,
+    supported: &WindowControls,
+) -> Option<AnyElement> {
+    let children: Vec<AnyElement> = buttons
+        .iter()
+        .filter_map(|slot| *slot)
+        .filter(|button| match button {
+            WindowButton::Minimize => supported.minimize,
+            WindowButton::Maximize => supported.maximize,
+            WindowButton::Close => true,
+        })
+        .map(|button| render_window_button(side, button, is_maximized))
+        .collect();
 
-    let mut buttons = div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(2.))
-        // Prevent mouse-down on the button strip from triggering title bar drag
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-
-    if supported.minimize {
-        buttons = buttons.child(window_control_button(
-            "wc-minimize",
-            "icons/generic_minimize.svg",
-            |_, window: &mut Window, _cx| window.minimize_window(),
-        ));
+    if children.is_empty() {
+        return None;
     }
 
-    if supported.maximize {
-        let icon = if is_maximized {
-            "icons/generic_restore.svg"
-        } else {
-            "icons/generic_maximize.svg"
-        };
-        buttons = buttons.child(window_control_button(
-            "wc-maximize",
-            icon,
-            |_, window: &mut Window, _cx| window.zoom_window(),
-        ));
-    }
-
-    // Close is always shown
-    buttons.child(window_control_button(
-        "wc-close",
-        "icons/generic_close.svg",
-        |_, _window, cx: &mut App| cx.quit(),
-    ))
+    Some(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(2.))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .children(children)
+            .into_any_element(),
+    )
 }
 
-/// A single window control button (close, minimize, or maximize/restore).
-fn window_control_button(
-    id: &'static str,
-    icon_path: &'static str,
-    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+/// Render a single window control button.
+fn render_window_button(
+    side: &'static str,
+    button: WindowButton,
+    is_maximized: bool,
+) -> AnyElement {
+    let id = match button {
+        WindowButton::Minimize => "wc-minimize",
+        WindowButton::Maximize => "wc-maximize",
+        WindowButton::Close => "wc-close",
+    };
+
+    let icon_path = match button {
+        WindowButton::Minimize => "icons/generic_minimize.svg",
+        WindowButton::Maximize if is_maximized => "icons/generic_restore.svg",
+        WindowButton::Maximize => "icons/generic_maximize.svg",
+        WindowButton::Close => "icons/generic_close.svg",
+    };
+
+    let element_id = format!("{id}-{side}");
+
     div()
-        .id(id)
+        .id(gpui::SharedString::from(element_id))
         .flex()
         .items_center()
         .justify_center()
@@ -163,9 +201,13 @@ fn window_control_button(
         .hover(|s| s.bg(rgb(0x45475a)))
         .active(|s| s.bg(rgb(0x585b70)))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(move |e, window, cx| {
+        .on_click(move |_, window, cx| {
             cx.stop_propagation();
-            on_click(e, window, cx);
+            match button {
+                WindowButton::Minimize => window.minimize_window(),
+                WindowButton::Maximize => window.zoom_window(),
+                WindowButton::Close => cx.quit(),
+            }
         })
         .child(
             svg()
@@ -174,4 +216,5 @@ fn window_control_button(
                 .path(icon_path)
                 .text_color(rgb(0xcdd6f4)),
         )
+        .into_any_element()
 }
