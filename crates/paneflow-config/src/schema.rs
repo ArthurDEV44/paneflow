@@ -61,13 +61,19 @@ pub enum LayoutNode {
         #[serde(default)]
         surfaces: Vec<SurfaceDefinition>,
     },
-    /// A split container dividing space between exactly 2 children.
+    /// A split container dividing space between 2 or more children.
     Split {
         /// Split direction: "horizontal" or "vertical".
         direction: String,
-        /// Split ratio in [0.1, 0.9]. Defaults to 0.5 if omitted.
+        /// Legacy: single split ratio for binary (2-child) layouts.
+        /// Ignored when `ratios` is present. Defaults to 0.5 if omitted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         ratio: Option<f64>,
-        /// Exactly 2 child layout nodes.
+        /// Per-child ratios for N-ary layouts. When present, must have
+        /// the same length as `children`. Values should sum to ~1.0.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ratios: Option<Vec<f64>>,
+        /// 2 or more child layout nodes.
         #[serde(default)]
         children: Vec<LayoutNode>,
     },

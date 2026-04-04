@@ -103,18 +103,23 @@ fn validate_command(cmd: &CommandDefinition) -> bool {
 
 /// Recursively validate and fix a layout node.
 ///
-/// - Split nodes: must have exactly 2 children; ratio clamped to [0.1, 0.9].
+/// - Split nodes: must have >= 2 children; legacy `ratio` clamped to [0.1, 0.9];
+///   per-child `ratios` clamped to [0.01, 1.0].
 /// - Pane nodes: must have >= 1 surface.
 fn validate_layout(node: &mut LayoutNode) {
     match node {
         LayoutNode::Split {
             ref mut ratio,
+            ref mut ratios,
             ref mut children,
             ..
         } => {
-            // Clamp ratio to [0.1, 0.9].
+            // Clamp legacy ratio to [0.1, 0.9]; reject non-finite values.
             if let Some(r) = ratio {
-                if *r < 0.1 {
+                if !r.is_finite() {
+                    warn!("split ratio is NaN/Infinity; resetting to 0.5");
+                    *r = 0.5;
+                } else if *r < 0.1 {
                     warn!("split ratio {r} is below minimum; clamping to 0.1");
                     *r = 0.1;
                 } else if *r > 0.9 {
@@ -123,20 +128,46 @@ fn validate_layout(node: &mut LayoutNode) {
                 }
             }
 
-            // Warn if children count is not exactly 2.
-            if children.len() != 2 {
+            // Must have at least 2 children; pad if fewer.
+            while children.len() < 2 {
                 warn!(
-                    "split node has {} children (expected 2); truncating or padding",
+                    "split node has {} children (need >= 2); padding",
                     children.len()
                 );
-                // Truncate to 2 if more, or pad with empty panes if fewer.
-                while children.len() > 2 {
-                    children.pop();
+                children.push(LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                });
+            }
+
+            // Validate per-child ratios: reject non-finite, fix length mismatch, normalize.
+            if let Some(ref mut rs) = ratios {
+                // Reject NaN/Infinity values.
+                for r in rs.iter_mut() {
+                    if !r.is_finite() {
+                        warn!("per-child ratio is NaN/Infinity; resetting");
+                        *r = 1.0 / children.len() as f64;
+                    }
                 }
-                while children.len() < 2 {
-                    children.push(LayoutNode::Pane {
-                        surfaces: vec![Default::default()],
-                    });
+                // Fix length mismatch: trim or extend to match children count.
+                let n = children.len();
+                if rs.len() != n {
+                    warn!(
+                        "ratios length ({}) != children count ({}); fixing",
+                        rs.len(),
+                        n
+                    );
+                    rs.resize(n, 1.0 / n as f64);
+                }
+                // Clamp individual values to [0.01, 1.0].
+                for r in rs.iter_mut() {
+                    *r = r.clamp(0.01, 1.0);
+                }
+                // Normalize to sum ~1.0.
+                let sum: f64 = rs.iter().sum();
+                if sum > 0.0 && (sum - 1.0).abs() > f64::EPSILON {
+                    for r in rs.iter_mut() {
+                        *r /= sum;
+                    }
                 }
             }
 
@@ -282,6 +313,7 @@ mod tests {
                 direction,
                 ratio,
                 children,
+                ..
             } => {
                 assert_eq!(direction, "horizontal");
                 assert_eq!(*ratio, Some(0.5));
@@ -365,8 +397,8 @@ mod tests {
     }
 
     #[test]
-    fn test_split_wrong_children_count() {
-        // 3 children should be truncated to 2.
+    fn test_split_nary_children_accepted() {
+        // 3+ children are valid in N-ary layout.
         let json = r#"{
             "commands": [{
                 "name": "test",
@@ -375,6 +407,7 @@ mod tests {
                     "layout": {
                         "type": "split",
                         "direction": "horizontal",
+                        "ratios": [0.33, 0.33, 0.34],
                         "children": [
                             {"type": "pane", "surfaces": [{"surface_type": "terminal"}]},
                             {"type": "pane", "surfaces": [{"surface_type": "terminal"}]},
@@ -387,8 +420,13 @@ mod tests {
         let config = parse_and_validate(json);
         let ws = config.commands[0].workspace.as_ref().unwrap();
         match ws.layout.as_ref().unwrap() {
-            LayoutNode::Split { children, .. } => {
-                assert_eq!(children.len(), 2);
+            LayoutNode::Split {
+                children, ratios, ..
+            } => {
+                assert_eq!(children.len(), 3);
+                let rs = ratios.as_ref().unwrap();
+                assert_eq!(rs.len(), 3);
+                assert!((rs[0] - 0.33).abs() < f64::EPSILON);
             }
             _ => panic!("expected split"),
         }
@@ -574,5 +612,69 @@ mod tests {
         let json = serde_json::to_string_pretty(&config).unwrap();
         let reparsed = parse_and_validate(&json);
         assert_eq!(config, reparsed);
+    }
+
+    #[test]
+    fn test_nary_layout_roundtrip() {
+        // Build a 6-pane N-ary layout: 3 panes horizontal on top, 3 on bottom.
+        let make_pane = |name: &str| LayoutNode::Pane {
+            surfaces: vec![SurfaceDefinition {
+                surface_type: Some("terminal".to_string()),
+                name: Some(name.to_string()),
+                ..Default::default()
+            }],
+        };
+
+        let top_row = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: None,
+            ratios: Some(vec![0.33, 0.33, 0.34]),
+            children: vec![make_pane("A"), make_pane("B"), make_pane("C")],
+        };
+        let bottom_row = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: None,
+            ratios: Some(vec![0.33, 0.33, 0.34]),
+            children: vec![make_pane("D"), make_pane("E"), make_pane("F")],
+        };
+        let root = LayoutNode::Split {
+            direction: "horizontal".to_string(),
+            ratio: None,
+            ratios: Some(vec![0.5, 0.5]),
+            children: vec![top_row, bottom_row],
+        };
+
+        // Serialize to JSON and back.
+        let json = serde_json::to_string_pretty(&root).unwrap();
+        let deserialized: LayoutNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(root, deserialized);
+    }
+
+    #[test]
+    fn test_legacy_binary_still_works() {
+        // Legacy format with single `ratio` field (no `ratios`).
+        let json = r#"{
+            "type": "split",
+            "direction": "horizontal",
+            "ratio": 0.6,
+            "children": [
+                {"type": "pane", "surfaces": [{"surface_type": "terminal"}]},
+                {"type": "pane", "surfaces": [{"surface_type": "terminal"}]}
+            ]
+        }"#;
+        let node: LayoutNode = serde_json::from_str(json).unwrap();
+        match &node {
+            LayoutNode::Split {
+                ratio,
+                ratios,
+                children,
+                ..
+            } => {
+                assert_eq!(*ratio, Some(0.6));
+                assert!(ratios.is_none());
+                assert_eq!(children.len(), 2);
+            }
+            _ => panic!("expected split"),
+        }
     }
 }
