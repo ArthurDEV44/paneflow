@@ -75,7 +75,8 @@ actions!(
         TerminalPaste,
         ScrollPageUp,
         ScrollPageDown,
-        CloseWindow
+        CloseWindow,
+        ToggleZoom
     ]
 );
 
@@ -478,6 +479,12 @@ impl PaneFlowApp {
     // --- Split/close/focus handlers (operate on active workspace) ---
 
     fn split(&mut self, direction: SplitDirection, window: &mut Window, cx: &mut Context<Self>) {
+        // No split while zoomed — the zoomed view is a temporary single-leaf root
+        if let Some(ws) = self.active_workspace()
+            && ws.is_zoomed()
+        {
+            return;
+        }
         const MAX_PANES: usize = 32;
         if let Some(ws) = self.active_workspace()
             && let Some(root) = &ws.root
@@ -537,6 +544,43 @@ impl PaneFlowApp {
             }
         }
 
+        cx.notify();
+    }
+
+    fn handle_toggle_zoom(&mut self, _: &ToggleZoom, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ws) = self.active_workspace_mut() else {
+            return;
+        };
+
+        if ws.is_zoomed() {
+            // Un-zoom: restore the saved layout
+            // Remember the zoomed pane so we can re-focus it after restore
+            let zoomed_pane = ws.root.as_ref().and_then(|r| r.first_leaf());
+            if let Some(saved) = ws.saved_layout.take() {
+                ws.root = Some(saved);
+                if let Some(pane) = zoomed_pane {
+                    pane.read(cx).focus_handle(cx).focus(window, cx);
+                }
+            }
+        } else {
+            // Zoom: save the full tree, replace root with the focused pane
+            let Some(root) = &ws.root else { return };
+
+            // No-op for single-pane workspaces
+            if root.leaf_count() <= 1 {
+                return;
+            }
+
+            let Some(focused) = root.focused_pane(window, cx) else {
+                return;
+            };
+
+            // Save the current layout and replace with a single zoomed leaf
+            let full_tree = ws.root.take().unwrap();
+            ws.saved_layout = Some(full_tree);
+            ws.root = Some(LayoutTree::Leaf(focused.clone()));
+            focused.read(cx).focus_handle(cx).focus(window, cx);
+        }
         cx.notify();
     }
 
@@ -1009,6 +1053,7 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_new_workspace))
             .on_action(cx.listener(Self::handle_close_workspace))
             .on_action(cx.listener(Self::handle_next_workspace))
+            .on_action(cx.listener(Self::handle_toggle_zoom))
             .on_action(cx.listener(Self::handle_ws1))
             .on_action(cx.listener(Self::handle_ws2))
             .on_action(cx.listener(Self::handle_ws3))
@@ -1084,6 +1129,7 @@ fn main() {
                 KeyBinding::new("ctrl-shift-v", TerminalPaste, Some("Terminal")),
                 KeyBinding::new("shift-pageup", ScrollPageUp, Some("Terminal")),
                 KeyBinding::new("shift-pagedown", ScrollPageDown, Some("Terminal")),
+                KeyBinding::new("ctrl-shift-z", ToggleZoom, None),
             ]);
 
             let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);

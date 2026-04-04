@@ -65,6 +65,9 @@ pub struct Workspace {
     /// Working directory at creation time. Does not update when the shell `cd`s.
     pub cwd: String,
     pub root: Option<LayoutTree>,
+    /// Saved layout tree when zoomed. `Some(tree)` means the workspace is zoomed
+    /// and `root` contains only the zoomed pane as a single Leaf.
+    pub saved_layout: Option<LayoutTree>,
     /// Cached git diff stats, refreshed by a background poller.
     pub git_stats: GitDiffStats,
 }
@@ -79,6 +82,7 @@ impl Workspace {
             title: title.into(),
             cwd,
             root: Some(LayoutTree::Leaf(pane)),
+            saved_layout: None,
             git_stats,
         }
     }
@@ -90,8 +94,13 @@ impl Workspace {
             title: title.into(),
             cwd: cwd_str,
             root: Some(LayoutTree::Leaf(pane)),
+            saved_layout: None,
             git_stats,
         }
+    }
+
+    pub fn is_zoomed(&self) -> bool {
+        self.saved_layout.is_some()
     }
 
     pub fn pane_count(&self) -> usize {
