@@ -727,11 +727,25 @@ fn main() {
 
         let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
 
+        // Read window_decorations setting from config
+        let config = paneflow_config::loader::load_config();
+        let decorations = match config.window_decorations.as_deref() {
+            Some("server") => WindowDecorations::Server,
+            Some("client") | None => WindowDecorations::Client,
+            Some(other) => {
+                log::warn!(
+                    "Invalid window_decorations value '{}', using 'client'",
+                    other
+                );
+                WindowDecorations::Client
+            }
+        };
+
         let window_result = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(800.0), px(500.0))),
-                window_decorations: Some(WindowDecorations::Client),
+                window_decorations: Some(decorations),
                 titlebar: Some(gpui::TitlebarOptions {
                     title: Some("PaneFlow".into()),
                     appears_transparent: true,
