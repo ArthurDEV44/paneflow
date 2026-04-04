@@ -512,13 +512,30 @@ impl PaneFlowApp {
 
     fn handle_close_pane(&mut self, _: &ClosePane, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ws) = self.active_workspace_mut()
+            && ws.is_zoomed()
+        {
+            // Close-while-zoomed: exit zoom first, then remove the pane from the
+            // restored layout. This prevents orphan pane references in saved_layout.
+            let zoomed_pane = ws.root.as_ref().and_then(|r| r.first_leaf());
+            if let Some(saved) = ws.saved_layout.take() {
+                ws.root = Some(saved);
+                if let Some(pane) = zoomed_pane
+                    && let Some(root) = ws.root.take()
+                {
+                    ws.root = root.remove_pane(&pane);
+                }
+                // Focus the next available pane
+                if let Some(ref root) = ws.root {
+                    root.focus_first(window, cx);
+                }
+            }
+        } else if let Some(ws) = self.active_workspace_mut()
             && let Some(root) = ws.root.take()
         {
             let (new_root, _closed, focus_target) = root.close_focused(window, cx);
             ws.root = new_root;
 
             if ws.root.is_some() {
-                // Focus the neighbor of the closed pane (previous sibling, or next)
                 if let Some(target) = focus_target {
                     target.read(cx).focus_handle(cx).focus(window, cx);
                 } else if let Some(ref root) = ws.root {
