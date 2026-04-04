@@ -560,6 +560,7 @@ mod tests {
                 m
             },
             default_shell: Some("/bin/fish".to_string()),
+            theme: Some("Dracula".to_string()),
             commands: vec![CommandDefinition {
                 name: "test".to_string(),
                 description: Some("A test command".to_string()),
@@ -567,6 +568,7 @@ mod tests {
                 workspace: None,
                 command: Some("echo hello".to_string()),
             }],
+            window_decorations: None,
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
