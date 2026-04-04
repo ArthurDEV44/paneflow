@@ -77,7 +77,8 @@ actions!(
         ScrollPageDown,
         CloseWindow,
         ToggleZoom,
-        LayoutEvenHorizontal
+        LayoutEvenHorizontal,
+        LayoutEvenVertical
     ]
 );
 
@@ -653,6 +654,19 @@ impl PaneFlowApp {
         );
     }
 
+    fn handle_layout_even_v(
+        &mut self,
+        _: &LayoutEvenVertical,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_layout_preset(
+            |panes| LayoutTree::from_panes_equal(SplitDirection::Horizontal, panes),
+            window,
+            cx,
+        );
+    }
+
     fn handle_new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ws) = self.active_workspace()
             && let Some(root) = &ws.root
@@ -1124,6 +1138,7 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_next_workspace))
             .on_action(cx.listener(Self::handle_toggle_zoom))
             .on_action(cx.listener(Self::handle_layout_even_h))
+            .on_action(cx.listener(Self::handle_layout_even_v))
             .on_action(cx.listener(Self::handle_ws1))
             .on_action(cx.listener(Self::handle_ws2))
             .on_action(cx.listener(Self::handle_ws3))
@@ -1201,6 +1216,7 @@ fn main() {
                 KeyBinding::new("shift-pagedown", ScrollPageDown, Some("Terminal")),
                 KeyBinding::new("ctrl-shift-z", ToggleZoom, None),
                 KeyBinding::new("ctrl-alt-1", LayoutEvenHorizontal, None),
+                KeyBinding::new("ctrl-alt-2", LayoutEvenVertical, None),
             ]);
 
             let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
