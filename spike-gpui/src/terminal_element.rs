@@ -94,6 +94,9 @@ pub struct TerminalElement {
     cursor_visible: bool,
     focused: bool,
     exited: Option<i32>,
+    /// Timestamp of the keystroke that triggered this render, for latency measurement.
+    #[cfg(debug_assertions)]
+    last_keystroke_at: Option<std::time::Instant>,
 }
 
 impl TerminalElement {
@@ -103,6 +106,7 @@ impl TerminalElement {
         cursor_visible: bool,
         focused: bool,
         exited: Option<i32>,
+        #[cfg(debug_assertions)] last_keystroke_at: Option<std::time::Instant>,
     ) -> Self {
         Self {
             term,
@@ -110,6 +114,8 @@ impl TerminalElement {
             cursor_visible,
             focused,
             exited,
+            #[cfg(debug_assertions)]
+            last_keystroke_at,
         }
     }
 
@@ -495,6 +501,13 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        #[cfg(debug_assertions)]
+        let _paint_start = if crate::terminal::probe_enabled() {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
         let Some(layout) = prepaint.take() else {
             return;
         };
@@ -689,6 +702,31 @@ impl Element for TerminalElement {
                 );
             }
         });
+
+        #[cfg(debug_assertions)]
+        if let Some(paint_start) = _paint_start {
+            let paint_elapsed = paint_start.elapsed();
+            let paint_ms = paint_elapsed.as_secs_f64() * 1000.0;
+
+            // Phase 2: paint() duration
+            if paint_ms > 1.0 {
+                log::warn!("[latency] paint: {paint_ms:.2}ms");
+            }
+
+            // Phase 3: total keystroke → pixel with per-phase breakdown
+            if let Some(keystroke_at) = self.last_keystroke_at {
+                let total_elapsed = keystroke_at.elapsed();
+                let total_ms = total_elapsed.as_secs_f64() * 1000.0;
+                let pty_to_paint_ms = total_ms - paint_ms;
+                if total_ms > 8.0 {
+                    log::warn!(
+                        "[latency] keystroke→pixel: {total_ms:.2}ms \
+                         (pty_write→paint_start: {pty_to_paint_ms:.2}ms, \
+                         paint: {paint_ms:.2}ms)"
+                    );
+                }
+            }
+        }
     }
 }
 
