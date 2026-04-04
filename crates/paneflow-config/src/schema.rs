@@ -79,6 +79,43 @@ pub enum LayoutNode {
     },
 }
 
+impl LayoutNode {
+    /// Count the number of leaf (Pane) nodes in the layout tree.
+    pub fn leaf_count(&self) -> usize {
+        match self {
+            LayoutNode::Pane { .. } => 1,
+            LayoutNode::Split { children, .. } => children.iter().map(|c| c.leaf_count()).sum(),
+        }
+    }
+
+    /// Resolve per-child ratios for a Split node.
+    ///
+    /// Returns `ratios` if present, else converts legacy `ratio` to binary
+    /// `[ratio, 1-ratio]`, else returns equal ratios for the child count.
+    pub fn resolved_ratios(&self) -> Vec<f64> {
+        match self {
+            LayoutNode::Pane { .. } => vec![1.0],
+            LayoutNode::Split {
+                ratio,
+                ratios,
+                children,
+                ..
+            } => {
+                if let Some(rs) = ratios {
+                    return rs.clone();
+                }
+                if let Some(r) = ratio {
+                    if children.len() == 2 {
+                        return vec![*r, 1.0 - *r];
+                    }
+                }
+                let n = children.len().max(1);
+                vec![1.0 / n as f64; n]
+            }
+        }
+    }
+}
+
 /// A surface within a pane (terminal, browser, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SurfaceDefinition {

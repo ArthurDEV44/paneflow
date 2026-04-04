@@ -106,7 +106,7 @@ fn validate_command(cmd: &CommandDefinition) -> bool {
 /// - Split nodes: must have >= 2 children; legacy `ratio` clamped to [0.1, 0.9];
 ///   per-child `ratios` clamped to [0.01, 1.0].
 /// - Pane nodes: must have >= 1 surface.
-fn validate_layout(node: &mut LayoutNode) {
+pub fn validate_layout(node: &mut LayoutNode) {
     match node {
         LayoutNode::Split {
             ref mut ratio,
@@ -675,6 +675,109 @@ mod tests {
                 assert_eq!(children.len(), 2);
             }
             _ => panic!("expected split"),
+        }
+    }
+
+    #[test]
+    fn test_layout_node_leaf_count() {
+        let single = LayoutNode::Pane {
+            surfaces: vec![Default::default()],
+        };
+        assert_eq!(single.leaf_count(), 1);
+
+        // 3-child flat split = 3 leaves
+        let flat = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: None,
+            ratios: Some(vec![0.33, 0.33, 0.34]),
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        assert_eq!(flat.leaf_count(), 3);
+
+        // Nested: 2 rows of 3 = 6 leaves
+        let nested = LayoutNode::Split {
+            direction: "horizontal".to_string(),
+            ratio: None,
+            ratios: Some(vec![0.5, 0.5]),
+            children: vec![flat.clone(), flat],
+        };
+        assert_eq!(nested.leaf_count(), 6);
+    }
+
+    #[test]
+    fn test_resolved_ratios_nary() {
+        let node = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: None,
+            ratios: Some(vec![0.25, 0.25, 0.5]),
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        assert_eq!(node.resolved_ratios(), vec![0.25, 0.25, 0.5]);
+    }
+
+    #[test]
+    fn test_resolved_ratios_legacy_binary() {
+        let node = LayoutNode::Split {
+            direction: "horizontal".to_string(),
+            ratio: Some(0.6),
+            ratios: None,
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        let rs = node.resolved_ratios();
+        assert_eq!(rs.len(), 2);
+        assert!((rs[0] - 0.6).abs() < f64::EPSILON);
+        assert!((rs[1] - 0.4).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_resolved_ratios_fallback_equal() {
+        let node = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: None,
+            ratios: None,
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        let rs = node.resolved_ratios();
+        assert_eq!(rs.len(), 3);
+        for r in &rs {
+            assert!((r - 1.0 / 3.0).abs() < f64::EPSILON);
         }
     }
 }

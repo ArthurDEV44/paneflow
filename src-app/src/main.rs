@@ -20,6 +20,10 @@ use gpui::{
 };
 use gpui_platform::application;
 
+use std::collections::VecDeque;
+
+use paneflow_config::schema::LayoutNode;
+
 use crate::pane::Pane;
 use crate::split::{FocusDirection, LayoutTree, SplitDirection};
 use crate::terminal::TerminalView;
@@ -398,6 +402,24 @@ impl PaneFlowApp {
                 cx.notify();
                 serde_json::json!({"split": true, "direction": dir_str, "panes": panes})
             }
+            "workspace.restore_layout" => {
+                let Some(layout_value) = params.get("layout") else {
+                    return serde_json::json!({"error": "Missing 'layout' parameter"});
+                };
+                let mut layout: LayoutNode = match serde_json::from_value(layout_value.clone()) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        return serde_json::json!({"error": format!("Invalid layout JSON: {e}")});
+                    }
+                };
+                match self.apply_layout_from_json(&mut layout, cx) {
+                    Ok(()) => {
+                        let panes = self.active_workspace().map_or(0, |ws| ws.pane_count());
+                        serde_json::json!({"restored": true, "panes": panes})
+                    }
+                    Err(e) => serde_json::json!({"error": e}),
+                }
+            }
             _ => {
                 serde_json::json!({"error": format!("Unknown method: {method}")})
             }
@@ -641,6 +663,69 @@ impl PaneFlowApp {
             r.focus_first(window, cx);
         }
         cx.notify();
+    }
+
+    /// Apply a layout from a `LayoutNode` (deserialized JSON) to the active workspace.
+    ///
+    /// Handles pane count mismatch: spawns new panes when the layout has more
+    /// leaves than available, drops extras when fewer. Exits zoom first.
+    fn apply_layout_from_json(
+        &mut self,
+        layout: &mut LayoutNode,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        const MAX_PANES: usize = 32;
+
+        // Validate the layout (clamps ratios, pads children, etc.)
+        paneflow_config::loader::validate_layout(layout);
+
+        let needed = layout.leaf_count();
+        if needed == 0 {
+            return Err("Layout has no panes".into());
+        }
+        if needed > MAX_PANES {
+            return Err(format!("Layout exceeds maximum pane count ({MAX_PANES})"));
+        }
+
+        // Exit zoom if active, clearing the zoomed flag on the pane
+        if let Some(ws) = self.active_workspace_mut()
+            && ws.is_zoomed()
+        {
+            let zoomed_pane = ws.root.as_ref().and_then(|r| r.first_leaf());
+            if let Some(saved) = ws.saved_layout.take() {
+                ws.root = Some(saved);
+            }
+            if let Some(pane) = zoomed_pane {
+                pane.update(cx, |p, _| p.zoomed = false);
+            }
+        }
+
+        let Some(ws) = self.active_workspace_mut() else {
+            return Err("No active workspace".into());
+        };
+
+        // Collect existing panes and drop the old tree
+        let existing: Vec<Entity<Pane>> = ws
+            .root
+            .take()
+            .map(|r| r.collect_leaves())
+            .unwrap_or_default();
+
+        // Keep only the panes we need; extras are dropped with the old tree
+        let mut pane_deque: VecDeque<Entity<Pane>> = existing.into_iter().take(needed).collect();
+
+        let app_ref = &mut *self;
+        let tree = LayoutTree::from_layout_node(layout, &mut pane_deque, &mut || {
+            let terminal = cx.new(TerminalView::new);
+            app_ref.create_pane(terminal, cx)
+        });
+
+        let Some(ws) = self.active_workspace_mut() else {
+            return Err("No active workspace".into());
+        };
+        ws.root = Some(tree);
+        cx.notify();
+        Ok(())
     }
 
     fn handle_layout_even_h(
