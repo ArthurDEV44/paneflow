@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event as AlacEvent, EventListener, Notify, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop as AlacEventLoop, Msg, Notifier};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll as AlacScroll};
 use alacritty_terminal::index::{Column as GridCol, Line as GridLine, Point as AlacPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
@@ -19,8 +19,8 @@ use alacritty_terminal::Term;
 
 use gpui::{
     div, prelude::*, App, ClipboardItem, Context, FocusHandle, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, Styled,
-    Window,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render,
+    ScrollWheelEvent, Styled, Window,
 };
 
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
@@ -200,6 +200,8 @@ pub struct TerminalView {
     /// Element origin in window coordinates — set by TerminalElement::paint(),
     /// read by mouse handlers for pixel→grid conversion.
     element_origin: Arc<Mutex<gpui::Point<gpui::Pixels>>>,
+    /// Sub-line scroll accumulator for smooth trackpad scrolling
+    scroll_remainder: f32,
 }
 
 impl TerminalView {
@@ -259,6 +261,7 @@ impl TerminalView {
             cell_width: gpui::px(8.0),
             line_height: gpui::px(16.0),
             element_origin: Arc::new(Mutex::new(gpui::Point::default())),
+            scroll_remainder: 0.0,
         }
     }
 
@@ -454,6 +457,53 @@ impl TerminalView {
             self.terminal.write_to_pty(paste_text.into_bytes());
         }
     }
+
+    // --- Scroll handlers ---
+
+    fn handle_scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Convert pixel delta to fractional lines, accumulate sub-line remainders
+        let delta_y = event.delta.pixel_delta(self.line_height).y;
+        self.scroll_remainder += delta_y / self.line_height;
+
+        // Clamp to prevent extreme values from synthesised events
+        self.scroll_remainder = self.scroll_remainder.clamp(-500.0, 500.0);
+
+        let lines = self.scroll_remainder as i32;
+        if lines == 0 {
+            return;
+        }
+        self.scroll_remainder -= lines as f32;
+
+        // Negate: positive pixel delta = scroll down, but AlacScroll::Delta
+        // positive = scroll toward history (up)
+        let mut term = self.terminal.term.lock();
+        term.scroll_display(AlacScroll::Delta(-lines));
+        self.terminal.dirty = true;
+        drop(term);
+
+        cx.notify();
+    }
+
+    fn handle_scroll_page_up(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let mut term = self.terminal.term.lock();
+        term.scroll_display(AlacScroll::PageUp);
+        self.terminal.dirty = true;
+        drop(term);
+        cx.notify();
+    }
+
+    fn handle_scroll_page_down(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let mut term = self.terminal.term.lock();
+        term.scroll_display(AlacScroll::PageDown);
+        self.terminal.dirty = true;
+        drop(term);
+        cx.notify();
+    }
 }
 
 impl gpui::Focusable for TerminalView {
@@ -498,6 +548,13 @@ impl Render for TerminalView {
             }))
             .on_action(cx.listener(|this, _: &crate::TerminalPaste, window, cx| {
                 this.handle_paste(window, cx);
+            }))
+            .on_scroll_wheel(cx.listener(Self::handle_scroll_wheel))
+            .on_action(cx.listener(|this, _: &crate::ScrollPageUp, window, cx| {
+                this.handle_scroll_page_up(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::ScrollPageDown, window, cx| {
+                this.handle_scroll_page_down(window, cx);
             }))
             .size_full()
             .child(terminal_element)

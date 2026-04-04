@@ -71,6 +71,10 @@ pub struct LayoutState {
     dimensions: CellDimensions,
     background_color: Hsla,
     exited: Option<i32>,
+    /// Scroll position for scrollbar indicator (0 = at bottom)
+    display_offset: usize,
+    /// Total scrollback history size
+    history_size: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -187,10 +191,12 @@ impl TerminalElement {
             a: 0.35,
         }; // Semi-transparent blue highlight
 
-        let (cells, cursor_snapshot, selection_range): (
+        let (cells, cursor_snapshot, selection_range, display_offset, history_size): (
             Vec<_>,
             Option<CursorInfo>,
             Option<SelectionRange>,
+            usize,
+            usize,
         ) = {
             let mut term = self.term.lock();
             // Resize the terminal grid if bounds have changed
@@ -237,11 +243,13 @@ impl TerminalElement {
                         wide,
                     })
                 };
+            let disp_offset = content.display_offset;
+            let hist_size = term.history_size();
             let cells = content
                 .display_iter
                 .map(|ic| (ic.point, ic.cell.c, ic.cell.fg, ic.cell.bg, ic.cell.flags))
                 .collect();
-            (cells, cursor, sel_range)
+            (cells, cursor, sel_range, disp_offset, hist_size)
         };
 
         let mut batch = BatchAccumulator::new();
@@ -415,6 +423,8 @@ impl TerminalElement {
             dimensions: dims,
             background_color,
             exited: self.exited,
+            display_offset,
+            history_size,
         }
     }
 }
@@ -754,7 +764,38 @@ impl Element for TerminalElement {
                 }
             }
 
-            // 5. Paint exit overlay if process has exited
+            // 5. Paint scrollbar indicator (thin overlay, right edge)
+            if layout.display_offset > 0 && layout.history_size > 0 {
+                let scrollbar_width = px(4.0);
+                let visible_rows = (bounds.size.height / line_height).floor() as usize;
+                let total_lines = layout.history_size + visible_rows;
+                let visible_ratio = visible_rows as f32 / total_lines as f32;
+                let thumb_height = (bounds.size.height * visible_ratio).max(px(16.0));
+                let scroll_ratio = layout.display_offset as f32 / layout.history_size as f32;
+                // display_offset=max → scrolled to top → thumb at top
+                let thumb_y = bounds.size.height
+                    - thumb_height
+                    - (bounds.size.height - thumb_height) * scroll_ratio;
+                let scrollbar_color = Hsla {
+                    h: 0.0,
+                    s: 0.0,
+                    l: 0.6,
+                    a: 0.4,
+                };
+                let scrollbar_bounds = Bounds::new(
+                    Point {
+                        x: origin.x + bounds.size.width - scrollbar_width,
+                        y: origin.y + thumb_y,
+                    },
+                    gpui::Size {
+                        width: scrollbar_width,
+                        height: thumb_height,
+                    },
+                );
+                window.paint_quad(fill(scrollbar_bounds, scrollbar_color));
+            }
+
+            // 6. Paint exit overlay if process has exited
             if let Some(code) = layout.exited {
                 let msg = format!("[Process exited with code {code}]");
                 let exit_fg = rgb_to_hsla(0x6c, 0x70, 0x86); // Overlay6
