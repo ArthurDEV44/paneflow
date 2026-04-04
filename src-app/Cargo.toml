@@ -33,3 +33,4 @@ libc = "0.2"
 
 [dev-dependencies]
 gpui = { path = "/home/arthur/dev/zed/crates/gpui", features = ["test-support"] }
+tempfile = "3"

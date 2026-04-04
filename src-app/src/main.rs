@@ -14,9 +14,11 @@ mod title_bar;
 mod workspace;
 
 use gpui::{
-    App, Bounds, ClickEvent, Context, Entity, Focusable, InteractiveElement, IntoElement,
-    KeyBinding, KeyDownEvent, PathPromptOptions, Render, SharedString, Styled, Window,
-    WindowBounds, WindowDecorations, WindowOptions, actions, div, prelude::*, px, rgb, size, svg,
+    App, Bounds, ClickEvent, Context, CursorStyle, Decorations, Entity, Focusable, HitboxBehavior,
+    InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, MouseButton, PathPromptOptions,
+    Pixels, Point, Render, ResizeEdge, SharedString, Size, Styled, Window, WindowBounds,
+    WindowDecorations, WindowOptions, actions, canvas, div, point, prelude::*, px, rgb, size, svg,
+    transparent_black,
 };
 use gpui_platform::application;
 
@@ -219,7 +221,7 @@ impl PaneFlowApp {
         )
         .detach();
 
-        // Poll git diff stats for all workspaces every 3s
+        // Poll git metadata for all workspaces every 3s
         cx.spawn(
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 loop {
@@ -231,6 +233,13 @@ impl PaneFlowApp {
                                 let new_stats = crate::workspace::GitDiffStats::from_cwd(&ws.cwd);
                                 if new_stats != ws.git_stats {
                                     ws.git_stats = new_stats;
+                                    changed = true;
+                                }
+                                let (new_branch, new_is_repo) =
+                                    crate::workspace::detect_branch(&ws.cwd);
+                                if new_branch != ws.git_branch || new_is_repo != ws.is_git_repo {
+                                    ws.git_branch = new_branch;
+                                    ws.is_git_repo = new_is_repo;
                                     changed = true;
                                 }
                             }
@@ -291,11 +300,13 @@ impl PaneFlowApp {
             }
             "workspace.current" => {
                 if let Some(ws) = self.active_workspace() {
+                    let layout = ws.serialize_layout(cx);
                     serde_json::json!({
                         "index": self.active_idx,
                         "title": ws.title,
                         "cwd": ws.cwd,
                         "panes": ws.pane_count(),
+                        "layout": layout.map(|l| serde_json::to_value(l).ok()).flatten(),
                     })
                 } else {
                     serde_json::json!(null)
@@ -1221,6 +1232,72 @@ impl PaneFlowApp {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CSD window resize helpers
+// ---------------------------------------------------------------------------
+
+/// Width of the invisible border zone used for edge/corner resize handles.
+const RESIZE_BORDER: Pixels = px(10.0);
+
+/// Determine which resize edge/corner the mouse is hovering, if any.
+fn resize_edge(
+    pos: Point<Pixels>,
+    border: Pixels,
+    window_size: Size<Pixels>,
+    tiling: gpui::Tiling,
+) -> Option<ResizeEdge> {
+    // If the cursor is well inside the content area, no edge.
+    let inner = Bounds::new(Point::default(), window_size).inset(border * 1.5);
+    if inner.contains(&pos) {
+        return None;
+    }
+
+    let corner = size(border * 1.5, border * 1.5);
+
+    // Corners first (larger hit zone = 1.5× border)
+    if !tiling.top && !tiling.left && Bounds::new(point(px(0.), px(0.)), corner).contains(&pos) {
+        return Some(ResizeEdge::TopLeft);
+    }
+    if !tiling.top
+        && !tiling.right
+        && Bounds::new(point(window_size.width - corner.width, px(0.)), corner).contains(&pos)
+    {
+        return Some(ResizeEdge::TopRight);
+    }
+    if !tiling.bottom
+        && !tiling.left
+        && Bounds::new(point(px(0.), window_size.height - corner.height), corner).contains(&pos)
+    {
+        return Some(ResizeEdge::BottomLeft);
+    }
+    if !tiling.bottom
+        && !tiling.right
+        && Bounds::new(
+            point(
+                window_size.width - corner.width,
+                window_size.height - corner.height,
+            ),
+            corner,
+        )
+        .contains(&pos)
+    {
+        return Some(ResizeEdge::BottomRight);
+    }
+
+    // Edges
+    if !tiling.top && pos.y < border {
+        Some(ResizeEdge::Top)
+    } else if !tiling.bottom && pos.y > window_size.height - border {
+        Some(ResizeEdge::Bottom)
+    } else if !tiling.left && pos.x < border {
+        Some(ResizeEdge::Left)
+    } else if !tiling.right && pos.x > window_size.width - border {
+        Some(ResizeEdge::Right)
+    } else {
+        None
+    }
+}
+
 impl Render for PaneFlowApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let main_content = if let Some(ws) = self.active_workspace() {
@@ -1256,10 +1333,20 @@ impl Render for PaneFlowApp {
             tb.sidebar_width = px(SIDEBAR_WIDTH);
         });
 
-        div()
+        // --- CSD resize backdrop ---
+        let decorations = window.window_decorations();
+
+        match decorations {
+            Decorations::Client { .. } => window.set_client_inset(RESIZE_BORDER),
+            Decorations::Server => window.set_client_inset(px(0.0)),
+        }
+
+        // The inner app content (title bar + sidebar + main)
+        let app_content = div()
             .flex()
             .flex_col()
             .size_full()
+            .cursor(CursorStyle::Arrow)
             .on_action(cx.listener(Self::handle_split_h))
             .on_action(cx.listener(Self::handle_split_v))
             .on_action(cx.listener(Self::handle_close_pane))
@@ -1291,6 +1378,7 @@ impl Render for PaneFlowApp {
                     cx.quit();
                 }),
             )
+            .on_mouse_move(|_e, _, cx| cx.stop_propagation())
             // Title bar (Entity with drag-to-move support)
             .child(self.title_bar.clone())
             // Sidebar + main content area
@@ -1309,7 +1397,75 @@ impl Render for PaneFlowApp {
                             .overflow_hidden()
                             .child(main_content),
                     ),
-            )
+            );
+
+        // Outer backdrop div — provides the invisible resize border zone for CSD
+        div()
+            .id("window-backdrop")
+            .bg(transparent_black())
+            .size_full()
+            .map(|d| match decorations {
+                Decorations::Server => d,
+                Decorations::Client { tiling } => d
+                    // Resize cursor canvas (absolute overlay for the full window)
+                    .child(
+                        canvas(
+                            |_bounds, window, _cx| {
+                                window.insert_hitbox(
+                                    Bounds::new(
+                                        point(px(0.0), px(0.0)),
+                                        window.window_bounds().get_bounds().size,
+                                    ),
+                                    HitboxBehavior::Normal,
+                                )
+                            },
+                            move |_bounds, hitbox, window, _cx| {
+                                let mouse = window.mouse_position();
+                                let win_size = window.window_bounds().get_bounds().size;
+                                let Some(edge) =
+                                    resize_edge(mouse, RESIZE_BORDER, win_size, tiling)
+                                else {
+                                    return;
+                                };
+                                window.set_cursor_style(
+                                    match edge {
+                                        ResizeEdge::Top | ResizeEdge::Bottom => {
+                                            CursorStyle::ResizeUpDown
+                                        }
+                                        ResizeEdge::Left | ResizeEdge::Right => {
+                                            CursorStyle::ResizeLeftRight
+                                        }
+                                        ResizeEdge::TopLeft | ResizeEdge::BottomRight => {
+                                            CursorStyle::ResizeUpLeftDownRight
+                                        }
+                                        ResizeEdge::TopRight | ResizeEdge::BottomLeft => {
+                                            CursorStyle::ResizeUpRightDownLeft
+                                        }
+                                    },
+                                    &hitbox,
+                                );
+                            },
+                        )
+                        .size_full()
+                        .absolute(),
+                    )
+                    // Padding on non-tiled edges creates the invisible resize border
+                    .when(!tiling.top, |d| d.pt(RESIZE_BORDER))
+                    .when(!tiling.bottom, |d| d.pb(RESIZE_BORDER))
+                    .when(!tiling.left, |d| d.pl(RESIZE_BORDER))
+                    .when(!tiling.right, |d| d.pr(RESIZE_BORDER))
+                    // Refresh on mouse move so cursor style updates every frame
+                    .on_mouse_move(|_e, window, _cx| window.refresh())
+                    // Initiate resize on mouse-down in the border zone
+                    .on_mouse_down(MouseButton::Left, move |e, window, _cx| {
+                        let win_size = window.window_bounds().get_bounds().size;
+                        if let Some(edge) = resize_edge(e.position, RESIZE_BORDER, win_size, tiling)
+                        {
+                            window.start_window_resize(edge);
+                        }
+                    }),
+            })
+            .child(app_content)
     }
 }
 
