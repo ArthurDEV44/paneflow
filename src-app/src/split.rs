@@ -172,11 +172,15 @@ impl LayoutTree {
             } => {
                 let dir = *direction;
 
-                // Build container with drag tracking
+                // Build container with drag tracking.
+                // Pre-compute per-child constraints (max yieldable pixels) so the
+                // drag closure can clamp based on nested subtree minimums.
                 let drag_move = drag.clone();
                 let size_for_drag = container_size.clone();
                 let child_ratios: Vec<Rc<Cell<f32>>> =
                     children.iter().map(|c| c.ratio.clone()).collect();
+                let child_constraints: Vec<f32> =
+                    children.iter().map(|c| c.resize_check(dir)).collect();
 
                 let mut container = div().flex().size_full().overflow_hidden().on_mouse_move(
                     move |e, _window, _cx| {
@@ -192,12 +196,32 @@ impl LayoutTree {
                             let delta = current_pos - ds.start_pos;
                             let ratio_delta = delta / csize;
 
-                            // Pixel-based constraint: each child must stay >= MIN_PANE_SIZE.
-                            // The pair's combined ratio is fixed; clamp so neither goes below min.
+                            // Constraint clamping: use the pre-computed resize_check of the
+                            // child being shrunk to prevent nested subtree minimum violations.
                             let pair_sum = ds.start_ratio_before + ds.start_ratio_after;
                             let min_r = MIN_PANE_SIZE / csize;
-                            let new_before = (ds.start_ratio_before + ratio_delta)
-                                .clamp(min_r, pair_sum - min_r);
+
+                            // Max shrinkable ratio for each side, from recursive constraints
+                            let max_shrink_before = child_constraints
+                                .get(ds.divider_idx)
+                                .copied()
+                                .unwrap_or(0.0)
+                                / csize;
+                            let max_shrink_after = child_constraints
+                                .get(ds.divider_idx + 1)
+                                .copied()
+                                .unwrap_or(0.0)
+                                / csize;
+
+                            // Clamp: child[i] can't shrink more than its constraint,
+                            // child[i+1] can't shrink more than its constraint.
+                            let lower = (ds.start_ratio_before - max_shrink_before).max(min_r);
+                            let upper =
+                                (ds.start_ratio_before + max_shrink_after).min(pair_sum - min_r);
+                            // Guarantee lower <= upper (can invert with tiny pair_sum)
+                            let upper = upper.max(lower);
+                            let new_before =
+                                (ds.start_ratio_before + ratio_delta).clamp(lower, upper);
                             let new_after = pair_sum - new_before;
 
                             if let Some(r) = child_ratios.get(ds.divider_idx) {
