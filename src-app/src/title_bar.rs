@@ -35,7 +35,8 @@ impl TitleBar {
 impl Render for TitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let height = (1.75 * window.rem_size()).max(px(34.));
-        let is_csd = matches!(window.window_decorations(), Decorations::Client { .. });
+        let decorations = window.window_decorations();
+        let is_csd = matches!(decorations, Decorations::Client { .. });
 
         // --- Title bar background from theme, switching on window focus ---
         let theme = crate::theme::active_theme();
@@ -95,7 +96,9 @@ impl Render for TitleBar {
                 );
         }
 
-        div()
+        let csd_rounding = px(10.);
+
+        let mut bar = div()
             .id("title-bar")
             .flex()
             .flex_row()
@@ -103,9 +106,25 @@ impl Render for TitleBar {
             .w_full()
             .h(height)
             .bg(bg_color)
-            .border_b_1()
-            .border_color(rgb(0x313244))
-            .px(px(12.))
+            .px(px(12.));
+
+        // CSD rounded corners with tiling awareness
+        if let Decorations::Client { tiling } = decorations {
+            if !(tiling.top || tiling.left) {
+                bar = bar.rounded_tl(csd_rounding);
+            }
+            if !(tiling.top || tiling.right) {
+                bar = bar.rounded_tr(csd_rounding);
+            }
+            // 1px border + negative margins fill transparent gap at rounded corners
+            bar = bar
+                .mt(px(-1.))
+                .mb(px(-1.))
+                .border(px(1.))
+                .border_color(bg_color);
+        }
+
+        bar
             // Drag-to-move state machine
             .on_mouse_down(
                 MouseButton::Left,
