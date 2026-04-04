@@ -152,6 +152,12 @@ impl Render for TitleBar {
                     window.zoom_window();
                 }
             })
+            // Right-click opens the DE's native window menu
+            .when(supported.window_menu, |bar| {
+                bar.on_mouse_down(MouseButton::Right, |ev, window, _| {
+                    window.show_window_menu(ev.position);
+                })
+            })
             .children(left_controls)
             .child(title)
             .children(right_controls)
