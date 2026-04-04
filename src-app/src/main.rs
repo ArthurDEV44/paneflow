@@ -21,6 +21,7 @@ use gpui::{
     transparent_black,
 };
 use gpui_platform::application;
+use notify::Watcher;
 
 use std::collections::VecDeque;
 
@@ -105,9 +106,48 @@ struct PaneFlowApp {
     last_config_mtime: Option<std::time::SystemTime>,
     ipc_rx: std::sync::mpsc::Receiver<ipc::IpcRequest>,
     title_bar: Entity<title_bar::TitleBar>,
+    /// File watcher for `.git/HEAD` and `.git/index` across all workspaces.
+    /// `None` if the OS watcher could not be created (graceful degradation).
+    git_watcher: Option<notify::RecommendedWatcher>,
+    /// Receiver for raw notify events from the git file watcher.
+    git_event_rx: std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
+    /// Refcount for watched `.git` directories (multiple workspaces may share a repo).
+    git_watch_counts: std::collections::HashMap<std::path::PathBuf, usize>,
 }
 
 impl PaneFlowApp {
+    /// Add a workspace's `.git` directory to the file watcher.
+    /// Uses refcounting so multiple workspaces sharing a repo don't conflict.
+    /// Silently skipped if the workspace is not in a git repo or watcher is unavailable.
+    fn watch_git_dir(&mut self, ws: &Workspace) {
+        if let Some(ref git_dir) = ws.git_dir {
+            let count = self.git_watch_counts.entry(git_dir.clone()).or_insert(0);
+            *count += 1;
+            if *count == 1 {
+                // First workspace watching this git dir — register with OS
+                if let Some(ref mut watcher) = self.git_watcher {
+                    if let Err(e) = watcher.watch(git_dir, notify::RecursiveMode::NonRecursive) {
+                        log::warn!("git watcher: failed to watch {}: {e}", git_dir.display());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Remove a workspace's `.git` directory from the file watcher.
+    /// Only unwatches when the last workspace using this git dir is removed.
+    fn unwatch_git_dir(&mut self, git_dir: &std::path::Path) {
+        if let Some(count) = self.git_watch_counts.get_mut(git_dir) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.git_watch_counts.remove(git_dir);
+                if let Some(ref mut watcher) = self.git_watcher {
+                    let _ = watcher.unwatch(git_dir);
+                }
+            }
+        }
+    }
+
     /// Create a new pane wrapping a terminal, and subscribe to its events.
     /// When the pane emits `PaneEvent::Remove` (last tab closed), the pane
     /// is removed from the split tree — following Zed's EventEmitter pattern.
@@ -180,6 +220,79 @@ impl PaneFlowApp {
         let title_bar = cx.new(title_bar::TitleBar::new);
         let last_config_mtime = crate::theme::config_mtime();
         let ipc_rx = ipc::start_server();
+
+        // Setup notify file watcher for .git directories
+        let (git_event_tx, git_event_rx) = std::sync::mpsc::channel();
+        let mut git_watcher = match notify::recommended_watcher(git_event_tx) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                log::warn!("git file watcher unavailable: {e}. Falling back to polling.");
+                None
+            }
+        };
+        let mut git_watch_counts = std::collections::HashMap::new();
+        // Watch the initial workspace's .git directory
+        if let Some(ref mut watcher) = git_watcher {
+            if let Some(ref git_dir) = ws.git_dir {
+                if let Err(e) = watcher.watch(git_dir, notify::RecursiveMode::NonRecursive) {
+                    log::warn!("git watcher: failed to watch {}: {e}", git_dir.display());
+                } else {
+                    git_watch_counts.insert(git_dir.clone(), 1);
+                }
+            }
+        }
+
+        // Poll git watcher events with 300ms debounce.
+        // Filter: only HEAD and index matter. NonRecursive mode limits events to
+        // top-level entries of .git/ so no subdirectory false positives.
+        cx.spawn(
+            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let debounce = std::time::Duration::from_millis(300);
+                let mut last_event = std::time::Instant::now() - debounce;
+                let mut pending = false;
+
+                loop {
+                    smol::Timer::after(std::time::Duration::from_millis(50)).await;
+
+                    // Drain events from the watcher channel, filter for HEAD/index
+                    let had_relevant = cx.update(|cx| {
+                        this.update(cx, |app: &mut Self, _cx: &mut Context<Self>| {
+                            let mut found = false;
+                            while let Ok(event) = app.git_event_rx.try_recv() {
+                                if let Ok(ref ev) = event {
+                                    if ev.paths.iter().any(|p| {
+                                        matches!(
+                                            p.file_name().and_then(|n| n.to_str()),
+                                            Some("HEAD" | "index")
+                                        )
+                                    }) {
+                                        found = true;
+                                    }
+                                }
+                            }
+                            found
+                        })
+                    });
+
+                    match had_relevant {
+                        Ok(true) => {
+                            last_event = std::time::Instant::now();
+                            pending = true;
+                        }
+                        Ok(false) => {}
+                        Err(_) => break, // app shutting down
+                    }
+
+                    // Debounce: fire after 300ms of quiet
+                    if pending && last_event.elapsed() >= debounce {
+                        pending = false;
+                        // US-003 will wire this to git probe execution.
+                        log::debug!("git watcher: debounced event fired");
+                    }
+                }
+            },
+        )
+        .detach();
 
         // Poll IPC requests every 10ms
         cx.spawn(
@@ -264,6 +377,9 @@ impl PaneFlowApp {
             last_config_mtime,
             ipc_rx,
             title_bar,
+            git_watcher,
+            git_event_rx,
+            git_watch_counts,
         }
     }
 
@@ -320,6 +436,7 @@ impl PaneFlowApp {
                 let terminal = cx.new(TerminalView::new);
                 let pane = self.create_pane(terminal, cx);
                 let ws = Workspace::new(name, pane);
+                self.watch_git_dir(&ws);
                 self.workspaces.push(ws);
                 let idx = self.workspaces.len() - 1;
                 cx.notify();
@@ -345,6 +462,9 @@ impl PaneFlowApp {
                         .map(|i| i as usize)
                         .unwrap_or(self.active_idx);
                     if idx < self.workspaces.len() {
+                        if let Some(dir) = self.workspaces[idx].git_dir.clone() {
+                            self.unwatch_git_dir(&dir);
+                        }
                         self.workspaces.remove(idx);
                         if self.active_idx >= self.workspaces.len() {
                             self.active_idx = self.workspaces.len() - 1;
@@ -467,6 +587,7 @@ impl PaneFlowApp {
         let terminal = cx.new(TerminalView::new);
         let pane = self.create_pane(terminal, cx);
         let ws = Workspace::new(format!("Terminal {n}"), pane);
+        self.watch_git_dir(&ws);
         self.workspaces.push(ws);
         self.active_idx = self.workspaces.len() - 1;
         self.workspaces[self.active_idx].focus_first(window, cx);
@@ -499,6 +620,7 @@ impl PaneFlowApp {
                                 let terminal = cx.new(|cx| TerminalView::with_cwd(Some(path), cx));
                                 let pane = app.create_pane(terminal, cx);
                                 let ws = Workspace::with_cwd(title, dir, pane);
+                                app.watch_git_dir(&ws);
                                 app.workspaces.push(ws);
                                 app.active_idx = app.workspaces.len() - 1;
                                 // Cannot call focus_first here (no Window ref in async),
@@ -889,6 +1011,9 @@ impl PaneFlowApp {
         // Guard: don't close the last workspace
         if self.workspaces.len() <= 1 || idx >= self.workspaces.len() {
             return;
+        }
+        if let Some(dir) = self.workspaces[idx].git_dir.clone() {
+            self.unwatch_git_dir(&dir);
         }
         self.workspaces.remove(idx);
         // Clamp active_idx
