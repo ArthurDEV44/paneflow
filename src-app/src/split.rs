@@ -17,7 +17,7 @@ use crate::pane::Pane;
 // Split direction
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum SplitDirection {
     /// Horizontal divider — panes stacked top/bottom (flex_col)
     Horizontal,
@@ -68,6 +68,26 @@ fn normalize_ratios(children: &[LayoutChild]) {
             child.ratio.set(child.ratio.get() / sum);
         }
     }
+}
+
+/// Insert a new pane as a sibling after `children[idx]`.
+/// The new child steals half of the target child's ratio.
+///
+/// # Panics
+/// Panics in debug builds if `idx >= children.len()`.
+fn insert_sibling(children: &mut Vec<LayoutChild>, idx: usize, new_pane: Entity<Pane>) {
+    debug_assert!(idx < children.len(), "insert_sibling: idx out of bounds");
+    let old_ratio = children[idx].ratio.get();
+    let half = old_ratio / 2.0;
+    children[idx].ratio.set(half);
+    children.insert(
+        idx + 1,
+        LayoutChild {
+            node: LayoutTree::Leaf(new_pane),
+            ratio: Rc::new(Cell::new(half)),
+            computed_size: Rc::new(Cell::new(0.0)),
+        },
+    );
 }
 
 impl LayoutTree {
@@ -211,6 +231,9 @@ impl LayoutTree {
     }
 
     /// Split the focused pane in the given direction.
+    ///
+    /// If the parent container has the same direction, the new pane is added
+    /// as a sibling (N-ary insertion). Otherwise a new nested container is created.
     pub fn split_at_focused(
         &mut self,
         direction: SplitDirection,
@@ -220,6 +243,7 @@ impl LayoutTree {
     ) -> bool {
         match self {
             LayoutTree::Leaf(pane) => {
+                // Cross-direction case: wrap in a new 2-child container
                 if pane.read(cx).focus_handle(cx).is_focused(window) {
                     let old = std::mem::replace(self, LayoutTree::Leaf(new_pane.clone()));
                     *self = LayoutTree::new_split(direction, old, LayoutTree::Leaf(new_pane));
@@ -228,7 +252,23 @@ impl LayoutTree {
                     false
                 }
             }
-            LayoutTree::Container { children, .. } => {
+            LayoutTree::Container {
+                direction: dir,
+                children,
+                ..
+            } => {
+                // Same-direction: check if any direct child leaf is the target
+                if *dir == direction {
+                    for i in 0..children.len() {
+                        if let LayoutTree::Leaf(pane) = &children[i].node {
+                            if pane.read(cx).focus_handle(cx).is_focused(window) {
+                                insert_sibling(children, i, new_pane);
+                                return true;
+                            }
+                        }
+                    }
+                }
+                // Recurse into children (handles cross-direction + deeper matches)
                 for child in children.iter_mut() {
                     if child
                         .node
@@ -244,13 +284,27 @@ impl LayoutTree {
 
     /// Split the first (leftmost/topmost) leaf in the given direction.
     /// Used by the IPC handler where no Window/focus context is available.
+    ///
+    /// Same-direction splits insert as a sibling in the parent container.
     pub fn split_first_leaf(&mut self, direction: SplitDirection, new_pane: Entity<Pane>) {
         match self {
             LayoutTree::Leaf(_) => {
                 let old = std::mem::replace(self, LayoutTree::Leaf(new_pane.clone()));
                 *self = LayoutTree::new_split(direction, old, LayoutTree::Leaf(new_pane));
             }
-            LayoutTree::Container { children, .. } => {
+            LayoutTree::Container {
+                direction: dir,
+                children,
+                ..
+            } => {
+                // Same direction + first child is a leaf → sibling insert
+                if *dir == direction
+                    && matches!(children.first(), Some(c) if matches!(c.node, LayoutTree::Leaf(_)))
+                {
+                    insert_sibling(children, 0, new_pane);
+                    return;
+                }
+                // Otherwise recurse into first child
                 if let Some(first) = children.first_mut() {
                     first.node.split_first_leaf(direction, new_pane);
                 }
@@ -268,6 +322,7 @@ impl LayoutTree {
     ) -> bool {
         match self {
             LayoutTree::Leaf(pane) => {
+                // Cross-direction case: wrap in a new 2-child container
                 if pane == target {
                     let old = std::mem::replace(self, LayoutTree::Leaf(new_pane.clone()));
                     *self = LayoutTree::new_split(direction, old, LayoutTree::Leaf(new_pane));
@@ -276,7 +331,23 @@ impl LayoutTree {
                     false
                 }
             }
-            LayoutTree::Container { children, .. } => {
+            LayoutTree::Container {
+                direction: dir,
+                children,
+                ..
+            } => {
+                // Same-direction: check if any direct child leaf is the target
+                if *dir == direction {
+                    for i in 0..children.len() {
+                        if let LayoutTree::Leaf(pane) = &children[i].node {
+                            if pane == target {
+                                insert_sibling(children, i, new_pane);
+                                return true;
+                            }
+                        }
+                    }
+                }
+                // Recurse into children
                 for child in children.iter_mut() {
                     if child
                         .node
@@ -444,6 +515,16 @@ impl LayoutTree {
             LayoutTree::Leaf(_) => 1,
             LayoutTree::Container { children, .. } => {
                 children.iter().map(|c| c.node.leaf_count()).sum()
+            }
+        }
+    }
+
+    /// Maximum depth of the tree (leaf = 0, container with leaves = 1).
+    pub fn depth(&self) -> usize {
+        match self {
+            LayoutTree::Leaf(_) => 0,
+            LayoutTree::Container { children, .. } => {
+                1 + children.iter().map(|c| c.node.depth()).max().unwrap_or(0)
             }
         }
     }
