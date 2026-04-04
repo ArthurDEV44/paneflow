@@ -93,6 +93,11 @@ impl Render for TitleBar {
                     window.start_window_move();
                 }
             }))
+            .on_click(|event, window, _| {
+                if event.click_count() == 2 {
+                    window.zoom_window();
+                }
+            })
             .child(title)
             .children(controls)
     }
