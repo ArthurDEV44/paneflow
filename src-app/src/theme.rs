@@ -1,9 +1,13 @@
 //! Terminal theming with 30 color slots compatible with Zed's terminal theme format.
 
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
+
 use gpui::{Hsla, Rgba};
 
 /// Terminal color theme with 30 slots:
 /// 5 base colors + 24 ANSI colors (8 hues x 3 intensities) + cursor.
+#[derive(Clone, Copy)]
 pub struct TerminalTheme {
     pub background: Hsla,
     pub foreground: Hsla,
@@ -261,8 +265,8 @@ fn read_config_theme_name() -> Option<String> {
     paneflow_config::loader::load_config().theme
 }
 
-/// Get the active theme — reads from config if available, falls back to Catppuccin Mocha.
-pub fn active_theme() -> TerminalTheme {
+/// Resolve the theme from config, falling back to Catppuccin Mocha.
+fn resolve_theme() -> TerminalTheme {
     if let Some(name) = read_config_theme_name() {
         if let Some(theme) = theme_by_name(&name) {
             return theme;
@@ -272,8 +276,60 @@ pub fn active_theme() -> TerminalTheme {
     catppuccin_mocha()
 }
 
+// ---------------------------------------------------------------------------
+// Theme cache — avoids disk I/O on every frame
+// ---------------------------------------------------------------------------
+
+/// Minimum interval between mtime checks (avoids stat() on every frame).
+const THEME_CHECK_INTERVAL: Duration = Duration::from_millis(500);
+
+struct CachedTheme {
+    theme: TerminalTheme,
+    mtime: Option<SystemTime>,
+    last_check: Instant,
+}
+
+static THEME_CACHE: Mutex<Option<CachedTheme>> = Mutex::new(None);
+
 /// Get the config file modification time for change detection.
-pub fn config_mtime() -> Option<std::time::SystemTime> {
+pub fn config_mtime() -> Option<SystemTime> {
     let config_path = paneflow_config::loader::config_path()?;
     std::fs::metadata(config_path).ok()?.modified().ok()
+}
+
+/// Get the active theme. Caches the parsed theme and only re-reads from disk
+/// when the config file's mtime has changed (checked at most every 500ms).
+/// If the config is corrupted or missing, the last valid theme is used.
+pub fn active_theme() -> TerminalTheme {
+    let mut cache = THEME_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+
+    if let Some(cached) = cache.as_ref() {
+        // Throttle: only check mtime if enough time has passed
+        if cached.last_check.elapsed() < THEME_CHECK_INTERVAL {
+            return cached.theme;
+        }
+    }
+
+    let current_mtime = config_mtime();
+    let needs_reload = match (&*cache, current_mtime) {
+        (None, _) => true,
+        // Config file missing/unreadable — always reload to pick up recovery
+        (_, None) => true,
+        (Some(cached), Some(_)) => cached.mtime != current_mtime,
+    };
+
+    if needs_reload {
+        let theme = resolve_theme();
+        *cache = Some(CachedTheme {
+            theme,
+            mtime: current_mtime,
+            last_check: Instant::now(),
+        });
+        theme
+    } else {
+        // mtime unchanged — update last_check and return cached theme
+        let cached = cache.as_mut().unwrap();
+        cached.last_check = Instant::now();
+        cached.theme
+    }
 }
