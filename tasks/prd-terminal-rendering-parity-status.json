@@ -1,0 +1,208 @@
+{
+  "prd": {
+    "file": "tasks/prd-terminal-rendering-parity.md",
+    "title": "Terminal Rendering Parity",
+    "created_at": "2026-04-05",
+    "status": "DRAFT"
+  },
+  "epics": [
+    {
+      "id": "EP-001",
+      "title": "Core Text Rendering",
+      "status": "TODO",
+      "priority": "P0",
+      "stories_total": 4,
+      "stories_done": 0
+    },
+    {
+      "id": "EP-002",
+      "title": "Cursor Rendering",
+      "status": "TODO",
+      "priority": "P0",
+      "stories_total": 2,
+      "stories_done": 0
+    },
+    {
+      "id": "EP-003",
+      "title": "Color & Contrast",
+      "status": "TODO",
+      "priority": "P1",
+      "stories_total": 2,
+      "stories_done": 0
+    },
+    {
+      "id": "EP-004",
+      "title": "Layout Precision",
+      "status": "TODO",
+      "priority": "P1",
+      "stories_total": 3,
+      "stories_done": 0
+    },
+    {
+      "id": "EP-005",
+      "title": "Configurability",
+      "status": "TODO",
+      "priority": "P2",
+      "stories_total": 2,
+      "stories_done": 0
+    }
+  ],
+  "stories": [
+    {
+      "id": "US-001",
+      "title": "Font fallback chain",
+      "epic": "EP-001",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-002",
+      "title": "Zero-width and combining character support",
+      "epic": "EP-001",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": ["US-001"],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-003",
+      "title": "DIM (faint) flag handling",
+      "epic": "EP-001",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "XS",
+      "blocked_by": [],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-004",
+      "title": "Underline color and undercurl",
+      "epic": "EP-001",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-005",
+      "title": "Block cursor with inverted text",
+      "epic": "EP-002",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-006",
+      "title": "Wide character cursor sizing",
+      "epic": "EP-002",
+      "status": "TODO",
+      "priority": "P0",
+      "size": "XS",
+      "blocked_by": [],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-007",
+      "title": "Minimum contrast enforcement",
+      "epic": "EP-003",
+      "status": "TODO",
+      "priority": "P1",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-008",
+      "title": "Decorative character detection",
+      "epic": "EP-003",
+      "status": "TODO",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": ["US-007"],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-009",
+      "title": "Pixel-aligned background rects",
+      "epic": "EP-004",
+      "status": "TODO",
+      "priority": "P1",
+      "size": "XS",
+      "blocked_by": [],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-010",
+      "title": "Left gutter margin",
+      "epic": "EP-004",
+      "status": "TODO",
+      "priority": "P1",
+      "size": "XS",
+      "blocked_by": [],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-011",
+      "title": "Theme caching",
+      "epic": "EP-004",
+      "status": "TODO",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-012",
+      "title": "Configurable line height",
+      "epic": "EP-005",
+      "status": "TODO",
+      "priority": "P2",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    },
+    {
+      "id": "US-013",
+      "title": "Configurable font family and size",
+      "epic": "EP-005",
+      "status": "TODO",
+      "priority": "P2",
+      "size": "S",
+      "blocked_by": ["US-012"],
+      "started_at": null,
+      "completed_at": null,
+      "reviewed_at": null
+    }
+  ]
+}
