@@ -82,6 +82,9 @@ pub struct TerminalState {
     pub notifier: Notifier,
     events_rx: UnboundedReceiver<AlacEvent>,
     pub exited: Option<i32>,
+    /// PID of the shell child process, used for port detection (US-006/007).
+    #[allow(dead_code)]
+    pub child_pid: u32,
     /// Terminal title set via OSC 0/2 escape sequences (e.g. shell prompt, Claude Code).
     pub title: String,
     /// Set when PTY output has been processed (Wakeup event received).
@@ -130,6 +133,7 @@ impl TerminalState {
         };
 
         let pty = tty::new(&pty_config, window_size, 0)?;
+        let child_pid = pty.child().id();
 
         let event_loop =
             AlacEventLoop::new(term.clone(), ZedListener(events_tx), pty, false, false)?;
@@ -142,6 +146,7 @@ impl TerminalState {
             notifier: Notifier(pty_tx),
             events_rx,
             exited: None,
+            child_pid,
             title: String::from("Terminal"),
             dirty: true, // Force initial render
             #[cfg(debug_assertions)]
