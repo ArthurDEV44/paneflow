@@ -572,6 +572,92 @@ impl PaneFlowApp {
         )
         .detach();
 
+        // CWD change detection: poll active terminals every 2s.
+        // When a shell `cd`s, update workspace CWD, re-attach notify watcher,
+        // and run immediate git probe.
+        cx.spawn(
+            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                loop {
+                    smol::Timer::after(std::time::Duration::from_secs(2)).await;
+                    let result = cx.update(|cx| {
+                        this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                            // Phase 1: detect CWD changes
+                            let mut cwd_changes: Vec<(usize, String)> = Vec::new();
+                            for (i, ws) in app.workspaces.iter().enumerate() {
+                                if let Some(root) = &ws.root {
+                                    for pane in root.collect_leaves() {
+                                        let cwd = pane
+                                            .read(cx)
+                                            .active_terminal()
+                                            .read(cx)
+                                            .terminal
+                                            .current_cwd
+                                            .clone();
+                                        if let Some(ref new_cwd) = cwd
+                                            && *new_cwd != ws.cwd
+                                        {
+                                            cwd_changes.push((i, new_cwd.clone()));
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if cwd_changes.is_empty() {
+                                return;
+                            }
+
+                            // Phase 2: apply changes
+                            for (i, new_cwd) in &cwd_changes {
+                                // Unwatch old git dir
+                                let old_git_dir = app.workspaces[*i].git_dir.clone();
+                                if let Some(ref dir) = old_git_dir {
+                                    app.unwatch_git_dir(dir);
+                                }
+
+                                // Update workspace fields with immediate git probe
+                                let new_git_dir = crate::workspace::find_git_dir(new_cwd);
+                                let (branch, is_repo) = crate::workspace::detect_branch(new_cwd);
+                                let stats = crate::workspace::GitDiffStats::from_cwd(new_cwd);
+                                let ws = &mut app.workspaces[*i];
+                                ws.cwd = new_cwd.clone();
+                                ws.git_dir = new_git_dir.clone();
+                                ws.git_branch = branch;
+                                ws.is_git_repo = is_repo;
+                                ws.git_stats = stats;
+
+                                // Watch new git dir (inlined to avoid
+                                // &mut self + &Workspace borrow conflict)
+                                if let Some(ref dir) = new_git_dir {
+                                    let count =
+                                        app.git_watch_counts.entry(dir.clone()).or_insert(0);
+                                    *count += 1;
+                                    if *count == 1
+                                        && let Some(ref mut watcher) = app.git_watcher
+                                        && let Err(e) =
+                                            watcher.watch(dir, notify::RecursiveMode::NonRecursive)
+                                    {
+                                        log::warn!(
+                                            "git watcher: failed to watch {}: {e}",
+                                            dir.display()
+                                        );
+                                    }
+                                }
+
+                                log::debug!("workspace CWD changed to: {new_cwd}");
+                            }
+
+                            cx.notify();
+                        })
+                    });
+                    if result.is_err() {
+                        break;
+                    }
+                }
+            },
+        )
+        .detach();
+
         Self {
             workspaces: vec![ws],
             active_idx: 0,
