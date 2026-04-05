@@ -761,11 +761,11 @@ impl Element for TerminalElement {
             // 1. Paint full terminal background
             window.paint_quad(fill(bounds, layout.background_color));
 
-            // 2. Paint per-cell background rects
+            // 2. Paint per-cell background rects (pixel-aligned to prevent gaps)
             for rect in &layout.rects {
-                let x = origin.x + cell_width * rect.col as f32;
+                let x = (origin.x + cell_width * rect.col as f32).floor();
                 let y = origin.y + line_height * rect.line as f32;
-                let w = cell_width * rect.num_cols as f32;
+                let w = (cell_width * rect.num_cols as f32).ceil();
                 let rect_bounds = Bounds::new(
                     Point { x, y },
                     gpui::Size {
@@ -776,11 +776,11 @@ impl Element for TerminalElement {
                 window.paint_quad(fill(rect_bounds, rect.color));
             }
 
-            // 2b. Paint selection highlight rects (semi-transparent overlay)
+            // 2b. Paint selection highlight rects (pixel-aligned)
             for rect in &layout.selection_rects {
-                let x = origin.x + cell_width * rect.col as f32;
+                let x = (origin.x + cell_width * rect.col as f32).floor();
                 let y = origin.y + line_height * rect.line as f32;
-                let w = cell_width * rect.num_cols as f32;
+                let w = (cell_width * rect.num_cols as f32).ceil();
                 let rect_bounds = Bounds::new(
                     Point { x, y },
                     gpui::Size {
