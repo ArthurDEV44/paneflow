@@ -737,7 +737,7 @@ impl Element for TerminalElement {
             if let Some(cursor) = &layout.cursor {
                 let cx_ = origin.x + cell_width * cursor.col as f32;
                 let cy = origin.y + line_height * cursor.line as f32;
-                let cw = if cursor.wide {
+                let mut cw = if cursor.wide {
                     cell_width * 2.0
                 } else {
                     cell_width
@@ -747,17 +747,9 @@ impl Element for TerminalElement {
 
                 match cursor.shape {
                     CursorShape::Block => {
-                        let cursor_bounds = Bounds::new(
-                            Point { x: cx_, y: cy },
-                            gpui::Size {
-                                width: cw,
-                                height: ch,
-                            },
-                        );
-                        window.paint_quad(fill(cursor_bounds, color));
-
-                        // Paint the character under the cursor in the terminal bg color
-                        if let Some(ch) = cursor.text {
+                        // Shape the cursor character first so we can size the
+                        // cursor quad to fit wide/emoji glyphs.
+                        let shaped = cursor.text.map(|ch| {
                             let mut cursor_font = Self::base_font();
                             if cursor.bold {
                                 cursor_font.weight = FontWeight::BOLD;
@@ -767,7 +759,7 @@ impl Element for TerminalElement {
                             }
                             let text = ch.to_string();
                             let len = text.len();
-                            let shaped = window.text_system().shape_line(
+                            window.text_system().shape_line(
                                 SharedString::from(text),
                                 Self::font_size(),
                                 &[TextRun {
@@ -778,8 +770,28 @@ impl Element for TerminalElement {
                                     underline: None,
                                     strikethrough: None,
                                 }],
-                                Some(cw),
-                            );
+                                None,
+                            )
+                        });
+
+                        // Widen cursor to fit glyphs that exceed cell_width * 2
+                        if cursor.wide
+                            && let Some(ref shaped) = shaped
+                        {
+                            cw = cw.max(shaped.width());
+                        }
+
+                        let cursor_bounds = Bounds::new(
+                            Point { x: cx_, y: cy },
+                            gpui::Size {
+                                width: cw,
+                                height: ch,
+                            },
+                        );
+                        window.paint_quad(fill(cursor_bounds, color));
+
+                        // Paint the character on top of the cursor quad
+                        if let Some(shaped) = shaped {
                             let _ = shaped.paint(
                                 Point { x: cx_, y: cy },
                                 line_height,
