@@ -29,6 +29,7 @@ use crate::terminal::{SpikeTermSize, ZedListener};
 
 const FONT_SIZE: f32 = 14.0;
 const FONT_FAMILY: &str = "Noto Sans Mono";
+const DEFAULT_LINE_HEIGHT: f32 = 1.4;
 
 const FONT_FALLBACK_EMOJI: &str = "Noto Color Emoji";
 const FONT_FALLBACK_SYMBOLS: &str = "Symbols Nerd Font Mono";
@@ -251,7 +252,20 @@ impl TerminalElement {
             .advance(font_id, font_size, 'm')
             .unwrap()
             .width;
-        let line_height = px(FONT_SIZE * 1.4);
+        let multiplier = paneflow_config::loader::load_config()
+            .line_height
+            .map(|lh| {
+                if (1.0..=2.5).contains(&lh) {
+                    lh
+                } else {
+                    log::warn!(
+                        "line_height {lh} out of range [1.0, 2.5]; using default {DEFAULT_LINE_HEIGHT}"
+                    );
+                    DEFAULT_LINE_HEIGHT
+                }
+            })
+            .unwrap_or(DEFAULT_LINE_HEIGHT);
+        let line_height = px(FONT_SIZE * multiplier);
         CellDimensions {
             cell_width,
             line_height,

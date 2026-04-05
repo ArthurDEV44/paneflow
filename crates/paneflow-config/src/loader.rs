@@ -607,6 +607,7 @@ mod tests {
                 command: Some("echo hello".to_string()),
             }],
             window_decorations: None,
+            line_height: None,
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
