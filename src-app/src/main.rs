@@ -245,49 +245,121 @@ impl PaneFlowApp {
         // Poll git watcher events with 300ms debounce.
         // Filter: only HEAD and index matter. NonRecursive mode limits events to
         // top-level entries of .git/ so no subdirectory false positives.
+        // On debounce fire, run git probes off main thread and apply results.
         cx.spawn(
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let debounce = std::time::Duration::from_millis(300);
                 let mut last_event = std::time::Instant::now() - debounce;
                 let mut pending = false;
+                let mut pending_git_dirs = std::collections::HashSet::<std::path::PathBuf>::new();
 
                 loop {
                     smol::Timer::after(std::time::Duration::from_millis(50)).await;
 
-                    // Drain events from the watcher channel, filter for HEAD/index
-                    let had_relevant = cx.update(|cx| {
+                    // Drain events from the watcher channel, collect affected .git dirs
+                    let new_dirs = cx.update(|cx| {
                         this.update(cx, |app: &mut Self, _cx: &mut Context<Self>| {
-                            let mut found = false;
+                            let mut dirs = Vec::new();
                             while let Ok(event) = app.git_event_rx.try_recv() {
                                 if let Ok(ref ev) = event {
-                                    if ev.paths.iter().any(|p| {
-                                        matches!(
+                                    for p in &ev.paths {
+                                        if matches!(
                                             p.file_name().and_then(|n| n.to_str()),
                                             Some("HEAD" | "index")
-                                        )
-                                    }) {
-                                        found = true;
+                                        ) && let Some(parent) = p.parent()
+                                        {
+                                            dirs.push(parent.to_path_buf());
+                                        }
                                     }
                                 }
                             }
-                            found
+                            dirs
                         })
                     });
 
-                    match had_relevant {
-                        Ok(true) => {
+                    match new_dirs {
+                        Ok(dirs) if !dirs.is_empty() => {
+                            pending_git_dirs.extend(dirs);
                             last_event = std::time::Instant::now();
                             pending = true;
                         }
-                        Ok(false) => {}
+                        Ok(_) => {}
                         Err(_) => break, // app shutting down
                     }
 
                     // Debounce: fire after 300ms of quiet
                     if pending && last_event.elapsed() >= debounce {
                         pending = false;
-                        // US-003 will wire this to git probe execution.
-                        log::debug!("git watcher: debounced event fired");
+                        let affected_dirs = std::mem::take(&mut pending_git_dirs);
+                        log::debug!(
+                            "git watcher: debounced event fired for {} dir(s)",
+                            affected_dirs.len()
+                        );
+
+                        // Collect CWDs of affected workspaces (main thread)
+                        let cwds = cx.update(|cx| {
+                            this.update(cx, |app: &mut Self, _cx: &mut Context<Self>| {
+                                app.workspaces
+                                    .iter()
+                                    .filter(|ws| {
+                                        ws.git_dir
+                                            .as_ref()
+                                            .is_some_and(|gd| affected_dirs.contains(gd))
+                                    })
+                                    .map(|ws| ws.cwd.clone())
+                                    .collect::<Vec<String>>()
+                            })
+                        });
+
+                        let cwds = match cwds {
+                            Ok(c) => c,
+                            Err(_) => break,
+                        };
+
+                        if cwds.is_empty() {
+                            continue;
+                        }
+
+                        // Run git probes off main thread
+                        let results = smol::unblock(move || {
+                            cwds.into_iter()
+                                .map(|cwd| {
+                                    let (branch, is_repo) = crate::workspace::detect_branch(&cwd);
+                                    let stats = crate::workspace::GitDiffStats::from_cwd(&cwd);
+                                    (cwd, branch, is_repo, stats)
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .await;
+
+                        // Apply results to matching workspaces (main thread)
+                        let apply = cx.update(|cx| {
+                            this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                                let mut changed = false;
+                                for (cwd, branch, is_repo, stats) in &results {
+                                    for ws in &mut app.workspaces {
+                                        if ws.cwd != *cwd {
+                                            continue;
+                                        }
+                                        if ws.git_branch != *branch || ws.is_git_repo != *is_repo {
+                                            ws.git_branch = branch.clone();
+                                            ws.is_git_repo = *is_repo;
+                                            changed = true;
+                                        }
+                                        if ws.git_stats != *stats {
+                                            ws.git_stats = stats.clone();
+                                            changed = true;
+                                        }
+                                    }
+                                }
+                                if changed {
+                                    cx.notify();
+                                }
+                            })
+                        });
+                        if apply.is_err() {
+                            break;
+                        }
                     }
                 }
             },
