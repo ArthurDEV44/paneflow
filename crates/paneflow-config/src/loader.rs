@@ -608,6 +608,8 @@ mod tests {
             }],
             window_decorations: None,
             line_height: None,
+            font_family: None,
+            font_size: None,
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();

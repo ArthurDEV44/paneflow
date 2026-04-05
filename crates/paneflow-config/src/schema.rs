@@ -19,6 +19,10 @@ pub struct PaneFlowConfig {
     pub window_decorations: Option<String>,
     /// Terminal line height multiplier (default: 1.4, valid range: 1.0–2.5).
     pub line_height: Option<f32>,
+    /// Terminal font family (default: "Noto Sans Mono").
+    pub font_family: Option<String>,
+    /// Terminal font size in pixels (default: 14.0, valid range: 8.0–32.0).
+    pub font_size: Option<f32>,
 }
 
 /// A single command definition, compatible with the cmux workspace format.

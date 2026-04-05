@@ -27,8 +27,8 @@ use crate::terminal::{SpikeTermSize, ZedListener};
 // Constants
 // ---------------------------------------------------------------------------
 
-const FONT_SIZE: f32 = 14.0;
-const FONT_FAMILY: &str = "Noto Sans Mono";
+const DEFAULT_FONT_SIZE: f32 = 14.0;
+const DEFAULT_FONT_FAMILY: &str = "Noto Sans Mono";
 const DEFAULT_LINE_HEIGHT: f32 = 1.4;
 
 const FONT_FALLBACK_EMOJI: &str = "Noto Color Emoji";
@@ -45,6 +45,76 @@ static FONT_FALLBACKS: LazyLock<FontFallbacks> = LazyLock::new(|| {
         FONT_FALLBACK_SANS.to_string(),
     ])
 });
+
+// ---------------------------------------------------------------------------
+// Font config cache — avoids load_config() on every base_font()/font_size() call
+// ---------------------------------------------------------------------------
+
+struct CachedFontConfig {
+    family: String,
+    size: f32,
+    line_height: f32,
+    last_check: std::time::Instant,
+}
+
+static FONT_CONFIG_CACHE: std::sync::Mutex<Option<CachedFontConfig>> = std::sync::Mutex::new(None);
+
+/// Read font config, cached for 500ms (same pattern as theme cache).
+fn cached_font_config() -> (String, f32, f32) {
+    use std::time::{Duration, Instant};
+    const CHECK_INTERVAL: Duration = Duration::from_millis(500);
+
+    let mut cache = FONT_CONFIG_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+
+    if let Some(ref c) = *cache
+        && c.last_check.elapsed() < CHECK_INTERVAL
+    {
+        return (c.family.clone(), c.size, c.line_height);
+    }
+
+    let config = paneflow_config::loader::load_config();
+
+    let family = config
+        .font_family
+        .unwrap_or_else(|| DEFAULT_FONT_FAMILY.to_string());
+
+    let size = config
+        .font_size
+        .map(|s| {
+            if (8.0..=32.0).contains(&s) {
+                s
+            } else {
+                log::warn!(
+                    "font_size {s} out of range [8.0, 32.0]; using default {DEFAULT_FONT_SIZE}"
+                );
+                DEFAULT_FONT_SIZE
+            }
+        })
+        .unwrap_or(DEFAULT_FONT_SIZE);
+
+    let line_height = config
+        .line_height
+        .map(|lh| {
+            if (1.0..=2.5).contains(&lh) {
+                lh
+            } else {
+                log::warn!(
+                    "line_height {lh} out of range [1.0, 2.5]; using default {DEFAULT_LINE_HEIGHT}"
+                );
+                DEFAULT_LINE_HEIGHT
+            }
+        })
+        .unwrap_or(DEFAULT_LINE_HEIGHT);
+
+    *cache = Some(CachedFontConfig {
+        family: family.clone(),
+        size,
+        line_height,
+        last_check: Instant::now(),
+    });
+
+    (family, size, line_height)
+}
 
 // ---------------------------------------------------------------------------
 // Minimum contrast (WCAG 2.0 luminance ratio)
@@ -230,8 +300,9 @@ impl TerminalElement {
     }
 
     fn base_font() -> Font {
+        let (family, _, _) = cached_font_config();
         Font {
-            family: SharedString::from(FONT_FAMILY),
+            family: SharedString::from(family),
             features: Default::default(),
             fallbacks: Some(FONT_FALLBACKS.clone()),
             weight: FontWeight::NORMAL,
@@ -240,7 +311,8 @@ impl TerminalElement {
     }
 
     fn font_size() -> Pixels {
-        px(FONT_SIZE)
+        let (_, size, _) = cached_font_config();
+        px(size)
     }
 
     pub fn measure_cell(window: &mut Window, _cx: &mut App) -> CellDimensions {
@@ -252,20 +324,8 @@ impl TerminalElement {
             .advance(font_id, font_size, 'm')
             .unwrap()
             .width;
-        let multiplier = paneflow_config::loader::load_config()
-            .line_height
-            .map(|lh| {
-                if (1.0..=2.5).contains(&lh) {
-                    lh
-                } else {
-                    log::warn!(
-                        "line_height {lh} out of range [1.0, 2.5]; using default {DEFAULT_LINE_HEIGHT}"
-                    );
-                    DEFAULT_LINE_HEIGHT
-                }
-            })
-            .unwrap_or(DEFAULT_LINE_HEIGHT);
-        let line_height = px(FONT_SIZE * multiplier);
+        let (_, size_f32, multiplier) = cached_font_config();
+        let line_height = px(size_f32 * multiplier);
         CellDimensions {
             cell_width,
             line_height,
