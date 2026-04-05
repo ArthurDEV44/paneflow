@@ -300,6 +300,11 @@ impl TerminalElement {
                 std::mem::swap(&mut fg, &mut bg);
             }
 
+            // DIM/faint (SGR 2): reduce foreground opacity (applied after INVERSE)
+            if flags.contains(CellFlags::DIM) {
+                fg.a *= 0.7;
+            }
+
             // Background rect — only for non-default backgrounds
             let cell_cols = if flags.contains(CellFlags::WIDE_CHAR) {
                 2
