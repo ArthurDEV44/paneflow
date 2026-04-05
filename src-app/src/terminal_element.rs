@@ -269,8 +269,10 @@ impl TerminalElement {
         let background_color = theme.background;
         let default_bg = background_color;
 
-        // Compute desired terminal grid size from pixel bounds
-        let desired_cols = (bounds.size.width / dims.cell_width).floor() as usize;
+        // Compute desired terminal grid size from pixel bounds (accounting for left gutter)
+        let gutter = dims.cell_width;
+        let available_width = (bounds.size.width - gutter).max(px(0.0));
+        let desired_cols = (available_width / dims.cell_width).floor().max(1.0) as usize;
         let desired_rows = (bounds.size.height / dims.line_height).floor() as usize;
 
         // Snapshot the grid, cursor, and selection under lock to minimize FairMutex hold time.
@@ -749,10 +751,14 @@ impl Element for TerminalElement {
             return;
         };
 
-        let origin = bounds.origin;
-        // Store origin for mouse → grid coordinate conversion in TerminalView
-        *self.element_origin.lock().unwrap() = origin;
         let cell_width = layout.dimensions.cell_width;
+        // Offset origin by left gutter (1 cell width)
+        let origin = Point {
+            x: bounds.origin.x + cell_width,
+            y: bounds.origin.y,
+        };
+        // Store gutter-adjusted origin for mouse → grid coordinate conversion
+        *self.element_origin.lock().unwrap() = origin;
         let line_height = layout.dimensions.line_height;
         let font_size = Self::font_size();
 
