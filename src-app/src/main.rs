@@ -1537,6 +1537,13 @@ impl PaneFlowApp {
                                 .child(format!("-{del}")),
                         ),
                 );
+            } else if ws.is_git_repo {
+                card = card.child(
+                    div()
+                        .text_color(rgb(0x6c7086)) // Catppuccin Overlay0
+                        .text_xs()
+                        .child("No changes detected"),
+                );
             }
 
             // ── Row 4: Working directory (monospace-style) ──
