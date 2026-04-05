@@ -406,11 +406,13 @@ impl PaneFlowApp {
         )
         .detach();
 
-        // Poll git metadata for all workspaces every 3s
+        // Fallback: poll git metadata for all workspaces every 30s.
+        // Primary detection is event-driven (US-003 notify watcher above).
+        // This timer catches edge cases where file system events are missed.
         cx.spawn(
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 loop {
-                    smol::Timer::after(std::time::Duration::from_secs(3)).await;
+                    smol::Timer::after(std::time::Duration::from_secs(30)).await;
                     let result = cx.update(|cx| {
                         this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
                             let mut changed = false;
