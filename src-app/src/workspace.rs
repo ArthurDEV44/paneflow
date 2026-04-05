@@ -151,6 +151,79 @@ pub fn detect_branch(cwd: &str) -> (String, bool) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Port detection
+// ---------------------------------------------------------------------------
+
+/// Collect all descendant PIDs of the given PID by walking `/proc/{pid}/task/{tid}/children`.
+/// Requires `CONFIG_PROC_CHILDREN=y` in the kernel; absent on some distributions.
+/// Returns the input PID plus all recursive descendants. On non-Linux or on
+/// read failure, returns only the input PID. Capped at 512 PIDs to bound
+/// memory usage in fork-bomb scenarios.
+#[allow(dead_code)]
+fn collect_descendant_pids(root_pid: u32) -> Vec<u32> {
+    const MAX_PIDS: usize = 512;
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(root_pid);
+    let mut result = vec![root_pid];
+    let mut queue = vec![root_pid];
+    while let Some(pid) = queue.pop() {
+        if visited.len() >= MAX_PIDS {
+            break;
+        }
+        let children_path = format!("/proc/{pid}/task/{pid}/children");
+        if let Ok(content) = std::fs::read_to_string(&children_path) {
+            for token in content.split_whitespace() {
+                if let Ok(child_pid) = token.parse::<u32>()
+                    && visited.insert(child_pid)
+                {
+                    result.push(child_pid);
+                    queue.push(child_pid);
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Detect TCP listening ports belonging to any of the given PIDs or their descendants.
+///
+/// Uses the `listeners` crate for cross-platform port-to-PID mapping.
+/// Returns a sorted, deduplicated `Vec<u16>`. On failure (permission error,
+/// unsupported platform), returns an empty Vec without panic.
+#[allow(dead_code)]
+pub fn detect_ports(pids: &[u32]) -> Vec<u16> {
+    if pids.is_empty() {
+        return vec![];
+    }
+
+    // Expand PIDs to include all descendant processes
+    let mut all_pids = std::collections::HashSet::new();
+    for &pid in pids {
+        for descendant in collect_descendant_pids(pid) {
+            all_pids.insert(descendant);
+        }
+    }
+
+    let all_listeners = match listeners::get_all() {
+        Ok(l) => l,
+        Err(e) => {
+            log::debug!("detect_ports: listeners::get_all() failed: {e}");
+            return vec![];
+        }
+    };
+
+    let mut ports: Vec<u16> = all_listeners
+        .into_iter()
+        .filter(|l| l.protocol == listeners::Protocol::TCP && all_pids.contains(&l.process.pid))
+        .map(|l| l.socket.port())
+        .collect();
+
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
 pub struct Workspace {
     pub title: String,
     /// Working directory at creation time. Does not update when the shell `cd`s.
@@ -167,6 +240,9 @@ pub struct Workspace {
     pub is_git_repo: bool,
     /// Resolved `.git` directory path (for file watcher). `None` if not a git repo.
     pub git_dir: Option<std::path::PathBuf>,
+    /// Active TCP listening ports from workspace terminal processes.
+    #[allow(dead_code)]
+    pub active_ports: Vec<u16>,
 }
 
 impl Workspace {
@@ -189,6 +265,7 @@ impl Workspace {
             git_branch,
             is_git_repo,
             git_dir,
+            active_ports: vec![],
         }
     }
 
@@ -209,6 +286,7 @@ impl Workspace {
             git_branch,
             is_git_repo,
             git_dir,
+            active_ports: vec![],
         }
     }
 
