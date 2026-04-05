@@ -74,6 +74,10 @@ struct CursorInfo {
     shape: CursorShape,
     color: Hsla,
     wide: bool,
+    /// Character under the cursor (None for whitespace or non-Block shapes).
+    text: Option<char>,
+    bold: bool,
+    italic: bool,
 }
 
 pub struct LayoutState {
@@ -241,12 +245,27 @@ impl TerminalElement {
                     };
                     let cursor_cell = &term.grid()[content.cursor.point];
                     let wide = cursor_cell.flags.contains(CellFlags::WIDE_CHAR);
+                    let cursor_char = cursor_cell.c;
+                    let cursor_flags = cursor_cell.flags;
+                    let text = if matches!(shape, CursorShape::Block)
+                        && cursor_char != ' '
+                        && cursor_char != '\0'
+                    {
+                        Some(cursor_char)
+                    } else {
+                        None
+                    };
                     Some(CursorInfo {
                         line: content.cursor.point.line.0,
                         col: content.cursor.point.column.0,
                         shape,
                         color: cursor_color,
                         wide,
+                        text,
+                        bold: cursor_flags.contains(CellFlags::BOLD)
+                            || cursor_flags.contains(CellFlags::BOLD_ITALIC),
+                        italic: cursor_flags.contains(CellFlags::ITALIC)
+                            || cursor_flags.contains(CellFlags::BOLD_ITALIC),
                     })
                 };
             let disp_offset = content.display_offset;
@@ -736,6 +755,40 @@ impl Element for TerminalElement {
                             },
                         );
                         window.paint_quad(fill(cursor_bounds, color));
+
+                        // Paint the character under the cursor in the terminal bg color
+                        if let Some(ch) = cursor.text {
+                            let mut cursor_font = Self::base_font();
+                            if cursor.bold {
+                                cursor_font.weight = FontWeight::BOLD;
+                            }
+                            if cursor.italic {
+                                cursor_font.style = FontStyle::Italic;
+                            }
+                            let text = ch.to_string();
+                            let len = text.len();
+                            let shaped = window.text_system().shape_line(
+                                SharedString::from(text),
+                                Self::font_size(),
+                                &[TextRun {
+                                    len,
+                                    font: cursor_font,
+                                    color: layout.background_color,
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                }],
+                                Some(cw),
+                            );
+                            let _ = shaped.paint(
+                                Point { x: cx_, y: cy },
+                                line_height,
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                        }
                     }
                     CursorShape::Beam => {
                         let beam_width = px(2.0);
