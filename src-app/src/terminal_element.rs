@@ -100,6 +100,7 @@ struct CellStyle {
     fg: Hsla,
     bg: Hsla,
     underline: bool,
+    undercurl: bool,
     strikethrough: bool,
 }
 
@@ -360,6 +361,7 @@ impl TerminalElement {
                 || flags.contains(CellFlags::UNDERCURL)
                 || flags.contains(CellFlags::DOTTED_UNDERLINE)
                 || flags.contains(CellFlags::DASHED_UNDERLINE);
+            let is_undercurl = flags.contains(CellFlags::UNDERCURL);
             let is_strikethrough = flags.contains(CellFlags::STRIKEOUT);
 
             if flags.contains(CellFlags::BOLD) || flags.contains(CellFlags::BOLD_ITALIC) {
@@ -374,6 +376,7 @@ impl TerminalElement {
                 fg,
                 bg,
                 underline: is_underline,
+                undercurl: is_undercurl,
                 strikethrough: is_strikethrough,
             };
 
@@ -389,6 +392,7 @@ impl TerminalElement {
                     font,
                     fg,
                     is_underline,
+                    is_undercurl,
                     is_strikethrough,
                     point.line.0,
                     point.column.0,
@@ -473,6 +477,7 @@ struct BatchAccumulator {
     font: Font,
     fg: Hsla,
     underline: bool,
+    undercurl: bool,
     strikethrough: bool,
     line: i32,
     col_start: usize,
@@ -488,6 +493,7 @@ impl BatchAccumulator {
             font: TerminalElement::base_font(),
             fg: Hsla::default(),
             underline: false,
+            undercurl: false,
             strikethrough: false,
             line: 0,
             col_start: 0,
@@ -526,6 +532,7 @@ impl BatchAccumulator {
         font: Font,
         fg: Hsla,
         underline: bool,
+        undercurl: bool,
         strikethrough: bool,
         line: i32,
         col_start: usize,
@@ -535,6 +542,7 @@ impl BatchAccumulator {
         self.font = font;
         self.fg = fg;
         self.underline = underline;
+        self.undercurl = undercurl;
         self.strikethrough = strikethrough;
         self.line = line;
         self.col_start = col_start;
@@ -552,8 +560,8 @@ impl BatchAccumulator {
             underline: if self.underline {
                 Some(UnderlineStyle {
                     thickness: px(1.0),
-                    color: None,
-                    wavy: false,
+                    color: Some(self.fg),
+                    wavy: self.undercurl,
                 })
             } else {
                 None
@@ -561,7 +569,7 @@ impl BatchAccumulator {
             strikethrough: if self.strikethrough {
                 Some(StrikethroughStyle {
                     thickness: px(1.0),
-                    color: None,
+                    color: Some(self.fg),
                 })
             } else {
                 None
