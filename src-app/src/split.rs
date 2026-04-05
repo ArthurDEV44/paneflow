@@ -53,6 +53,9 @@ pub struct LayoutChild {
 impl LayoutChild {
     /// Maximum pixels this child can yield if shrunk along `dir`.
     /// Uses `computed_size` (the child's actual pixel size from layout).
+    /// Currently unused — `computed_size` is not yet populated per-child.
+    /// Will be wired in when per-child canvas bounds capture is added (US-008).
+    #[allow(dead_code)]
     pub fn resize_check(&self, dir: SplitDirection) -> f32 {
         match &self.node {
             LayoutTree::Leaf(_) => (self.computed_size.get() - MIN_PANE_SIZE).max(0.0),
@@ -163,6 +166,7 @@ impl LayoutTree {
     }
 
     /// Render the layout tree recursively as nested GPUI flex divs.
+    #[allow(clippy::only_used_in_recursion)]
     pub fn render(&self, window: &Window, cx: &App) -> AnyElement {
         match self {
             LayoutTree::Leaf(pane) => div().size_full().child(pane.clone()).into_any_element(),
@@ -182,11 +186,9 @@ impl LayoutTree {
                 let size_for_drag = container_size.clone();
                 let child_ratios: Vec<Rc<Cell<f32>>> =
                     children.iter().map(|c| c.ratio.clone()).collect();
-                let child_constraints: Vec<f32> =
-                    children.iter().map(|c| c.resize_check(dir)).collect();
 
                 let mut container = div().flex().size_full().overflow_hidden().on_mouse_move(
-                    move |e, _window, _cx| {
+                    move |e, window, _cx| {
                         if let Some(ds) = drag_move.get() {
                             let csize = size_for_drag.get();
                             if csize <= 0.0 {
@@ -199,30 +201,13 @@ impl LayoutTree {
                             let delta = current_pos - ds.start_pos;
                             let ratio_delta = delta / csize;
 
-                            // Constraint clamping: use the pre-computed resize_check of the
-                            // child being shrunk to prevent nested subtree minimum violations.
+                            // Clamp so neither child goes below MIN_PANE_SIZE pixels.
+                            // min_r is the minimum ratio a child can occupy given the
+                            // current container size.
                             let pair_sum = ds.start_ratio_before + ds.start_ratio_after;
                             let min_r = MIN_PANE_SIZE / csize;
-
-                            // Max shrinkable ratio for each side, from recursive constraints
-                            let max_shrink_before = child_constraints
-                                .get(ds.divider_idx)
-                                .copied()
-                                .unwrap_or(0.0)
-                                / csize;
-                            let max_shrink_after = child_constraints
-                                .get(ds.divider_idx + 1)
-                                .copied()
-                                .unwrap_or(0.0)
-                                / csize;
-
-                            // Clamp: child[i] can't shrink more than its constraint,
-                            // child[i+1] can't shrink more than its constraint.
-                            let lower = (ds.start_ratio_before - max_shrink_before).max(min_r);
-                            let upper =
-                                (ds.start_ratio_before + max_shrink_after).min(pair_sum - min_r);
-                            // Guarantee lower <= upper (can invert with tiny pair_sum)
-                            let upper = upper.max(lower);
+                            let lower = min_r;
+                            let upper = (pair_sum - min_r).max(lower);
                             let new_before =
                                 (ds.start_ratio_before + ratio_delta).clamp(lower, upper);
                             let new_after = pair_sum - new_before;
@@ -233,6 +218,12 @@ impl LayoutTree {
                             if let Some(r) = child_ratios.get(ds.divider_idx + 1) {
                                 r.set(new_after);
                             }
+
+                            // Request a repaint so the new ratios take effect immediately.
+                            // GPUI only auto-refreshes on mouse_move when cx.has_active_drag()
+                            // (i.e., GPUI-managed drags). Our Cell-based drag needs an explicit
+                            // refresh to avoid waiting for the next terminal poll cycle.
+                            window.refresh();
                         }
                     },
                 );
@@ -369,11 +360,11 @@ impl LayoutTree {
                 // Same-direction: check if any direct child leaf is the target
                 if *dir == direction {
                     for i in 0..children.len() {
-                        if let LayoutTree::Leaf(pane) = &children[i].node {
-                            if pane.read(cx).focus_handle(cx).is_focused(window) {
-                                insert_sibling(children, i, new_pane);
-                                return true;
-                            }
+                        if let LayoutTree::Leaf(pane) = &children[i].node
+                            && pane.read(cx).focus_handle(cx).is_focused(window)
+                        {
+                            insert_sibling(children, i, new_pane);
+                            return true;
                         }
                     }
                 }
@@ -448,11 +439,11 @@ impl LayoutTree {
                 // Same-direction: check if any direct child leaf is the target
                 if *dir == direction {
                     for i in 0..children.len() {
-                        if let LayoutTree::Leaf(pane) = &children[i].node {
-                            if pane == target {
-                                insert_sibling(children, i, new_pane);
-                                return true;
-                            }
+                        if let LayoutTree::Leaf(pane) = &children[i].node
+                            && pane == target
+                        {
+                            insert_sibling(children, i, new_pane);
+                            return true;
                         }
                     }
                 }
@@ -474,7 +465,7 @@ impl LayoutTree {
     /// - `tree`: the surviving layout (None if the last pane was closed)
     /// - `closed`: whether a pane was actually closed
     /// - `focus_neighbor`: the pane that should receive focus (previous sibling,
-    ///    or next sibling if the closed pane was first)
+    ///   or next sibling if the closed pane was first)
     pub fn close_focused(
         self,
         window: &Window,
@@ -549,15 +540,14 @@ impl LayoutTree {
 
                 // Determine focus neighbor when a direct child was removed
                 // (only if no nested focus was already determined)
-                if focus_neighbor.is_none() {
-                    if let Some(idx) = closed_idx {
-                        // Prefer previous sibling, fall back to next
-                        if idx > 0 {
-                            focus_neighbor =
-                                new_children.get(idx - 1).and_then(|c| c.node.last_leaf());
-                        } else {
-                            focus_neighbor = new_children.first().and_then(|c| c.node.first_leaf());
-                        }
+                if focus_neighbor.is_none()
+                    && let Some(idx) = closed_idx
+                {
+                    // Prefer previous sibling, fall back to next
+                    if idx > 0 {
+                        focus_neighbor = new_children.get(idx - 1).and_then(|c| c.node.last_leaf());
+                    } else {
+                        focus_neighbor = new_children.first().and_then(|c| c.node.first_leaf());
                     }
                 }
 
@@ -801,47 +791,6 @@ impl LayoutTree {
         })
     }
 
-    /// Maximum depth of the tree (leaf = 0, container with leaves = 1).
-    pub fn depth(&self) -> usize {
-        match self {
-            LayoutTree::Leaf(_) => 0,
-            LayoutTree::Container { children, .. } => {
-                1 + children.iter().map(|c| c.node.depth()).max().unwrap_or(0)
-            }
-        }
-    }
-
-    /// Compute the maximum pixels this subtree can yield if shrunk along `dir`.
-    ///
-    /// For accurate leaf results, use `LayoutChild::resize_check()` instead —
-    /// it has access to the leaf's `computed_size`. This method returns 0.0
-    /// for bare Leaf nodes (they lack size context at the LayoutTree level).
-    ///
-    /// - **Same-direction container:** sum of children's resize_check (all shrink independently)
-    /// - **Cross-direction container:** min of children's resize_check (tightest constraint)
-    pub fn resize_check(&self, dir: SplitDirection) -> f32 {
-        match self {
-            LayoutTree::Leaf(_) => 0.0,
-            LayoutTree::Container {
-                direction,
-                children,
-                ..
-            } => {
-                if *direction == dir {
-                    // Same direction: all children can yield space independently
-                    children.iter().map(|c| c.resize_check(dir)).sum()
-                } else {
-                    // Cross direction: limited by the tightest child
-                    children
-                        .iter()
-                        .map(|c| c.resize_check(dir))
-                        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                        .unwrap_or(0.0)
-                }
-            }
-        }
-    }
-
     /// Focus the first (leftmost/topmost) leaf in the tree.
     pub fn focus_first(&self, window: &mut Window, cx: &mut App) {
         match self {
@@ -995,7 +944,7 @@ impl LayoutTree {
     ) -> Self {
         match node {
             LayoutNode::Pane { .. } => {
-                let pane = panes.pop_front().unwrap_or_else(|| spawn());
+                let pane = panes.pop_front().unwrap_or_else(spawn);
                 LayoutTree::Leaf(pane)
             }
             LayoutNode::Split {

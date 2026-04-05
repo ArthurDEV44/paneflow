@@ -136,14 +136,14 @@ impl Pane {
         // For shell titles like "user@host: /path/to/dir", extract the last path component
         if let Some(path_part) = raw.rsplit(':').next() {
             let trimmed = path_part.trim();
-            if trimmed.starts_with('/') || trimmed.starts_with('~') {
-                if let Some(last) = trimmed.rsplit('/').next() {
-                    if !last.is_empty() {
-                        return last.to_string();
-                    }
-                    // Root "/" — show "/"
-                    return "/".into();
+            if (trimmed.starts_with('/') || trimmed.starts_with('~'))
+                && let Some(last) = trimmed.rsplit('/').next()
+            {
+                if !last.is_empty() {
+                    return last.to_string();
                 }
+                // Root "/" — show "/"
+                return "/".into();
             }
         }
         // Fallback: use the raw title, truncated

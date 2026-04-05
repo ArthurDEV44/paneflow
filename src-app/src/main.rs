@@ -125,10 +125,10 @@ impl PaneFlowApp {
             *count += 1;
             if *count == 1 {
                 // First workspace watching this git dir — register with OS
-                if let Some(ref mut watcher) = self.git_watcher {
-                    if let Err(e) = watcher.watch(git_dir, notify::RecursiveMode::NonRecursive) {
-                        log::warn!("git watcher: failed to watch {}: {e}", git_dir.display());
-                    }
+                if let Some(ref mut watcher) = self.git_watcher
+                    && let Err(e) = watcher.watch(git_dir, notify::RecursiveMode::NonRecursive)
+                {
+                    log::warn!("git watcher: failed to watch {}: {e}", git_dir.display());
                 }
             }
         }
@@ -232,13 +232,13 @@ impl PaneFlowApp {
         };
         let mut git_watch_counts = std::collections::HashMap::new();
         // Watch the initial workspace's .git directory
-        if let Some(ref mut watcher) = git_watcher {
-            if let Some(ref git_dir) = ws.git_dir {
-                if let Err(e) = watcher.watch(git_dir, notify::RecursiveMode::NonRecursive) {
-                    log::warn!("git watcher: failed to watch {}: {e}", git_dir.display());
-                } else {
-                    git_watch_counts.insert(git_dir.clone(), 1);
-                }
+        if let Some(ref mut watcher) = git_watcher
+            && let Some(ref git_dir) = ws.git_dir
+        {
+            if let Err(e) = watcher.watch(git_dir, notify::RecursiveMode::NonRecursive) {
+                log::warn!("git watcher: failed to watch {}: {e}", git_dir.display());
+            } else {
+                git_watch_counts.insert(git_dir.clone(), 1);
             }
         }
 
@@ -413,21 +413,51 @@ impl PaneFlowApp {
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 loop {
                     smol::Timer::after(std::time::Duration::from_secs(30)).await;
-                    let result = cx.update(|cx| {
+
+                    // Phase 1: collect CWDs (cheap, main thread)
+                    let cwds = cx.update(|cx| {
+                        this.update(cx, |app: &mut Self, _cx: &mut Context<Self>| {
+                            app.workspaces
+                                .iter()
+                                .map(|ws| ws.cwd.clone())
+                                .collect::<Vec<String>>()
+                        })
+                    });
+                    let cwds = match cwds {
+                        Ok(c) => c,
+                        Err(_) => break,
+                    };
+
+                    // Phase 2: run git probes off main thread
+                    let results = smol::unblock(move || {
+                        cwds.into_iter()
+                            .map(|cwd| {
+                                let (branch, is_repo) = crate::workspace::detect_branch(&cwd);
+                                let stats = crate::workspace::GitDiffStats::from_cwd(&cwd);
+                                (cwd, branch, is_repo, stats)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .await;
+
+                    // Phase 3: apply results (cheap, main thread)
+                    let apply = cx.update(|cx| {
                         this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
                             let mut changed = false;
-                            for ws in &mut app.workspaces {
-                                let new_stats = crate::workspace::GitDiffStats::from_cwd(&ws.cwd);
-                                if new_stats != ws.git_stats {
-                                    ws.git_stats = new_stats;
-                                    changed = true;
-                                }
-                                let (new_branch, new_is_repo) =
-                                    crate::workspace::detect_branch(&ws.cwd);
-                                if new_branch != ws.git_branch || new_is_repo != ws.is_git_repo {
-                                    ws.git_branch = new_branch;
-                                    ws.is_git_repo = new_is_repo;
-                                    changed = true;
+                            for (cwd, branch, is_repo, stats) in &results {
+                                for ws in &mut app.workspaces {
+                                    if ws.cwd != *cwd {
+                                        continue;
+                                    }
+                                    if ws.git_branch != *branch || ws.is_git_repo != *is_repo {
+                                        ws.git_branch = branch.clone();
+                                        ws.is_git_repo = *is_repo;
+                                        changed = true;
+                                    }
+                                    if ws.git_stats != *stats {
+                                        ws.git_stats = stats.clone();
+                                        changed = true;
+                                    }
                                 }
                             }
                             if changed {
@@ -435,7 +465,7 @@ impl PaneFlowApp {
                             }
                         })
                     });
-                    if result.is_err() {
+                    if apply.is_err() {
                         break;
                     }
                 }
@@ -474,12 +504,13 @@ impl PaneFlowApp {
                                     }
                                 }
 
-                                // Detect new terminal output (only schedule if
-                                // no burst is already in progress)
+                                // Detect new terminal output — always record
+                                // activity time so a new burst can be armed
+                                // after the current one completes.
                                 if current_sum != ws.last_wakeup_sum {
                                     ws.last_wakeup_sum = current_sum;
+                                    ws.port_scan_last_output = Some(now);
                                     if ws.port_scan_burst_start.is_none() {
-                                        ws.port_scan_last_output = Some(now);
                                         ws.port_scan_pending = true;
                                     }
                                 }
@@ -520,7 +551,15 @@ impl PaneFlowApp {
                                         scans.push((ws.id, pids));
                                     }
                                     if ws.port_scan_burst_idx >= BURST_OFFSETS.len() {
-                                        ws.port_scan_burst_start = None;
+                                        let burst_start = ws.port_scan_burst_start.take();
+                                        // Rearm: if new activity arrived during
+                                        // the burst, schedule a fresh debounce.
+                                        if let (Some(start), Some(last)) =
+                                            (burst_start, ws.port_scan_last_output)
+                                            && last > start
+                                        {
+                                            ws.port_scan_pending = true;
+                                        }
                                     }
                                 }
                             }
@@ -579,10 +618,11 @@ impl PaneFlowApp {
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 loop {
                     smol::Timer::after(std::time::Duration::from_secs(2)).await;
-                    let result = cx.update(|cx| {
+
+                    // Phase 1: detect CWD changes (cheap reads, main thread)
+                    let cwd_changes = cx.update(|cx| {
                         this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
-                            // Phase 1: detect CWD changes
-                            let mut cwd_changes: Vec<(usize, String)> = Vec::new();
+                            let mut changes: Vec<(usize, String)> = Vec::new();
                             for (i, ws) in app.workspaces.iter().enumerate() {
                                 if let Some(root) = &ws.root {
                                     for pane in root.collect_leaves() {
@@ -596,39 +636,59 @@ impl PaneFlowApp {
                                         if let Some(ref new_cwd) = cwd
                                             && *new_cwd != ws.cwd
                                         {
-                                            cwd_changes.push((i, new_cwd.clone()));
+                                            changes.push((i, new_cwd.clone()));
                                             break;
                                         }
                                     }
                                 }
                             }
+                            changes
+                        })
+                    });
+                    let cwd_changes = match cwd_changes {
+                        Ok(c) if !c.is_empty() => c,
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    };
 
-                            if cwd_changes.is_empty() {
-                                return;
-                            }
+                    // Phase 2: run git probes off main thread
+                    let probes = smol::unblock({
+                        let changes = cwd_changes.clone();
+                        move || {
+                            changes
+                                .into_iter()
+                                .map(|(i, cwd)| {
+                                    let git_dir = crate::workspace::find_git_dir(&cwd);
+                                    let (branch, is_repo) = crate::workspace::detect_branch(&cwd);
+                                    let stats = crate::workspace::GitDiffStats::from_cwd(&cwd);
+                                    (i, cwd, git_dir, branch, is_repo, stats)
+                                })
+                                .collect::<Vec<_>>()
+                        }
+                    })
+                    .await;
 
-                            // Phase 2: apply changes
-                            for (i, new_cwd) in &cwd_changes {
+                    // Phase 3: apply results and re-attach watchers (main thread)
+                    let apply = cx.update(|cx| {
+                        this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                            for (i, new_cwd, new_git_dir, branch, is_repo, stats) in &probes {
+                                if *i >= app.workspaces.len() {
+                                    continue;
+                                }
                                 // Unwatch old git dir
                                 let old_git_dir = app.workspaces[*i].git_dir.clone();
                                 if let Some(ref dir) = old_git_dir {
                                     app.unwatch_git_dir(dir);
                                 }
-
-                                // Update workspace fields with immediate git probe
-                                let new_git_dir = crate::workspace::find_git_dir(new_cwd);
-                                let (branch, is_repo) = crate::workspace::detect_branch(new_cwd);
-                                let stats = crate::workspace::GitDiffStats::from_cwd(new_cwd);
+                                // Update workspace fields
                                 let ws = &mut app.workspaces[*i];
                                 ws.cwd = new_cwd.clone();
                                 ws.git_dir = new_git_dir.clone();
-                                ws.git_branch = branch;
-                                ws.is_git_repo = is_repo;
-                                ws.git_stats = stats;
-
-                                // Watch new git dir (inlined to avoid
-                                // &mut self + &Workspace borrow conflict)
-                                if let Some(ref dir) = new_git_dir {
+                                ws.git_branch = branch.clone();
+                                ws.is_git_repo = *is_repo;
+                                ws.git_stats = stats.clone();
+                                // Watch new git dir
+                                if let Some(dir) = new_git_dir {
                                     let count =
                                         app.git_watch_counts.entry(dir.clone()).or_insert(0);
                                     *count += 1;
@@ -643,14 +703,12 @@ impl PaneFlowApp {
                                         );
                                     }
                                 }
-
                                 log::debug!("workspace CWD changed to: {new_cwd}");
                             }
-
                             cx.notify();
                         })
                     });
-                    if result.is_err() {
+                    if apply.is_err() {
                         break;
                     }
                 }
@@ -711,7 +769,7 @@ impl PaneFlowApp {
                         "title": ws.title,
                         "cwd": ws.cwd,
                         "panes": ws.pane_count(),
-                        "layout": layout.map(|l| serde_json::to_value(l).ok()).flatten(),
+                        "layout": layout.and_then(|l| serde_json::to_value(l).ok()),
                     })
                 } else {
                     serde_json::json!(null)
@@ -896,28 +954,28 @@ impl PaneFlowApp {
         });
         cx.spawn(
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                if let Ok(Ok(Some(paths))) = receiver.await {
-                    if let Some(path) = paths.into_iter().next() {
-                        let _ = cx.update(|cx| {
-                            this.update(cx, |app, cx| {
-                                let n = app.workspaces.len() + 1;
-                                let dir = path.clone();
-                                let title = dir
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| format!("Terminal {n}"));
-                                let terminal = cx.new(|cx| TerminalView::with_cwd(Some(path), cx));
-                                let pane = app.create_pane(terminal, cx);
-                                let ws = Workspace::with_cwd(title, dir, pane);
-                                app.watch_git_dir(&ws);
-                                app.workspaces.push(ws);
-                                app.active_idx = app.workspaces.len() - 1;
-                                // Cannot call focus_first here (no Window ref in async),
-                                // but cx.notify() triggers repaint which selects the workspace.
-                                cx.notify();
-                            })
-                        });
-                    }
+                if let Ok(Ok(Some(paths))) = receiver.await
+                    && let Some(path) = paths.into_iter().next()
+                {
+                    let _ = cx.update(|cx| {
+                        this.update(cx, |app, cx| {
+                            let n = app.workspaces.len() + 1;
+                            let dir = path.clone();
+                            let title = dir
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| format!("Terminal {n}"));
+                            let terminal = cx.new(|cx| TerminalView::with_cwd(Some(path), cx));
+                            let pane = app.create_pane(terminal, cx);
+                            let ws = Workspace::with_cwd(title, dir, pane);
+                            app.watch_git_dir(&ws);
+                            app.workspaces.push(ws);
+                            app.active_idx = app.workspaces.len() - 1;
+                            // Cannot call focus_first here (no Window ref in async),
+                            // but cx.notify() triggers repaint which selects the workspace.
+                            cx.notify();
+                        })
+                    });
                 }
             },
         )
@@ -1058,10 +1116,9 @@ impl PaneFlowApp {
         // Exit zoom if active
         if let Some(ws) = self.active_workspace_mut()
             && ws.is_zoomed()
+            && let Some(saved) = ws.saved_layout.take()
         {
-            if let Some(saved) = ws.saved_layout.take() {
-                ws.root = Some(saved);
-            }
+            ws.root = Some(saved);
         }
 
         let Some(ws) = self.active_workspace_mut() else {
@@ -1185,10 +1242,9 @@ impl PaneFlowApp {
         // Exit zoom if active
         if let Some(ws) = self.active_workspace_mut()
             && ws.is_zoomed()
+            && let Some(saved) = ws.saved_layout.take()
         {
-            if let Some(saved) = ws.saved_layout.take() {
-                ws.root = Some(saved);
-            }
+            ws.root = Some(saved);
         }
 
         let Some(ws) = self.active_workspace() else {
@@ -1222,7 +1278,7 @@ impl PaneFlowApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.apply_layout_preset(|panes| LayoutTree::tiled(panes), window, cx);
+        self.apply_layout_preset(LayoutTree::tiled, window, cx);
     }
 
     fn handle_new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -1516,14 +1572,13 @@ impl PaneFlowApp {
                             cx.notify();
                         }
                         _ => {
-                            if let Some(ch) = &e.keystroke.key_char {
-                                if !ch.is_empty()
-                                    && !e.keystroke.modifiers.control
-                                    && !e.keystroke.modifiers.platform
-                                {
-                                    this.rename_text.push_str(ch);
-                                    cx.notify();
-                                }
+                            if let Some(ch) = &e.keystroke.key_char
+                                && !ch.is_empty()
+                                && !e.keystroke.modifiers.control
+                                && !e.keystroke.modifiers.platform
+                            {
+                                this.rename_text.push_str(ch);
+                                cx.notify();
                             }
                         }
                     }

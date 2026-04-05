@@ -51,10 +51,10 @@ impl GitDiffStats {
                 if let Some(n) = trimmed.split_whitespace().next() {
                     insertions = n.parse().unwrap_or(0);
                 }
-            } else if trimmed.contains("deletion") {
-                if let Some(n) = trimmed.split_whitespace().next() {
-                    deletions = n.parse().unwrap_or(0);
-                }
+            } else if trimmed.contains("deletion")
+                && let Some(n) = trimmed.split_whitespace().next()
+            {
+                deletions = n.parse().unwrap_or(0);
             }
         }
 
@@ -178,7 +178,7 @@ fn collect_descendant_pids(root_pid: u32) -> Vec<u32> {
             break;
         }
         let children_path = format!("/proc/{pid}/task/{pid}/children");
-        if let Ok(content) = std::fs::read_to_string(&children_path) {
+        if let Ok(content) = read_capped(std::path::Path::new(&children_path), 4096) {
             for token in content.split_whitespace() {
                 if let Ok(child_pid) = token.parse::<u32>()
                     && visited.insert(child_pid)
