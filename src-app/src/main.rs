@@ -1504,7 +1504,18 @@ impl PaneFlowApp {
 
             card = card.child(title_row);
 
-            // ── Row 2: Subtitle — pane count as status ──
+            // ── Row 2: Git branch ──
+            if !ws.git_branch.is_empty() {
+                card = card.child(
+                    div()
+                        .text_color(rgb(0x89b4fa)) // Catppuccin Blue
+                        .text_xs()
+                        .truncate()
+                        .child(format!(" {}", ws.git_branch)),
+                );
+            }
+
+            // ── Row 3: Subtitle — pane count as status ──
             card = card.child(
                 div()
                     .text_color(if is_active {
