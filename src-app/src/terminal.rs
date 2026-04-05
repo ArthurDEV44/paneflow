@@ -89,6 +89,10 @@ pub struct TerminalState {
     pub wakeup_count: u64,
     /// Terminal title set via OSC 0/2 escape sequences (e.g. shell prompt, Claude Code).
     pub title: String,
+    /// Current working directory of the shell process, detected by reading
+    /// `/proc/<child_pid>/cwd`. Updated on every 50th Wakeup event (~200ms at
+    /// sustained output). `None` if not yet detected or process exited.
+    pub current_cwd: Option<String>,
     /// Set when PTY output has been processed (Wakeup event received).
     /// Cleared after cx.notify() triggers a repaint.
     pub dirty: bool,
@@ -150,6 +154,7 @@ impl TerminalState {
             exited: None,
             child_pid,
             wakeup_count: 0,
+            current_cwd: None,
             title: String::from("Terminal"),
             dirty: true, // Force initial render
             #[cfg(debug_assertions)]
@@ -164,6 +169,10 @@ impl TerminalState {
                 AlacEvent::Wakeup => {
                     self.dirty = true;
                     self.wakeup_count += 1;
+                    // Poll shell CWD every 50th wakeup (~200ms at sustained output)
+                    if self.wakeup_count.is_multiple_of(50) {
+                        self.poll_cwd();
+                    }
                 }
                 AlacEvent::ChildExit(status) => {
                     self.exited = Some(status);
@@ -180,6 +189,19 @@ impl TerminalState {
                     self.title = String::from("Terminal");
                 }
                 _ => {} // Bell, ClipboardStore, etc.
+            }
+        }
+    }
+
+    /// Read the shell's current working directory from `/proc/<pid>/cwd`.
+    /// Updates `current_cwd` only if the path changed. Silently ignored
+    /// if the process has exited or `/proc` is unavailable.
+    fn poll_cwd(&mut self) {
+        let proc_path = format!("/proc/{}/cwd", self.child_pid);
+        if let Ok(path) = std::fs::read_link(&proc_path) {
+            let cwd = path.to_string_lossy().into_owned();
+            if self.current_cwd.as_deref() != Some(&cwd) {
+                self.current_cwd = Some(cwd);
             }
         }
     }
