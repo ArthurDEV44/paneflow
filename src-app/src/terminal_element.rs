@@ -34,6 +34,9 @@ const FONT_FALLBACK_EMOJI: &str = "Noto Color Emoji";
 const FONT_FALLBACK_SYMBOLS: &str = "Symbols Nerd Font Mono";
 const FONT_FALLBACK_SANS: &str = "Noto Sans";
 
+/// WCAG 2.0 AA minimum contrast ratio for normal text.
+const MIN_CONTRAST_RATIO: f32 = 4.5;
+
 static FONT_FALLBACKS: LazyLock<FontFallbacks> = LazyLock::new(|| {
     FontFallbacks::from_fonts(vec![
         FONT_FALLBACK_EMOJI.to_string(),
@@ -41,6 +44,71 @@ static FONT_FALLBACKS: LazyLock<FontFallbacks> = LazyLock::new(|| {
         FONT_FALLBACK_SANS.to_string(),
     ])
 });
+
+// ---------------------------------------------------------------------------
+// Minimum contrast (WCAG 2.0 luminance ratio)
+// ---------------------------------------------------------------------------
+
+/// sRGB relative luminance per WCAG 2.0 §1.4.3.
+fn relative_luminance(color: Hsla) -> f32 {
+    let rgba = Rgba::from(color);
+    let linearize = |c: f32| -> f32 {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linearize(rgba.r) + 0.7152 * linearize(rgba.g) + 0.0722 * linearize(rgba.b)
+}
+
+/// WCAG 2.0 contrast ratio between two relative luminances.
+fn contrast_ratio(l1: f32, l2: f32) -> f32 {
+    let (lighter, darker) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+/// Adjust `fg` lightness so that the WCAG 2.0 contrast ratio against `bg`
+/// meets `min_ratio`. Returns `fg` unchanged if contrast is already sufficient.
+fn ensure_minimum_contrast(fg: Hsla, bg: Hsla, min_ratio: f32) -> Hsla {
+    let bg_lum = relative_luminance(bg);
+    let fg_lum = relative_luminance(fg);
+
+    if contrast_ratio(fg_lum, bg_lum) >= min_ratio {
+        return fg;
+    }
+
+    // Lighten fg when bg is dark, darken when bg is light.
+    let lighten = bg_lum < 0.5;
+    let mut result = fg;
+    let (mut lo, mut hi) = if lighten {
+        (result.l, 1.0)
+    } else {
+        (0.0, result.l)
+    };
+
+    for _ in 0..16 {
+        let mid = (lo + hi) * 0.5;
+        result.l = mid;
+        let new_lum = relative_luminance(result);
+        if contrast_ratio(new_lum, bg_lum) >= min_ratio {
+            // Found sufficient contrast — try to stay closer to original
+            if lighten {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        } else if lighten {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    // Snap to the bound guaranteed to pass the contrast threshold.
+    result.l = if lighten { hi } else { lo };
+    result
+}
 
 // ---------------------------------------------------------------------------
 // Layout types
@@ -324,6 +392,9 @@ impl TerminalElement {
             if flags.contains(CellFlags::DIM) {
                 fg.a *= 0.7;
             }
+
+            // Enforce minimum foreground/background contrast
+            fg = ensure_minimum_contrast(fg, bg, MIN_CONTRAST_RATIO);
 
             // Background rect — only for non-default backgrounds
             let cell_cols = if flags.contains(CellFlags::WIDE_CHAR) {
