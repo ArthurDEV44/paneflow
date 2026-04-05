@@ -7,8 +7,8 @@
 //! including 4px dividers between children and deeply nested trees.
 
 use gpui::{
-    div, point, px, relative, size, AvailableSpace, InteractiveElement, ParentElement, Styled,
-    TestAppContext,
+    AvailableSpace, InteractiveElement, ParentElement, Styled, TestAppContext, div, point, px,
+    relative, size,
 };
 
 const TOLERANCE: f32 = 2.0;
