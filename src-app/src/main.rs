@@ -1557,7 +1557,27 @@ impl PaneFlowApp {
                 );
             }
 
-            // ── Row 4: Working directory (monospace-style) ──
+            // ── Row 4: Active ports ──
+            if !ws.active_ports.is_empty() {
+                let mut port_text = ws
+                    .active_ports
+                    .iter()
+                    .take(4)
+                    .map(|p| format!(":{p}"))
+                    .collect::<Vec<_>>()
+                    .join("  ");
+                if ws.active_ports.len() > 4 {
+                    port_text.push_str(&format!("  +{} more", ws.active_ports.len() - 4));
+                }
+                card = card.child(
+                    div()
+                        .text_color(rgb(0xf9e2af)) // Catppuccin Yellow
+                        .text_xs()
+                        .child(port_text),
+                );
+            }
+
+            // ── Row 5: Working directory (monospace-style) ──
             card = card.child(
                 div()
                     .text_color(if is_active {
