@@ -110,6 +110,19 @@ fn ensure_minimum_contrast(fg: Hsla, bg: Hsla, min_ratio: f32) -> Hsla {
     result
 }
 
+/// Returns `true` for characters whose colors should be preserved exactly
+/// (no contrast adjustment). Covers box-drawing, block elements, geometric
+/// shapes, and Powerline separator symbols.
+fn is_decorative_character(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x2500..=0x257F  // Box Drawing (─ │ ┌ ┐ └ ┘ etc.)
+        | 0x2580..=0x259F // Block Elements (▀ ▄ █ ░ ▒ ▓ etc.)
+        | 0x25A0..=0x25FF // Geometric Shapes (■ ▶ ● etc.)
+        | 0xE0B0..=0xE0D7 // Powerline separators
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Layout types
 // ---------------------------------------------------------------------------
@@ -393,8 +406,10 @@ impl TerminalElement {
                 fg.a *= 0.7;
             }
 
-            // Enforce minimum foreground/background contrast
-            fg = ensure_minimum_contrast(fg, bg, MIN_CONTRAST_RATIO);
+            // Enforce minimum foreground/background contrast (skip decorative chars)
+            if !is_decorative_character(*c) {
+                fg = ensure_minimum_contrast(fg, bg, MIN_CONTRAST_RATIO);
+            }
 
             // Background rect — only for non-default backgrounds
             let cell_cols = if flags.contains(CellFlags::WIDE_CHAR) {
