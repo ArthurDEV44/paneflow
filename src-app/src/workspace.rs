@@ -6,6 +6,13 @@ use crate::pane::Pane;
 use crate::split::LayoutTree;
 use gpui::{App, Entity, Window};
 
+/// Monotonic workspace ID counter. Each workspace gets a unique ID at construction.
+static NEXT_WORKSPACE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_workspace_id() -> u64 {
+    NEXT_WORKSPACE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Git diff statistics for a workspace directory.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct GitDiffStats {
@@ -160,7 +167,6 @@ pub fn detect_branch(cwd: &str) -> (String, bool) {
 /// Returns the input PID plus all recursive descendants. On non-Linux or on
 /// read failure, returns only the input PID. Capped at 512 PIDs to bound
 /// memory usage in fork-bomb scenarios.
-#[allow(dead_code)]
 fn collect_descendant_pids(root_pid: u32) -> Vec<u32> {
     const MAX_PIDS: usize = 512;
     let mut visited = std::collections::HashSet::new();
@@ -191,7 +197,6 @@ fn collect_descendant_pids(root_pid: u32) -> Vec<u32> {
 /// Uses the `listeners` crate for cross-platform port-to-PID mapping.
 /// Returns a sorted, deduplicated `Vec<u16>`. On failure (permission error,
 /// unsupported platform), returns an empty Vec without panic.
-#[allow(dead_code)]
 pub fn detect_ports(pids: &[u32]) -> Vec<u16> {
     if pids.is_empty() {
         return vec![];
@@ -225,6 +230,8 @@ pub fn detect_ports(pids: &[u32]) -> Vec<u16> {
 }
 
 pub struct Workspace {
+    /// Unique workspace identifier, assigned at construction.
+    pub id: u64,
     pub title: String,
     /// Working directory at creation time. Does not update when the shell `cd`s.
     pub cwd: String,
@@ -241,8 +248,17 @@ pub struct Workspace {
     /// Resolved `.git` directory path (for file watcher). `None` if not a git repo.
     pub git_dir: Option<std::path::PathBuf>,
     /// Active TCP listening ports from workspace terminal processes.
-    #[allow(dead_code)]
     pub active_ports: Vec<u16>,
+    /// Port scan state: last observed sum of terminal wakeup counts.
+    pub last_wakeup_sum: u64,
+    /// Port scan state: true when terminal output was detected, awaiting debounce.
+    pub port_scan_pending: bool,
+    /// Port scan state: when the last terminal output was observed.
+    pub port_scan_last_output: Option<std::time::Instant>,
+    /// Port scan state: when the current burst scan sequence started.
+    pub port_scan_burst_start: Option<std::time::Instant>,
+    /// Port scan state: index into the burst scan offset array (0..3).
+    pub port_scan_burst_idx: usize,
 }
 
 impl Workspace {
@@ -257,6 +273,7 @@ impl Workspace {
             None => (String::new(), false),
         };
         Self {
+            id: next_workspace_id(),
             title: title.into(),
             cwd,
             root: Some(LayoutTree::Leaf(pane)),
@@ -266,6 +283,11 @@ impl Workspace {
             is_git_repo,
             git_dir,
             active_ports: vec![],
+            last_wakeup_sum: 0,
+            port_scan_pending: false,
+            port_scan_last_output: None,
+            port_scan_burst_start: None,
+            port_scan_burst_idx: 0,
         }
     }
 
@@ -278,6 +300,7 @@ impl Workspace {
             None => (String::new(), false),
         };
         Self {
+            id: next_workspace_id(),
             title: title.into(),
             cwd: cwd_str,
             root: Some(LayoutTree::Leaf(pane)),
@@ -287,6 +310,11 @@ impl Workspace {
             is_git_repo,
             git_dir,
             active_ports: vec![],
+            last_wakeup_sum: 0,
+            port_scan_pending: false,
+            port_scan_last_output: None,
+            port_scan_burst_start: None,
+            port_scan_burst_idx: 0,
         }
     }
 

@@ -443,6 +443,135 @@ impl PaneFlowApp {
         )
         .detach();
 
+        // Port scan loop: debounce terminal Wakeup events (500ms), then burst
+        // scan at [1s, 3s, 7s] offsets. Detects servers binding ports.
+        cx.spawn(
+            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
+                const BURST_OFFSETS: [std::time::Duration; 3] = [
+                    std::time::Duration::from_secs(1),
+                    std::time::Duration::from_secs(3),
+                    std::time::Duration::from_secs(7),
+                ];
+
+                loop {
+                    smol::Timer::after(std::time::Duration::from_millis(100)).await;
+
+                    // Phase 1: detect terminal output, manage debounce/burst, collect PIDs
+                    let to_scan = cx.update(|cx| {
+                        this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                            let now = std::time::Instant::now();
+                            let mut scans = Vec::new();
+
+                            for ws in &mut app.workspaces {
+                                // Sum wakeup counts for all terminals in workspace
+                                let mut current_sum = 0u64;
+                                if let Some(root) = &ws.root {
+                                    for pane in root.collect_leaves() {
+                                        for tv in &pane.read(cx).tabs {
+                                            current_sum += tv.read(cx).terminal.wakeup_count;
+                                        }
+                                    }
+                                }
+
+                                // Detect new terminal output (only schedule if
+                                // no burst is already in progress)
+                                if current_sum != ws.last_wakeup_sum {
+                                    ws.last_wakeup_sum = current_sum;
+                                    if ws.port_scan_burst_start.is_none() {
+                                        ws.port_scan_last_output = Some(now);
+                                        ws.port_scan_pending = true;
+                                    }
+                                }
+
+                                // Debounce: fire after 500ms of quiet
+                                if ws.port_scan_pending
+                                    && let Some(last) = ws.port_scan_last_output
+                                    && now.duration_since(last) >= DEBOUNCE
+                                {
+                                    ws.port_scan_pending = false;
+                                    ws.port_scan_burst_start = Some(now);
+                                    ws.port_scan_burst_idx = 0;
+                                    log::debug!("port scan: debounce fired for '{}'", ws.title);
+                                }
+
+                                // Burst scan: fire all overdue scans (catch up
+                                // if the poll loop was delayed)
+                                if let Some(burst_start) = ws.port_scan_burst_start {
+                                    let mut fired = false;
+                                    while ws.port_scan_burst_idx < BURST_OFFSETS.len() {
+                                        let offset = BURST_OFFSETS[ws.port_scan_burst_idx];
+                                        if now.duration_since(burst_start) < offset {
+                                            break;
+                                        }
+                                        ws.port_scan_burst_idx += 1;
+                                        fired = true;
+                                    }
+                                    if fired {
+                                        // Collect PIDs from all terminals
+                                        let mut pids = Vec::new();
+                                        if let Some(root) = &ws.root {
+                                            for pane in root.collect_leaves() {
+                                                for tv in &pane.read(cx).tabs {
+                                                    pids.push(tv.read(cx).terminal.child_pid);
+                                                }
+                                            }
+                                        }
+                                        scans.push((ws.id, pids));
+                                    }
+                                    if ws.port_scan_burst_idx >= BURST_OFFSETS.len() {
+                                        ws.port_scan_burst_start = None;
+                                    }
+                                }
+                            }
+
+                            scans
+                        })
+                    });
+
+                    let to_scan = match to_scan {
+                        Ok(s) if !s.is_empty() => s,
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    };
+
+                    // Phase 2: run port detection off main thread
+                    let results = smol::unblock(move || {
+                        to_scan
+                            .into_iter()
+                            .map(|(ws_id, pids)| {
+                                let ports = crate::workspace::detect_ports(&pids);
+                                (ws_id, ports)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .await;
+
+                    // Phase 3: apply results if ports changed (match by workspace ID)
+                    let apply = cx.update(|cx| {
+                        this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                            let mut changed = false;
+                            for (ws_id, ports) in &results {
+                                for ws in &mut app.workspaces {
+                                    if ws.id == *ws_id && ws.active_ports != *ports {
+                                        ws.active_ports = ports.clone();
+                                        changed = true;
+                                    }
+                                }
+                            }
+                            if changed {
+                                cx.notify();
+                            }
+                        })
+                    });
+                    if apply.is_err() {
+                        break;
+                    }
+                }
+            },
+        )
+        .detach();
+
         Self {
             workspaces: vec![ws],
             active_idx: 0,
