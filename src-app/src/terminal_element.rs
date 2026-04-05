@@ -3,7 +3,7 @@
 //! Renders terminal cells from alacritty_terminal as batched text runs with
 //! full ANSI color support, cell attributes, and background quads.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use alacritty_terminal::event::WindowSize;
 use alacritty_terminal::event_loop::{Msg, Notifier};
@@ -15,9 +15,10 @@ use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor};
 
 use gpui::{
-    App, Bounds, ContentMask, Element, ElementId, Font, FontStyle, FontWeight, GlobalElementId,
-    Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, Rgba, SharedString,
-    StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window, fill, px, relative,
+    App, Bounds, ContentMask, Element, ElementId, Font, FontFallbacks, FontStyle, FontWeight,
+    GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, Rgba,
+    SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window, fill, px,
+    relative,
 };
 
 use crate::terminal::{SpikeTermSize, ZedListener};
@@ -28,6 +29,18 @@ use crate::terminal::{SpikeTermSize, ZedListener};
 
 const FONT_SIZE: f32 = 14.0;
 const FONT_FAMILY: &str = "Noto Sans Mono";
+
+const FONT_FALLBACK_EMOJI: &str = "Noto Color Emoji";
+const FONT_FALLBACK_SYMBOLS: &str = "Symbols Nerd Font Mono";
+const FONT_FALLBACK_SANS: &str = "Noto Sans";
+
+static FONT_FALLBACKS: LazyLock<FontFallbacks> = LazyLock::new(|| {
+    FontFallbacks::from_fonts(vec![
+        FONT_FALLBACK_EMOJI.to_string(),
+        FONT_FALLBACK_SYMBOLS.to_string(),
+        FONT_FALLBACK_SANS.to_string(),
+    ])
+});
 
 // ---------------------------------------------------------------------------
 // Layout types
@@ -133,7 +146,7 @@ impl TerminalElement {
         Font {
             family: SharedString::from(FONT_FAMILY),
             features: Default::default(),
-            fallbacks: None,
+            fallbacks: Some(FONT_FALLBACKS.clone()),
             weight: FontWeight::NORMAL,
             style: FontStyle::Normal,
         }
