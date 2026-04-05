@@ -250,9 +250,19 @@ impl TerminalElement {
                 };
             let disp_offset = content.display_offset;
             let hist_size = term.history_size();
-            let cells = content
+            let cells: Vec<_> = content
                 .display_iter
-                .map(|ic| (ic.point, ic.cell.c, ic.cell.fg, ic.cell.bg, ic.cell.flags))
+                .map(|ic| {
+                    let zw = ic.cell.zerowidth().map(|chars| chars.to_vec());
+                    (
+                        ic.point,
+                        ic.cell.c,
+                        ic.cell.fg,
+                        ic.cell.bg,
+                        ic.cell.flags,
+                        zw,
+                    )
+                })
                 .collect();
             (cells, cursor, sel_range, disp_offset, hist_size)
         };
@@ -261,8 +271,9 @@ impl TerminalElement {
         let mut rects: Vec<LayoutRect> = Vec::new();
         let mut current_rect: Option<LayoutRect> = None;
         let mut last_line: i32 = i32::MIN;
+        let mut previous_cell_had_extras = false;
 
-        for (point, c, cell_fg, cell_bg, flags) in &cells {
+        for (point, c, cell_fg, cell_bg, flags, zw) in &cells {
             let point = *point;
             let flags = *flags;
 
@@ -320,9 +331,19 @@ impl TerminalElement {
                 rects.push(rect);
             }
 
-            // Skip empty cells for text runs (space or NUL)
+            // Skip space fillers following cells with zero-width extras (emoji sequences)
             let c = *c;
+            if c == ' ' && previous_cell_had_extras {
+                previous_cell_had_extras = false;
+                continue;
+            }
+
+            // Track whether this cell has combining/zero-width characters
+            let has_extras = matches!(zw, Some(chars) if !chars.is_empty());
+
+            // Skip empty cells for text runs (space or NUL)
             if c == ' ' || c == '\0' {
+                previous_cell_had_extras = has_extras;
                 batch.flush();
                 continue;
             }
@@ -368,6 +389,12 @@ impl TerminalElement {
                     point.column.0,
                 );
             }
+
+            // Append zero-width combining characters (diacriticals, ZWJ, variation selectors)
+            if let Some(chars) = zw {
+                batch.append_zerowidth(chars);
+            }
+            previous_cell_had_extras = has_extras;
         }
 
         // Flush remaining
@@ -473,6 +500,16 @@ impl BatchAccumulator {
     fn append(&mut self, c: char, cell_cols: usize) {
         self.text.push(c);
         self.col_end += cell_cols;
+    }
+
+    fn append_zerowidth(&mut self, chars: &[char]) {
+        debug_assert!(
+            !self.text.is_empty(),
+            "zero-width chars require a base character"
+        );
+        for &c in chars {
+            self.text.push(c);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
