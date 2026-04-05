@@ -17,6 +17,8 @@ pub struct PaneFlowConfig {
     pub commands: Vec<CommandDefinition>,
     /// Window decoration mode: `"client"` (CSD, default) or `"server"` (SSD).
     pub window_decorations: Option<String>,
+    /// Terminal line height multiplier (default: 1.4, valid range: 1.0–2.5).
+    pub line_height: Option<f32>,
 }
 
 /// A single command definition, compatible with the cmux workspace format.
