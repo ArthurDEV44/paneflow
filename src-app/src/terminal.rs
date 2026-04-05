@@ -82,9 +82,11 @@ pub struct TerminalState {
     pub notifier: Notifier,
     events_rx: UnboundedReceiver<AlacEvent>,
     pub exited: Option<i32>,
-    /// PID of the shell child process, used for port detection (US-006/007).
-    #[allow(dead_code)]
+    /// PID of the shell child process, used for port detection.
     pub child_pid: u32,
+    /// Monotonic counter incremented on each Wakeup event. The port scan loop
+    /// compares this across ticks to detect terminal output activity.
+    pub wakeup_count: u64,
     /// Terminal title set via OSC 0/2 escape sequences (e.g. shell prompt, Claude Code).
     pub title: String,
     /// Set when PTY output has been processed (Wakeup event received).
@@ -147,6 +149,7 @@ impl TerminalState {
             events_rx,
             exited: None,
             child_pid,
+            wakeup_count: 0,
             title: String::from("Terminal"),
             dirty: true, // Force initial render
             #[cfg(debug_assertions)]
@@ -160,6 +163,7 @@ impl TerminalState {
             match event {
                 AlacEvent::Wakeup => {
                     self.dirty = true;
+                    self.wakeup_count += 1;
                 }
                 AlacEvent::ChildExit(status) => {
                     self.exited = Some(status);
