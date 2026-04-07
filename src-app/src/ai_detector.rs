@@ -51,6 +51,16 @@ impl AiTool {
             AiTool::Codex => "Codex",
         }
     }
+
+    /// Parse a tool name string into an `AiTool`. Case-insensitive.
+    /// Defaults to `Claude` for unknown names.
+    pub fn from_name(name: &str) -> Self {
+        if name.eq_ignore_ascii_case("codex") {
+            AiTool::Codex
+        } else {
+            AiTool::Claude
+        }
+    }
 }
 
 /// AI tool session state visible to the rest of the app.

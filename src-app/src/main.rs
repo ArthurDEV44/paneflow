@@ -1240,6 +1240,32 @@ impl PaneFlowApp {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
                 }
             }
+            "ai.prompt_submit" => {
+                let Some(workspace_id) = params.get("workspace_id").and_then(|v| v.as_u64()) else {
+                    return serde_json::json!({"error": "Missing workspace_id"});
+                };
+                let hook = params.get("hook_payload");
+                let tool_name = params
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
+                    .unwrap_or("claude");
+                let tool = ai_detector::AiTool::from_name(tool_name);
+
+                if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
+                    ws.ai_state = ai_detector::AiToolState::Thinking(tool);
+                    // Clear pending notifications for this workspace
+                    self.notifications
+                        .retain(|n| n.workspace_id != workspace_id);
+                    cx.notify();
+                    if !self.loader_anim_running {
+                        self.start_loader_animation(cx);
+                    }
+                    serde_json::json!({"status": "running"})
+                } else {
+                    serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
+                }
+            }
             _ => {
                 serde_json::json!({"error": format!("Unknown method: {method}")})
             }
