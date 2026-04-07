@@ -427,7 +427,7 @@ fn ensure_wrapper_scripts(bin_dir: &std::path::Path) {
         return;
     }
 
-    for name in &["claude", "paneflow-hook"] {
+    for name in &["claude", "codex", "paneflow-hook"] {
         let asset_path = format!("bin/{name}");
         let Some(file) = Assets::get(&asset_path) else {
             continue;
