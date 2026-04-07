@@ -300,53 +300,6 @@ impl PaneFlowApp {
                     }
                 }
             }
-            terminal::TerminalEvent::AiToolStateChanged(state) => {
-                if let Some(ws_idx) = self.workspace_idx_for_terminal(&terminal, cx) {
-                    let ws = &mut self.workspaces[ws_idx];
-                    ws.ai_state = *state;
-
-                    // Push notification for actionable states
-                    match state {
-                        ai_detector::AiToolState::WaitingForInput(tool) => {
-                            self.notifications.push(Notification {
-                                workspace_id: ws.id,
-                                workspace_title: ws.title.clone(),
-                                message: format!("{} needs input", tool.label()),
-                                kind: *state,
-                                timestamp: std::time::Instant::now(),
-                                read: false,
-                            });
-                        }
-                        ai_detector::AiToolState::Finished(tool) => {
-                            self.notifications.push(Notification {
-                                workspace_id: ws.id,
-                                workspace_title: ws.title.clone(),
-                                message: format!("{} finished", tool.label()),
-                                kind: *state,
-                                timestamp: std::time::Instant::now(),
-                                read: false,
-                            });
-                        }
-                        _ => {}
-                    }
-
-                    // Cap at 50 notifications
-                    if self.notifications.len() > 50 {
-                        self.notifications.drain(0..self.notifications.len() - 50);
-                    }
-
-                    // Start loader animation if needed
-                    if matches!(state, ai_detector::AiToolState::Thinking(_))
-                        && !self.loader_anim_running
-                    {
-                        self.start_loader_animation(cx);
-                    }
-
-                    if self.settings_section.is_none() {
-                        cx.notify();
-                    }
-                }
-            }
             // ChildExited + TitleChanged are handled by Pane's subscription
             _ => {}
         }
