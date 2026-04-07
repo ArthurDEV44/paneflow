@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# PaneFlow hook helper — bridges Claude Code lifecycle events to PaneFlow's
+# IPC socket. Called by the claude wrapper: `paneflow-hook <event-name>`
+#
+# Reads the hook JSON payload from stdin, wraps it in a JSON-RPC 2.0 request
+# with PaneFlow identity env vars, and sends it to the IPC socket.
+#
+# Must complete in < 100ms. Failures are silent — never block Claude Code.
+
+# ---------------------------------------------------------------------------
+# Map event name (from claude wrapper) to IPC method
+# ---------------------------------------------------------------------------
+EVENT="${1:-}"
+
+case "$EVENT" in
+    session-start)  METHOD="ai.session_start" ;;
+    prompt-submit)  METHOD="ai.prompt_submit" ;;
+    tool-use)       METHOD="ai.tool_use" ;;
+    notification)   METHOD="ai.notification" ;;
+    stop)           METHOD="ai.stop" ;;
+    session-end)    METHOD="ai.session_end" ;;
+    *)
+        exit 0
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Read stdin payload (Claude Code sends compact JSON on one line)
+# Cap at 64KB to prevent unbounded reads from stalling the script.
+# ---------------------------------------------------------------------------
+PAYLOAD="$(head -c 65536 2>/dev/null)" || PAYLOAD="{}"
+if [[ -z "$PAYLOAD" ]]; then
+    PAYLOAD="{}"
+fi
+
+# ---------------------------------------------------------------------------
+# Env vars set by PaneFlow at PTY spawn (US-001) and claude wrapper (US-002)
+# ---------------------------------------------------------------------------
+SOCKET="${PANEFLOW_SOCKET_PATH:-}"
+WS_ID="${PANEFLOW_WORKSPACE_ID:-0}"
+SURF_ID="${PANEFLOW_SURFACE_ID:-0}"
+PID="${PANEFLOW_CLAUDE_PID:-0}"
+
+if [[ -z "$SOCKET" ]]; then
+    exit 0
+fi
+
+# Validate numeric env vars to prevent JSON injection
+[[ "$WS_ID" =~ ^[0-9]+$ ]] || WS_ID=0
+[[ "$SURF_ID" =~ ^[0-9]+$ ]] || SURF_ID=0
+[[ "$PID" =~ ^[0-9]+$ ]] || PID=0
+
+# ---------------------------------------------------------------------------
+# Build JSON-RPC 2.0 request
+# Use jq when available to safely embed the payload (prevents JSON injection).
+# Fall back to printf with validation when jq is not installed.
+# ---------------------------------------------------------------------------
+if command -v jq &>/dev/null; then
+    REQUEST=$(printf '%s' "$PAYLOAD" | jq -c \
+        --arg method "$METHOD" \
+        --argjson ws_id "$WS_ID" \
+        --argjson surface_id "$SURF_ID" \
+        --argjson pid "$PID" \
+        '{"jsonrpc":"2.0","method":$method,"params":{"workspace_id":$ws_id,"surface_id":$surface_id,"pid":$pid,"hook_payload":.},"id":1}' \
+        2>/dev/null)
+
+    # If jq failed (invalid JSON input), build a minimal request without payload
+    if [[ -z "$REQUEST" ]]; then
+        REQUEST=$(jq -nc \
+            --arg method "$METHOD" \
+            --argjson ws_id "$WS_ID" \
+            --argjson surface_id "$SURF_ID" \
+            --argjson pid "$PID" \
+            '{"jsonrpc":"2.0","method":$method,"params":{"workspace_id":$ws_id,"surface_id":$surface_id,"pid":$pid,"hook_payload":{}},"id":1}')
+    fi
+else
+    # No jq: validate that PAYLOAD looks like JSON (starts with { or [)
+    # before embedding. If it doesn't, use empty object.
+    if [[ "$PAYLOAD" =~ ^\{.*\}$ ]] || [[ "$PAYLOAD" =~ ^\[.*\]$ ]]; then
+        SAFE_PAYLOAD="$PAYLOAD"
+    else
+        SAFE_PAYLOAD="{}"
+    fi
+    REQUEST=$(printf '{"jsonrpc":"2.0","method":"%s","params":{"workspace_id":%s,"surface_id":%s,"pid":%s,"hook_payload":%s},"id":1}' \
+        "$METHOD" "$WS_ID" "$SURF_ID" "$PID" "$SAFE_PAYLOAD")
+fi
+
+# ---------------------------------------------------------------------------
+# Send to IPC socket (1s timeout, fire-and-forget)
+# Prefer socat, fall back to nc. Silently ignore errors.
+# ---------------------------------------------------------------------------
+if command -v socat &>/dev/null; then
+    printf '%s\n' "$REQUEST" | socat -t1 - "UNIX-CONNECT:${SOCKET}" 2>/dev/null || true
+elif command -v nc &>/dev/null; then
+    printf '%s\n' "$REQUEST" | nc -w1 -U "$SOCKET" 2>/dev/null || true
+else
+    # No socket tool available — silently skip
+    :
+fi
+
+exit 0
