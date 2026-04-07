@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# PaneFlow hook helper — bridges Claude Code lifecycle events to PaneFlow's
-# IPC socket. Called by the claude wrapper: `paneflow-hook <event-name>`
+# PaneFlow hook helper — bridges AI tool lifecycle events to PaneFlow's
+# IPC socket. Called by the claude/codex wrapper: `paneflow-hook <event-name>`
 #
 # Reads the hook JSON payload from stdin, wraps it in a JSON-RPC 2.0 request
 # with PaneFlow identity env vars, and sends it to the IPC socket.
@@ -34,12 +34,26 @@ if [[ -z "$PAYLOAD" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Env vars set by PaneFlow at PTY spawn (US-001) and claude wrapper (US-002)
+# Env vars set by PaneFlow at PTY spawn and the claude/codex wrapper
 # ---------------------------------------------------------------------------
 SOCKET="${PANEFLOW_SOCKET_PATH:-}"
 WS_ID="${PANEFLOW_WORKSPACE_ID:-0}"
 SURF_ID="${PANEFLOW_SURFACE_ID:-0}"
-PID="${PANEFLOW_CLAUDE_PID:-0}"
+
+# Detect which AI tool is active from PID env vars
+CLAUDE_PID="${PANEFLOW_CLAUDE_PID:-0}"
+CODEX_PID="${PANEFLOW_CODEX_PID:-0}"
+
+if [[ "$CODEX_PID" != "0" ]] && [[ "$CLAUDE_PID" == "0" ]]; then
+    TOOL="codex"
+    PID="$CODEX_PID"
+elif [[ "$CLAUDE_PID" != "0" ]]; then
+    TOOL="claude"
+    PID="$CLAUDE_PID"
+else
+    TOOL="claude"
+    PID=0
+fi
 
 if [[ -z "$SOCKET" ]]; then
     exit 0
@@ -61,7 +75,8 @@ if command -v jq &>/dev/null; then
         --argjson ws_id "$WS_ID" \
         --argjson surface_id "$SURF_ID" \
         --argjson pid "$PID" \
-        '{"jsonrpc":"2.0","method":$method,"params":{"workspace_id":$ws_id,"surface_id":$surface_id,"pid":$pid,"hook_payload":.},"id":1}' \
+        --arg tool "$TOOL" \
+        '{"jsonrpc":"2.0","method":$method,"params":{"workspace_id":$ws_id,"surface_id":$surface_id,"pid":$pid,"tool":$tool,"hook_payload":.},"id":1}' \
         2>/dev/null)
 
     # If jq failed (invalid JSON input), build a minimal request without payload
@@ -71,18 +86,15 @@ if command -v jq &>/dev/null; then
             --argjson ws_id "$WS_ID" \
             --argjson surface_id "$SURF_ID" \
             --argjson pid "$PID" \
-            '{"jsonrpc":"2.0","method":$method,"params":{"workspace_id":$ws_id,"surface_id":$surface_id,"pid":$pid,"hook_payload":{}},"id":1}')
+            --arg tool "$TOOL" \
+            '{"jsonrpc":"2.0","method":$method,"params":{"workspace_id":$ws_id,"surface_id":$surface_id,"pid":$pid,"tool":$tool,"hook_payload":{}},"id":1}')
     fi
 else
-    # No jq: validate that PAYLOAD looks like JSON (starts with { or [)
-    # before embedding. If it doesn't, use empty object.
-    if [[ "$PAYLOAD" =~ ^\{.*\}$ ]] || [[ "$PAYLOAD" =~ ^\[.*\]$ ]]; then
-        SAFE_PAYLOAD="$PAYLOAD"
-    else
-        SAFE_PAYLOAD="{}"
-    fi
-    REQUEST=$(printf '{"jsonrpc":"2.0","method":"%s","params":{"workspace_id":%s,"surface_id":%s,"pid":%s,"hook_payload":%s},"id":1}' \
-        "$METHOD" "$WS_ID" "$SURF_ID" "$PID" "$SAFE_PAYLOAD")
+    # No jq: embedding untrusted payload via printf risks JSON injection (CWE-74).
+    # Send an empty hook_payload — the critical fields (method, workspace_id,
+    # surface_id, pid) are already validated as numeric or fixed strings.
+    REQUEST=$(printf '{"jsonrpc":"2.0","method":"%s","params":{"workspace_id":%s,"surface_id":%s,"pid":%s,"tool":"%s","hook_payload":{}},"id":1}' \
+        "$METHOD" "$WS_ID" "$SURF_ID" "$PID" "$TOOL")
 fi
 
 # ---------------------------------------------------------------------------
