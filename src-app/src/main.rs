@@ -367,6 +367,42 @@ impl PaneFlowApp {
         })
     }
 
+    /// Probe registered AI agent PIDs with `kill(pid, 0)` and clean up
+    /// stale entries where the process no longer exists (ESRCH).
+    fn sweep_stale_pids(&mut self, cx: &mut Context<Self>) {
+        let mut changed = false;
+        for ws in &mut self.workspaces {
+            if ws.agent_pids.is_empty() {
+                continue;
+            }
+            let before = ws.agent_pids.len();
+            ws.agent_pids.retain(|_tool, &mut pid| {
+                debug_assert!(pid <= i32::MAX as u32, "PID exceeds i32 range");
+                let ret = unsafe { libc::kill(pid as i32, 0) };
+                if ret == -1 {
+                    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                    if errno == libc::ESRCH {
+                        // Process does not exist — stale
+                        return false;
+                    }
+                    // EPERM or other: process exists but we can't signal it — keep
+                }
+                true
+            });
+            if ws.agent_pids.len() < before {
+                changed = true;
+                // If all agent PIDs were cleared and state is still active, reset to Inactive
+                if ws.agent_pids.is_empty() && ws.ai_state != ai_detector::AiToolState::Inactive {
+                    ws.ai_state = ai_detector::AiToolState::Inactive;
+                    ws.active_tool_name = None;
+                }
+            }
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
     /// Start the spinner animation loop. Runs at ~60fps, advancing
     /// `loader_angle` on all Thinking workspaces. Self-stops when no
     /// workspace is in Thinking state.
@@ -848,6 +884,27 @@ impl PaneFlowApp {
                         })
                     });
                     if apply.is_err() {
+                        break;
+                    }
+                }
+            },
+        )
+        .detach();
+
+        // Stale PID sweep: every 30s, probe registered AI agent PIDs with
+        // kill(pid, 0) to detect crashed processes and clean up sidebar state.
+        cx.spawn(
+            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                loop {
+                    smol::Timer::after(std::time::Duration::from_secs(30)).await;
+                    if cx
+                        .update(|cx| {
+                            this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                                app.sweep_stale_pids(cx);
+                            })
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
