@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# PaneFlow wrapper for Claude Code — injects lifecycle hooks so the sidebar
+# can track Claude's state (Running / Needs input / Idle).
+#
+# When launched inside a PaneFlow terminal, this script:
+#   1. Detects the real `claude` binary on PATH (skipping itself)
+#   2. Injects --settings with hooks for 6 lifecycle events
+#   3. Passes all original arguments through unchanged
+#
+# Outside PaneFlow (no PANEFLOW_SURFACE_ID), this is a transparent passthrough.
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Find the real claude binary (skip our own directory on PATH)
+# ---------------------------------------------------------------------------
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLEAN_PATH="${PATH//$SELF_DIR:/}"
+CLEAN_PATH="${CLEAN_PATH//:$SELF_DIR/}"
+REAL_CLAUDE="$(PATH="$CLEAN_PATH" command -v claude 2>/dev/null || true)"
+
+if [[ -z "$REAL_CLAUDE" ]]; then
+    echo "paneflow: claude not found on PATH" >&2
+    exit 127
+fi
+
+# ---------------------------------------------------------------------------
+# Guard 1: Not inside PaneFlow — passthrough to real claude
+# ---------------------------------------------------------------------------
+if [[ -z "${PANEFLOW_SURFACE_ID:-}" ]]; then
+    exec "$REAL_CLAUDE" "$@"
+fi
+
+# ---------------------------------------------------------------------------
+# Guard 2: IPC socket unreachable — passthrough
+# ---------------------------------------------------------------------------
+SOCKET="${PANEFLOW_SOCKET_PATH:-}"
+if [[ -z "$SOCKET" ]] || ! [[ -S "$SOCKET" ]]; then
+    exec "$REAL_CLAUDE" "$@"
+fi
+
+# Quick reachability check: try connecting with 1s timeout.
+# Prefer socat, fall back to nc -U, skip check if neither is available.
+if command -v socat &>/dev/null; then
+    if ! socat -u /dev/null "UNIX-CONNECT:${SOCKET},connect-timeout=1" 2>/dev/null; then
+        exec "$REAL_CLAUDE" "$@"
+    fi
+elif command -v nc &>/dev/null; then
+    if ! nc -z -w1 -U "$SOCKET" 2>/dev/null; then
+        exec "$REAL_CLAUDE" "$@"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Session UUID — generate one if the user didn't supply --session-id,
+# --resume, or --continue
+# ---------------------------------------------------------------------------
+NEEDS_SESSION_ID=true
+for arg in "$@"; do
+    case "$arg" in
+        --session-id|--session-id=*|--resume|--resume=*|--continue|--continue=*)
+            NEEDS_SESSION_ID=false
+            break
+            ;;
+    esac
+done
+
+SESSION_ARGS=()
+if [[ "$NEEDS_SESSION_ID" == true ]]; then
+    SESSION_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || echo "pf-$$-$(date +%s)")"
+    SESSION_ARGS=(--session-id "$SESSION_UUID")
+fi
+
+# ---------------------------------------------------------------------------
+# Unset CLAUDECODE to prevent nested session detection interference
+# ---------------------------------------------------------------------------
+unset CLAUDECODE
+
+# ---------------------------------------------------------------------------
+# Export PID for stale session tracking (US-011)
+# ---------------------------------------------------------------------------
+export PANEFLOW_CLAUDE_PID=$$
+
+# ---------------------------------------------------------------------------
+# Build hooks JSON — 6 lifecycle events routed to paneflow-hook
+# JSON-escape the hook directory path to handle special characters safely.
+# ---------------------------------------------------------------------------
+HOOK_DIR="$SELF_DIR"
+ESCAPED_HOOK_DIR="${HOOK_DIR//\\/\\\\}"
+ESCAPED_HOOK_DIR="${ESCAPED_HOOK_DIR//\"/\\\"}"
+
+read -r -d '' HOOKS_JSON << HOOKS_EOF || true
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${ESCAPED_HOOK_DIR}/paneflow-hook session-start"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${ESCAPED_HOOK_DIR}/paneflow-hook prompt-submit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${ESCAPED_HOOK_DIR}/paneflow-hook tool-use",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${ESCAPED_HOOK_DIR}/paneflow-hook notification"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${ESCAPED_HOOK_DIR}/paneflow-hook stop"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${ESCAPED_HOOK_DIR}/paneflow-hook session-end"
+          }
+        ]
+      }
+    ]
+  }
+}
+HOOKS_EOF
+
+# ---------------------------------------------------------------------------
+# Exec real claude with hooks injected
+# ---------------------------------------------------------------------------
+exec "$REAL_CLAUDE" "${SESSION_ARGS[@]}" "$@" --settings "$HOOKS_JSON"
