@@ -32,9 +32,9 @@
     {
       "id": "EP-003",
       "title": "Stale Session Cleanup",
-      "status": "NOT_STARTED",
+      "status": "IN_PROGRESS",
       "stories": [
-        { "id": "US-011", "title": "Stale PID sweep timer", "status": "NOT_STARTED", "priority": "P0", "size": 3, "blocked_by": ["US-005"] }
+        { "id": "US-011", "title": "Stale PID sweep timer", "status": "IN_REVIEW", "priority": "P0", "size": 3, "blocked_by": ["US-005"], "completed_at": "2026-04-07" }
       ]
     },
     {
