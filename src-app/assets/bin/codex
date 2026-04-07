@@ -12,7 +12,7 @@
 # Outside PaneFlow (no PANEFLOW_SURFACE_ID), this is a transparent passthrough.
 #
 # Note: Codex hooks (UserPromptSubmit, PreToolUse, Stop) are configured via
-# ~/.codex/hooks.json — see US-002 for the installation logic.
+# ~/.codex/hooks.json — installed/merged idempotently below.
 
 set -euo pipefail
 
@@ -60,6 +60,104 @@ fi
 # Export PID for stale session tracking
 # ---------------------------------------------------------------------------
 export PANEFLOW_CODEX_PID=$$
+
+# ---------------------------------------------------------------------------
+# Install PaneFlow hooks into ~/.codex/hooks.json (idempotent)
+#
+# Three events: UserPromptSubmit, PreToolUse, Stop.
+# SessionStart/SessionEnd are handled by this wrapper directly (above/below).
+# Codex has no Notification event (upstream gap).
+# ---------------------------------------------------------------------------
+CODEX_DIR="$HOME/.codex"
+HOOKS_FILE="$CODEX_DIR/hooks.json"
+
+# JSON-escape the hook directory path for safe embedding
+ESCAPED_HOOK_DIR="${SELF_DIR//\\/\\\\}"
+ESCAPED_HOOK_DIR="${ESCAPED_HOOK_DIR//\"/\\\"}"
+
+# PaneFlow hooks template — the 3 events Codex dispatches that we need
+read -r -d '' PANEFLOW_HOOKS << 'HOOKSTPL' || true
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__HOOK_DIR__/paneflow-hook prompt-submit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__HOOK_DIR__/paneflow-hook tool-use"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__HOOK_DIR__/paneflow-hook stop"
+          }
+        ]
+      }
+    ]
+  }
+}
+HOOKSTPL
+
+# Substitute the actual hook directory path
+PANEFLOW_HOOKS="${PANEFLOW_HOOKS//__HOOK_DIR__/$ESCAPED_HOOK_DIR}"
+
+mkdir -p "$CODEX_DIR"
+
+if [[ ! -f "$HOOKS_FILE" ]] || [[ ! -s "$HOOKS_FILE" ]]; then
+    # No existing hooks.json (or empty file) — write fresh PaneFlow hooks
+    TMP_HOOKS=$(mktemp "$CODEX_DIR/.hooks.json.XXXXXX")
+    printf '%s\n' "$PANEFLOW_HOOKS" > "$TMP_HOOKS"
+    chmod 600 "$TMP_HOOKS"
+    mv "$TMP_HOOKS" "$HOOKS_FILE"
+elif command -v jq &>/dev/null; then
+    # Merge: remove stale PaneFlow entries (idempotent), then inject fresh ones.
+    # PaneFlow hooks are identified by commands containing "paneflow-hook".
+    MERGED=$(jq -s '
+      .[0] as $existing | .[1] as $pf |
+      ($existing.hooks // {}) as $eh |
+      ($pf.hooks // {}) as $ph |
+      ([$eh, $ph] | map(keys) | add | unique) as $events |
+      { "hooks":
+        ( [ $events[] as $ev |
+            # User entries for this event (filter out paneflow-hook commands)
+            ( ($eh[$ev] // []) | map(
+                { "matcher": .matcher,
+                  "hooks": [ .hooks[] | select((.command? // "") | test("paneflow-hook") | not) ] }
+              ) | map(select(.hooks | length > 0))
+            ) as $user_entries |
+            ( ($ph[$ev] // []) ) as $pf_entries |
+            { ($ev): ($user_entries + $pf_entries) }
+          ] | add // {} )
+      }
+    ' "$HOOKS_FILE" <(printf '%s\n' "$PANEFLOW_HOOKS") 2>/dev/null) || MERGED=""
+
+    if [[ -n "$MERGED" ]]; then
+        TMP_HOOKS=$(mktemp "$CODEX_DIR/.hooks.json.XXXXXX")
+        printf '%s\n' "$MERGED" > "$TMP_HOOKS"
+        chmod 600 "$TMP_HOOKS"
+        mv "$TMP_HOOKS" "$HOOKS_FILE"
+    fi
+    # If jq merge failed, leave existing file untouched (safe)
+fi
+# No jq + file exists → skip merge entirely (safe fallback)
 
 # ---------------------------------------------------------------------------
 # Cleanup: send session-end on exit (Codex has no SessionEnd hook event)
