@@ -13,17 +13,14 @@ gpui = { path = "/home/arthur/dev/zed/crates/gpui" }
 gpui_platform = { path = "/home/arthur/dev/zed/crates/gpui_platform", features = ["wayland", "x11"] }
 collections = { path = "/home/arthur/dev/zed/crates/collections" }
 
-# Alacritty terminal (Zed's fork)
-alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "9d9640d4" }
+# Alacritty terminal (Zed's fork — local patch for OSC 7 support)
+alacritty_terminal = { path = "/home/arthur/dev/alacritty/alacritty_terminal" }
 
 # Internal crates
 paneflow-config = { path = "../crates/paneflow-config" }
 
 # File system watcher (OS-native: inotify/FSEvents/ReadDirectoryChanges)
 notify = "7"
-
-# Cross-platform port-to-PID detection (reads /proc/net/tcp on Linux)
-listeners = "0.5"
 
 # Standard deps
 anyhow = "1.0.86"

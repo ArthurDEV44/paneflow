@@ -23,6 +23,14 @@ pub fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("paneflow").join("paneflow.json"))
 }
 
+/// Returns the platform-appropriate session file path.
+///
+/// - Linux: `$XDG_CACHE_HOME/paneflow/session.json`
+/// - macOS: `~/Library/Caches/paneflow/session.json`
+pub fn session_path() -> Option<PathBuf> {
+    dirs::cache_dir().map(|dir| dir.join("paneflow").join("session.json"))
+}
+
 /// Load the PaneFlow configuration from the default platform path.
 ///
 /// - If the config file does not exist, returns `PaneFlowConfig::default()`.

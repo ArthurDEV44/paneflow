@@ -887,29 +887,44 @@ impl LayoutTree {
 
     /// Serialize the layout tree to a `LayoutNode` (config schema type).
     ///
-    /// Each leaf produces a `LayoutNode::Pane` with a single `SurfaceDefinition`
-    /// containing the terminal's OSC title as `name`. Each container produces a
-    /// `LayoutNode::Split` with per-child `ratios` and recursive children.
+    /// Each leaf produces a `LayoutNode::Pane` with one `SurfaceDefinition` per
+    /// tab, capturing the terminal's CWD and OSC title. The active tab is marked
+    /// with `focus: true`. Each container produces a `LayoutNode::Split` with
+    /// per-child `ratios` and recursive children.
     pub fn serialize(&self, cx: &App) -> LayoutNode {
         match self {
             LayoutTree::Leaf(pane) => {
                 let pane_ref = pane.read(cx);
-                let title = if pane_ref.tabs.is_empty() {
-                    None
-                } else {
-                    let t = pane_ref.active_terminal().read(cx).terminal.title.clone();
-                    if t.is_empty() { None } else { Some(t) }
-                };
-                LayoutNode::Pane {
-                    surfaces: vec![SurfaceDefinition {
-                        surface_type: Some("terminal".to_string()),
-                        name: title,
-                        command: None,
-                        cwd: None,
-                        env: None,
-                        focus: None,
-                    }],
-                }
+                let surfaces: Vec<SurfaceDefinition> = pane_ref
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, tv)| {
+                        let tv_ref = tv.read(cx);
+                        let name = if tv_ref.terminal.title.is_empty() {
+                            None
+                        } else {
+                            Some(tv_ref.terminal.title.clone())
+                        };
+                        let cwd =
+                            tv_ref.terminal.current_cwd.clone().or_else(|| {
+                                tv_ref.terminal.cwd_now().map(|p| p.display().to_string())
+                            });
+                        SurfaceDefinition {
+                            surface_type: Some("terminal".to_string()),
+                            name,
+                            command: None,
+                            cwd,
+                            env: None,
+                            focus: if i == pane_ref.selected_idx {
+                                Some(true)
+                            } else {
+                                None
+                            },
+                        }
+                    })
+                    .collect();
+                LayoutNode::Pane { surfaces }
             }
             LayoutTree::Container {
                 direction,
@@ -936,15 +951,16 @@ impl LayoutTree {
     /// Rebuild a `LayoutTree` from a `LayoutNode` (config schema).
     ///
     /// Panes are consumed from `panes` in left-to-right order for each leaf.
-    /// When `panes` is exhausted, `spawn` is called to create new panes.
+    /// When `panes` is exhausted, `spawn` is called with the current `LayoutNode`
+    /// so the caller can extract per-surface metadata (e.g. CWD) for new panes.
     pub fn from_layout_node(
         node: &LayoutNode,
         panes: &mut VecDeque<Entity<Pane>>,
-        spawn: &mut impl FnMut() -> Entity<Pane>,
+        spawn: &mut impl FnMut(&LayoutNode) -> Entity<Pane>,
     ) -> Self {
         match node {
             LayoutNode::Pane { .. } => {
-                let pane = panes.pop_front().unwrap_or_else(spawn);
+                let pane = panes.pop_front().unwrap_or_else(|| spawn(node));
                 LayoutTree::Leaf(pane)
             }
             LayoutNode::Split {

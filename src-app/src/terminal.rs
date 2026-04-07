@@ -25,7 +25,13 @@ use gpui::{
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
+use crate::ai_detector::{AiToolDetector, AiToolState};
 use crate::terminal_element::TerminalElement;
+
+/// Global flag: when true, terminals skip `cx.notify()` to avoid repaints
+/// while a non-terminal page (e.g. settings) is displayed.
+pub static SUPPRESS_REPAINTS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // Debug latency probes — zero overhead in release builds
@@ -74,6 +80,99 @@ impl EventListener for ZedListener {
 }
 
 // ---------------------------------------------------------------------------
+// Shell integration — automatic OSC 7 injection
+// ---------------------------------------------------------------------------
+
+/// zsh: ZDOTDIR-based injection. Our `.zshenv` restores the original ZDOTDIR
+/// so all other dotfiles (`.zshrc`, `.zprofile`) load from `$HOME` as usual.
+const ZSH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
+if [[ -n "${PANEFLOW_ORIG_ZDOTDIR+x}" ]]; then
+    ZDOTDIR="${PANEFLOW_ORIG_ZDOTDIR}"
+    unset PANEFLOW_ORIG_ZDOTDIR
+else
+    unset ZDOTDIR
+fi
+[[ -f "${ZDOTDIR:-$HOME}/.zshenv" ]] && source "${ZDOTDIR:-$HOME}/.zshenv"
+__paneflow_osc7() { printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}"; }
+autoload -Uz add-zsh-hook
+add-zsh-hook chpwd __paneflow_osc7
+__paneflow_osc7
+"#;
+
+/// bash: `--rcfile` replacement. Sources the real `.bashrc`, then appends
+/// our OSC 7 function to PROMPT_COMMAND (preserving starship/oh-my-bash/etc.).
+const BASH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
+[[ -f ~/.bashrc ]] && source ~/.bashrc
+__paneflow_osc7() { printf '\e]7;file://%s%s\a' "${HOSTNAME}" "${PWD}"; }
+PROMPT_COMMAND="__paneflow_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+"#;
+
+/// fish: `--init-command` sourced script. Uses `--on-variable PWD` so it
+/// fires on every directory change independently of the prompt function.
+const FISH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
+function __paneflow_osc7 --on-variable PWD
+    printf '\e]7;file://%s%s\a' (hostname) "$PWD"
+end
+__paneflow_osc7
+"#;
+
+/// Write OSC 7 shell integration scripts and return the extra shell args
+/// and env vars needed to activate them. Scripts are written to
+/// `$XDG_DATA_HOME/paneflow/shell/{zsh,bash,fish}/`.
+///
+/// # Platform gaps (for future porting)
+/// - **Windows**: PowerShell needs a `prompt` function override;
+///   cmd.exe has no hook mechanism (consider ConPTY passthrough).
+/// - **Shells without injection** (nushell, elvish, xonsh): rely on
+///   `cwd_now()` fallback. On macOS this requires `proc_pidinfo()`.
+fn setup_shell_integration(
+    shell: &str,
+    env: &mut std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    let Some(base) = dirs::data_dir().map(|d| d.join("paneflow").join("shell")) else {
+        return vec![];
+    };
+
+    let basename = shell.rsplit('/').next().unwrap_or(shell);
+    match basename {
+        "zsh" => {
+            let dir = base.join("zsh");
+            if std::fs::create_dir_all(&dir).is_err() {
+                return vec![];
+            }
+            let _ = std::fs::write(dir.join(".zshenv"), ZSH_OSC7);
+            if let Ok(orig) = std::env::var("ZDOTDIR") {
+                env.insert("PANEFLOW_ORIG_ZDOTDIR".into(), orig);
+            }
+            env.insert("ZDOTDIR".into(), dir.display().to_string());
+            vec![]
+        }
+        "bash" => {
+            let dir = base.join("bash");
+            if std::fs::create_dir_all(&dir).is_err() {
+                return vec![];
+            }
+            let rcfile = dir.join("bashrc");
+            let _ = std::fs::write(&rcfile, BASH_OSC7);
+            vec!["--rcfile".into(), rcfile.display().to_string()]
+        }
+        "fish" => {
+            let dir = base.join("fish");
+            if std::fs::create_dir_all(&dir).is_err() {
+                return vec![];
+            }
+            let initfile = dir.join("osc7.fish");
+            let _ = std::fs::write(&initfile, FISH_OSC7);
+            vec![
+                "--init-command".into(),
+                format!("source {}", initfile.display()),
+            ]
+        }
+        _ => vec![],
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Terminal state
 // ---------------------------------------------------------------------------
 
@@ -84,18 +183,22 @@ pub struct TerminalState {
     pub exited: Option<i32>,
     /// PID of the shell child process, used for port detection.
     pub child_pid: u32,
-    /// Monotonic counter incremented on each Wakeup event. The port scan loop
-    /// compares this across ticks to detect terminal output activity.
-    pub wakeup_count: u64,
     /// Terminal title set via OSC 0/2 escape sequences (e.g. shell prompt, Claude Code).
     pub title: String,
-    /// Current working directory of the shell process, detected by reading
-    /// `/proc/<child_pid>/cwd`. Updated on every 50th Wakeup event (~200ms at
-    /// sustained output). `None` if not yet detected or process exited.
+    /// Current working directory of the shell process.
+    /// Updated via OSC 7 escape sequence (push from shell) or on-demand
+    /// via `cwd_now()` (fallback for shells that don't emit OSC 7).
     pub current_cwd: Option<String>,
     /// Set when PTY output has been processed (Wakeup event received).
     /// Cleared after cx.notify() triggers a repaint.
     pub dirty: bool,
+    /// Counter for throttling output scans — scans every 50th dirty tick.
+    output_scan_ticks: u32,
+    /// Ports already reported via ServiceDetected (dedup guard).
+    /// Cleared on ChildExit so a restarted server is re-detected.
+    reported_ports: Vec<u16>,
+    /// AI tool session detector — fed by terminal grid content, ticked for timeouts.
+    pub ai_detector: AiToolDetector,
     /// Timestamp of the most recent keystroke, used by latency probes
     /// to measure total keystroke-to-pixel time. Debug builds only.
     /// Note: on rapid keystrokes before a render frame, earlier timestamps are overwritten.
@@ -104,7 +207,11 @@ pub struct TerminalState {
 }
 
 impl TerminalState {
-    pub fn new(working_directory: Option<std::path::PathBuf>) -> anyhow::Result<Self> {
+    pub fn new(
+        working_directory: Option<std::path::PathBuf>,
+        workspace_id: u64,
+        surface_id: u64,
+    ) -> anyhow::Result<Self> {
         let (events_tx, events_rx) = unbounded();
         let listener = ZedListener(events_tx.clone());
 
@@ -120,15 +227,26 @@ impl TerminalState {
         let term = Term::new(config, &dimensions, listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
-        // Create PTY
+        // Create PTY with OSC 7 shell integration
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let mut env = std::collections::HashMap::new();
+        let extra_args = setup_shell_integration(&shell, &mut env);
+
+        // Inject PaneFlow identity env vars for AI tool hook integration.
+        // Child process env only — never inherited by PaneFlow's own process.
+        env.insert("PANEFLOW_WORKSPACE_ID".into(), workspace_id.to_string());
+        env.insert("PANEFLOW_SURFACE_ID".into(), surface_id.to_string());
+        if let Some(socket_path) = paneflow_socket_path() {
+            env.insert("PANEFLOW_SOCKET_PATH".into(), socket_path);
+        }
+
         let cwd = working_directory
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let pty_config = tty::Options {
-            shell: Some(tty::Shell::new(shell, vec![])),
+            shell: Some(tty::Shell::new(shell, extra_args)),
             working_directory: Some(cwd),
             drain_on_exit: false,
-            env: std::collections::HashMap::new(),
+            env,
         };
 
         let window_size = WindowSize {
@@ -153,10 +271,12 @@ impl TerminalState {
             events_rx,
             exited: None,
             child_pid,
-            wakeup_count: 0,
             current_cwd: None,
             title: String::from("Terminal"),
             dirty: true, // Force initial render
+            output_scan_ticks: 0,
+            reported_ports: Vec::new(),
+            ai_detector: AiToolDetector::new(),
             #[cfg(debug_assertions)]
             last_keystroke_at: None,
         })
@@ -168,15 +288,17 @@ impl TerminalState {
             match event {
                 AlacEvent::Wakeup => {
                     self.dirty = true;
-                    self.wakeup_count += 1;
-                    // Poll shell CWD every 50th wakeup (~200ms at sustained output)
-                    if self.wakeup_count.is_multiple_of(50) {
-                        self.poll_cwd();
+                }
+                AlacEvent::CurrentWorkingDirectory(uri) => {
+                    if let Some(path) = parse_osc7_uri(&uri) {
+                        self.current_cwd = Some(path);
                     }
                 }
                 AlacEvent::ChildExit(status) => {
                     self.exited = Some(status);
                     self.dirty = true;
+                    self.reported_ports.clear();
+                    self.ai_detector = AiToolDetector::new();
                 }
                 AlacEvent::Exit => {
                     self.exited = Some(-1);
@@ -193,22 +315,86 @@ impl TerminalState {
         }
     }
 
-    /// Read the shell's current working directory from `/proc/<pid>/cwd`.
-    /// Updates `current_cwd` only if the path changed. Silently ignored
-    /// if the process has exited or `/proc` is unavailable.
-    fn poll_cwd(&mut self) {
+    /// Read the shell's CWD from `/proc/<pid>/cwd` on demand.
+    /// Fallback for shells that don't emit OSC 7 — used at split time.
+    ///
+    /// # Platform gaps (for future porting)
+    /// - **macOS**: `/proc` doesn't exist. Use `proc_pidinfo()` with
+    ///   `PROC_PIDVNODEPATHINFO` instead.
+    /// - **Windows**: Use `NtQueryInformationProcess` with
+    ///   `ProcessCommandLineInformation`, or `GetFinalPathNameByHandle`.
+    pub fn cwd_now(&self) -> Option<std::path::PathBuf> {
         let proc_path = format!("/proc/{}/cwd", self.child_pid);
-        if let Ok(path) = std::fs::read_link(&proc_path) {
-            let cwd = path.to_string_lossy().into_owned();
-            if self.current_cwd.as_deref() != Some(&cwd) {
-                self.current_cwd = Some(cwd);
+        std::fs::read_link(&proc_path).ok()
+    }
+
+    /// Scan the last 100 lines of terminal output for server/service patterns.
+    /// Returns newly detected services (deduped against previously reported ports).
+    /// Lock on `self.term` is held only for text extraction, then released before parsing.
+    pub fn scan_output(&mut self) -> Vec<ServiceInfo> {
+        let lines: Vec<String> = {
+            let term = self.term.lock();
+            let bottom = term.bottommost_line();
+            let top_limit = term.topmost_line();
+            let cols = term.last_column();
+
+            let mut buf = Vec::with_capacity(100);
+            let mut row = bottom.0;
+            while row >= top_limit.0 && buf.len() < 100 {
+                let line = term.bounds_to_string(
+                    AlacPoint::new(GridLine(row), GridCol(0)),
+                    AlacPoint::new(GridLine(row), cols),
+                );
+                let trimmed = line.trim_end().to_string();
+                if !trimmed.is_empty() {
+                    buf.push(trimmed);
+                }
+                row -= 1;
+            }
+            buf
+            // term lock dropped here
+        };
+
+        // Detect framework from ALL lines (context-wide), not just the port line.
+        // Next.js prints "▲ Next.js 16.1.6" on one line and "localhost:3000" on another.
+        let all_text = lines.join(" ");
+        let (global_label, global_is_frontend) = detect_framework(&all_text);
+
+        let mut results = Vec::new();
+        for line in &lines {
+            if let Some(mut info) = parse_service_line(line)
+                && !self.reported_ports.contains(&info.port)
+            {
+                if info.label.is_none() {
+                    info.label = global_label.clone();
+                    info.is_frontend = global_is_frontend;
+                }
+                self.reported_ports.push(info.port);
+                results.push(info);
             }
         }
+
+        results
     }
 
     pub fn write_to_pty(&self, input: impl Into<Cow<'static, [u8]>>) {
         self.notifier.notify(input);
     }
+}
+
+/// Compute the PaneFlow IPC socket path: `$XDG_RUNTIME_DIR/paneflow/paneflow.sock`.
+fn paneflow_socket_path() -> Option<String> {
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(dirs::runtime_dir)?;
+    Some(
+        runtime_dir
+            .join("paneflow")
+            .join("paneflow.sock")
+            .display()
+            .to_string(),
+    )
 }
 
 impl Drop for TerminalState {
@@ -240,34 +426,111 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        Self::with_cwd(None, cx)
+    pub fn new(workspace_id: u64, cx: &mut Context<Self>) -> Self {
+        Self::with_cwd(workspace_id, None, cx)
     }
 
-    pub fn with_cwd(cwd: Option<std::path::PathBuf>, cx: &mut Context<Self>) -> Self {
-        let terminal = TerminalState::new(cwd).expect("Failed to create terminal");
+    pub fn with_cwd(
+        workspace_id: u64,
+        cwd: Option<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let surface_id = cx.entity_id().as_u64();
+        let terminal =
+            TerminalState::new(cwd, workspace_id, surface_id).expect("Failed to create terminal");
         let focus_handle = cx.focus_handle();
 
-        // Demand-driven sync: poll for new PTY events every 4ms,
-        // but only trigger repaint when dirty (new output received).
-        // Idle terminal = zero repaints, zero CPU.
+        // Adaptive sync: poll fast (4ms) when active, slow (50ms) when idle.
+        // Idle terminal = fewer lock acquisitions, less CPU.
         cx.spawn(
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut idle_ticks: u32 = 0;
+                let mut ai_tick_counter: u32 = 0;
                 loop {
-                    smol::Timer::after(std::time::Duration::from_millis(4)).await;
+                    let interval = if idle_ticks > 10 { 50 } else { 4 };
+                    smol::Timer::after(std::time::Duration::from_millis(interval)).await;
                     let result = cx.update(|cx| {
                         this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
                             let old_title = view.terminal.title.clone();
+                            let old_cwd = view.terminal.current_cwd.clone();
                             view.terminal.sync();
                             if view.terminal.exited.is_some() {
+                                // If an AI tool was active, force to Finished
+                                if view.terminal.ai_detector.state().is_active() {
+                                    view.terminal.ai_detector.force_finished();
+                                    cx.emit(TerminalEvent::AiToolStateChanged(
+                                        view.terminal.ai_detector.state(),
+                                    ));
+                                }
                                 cx.emit(TerminalEvent::ChildExited);
                             }
                             if view.terminal.title != old_title {
                                 cx.emit(TerminalEvent::TitleChanged);
+                                // Feed the new title to the AI tool detector —
+                                // event-driven, only fires on actual title changes.
+                                if let Some(new_state) = view
+                                    .terminal
+                                    .ai_detector
+                                    .feed_title(&view.terminal.title, view.terminal.child_pid)
+                                {
+                                    cx.emit(TerminalEvent::AiToolStateChanged(new_state));
+                                }
                             }
+                            if view.terminal.current_cwd != old_cwd
+                                && let Some(ref cwd) = view.terminal.current_cwd
+                            {
+                                cx.emit(TerminalEvent::CwdChanged(cwd.clone()));
+                            }
+                            // Tick AI detector unconditionally (~every 500ms)
+                            // Decoupled from idle state so timeout transitions
+                            // fire even while the tool produces output.
+                            ai_tick_counter += 1;
+                            if ai_tick_counter.is_multiple_of(125) {
+                                // 125 * 4ms = 500ms
+                                if let Some(new_state) = view.terminal.ai_detector.tick() {
+                                    cx.emit(TerminalEvent::AiToolStateChanged(new_state));
+                                    if !SUPPRESS_REPAINTS.load(std::sync::atomic::Ordering::Relaxed)
+                                    {
+                                        cx.notify();
+                                    }
+                                }
+                            }
+
                             if view.terminal.dirty {
                                 view.terminal.dirty = false;
-                                cx.notify();
+                                let suppress =
+                                    SUPPRESS_REPAINTS.load(std::sync::atomic::Ordering::Relaxed);
+
+                                // Skip output scanning and event emission when
+                                // the settings overlay is visible — no point
+                                // locking the grid or triggering subscribers.
+                                if !suppress {
+                                    view.terminal.output_scan_ticks += 1;
+                                    // Scan aggressively for first 10 ticks (~40ms each),
+                                    // then throttle to every 50th tick (~200ms).
+                                    // This catches server startup messages before they
+                                    // scroll out of view from rapid log output.
+                                    let should_scan = idle_ticks > 10
+                                        || view.terminal.output_scan_ticks <= 10
+                                        || view.terminal.output_scan_ticks >= 50;
+                                    if should_scan {
+                                        view.terminal.output_scan_ticks = 0;
+                                        for service in view.terminal.scan_output() {
+                                            cx.emit(TerminalEvent::ServiceDetected(service));
+                                        }
+                                    }
+
+                                    if idle_ticks > 10 {
+                                        cx.emit(TerminalEvent::ActivityBurst);
+                                    }
+                                }
+
+                                idle_ticks = 0;
+                                if !suppress {
+                                    cx.notify();
+                                }
+                            } else {
+                                idle_ticks = idle_ticks.saturating_add(1);
                             }
                         })
                     });
@@ -287,8 +550,9 @@ impl TerminalView {
                         .await;
                     let result = cx.update(|cx| {
                         this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
-                            // Skip blink repaints when process has exited
-                            if view.terminal.exited.is_some() {
+                            if view.terminal.exited.is_some()
+                                || SUPPRESS_REPAINTS.load(std::sync::atomic::Ordering::Relaxed)
+                            {
                                 return;
                             }
                             view.cursor_visible = !view.cursor_visible;
@@ -555,12 +819,182 @@ impl TerminalView {
     }
 }
 
-/// Events emitted by TerminalView to its parent (Pane).
+// ---------------------------------------------------------------------------
+// Service detection from PTY output
+// ---------------------------------------------------------------------------
+
+/// Metadata about a detected service (server listening on a port).
+/// Enriches the bare port number from `/proc/net/tcp` with human-readable info.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServiceInfo {
+    pub port: u16,
+    pub url: Option<String>,
+    pub label: Option<String>,
+    /// True for frontend dev servers (Next.js, Vite, Nuxt) — clickable in sidebar.
+    pub is_frontend: bool,
+}
+
+/// Parse a terminal output line for local server URL patterns.
+/// Derived from VS Code's UrlFinder — anchors on localhost/127.0.0.1/0.0.0.0.
+fn parse_service_line(line: &str) -> Option<ServiceInfo> {
+    let port = extract_local_port(line)?;
+    if port == 0 {
+        return None;
+    }
+    let url = extract_url(line);
+    let (label, is_frontend) = detect_framework(line);
+    Some(ServiceInfo {
+        port,
+        url,
+        label,
+        is_frontend,
+    })
+}
+
+/// Extract a port number from localhost:PORT, 127.0.0.1:PORT, or 0.0.0.0:PORT patterns.
+/// Also handles Python's `http.server` format: "HTTP on 127.0.0.1 port 8000".
+fn extract_local_port(line: &str) -> Option<u16> {
+    for anchor in ["localhost:", "127.0.0.1:", "0.0.0.0:"] {
+        if let Some(idx) = line.find(anchor) {
+            let after = &line[idx + anchor.len()..];
+            let port_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(port) = port_str.parse::<u16>() {
+                return Some(port);
+            }
+        }
+    }
+    // Python http.server: "HTTP on 127.0.0.1 port 8000"
+    if let Some(idx) = line.find(" port ")
+        && (line.contains("127.0.0.1") || line.contains("0.0.0.0"))
+    {
+        let after = &line[idx + 6..];
+        let port_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(port) = port_str.parse::<u16>() {
+            return Some(port);
+        }
+    }
+    None
+}
+
+/// Extract a full URL (http:// or https://) from a terminal line.
+fn extract_url(line: &str) -> Option<String> {
+    for scheme in ["https://", "http://"] {
+        if let Some(start) = line.find(scheme) {
+            let url: String = line[start..]
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != ')' && *c != '"' && *c != '\'')
+                .collect();
+            if url.len() > scheme.len() {
+                return Some(url);
+            }
+        }
+    }
+    None
+}
+
+/// Detect the framework/server name from keywords in the terminal line.
+/// Returns `(label, is_frontend)` — frontend frameworks get clickable URLs in the sidebar.
+/// Uses word-boundary matching to avoid false positives (e.g. "origin" matching "gin").
+fn detect_framework(line: &str) -> (Option<String>, bool) {
+    // (keyword, display_label, is_frontend)
+    const FRAMEWORKS: &[(&str, &str, bool)] = &[
+        ("next.js", "Next.js", true),
+        ("next dev", "Next.js", true),
+        ("turbopack", "Next.js", true),
+        ("vite", "Vite", true),
+        ("nuxt", "Nuxt", true),
+        ("remix", "Remix", true),
+        ("astro", "Astro", true),
+        ("webpack-dev-server", "Webpack", true),
+        ("angular", "Angular", true),
+        ("express", "Express", false),
+        ("fastify", "Fastify", false),
+        ("uvicorn", "uvicorn", false),
+        ("flask", "Flask", false),
+        ("django", "Django", false),
+        ("rocket", "Rocket", false),
+        ("actix-web", "Actix", false),
+        ("axum", "Axum", false),
+        ("gin-gonic", "Gin", false),
+        ("fiber", "Fiber", false),
+        ("puma", "Puma", false),
+        ("tomcat", "Tomcat", false),
+        ("laravel", "Laravel", false),
+        ("spring boot", "Spring", false),
+    ];
+    let lower = line.to_lowercase();
+    for (key, label, frontend) in FRAMEWORKS {
+        if lower.contains(key) {
+            return (Some(label.to_string()), *frontend);
+        }
+    }
+    (None, false)
+}
+
+// ---------------------------------------------------------------------------
+// OSC 7 URI parsing
+// ---------------------------------------------------------------------------
+
+/// Parse an OSC 7 `file://` URI into a filesystem path.
+///
+/// Format: `file://hostname/path/to/dir` — hostname is ignored (local only),
+/// path is percent-decoded (e.g. `%20` → space). Returns `None` for malformed URIs.
+fn parse_osc7_uri(uri: &str) -> Option<String> {
+    let path_part = uri.strip_prefix("file://")?;
+    // Skip hostname: everything before the first `/` after `file://`
+    let path = match path_part.find('/') {
+        Some(idx) => &path_part[idx..],
+        None => return None,
+    };
+    if path.is_empty() {
+        return None;
+    }
+    Some(percent_decode(path))
+}
+
+/// Decode percent-encoded bytes in a URI path component.
+/// Handles `%XX` sequences where XX is a two-digit hex value.
+fn percent_decode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut bytes = input.bytes();
+    while let Some(b) = bytes.next() {
+        if b == b'%' {
+            let hi = bytes.next().and_then(|c| (c as char).to_digit(16));
+            let lo = bytes.next().and_then(|c| (c as char).to_digit(16));
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8 as char);
+            } else {
+                out.push('%');
+            }
+        } else {
+            out.push(b as char);
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Terminal events
+// ---------------------------------------------------------------------------
+
+/// Events emitted by TerminalView via GPUI's EventEmitter.
+/// Pane subscribes for ChildExited/TitleChanged; PaneFlowApp subscribes
+/// for CwdChanged/ActivityBurst/ServiceDetected to drive sidebar updates.
 pub enum TerminalEvent {
     /// The shell process exited (e.g. user typed `exit`).
     ChildExited,
     /// The terminal title changed (via OSC 0/2 escape sequence).
     TitleChanged,
+    /// The shell's working directory changed (detected via OSC 7 escape sequence).
+    CwdChanged(String),
+    /// Terminal transitioned from idle to active (new output after idle period).
+    /// Used to trigger debounced port scans without polling.
+    ActivityBurst,
+    /// A server/service was detected in PTY output (e.g. "Listening on :3000").
+    /// Enriches the bare port from `/proc/net/tcp` with label and URL.
+    ServiceDetected(ServiceInfo),
+    /// AI tool session state changed (Claude Code or Codex detected via terminal content).
+    AiToolStateChanged(AiToolState),
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
