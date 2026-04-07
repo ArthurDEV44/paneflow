@@ -1204,6 +1204,42 @@ impl PaneFlowApp {
                     Err(e) => serde_json::json!({"error": e}),
                 }
             }
+            // -----------------------------------------------------------------
+            // AI hook lifecycle methods (from paneflow-hook via IPC socket)
+            // -----------------------------------------------------------------
+            "ai.session_start" => {
+                let Some(workspace_id) = params.get("workspace_id").and_then(|v| v.as_u64()) else {
+                    return serde_json::json!({"error": "Missing workspace_id"});
+                };
+                let Some(pid) = params
+                    .get("pid")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .filter(|&p| p > 0)
+                else {
+                    return serde_json::json!({"error": "Missing or invalid pid"});
+                };
+                // Tool name: check top-level "tool" param, then hook_payload.tool, default "claude"
+                let hook = params.get("hook_payload");
+                let tool = params
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
+                    .unwrap_or("claude");
+                // Validate tool name: alphanumeric + hyphens, max 64 chars
+                if tool.len() > 64 || !tool.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                {
+                    return serde_json::json!({"error": "Invalid tool name"});
+                }
+                let tool = tool.to_string();
+
+                if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
+                    ws.agent_pids.insert(tool, pid);
+                    serde_json::json!({"registered": true})
+                } else {
+                    serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
+                }
+            }
             _ => {
                 serde_json::json!({"error": format!("Unknown method: {method}")})
             }

@@ -306,6 +306,9 @@ pub struct Workspace {
     pub ai_state: AiToolState,
     /// Animation angle for the Claude thinking spinner (radians, 0..TAU).
     pub loader_angle: Rc<Cell<f32>>,
+    /// Registered AI agent PIDs, keyed by tool name ("claude", "codex").
+    /// Used by the stale PID sweep to detect crashed processes.
+    pub agent_pids: std::collections::HashMap<String, u32>,
 }
 
 impl Workspace {
@@ -335,6 +338,7 @@ impl Workspace {
             service_labels: std::collections::HashMap::new(),
             ai_state: AiToolState::Inactive,
             loader_angle: Rc::new(Cell::new(0.0)),
+            agent_pids: std::collections::HashMap::new(),
         }
     }
 
@@ -367,6 +371,7 @@ impl Workspace {
             service_labels: std::collections::HashMap::new(),
             ai_state: AiToolState::Inactive,
             loader_angle: Rc::new(Cell::new(0.0)),
+            agent_pids: std::collections::HashMap::new(),
         }
     }
 
@@ -399,6 +404,7 @@ impl Workspace {
             service_labels: std::collections::HashMap::new(),
             ai_state: AiToolState::Inactive,
             loader_angle: Rc::new(Cell::new(0.0)),
+            agent_pids: std::collections::HashMap::new(),
         }
     }
 
