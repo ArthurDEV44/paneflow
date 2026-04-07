@@ -120,7 +120,8 @@ fn handle_connection(stream: UnixStream, request_tx: mpsc::Sender<IpcRequest>) {
                                 "workspace.list", "workspace.create", "workspace.select",
                                 "workspace.close", "workspace.current",
                                 "workspace.restore_layout",
-                                "surface.list", "surface.send_text", "surface.split"
+                                "surface.list", "surface.send_text", "surface.split",
+                                "ai.session_start"
                             ]
                         }, "id": id})
                     }
