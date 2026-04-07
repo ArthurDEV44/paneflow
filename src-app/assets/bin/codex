@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# PaneFlow wrapper for OpenAI Codex CLI — bridges Codex lifecycle events to
+# PaneFlow's IPC socket so the sidebar can track Codex's state.
+#
+# When launched inside a PaneFlow terminal, this script:
+#   1. Detects the real `codex` binary on PATH (skipping itself)
+#   2. Calls paneflow-hook session-start before launching Codex
+#   3. Sets an EXIT trap for session-end (Codex has no SessionEnd event)
+#   4. Passes -c features.codex_hooks=true to enable the hooks feature gate
+#   5. Runs Codex with all original arguments preserved
+#
+# Outside PaneFlow (no PANEFLOW_SURFACE_ID), this is a transparent passthrough.
+#
+# Note: Codex hooks (UserPromptSubmit, PreToolUse, Stop) are configured via
+# ~/.codex/hooks.json — see US-002 for the installation logic.
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Find the real codex binary (skip our own directory on PATH)
+# ---------------------------------------------------------------------------
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLEAN_PATH="${PATH//$SELF_DIR:/}"
+CLEAN_PATH="${CLEAN_PATH//:$SELF_DIR/}"
+REAL_CODEX="$(PATH="$CLEAN_PATH" command -v codex 2>/dev/null || true)"
+
+if [[ -z "$REAL_CODEX" ]]; then
+    echo "paneflow: codex not found on PATH" >&2
+    exit 127
+fi
+
+# ---------------------------------------------------------------------------
+# Guard 1: Not inside PaneFlow — passthrough to real codex
+# ---------------------------------------------------------------------------
+if [[ -z "${PANEFLOW_SURFACE_ID:-}" ]]; then
+    exec "$REAL_CODEX" "$@"
+fi
+
+# ---------------------------------------------------------------------------
+# Guard 2: IPC socket unreachable — passthrough
+# ---------------------------------------------------------------------------
+SOCKET="${PANEFLOW_SOCKET_PATH:-}"
+if [[ -z "$SOCKET" ]] || ! [[ -S "$SOCKET" ]]; then
+    exec "$REAL_CODEX" "$@"
+fi
+
+# Quick reachability check: try connecting with 1s timeout.
+# Prefer socat, fall back to nc -U, skip check if neither is available.
+if command -v socat &>/dev/null; then
+    if ! socat -u /dev/null "UNIX-CONNECT:${SOCKET},connect-timeout=1" 2>/dev/null; then
+        exec "$REAL_CODEX" "$@"
+    fi
+elif command -v nc &>/dev/null; then
+    if ! nc -z -w1 -U "$SOCKET" 2>/dev/null; then
+        exec "$REAL_CODEX" "$@"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Export PID for stale session tracking
+# ---------------------------------------------------------------------------
+export PANEFLOW_CODEX_PID=$$
+
+# ---------------------------------------------------------------------------
+# Cleanup: send session-end on exit (Codex has no SessionEnd hook event)
+# ---------------------------------------------------------------------------
+HOOK_CMD="$SELF_DIR/paneflow-hook"
+
+cleanup() {
+    echo '{}' | "$HOOK_CMD" session-end 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# Notify PaneFlow that a Codex session is starting
+# ---------------------------------------------------------------------------
+echo '{}' | "$HOOK_CMD" session-start 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Launch Codex with hooks feature gate enabled.
+# Not using exec — the EXIT trap must fire when Codex exits to send
+# session-end (Codex has no SessionEnd event, unlike Claude Code).
+# ---------------------------------------------------------------------------
+CODEX_EXIT=0
+"$REAL_CODEX" -c features.codex_hooks=true "$@" || CODEX_EXIT=$?
+exit "$CODEX_EXIT"

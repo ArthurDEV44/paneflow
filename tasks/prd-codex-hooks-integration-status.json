@@ -1,0 +1,24 @@
+{
+  "prd": "prd-codex-hooks-integration",
+  "title": "Codex CLI Hooks Integration",
+  "status": "IN_PROGRESS",
+  "created": "2026-04-07",
+  "updated": "2026-04-07",
+  "epics": [
+    {
+      "id": "EP-001",
+      "title": "Codex Hooks Integration",
+      "status": "IN_PROGRESS",
+      "stories": [
+        { "id": "US-001", "title": "Write Codex wrapper script", "status": "IN_REVIEW", "priority": "P0", "size": 3, "blocked_by": [], "completed_at": "2026-04-07" },
+        { "id": "US-002", "title": "Hooks.json installation logic", "status": "NOT_STARTED", "priority": "P0", "size": 3, "blocked_by": ["US-001"] },
+        { "id": "US-003", "title": "Add codex to wrapper script extraction list", "status": "NOT_STARTED", "priority": "P0", "size": 1, "blocked_by": ["US-001"] },
+        { "id": "US-004", "title": "Adapt paneflow-hook for Codex PID env var", "status": "NOT_STARTED", "priority": "P0", "size": 1, "blocked_by": ["US-001"] },
+        { "id": "US-005", "title": "End-to-end manual verification", "status": "NOT_STARTED", "priority": "P0", "size": 2, "blocked_by": ["US-001", "US-002", "US-003", "US-004"] }
+      ]
+    }
+  ],
+  "total_points": 10,
+  "p0_points": 10,
+  "p1_points": 0
+}
