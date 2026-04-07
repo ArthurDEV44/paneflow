@@ -240,6 +240,16 @@ impl TerminalState {
             env.insert("PANEFLOW_SOCKET_PATH".into(), socket_path);
         }
 
+        // Extract wrapper scripts and prepend their directory to PATH
+        if let Some(bin_dir) = paneflow_bin_dir() {
+            ensure_wrapper_scripts(&bin_dir);
+            let bin_dir_str = bin_dir.display().to_string();
+            let current_path = std::env::var("PATH").unwrap_or_default();
+            if !current_path.split(':').any(|p| p == bin_dir_str) {
+                env.insert("PATH".into(), format!("{bin_dir_str}:{current_path}"));
+            }
+        }
+
         let cwd = working_directory
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let pty_config = tty::Options {
@@ -395,6 +405,61 @@ fn paneflow_socket_path() -> Option<String> {
             .display()
             .to_string(),
     )
+}
+
+/// Compute the PaneFlow wrapper scripts directory: `$XDG_RUNTIME_DIR/paneflow/bin/`.
+fn paneflow_bin_dir() -> Option<std::path::PathBuf> {
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(dirs::runtime_dir)?;
+    Some(runtime_dir.join("paneflow").join("bin"))
+}
+
+/// Extract embedded wrapper scripts (claude, paneflow-hook) to the runtime bin
+/// directory with executable permissions. Idempotent: only writes if the file
+/// is missing or content has changed. Uses atomic write (temp + rename) to
+/// avoid race conditions when multiple terminals spawn concurrently.
+fn ensure_wrapper_scripts(bin_dir: &std::path::Path) {
+    use crate::assets::Assets;
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Err(e) = std::fs::create_dir_all(bin_dir) {
+        log::warn!(
+            "paneflow: failed to create wrapper bin dir {}: {e}",
+            bin_dir.display()
+        );
+        return;
+    }
+
+    for name in &["claude", "paneflow-hook"] {
+        let asset_path = format!("bin/{name}");
+        let Some(file) = Assets::get(&asset_path) else {
+            continue;
+        };
+
+        let dest = bin_dir.join(name);
+
+        // Skip write if content matches (avoid unnecessary disk I/O)
+        if dest.exists()
+            && let Ok(existing) = std::fs::read(&dest)
+            && existing == file.data.as_ref()
+        {
+            continue;
+        }
+
+        // Atomic write: temp file → chmod → rename (same filesystem guarantees atomicity)
+        let tmp = bin_dir.join(format!(".{name}.tmp"));
+        if std::fs::write(&tmp, file.data.as_ref()).is_ok() {
+            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+            if let Err(e) = std::fs::rename(&tmp, &dest) {
+                log::warn!("paneflow: failed to install wrapper script {name}: {e}");
+                let _ = std::fs::remove_file(&tmp);
+            }
+        } else {
+            log::warn!("paneflow: failed to write wrapper script {name}");
+        }
+    }
 }
 
 impl Drop for TerminalState {
