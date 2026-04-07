@@ -122,6 +122,28 @@ impl LayoutNode {
     }
 }
 
+/// Persisted session state written to `~/.cache/paneflow/session.json`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionState {
+    /// Schema version for forward-compatible migrations.
+    pub version: u32,
+    /// Index of the active workspace at save time.
+    pub active_workspace: usize,
+    /// Ordered list of workspace snapshots.
+    pub workspaces: Vec<WorkspaceSession>,
+}
+
+/// Snapshot of a single workspace for session persistence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkspaceSession {
+    /// Workspace display title.
+    pub title: String,
+    /// Root working directory of the workspace.
+    pub cwd: String,
+    /// Layout tree (splits + panes). `None` means a single default pane.
+    pub layout: Option<LayoutNode>,
+}
+
 /// A surface within a pane (terminal, browser, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SurfaceDefinition {

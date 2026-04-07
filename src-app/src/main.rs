@@ -2,8 +2,11 @@
 //!
 //! App shell with sidebar workspace list + main content area.
 
+mod ai_detector;
 mod assets;
+mod config_writer;
 mod ipc;
+mod keybindings;
 mod keys;
 mod pane;
 mod split;
@@ -14,11 +17,11 @@ mod title_bar;
 mod workspace;
 
 use gpui::{
-    App, Bounds, ClickEvent, Context, CursorStyle, Decorations, Entity, Focusable, HitboxBehavior,
-    InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, MouseButton, PathPromptOptions,
+    App, Bounds, ClickEvent, Context, CursorStyle, Decorations, Entity, FocusHandle, Focusable,
+    HitboxBehavior, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, PathPromptOptions,
     Pixels, Point, Render, ResizeEdge, SharedString, Size, Styled, Window, WindowBounds,
-    WindowDecorations, WindowOptions, actions, canvas, div, point, prelude::*, px, rgb, size, svg,
-    transparent_black,
+    WindowDecorations, WindowOptions, actions, canvas, deferred, div, point, prelude::*, px, rgb,
+    size, svg, transparent_black,
 };
 use gpui_platform::application;
 use notify::Watcher;
@@ -30,7 +33,7 @@ use paneflow_config::schema::LayoutNode;
 use crate::pane::Pane;
 use crate::split::{FocusDirection, LayoutTree, SplitDirection};
 use crate::terminal::TerminalView;
-use crate::workspace::Workspace;
+use crate::workspace::{Workspace, next_workspace_id};
 
 /// Write text to the first leaf pane's active terminal PTY in a layout tree.
 fn send_text_to_first_leaf(node: &LayoutTree, text: &str, cx: &App) {
@@ -98,6 +101,29 @@ actions!(
 /// Sidebar width in pixels — shared between sidebar and title bar for alignment.
 const SIDEBAR_WIDTH: f32 = 240.;
 
+#[derive(Clone, Copy, PartialEq)]
+enum SettingsSection {
+    Shortcuts,
+    Appearance,
+}
+
+/// A notification from Claude Code state changes, displayed in the bell menu.
+#[derive(Clone)]
+#[allow(dead_code)]
+struct Notification {
+    workspace_id: u64,
+    workspace_title: String,
+    message: String,
+    kind: ai_detector::AiToolState,
+    timestamp: std::time::Instant,
+    read: bool,
+}
+
+/// Claude Code spinner glyphs — same characters Claude renders in the terminal.
+const CLAUDE_SPINNER_FRAMES: [char; 6] = ['·', '✻', '✽', '✶', '✳', '✢'];
+/// Codex spinner glyphs — pulsing dot from the dots animation variant.
+const CODEX_SPINNER_FRAMES: [char; 4] = ['●', '○', '◉', '○'];
+
 struct PaneFlowApp {
     workspaces: Vec<Workspace>,
     active_idx: usize,
@@ -113,6 +139,28 @@ struct PaneFlowApp {
     git_event_rx: std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
     /// Refcount for watched `.git` directories (multiple workspaces may share a repo).
     git_watch_counts: std::collections::HashMap<std::path::PathBuf, usize>,
+    /// Active settings section, or `None` if settings is closed.
+    settings_section: Option<SettingsSection>,
+    /// Cached HOME directory for sidebar display (avoids per-render syscall).
+    home_dir: String,
+    /// Effective keybindings (defaults merged with user overrides) for settings display.
+    effective_shortcuts: Vec<keybindings::ShortcutEntry>,
+    /// Index of the shortcut row currently being recorded (`None` = not recording).
+    recording_shortcut_idx: Option<usize>,
+    /// Focus handle for the settings page (receives key events during recording/font search).
+    settings_focus: FocusHandle,
+    /// Cached list of monospace font family names from the system.
+    mono_font_names: Vec<String>,
+    /// Whether the font family dropdown is open.
+    font_dropdown_open: bool,
+    /// Filter text for the font dropdown.
+    font_search: String,
+    /// Notifications from Claude Code state changes (bell menu).
+    notifications: Vec<Notification>,
+    /// Whether the notification bell dropdown is open.
+    notif_menu_open: bool,
+    /// Whether the loader animation spawn is currently running.
+    loader_anim_running: bool,
 }
 
 impl PaneFlowApp {
@@ -154,9 +202,12 @@ impl PaneFlowApp {
     fn create_pane(
         &mut self,
         terminal: Entity<TerminalView>,
+        workspace_id: u64,
         cx: &mut Context<Self>,
     ) -> Entity<Pane> {
-        let pane = cx.new(|cx| Pane::new(terminal, cx));
+        cx.subscribe(&terminal, Self::handle_terminal_event)
+            .detach();
+        let pane = cx.new(|cx| Pane::new(terminal, workspace_id, cx));
         cx.subscribe(&pane, Self::handle_pane_event).detach();
         pane
     }
@@ -179,8 +230,9 @@ impl PaneFlowApp {
                 if let Some(ws) = self.active_workspace()
                     && ws.root.is_none()
                 {
-                    let terminal = cx.new(TerminalView::new);
-                    let new_pane = self.create_pane(terminal, cx);
+                    let ws_id = self.active_workspace().unwrap().id;
+                    let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
+                    let new_pane = self.create_pane(terminal, ws_id, cx);
                     if let Some(ws) = self.active_workspace_mut() {
                         ws.root = Some(LayoutTree::Leaf(new_pane));
                     }
@@ -196,8 +248,11 @@ impl PaneFlowApp {
                 {
                     return;
                 }
-                let new_terminal = cx.new(TerminalView::new);
-                let new_pane = self.create_pane(new_terminal, cx);
+                // Inherit CWD from the source pane's active terminal (fresh /proc read)
+                let source_cwd = pane.read(cx).active_terminal().read(cx).terminal.cwd_now();
+                let ws_id = self.active_workspace().map(|ws| ws.id).unwrap_or(0);
+                let new_terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, source_cwd, cx));
+                let new_pane = self.create_pane(new_terminal, ws_id, cx);
                 if let Some(ws) = self.active_workspace_mut()
                     && let Some(root) = &mut ws.root
                 {
@@ -208,18 +263,339 @@ impl PaneFlowApp {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Terminal event handling — push-based port detection and CWD tracking
+    // -----------------------------------------------------------------------
+
+    fn handle_terminal_event(
+        &mut self,
+        terminal: Entity<TerminalView>,
+        event: &terminal::TerminalEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            terminal::TerminalEvent::ActivityBurst => {
+                if let Some(ws_idx) = self.workspace_idx_for_terminal(&terminal, cx) {
+                    self.schedule_port_scan(ws_idx, cx);
+                }
+            }
+            terminal::TerminalEvent::CwdChanged(new_cwd) => {
+                self.handle_cwd_change(&terminal, new_cwd, cx);
+            }
+            terminal::TerminalEvent::ServiceDetected(info) => {
+                if let Some(ws_idx) = self.workspace_idx_for_terminal(&terminal, cx) {
+                    let ws = &mut self.workspaces[ws_idx];
+                    // Don't overwrite a frontend label with a non-frontend one.
+                    // A backend terminal might reference "localhost:3000" in CORS
+                    // config, but the frontend terminal already claimed that port.
+                    if let Some(existing) = ws.service_labels.get(&info.port)
+                        && existing.is_frontend
+                        && !info.is_frontend
+                    {
+                        return;
+                    }
+                    ws.service_labels.insert(info.port, info.clone());
+                    if self.settings_section.is_none() {
+                        cx.notify();
+                    }
+                }
+            }
+            terminal::TerminalEvent::AiToolStateChanged(state) => {
+                if let Some(ws_idx) = self.workspace_idx_for_terminal(&terminal, cx) {
+                    let ws = &mut self.workspaces[ws_idx];
+                    ws.ai_state = *state;
+
+                    // Push notification for actionable states
+                    match state {
+                        ai_detector::AiToolState::WaitingForInput(tool) => {
+                            self.notifications.push(Notification {
+                                workspace_id: ws.id,
+                                workspace_title: ws.title.clone(),
+                                message: format!("{} needs input", tool.label()),
+                                kind: *state,
+                                timestamp: std::time::Instant::now(),
+                                read: false,
+                            });
+                        }
+                        ai_detector::AiToolState::Finished(tool) => {
+                            self.notifications.push(Notification {
+                                workspace_id: ws.id,
+                                workspace_title: ws.title.clone(),
+                                message: format!("{} finished", tool.label()),
+                                kind: *state,
+                                timestamp: std::time::Instant::now(),
+                                read: false,
+                            });
+                        }
+                        _ => {}
+                    }
+
+                    // Cap at 50 notifications
+                    if self.notifications.len() > 50 {
+                        self.notifications.drain(0..self.notifications.len() - 50);
+                    }
+
+                    // Start loader animation if needed
+                    if matches!(state, ai_detector::AiToolState::Thinking(_))
+                        && !self.loader_anim_running
+                    {
+                        self.start_loader_animation(cx);
+                    }
+
+                    if self.settings_section.is_none() {
+                        cx.notify();
+                    }
+                }
+            }
+            // ChildExited + TitleChanged are handled by Pane's subscription
+            _ => {}
+        }
+    }
+
+    /// Find which workspace contains the given terminal entity.
+    fn workspace_idx_for_terminal(
+        &self,
+        terminal: &Entity<TerminalView>,
+        cx: &App,
+    ) -> Option<usize> {
+        self.workspaces.iter().position(|ws| {
+            ws.root.as_ref().is_some_and(|root| {
+                root.collect_leaves()
+                    .iter()
+                    .any(|pane| pane.read(cx).tabs.contains(terminal))
+            })
+        })
+    }
+
+    /// Start the spinner animation loop. Runs at ~60fps, advancing
+    /// `loader_angle` on all Thinking workspaces. Self-stops when no
+    /// workspace is in Thinking state.
+    fn start_loader_animation(&mut self, cx: &mut Context<Self>) {
+        self.loader_anim_running = true;
+        cx.spawn(
+            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                loop {
+                    smol::Timer::after(std::time::Duration::from_millis(16)).await;
+                    let result = cx.update(|cx| {
+                        this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                            let any_thinking = app.workspaces.iter().any(|ws| {
+                                matches!(ws.ai_state, ai_detector::AiToolState::Thinking(_))
+                            });
+                            if !any_thinking {
+                                app.loader_anim_running = false;
+                                return false;
+                            }
+                            // 0.9s per revolution ≈ 0.1164 rad/frame at 60fps
+                            let delta = std::f32::consts::TAU / (0.9 * 60.0);
+                            for ws in &app.workspaces {
+                                if matches!(ws.ai_state, ai_detector::AiToolState::Thinking(_)) {
+                                    let angle = ws.loader_angle.get() + delta;
+                                    ws.loader_angle.set(angle % std::f32::consts::TAU);
+                                }
+                            }
+                            if app.settings_section.is_none() {
+                                cx.notify();
+                            }
+                            true
+                        })
+                    });
+                    match result {
+                        Ok(true) => {}
+                        _ => break,
+                    }
+                }
+            },
+        )
+        .detach();
+    }
+
+    /// Schedule a debounced port scan for the given workspace.
+    /// Uses a generation counter to cancel superseded scans.
+    fn schedule_port_scan(&mut self, ws_idx: usize, cx: &mut Context<Self>) {
+        let ws = &mut self.workspaces[ws_idx];
+        ws.port_scan_generation += 1;
+        let generation = ws.port_scan_generation;
+        let ws_id = ws.id;
+
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                // Debounce: wait 500ms for activity to settle
+                smol::Timer::after(std::time::Duration::from_millis(500)).await;
+
+                // Burst scan at 0s, +2s, +6s after debounce
+                for delay_ms in [0u64, 2000, 6000] {
+                    if delay_ms > 0 {
+                        smol::Timer::after(std::time::Duration::from_millis(delay_ms)).await;
+                    }
+                    let should_continue = cx.update(|cx| {
+                        this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                            app.run_port_scan(ws_id, generation, cx)
+                        })
+                    });
+                    match should_continue {
+                        Ok(true) => {}
+                        _ => break,
+                    }
+                }
+            },
+        )
+        .detach();
+    }
+
+    /// Execute a single port scan for a workspace. Returns `false` if the scan
+    /// should be aborted (generation superseded or workspace removed).
+    fn run_port_scan(&mut self, ws_id: u64, generation: u64, cx: &mut Context<Self>) -> bool {
+        let ws = match self.workspaces.iter().find(|ws| ws.id == ws_id) {
+            Some(ws) if ws.port_scan_generation == generation => ws,
+            _ => return false,
+        };
+
+        let pids: Vec<u32> = ws
+            .root
+            .as_ref()
+            .map(|root| {
+                root.collect_leaves()
+                    .iter()
+                    .flat_map(|pane| {
+                        pane.read(cx)
+                            .tabs
+                            .iter()
+                            .map(|tv| tv.read(cx).terminal.child_pid)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if pids.is_empty() {
+            return true;
+        }
+
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let ports = smol::unblock(move || crate::workspace::detect_ports(&pids)).await;
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                        if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.id == ws_id)
+                            && ws.port_scan_generation == generation
+                            && ws.active_ports != ports
+                        {
+                            ws.active_ports = ports;
+                            // Clean up service labels for ports that are no longer active
+                            ws.service_labels
+                                .retain(|port, _| ws.active_ports.contains(port));
+                            cx.notify();
+                        }
+                    })
+                });
+            },
+        )
+        .detach();
+        true
+    }
+
+    /// Handle a CWD change from a terminal. Only processes if the terminal is
+    /// the active tab of a pane in its workspace (background terminals ignored).
+    fn handle_cwd_change(
+        &mut self,
+        terminal: &Entity<TerminalView>,
+        new_cwd: &str,
+        cx: &mut Context<Self>,
+    ) {
+        // Find workspace where this terminal is the active tab in any pane
+        let ws_idx = self.workspaces.iter().position(|ws| {
+            ws.root.as_ref().is_some_and(|root| {
+                root.collect_leaves()
+                    .iter()
+                    .any(|pane| *pane.read(cx).active_terminal() == *terminal)
+            })
+        });
+        let Some(ws_idx) = ws_idx else { return };
+
+        if self.workspaces[ws_idx].cwd == new_cwd {
+            return;
+        }
+
+        let new_cwd_owned = new_cwd.to_string();
+
+        // Run git probe off main thread
+        cx.spawn({
+            let new_cwd = new_cwd_owned.clone();
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let (git_dir, branch, is_repo, stats) = smol::unblock({
+                    let cwd = new_cwd.clone();
+                    move || {
+                        let git_dir = crate::workspace::find_git_dir(&cwd);
+                        let (branch, is_repo) = crate::workspace::detect_branch(&cwd);
+                        let stats = crate::workspace::GitDiffStats::from_cwd(&cwd);
+                        (git_dir, branch, is_repo, stats)
+                    }
+                })
+                .await;
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                        if ws_idx >= app.workspaces.len() {
+                            return;
+                        }
+                        // Unwatch old git dir
+                        let old_git_dir = app.workspaces[ws_idx].git_dir.clone();
+                        if let Some(ref dir) = old_git_dir {
+                            app.unwatch_git_dir(dir);
+                        }
+                        // Update workspace
+                        let ws = &mut app.workspaces[ws_idx];
+                        ws.cwd = new_cwd.clone();
+                        ws.git_dir = git_dir.clone();
+                        ws.git_branch = branch.clone();
+                        ws.is_git_repo = is_repo;
+                        ws.git_stats = stats.clone();
+                        // Watch new git dir
+                        if let Some(ref dir) = git_dir {
+                            let count = app.git_watch_counts.entry(dir.clone()).or_insert(0);
+                            *count += 1;
+                            if *count == 1
+                                && let Some(ref mut watcher) = app.git_watcher
+                                && let Err(e) =
+                                    watcher.watch(dir, notify::RecursiveMode::NonRecursive)
+                            {
+                                log::warn!("git watcher: failed to watch {}: {e}", dir.display());
+                            }
+                        }
+                        log::debug!("workspace CWD changed to: {new_cwd}");
+                        cx.notify();
+                    })
+                });
+            }
+        })
+        .detach();
+    }
+
     fn new(cx: &mut Context<Self>) -> Self {
-        let terminal = cx.new(TerminalView::new);
-        let pane = cx.new(|cx| Pane::new(terminal, cx));
-        cx.subscribe(&pane, Self::handle_pane_event).detach();
-        let dir_name = std::env::current_dir()
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "Terminal 1".into());
-        let ws = Workspace::new(dir_name, pane);
         let title_bar = cx.new(title_bar::TitleBar::new);
         let last_config_mtime = crate::theme::config_mtime();
         let ipc_rx = ipc::start_server();
+
+        // Restore session or create a single default workspace
+        let (workspaces, active_idx) = if let Some(session) = Self::load_session() {
+            log::info!(
+                "restoring session: {} workspace(s)",
+                session.workspaces.len()
+            );
+            Self::restore_workspaces(&session, cx)
+        } else {
+            let ws_id = next_workspace_id();
+            let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
+            cx.subscribe(&terminal, Self::handle_terminal_event)
+                .detach();
+            let pane = cx.new(|cx| Pane::new(terminal, ws_id, cx));
+            cx.subscribe(&pane, Self::handle_pane_event).detach();
+            let dir_name = std::env::current_dir()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "Terminal 1".into());
+            let ws = Workspace::with_id(ws_id, dir_name, pane);
+            (vec![ws], 0)
+        };
 
         // Setup notify file watcher for .git directories
         let (git_event_tx, git_event_rx) = std::sync::mpsc::channel();
@@ -231,14 +607,16 @@ impl PaneFlowApp {
             }
         };
         let mut git_watch_counts = std::collections::HashMap::new();
-        // Watch the initial workspace's .git directory
-        if let Some(ref mut watcher) = git_watcher
-            && let Some(ref git_dir) = ws.git_dir
-        {
-            if let Err(e) = watcher.watch(git_dir, notify::RecursiveMode::NonRecursive) {
-                log::warn!("git watcher: failed to watch {}: {e}", git_dir.display());
-            } else {
-                git_watch_counts.insert(git_dir.clone(), 1);
+        // Watch all workspaces' .git directories
+        if let Some(ref mut watcher) = git_watcher {
+            for ws in &workspaces {
+                if let Some(ref git_dir) = ws.git_dir {
+                    if let Err(e) = watcher.watch(git_dir, notify::RecursiveMode::NonRecursive) {
+                        log::warn!("git watcher: failed to watch {}: {e}", git_dir.display());
+                    } else {
+                        *git_watch_counts.entry(git_dir.clone()).or_insert(0) += 1;
+                    }
+                }
             }
         }
 
@@ -254,7 +632,7 @@ impl PaneFlowApp {
                 let mut pending_git_dirs = std::collections::HashSet::<std::path::PathBuf>::new();
 
                 loop {
-                    smol::Timer::after(std::time::Duration::from_millis(50)).await;
+                    smol::Timer::after(std::time::Duration::from_millis(200)).await;
 
                     // Drain events from the watcher channel, collect affected .git dirs
                     let new_dirs = cx.update(|cx| {
@@ -366,11 +744,11 @@ impl PaneFlowApp {
         )
         .detach();
 
-        // Poll IPC requests every 10ms
+        // Poll IPC requests every 50ms
         cx.spawn(
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 loop {
-                    smol::Timer::after(std::time::Duration::from_millis(10)).await;
+                    smol::Timer::after(std::time::Duration::from_millis(50)).await;
                     let result = cx.update(|cx| {
                         this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
                             app.process_ipc_requests(cx);
@@ -384,7 +762,7 @@ impl PaneFlowApp {
         )
         .detach();
 
-        // Poll config file for theme changes every 500ms
+        // Poll config file for theme + keybinding changes every 500ms
         cx.spawn(
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 loop {
@@ -394,7 +772,11 @@ impl PaneFlowApp {
                             let current_mtime = crate::theme::config_mtime();
                             if current_mtime != app.last_config_mtime {
                                 app.last_config_mtime = current_mtime;
-                                cx.notify(); // Trigger repaint with new theme
+                                let config = paneflow_config::loader::load_config();
+                                keybindings::apply_keybindings(cx, &config.shortcuts);
+                                app.effective_shortcuts =
+                                    keybindings::effective_shortcuts(&config.shortcuts);
+                                cx.notify();
                             }
                         })
                     });
@@ -473,252 +855,14 @@ impl PaneFlowApp {
         )
         .detach();
 
-        // Port scan loop: debounce terminal Wakeup events (500ms), then burst
-        // scan at [1s, 3s, 7s] offsets. Detects servers binding ports.
-        cx.spawn(
-            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
-                const BURST_OFFSETS: [std::time::Duration; 3] = [
-                    std::time::Duration::from_secs(1),
-                    std::time::Duration::from_secs(3),
-                    std::time::Duration::from_secs(7),
-                ];
-
-                loop {
-                    smol::Timer::after(std::time::Duration::from_millis(100)).await;
-
-                    // Phase 1: detect terminal output, manage debounce/burst, collect PIDs
-                    let to_scan = cx.update(|cx| {
-                        this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
-                            let now = std::time::Instant::now();
-                            let mut scans = Vec::new();
-
-                            for ws in &mut app.workspaces {
-                                // Sum wakeup counts for all terminals in workspace
-                                let mut current_sum = 0u64;
-                                if let Some(root) = &ws.root {
-                                    for pane in root.collect_leaves() {
-                                        for tv in &pane.read(cx).tabs {
-                                            current_sum += tv.read(cx).terminal.wakeup_count;
-                                        }
-                                    }
-                                }
-
-                                // Detect new terminal output — always record
-                                // activity time so a new burst can be armed
-                                // after the current one completes.
-                                if current_sum != ws.last_wakeup_sum {
-                                    ws.last_wakeup_sum = current_sum;
-                                    ws.port_scan_last_output = Some(now);
-                                    if ws.port_scan_burst_start.is_none() {
-                                        ws.port_scan_pending = true;
-                                    }
-                                }
-
-                                // Debounce: fire after 500ms of quiet
-                                if ws.port_scan_pending
-                                    && let Some(last) = ws.port_scan_last_output
-                                    && now.duration_since(last) >= DEBOUNCE
-                                {
-                                    ws.port_scan_pending = false;
-                                    ws.port_scan_burst_start = Some(now);
-                                    ws.port_scan_burst_idx = 0;
-                                    log::debug!("port scan: debounce fired for '{}'", ws.title);
-                                }
-
-                                // Burst scan: fire all overdue scans (catch up
-                                // if the poll loop was delayed)
-                                if let Some(burst_start) = ws.port_scan_burst_start {
-                                    let mut fired = false;
-                                    while ws.port_scan_burst_idx < BURST_OFFSETS.len() {
-                                        let offset = BURST_OFFSETS[ws.port_scan_burst_idx];
-                                        if now.duration_since(burst_start) < offset {
-                                            break;
-                                        }
-                                        ws.port_scan_burst_idx += 1;
-                                        fired = true;
-                                    }
-                                    if fired {
-                                        // Collect PIDs from all terminals
-                                        let mut pids = Vec::new();
-                                        if let Some(root) = &ws.root {
-                                            for pane in root.collect_leaves() {
-                                                for tv in &pane.read(cx).tabs {
-                                                    pids.push(tv.read(cx).terminal.child_pid);
-                                                }
-                                            }
-                                        }
-                                        scans.push((ws.id, pids));
-                                    }
-                                    if ws.port_scan_burst_idx >= BURST_OFFSETS.len() {
-                                        let burst_start = ws.port_scan_burst_start.take();
-                                        // Rearm: if new activity arrived during
-                                        // the burst, schedule a fresh debounce.
-                                        if let (Some(start), Some(last)) =
-                                            (burst_start, ws.port_scan_last_output)
-                                            && last > start
-                                        {
-                                            ws.port_scan_pending = true;
-                                        }
-                                    }
-                                }
-                            }
-
-                            scans
-                        })
-                    });
-
-                    let to_scan = match to_scan {
-                        Ok(s) if !s.is_empty() => s,
-                        Ok(_) => continue,
-                        Err(_) => break,
-                    };
-
-                    // Phase 2: run port detection off main thread
-                    let results = smol::unblock(move || {
-                        to_scan
-                            .into_iter()
-                            .map(|(ws_id, pids)| {
-                                let ports = crate::workspace::detect_ports(&pids);
-                                (ws_id, ports)
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .await;
-
-                    // Phase 3: apply results if ports changed (match by workspace ID)
-                    let apply = cx.update(|cx| {
-                        this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
-                            let mut changed = false;
-                            for (ws_id, ports) in &results {
-                                for ws in &mut app.workspaces {
-                                    if ws.id == *ws_id && ws.active_ports != *ports {
-                                        ws.active_ports = ports.clone();
-                                        changed = true;
-                                    }
-                                }
-                            }
-                            if changed {
-                                cx.notify();
-                            }
-                        })
-                    });
-                    if apply.is_err() {
-                        break;
-                    }
-                }
-            },
-        )
-        .detach();
-
-        // CWD change detection: poll active terminals every 2s.
-        // When a shell `cd`s, update workspace CWD, re-attach notify watcher,
-        // and run immediate git probe.
-        cx.spawn(
-            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                loop {
-                    smol::Timer::after(std::time::Duration::from_secs(2)).await;
-
-                    // Phase 1: detect CWD changes (cheap reads, main thread)
-                    let cwd_changes = cx.update(|cx| {
-                        this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
-                            let mut changes: Vec<(usize, String)> = Vec::new();
-                            for (i, ws) in app.workspaces.iter().enumerate() {
-                                if let Some(root) = &ws.root {
-                                    for pane in root.collect_leaves() {
-                                        let cwd = pane
-                                            .read(cx)
-                                            .active_terminal()
-                                            .read(cx)
-                                            .terminal
-                                            .current_cwd
-                                            .clone();
-                                        if let Some(ref new_cwd) = cwd
-                                            && *new_cwd != ws.cwd
-                                        {
-                                            changes.push((i, new_cwd.clone()));
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            changes
-                        })
-                    });
-                    let cwd_changes = match cwd_changes {
-                        Ok(c) if !c.is_empty() => c,
-                        Ok(_) => continue,
-                        Err(_) => break,
-                    };
-
-                    // Phase 2: run git probes off main thread
-                    let probes = smol::unblock({
-                        let changes = cwd_changes.clone();
-                        move || {
-                            changes
-                                .into_iter()
-                                .map(|(i, cwd)| {
-                                    let git_dir = crate::workspace::find_git_dir(&cwd);
-                                    let (branch, is_repo) = crate::workspace::detect_branch(&cwd);
-                                    let stats = crate::workspace::GitDiffStats::from_cwd(&cwd);
-                                    (i, cwd, git_dir, branch, is_repo, stats)
-                                })
-                                .collect::<Vec<_>>()
-                        }
-                    })
-                    .await;
-
-                    // Phase 3: apply results and re-attach watchers (main thread)
-                    let apply = cx.update(|cx| {
-                        this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
-                            for (i, new_cwd, new_git_dir, branch, is_repo, stats) in &probes {
-                                if *i >= app.workspaces.len() {
-                                    continue;
-                                }
-                                // Unwatch old git dir
-                                let old_git_dir = app.workspaces[*i].git_dir.clone();
-                                if let Some(ref dir) = old_git_dir {
-                                    app.unwatch_git_dir(dir);
-                                }
-                                // Update workspace fields
-                                let ws = &mut app.workspaces[*i];
-                                ws.cwd = new_cwd.clone();
-                                ws.git_dir = new_git_dir.clone();
-                                ws.git_branch = branch.clone();
-                                ws.is_git_repo = *is_repo;
-                                ws.git_stats = stats.clone();
-                                // Watch new git dir
-                                if let Some(dir) = new_git_dir {
-                                    let count =
-                                        app.git_watch_counts.entry(dir.clone()).or_insert(0);
-                                    *count += 1;
-                                    if *count == 1
-                                        && let Some(ref mut watcher) = app.git_watcher
-                                        && let Err(e) =
-                                            watcher.watch(dir, notify::RecursiveMode::NonRecursive)
-                                    {
-                                        log::warn!(
-                                            "git watcher: failed to watch {}: {e}",
-                                            dir.display()
-                                        );
-                                    }
-                                }
-                                log::debug!("workspace CWD changed to: {new_cwd}");
-                            }
-                            cx.notify();
-                        })
-                    });
-                    if apply.is_err() {
-                        break;
-                    }
-                }
-            },
-        )
-        .detach();
+        // Port scanning and CWD detection are now event-driven:
+        // - TerminalEvent::ActivityBurst → schedule_port_scan()
+        // - TerminalEvent::CwdChanged → handle_cwd_change()
+        // See handle_terminal_event() for the push-based implementation.
 
         Self {
-            workspaces: vec![ws],
-            active_idx: 0,
+            workspaces,
+            active_idx,
             renaming_idx: None,
             rename_text: String::new(),
             last_config_mtime,
@@ -727,7 +871,167 @@ impl PaneFlowApp {
             git_watcher,
             git_event_rx,
             git_watch_counts,
+            settings_section: None,
+            home_dir: std::env::var("HOME").unwrap_or_default(),
+            effective_shortcuts: keybindings::effective_shortcuts(
+                &paneflow_config::loader::load_config().shortcuts,
+            ),
+            recording_shortcut_idx: None,
+            settings_focus: cx.focus_handle(),
+            mono_font_names: Vec::new(),
+            font_dropdown_open: false,
+            font_search: String::new(),
+            notifications: Vec::new(),
+            notif_menu_open: false,
+            loader_anim_running: false,
         }
+    }
+
+    // ── Session persistence ──────────────────────────────────────────
+
+    fn save_session(&self, cx: &App) {
+        let state = paneflow_config::schema::SessionState {
+            version: 1,
+            active_workspace: self.active_idx,
+            workspaces: self
+                .workspaces
+                .iter()
+                .map(|ws| paneflow_config::schema::WorkspaceSession {
+                    title: ws.title.clone(),
+                    cwd: ws.cwd.clone(),
+                    layout: ws.serialize_layout(cx),
+                })
+                .collect(),
+        };
+        let Some(path) = paneflow_config::loader::session_path() else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match serde_json::to_string_pretty(&state) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    log::warn!("session save failed: {e}");
+                }
+            }
+            Err(e) => log::warn!("session serialize failed: {e}"),
+        }
+    }
+
+    fn load_session() -> Option<paneflow_config::schema::SessionState> {
+        let path = paneflow_config::loader::session_path()?;
+        let data = std::fs::read_to_string(&path).ok()?;
+        let state: paneflow_config::schema::SessionState = serde_json::from_str(&data).ok()?;
+        if state.workspaces.is_empty() {
+            return None;
+        }
+        Some(state)
+    }
+
+    /// Rebuild workspaces from a saved session. Each workspace's layout tree
+    /// is reconstructed via `LayoutTree::from_layout_node` with CWD-aware
+    /// terminal spawning. Returns the workspace list and active index.
+    fn restore_workspaces(
+        session: &paneflow_config::schema::SessionState,
+        cx: &mut Context<Self>,
+    ) -> (Vec<Workspace>, usize) {
+        use std::path::PathBuf;
+
+        let mut workspaces = Vec::new();
+
+        for ws_session in &session.workspaces {
+            let cwd = PathBuf::from(&ws_session.cwd);
+            let ws_id = next_workspace_id();
+
+            if let Some(mut layout) = ws_session.layout.clone() {
+                paneflow_config::loader::validate_layout(&mut layout);
+                let mut pane_deque: VecDeque<Entity<Pane>> = VecDeque::new();
+                let ws_cwd = cwd.clone();
+                let tree = LayoutTree::from_layout_node(&layout, &mut pane_deque, &mut |node| {
+                    let surfaces = match node {
+                        LayoutNode::Pane { surfaces } => surfaces.as_slice(),
+                        _ => &[],
+                    };
+                    Self::spawn_pane_from_surfaces(ws_id, surfaces, &ws_cwd, cx)
+                });
+                workspaces.push(Workspace::with_layout_and_id(
+                    ws_id,
+                    ws_session.title.clone(),
+                    cwd,
+                    tree,
+                ));
+            } else {
+                // No saved layout — single terminal in the workspace CWD
+                let terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, Some(cwd.clone()), cx));
+                cx.subscribe(&terminal, Self::handle_terminal_event)
+                    .detach();
+                let pane = cx.new(|cx| Pane::new(terminal, ws_id, cx));
+                cx.subscribe(&pane, Self::handle_pane_event).detach();
+                workspaces.push(Workspace::with_cwd_and_id(
+                    ws_id,
+                    ws_session.title.clone(),
+                    cwd,
+                    pane,
+                ));
+            }
+        }
+
+        let active_idx = session
+            .active_workspace
+            .min(workspaces.len().saturating_sub(1));
+        (workspaces, active_idx)
+    }
+
+    /// Create a `Pane` (with one tab per surface) from serialized surface
+    /// definitions. Falls back to a single terminal in `fallback_cwd` when
+    /// the surface list is empty.
+    fn spawn_pane_from_surfaces(
+        workspace_id: u64,
+        surfaces: &[paneflow_config::schema::SurfaceDefinition],
+        fallback_cwd: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> Entity<Pane> {
+        use std::path::PathBuf;
+
+        let mut focus_idx: usize = 0;
+        let terminals: Vec<Entity<TerminalView>> = if surfaces.is_empty() {
+            let t = cx.new(|cx| {
+                TerminalView::with_cwd(workspace_id, Some(fallback_cwd.to_path_buf()), cx)
+            });
+            cx.subscribe(&t, Self::handle_terminal_event).detach();
+            vec![t]
+        } else {
+            surfaces
+                .iter()
+                .enumerate()
+                .map(|(i, surface)| {
+                    let cwd = surface
+                        .cwd
+                        .as_ref()
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| fallback_cwd.to_path_buf());
+                    let t = cx.new(|cx| TerminalView::with_cwd(workspace_id, Some(cwd), cx));
+                    cx.subscribe(&t, Self::handle_terminal_event).detach();
+                    if surface.focus == Some(true) {
+                        focus_idx = i;
+                    }
+                    t
+                })
+                .collect()
+        };
+
+        let first = terminals[0].clone();
+        let pane = cx.new(|cx| {
+            let mut p = Pane::new(first, workspace_id, cx);
+            for tab in &terminals[1..] {
+                p.add_tab(tab.clone(), cx);
+            }
+            p.selected_idx = focus_idx.min(terminals.len() - 1);
+            p
+        });
+        cx.subscribe(&pane, Self::handle_pane_event).detach();
+        pane
     }
 
     fn process_ipc_requests(&mut self, cx: &mut Context<Self>) {
@@ -780,9 +1084,10 @@ impl PaneFlowApp {
                     .get("name")
                     .and_then(|n| n.as_str())
                     .unwrap_or("Terminal");
-                let terminal = cx.new(TerminalView::new);
-                let pane = self.create_pane(terminal, cx);
-                let ws = Workspace::new(name, pane);
+                let ws_id = next_workspace_id();
+                let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
+                let pane = self.create_pane(terminal, ws_id, cx);
+                let ws = Workspace::with_id(ws_id, name, pane);
                 self.watch_git_dir(&ws);
                 self.workspaces.push(ws);
                 let idx = self.workspaces.len() - 1;
@@ -867,8 +1172,9 @@ impl PaneFlowApp {
                 if root.leaf_count() >= MAX_PANES {
                     return serde_json::json!({"error": "Maximum pane count reached"});
                 }
-                let new_terminal = cx.new(TerminalView::new);
-                let new_pane = self.create_pane(new_terminal, cx);
+                let ws_id = self.active_workspace().unwrap().id;
+                let new_terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
+                let new_pane = self.create_pane(new_terminal, ws_id, cx);
                 let Some(ws) = self.active_workspace_mut() else {
                     return serde_json::json!({"error": "No active workspace"});
                 };
@@ -917,6 +1223,7 @@ impl PaneFlowApp {
     }
 
     fn select_workspace(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.notif_menu_open = false;
         if idx < self.workspaces.len() && idx != self.active_idx {
             self.active_idx = idx;
             self.workspaces[idx].focus_first(window, cx);
@@ -931,9 +1238,10 @@ impl PaneFlowApp {
             return;
         }
         let n = self.workspaces.len() + 1;
-        let terminal = cx.new(TerminalView::new);
-        let pane = self.create_pane(terminal, cx);
-        let ws = Workspace::new(format!("Terminal {n}"), pane);
+        let ws_id = next_workspace_id();
+        let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
+        let pane = self.create_pane(terminal, ws_id, cx);
+        let ws = Workspace::with_id(ws_id, format!("Terminal {n}"), pane);
         self.watch_git_dir(&ws);
         self.workspaces.push(ws);
         self.active_idx = self.workspaces.len() - 1;
@@ -949,30 +1257,33 @@ impl PaneFlowApp {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
-            multiple: false,
+            multiple: true,
             prompt: None,
         });
         cx.spawn(
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                if let Ok(Ok(Some(paths))) = receiver.await
-                    && let Some(path) = paths.into_iter().next()
-                {
+                if let Ok(Ok(Some(paths))) = receiver.await {
                     let _ = cx.update(|cx| {
                         this.update(cx, |app, cx| {
-                            let n = app.workspaces.len() + 1;
-                            let dir = path.clone();
-                            let title = dir
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| format!("Terminal {n}"));
-                            let terminal = cx.new(|cx| TerminalView::with_cwd(Some(path), cx));
-                            let pane = app.create_pane(terminal, cx);
-                            let ws = Workspace::with_cwd(title, dir, pane);
-                            app.watch_git_dir(&ws);
-                            app.workspaces.push(ws);
+                            for path in paths {
+                                if app.workspaces.len() >= MAX_WORKSPACES {
+                                    break;
+                                }
+                                let n = app.workspaces.len() + 1;
+                                let dir = path.clone();
+                                let title = dir
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| format!("Terminal {n}"));
+                                let ws_id = next_workspace_id();
+                                let terminal =
+                                    cx.new(|cx| TerminalView::with_cwd(ws_id, Some(path), cx));
+                                let pane = app.create_pane(terminal, ws_id, cx);
+                                let ws = Workspace::with_cwd_and_id(ws_id, title, dir, pane);
+                                app.watch_git_dir(&ws);
+                                app.workspaces.push(ws);
+                            }
                             app.active_idx = app.workspaces.len() - 1;
-                            // Cannot call focus_first here (no Window ref in async),
-                            // but cx.notify() triggers repaint which selects the workspace.
                             cx.notify();
                         })
                     });
@@ -998,8 +1309,15 @@ impl PaneFlowApp {
         {
             return;
         }
-        let new_terminal = cx.new(TerminalView::new);
-        let new_pane = self.create_pane(new_terminal, cx);
+        // Inherit CWD from the focused pane's active terminal (fresh /proc read)
+        let source_cwd = self
+            .active_workspace()
+            .and_then(|ws| ws.root.as_ref())
+            .and_then(|root| root.focused_pane(window, cx))
+            .and_then(|pane| pane.read(cx).active_terminal().read(cx).terminal.cwd_now());
+        let ws_id = self.active_workspace().map(|ws| ws.id).unwrap_or(0);
+        let new_terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, source_cwd, cx));
+        let new_pane = self.create_pane(new_terminal, ws_id, cx);
         if let Some(ws) = self.active_workspace_mut()
             && let Some(root) = &mut ws.root
             && root.split_at_focused(direction, new_pane.clone(), window, cx)
@@ -1058,8 +1376,9 @@ impl PaneFlowApp {
                 self.close_workspace_at(self.active_idx, window, cx);
             } else {
                 // Last workspace: spawn a fresh pane instead of destroying
-                let terminal = cx.new(TerminalView::new);
-                let new_pane = self.create_pane(terminal, cx);
+                let ws_id = self.active_workspace().unwrap().id;
+                let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
+                let new_pane = self.create_pane(terminal, ws_id, cx);
                 if let Some(ws) = self.active_workspace_mut() {
                     ws.root = Some(LayoutTree::Leaf(new_pane));
                 }
@@ -1193,10 +1512,11 @@ impl PaneFlowApp {
         // Keep only the panes we need; extras are dropped with the old tree
         let mut pane_deque: VecDeque<Entity<Pane>> = existing.into_iter().take(needed).collect();
 
+        let ws_id = self.active_workspace().map(|ws| ws.id).unwrap_or(0);
         let app_ref = &mut *self;
-        let tree = LayoutTree::from_layout_node(layout, &mut pane_deque, &mut || {
-            let terminal = cx.new(TerminalView::new);
-            app_ref.create_pane(terminal, cx)
+        let tree = LayoutTree::from_layout_node(layout, &mut pane_deque, &mut |_node| {
+            let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
+            app_ref.create_pane(terminal, ws_id, cx)
         });
 
         let Some(ws) = self.active_workspace_mut() else {
@@ -1286,7 +1606,10 @@ impl PaneFlowApp {
             && let Some(root) = &ws.root
             && let Some(pane) = root.focused_pane(window, cx)
         {
-            let terminal = cx.new(TerminalView::new);
+            let ws_id = self.active_workspace().unwrap().id;
+            let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
+            cx.subscribe(&terminal, Self::handle_terminal_event)
+                .detach();
             pane.update(cx, |p, cx| {
                 p.add_tab(terminal, cx);
             });
@@ -1432,9 +1755,10 @@ impl PaneFlowApp {
     fn sidebar_action_btn(
         &self,
         id: &'static str,
-        label: &'static str,
+        icon_path: &'static str,
         on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
+        let ui = crate::theme::ui_colors();
         div()
             .id(id)
             .flex()
@@ -1444,21 +1768,30 @@ impl PaneFlowApp {
             .h(px(22.))
             .rounded(px(4.))
             .cursor_pointer()
-            .text_color(rgb(0x6c7086))
-            .text_xs()
-            .hover(|s| s.bg(rgb(0x313244)).text_color(rgb(0xcdd6f4)))
+            .text_color(ui.muted)
+            .hover(|s| {
+                let ui = crate::theme::ui_colors();
+                s.bg(ui.subtle).text_color(ui.text)
+            })
             .on_click(move |e, w, cx| on_click(e, w, cx))
-            .child(label)
+            .child(
+                svg()
+                    .size(px(14.))
+                    .flex_none()
+                    .path(icon_path)
+                    .text_color(ui.muted),
+            )
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = crate::theme::ui_colors();
+        let theme = crate::theme::active_theme();
         let mut sidebar = div()
+            .relative()
             .w(px(SIDEBAR_WIDTH))
             .flex_shrink_0()
             .h_full()
-            .bg(rgb(0x181825))
-            .border_r_1()
-            .border_color(rgb(0x313244))
+            .bg(theme.title_bar_background)
             .flex()
             .flex_col();
 
@@ -1479,31 +1812,169 @@ impl PaneFlowApp {
                     div()
                         .text_xs()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(rgb(0x6c7086))
+                        .text_color(ui.text)
                         .child("WORKSPACES"),
                 )
                 .child(
                     // Right side — action buttons
-                    div().flex().flex_row().items_center().gap(px(2.)).child(
-                        self.sidebar_action_btn(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(2.))
+                        .child({
+                            let has_unread = self.notifications.iter().any(|n| !n.read);
+                            div()
+                                .relative()
+                                .child(self.sidebar_action_btn(
+                                    "sidebar-bell",
+                                    "icons/bell.svg",
+                                    cx.listener(|this, _: &ClickEvent, _w, cx| {
+                                        this.notif_menu_open = !this.notif_menu_open;
+                                        cx.notify();
+                                    }),
+                                ))
+                                .when(has_unread, |d| {
+                                    d.child(
+                                        div()
+                                            .absolute()
+                                            .top(px(2.))
+                                            .right(px(2.))
+                                            .w(px(6.))
+                                            .h(px(6.))
+                                            .rounded_full()
+                                            .bg(rgb(0xf38ba8)),
+                                    )
+                                })
+                        })
+                        .child(self.sidebar_action_btn(
+                            "sidebar-settings",
+                            "icons/settings.svg",
+                            cx.listener(|this, _: &ClickEvent, _w, cx| {
+                                if this.settings_section.is_some() {
+                                    this.close_settings(cx);
+                                } else {
+                                    this.settings_section = Some(SettingsSection::Shortcuts);
+                                    crate::terminal::SUPPRESS_REPAINTS
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                cx.notify();
+                            }),
+                        ))
+                        .child(self.sidebar_action_btn(
                             "sidebar-new-ws",
-                            "+",
+                            "icons/plus.svg",
                             cx.listener(|this, _: &ClickEvent, w, cx| {
                                 this.create_workspace_with_picker(w, cx);
                             }),
-                        ),
-                    ),
+                        )),
                 ),
         );
 
+        // ── Notification dropdown menu ──
+        if self.notif_menu_open {
+            let mut menu = div()
+                .id("notif-menu")
+                .occlude()
+                .absolute()
+                .top(px(64.))
+                .left(px(6.))
+                .w(px(SIDEBAR_WIDTH - 12.))
+                .max_h(px(300.))
+                .overflow_y_scroll()
+                .bg(ui.overlay)
+                .border_1()
+                .border_color(ui.border)
+                .rounded(px(6.))
+                .shadow_lg()
+                .flex()
+                .flex_col()
+                .p(px(4.));
+
+            if self.notifications.is_empty() {
+                menu = menu.child(
+                    div()
+                        .px(px(10.))
+                        .py(px(12.))
+                        .text_xs()
+                        .text_color(ui.muted)
+                        .child("No notifications"),
+                );
+            } else {
+                // Newest first
+                for (ni, notif) in self.notifications.iter().enumerate().rev() {
+                    let ws_id = notif.workspace_id;
+                    let is_unread = !notif.read;
+                    let notif_idx = ni;
+                    menu = menu.child(
+                        div()
+                            .id(SharedString::from(format!("notif-{ni}")))
+                            .px(px(10.))
+                            .py(px(6.))
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .when(is_unread, |d| {
+                                let ui = crate::theme::ui_colors();
+                                d.bg(ui.subtle)
+                            })
+                            .hover(|s| {
+                                let ui = crate::theme::ui_colors();
+                                s.bg(ui.surface)
+                            })
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                // Find workspace by stable ID
+                                if let Some(idx) =
+                                    this.workspaces.iter().position(|ws| ws.id == ws_id)
+                                {
+                                    this.select_workspace(idx, window, cx);
+                                }
+                                if notif_idx < this.notifications.len() {
+                                    this.notifications[notif_idx].read = true;
+                                }
+                                this.notif_menu_open = false;
+                                cx.notify();
+                            }))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(if is_unread { ui.text } else { ui.muted })
+                                    .child(notif.workspace_title.clone()),
+                            )
+                            .child({
+                                let msg_color = match notif.kind {
+                                    ai_detector::AiToolState::WaitingForInput(_) => {
+                                        gpui::Hsla::from(rgb(0xf9e2af))
+                                    }
+                                    ai_detector::AiToolState::Finished(_) => {
+                                        gpui::Hsla::from(rgb(0xa6e3a1))
+                                    }
+                                    _ => ui.muted,
+                                };
+                                div()
+                                    .text_xs()
+                                    .text_color(msg_color)
+                                    .child(notif.message.clone())
+                            }),
+                    );
+                }
+            }
+
+            sidebar = sidebar.child(deferred(menu));
+        }
+
         // Workspace list — scrollable area
         let mut list = div()
+            .id("workspace-list")
             .flex_1()
-            .overflow_hidden()
+            .overflow_y_scroll()
             .flex()
             .flex_col()
-            .py_2()
-            .gap(px(2.)); // ~2px spacing between cards
+            .gap(px(6.))
+            .py_2();
 
         for (i, ws) in self.workspaces.iter().enumerate() {
             let is_active = i == self.active_idx;
@@ -1511,9 +1982,8 @@ impl PaneFlowApp {
             let title = ws.title.clone();
             // Format cwd as ~/... (collapse home dir)
             let cwd_display = {
-                let home = std::env::var("HOME").unwrap_or_default();
-                if !home.is_empty() && ws.cwd.starts_with(&home) {
-                    format!("~{}", &ws.cwd[home.len()..])
+                if !self.home_dir.is_empty() && ws.cwd.starts_with(&self.home_dir) {
+                    format!("~{}", &ws.cwd[self.home_dir.len()..])
                 } else {
                     ws.cwd.clone()
                 }
@@ -1525,21 +1995,21 @@ impl PaneFlowApp {
             );
 
             let idx = i;
-            let card_bg = if is_active {
-                rgb(0x313244) // Surface0 — active card fill
-            } else {
-                rgb(0x181825) // Mantle — same as sidebar bg (invisible card)
-            };
 
             let mut card = div()
                 .id(SharedString::from(format!("ws-{i}")))
                 .mx(px(6.))
                 .px(px(10.))
                 .py(px(8.))
-                .bg(card_bg)
+                .when(is_active, |d| d.bg(ui.overlay))
                 .rounded(px(6.))
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(0x45475a)))
+                .when(!is_active, |d| {
+                    d.hover(|s| {
+                        let ui = crate::theme::ui_colors();
+                        s.bg(ui.subtle)
+                    })
+                })
                 .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                     let is_double = matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2);
                     if is_double {
@@ -1591,20 +2061,16 @@ impl PaneFlowApp {
             let can_close = self.workspaces.len() > 1;
             let title_el = if self.renaming_idx == Some(i) {
                 div()
-                    .text_color(rgb(0xcdd6f4))
+                    .text_color(ui.text)
                     .text_sm()
                     .font_weight(gpui::FontWeight::BOLD)
-                    .bg(rgb(0x45475a))
+                    .bg(ui.overlay)
                     .px_1()
                     .rounded_sm()
                     .child(format!("{}|", self.rename_text))
             } else {
                 div()
-                    .text_color(if is_active {
-                        rgb(0xcdd6f4)
-                    } else {
-                        rgb(0xbac2de) // Subtext1 for inactive
-                    })
+                    .text_color(ui.text)
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(title)
@@ -1627,9 +2093,12 @@ impl PaneFlowApp {
                         .h(px(18.))
                         .rounded(px(4.))
                         .cursor_pointer()
-                        .text_color(rgb(0x585b70))
+                        .text_color(ui.muted)
                         .text_xs()
-                        .hover(|s| s.bg(rgb(0x45475a)).text_color(rgb(0xf38ba8)))
+                        .hover(|s| {
+                            let ui = crate::theme::ui_colors();
+                            s.bg(ui.overlay).text_color(rgb(0xf38ba8))
+                        })
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                             this.close_workspace_at(idx, window, cx);
                         }))
@@ -1638,7 +2107,7 @@ impl PaneFlowApp {
                                 .size(px(12.))
                                 .flex_none()
                                 .path("icons/trash.svg")
-                                .text_color(rgb(0x585b70)),
+                                .text_color(ui.muted),
                         ),
                 );
             }
@@ -1657,16 +2126,7 @@ impl PaneFlowApp {
             }
 
             // ── Row 3: Subtitle — pane count as status ──
-            card = card.child(
-                div()
-                    .text_color(if is_active {
-                        rgb(0xa6adc8) // Subtext0 — slightly brighter when active
-                    } else {
-                        rgb(0x6c7086) // Overlay0
-                    })
-                    .text_xs()
-                    .child(pane_label),
-            );
+            card = card.child(div().text_color(ui.muted).text_xs().child(pane_label));
 
             // ── Row 3: Git diff stats ──
             if !ws.git_stats.is_empty() {
@@ -1692,43 +2152,140 @@ impl PaneFlowApp {
             } else if ws.is_git_repo {
                 card = card.child(
                     div()
-                        .text_color(rgb(0x6c7086)) // Catppuccin Overlay0
+                        .text_color(ui.muted)
                         .text_xs()
                         .child("No changes detected"),
                 );
             }
 
-            // ── Row 4: Active ports ──
+            // ── Row 4: Active ports — clickable URL badges ──
             if !ws.active_ports.is_empty() {
-                let mut port_text = ws
-                    .active_ports
-                    .iter()
-                    .take(4)
-                    .map(|p| format!(":{p}"))
-                    .collect::<Vec<_>>()
-                    .join("  ");
-                if ws.active_ports.len() > 4 {
-                    port_text.push_str(&format!("  +{} more", ws.active_ports.len() - 4));
+                let mut ports_row = div().flex().flex_row().flex_wrap().gap(px(4.));
+
+                for (pi, port) in ws.active_ports.iter().take(4).enumerate() {
+                    let info = ws.service_labels.get(port);
+                    let is_frontend = info.is_some_and(|i| i.is_frontend);
+                    let label = if let Some(i) = info
+                        && let Some(ref l) = i.label
+                    {
+                        format!("{l} :{port}")
+                    } else {
+                        format!(":{port}")
+                    };
+
+                    if is_frontend {
+                        let url = info
+                            .and_then(|i| i.url.clone())
+                            .unwrap_or_else(|| format!("http://localhost:{port}"));
+                        ports_row = ports_row.child(
+                            div()
+                                .id(SharedString::from(format!("port-{idx}-{pi}")))
+                                .px(px(6.))
+                                .py(px(2.))
+                                .rounded(px(4.))
+                                .bg(ui.subtle)
+                                .text_xs()
+                                .text_color(ui.accent)
+                                .cursor_pointer()
+                                .hover(|s| s.text_color(rgb(0xa0e8ff)))
+                                .on_click(move |_, _, _| {
+                                    let _ =
+                                        std::process::Command::new("xdg-open").arg(&url).spawn();
+                                })
+                                .child(label),
+                        );
+                    } else {
+                        ports_row =
+                            ports_row.child(div().text_xs().text_color(ui.muted).child(label));
+                    }
                 }
-                card = card.child(
-                    div()
-                        .text_color(rgb(0xf9e2af)) // Catppuccin Yellow
-                        .text_xs()
-                        .child(port_text),
-                );
+
+                if ws.active_ports.len() > 4 {
+                    ports_row = ports_row.child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0xffffff))
+                            .child(format!("+{} more", ws.active_ports.len() - 4)),
+                    );
+                }
+
+                card = card.child(ports_row);
+            }
+
+            // ── Row: AI tool status (Claude Code / Codex) ──
+            match ws.ai_state {
+                ai_detector::AiToolState::Thinking(tool) => {
+                    let (frames, color): (&[char], u32) = match tool {
+                        ai_detector::AiTool::Claude => (&CLAUDE_SPINNER_FRAMES, 0xd97757),
+                        ai_detector::AiTool::Codex => (&CODEX_SPINNER_FRAMES, 0x10a37f),
+                    };
+                    let angle = ws.loader_angle.get();
+                    let idx = ((angle / std::f32::consts::TAU) * frames.len() as f32) as usize
+                        % frames.len();
+                    let spinner = frames[idx];
+                    card = card.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .w(px(14.))
+                                    .h(px(14.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_color(rgb(color))
+                                    .text_xs()
+                                    .child(format!("{spinner}")),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(color))
+                                    .child(format!("{} thinking…", tool.label())),
+                            ),
+                    );
+                }
+                ai_detector::AiToolState::WaitingForInput(tool) => {
+                    card = card.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                svg()
+                                    .size(px(14.))
+                                    .flex_none()
+                                    .path("icons/bell.svg")
+                                    .text_color(rgb(0xf9e2af)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(0xf9e2af))
+                                    .child(format!("{} needs input", tool.label())),
+                            ),
+                    );
+                }
+                ai_detector::AiToolState::Finished(tool) => {
+                    card = card.child(
+                        div().flex().flex_row().items_center().gap(px(6.)).child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0xa6e3a1))
+                                .child(format!("✓ {} done", tool.label())),
+                        ),
+                    );
+                }
+                ai_detector::AiToolState::Inactive => {}
             }
 
             // ── Row 5: Working directory (monospace-style) ──
-            card = card.child(
-                div()
-                    .text_color(if is_active {
-                        rgb(0x9399b2) // Overlay2 when active
-                    } else {
-                        rgb(0x585b70) // Surface2 when inactive
-                    })
-                    .text_xs()
-                    .child(cwd_display),
-            );
+            card = card.child(div().text_color(ui.muted).text_xs().child(cwd_display));
 
             list = list.child(card);
         }
@@ -1736,6 +2293,575 @@ impl PaneFlowApp {
         sidebar = sidebar.child(list);
 
         sidebar
+    }
+
+    // ── Settings page: sidebar + content ──────────────────────────────
+
+    fn render_settings_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let section = self.settings_section.unwrap_or(SettingsSection::Shortcuts);
+        let ui = crate::theme::ui_colors();
+
+        // Header bar: title + close button
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px(px(24.))
+            .pt(px(20.))
+            .pb(px(16.))
+            .child(
+                div()
+                    .text_size(px(18.))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(ui.text)
+                    .child("Settings"),
+            )
+            .child(
+                div()
+                    .id("settings-close")
+                    .px(px(8.))
+                    .py(px(4.))
+                    .rounded(px(4.))
+                    .cursor(CursorStyle::PointingHand)
+                    .hover(|s| s.bg(ui.subtle))
+                    .text_size(px(14.))
+                    .text_color(ui.muted)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                        this.close_settings(cx);
+                        cx.notify();
+                    }))
+                    .child("Close"),
+            );
+
+        // Content area based on active section
+        let content = match section {
+            SettingsSection::Shortcuts => self.render_shortcuts_content(cx).into_any_element(),
+            SettingsSection::Appearance => self.render_appearance_content(cx).into_any_element(),
+        };
+
+        div()
+            .id("settings-page")
+            .track_focus(&self.settings_focus)
+            .on_key_down(cx.listener(Self::handle_settings_key_down))
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(ui.base)
+            .child(header)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .min_h_0()
+                    // Left sidebar
+                    .child(self.render_settings_sidebar(section, ui, cx))
+                    // Right content
+                    .child(
+                        div()
+                            .id("settings-content")
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .px(px(24.))
+                            .py(px(12.))
+                            .child(content),
+                    ),
+            )
+    }
+
+    fn render_settings_sidebar(
+        &self,
+        active: SettingsSection,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let sections = [
+            ("Shortcuts", SettingsSection::Shortcuts),
+            ("Appearance", SettingsSection::Appearance),
+        ];
+
+        let mut nav = div()
+            .flex()
+            .flex_col()
+            .w(px(180.))
+            .h_full()
+            .border_r_1()
+            .border_color(ui.border)
+            .bg(ui.base)
+            .pt(px(4.));
+
+        for (label, section) in sections {
+            let is_active = section == active;
+            nav = nav.child(
+                div()
+                    .id(SharedString::from(format!("nav-{label}")))
+                    .mx(px(8.))
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(px(6.))
+                    .text_size(px(13.))
+                    .cursor(CursorStyle::PointingHand)
+                    .when(is_active, |d| d.bg(ui.overlay).text_color(ui.text))
+                    .when(!is_active, |d| {
+                        d.text_color(ui.muted).hover(|s| s.bg(ui.subtle))
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        this.settings_section = Some(section);
+                        // Reset editing state when switching tabs
+                        this.font_dropdown_open = false;
+                        this.font_search.clear();
+                        if this.recording_shortcut_idx.is_some() {
+                            this.recording_shortcut_idx = None;
+                            let config = paneflow_config::loader::load_config();
+                            keybindings::apply_keybindings(cx, &config.shortcuts);
+                        }
+                        cx.notify();
+                    }))
+                    .child(label),
+            );
+        }
+
+        nav
+    }
+
+    fn render_shortcuts_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = crate::theme::ui_colors();
+        let recording_idx = self.recording_shortcut_idx;
+
+        // Section header + reset button
+        let section_header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .pb(px(16.))
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(ui.text)
+                    .child("KEYBOARD SHORTCUTS"),
+            )
+            .child(
+                div()
+                    .id("reset-shortcuts")
+                    .px(px(10.))
+                    .py(px(4.))
+                    .rounded(px(4.))
+                    .cursor(CursorStyle::PointingHand)
+                    .bg(ui.subtle)
+                    .hover(|s| s.bg(ui.overlay))
+                    .text_size(px(12.))
+                    .text_color(ui.text)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                        config_writer::reset_shortcuts();
+                        let config = paneflow_config::loader::load_config();
+                        keybindings::apply_keybindings(cx, &config.shortcuts);
+                        this.effective_shortcuts =
+                            keybindings::effective_shortcuts(&config.shortcuts);
+                        this.recording_shortcut_idx = None;
+                        cx.notify();
+                    }))
+                    .child("Reset to defaults"),
+            );
+
+        let mut list = div().flex().flex_col();
+
+        for (i, entry) in self.effective_shortcuts.iter().enumerate() {
+            let is_recording = recording_idx == Some(i);
+
+            let key_badge = if is_recording {
+                div()
+                    .px(px(8.))
+                    .py(px(3.))
+                    .rounded(px(4.))
+                    .bg(ui.overlay)
+                    .text_size(px(12.))
+                    .text_color(ui.accent)
+                    .child("Press a key...")
+            } else {
+                div()
+                    .px(px(8.))
+                    .py(px(3.))
+                    .rounded(px(4.))
+                    .bg(ui.subtle)
+                    .text_size(px(12.))
+                    .text_color(ui.text)
+                    .child(entry.key.clone())
+            };
+
+            let row_bg = if is_recording { ui.overlay } else { ui.base };
+
+            list = list.child(
+                div()
+                    .id(("shortcut", i))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(px(4.))
+                    .bg(row_bg)
+                    .cursor(CursorStyle::PointingHand)
+                    .hover(|s| s.bg(ui.overlay))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.recording_shortcut_idx = Some(i);
+                        cx.clear_key_bindings();
+                        this.settings_focus.focus(window, cx);
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .text_color(ui.text)
+                            .child(entry.description.clone()),
+                    )
+                    .child(key_badge),
+            );
+        }
+
+        div().flex().flex_col().child(section_header).child(list)
+    }
+
+    fn render_appearance_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let config = paneflow_config::loader::load_config();
+        let ui = crate::theme::ui_colors();
+        let current_font = config
+            .font_family
+            .unwrap_or_else(|| "Noto Sans Mono".to_string());
+        let current_theme = config
+            .theme
+            .clone()
+            .unwrap_or_else(|| "Catppuccin Mocha".to_string());
+
+        let section_header = div()
+            .text_size(px(13.))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(ui.text)
+            .child("APPEARANCE");
+
+        // ── Theme ──
+        let theme_label = div()
+            .text_size(px(13.))
+            .text_color(ui.muted)
+            .pb(px(6.))
+            .child("Theme");
+
+        let themes = [
+            ("Catppuccin Mocha", "Default (Dark)"),
+            ("PaneFlow Light", "Light"),
+        ];
+        let mut theme_row_inner = div().flex().flex_row().gap(px(8.));
+
+        for (theme_id, label) in themes {
+            let is_active = current_theme == theme_id;
+            let theme_id_owned = theme_id.to_string();
+            theme_row_inner = theme_row_inner.child(
+                div()
+                    .id(SharedString::from(format!("theme-{theme_id}")))
+                    .px(px(14.))
+                    .py(px(8.))
+                    .rounded(px(6.))
+                    .cursor(CursorStyle::PointingHand)
+                    .text_size(px(13.))
+                    .when(is_active, |d| d.bg(ui.accent).text_color(ui.base))
+                    .when(!is_active, |d| {
+                        d.bg(ui.subtle)
+                            .text_color(ui.muted)
+                            .hover(|s| s.bg(ui.overlay))
+                    })
+                    .on_click(cx.listener(move |_this, _: &ClickEvent, _w, cx| {
+                        config_writer::save_config_value(
+                            "theme",
+                            serde_json::Value::String(theme_id_owned.clone()),
+                        );
+                        crate::theme::invalidate_theme_cache();
+                        cx.notify();
+                    }))
+                    .child(label),
+            );
+        }
+
+        let theme_row = div()
+            .flex()
+            .flex_col()
+            .pb(px(20.))
+            .child(theme_label)
+            .child(theme_row_inner);
+
+        // ── Font Family ──
+        let font_label = div()
+            .text_size(px(13.))
+            .text_color(ui.muted)
+            .pb(px(6.))
+            .child("Font Family");
+
+        let font_value_text = if self.font_dropdown_open {
+            if self.font_search.is_empty() {
+                "Search fonts...".to_string()
+            } else {
+                format!("{}|", self.font_search)
+            }
+        } else {
+            current_font.clone()
+        };
+
+        let font_value_color = if self.font_dropdown_open {
+            ui.accent
+        } else {
+            ui.text
+        };
+
+        let font_badge = div()
+            .id("font-family-badge")
+            .px(px(12.))
+            .py(px(6.))
+            .rounded(px(4.))
+            .bg(ui.overlay)
+            .cursor(CursorStyle::PointingHand)
+            .hover(|s| s.bg(ui.subtle))
+            .text_size(px(13.))
+            .text_color(font_value_color)
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.font_dropdown_open = !this.font_dropdown_open;
+                this.font_search.clear();
+                if this.font_dropdown_open && this.mono_font_names.is_empty() {
+                    this.mono_font_names = config_writer::load_mono_fonts();
+                }
+                this.settings_focus.focus(window, cx);
+                cx.notify();
+            }))
+            .child(font_value_text);
+
+        let mut font_row = div()
+            .flex()
+            .flex_col()
+            .pb(px(20.))
+            .child(font_label)
+            .child(font_badge);
+
+        // Dropdown list
+        if self.font_dropdown_open {
+            let search = self.font_search.to_lowercase();
+            let filtered: Vec<&String> = self
+                .mono_font_names
+                .iter()
+                .filter(|name| search.is_empty() || name.to_lowercase().contains(&search))
+                .collect();
+
+            let mut dropdown = div()
+                .id("font-dropdown")
+                .flex()
+                .flex_col()
+                .mt(px(4.))
+                .rounded(px(6.))
+                .bg(ui.overlay)
+                .border_1()
+                .border_color(ui.border)
+                .max_h(px(250.))
+                .overflow_y_scroll();
+
+            for (i, name) in filtered.iter().enumerate() {
+                let name_owned = (*name).clone();
+                let is_current = **name == current_font;
+                dropdown = dropdown.child(
+                    div()
+                        .id(("font", i))
+                        .px(px(12.))
+                        .py(px(6.))
+                        .cursor(CursorStyle::PointingHand)
+                        .text_size(px(13.))
+                        .when(is_current, |d| d.text_color(ui.accent).bg(ui.subtle))
+                        .when(!is_current, |d| {
+                            d.text_color(ui.text).hover(|s| s.bg(ui.subtle))
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                            config_writer::save_config_value(
+                                "font_family",
+                                serde_json::Value::String(name_owned.clone()),
+                            );
+                            this.font_dropdown_open = false;
+                            this.font_search.clear();
+                            cx.notify();
+                        }))
+                        .child((*name).clone()),
+                );
+            }
+
+            if filtered.is_empty() {
+                dropdown = dropdown.child(
+                    div()
+                        .px(px(12.))
+                        .py(px(8.))
+                        .text_size(px(12.))
+                        .text_color(ui.muted)
+                        .child("No matching fonts"),
+                );
+            }
+
+            font_row = font_row.child(dropdown);
+        }
+
+        // ── Font Preview ──
+        let preview = div()
+            .pb(px(20.))
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .text_color(ui.muted)
+                    .pb(px(6.))
+                    .child("Preview"),
+            )
+            .child(
+                div()
+                    .px(px(16.))
+                    .py(px(12.))
+                    .rounded(px(6.))
+                    .bg(ui.preview_bg)
+                    .border_1()
+                    .border_color(ui.border)
+                    .font_family(current_font.clone())
+                    .text_size(px(14.))
+                    .text_color(ui.text)
+                    .child("The quick brown fox jumps over the lazy dog\nABCDEFGHIJKLM 0123456789 {}[]()"),
+            );
+
+        // ── Reset to defaults ──
+        let reset_btn = div()
+            .id("reset-appearance")
+            .px(px(10.))
+            .py(px(4.))
+            .rounded(px(4.))
+            .cursor(CursorStyle::PointingHand)
+            .bg(ui.subtle)
+            .hover(|s| s.bg(ui.overlay))
+            .text_size(px(12.))
+            .text_color(ui.text)
+            .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                config_writer::save_config_value("font_family", serde_json::Value::Null);
+                config_writer::save_config_value("theme", serde_json::Value::Null);
+                crate::theme::invalidate_theme_cache();
+                this.font_dropdown_open = false;
+                cx.notify();
+            }))
+            .child("Reset to defaults");
+
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .pb(px(16.))
+                    .child(section_header)
+                    .child(reset_btn),
+            )
+            .child(theme_row)
+            .child(font_row)
+            .child(preview)
+    }
+
+    fn handle_settings_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Font dropdown search
+        if self.font_dropdown_open {
+            let key = event.keystroke.key.as_str();
+            match key {
+                "escape" => {
+                    self.font_dropdown_open = false;
+                    self.font_search.clear();
+                    cx.notify();
+                }
+                "backspace" => {
+                    self.font_search.pop();
+                    cx.notify();
+                }
+                _ => {
+                    if let Some(ch) = &event.keystroke.key_char
+                        && !ch.is_empty()
+                        && !event.keystroke.modifiers.control
+                        && !event.keystroke.modifiers.platform
+                    {
+                        self.font_search.push_str(ch);
+                        cx.notify();
+                    }
+                }
+            }
+            return;
+        }
+
+        // Shortcut recording (only on Shortcuts tab)
+        if self.settings_section == Some(SettingsSection::Shortcuts) {
+            self.handle_shortcut_recording(event, _window, cx);
+        }
+    }
+
+    fn close_settings(&mut self, cx: &mut Context<Self>) {
+        self.settings_section = None;
+        self.font_dropdown_open = false;
+        self.font_search.clear();
+        if self.recording_shortcut_idx.is_some() {
+            self.recording_shortcut_idx = None;
+            let config = paneflow_config::loader::load_config();
+            keybindings::apply_keybindings(cx, &config.shortcuts);
+        }
+        crate::terminal::SUPPRESS_REPAINTS.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn handle_shortcut_recording(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(idx) = self.recording_shortcut_idx else {
+            return;
+        };
+
+        // Ignore bare modifier presses (Shift alone, Ctrl alone, etc.)
+        if keybindings::is_bare_modifier(&event.keystroke) {
+            return;
+        }
+
+        // Escape cancels recording
+        if event.keystroke.key == "escape" {
+            self.recording_shortcut_idx = None;
+            let config = paneflow_config::loader::load_config();
+            keybindings::apply_keybindings(cx, &config.shortcuts);
+            cx.notify();
+            return;
+        }
+
+        // Get the action name for this shortcut index
+        let Some(action_name) = keybindings::action_name_at(idx) else {
+            self.recording_shortcut_idx = None;
+            let config = paneflow_config::loader::load_config();
+            keybindings::apply_keybindings(cx, &config.shortcuts);
+            cx.notify();
+            return;
+        };
+
+        // Format keystroke to GPUI string (e.g. "ctrl-shift-d")
+        let new_key = event.keystroke.to_string();
+
+        // Save to config file
+        config_writer::save_shortcut(&new_key, action_name);
+
+        // Re-apply keybindings from updated config
+        let config = paneflow_config::loader::load_config();
+        keybindings::apply_keybindings(cx, &config.shortcuts);
+        self.effective_shortcuts = keybindings::effective_shortcuts(&config.shortcuts);
+        self.recording_shortcut_idx = None;
+        cx.notify();
     }
 }
 
@@ -1807,7 +2933,9 @@ fn resize_edge(
 
 impl Render for PaneFlowApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let main_content = if let Some(ws) = self.active_workspace() {
+        let main_content = if self.settings_section.is_some() {
+            self.render_settings_page(cx).into_any_element()
+        } else if let Some(ws) = self.active_workspace() {
             if let Some(root) = &ws.root {
                 root.render(window, cx)
             } else {
@@ -1818,7 +2946,7 @@ impl Render for PaneFlowApp {
                     .size_full()
                     .child(
                         div()
-                            .text_color(rgb(0x6c7086))
+                            .text_color(rgb(0xffffff))
                             .child("No terminal panes open"),
                     )
                     .into_any_element()
@@ -1829,7 +2957,7 @@ impl Render for PaneFlowApp {
                 .items_center()
                 .justify_center()
                 .size_full()
-                .child(div().text_color(rgb(0x6c7086)).child("No workspaces"))
+                .child(div().text_color(rgb(0xffffff)).child("No workspaces"))
                 .into_any_element()
         };
 
@@ -1849,7 +2977,11 @@ impl Render for PaneFlowApp {
         }
 
         // The inner app content (title bar + sidebar + main)
+        let ui_font = paneflow_config::loader::load_config()
+            .font_family
+            .unwrap_or_else(|| "Noto Sans Mono".to_string());
         let app_content = div()
+            .font_family(ui_font)
             .flex()
             .flex_col()
             .size_full()
@@ -1881,7 +3013,8 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_ws8))
             .on_action(cx.listener(Self::handle_ws9))
             .on_action(
-                cx.listener(|_this: &mut Self, _: &CloseWindow, _window, cx| {
+                cx.listener(|this: &mut Self, _: &CloseWindow, _window, cx| {
+                    this.save_session(cx);
                     cx.quit();
                 }),
             )
@@ -1900,7 +3033,7 @@ impl Render for PaneFlowApp {
                         div()
                             .flex_1()
                             .h_full()
-                            .bg(rgb(0x1e1e2e))
+                            .bg(rgb(0x212121))
                             .overflow_hidden()
                             .child(main_content),
                     ),
@@ -1989,43 +3122,11 @@ fn main() {
     application()
         .with_assets(assets::Assets)
         .run(|cx: &mut App| {
-            cx.bind_keys([
-                KeyBinding::new("ctrl-shift-d", SplitHorizontally, None),
-                KeyBinding::new("ctrl-shift-e", SplitVertically, None),
-                KeyBinding::new("ctrl-shift-w", ClosePane, None),
-                KeyBinding::new("ctrl-shift-n", NewWorkspace, None),
-                KeyBinding::new("ctrl-shift-q", CloseWorkspace, None),
-                KeyBinding::new("ctrl-tab", NextWorkspace, None),
-                KeyBinding::new("alt-left", FocusLeft, None),
-                KeyBinding::new("alt-right", FocusRight, None),
-                KeyBinding::new("alt-up", FocusUp, None),
-                KeyBinding::new("alt-down", FocusDown, None),
-                KeyBinding::new("ctrl-1", SelectWorkspace1, None),
-                KeyBinding::new("ctrl-2", SelectWorkspace2, None),
-                KeyBinding::new("ctrl-3", SelectWorkspace3, None),
-                KeyBinding::new("ctrl-4", SelectWorkspace4, None),
-                KeyBinding::new("ctrl-5", SelectWorkspace5, None),
-                KeyBinding::new("ctrl-6", SelectWorkspace6, None),
-                KeyBinding::new("ctrl-7", SelectWorkspace7, None),
-                KeyBinding::new("ctrl-8", SelectWorkspace8, None),
-                KeyBinding::new("ctrl-9", SelectWorkspace9, None),
-                KeyBinding::new("ctrl-shift-t", NewTab, None),
-                KeyBinding::new("ctrl-w", CloseTab, None),
-                KeyBinding::new("ctrl-shift-c", TerminalCopy, Some("Terminal")),
-                KeyBinding::new("ctrl-shift-v", TerminalPaste, Some("Terminal")),
-                KeyBinding::new("shift-pageup", ScrollPageUp, Some("Terminal")),
-                KeyBinding::new("shift-pagedown", ScrollPageDown, Some("Terminal")),
-                KeyBinding::new("ctrl-shift-z", ToggleZoom, None),
-                KeyBinding::new("ctrl-alt-1", LayoutEvenHorizontal, None),
-                KeyBinding::new("ctrl-alt-2", LayoutEvenVertical, None),
-                KeyBinding::new("ctrl-alt-3", LayoutMainVertical, None),
-                KeyBinding::new("ctrl-alt-4", LayoutTiled, None),
-            ]);
+            // Load config early — needed for keybindings and window decorations
+            let config = paneflow_config::loader::load_config();
+            keybindings::apply_keybindings(cx, &config.shortcuts);
 
             let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
-
-            // Read window_decorations setting from config
-            let config = paneflow_config::loader::load_config();
             let decorations = match config.window_decorations.as_deref() {
                 Some("server") => WindowDecorations::Server,
                 Some("client") | None => WindowDecorations::Client,

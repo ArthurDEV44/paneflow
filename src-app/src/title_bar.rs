@@ -1,11 +1,7 @@
 use gpui::{
     AnyElement, Context, Decorations, IntoElement, MouseButton, Pixels, Render, Styled, Window,
-    WindowButton, WindowButtonLayout, WindowControlArea, WindowControls, div, prelude::*, px, rgb,
-    svg,
+    WindowButton, WindowButtonLayout, WindowControlArea, WindowControls, div, prelude::*, px, svg,
 };
-
-/// Maximum workspace name display length before truncation.
-const MAX_WORKSPACE_NAME_LEN: usize = 40;
 
 /// Default button layout when the DE doesn't provide one.
 fn default_button_layout() -> WindowButtonLayout {
@@ -67,6 +63,7 @@ impl Render for TitleBar {
         };
 
         // --- Left section: "PaneFlow" brand, fixed width aligned with sidebar ---
+        let ui = crate::theme::ui_colors();
         let brand = div()
             .w(self.sidebar_width)
             .flex_shrink_0()
@@ -77,35 +74,14 @@ impl Render for TitleBar {
             .overflow_x_hidden()
             .child(
                 div()
-                    .text_color(rgb(0xcdd6f4))
+                    .text_color(ui.text)
                     .text_sm()
                     .font_weight(gpui::FontWeight::BOLD)
                     .child("PaneFlow"),
             );
 
-        // --- Right section: workspace name (fills remaining space) ---
-        let mut content = div()
-            .flex_1()
-            .flex()
-            .flex_row()
-            .items_center()
-            .overflow_x_hidden();
-
-        if let Some(name) = &self.workspace_name {
-            let display_name = if name.chars().count() > MAX_WORKSPACE_NAME_LEN {
-                let truncated: String = name.chars().take(MAX_WORKSPACE_NAME_LEN).collect();
-                format!("{truncated}...")
-            } else {
-                name.clone()
-            };
-
-            content = content.child(
-                div()
-                    .text_color(rgb(0xa6adc8))
-                    .text_sm()
-                    .child(display_name),
-            );
-        }
+        // --- Right section: spacer (fills remaining space for drag area) ---
+        let content = div().flex_1().flex().flex_row().items_center();
 
         let csd_rounding = px(10.);
 
@@ -251,8 +227,14 @@ fn render_window_button(
         .h(px(22.))
         .rounded_sm()
         .cursor_pointer()
-        .hover(|s| s.bg(rgb(0x45475a)))
-        .active(|s| s.bg(rgb(0x585b70)))
+        .hover(|s| {
+            let ui = crate::theme::ui_colors();
+            s.bg(ui.subtle)
+        })
+        .active(|s| {
+            let ui = crate::theme::ui_colors();
+            s.bg(ui.subtle)
+        })
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |_, window, cx| {
             cx.stop_propagation();
@@ -264,12 +246,13 @@ fn render_window_button(
                 }
             }
         })
-        .child(
+        .child({
+            let ui = crate::theme::ui_colors();
             svg()
                 .size(px(16.))
                 .flex_none()
                 .path(icon_path)
-                .text_color(rgb(0xcdd6f4)),
-        )
+                .text_color(ui.text)
+        })
         .into_any_element()
 }

@@ -1,0 +1,53 @@
+{
+  "prd": "prd-ai-hooks-integration",
+  "title": "AI Tool Hooks Integration (Claude Code + Codex)",
+  "status": "READY",
+  "created": "2026-04-07",
+  "updated": "2026-04-07",
+  "epics": [
+    {
+      "id": "EP-001",
+      "title": "Environment & Wrapper Foundation",
+      "status": "NOT_STARTED",
+      "stories": [
+        { "id": "US-001", "title": "Inject PaneFlow env vars at PTY spawn", "status": "NOT_STARTED", "priority": "P0", "size": 2, "blocked_by": [] },
+        { "id": "US-002", "title": "Write Claude Code wrapper script", "status": "NOT_STARTED", "priority": "P0", "size": 3, "blocked_by": ["US-001"] },
+        { "id": "US-003", "title": "Write IPC hook helper script", "status": "NOT_STARTED", "priority": "P0", "size": 2, "blocked_by": ["US-001"] },
+        { "id": "US-004", "title": "Prepend wrapper directory to terminal PATH", "status": "NOT_STARTED", "priority": "P0", "size": 2, "blocked_by": ["US-002"] }
+      ]
+    },
+    {
+      "id": "EP-002",
+      "title": "IPC Methods & State Management",
+      "status": "NOT_STARTED",
+      "stories": [
+        { "id": "US-005", "title": "Implement ai.session_start IPC method", "status": "NOT_STARTED", "priority": "P0", "size": 2, "blocked_by": ["US-001", "US-013"] },
+        { "id": "US-006", "title": "Implement ai.prompt_submit IPC method", "status": "NOT_STARTED", "priority": "P0", "size": 2, "blocked_by": ["US-005"] },
+        { "id": "US-007", "title": "Implement ai.tool_use IPC method", "status": "NOT_STARTED", "priority": "P1", "size": 2, "blocked_by": ["US-006"] },
+        { "id": "US-008", "title": "Implement ai.notification IPC method", "status": "NOT_STARTED", "priority": "P0", "size": 2, "blocked_by": ["US-005"] },
+        { "id": "US-009", "title": "Implement ai.stop IPC method", "status": "NOT_STARTED", "priority": "P0", "size": 2, "blocked_by": ["US-005"] },
+        { "id": "US-010", "title": "Implement ai.session_end IPC method", "status": "NOT_STARTED", "priority": "P0", "size": 2, "blocked_by": ["US-005"] }
+      ]
+    },
+    {
+      "id": "EP-003",
+      "title": "Stale Session Cleanup",
+      "status": "NOT_STARTED",
+      "stories": [
+        { "id": "US-011", "title": "Stale PID sweep timer", "status": "NOT_STARTED", "priority": "P0", "size": 3, "blocked_by": ["US-005"] }
+      ]
+    },
+    {
+      "id": "EP-004",
+      "title": "Cleanup & Migration",
+      "status": "NOT_STARTED",
+      "stories": [
+        { "id": "US-012", "title": "Remove title-based AI detection", "status": "NOT_STARTED", "priority": "P0", "size": 3, "blocked_by": ["US-006", "US-008", "US-009", "US-010"] },
+        { "id": "US-013", "title": "Add agent_pids field to Workspace", "status": "NOT_STARTED", "priority": "P0", "size": 1, "blocked_by": [] }
+      ]
+    }
+  ],
+  "total_points": 26,
+  "p0_points": 24,
+  "p1_points": 2
+}

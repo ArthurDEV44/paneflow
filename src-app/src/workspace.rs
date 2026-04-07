@@ -1,7 +1,11 @@
 //! Workspace — a named collection of terminal panes with a split layout.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use paneflow_config::schema::LayoutNode;
 
+use crate::ai_detector::AiToolState;
 use crate::pane::Pane;
 use crate::split::LayoutTree;
 use gpui::{App, Entity, Window};
@@ -9,7 +13,7 @@ use gpui::{App, Entity, Window};
 /// Monotonic workspace ID counter. Each workspace gets a unique ID at construction.
 static NEXT_WORKSPACE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-fn next_workspace_id() -> u64 {
+pub fn next_workspace_id() -> u64 {
     NEXT_WORKSPACE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
@@ -194,9 +198,12 @@ fn collect_descendant_pids(root_pid: u32) -> Vec<u32> {
 
 /// Detect TCP listening ports belonging to any of the given PIDs or their descendants.
 ///
-/// Uses the `listeners` crate for cross-platform port-to-PID mapping.
-/// Returns a sorted, deduplicated `Vec<u16>`. On failure (permission error,
-/// unsupported platform), returns an empty Vec without panic.
+/// Parses `/proc/net/tcp` and `/proc/net/tcp6` directly, filtering for TCP state
+/// `0A` (LISTEN) only. Cross-references socket inodes with the file descriptors
+/// of descendant PIDs to determine ownership.
+///
+/// Returns a sorted, deduplicated `Vec<u16>`. On non-Linux or on read failure,
+/// returns an empty Vec without panic.
 pub fn detect_ports(pids: &[u32]) -> Vec<u16> {
     if pids.is_empty() {
         return vec![];
@@ -210,23 +217,62 @@ pub fn detect_ports(pids: &[u32]) -> Vec<u16> {
         }
     }
 
-    let all_listeners = match listeners::get_all() {
-        Ok(l) => l,
-        Err(e) => {
-            log::debug!("detect_ports: listeners::get_all() failed: {e}");
-            return vec![];
-        }
-    };
+    // Collect all socket inodes owned by our PID set
+    let owned_inodes = collect_socket_inodes(&all_pids);
+    if owned_inodes.is_empty() {
+        return vec![];
+    }
 
-    let mut ports: Vec<u16> = all_listeners
-        .into_iter()
-        .filter(|l| l.protocol == listeners::Protocol::TCP && all_pids.contains(&l.process.pid))
-        .map(|l| l.socket.port())
-        .collect();
+    // Parse /proc/net/tcp and /proc/net/tcp6 for LISTEN-state sockets
+    let mut ports: Vec<u16> = Vec::new();
+    for path in &["/proc/net/tcp", "/proc/net/tcp6"] {
+        if let Ok(content) = read_capped(std::path::Path::new(path), 256 * 1024) {
+            for line in content.lines().skip(1) {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                if fields.len() < 10 {
+                    continue;
+                }
+                // Field 3 is TCP state; 0A = LISTEN
+                if fields[3] != "0A" {
+                    continue;
+                }
+                // Field 1 is local_address (hex_ip:hex_port)
+                if let Some(port_hex) = fields[1].split(':').next_back()
+                    && let Ok(port) = u16::from_str_radix(port_hex, 16)
+                    && let Ok(inode) = fields[9].parse::<u64>()
+                    && owned_inodes.contains(&inode)
+                {
+                    ports.push(port);
+                }
+            }
+        }
+    }
 
     ports.sort_unstable();
     ports.dedup();
     ports
+}
+
+/// Collect all socket inodes from `/proc/{pid}/fd/` for the given PID set.
+fn collect_socket_inodes(pids: &std::collections::HashSet<u32>) -> std::collections::HashSet<u64> {
+    let mut inodes = std::collections::HashSet::new();
+    for &pid in pids {
+        let fd_dir = format!("/proc/{pid}/fd");
+        if let Ok(entries) = std::fs::read_dir(&fd_dir) {
+            for entry in entries.flatten() {
+                if let Ok(link) = std::fs::read_link(entry.path()) {
+                    let link_str = link.to_string_lossy();
+                    if let Some(rest) = link_str.strip_prefix("socket:[")
+                        && let Some(inode_str) = rest.strip_suffix(']')
+                        && let Ok(inode) = inode_str.parse::<u64>()
+                    {
+                        inodes.insert(inode);
+                    }
+                }
+            }
+        }
+    }
+    inodes
 }
 
 pub struct Workspace {
@@ -249,20 +295,22 @@ pub struct Workspace {
     pub git_dir: Option<std::path::PathBuf>,
     /// Active TCP listening ports from workspace terminal processes.
     pub active_ports: Vec<u16>,
-    /// Port scan state: last observed sum of terminal wakeup counts.
-    pub last_wakeup_sum: u64,
-    /// Port scan state: true when terminal output was detected, awaiting debounce.
-    pub port_scan_pending: bool,
-    /// Port scan state: when the last terminal output was observed.
-    pub port_scan_last_output: Option<std::time::Instant>,
-    /// Port scan state: when the current burst scan sequence started.
-    pub port_scan_burst_start: Option<std::time::Instant>,
-    /// Port scan state: index into the burst scan offset array (0..3).
-    pub port_scan_burst_idx: usize,
+    /// Generation counter for debouncing event-driven port scans.
+    /// Incremented on each `ActivityBurst` event; superseded scans check this
+    /// to abort if a newer scan was triggered.
+    pub port_scan_generation: u64,
+    /// Service metadata detected from PTY output (enrichment for `active_ports`).
+    /// Keyed by port number; cleaned up when ports are removed from `active_ports`.
+    pub service_labels: std::collections::HashMap<u16, crate::terminal::ServiceInfo>,
+    /// AI tool detection state for this workspace's terminals (Claude Code / Codex).
+    pub ai_state: AiToolState,
+    /// Animation angle for the Claude thinking spinner (radians, 0..TAU).
+    pub loader_angle: Rc<Cell<f32>>,
 }
 
 impl Workspace {
-    pub fn new(title: impl Into<String>, pane: Entity<Pane>) -> Self {
+    /// Create a workspace with a pre-allocated ID (use `next_workspace_id()` to obtain one).
+    pub fn with_id(id: u64, title: impl Into<String>, pane: Entity<Pane>) -> Self {
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "~".into());
@@ -273,7 +321,7 @@ impl Workspace {
             None => (String::new(), false),
         };
         Self {
-            id: next_workspace_id(),
+            id,
             title: title.into(),
             cwd,
             root: Some(LayoutTree::Leaf(pane)),
@@ -283,15 +331,20 @@ impl Workspace {
             is_git_repo,
             git_dir,
             active_ports: vec![],
-            last_wakeup_sum: 0,
-            port_scan_pending: false,
-            port_scan_last_output: None,
-            port_scan_burst_start: None,
-            port_scan_burst_idx: 0,
+            port_scan_generation: 0,
+            service_labels: std::collections::HashMap::new(),
+            ai_state: AiToolState::Inactive,
+            loader_angle: Rc::new(Cell::new(0.0)),
         }
     }
 
-    pub fn with_cwd(title: impl Into<String>, cwd: std::path::PathBuf, pane: Entity<Pane>) -> Self {
+    /// Create a workspace with a pre-allocated ID and explicit CWD.
+    pub fn with_cwd_and_id(
+        id: u64,
+        title: impl Into<String>,
+        cwd: std::path::PathBuf,
+        pane: Entity<Pane>,
+    ) -> Self {
         let cwd_str = cwd.display().to_string();
         let git_stats = GitDiffStats::from_cwd(&cwd_str);
         let git_dir = find_git_dir(&cwd_str);
@@ -300,7 +353,7 @@ impl Workspace {
             None => (String::new(), false),
         };
         Self {
-            id: next_workspace_id(),
+            id,
             title: title.into(),
             cwd: cwd_str,
             root: Some(LayoutTree::Leaf(pane)),
@@ -310,11 +363,42 @@ impl Workspace {
             is_git_repo,
             git_dir,
             active_ports: vec![],
-            last_wakeup_sum: 0,
-            port_scan_pending: false,
-            port_scan_last_output: None,
-            port_scan_burst_start: None,
-            port_scan_burst_idx: 0,
+            port_scan_generation: 0,
+            service_labels: std::collections::HashMap::new(),
+            ai_state: AiToolState::Inactive,
+            loader_angle: Rc::new(Cell::new(0.0)),
+        }
+    }
+
+    /// Create a workspace with a pre-allocated ID and layout tree.
+    pub fn with_layout_and_id(
+        id: u64,
+        title: impl Into<String>,
+        cwd: std::path::PathBuf,
+        root: LayoutTree,
+    ) -> Self {
+        let cwd_str = cwd.display().to_string();
+        let git_stats = GitDiffStats::from_cwd(&cwd_str);
+        let git_dir = find_git_dir(&cwd_str);
+        let (git_branch, is_git_repo) = match &git_dir {
+            Some(dir) => parse_head(dir),
+            None => (String::new(), false),
+        };
+        Self {
+            id,
+            title: title.into(),
+            cwd: cwd_str,
+            root: Some(root),
+            saved_layout: None,
+            git_stats,
+            git_branch,
+            is_git_repo,
+            git_dir,
+            active_ports: vec![],
+            port_scan_generation: 0,
+            service_labels: std::collections::HashMap::new(),
+            ai_state: AiToolState::Inactive,
+            loader_angle: Rc::new(Cell::new(0.0)),
         }
     }
 
