@@ -25,7 +25,6 @@ use gpui::{
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
-use crate::ai_detector::{AiToolDetector, AiToolState};
 use crate::terminal_element::TerminalElement;
 
 /// Global flag: when true, terminals skip `cx.notify()` to avoid repaints
@@ -197,8 +196,6 @@ pub struct TerminalState {
     /// Ports already reported via ServiceDetected (dedup guard).
     /// Cleared on ChildExit so a restarted server is re-detected.
     reported_ports: Vec<u16>,
-    /// AI tool session detector — fed by terminal grid content, ticked for timeouts.
-    pub ai_detector: AiToolDetector,
     /// Timestamp of the most recent keystroke, used by latency probes
     /// to measure total keystroke-to-pixel time. Debug builds only.
     /// Note: on rapid keystrokes before a render frame, earlier timestamps are overwritten.
@@ -286,7 +283,6 @@ impl TerminalState {
             dirty: true, // Force initial render
             output_scan_ticks: 0,
             reported_ports: Vec::new(),
-            ai_detector: AiToolDetector::new(),
             #[cfg(debug_assertions)]
             last_keystroke_at: None,
         })
@@ -308,7 +304,6 @@ impl TerminalState {
                     self.exited = Some(status);
                     self.dirty = true;
                     self.reported_ports.clear();
-                    self.ai_detector = AiToolDetector::new();
                 }
                 AlacEvent::Exit => {
                     self.exited = Some(-1);
@@ -510,7 +505,6 @@ impl TerminalView {
         cx.spawn(
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let mut idle_ticks: u32 = 0;
-                let mut ai_tick_counter: u32 = 0;
                 loop {
                     let interval = if idle_ticks > 10 { 50 } else { 4 };
                     smol::Timer::after(std::time::Duration::from_millis(interval)).await;
@@ -520,45 +514,15 @@ impl TerminalView {
                             let old_cwd = view.terminal.current_cwd.clone();
                             view.terminal.sync();
                             if view.terminal.exited.is_some() {
-                                // If an AI tool was active, force to Finished
-                                if view.terminal.ai_detector.state().is_active() {
-                                    view.terminal.ai_detector.force_finished();
-                                    cx.emit(TerminalEvent::AiToolStateChanged(
-                                        view.terminal.ai_detector.state(),
-                                    ));
-                                }
                                 cx.emit(TerminalEvent::ChildExited);
                             }
                             if view.terminal.title != old_title {
                                 cx.emit(TerminalEvent::TitleChanged);
-                                // Feed the new title to the AI tool detector —
-                                // event-driven, only fires on actual title changes.
-                                if let Some(new_state) = view
-                                    .terminal
-                                    .ai_detector
-                                    .feed_title(&view.terminal.title, view.terminal.child_pid)
-                                {
-                                    cx.emit(TerminalEvent::AiToolStateChanged(new_state));
-                                }
                             }
                             if view.terminal.current_cwd != old_cwd
                                 && let Some(ref cwd) = view.terminal.current_cwd
                             {
                                 cx.emit(TerminalEvent::CwdChanged(cwd.clone()));
-                            }
-                            // Tick AI detector unconditionally (~every 500ms)
-                            // Decoupled from idle state so timeout transitions
-                            // fire even while the tool produces output.
-                            ai_tick_counter += 1;
-                            if ai_tick_counter.is_multiple_of(125) {
-                                // 125 * 4ms = 500ms
-                                if let Some(new_state) = view.terminal.ai_detector.tick() {
-                                    cx.emit(TerminalEvent::AiToolStateChanged(new_state));
-                                    if !SUPPRESS_REPAINTS.load(std::sync::atomic::Ordering::Relaxed)
-                                    {
-                                        cx.notify();
-                                    }
-                                }
                             }
 
                             if view.terminal.dirty {
@@ -1058,8 +1022,6 @@ pub enum TerminalEvent {
     /// A server/service was detected in PTY output (e.g. "Listening on :3000").
     /// Enriches the bare port from `/proc/net/tcp` with label and URL.
     ServiceDetected(ServiceInfo),
-    /// AI tool session state changed (Claude Code or Codex detected via terminal content).
-    AiToolStateChanged(AiToolState),
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
