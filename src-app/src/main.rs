@@ -1266,6 +1266,150 @@ impl PaneFlowApp {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
                 }
             }
+            "ai.tool_use" => {
+                let Some(workspace_id) = params.get("workspace_id").and_then(|v| v.as_u64()) else {
+                    return serde_json::json!({"error": "Missing workspace_id"});
+                };
+                let hook = params.get("hook_payload");
+                let tool_name = hook
+                    .and_then(|h| h.get("tool_name"))
+                    .and_then(|v| v.as_str())
+                    .or_else(|| params.get("tool_name").and_then(|v| v.as_str()));
+                let tool_str = params
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
+                    .unwrap_or("claude");
+                let tool = ai_detector::AiTool::from_name(tool_str);
+
+                if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
+                    // Keep Thinking state (no transition if already Thinking)
+                    if !matches!(ws.ai_state, ai_detector::AiToolState::Thinking(_)) {
+                        ws.ai_state = ai_detector::AiToolState::Thinking(tool);
+                    }
+                    ws.active_tool_name =
+                        tool_name.map(|s| s.chars().take(128).collect::<String>());
+                    cx.notify();
+                    serde_json::json!({"status": "running"})
+                } else {
+                    serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
+                }
+            }
+            "ai.notification" => {
+                let Some(workspace_id) = params.get("workspace_id").and_then(|v| v.as_u64()) else {
+                    return serde_json::json!({"error": "Missing workspace_id"});
+                };
+                let hook = params.get("hook_payload");
+                let tool_str = params
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
+                    .unwrap_or("claude");
+                let tool = ai_detector::AiTool::from_name(tool_str);
+                let message: String = hook
+                    .and_then(|h| h.get("message"))
+                    .and_then(|v| v.as_str())
+                    .or_else(|| params.get("message").and_then(|v| v.as_str()))
+                    .unwrap_or("Needs input")
+                    .chars()
+                    .take(512)
+                    .collect();
+
+                if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
+                    ws.ai_state = ai_detector::AiToolState::WaitingForInput(tool);
+                    ws.active_tool_name = None;
+                    let title = ws.title.clone();
+                    self.notifications.push(Notification {
+                        workspace_id,
+                        workspace_title: title,
+                        message,
+                        kind: ai_detector::AiToolState::WaitingForInput(tool),
+                        timestamp: std::time::Instant::now(),
+                        read: false,
+                    });
+                    cx.notify();
+                    serde_json::json!({"status": "waiting"})
+                } else {
+                    serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
+                }
+            }
+            "ai.stop" => {
+                let Some(workspace_id) = params.get("workspace_id").and_then(|v| v.as_u64()) else {
+                    return serde_json::json!({"error": "Missing workspace_id"});
+                };
+                let hook = params.get("hook_payload");
+                let tool_str = params
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
+                    .unwrap_or("claude");
+                let tool = ai_detector::AiTool::from_name(tool_str);
+
+                if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
+                    ws.ai_state = ai_detector::AiToolState::Finished(tool);
+                    ws.active_tool_name = None;
+                    let title = ws.title.clone();
+                    self.notifications.push(Notification {
+                        workspace_id,
+                        workspace_title: title,
+                        message: format!("{} finished", tool.label()),
+                        kind: ai_detector::AiToolState::Finished(tool),
+                        timestamp: std::time::Instant::now(),
+                        read: false,
+                    });
+                    cx.notify();
+
+                    // Auto-reset to Inactive after 5 seconds
+                    let ws_id = workspace_id;
+                    cx.spawn(
+                        async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                            smol::Timer::after(std::time::Duration::from_secs(5)).await;
+                            cx.update(|cx| {
+                                let _ = this.update(cx, |app, cx| {
+                                    if let Some(ws) =
+                                        app.workspaces.iter_mut().find(|ws| ws.id == ws_id)
+                                        && matches!(
+                                            ws.ai_state,
+                                            ai_detector::AiToolState::Finished(_)
+                                        )
+                                    {
+                                        ws.ai_state = ai_detector::AiToolState::Inactive;
+                                        cx.notify();
+                                    }
+                                });
+                            });
+                        },
+                    )
+                    .detach();
+
+                    serde_json::json!({"status": "idle"})
+                } else {
+                    serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
+                }
+            }
+            "ai.session_end" => {
+                let Some(workspace_id) = params.get("workspace_id").and_then(|v| v.as_u64()) else {
+                    return serde_json::json!({"error": "Missing workspace_id"});
+                };
+                let hook = params.get("hook_payload");
+                let tool_str = params
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
+                    .unwrap_or("claude");
+
+                if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
+                    ws.ai_state = ai_detector::AiToolState::Inactive;
+                    ws.active_tool_name = None;
+                    ws.agent_pids.remove(tool_str);
+                    self.notifications
+                        .retain(|n| n.workspace_id != workspace_id);
+                    cx.notify();
+                    serde_json::json!({"cleared": true})
+                } else {
+                    serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
+                }
+            }
             _ => {
                 serde_json::json!({"error": format!("Unknown method: {method}")})
             }

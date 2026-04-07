@@ -122,7 +122,11 @@ fn handle_connection(stream: UnixStream, request_tx: mpsc::Sender<IpcRequest>) {
                                 "workspace.restore_layout",
                                 "surface.list", "surface.send_text", "surface.split",
                                 "ai.session_start",
-                                "ai.prompt_submit"
+                                "ai.prompt_submit",
+                                "ai.tool_use",
+                                "ai.notification",
+                                "ai.stop",
+                                "ai.session_end"
                             ]
                         }, "id": id})
                     }
