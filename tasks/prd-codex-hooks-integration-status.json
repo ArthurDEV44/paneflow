@@ -14,7 +14,7 @@
         { "id": "US-002", "title": "Hooks.json installation logic", "status": "IN_REVIEW", "priority": "P0", "size": 3, "blocked_by": ["US-001"], "completed_at": "2026-04-07" },
         { "id": "US-003", "title": "Add codex to wrapper script extraction list", "status": "IN_REVIEW", "priority": "P0", "size": 1, "blocked_by": ["US-001"], "completed_at": "2026-04-07" },
         { "id": "US-004", "title": "Adapt paneflow-hook for Codex PID env var", "status": "IN_REVIEW", "priority": "P0", "size": 1, "blocked_by": ["US-001"], "completed_at": "2026-04-07" },
-        { "id": "US-005", "title": "End-to-end manual verification", "status": "NOT_STARTED", "priority": "P0", "size": 2, "blocked_by": ["US-001", "US-002", "US-003", "US-004"] }
+        { "id": "US-005", "title": "End-to-end manual verification", "status": "IN_REVIEW", "priority": "P0", "size": 2, "blocked_by": ["US-001", "US-002", "US-003", "US-004"], "completed_at": "2026-04-07" }
       ]
     }
   ],
