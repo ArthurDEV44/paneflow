@@ -22,7 +22,7 @@
       "status": "IN_PROGRESS",
       "stories": [
         { "id": "US-005", "title": "Implement ai.session_start IPC method", "status": "IN_REVIEW", "priority": "P0", "size": 2, "blocked_by": ["US-001", "US-013"], "completed_at": "2026-04-07" },
-        { "id": "US-006", "title": "Implement ai.prompt_submit IPC method", "status": "NOT_STARTED", "priority": "P0", "size": 2, "blocked_by": ["US-005"] },
+        { "id": "US-006", "title": "Implement ai.prompt_submit IPC method", "status": "IN_REVIEW", "priority": "P0", "size": 2, "blocked_by": ["US-005"], "completed_at": "2026-04-07" },
         { "id": "US-007", "title": "Implement ai.tool_use IPC method", "status": "NOT_STARTED", "priority": "P1", "size": 2, "blocked_by": ["US-006"] },
         { "id": "US-008", "title": "Implement ai.notification IPC method", "status": "NOT_STARTED", "priority": "P0", "size": 2, "blocked_by": ["US-005"] },
         { "id": "US-009", "title": "Implement ai.stop IPC method", "status": "NOT_STARTED", "priority": "P0", "size": 2, "blocked_by": ["US-005"] },
