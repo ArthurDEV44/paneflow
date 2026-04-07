@@ -309,6 +309,9 @@ pub struct Workspace {
     /// Registered AI agent PIDs, keyed by tool name ("claude", "codex").
     /// Used by the stale PID sweep to detect crashed processes.
     pub agent_pids: std::collections::HashMap<String, u32>,
+    /// Name of the Claude tool currently being used (e.g., "Edit", "Bash").
+    /// Set by `ai.tool_use`, cleared on state transitions. For future verbose display.
+    pub active_tool_name: Option<String>,
 }
 
 impl Workspace {
@@ -339,6 +342,7 @@ impl Workspace {
             ai_state: AiToolState::Inactive,
             loader_angle: Rc::new(Cell::new(0.0)),
             agent_pids: std::collections::HashMap::new(),
+            active_tool_name: None,
         }
     }
 
@@ -372,6 +376,7 @@ impl Workspace {
             ai_state: AiToolState::Inactive,
             loader_angle: Rc::new(Cell::new(0.0)),
             agent_pids: std::collections::HashMap::new(),
+            active_tool_name: None,
         }
     }
 
@@ -405,6 +410,7 @@ impl Workspace {
             ai_state: AiToolState::Inactive,
             loader_angle: Rc::new(Cell::new(0.0)),
             agent_pids: std::collections::HashMap::new(),
+            active_tool_name: None,
         }
     }
 
