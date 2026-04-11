@@ -28,3 +28,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Local development artifacts
+.codex
+ai_debug.log
