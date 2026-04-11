@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=PaneFlow
+Comment=Cross-platform terminal multiplexer
+Exec=paneflow
+Icon=paneflow
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;
+Keywords=terminal;multiplexer;pane;split;
+StartupWMClass=paneflow

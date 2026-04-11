@@ -96,7 +96,8 @@ read -r -d '' PANEFLOW_HOOKS << 'HOOKSTPL' || true
         "hooks": [
           {
             "type": "command",
-            "command": "__HOOK_DIR__/paneflow-hook tool-use"
+            "command": "__HOOK_DIR__/paneflow-hook tool-use",
+            "async": true
           }
         ]
       }
@@ -135,7 +136,7 @@ elif command -v jq &>/dev/null; then
       ($existing.hooks // {}) as $eh |
       ($pf.hooks // {}) as $ph |
       ([$eh, $ph] | map(keys) | add | unique) as $events |
-      { "hooks":
+      $existing + { "hooks":
         ( [ $events[] as $ev |
             # User entries for this event (filter out paneflow-hook commands)
             ( ($eh[$ev] // []) | map(

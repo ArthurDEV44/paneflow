@@ -84,7 +84,7 @@ impl EventListener for ZedListener {
 
 /// zsh: ZDOTDIR-based injection. Our `.zshenv` restores the original ZDOTDIR
 /// so all other dotfiles (`.zshrc`, `.zprofile`) load from `$HOME` as usual.
-const ZSH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
+const ZSH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting + wrapper PATH
 if [[ -n "${PANEFLOW_ORIG_ZDOTDIR+x}" ]]; then
     ZDOTDIR="${PANEFLOW_ORIG_ZDOTDIR}"
     unset PANEFLOW_ORIG_ZDOTDIR
@@ -96,23 +96,40 @@ __paneflow_osc7() { printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}"; }
 autoload -Uz add-zsh-hook
 add-zsh-hook chpwd __paneflow_osc7
 __paneflow_osc7
+# Prepend wrapper bin dir to PATH after .zshrc has loaded.
+# Uses precmd (fires once before first prompt) so it runs AFTER all rc files.
+if [[ -n "$__PANEFLOW_BIN_DIR" ]]; then
+    __paneflow_path_inject() {
+        [[ "$PATH" != "$__PANEFLOW_BIN_DIR:"* ]] && export PATH="$__PANEFLOW_BIN_DIR:$PATH"
+        add-zsh-hook -d precmd __paneflow_path_inject
+    }
+    add-zsh-hook precmd __paneflow_path_inject
+fi
 "#;
 
 /// bash: `--rcfile` replacement. Sources the real `.bashrc`, then appends
 /// our OSC 7 function to PROMPT_COMMAND (preserving starship/oh-my-bash/etc.).
-const BASH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
+const BASH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting + wrapper PATH
 [[ -f ~/.bashrc ]] && source ~/.bashrc
 __paneflow_osc7() { printf '\e]7;file://%s%s\a' "${HOSTNAME}" "${PWD}"; }
 PROMPT_COMMAND="__paneflow_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+# Prepend wrapper bin dir to PATH after .bashrc has loaded.
+if [[ -n "$__PANEFLOW_BIN_DIR" && "$PATH" != "$__PANEFLOW_BIN_DIR:"* ]]; then
+    export PATH="$__PANEFLOW_BIN_DIR:$PATH"
+fi
 "#;
 
 /// fish: `--init-command` sourced script. Uses `--on-variable PWD` so it
 /// fires on every directory change independently of the prompt function.
-const FISH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
+const FISH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting + wrapper PATH
 function __paneflow_osc7 --on-variable PWD
     printf '\e]7;file://%s%s\a' (hostname) "$PWD"
 end
 __paneflow_osc7
+# Prepend wrapper bin dir to PATH after config.fish has loaded.
+if set -q __PANEFLOW_BIN_DIR; and test "$PATH[1]" != "$__PANEFLOW_BIN_DIR"
+    set -gx PATH $__PANEFLOW_BIN_DIR $PATH
+end
 "#;
 
 /// Write OSC 7 shell integration scripts and return the extra shell args
@@ -237,10 +254,16 @@ impl TerminalState {
             env.insert("PANEFLOW_SOCKET_PATH".into(), socket_path);
         }
 
-        // Extract wrapper scripts and prepend their directory to PATH
+        // Extract wrapper scripts and expose their directory for shell integration.
+        // We set __PANEFLOW_BIN_DIR as an env var; the shell integration scripts
+        // (zsh precmd / bash rcfile) prepend it to PATH AFTER .zshrc/.bashrc load.
+        // This ensures our wrappers take priority over user-installed binaries
+        // even when .zshrc does `export PATH="$HOME/.local/bin:$PATH"`.
         if let Some(bin_dir) = paneflow_bin_dir() {
             ensure_wrapper_scripts(&bin_dir);
             let bin_dir_str = bin_dir.display().to_string();
+            env.insert("__PANEFLOW_BIN_DIR".into(), bin_dir_str.clone());
+            // Also set PATH directly as a fallback for shells without integration
             let current_path = std::env::var("PATH").unwrap_or_default();
             if !current_path.split(':').any(|p| p == bin_dir_str) {
                 env.insert("PATH".into(), format!("{bin_dir_str}:{current_path}"));
