@@ -148,7 +148,7 @@ Stateful methods dispatch to GPUI main thread via `mpsc::channel`, polled every 
 - **All styling is inline** via GPUI's Tailwind-like builder API: `.bg(rgb(0x181825)).px_3().rounded_md()`
 - **Sidebar/titlebar colors are hardcoded** Catppuccin Mocha hex values — they do NOT change with the terminal theme.
 - **Terminal colors** use the `TerminalTheme` struct (30 Hsla slots) resolved via `active_theme()`.
-- **Font**: hardcoded `"Noto Sans Mono"` at 14px (`terminal_element.rs:29–30`). Not configurable.
+- **Font**: defaults to a platform-specific installed monospace fallback at 14px (`terminal_element.rs`). Invalid Linux font names fall back to the first available preferred mono family.
 
 ## Gotchas
 

@@ -3,6 +3,7 @@
 //! Renders terminal cells from alacritty_terminal as batched text runs with
 //! full ANSI color support, cell attributes, and background quads.
 
+use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use alacritty_terminal::event::WindowSize;
@@ -28,7 +29,6 @@ use crate::terminal::{SpikeTermSize, ZedListener};
 // ---------------------------------------------------------------------------
 
 const DEFAULT_FONT_SIZE: f32 = 14.0;
-const DEFAULT_FONT_FAMILY: &str = "Noto Sans Mono";
 const DEFAULT_LINE_HEIGHT: f32 = 1.4;
 
 const FONT_FALLBACK_EMOJI: &str = "Noto Color Emoji";
@@ -46,6 +46,13 @@ static FONT_FALLBACKS: LazyLock<FontFallbacks> = LazyLock::new(|| {
     ])
 });
 
+#[cfg(target_os = "linux")]
+static INSTALLED_MONO_FONTS: LazyLock<HashSet<String>> = LazyLock::new(|| {
+    crate::config_writer::load_mono_fonts()
+        .into_iter()
+        .collect()
+});
+
 // ---------------------------------------------------------------------------
 // Font config cache — avoids load_config() on every base_font()/font_size() call
 // ---------------------------------------------------------------------------
@@ -58,6 +65,67 @@ struct CachedFontConfig {
 }
 
 static FONT_CONFIG_CACHE: std::sync::Mutex<Option<CachedFontConfig>> = std::sync::Mutex::new(None);
+
+pub(crate) fn default_font_family() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Menlo"
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        "Cascadia Mono"
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        [
+            "Ubuntu Mono",
+            "DejaVu Sans Mono",
+            "Liberation Mono",
+            "Noto Sans Mono",
+        ]
+        .into_iter()
+        .find(|family| INSTALLED_MONO_FONTS.contains(*family))
+        .unwrap_or("Noto Sans Mono")
+    }
+
+    #[cfg(all(
+        not(target_os = "macos"),
+        not(target_os = "windows"),
+        not(target_os = "linux")
+    ))]
+    {
+        "Noto Sans Mono"
+    }
+}
+
+pub(crate) fn resolve_font_family(configured: Option<&str>) -> String {
+    if let Some(family) = configured
+        .map(str::trim)
+        .filter(|family| !family.is_empty())
+    {
+        #[cfg(target_os = "linux")]
+        {
+            if INSTALLED_MONO_FONTS.contains(family) {
+                return family.to_string();
+            }
+
+            let fallback = default_font_family();
+            log::warn!(
+                "font_family '{family}' is not installed as a monospace font; using '{fallback}'"
+            );
+            return fallback.to_string();
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            return family.to_string();
+        }
+    }
+
+    default_font_family().to_string()
+}
 
 /// Read font config, cached for 500ms (same pattern as theme cache).
 fn cached_font_config() -> (String, f32, f32) {
@@ -74,9 +142,7 @@ fn cached_font_config() -> (String, f32, f32) {
 
     let config = paneflow_config::loader::load_config();
 
-    let family = config
-        .font_family
-        .unwrap_or_else(|| DEFAULT_FONT_FAMILY.to_string());
+    let family = resolve_font_family(config.font_family.as_deref());
 
     let size = config
         .font_size

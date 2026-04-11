@@ -330,7 +330,9 @@ impl PaneFlowApp {
             }
             let before = ws.agent_pids.len();
             ws.agent_pids.retain(|_tool, &mut pid| {
-                debug_assert!(pid <= i32::MAX as u32, "PID exceeds i32 range");
+                if pid > i32::MAX as u32 {
+                    return false; // Invalid PID range — treat as stale
+                }
                 let ret = unsafe { libc::kill(pid as i32, 0) };
                 if ret == -1 {
                     let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -1244,6 +1246,12 @@ impl PaneFlowApp {
                 let tool = tool.to_string();
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
+                    // Cap agent PIDs to prevent unbounded HashMap growth from
+                    // malicious or buggy IPC clients (CWE-400).
+                    const MAX_AGENT_PIDS: usize = 16;
+                    if ws.agent_pids.len() >= MAX_AGENT_PIDS && !ws.agent_pids.contains_key(&tool) {
+                        return serde_json::json!({"error": "Agent PID limit reached"});
+                    }
                     ws.agent_pids.insert(tool, pid);
                     serde_json::json!({"registered": true})
                 } else {
@@ -1407,6 +1415,13 @@ impl PaneFlowApp {
                     .and_then(|v| v.as_str())
                     .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
                     .unwrap_or("claude");
+                if tool_str.len() > 64
+                    || !tool_str
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                {
+                    return serde_json::json!({"error": "Invalid tool name"});
+                }
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     ws.ai_state = ai_detector::AiToolState::Inactive;
@@ -2744,9 +2759,8 @@ impl PaneFlowApp {
     fn render_appearance_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let config = paneflow_config::loader::load_config();
         let ui = crate::theme::ui_colors();
-        let current_font = config
-            .font_family
-            .unwrap_or_else(|| "Noto Sans Mono".to_string());
+        let current_font =
+            crate::terminal_element::resolve_font_family(config.font_family.as_deref());
         let current_theme = config
             .theme
             .clone()
@@ -3193,9 +3207,11 @@ impl Render for PaneFlowApp {
         }
 
         // The inner app content (title bar + sidebar + main)
-        let ui_font = paneflow_config::loader::load_config()
-            .font_family
-            .unwrap_or_else(|| "Noto Sans Mono".to_string());
+        let ui_font = crate::terminal_element::resolve_font_family(
+            paneflow_config::loader::load_config()
+                .font_family
+                .as_deref(),
+        );
         let app_content = div()
             .font_family(ui_font)
             .flex()

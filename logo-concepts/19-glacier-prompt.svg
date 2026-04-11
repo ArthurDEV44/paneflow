@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="gl-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f0f9ff"/>
+      <stop offset="100%" stop-color="#e0e7ff"/>
+    </linearGradient>
+    <linearGradient id="gl1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#bae6fd"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <linearGradient id="gl2" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#93c5fd"/>
+      <stop offset="100%" stop-color="#4338ca"/>
+    </linearGradient>
+    <linearGradient id="gl3" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#1e1b4b"/>
+      <stop offset="100%" stop-color="#818cf8"/>
+    </linearGradient>
+    <linearGradient id="gl4" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#e0e7ff"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
+    </linearGradient>
+    <filter id="gl-shadow">
+      <feDropShadow dx="0" dy="6" stdDeviation="14" flood-color="#4338ca" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <rect x="56" y="56" width="400" height="400" rx="88" fill="url(#gl-bg)" filter="url(#gl-shadow)"/>
+
+  <!-- Iceberg/glacier — faceted ice crystal emerging -->
+  <g transform="translate(256, 260)">
+    <!-- Large back facet -->
+    <polygon points="-20,-155 70,-100 30,-20" fill="url(#gl4)" opacity="0.5"/>
+    <!-- Left main face -->
+    <polygon points="-20,-155 -100,-40 -30,60 30,-20" fill="url(#gl1)"/>
+    <!-- Right main face -->
+    <polygon points="-20,-155 70,-100 90,-10 30,-20" fill="url(#gl2)"/>
+    <!-- Left lower face -->
+    <polygon points="-100,-40 -80,80 -30,60" fill="url(#gl3)"/>
+    <!-- Center front face -->
+    <polygon points="-30,60 30,-20 90,-10 50,90 -10,100" fill="url(#gl4)" opacity="0.7"/>
+    <!-- Right lower face -->
+    <polygon points="90,-10 100,60 50,90" fill="url(#gl3)" opacity="0.8"/>
+    <!-- Bottom face -->
+    <polygon points="-80,80 -10,100 50,90 -30,60" fill="url(#gl2)" opacity="0.5"/>
+
+    <!-- Ice highlights / refraction -->
+    <polygon points="-20,-155 -10,-100 -60,-60 -100,-40" fill="white" opacity="0.15"/>
+    <polygon points="-20,-155 30,-110 30,-20 -10,-100" fill="white" opacity="0.08"/>
+    <polygon points="30,-20 60,-5 50,30 10,40" fill="white" opacity="0.06"/>
+
+    <!-- Edge lines -->
+    <g stroke="rgba(255,255,255,0.2)" stroke-width="1" fill="none">
+      <line x1="-20" y1="-155" x2="30" y2="-20"/>
+      <line x1="-100" y1="-40" x2="-30" y2="60"/>
+      <line x1="90" y1="-10" x2="50" y2="90"/>
+      <line x1="-30" y1="60" x2="-10" y2="100"/>
+    </g>
+
+    <!-- Terminal >_ near the base -->
+    <polyline
+      points="-30,30 -8,50 -30,70"
+      stroke="white"
+      stroke-width="9"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      fill="none"
+      opacity="0.9"
+    />
+    <rect x="5" y="61" width="30" height="5" rx="2.5" fill="white" opacity="0.7"/>
+  </g>
+</svg>

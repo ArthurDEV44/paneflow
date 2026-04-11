@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="ts1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <linearGradient id="ts2" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#1e1b4b"/>
+    </linearGradient>
+    <linearGradient id="ts3" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#4338ca"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="ts4" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#c4b5fd"/>
+      <stop offset="100%" stop-color="#5b21b6"/>
+    </linearGradient>
+    <linearGradient id="ts5" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#2e1065"/>
+    </linearGradient>
+    <clipPath id="hexClip">
+      <polygon points="256,56 430,156 430,356 256,456 82,356 82,156"/>
+    </clipPath>
+  </defs>
+
+  <rect width="512" height="512" fill="#09090b"/>
+
+  <!-- Hexagonal container with tessellated panes inside -->
+  <g clip-path="url(#hexClip)">
+    <!-- Irregular tessellation — like a voronoi/shattered glass -->
+    <polygon points="256,56 340,56 290,180 200,160" fill="url(#ts1)" opacity="0.9"/>
+    <polygon points="340,56 430,156 380,200 290,180" fill="url(#ts2)" opacity="0.85"/>
+    <polygon points="200,160 290,180 256,280 140,240" fill="url(#ts4)" opacity="0.75"/>
+    <polygon points="290,180 380,200 350,310 256,280" fill="url(#ts1)" opacity="0.55"/>
+    <polygon points="380,200 430,156 430,310 350,310" fill="url(#ts3)" opacity="0.65"/>
+    <polygon points="256,56 200,160 140,140 82,156" fill="url(#ts3)" opacity="0.7"/>
+    <polygon points="82,156 140,140 140,240 82,280" fill="url(#ts5)" opacity="0.6"/>
+    <polygon points="82,280 140,240 160,370 82,356" fill="url(#ts2)" opacity="0.5"/>
+    <polygon points="140,240 256,280 220,380 160,370" fill="url(#ts1)" opacity="0.4"/>
+    <polygon points="256,280 350,310 310,400 220,380" fill="url(#ts4)" opacity="0.7"/>
+    <polygon points="350,310 430,310 430,356 310,400" fill="url(#ts5)" opacity="0.45"/>
+    <polygon points="220,380 310,400 256,456 160,456" fill="url(#ts3)" opacity="0.55"/>
+    <polygon points="160,370 220,380 160,456 82,356" fill="url(#ts1)" opacity="0.35"/>
+    <polygon points="310,400 430,356 256,456" fill="url(#ts2)" opacity="0.6"/>
+
+    <!-- Tessellation edge lines -->
+    <g stroke="rgba(255,255,255,0.15)" stroke-width="1" fill="none">
+      <polygon points="256,56 340,56 290,180 200,160"/>
+      <polygon points="340,56 430,156 380,200 290,180"/>
+      <polygon points="200,160 290,180 256,280 140,240"/>
+      <polygon points="290,180 380,200 350,310 256,280"/>
+      <polygon points="380,200 430,156 430,310 350,310"/>
+      <polygon points="256,56 200,160 140,140 82,156"/>
+      <polygon points="82,156 140,140 140,240 82,280"/>
+      <polygon points="82,280 140,240 160,370 82,356"/>
+      <polygon points="140,240 256,280 220,380 160,370"/>
+      <polygon points="256,280 350,310 310,400 220,380"/>
+      <polygon points="350,310 430,310 430,356 310,400"/>
+      <polygon points="220,380 310,400 256,456 160,456"/>
+      <polygon points="160,370 220,380 160,456 82,356"/>
+      <polygon points="310,400 430,356 256,456"/>
+    </g>
+  </g>
+
+  <!-- Hexagon outer edge -->
+  <polygon points="256,56 430,156 430,356 256,456 82,356 82,156" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="2"/>
+</svg>

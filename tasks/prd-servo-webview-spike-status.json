@@ -1,0 +1,129 @@
+{
+  "prd": "prd-servo-webview-spike",
+  "title": "Servo WebView Embedding Spike",
+  "status": "READY",
+  "created": "2026-04-06",
+  "updated": "2026-04-06",
+  "epics": {
+    "EP-001": {
+      "title": "Servo Build Integration",
+      "status": "NOT_STARTED",
+      "stories": {
+        "US-001": {
+          "title": "Add Servo as a Cargo path dependency",
+          "status": "NOT_STARTED",
+          "priority": "P0",
+          "size": "M",
+          "points": 3,
+          "dependencies": [],
+          "blocked_by": []
+        },
+        "US-002": {
+          "title": "Validate Servo initialization lifecycle",
+          "status": "NOT_STARTED",
+          "priority": "P0",
+          "size": "S",
+          "points": 2,
+          "dependencies": ["US-001"],
+          "blocked_by": []
+        }
+      }
+    },
+    "EP-002": {
+      "title": "Offscreen Rendering Pipeline",
+      "status": "NOT_STARTED",
+      "stories": {
+        "US-003": {
+          "title": "Render HTML to pixel buffer via SoftwareRenderingContext",
+          "status": "NOT_STARTED",
+          "priority": "P0",
+          "size": "M",
+          "points": 3,
+          "dependencies": ["US-002"],
+          "blocked_by": []
+        },
+        "US-004": {
+          "title": "Display Servo pixel buffer in a GPUI Element",
+          "status": "NOT_STARTED",
+          "priority": "P0",
+          "size": "L",
+          "points": 5,
+          "dependencies": ["US-003"],
+          "blocked_by": []
+        },
+        "US-005": {
+          "title": "Continuous frame updates from Servo to GPUI",
+          "status": "NOT_STARTED",
+          "priority": "P1",
+          "size": "M",
+          "points": 3,
+          "dependencies": ["US-004"],
+          "blocked_by": []
+        }
+      }
+    },
+    "EP-003": {
+      "title": "Input Event Bridge",
+      "status": "NOT_STARTED",
+      "stories": {
+        "US-006": {
+          "title": "Forward mouse events from GPUI to Servo",
+          "status": "NOT_STARTED",
+          "priority": "P1",
+          "size": "M",
+          "points": 3,
+          "dependencies": ["US-004"],
+          "blocked_by": []
+        },
+        "US-007": {
+          "title": "Forward keyboard events from GPUI to Servo",
+          "status": "NOT_STARTED",
+          "priority": "P1",
+          "size": "M",
+          "points": 3,
+          "dependencies": ["US-006"],
+          "blocked_by": []
+        }
+      }
+    },
+    "EP-004": {
+      "title": "Evaluation and Decision",
+      "status": "NOT_STARTED",
+      "stories": {
+        "US-008": {
+          "title": "Benchmark rendering performance",
+          "status": "NOT_STARTED",
+          "priority": "P0",
+          "size": "M",
+          "points": 3,
+          "dependencies": ["US-005"],
+          "blocked_by": []
+        },
+        "US-009": {
+          "title": "Test HTML/CSS rendering fidelity",
+          "status": "NOT_STARTED",
+          "priority": "P1",
+          "size": "S",
+          "points": 2,
+          "dependencies": ["US-004"],
+          "blocked_by": []
+        },
+        "US-010": {
+          "title": "Write go/no-go decision document",
+          "status": "NOT_STARTED",
+          "priority": "P0",
+          "size": "S",
+          "points": 2,
+          "dependencies": ["US-008", "US-009"],
+          "blocked_by": []
+        }
+      }
+    }
+  },
+  "total_points": 29,
+  "total_stories": 10,
+  "priority_breakdown": {
+    "P0": 6,
+    "P1": 4
+  }
+}
