@@ -51,6 +51,27 @@ fn h(hex: u32) -> Hsla {
     Hsla::from(Rgba { r, g, b, a: 1.0 })
 }
 
+const CHROME_BACKGROUND_HEX: u32 = 0x141414;
+const TERMINAL_BACKGROUND_HEX: u32 = 0x181818;
+
+fn is_light_theme(theme: &TerminalTheme) -> bool {
+    theme.background.l > 0.5
+}
+
+fn apply_surface_overrides(mut theme: TerminalTheme) -> TerminalTheme {
+    if is_light_theme(&theme) {
+        return theme;
+    }
+
+    let chrome_bg = h(CHROME_BACKGROUND_HEX);
+    let terminal_bg = h(TERMINAL_BACKGROUND_HEX);
+    theme.title_bar_background = chrome_bg;
+    theme.title_bar_inactive_background = chrome_bg;
+    theme.background = terminal_bg;
+    theme.ansi_background = terminal_bg;
+    theme
+}
+
 // ---------------------------------------------------------------------------
 // Bundled themes
 // ---------------------------------------------------------------------------
@@ -320,8 +341,7 @@ pub struct UiColors {
 /// Light themes get light UI; dark themes get dark UI.
 pub fn ui_colors() -> UiColors {
     let theme = active_theme();
-    // Heuristic: if the background lightness > 0.5, it's a light theme
-    let is_light = theme.background.l > 0.5;
+    let is_light = is_light_theme(&theme);
     if is_light {
         UiColors {
             base: h(0xefefef),
@@ -359,11 +379,11 @@ fn read_config_theme_name() -> Option<String> {
 fn resolve_theme() -> TerminalTheme {
     if let Some(name) = read_config_theme_name() {
         if let Some(theme) = theme_by_name(&name) {
-            return theme;
+            return apply_surface_overrides(theme);
         }
         log::warn!("Unknown theme '{}', using default", name);
     }
-    catppuccin_mocha()
+    apply_surface_overrides(catppuccin_mocha())
 }
 
 // ---------------------------------------------------------------------------
@@ -427,5 +447,28 @@ pub fn active_theme() -> TerminalTheme {
         let cached = cache.as_mut().unwrap();
         cached.last_check = Instant::now();
         cached.theme
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn light_theme_keeps_light_surfaces_after_overrides() {
+        let theme = apply_surface_overrides(paneflow_light());
+
+        assert!(theme.background.l > 0.5);
+        assert!(theme.ansi_background.l > 0.5);
+        assert!(theme.title_bar_background.l > 0.5);
+    }
+
+    #[test]
+    fn dark_theme_still_uses_dark_surface_overrides() {
+        let theme = apply_surface_overrides(catppuccin_mocha());
+
+        assert_eq!(theme.background.l, h(TERMINAL_BACKGROUND_HEX).l);
+        assert_eq!(theme.ansi_background.l, h(TERMINAL_BACKGROUND_HEX).l);
+        assert_eq!(theme.title_bar_background.l, h(CHROME_BACKGROUND_HEX).l);
     }
 }

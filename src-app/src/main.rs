@@ -5,10 +5,12 @@
 mod ai_detector;
 mod assets;
 mod config_writer;
+mod csd;
 mod ipc;
 mod keybindings;
 mod keys;
 mod pane;
+mod settings_window;
 mod split;
 mod terminal;
 mod terminal_element;
@@ -17,11 +19,11 @@ mod title_bar;
 mod workspace;
 
 use gpui::{
-    App, Bounds, ClickEvent, Context, CursorStyle, Decorations, Entity, FocusHandle, Focusable,
-    HitboxBehavior, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, PathPromptOptions,
-    Pixels, Point, Render, ResizeEdge, SharedString, Size, Styled, Window, WindowBounds,
-    WindowDecorations, WindowOptions, actions, canvas, deferred, div, point, prelude::*, px, rgb,
-    size, svg, transparent_black,
+    Animation, AnimationExt, App, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle,
+    Decorations, Entity, FocusHandle, Focusable, HitboxBehavior, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseButton, PathPromptOptions, Pixels, Point, Render, ResizeEdge, SharedString,
+    Styled, Window, WindowBounds, WindowDecorations, WindowOptions, actions, canvas, deferred, div,
+    ease_in_out, point, prelude::*, px, rgb, size, svg, transparent_black,
 };
 use gpui_platform::application;
 use notify::Watcher;
@@ -71,6 +73,12 @@ actions!(
         FocusDown,
         NewWorkspace,
         CloseWorkspace,
+        CopyWorkspacePath,
+        RevealWorkspaceInFileManager,
+        OpenWorkspaceInZed,
+        OpenWorkspaceInCursor,
+        OpenWorkspaceInVsCode,
+        OpenWorkspaceInWindsurf,
         NextWorkspace,
         SelectWorkspace1,
         SelectWorkspace2,
@@ -119,10 +127,23 @@ struct Notification {
     read: bool,
 }
 
+struct Toast {
+    message: String,
+}
+
+#[derive(Clone, Copy)]
+struct WorkspaceContextMenu {
+    idx: usize,
+    position: Point<Pixels>,
+}
+
 /// Claude Code spinner glyphs — same characters Claude renders in the terminal.
 const CLAUDE_SPINNER_FRAMES: [char; 6] = ['·', '✻', '✽', '✶', '✳', '✢'];
 /// Codex spinner glyphs — pulsing dot from the dots animation variant.
 const CODEX_SPINNER_FRAMES: [char; 4] = ['●', '○', '◉', '○'];
+const TOAST_ENTER_MS: u64 = 180;
+const TOAST_HOLD_MS: u64 = 1440;
+const TOAST_EXIT_MS: u64 = 180;
 
 struct PaneFlowApp {
     workspaces: Vec<Workspace>,
@@ -159,6 +180,14 @@ struct PaneFlowApp {
     notifications: Vec<Notification>,
     /// Whether the notification bell dropdown is open.
     notif_menu_open: bool,
+    /// Workflow action menu currently open in the sidebar (`None` = closed).
+    workspace_menu_open: Option<WorkspaceContextMenu>,
+    /// Burger menu currently open in the title bar (`None` = closed).
+    title_bar_menu_open: Option<Point<Pixels>>,
+    /// Ephemeral bottom-right toast.
+    toast: Option<Toast>,
+    /// Dismiss timer for the active toast — dropped on new toast to cancel the old timer.
+    _toast_task: Option<gpui::Task<()>>,
     /// Whether the loader animation spawn is currently running.
     loader_anim_running: bool,
 }
@@ -210,6 +239,26 @@ impl PaneFlowApp {
         let pane = cx.new(|cx| Pane::new(terminal, workspace_id, cx));
         cx.subscribe(&pane, Self::handle_pane_event).detach();
         pane
+    }
+
+    fn handle_title_bar_event(
+        &mut self,
+        _title_bar: Entity<title_bar::TitleBar>,
+        event: &title_bar::TitleBarEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            title_bar::TitleBarEvent::ToggleMenu(position) => {
+                self.workspace_menu_open = None;
+                self.notif_menu_open = false;
+                self.title_bar_menu_open = if self.title_bar_menu_open.is_some() {
+                    None
+                } else {
+                    Some(*position)
+                };
+                cx.notify();
+            }
+        }
     }
 
     fn handle_pane_event(
@@ -563,6 +612,8 @@ impl PaneFlowApp {
 
     fn new(cx: &mut Context<Self>) -> Self {
         let title_bar = cx.new(title_bar::TitleBar::new);
+        cx.subscribe(&title_bar, Self::handle_title_bar_event)
+            .detach();
         let last_config_mtime = crate::theme::config_mtime();
         let ipc_rx = ipc::start_server();
 
@@ -895,6 +946,10 @@ impl PaneFlowApp {
             font_search: String::new(),
             notifications: Vec::new(),
             notif_menu_open: false,
+            workspace_menu_open: None,
+            title_bar_menu_open: None,
+            toast: None,
+            _toast_task: None,
             loader_anim_running: false,
         }
     }
@@ -1455,6 +1510,8 @@ impl PaneFlowApp {
 
     fn select_workspace(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.notif_menu_open = false;
+        self.workspace_menu_open = None;
+        self.title_bar_menu_open = None;
         if idx < self.workspaces.len() && idx != self.active_idx {
             self.active_idx = idx;
             self.workspaces[idx].focus_first(window, cx);
@@ -1906,11 +1963,66 @@ impl PaneFlowApp {
         self.close_workspace_at(self.active_idx, window, cx);
     }
 
+    fn handle_copy_workspace_path(
+        &mut self,
+        _: &CopyWorkspacePath,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.copy_workspace_path(self.active_idx, cx);
+    }
+
+    fn handle_reveal_workspace_in_file_manager(
+        &mut self,
+        _: &RevealWorkspaceInFileManager,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.reveal_workspace_in_file_manager(self.active_idx, cx);
+    }
+
+    fn handle_open_workspace_in_zed(
+        &mut self,
+        _: &OpenWorkspaceInZed,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_workspace_in_editor(self.active_idx, "zed", "Zed", cx);
+    }
+
+    fn handle_open_workspace_in_cursor(
+        &mut self,
+        _: &OpenWorkspaceInCursor,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_workspace_in_editor(self.active_idx, "cursor", "Cursor", cx);
+    }
+
+    fn handle_open_workspace_in_vscode(
+        &mut self,
+        _: &OpenWorkspaceInVsCode,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_workspace_in_editor(self.active_idx, "code", "VS Code", cx);
+    }
+
+    fn handle_open_workspace_in_windsurf(
+        &mut self,
+        _: &OpenWorkspaceInWindsurf,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_workspace_in_editor(self.active_idx, "windsurf", "Windsurf", cx);
+    }
+
     fn close_workspace_at(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
         // Guard: don't close the last workspace
         if self.workspaces.len() <= 1 || idx >= self.workspaces.len() {
             return;
         }
+        self.workspace_menu_open = None;
         if let Some(dir) = self.workspaces[idx].git_dir.clone() {
             self.unwatch_git_dir(&dir);
         }
@@ -1923,6 +2035,129 @@ impl PaneFlowApp {
         }
         self.workspaces[self.active_idx].focus_first(window, cx);
         cx.notify();
+    }
+
+    fn copy_workspace_path(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let Some(ws) = self.workspaces.get(idx) else {
+            return;
+        };
+
+        cx.write_to_clipboard(ClipboardItem::new_string(ws.cwd.clone()));
+        self.show_toast("Path copied", cx);
+        self.workspace_menu_open = None;
+        cx.notify();
+    }
+
+    fn reveal_workspace_in_file_manager(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let Some(ws) = self.workspaces.get(idx) else {
+            return;
+        };
+
+        if let Err(err) = std::process::Command::new("xdg-open").arg(&ws.cwd).spawn() {
+            log::warn!("failed to reveal workspace path in file manager: {err}");
+        }
+
+        self.workspace_menu_open = None;
+        cx.notify();
+    }
+
+    fn open_workspace_in_editor(
+        &mut self,
+        idx: usize,
+        command: &str,
+        label: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ws) = self.workspaces.get(idx) else {
+            return;
+        };
+
+        if let Err(err) = std::process::Command::new(command)
+            .current_dir(&ws.cwd)
+            .arg(".")
+            .spawn()
+        {
+            log::warn!("failed to open workspace in {label}: {err}");
+        }
+
+        self.workspace_menu_open = None;
+        cx.notify();
+    }
+
+    fn shortcut_for_description(&self, description: &str) -> Option<&str> {
+        self.effective_shortcuts
+            .iter()
+            .find(|entry| entry.description == description)
+            .map(|entry| entry.key.as_str())
+    }
+
+    fn render_context_menu_item(
+        &self,
+        id: SharedString,
+        label: &str,
+        shortcut: Option<SharedString>,
+        ui: crate::theme::UiColors,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(10.))
+            .px(px(8.))
+            .py(px(5.))
+            .rounded(px(4.))
+            .cursor_pointer()
+            .text_size(px(11.))
+            .text_color(ui.text)
+            .hover(|s| {
+                let ui = crate::theme::ui_colors();
+                s.bg(ui.subtle)
+            })
+            .on_click(on_click)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_x_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(label.to_string()),
+            )
+            .when_some(shortcut, |d, shortcut| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(10.))
+                        .text_color(ui.muted)
+                        .child(shortcut),
+                )
+            })
+    }
+
+    fn show_toast(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.toast = Some(Toast {
+            message: message.into(),
+        });
+        cx.notify();
+
+        // Dropping the previous task cancels its timer automatically.
+        self._toast_task = Some(cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                smol::Timer::after(std::time::Duration::from_millis(
+                    TOAST_ENTER_MS + TOAST_HOLD_MS + TOAST_EXIT_MS,
+                ))
+                .await;
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                        app.toast = None;
+                        app._toast_task = None;
+                        cx.notify();
+                    })
+                });
+            },
+        ));
     }
 
     fn commit_rename(&mut self) {
@@ -2023,11 +2258,10 @@ impl PaneFlowApp {
             .flex_shrink_0()
             .h_full()
             .bg(theme.title_bar_background)
+            .border_r_1()
+            .border_color(ui.border)
             .flex()
             .flex_col();
-
-        // Top spacing for traffic-light / title-bar area (matches cmux trafficLightPadding)
-        sidebar = sidebar.child(div().h(px(28.)));
 
         // ── Action buttons row ──
         sidebar = sidebar.child(
@@ -2061,6 +2295,7 @@ impl PaneFlowApp {
                                     "sidebar-bell",
                                     "icons/bell.svg",
                                     cx.listener(|this, _: &ClickEvent, _w, cx| {
+                                        this.title_bar_menu_open = None;
                                         this.notif_menu_open = !this.notif_menu_open;
                                         cx.notify();
                                     }),
@@ -2081,15 +2316,8 @@ impl PaneFlowApp {
                         .child(self.sidebar_action_btn(
                             "sidebar-settings",
                             "icons/settings.svg",
-                            cx.listener(|this, _: &ClickEvent, _w, cx| {
-                                if this.settings_section.is_some() {
-                                    this.close_settings(cx);
-                                } else {
-                                    this.settings_section = Some(SettingsSection::Shortcuts);
-                                    crate::terminal::SUPPRESS_REPAINTS
-                                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                cx.notify();
+                            cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.open_settings_window(window, cx);
                             }),
                         ))
                         .child(self.sidebar_action_btn(
@@ -2242,6 +2470,8 @@ impl PaneFlowApp {
                     })
                 })
                 .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                    this.workspace_menu_open = None;
+                    this.title_bar_menu_open = None;
                     let is_double = matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2);
                     if is_double {
                         this.commit_rename(); // commit any previous rename
@@ -2252,6 +2482,17 @@ impl PaneFlowApp {
                         this.select_workspace(idx, window, cx);
                     }
                     cx.notify();
+                }))
+                .on_aux_click(cx.listener(move |this, e: &ClickEvent, _window, cx| {
+                    if e.is_right_click()
+                        && let Some(position) = e.mouse_position()
+                    {
+                        this.commit_rename();
+                        this.title_bar_menu_open = None;
+                        this.workspace_menu_open = Some(WorkspaceContextMenu { idx, position });
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
                 }))
                 .on_key_down(cx.listener(move |this, e: &KeyDownEvent, _window, cx| {
                     if this.renaming_idx != Some(idx) {
@@ -2288,8 +2529,7 @@ impl PaneFlowApp {
                 .flex_col()
                 .gap_1();
 
-            // ── Row 1: Title + close button ──
-            let can_close = self.workspaces.len() > 1;
+            // ── Row 1: Title + action menu ──
             let title_el = if self.renaming_idx == Some(i) {
                 div()
                     .text_color(ui.text)
@@ -2306,42 +2546,12 @@ impl PaneFlowApp {
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(title)
             };
-            let mut title_row = div()
+            let title_row = div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .justify_between()
                 .child(title_el);
-
-            if can_close {
-                title_row = title_row.child(
-                    div()
-                        .id(SharedString::from(format!("ws-close-{i}")))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w(px(18.))
-                        .h(px(18.))
-                        .rounded(px(4.))
-                        .cursor_pointer()
-                        .text_color(ui.muted)
-                        .text_xs()
-                        .hover(|s| {
-                            let ui = crate::theme::ui_colors();
-                            s.bg(ui.overlay).text_color(rgb(0xf38ba8))
-                        })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            this.close_workspace_at(idx, window, cx);
-                        }))
-                        .child(
-                            svg()
-                                .size(px(12.))
-                                .flex_none()
-                                .path("icons/trash.svg")
-                                .text_color(ui.muted),
-                        ),
-                );
-            }
 
             card = card.child(title_row);
 
@@ -2415,7 +2625,7 @@ impl PaneFlowApp {
                                 .py(px(2.))
                                 .rounded(px(4.))
                                 .bg(ui.subtle)
-                                .text_xs()
+                                .text_size(px(11.))
                                 .text_color(ui.accent)
                                 .cursor_pointer()
                                 .hover(|s| s.text_color(rgb(0xa0e8ff)))
@@ -2506,7 +2716,7 @@ impl PaneFlowApp {
                     card = card.child(
                         div().flex().flex_row().items_center().gap(px(6.)).child(
                             div()
-                                .text_xs()
+                                .text_size(px(11.))
                                 .text_color(rgb(0xa6e3a1))
                                 .child(format!("✓ {} done", tool.label())),
                         ),
@@ -3037,6 +3247,7 @@ impl PaneFlowApp {
 
     fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_section = None;
+        self.title_bar_menu_open = None;
         self.font_dropdown_open = false;
         self.font_search.clear();
         if self.recording_shortcut_idx.is_some() {
@@ -3045,6 +3256,14 @@ impl PaneFlowApp {
             keybindings::apply_keybindings(cx, &config.shortcuts);
         }
         crate::terminal::SUPPRESS_REPAINTS.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn open_settings_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.notif_menu_open = false;
+        self.workspace_menu_open = None;
+        self.title_bar_menu_open = None;
+        settings_window::open_or_focus(window, cx);
+        cx.notify();
     }
 
     fn handle_shortcut_recording(
@@ -3102,67 +3321,12 @@ impl PaneFlowApp {
 /// Width of the invisible border zone used for edge/corner resize handles.
 const RESIZE_BORDER: Pixels = px(10.0);
 
-/// Determine which resize edge/corner the mouse is hovering, if any.
-fn resize_edge(
-    pos: Point<Pixels>,
-    border: Pixels,
-    window_size: Size<Pixels>,
-    tiling: gpui::Tiling,
-) -> Option<ResizeEdge> {
-    // If the cursor is well inside the content area, no edge.
-    let inner = Bounds::new(Point::default(), window_size).inset(border * 1.5);
-    if inner.contains(&pos) {
-        return None;
-    }
-
-    let corner = size(border * 1.5, border * 1.5);
-
-    // Corners first (larger hit zone = 1.5× border)
-    if !tiling.top && !tiling.left && Bounds::new(point(px(0.), px(0.)), corner).contains(&pos) {
-        return Some(ResizeEdge::TopLeft);
-    }
-    if !tiling.top
-        && !tiling.right
-        && Bounds::new(point(window_size.width - corner.width, px(0.)), corner).contains(&pos)
-    {
-        return Some(ResizeEdge::TopRight);
-    }
-    if !tiling.bottom
-        && !tiling.left
-        && Bounds::new(point(px(0.), window_size.height - corner.height), corner).contains(&pos)
-    {
-        return Some(ResizeEdge::BottomLeft);
-    }
-    if !tiling.bottom
-        && !tiling.right
-        && Bounds::new(
-            point(
-                window_size.width - corner.width,
-                window_size.height - corner.height,
-            ),
-            corner,
-        )
-        .contains(&pos)
-    {
-        return Some(ResizeEdge::BottomRight);
-    }
-
-    // Edges
-    if !tiling.top && pos.y < border {
-        Some(ResizeEdge::Top)
-    } else if !tiling.bottom && pos.y > window_size.height - border {
-        Some(ResizeEdge::Bottom)
-    } else if !tiling.left && pos.x < border {
-        Some(ResizeEdge::Left)
-    } else if !tiling.right && pos.x > window_size.width - border {
-        Some(ResizeEdge::Right)
-    } else {
-        None
-    }
-}
+/// Re-export from csd module for use in the render function below.
+use csd::resize_edge;
 
 impl Render for PaneFlowApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = crate::theme::ui_colors();
         let main_content = if self.settings_section.is_some() {
             self.render_settings_page(cx).into_any_element()
         } else if let Some(ws) = self.active_workspace() {
@@ -3212,8 +3376,9 @@ impl Render for PaneFlowApp {
                 .font_family
                 .as_deref(),
         );
-        let app_content = div()
+        let mut app_content = div()
             .font_family(ui_font)
+            .relative()
             .flex()
             .flex_col()
             .size_full()
@@ -3229,6 +3394,12 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_focus_down))
             .on_action(cx.listener(Self::handle_new_workspace))
             .on_action(cx.listener(Self::handle_close_workspace))
+            .on_action(cx.listener(Self::handle_copy_workspace_path))
+            .on_action(cx.listener(Self::handle_reveal_workspace_in_file_manager))
+            .on_action(cx.listener(Self::handle_open_workspace_in_zed))
+            .on_action(cx.listener(Self::handle_open_workspace_in_cursor))
+            .on_action(cx.listener(Self::handle_open_workspace_in_vscode))
+            .on_action(cx.listener(Self::handle_open_workspace_in_windsurf))
             .on_action(cx.listener(Self::handle_next_workspace))
             .on_action(cx.listener(Self::handle_toggle_zoom))
             .on_action(cx.listener(Self::handle_layout_even_h))
@@ -3270,6 +3441,263 @@ impl Render for PaneFlowApp {
                             .child(main_content),
                     ),
             );
+
+        if let Some(toast) = &self.toast {
+            app_content = app_content.child(
+                deferred(
+                    div()
+                        .id("copy-toast")
+                        .absolute()
+                        .right(px(20.))
+                        .bottom(px(20.))
+                        .max_w(px(320.))
+                        .px(px(14.))
+                        .py(px(10.))
+                        .rounded(px(8.))
+                        .bg(ui.overlay)
+                        .border_1()
+                        .border_color(ui.border)
+                        .shadow_lg()
+                        .text_sm()
+                        .text_color(ui.text)
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .w(px(18.))
+                                .h(px(18.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(11.))
+                                .text_color(ui.accent)
+                                .child("✓"),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(ui.text)
+                                .child(toast.message.clone()),
+                        )
+                        .with_animations(
+                            SharedString::from("copy-toast-anim"),
+                            vec![
+                                Animation::new(std::time::Duration::from_millis(TOAST_ENTER_MS))
+                                    .with_easing(ease_in_out),
+                                Animation::new(std::time::Duration::from_millis(TOAST_HOLD_MS)),
+                                Animation::new(std::time::Duration::from_millis(TOAST_EXIT_MS))
+                                    .with_easing(ease_in_out),
+                            ],
+                            |toast_el, stage, delta| match stage {
+                                0 => {
+                                    let lift = 8.0 * (1.0 - delta);
+                                    toast_el.opacity(delta).bottom(px(20.0 + lift))
+                                }
+                                1 => toast_el.opacity(1.0).bottom(px(20.0)),
+                                _ => {
+                                    let drop = 8.0 * delta;
+                                    toast_el.opacity(1.0 - delta).bottom(px(20.0 + drop))
+                                }
+                            },
+                        ),
+                )
+                .priority(2),
+            );
+        }
+
+        if let Some(position) = self.title_bar_menu_open {
+            app_content = app_content.child(
+                deferred(
+                    div()
+                        .id("title-bar-menu")
+                        .occlude()
+                        .absolute()
+                        .left(position.x)
+                        .top(position.y)
+                        .w(px(180.))
+                        .bg(ui.overlay)
+                        .border_1()
+                        .border_color(ui.border)
+                        .rounded(px(8.))
+                        .shadow_lg()
+                        .flex()
+                        .flex_col()
+                        .p(px(4.))
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.title_bar_menu_open = None;
+                            cx.notify();
+                        }))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                        .child(self.render_context_menu_item(
+                            "title-bar-menu-settings".into(),
+                            "Settings",
+                            None,
+                            ui,
+                            cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.open_settings_window(window, cx);
+                                cx.stop_propagation();
+                            }),
+                        )),
+                )
+                .priority(3),
+            );
+        }
+
+        if let Some(menu) = self.workspace_menu_open
+            && menu.idx < self.workspaces.len()
+        {
+            let idx = menu.idx;
+            let can_delete = self.workspaces.len() > 1;
+
+            // Data-driven editor entries: (id, label, command, shortcut_description)
+            let editors: &[(&str, &str, &str, &str)] = &[
+                ("zed", "Open in Zed", "zed", "Open in Zed"),
+                ("cursor", "Open in Cursor", "cursor", "Open in Cursor"),
+                ("vscode", "Open in VS Code", "code", "Open in VS Code"),
+                (
+                    "windsurf",
+                    "Open in Windsurf",
+                    "windsurf",
+                    "Open in Windsurf",
+                ),
+            ];
+
+            let mut context_menu = div()
+                .id("workspace-context-menu")
+                .occlude()
+                .absolute()
+                .left(menu.position.x)
+                .top(menu.position.y)
+                .w(px(248.))
+                .bg(ui.overlay)
+                .border_1()
+                .border_color(ui.border)
+                .rounded(px(8.))
+                .shadow_lg()
+                .flex()
+                .flex_col()
+                .p(px(4.))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.workspace_menu_open = None;
+                    cx.notify();
+                }))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
+
+            for &(id, label, command, shortcut_desc) in editors {
+                let shortcut = self
+                    .shortcut_for_description(shortcut_desc)
+                    .map(|s| SharedString::from(s.to_string()));
+                let command = command.to_string();
+                let label_owned = label.to_string();
+                context_menu = context_menu.child(self.render_context_menu_item(
+                    SharedString::from(format!("workspace-context-{id}")),
+                    label,
+                    shortcut,
+                    ui,
+                    cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                        this.open_workspace_in_editor(idx, &command, &label_owned, cx);
+                        cx.stop_propagation();
+                    }),
+                ));
+            }
+
+            // ── Separator ──
+            context_menu = context_menu.child(div().mx(px(-4.)).my(px(3.)).h(px(1.)).bg(ui.border));
+
+            // Reveal in file manager
+            let reveal_shortcut = self
+                .shortcut_for_description("Reveal in file manager")
+                .map(|s| SharedString::from(s.to_string()));
+            context_menu = context_menu.child(self.render_context_menu_item(
+                "workspace-context-reveal".into(),
+                "Reveal in File Manager",
+                reveal_shortcut,
+                ui,
+                cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    this.reveal_workspace_in_file_manager(idx, cx);
+                    cx.stop_propagation();
+                }),
+            ));
+
+            // Copy path
+            let copy_shortcut = self
+                .shortcut_for_description("Copy path")
+                .map(|s| SharedString::from(s.to_string()));
+            context_menu = context_menu.child(self.render_context_menu_item(
+                "workspace-context-copy".into(),
+                "Copy Path",
+                copy_shortcut,
+                ui,
+                cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    this.copy_workspace_path(idx, cx);
+                    cx.stop_propagation();
+                }),
+            ));
+
+            // ── Separator ──
+            context_menu = context_menu.child(div().mx(px(-4.)).my(px(3.)).h(px(1.)).bg(ui.border));
+
+            // Delete workspace (conditionally disabled)
+            let close_shortcut = self
+                .shortcut_for_description("Close workspace")
+                .map(|s| SharedString::from(s.to_string()));
+            context_menu = context_menu.child(
+                div()
+                    .id("workspace-context-delete")
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(10.))
+                    .px(px(8.))
+                    .py(px(5.))
+                    .rounded(px(4.))
+                    .when(can_delete, |d| d.cursor_pointer())
+                    .text_size(px(11.))
+                    .text_color(ui.muted)
+                    .when(can_delete, |d| d.text_color(ui.text))
+                    .when(can_delete, |d| {
+                        d.hover(|s| {
+                            let ui = crate::theme::ui_colors();
+                            s.bg(ui.subtle)
+                        })
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        if can_delete {
+                            this.close_workspace_at(idx, window, cx);
+                        } else {
+                            this.workspace_menu_open = None;
+                            cx.notify();
+                        }
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_x_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child("Delete"),
+                    )
+                    .when_some(close_shortcut, |d, shortcut| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .text_size(px(10.))
+                                .text_color(ui.muted)
+                                .child(shortcut),
+                        )
+                    }),
+            );
+
+            app_content = app_content.child(deferred(context_menu).priority(3));
+        }
 
         // Outer backdrop div — provides the invisible resize border zone for CSD
         div()
@@ -3386,6 +3814,14 @@ fn main() {
                 },
                 |window, cx| {
                     let view = cx.new(PaneFlowApp::new);
+                    window.on_window_should_close(cx, {
+                        let view = view.clone();
+                        move |_window, cx| {
+                            view.read(cx).save_session(cx);
+                            cx.quit();
+                            false
+                        }
+                    });
                     view.update(cx, |app, cx| {
                         app.workspaces[0].focus_first(window, cx);
                     });
