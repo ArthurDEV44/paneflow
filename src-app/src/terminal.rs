@@ -271,14 +271,38 @@ impl TerminalState {
         let term = Term::new(config, &dimensions, listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
-        // Build shell command and environment
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| {
-            if cfg!(unix) {
-                "/bin/sh".to_string()
-            } else {
-                "cmd.exe".to_string()
+        // Build shell command and environment.
+        // Fallback chain: config default_shell → $SHELL → /bin/sh
+        let shell = {
+            let config = paneflow_config::loader::load_config();
+            let configured = config
+                .default_shell
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            match configured {
+                Some(path) => {
+                    let p = std::path::Path::new(path);
+                    let is_executable = p.is_file() && {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::metadata(p)
+                            .map(|m| m.permissions().mode() & 0o111 != 0)
+                            .unwrap_or(false)
+                    };
+                    if is_executable {
+                        path.to_string()
+                    } else {
+                        log::warn!(
+                            "Configured default_shell {:?} not found or not executable, \
+                             falling back to $SHELL",
+                            path
+                        );
+                        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+                    }
+                }
+                None => std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()),
             }
-        });
+        };
         let mut env = std::collections::HashMap::new();
         let extra_args = setup_shell_integration(&shell, &mut env);
 
