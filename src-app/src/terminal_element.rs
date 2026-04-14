@@ -260,6 +260,18 @@ fn is_decorative_character(ch: char) -> bool {
     )
 }
 
+/// Returns `true` for Powerline separator glyphs and box-drawing characters
+/// whose intentional color transitions at cell edges should not be extended
+/// into the terminal padding (neverExtendBg heuristic, US-003).
+fn is_powerline_or_boxdraw(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x2500..=0x257F   // Box Drawing (─ │ ┌ ┐ └ ┘ etc.)
+        | 0x2580..=0x259F // Block Elements (▀ ▄ █ ░ ▒ ▓ — half-block color transitions)
+        | 0xE0B0..=0xE0D4 // Powerline separators (arrows, dividers)
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Layout types
 // ---------------------------------------------------------------------------
@@ -314,6 +326,9 @@ pub struct LayoutState {
     desired_cols: usize,
     /// Number of rows in the terminal grid (for padding extension)
     desired_rows: usize,
+    /// Per-line (extend_left, extend_right) flags for neverExtendBg heuristic.
+    /// Indexed by visible line number (0..desired_rows).
+    extend_line_flags: Vec<(bool, bool)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -520,6 +535,11 @@ impl TerminalElement {
         let mut last_line: i32 = i32::MIN;
         let mut previous_cell_had_extras = false;
 
+        // neverExtendBg heuristic (US-003): per-line flags for padding extension.
+        // Tracks whether Powerline/box-drawing glyphs at edges suppress extension.
+        let mut extend_line_flags: Vec<(bool, bool)> = vec![(true, true); desired_rows];
+        let mut last_nondefault_is_powerline = false;
+
         for (point, c, cell_fg, cell_bg, flags, zw) in &cells {
             let point = *point;
             let flags = *flags;
@@ -529,13 +549,21 @@ impl TerminalElement {
                 continue;
             }
 
-            // Line change → flush batch and rect
+            // Line change → flush batch and rect, finalize previous line's right flag
             if point.line.0 != last_line {
                 batch.flush();
                 if let Some(rect) = current_rect.take() {
                     rects.push(rect);
                 }
+                // Finalize right-extension flag for the previous line
+                if last_line >= 0
+                    && (last_line as usize) < desired_rows
+                    && last_nondefault_is_powerline
+                {
+                    extend_line_flags[last_line as usize].1 = false;
+                }
                 last_line = point.line.0;
+                last_nondefault_is_powerline = false;
             }
 
             // Compute colors
@@ -545,6 +573,19 @@ impl TerminalElement {
             // Handle inverse video
             if flags.contains(CellFlags::INVERSE) {
                 std::mem::swap(&mut fg, &mut bg);
+            }
+
+            // neverExtendBg: track Powerline/box-drawing at edges (US-003)
+            let line_idx = point.line.0;
+            if line_idx >= 0 && (line_idx as usize) < desired_rows {
+                // Left suppression: column 0 has a non-default bg AND a Powerline/box-drawing char
+                if point.column.0 == 0 && bg != default_bg && is_powerline_or_boxdraw(*c) {
+                    extend_line_flags[line_idx as usize].0 = false;
+                }
+                // Right suppression: track if current non-default-bg cell is Powerline
+                if bg != default_bg {
+                    last_nondefault_is_powerline = is_powerline_or_boxdraw(*c);
+                }
             }
 
             // DIM/faint (SGR 2): reduce foreground opacity (applied after INVERSE)
@@ -662,6 +703,10 @@ impl TerminalElement {
         if let Some(rect) = current_rect {
             rects.push(rect);
         }
+        // Finalize right-extension flag for the last line
+        if last_line >= 0 && (last_line as usize) < desired_rows && last_nondefault_is_powerline {
+            extend_line_flags[last_line as usize].1 = false;
+        }
 
         // Build selection highlight rects from the SelectionRange
         let mut selection_rects = Vec::new();
@@ -719,6 +764,7 @@ impl TerminalElement {
             history_size,
             desired_cols,
             desired_rows,
+            extend_line_flags,
         }
     }
 }
@@ -927,19 +973,27 @@ impl Element for TerminalElement {
                 let mut right = (origin.x + cell_width * (rect.col + rect.num_cols) as f32).ceil();
                 let mut bottom = y + line_height;
 
+                // Look up per-line extension flags (neverExtendBg, US-003)
+                let (extend_left, extend_right) =
+                    if rect.line >= 0 && (rect.line as usize) < layout.extend_line_flags.len() {
+                        layout.extend_line_flags[rect.line as usize]
+                    } else {
+                        (true, true)
+                    };
+
                 // Extend left edge into gutter for column-0 rects
-                if rect.col == 0 {
+                if rect.col == 0 && extend_left {
                     x = widget_left;
                 }
                 // Extend right edge to widget boundary for last-column rects
-                if rect.col + rect.num_cols >= layout.desired_cols {
+                if rect.col + rect.num_cols >= layout.desired_cols && extend_right {
                     right = widget_right;
                 }
-                // Extend top edge for first-row rects
+                // Vertical extension is unconditional — Powerline glyphs only
+                // create horizontal edge artifacts, not vertical ones.
                 if rect.line == 0 {
                     y = widget_top;
                 }
-                // Extend bottom edge for last-row rects
                 if rect.line == last_row {
                     bottom = widget_bottom;
                 }

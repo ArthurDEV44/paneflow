@@ -9,10 +9,10 @@
     {
       "id": "EP-001",
       "title": "Padding Extension",
-      "status": "IN_PROGRESS",
+      "status": "IN_REVIEW",
       "priority": "P0",
       "stories_total": 3,
-      "stories_done": 0
+      "stories_done": 3
     },
     {
       "id": "EP-002",
@@ -60,12 +60,12 @@
       "id": "US-003",
       "title": "neverExtendBg heuristic",
       "epic": "EP-001",
-      "status": "TODO",
+      "status": "IN_REVIEW",
       "priority": "P1",
       "size": "M",
       "blocked_by": ["US-001"],
-      "started_at": null,
-      "completed_at": null,
+      "started_at": "2026-04-14",
+      "completed_at": "2026-04-14",
       "reviewed_at": null
     },
     {
