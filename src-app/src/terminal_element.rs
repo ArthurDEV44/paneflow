@@ -310,6 +310,8 @@ pub struct LayoutState {
     display_offset: usize,
     /// Total scrollback history size
     history_size: usize,
+    /// Number of columns in the terminal grid (for padding extension)
+    desired_cols: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -713,6 +715,7 @@ impl TerminalElement {
             exited: self.exited,
             display_offset,
             history_size,
+            desired_cols,
         }
     }
 }
@@ -908,14 +911,28 @@ impl Element for TerminalElement {
             window.paint_quad(fill(bounds, layout.background_color));
 
             // 2. Paint per-cell background rects (pixel-aligned to prevent gaps)
+            //    Edge cells extend into the gutter/padding to fill the full widget
+            //    width, matching Ghostty's EXTEND_LEFT/RIGHT behavior (EP-001/US-001).
+            let widget_left = bounds.origin.x;
+            let widget_right = bounds.origin.x + bounds.size.width;
             for rect in &layout.rects {
-                let x = (origin.x + cell_width * rect.col as f32).floor();
+                let mut x = (origin.x + cell_width * rect.col as f32).floor();
                 let y = origin.y + line_height * rect.line as f32;
-                let w = (cell_width * rect.num_cols as f32).ceil();
+                let mut right = (origin.x + cell_width * (rect.col + rect.num_cols) as f32).ceil();
+
+                // Extend left edge into gutter for column-0 rects
+                if rect.col == 0 {
+                    x = widget_left;
+                }
+                // Extend right edge to widget boundary for last-column rects
+                if rect.col + rect.num_cols >= layout.desired_cols {
+                    right = widget_right;
+                }
+
                 let rect_bounds = Bounds::new(
                     Point { x, y },
                     gpui::Size {
-                        width: w,
+                        width: (right - x).max(px(0.0)),
                         height: line_height,
                     },
                 );

@@ -3,13 +3,13 @@
     "file": "tasks/prd-padding-extension-crossplatform.md",
     "title": "Padding Extension & Cross-Platform Foundation",
     "created_at": "2026-04-07",
-    "status": "DRAFT"
+    "status": "IN_PROGRESS"
   },
   "epics": [
     {
       "id": "EP-001",
       "title": "Padding Extension",
-      "status": "TODO",
+      "status": "IN_PROGRESS",
       "priority": "P0",
       "stories_total": 3,
       "stories_done": 0
@@ -36,12 +36,12 @@
       "id": "US-001",
       "title": "Horizontal padding extension (left/right)",
       "epic": "EP-001",
-      "status": "TODO",
+      "status": "IN_REVIEW",
       "priority": "P0",
       "size": "S",
       "blocked_by": [],
-      "started_at": null,
-      "completed_at": null,
+      "started_at": "2026-04-14",
+      "completed_at": "2026-04-14",
       "reviewed_at": null
     },
     {
