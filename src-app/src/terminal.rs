@@ -1,21 +1,23 @@
 //! Terminal state and view — PTY management and GPUI view wrapper.
 //!
-//! Manages the alacritty_terminal Term, PTY EventLoop, and periodic sync.
+//! Manages the alacritty_terminal Term, portable-pty PTY, and periodic sync.
 //! The TerminalView creates a TerminalElement for cell-by-cell rendering.
 
 use std::borrow::Cow;
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::Term;
-use alacritty_terminal::event::{Event as AlacEvent, EventListener, Notify, WindowSize};
-use alacritty_terminal::event_loop::{EventLoop as AlacEventLoop, Msg, Notifier};
+use alacritty_terminal::event::{Event as AlacEvent, EventListener, Notify};
+use alacritty_terminal::event_loop::Msg;
 use alacritty_terminal::grid::{Dimensions, Scroll as AlacScroll};
 use alacritty_terminal::index::{Column as GridCol, Line as GridLine, Point as AlacPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::term::TermMode;
-use alacritty_terminal::tty;
+
+use portable_pty::{CommandBuilder, PtySize};
 
 use gpui::{
     App, ClipboardItem, Context, EventEmitter, FocusHandle, InteractiveElement, IntoElement,
@@ -189,12 +191,37 @@ fn setup_shell_integration(
 }
 
 // ---------------------------------------------------------------------------
+// PTY notifier — replaces alacritty's Notifier (US-007, portable-pty)
+// ---------------------------------------------------------------------------
+
+/// Channel sender for PTY messages. Mirrors `alacritty_terminal::event_loop::Notifier`
+/// interface but uses a plain `mpsc::Sender` instead of mio-backed `EventLoopSender`.
+#[derive(Clone)]
+pub struct PtySender(std::sync::mpsc::Sender<Msg>);
+
+impl PtySender {
+    pub fn send(&self, msg: Msg) -> Result<(), std::sync::mpsc::SendError<Msg>> {
+        self.0.send(msg)
+    }
+}
+
+/// Wrapper for PTY write channel. Implements `Notify` for input, exposes `.0.send()`
+/// for resize/shutdown messages — same usage pattern as alacritty's `Notifier`.
+pub struct PtyNotifier(pub PtySender);
+
+impl Notify for PtyNotifier {
+    fn notify<B: Into<Cow<'static, [u8]>>>(&self, bytes: B) {
+        let _ = self.0.send(Msg::Input(bytes.into()));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Terminal state
 // ---------------------------------------------------------------------------
 
 pub struct TerminalState {
     pub term: Arc<FairMutex<Term<ZedListener>>>,
-    pub notifier: Notifier,
+    pub notifier: PtyNotifier,
     events_rx: UnboundedReceiver<AlacEvent>,
     pub exited: Option<i32>,
     /// PID of the shell child process, used for port detection.
@@ -241,29 +268,29 @@ impl TerminalState {
         let term = Term::new(config, &dimensions, listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
-        // Create PTY with OSC 7 shell integration
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        // Create PTY via portable-pty (cross-platform: openpty on Unix, ConPTY on Windows)
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+            if cfg!(unix) {
+                "/bin/sh".to_string()
+            } else {
+                "cmd.exe".to_string()
+            }
+        });
         let mut env = std::collections::HashMap::new();
         let extra_args = setup_shell_integration(&shell, &mut env);
 
         // Inject PaneFlow identity env vars for AI tool hook integration.
-        // Child process env only — never inherited by PaneFlow's own process.
         env.insert("PANEFLOW_WORKSPACE_ID".into(), workspace_id.to_string());
         env.insert("PANEFLOW_SURFACE_ID".into(), surface_id.to_string());
         if let Some(socket_path) = paneflow_socket_path() {
             env.insert("PANEFLOW_SOCKET_PATH".into(), socket_path);
         }
 
-        // Extract wrapper scripts and expose their directory for shell integration.
-        // We set __PANEFLOW_BIN_DIR as an env var; the shell integration scripts
-        // (zsh precmd / bash rcfile) prepend it to PATH AFTER .zshrc/.bashrc load.
-        // This ensures our wrappers take priority over user-installed binaries
-        // even when .zshrc does `export PATH="$HOME/.local/bin:$PATH"`.
+        // Expose wrapper scripts directory for shell integration.
         if let Some(bin_dir) = paneflow_bin_dir() {
             ensure_wrapper_scripts(&bin_dir);
             let bin_dir_str = bin_dir.display().to_string();
             env.insert("__PANEFLOW_BIN_DIR".into(), bin_dir_str.clone());
-            // Also set PATH directly as a fallback for shells without integration
             let current_path = std::env::var("PATH").unwrap_or_default();
             if !current_path.split(':').any(|p| p == bin_dir_str) {
                 env.insert("PATH".into(), format!("{bin_dir_str}:{current_path}"));
@@ -272,32 +299,62 @@ impl TerminalState {
 
         let cwd = working_directory
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
-        let pty_config = tty::Options {
-            shell: Some(tty::Shell::new(shell, extra_args)),
-            working_directory: Some(cwd),
-            drain_on_exit: false,
-            env,
+
+        let pty_system = portable_pty::native_pty_system();
+        let pty_size = PtySize {
+            rows: rows as u16,
+            cols: cols as u16,
+            pixel_width: 0,
+            pixel_height: 0,
         };
+        let pair = pty_system.openpty(pty_size).map_err(|e| {
+            log::error!("Failed to create PTY: {e}");
+            anyhow::anyhow!("Failed to create terminal: {e}")
+        })?;
 
-        let window_size = WindowSize {
-            num_cols: cols as u16,
-            num_lines: rows as u16,
-            cell_width: 8,
-            cell_height: 16,
-        };
+        let mut cmd = CommandBuilder::new(&shell);
+        for arg in &extra_args {
+            cmd.arg(arg);
+        }
+        cmd.cwd(&cwd);
+        for (k, v) in &env {
+            cmd.env(k, v);
+        }
+        let child = pair.slave.spawn_command(cmd).map_err(|e| {
+            log::error!("Failed to spawn shell '{shell}': {e}");
+            anyhow::anyhow!("Failed to spawn shell: {e}")
+        })?;
+        let child_pid = child.process_id().unwrap_or(0);
 
-        let pty = tty::new(&pty_config, window_size, 0)?;
-        let child_pid = pty.child().id();
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| anyhow::anyhow!("Failed to clone PTY reader: {e}"))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| anyhow::anyhow!("Failed to take PTY writer: {e}"))?;
+        let master = Arc::new(Mutex::new(pair.master));
 
-        let event_loop =
-            AlacEventLoop::new(term.clone(), ZedListener(events_tx), pty, false, false)?;
+        // I/O threads replace AlacEventLoop (US-007).
+        // Reader thread: reads PTY output → VTE parser → Term mutations → Wakeup.
+        // Also owns the child handle to capture exit status after EOF.
+        let term_for_reader = term.clone();
+        let listener_for_reader = ZedListener(events_tx.clone());
+        std::thread::spawn(move || {
+            pty_reader_loop(reader, term_for_reader, listener_for_reader, child);
+        });
 
-        let pty_tx = event_loop.channel();
-        let _io_thread = event_loop.spawn();
+        // Message handler thread: receives Notifier messages → writes to PTY / resizes.
+        let (msg_tx, msg_rx) = std::sync::mpsc::channel::<Msg>();
+        let master_for_msgs = master.clone();
+        std::thread::spawn(move || {
+            pty_message_loop(msg_rx, writer, master_for_msgs);
+        });
 
         Ok(Self {
             term,
-            notifier: Notifier(pty_tx),
+            notifier: PtyNotifier(PtySender(msg_tx)),
             events_rx,
             exited: None,
             child_pid,
@@ -870,6 +927,87 @@ impl TerminalView {
 }
 
 // ---------------------------------------------------------------------------
+// portable-pty I/O loops (US-007) — replace AlacEventLoop
+// ---------------------------------------------------------------------------
+
+/// Reader thread: reads PTY output, feeds through VTE parser into Term, sends Wakeup events.
+/// Owns the child handle to capture exit status after the read loop ends.
+fn pty_reader_loop(
+    mut reader: Box<dyn Read + Send>,
+    term: Arc<FairMutex<Term<ZedListener>>>,
+    listener: ZedListener,
+    mut child: Box<dyn portable_pty::Child + Send + Sync>,
+) {
+    let mut buf = [0u8; 4096];
+    let mut processor = alacritty_terminal::vte::ansi::Processor::<
+        alacritty_terminal::vte::ansi::StdSyncHandler,
+    >::new();
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let mut term = term.lock();
+                processor.advance(&mut *term, &buf[..n]);
+                drop(term);
+                listener.send_event(AlacEvent::Wakeup);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                break;
+            }
+        }
+    }
+    // Capture child exit status after PTY read loop ends.
+    match child.wait() {
+        Ok(status) => {
+            let code = status.exit_code() as i32;
+            listener.send_event(AlacEvent::ChildExit(
+                // portable-pty ExitStatus → std ExitStatus via raw code
+                #[cfg(unix)]
+                std::os::unix::process::ExitStatusExt::from_raw(code),
+                #[cfg(not(unix))]
+                {
+                    // On non-Unix, synthesize via Command; ChildExit only needs .code()
+                    listener.send_event(AlacEvent::Exit);
+                    return;
+                },
+            ));
+        }
+        Err(_) => {
+            listener.send_event(AlacEvent::Exit);
+        }
+    }
+}
+
+/// Message handler thread: receives Msg from Notifier channel, writes to PTY or resizes.
+fn pty_message_loop(
+    rx: std::sync::mpsc::Receiver<Msg>,
+    mut writer: Box<dyn Write + Send>,
+    master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
+) {
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            Msg::Input(bytes) => {
+                let _ = writer.write_all(&bytes);
+                let _ = writer.flush();
+            }
+            Msg::Resize(size) => {
+                let pty_size = PtySize {
+                    rows: size.num_lines,
+                    cols: size.num_cols,
+                    pixel_width: size.num_cols * size.cell_width,
+                    pixel_height: size.num_lines * size.cell_height,
+                };
+                if let Ok(master) = master.lock() {
+                    let _ = master.resize(pty_size);
+                }
+            }
+            Msg::Shutdown => break,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Service detection from PTY output
 // ---------------------------------------------------------------------------
 
@@ -1029,7 +1167,7 @@ impl Render for TerminalView {
 
         let terminal_element = TerminalElement::new(
             self.terminal.term.clone(),
-            Notifier(self.terminal.notifier.0.clone()),
+            PtyNotifier(self.terminal.notifier.0.clone()),
             self.cursor_visible,
             focused,
             self.terminal.exited,
