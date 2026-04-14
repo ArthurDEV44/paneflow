@@ -9,8 +9,8 @@
 //! Tab bar UI is modeled after Zed's tab bar design.
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, InteractiveElement, IntoElement, Render,
-    SharedString, Styled, Window, div, prelude::*, px, rgb, svg,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    Render, SharedString, Styled, Window, div, prelude::*, px, rgb, svg,
 };
 
 use crate::terminal::{TerminalEvent, TerminalView};
@@ -220,6 +220,7 @@ impl Pane {
         let tab_count = self.tabs.len();
         let ui = tab_colors();
         let theme = crate::theme::active_theme();
+        let chrome_border = ui.border;
 
         // Outer container: full-width, fixed height, tab_bar background
         let bar = div()
@@ -231,7 +232,7 @@ impl Pane {
             .bg(theme.title_bar_background);
 
         // Scrollable tab area (Zed pattern: overflow_x_scroll on inner row)
-        let tabs_area = div().flex_1().h_full().overflow_x_hidden();
+        let tabs_area = div().relative().flex_1().h_full().overflow_x_hidden();
 
         let mut tabs_row = div()
             .id("pane-tabs-scroll")
@@ -248,6 +249,7 @@ impl Pane {
             let mut tab = div()
                 .id(SharedString::from(format!("pane-tab-{i}")))
                 .group(group_name.clone())
+                .relative()
                 .flex()
                 .flex_row()
                 .items_center()
@@ -258,9 +260,18 @@ impl Pane {
                 .text_size(px(14.));
 
             if is_selected {
-                tab = tab.bg(theme.background).text_color(ui.text);
+                tab = tab
+                    .bg(theme.background)
+                    .text_color(ui.text)
+                    .border_r_1()
+                    .border_color(chrome_border);
             } else {
-                tab = tab.bg(theme.title_bar_background).text_color(ui.muted);
+                tab = tab
+                    .bg(theme.title_bar_background)
+                    .text_color(ui.muted)
+                    .border_r_1()
+                    .border_b_1()
+                    .border_color(chrome_border);
             }
 
             // Close button — always visible on active tab, hover-only on inactive.
@@ -305,9 +316,10 @@ impl Pane {
                 .items_center()
                 .h(px(TAB_CONTENT_HEIGHT))
                 .px(px(TAB_PX))
-                .on_click(cx.listener(move |this, _, _window, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     if tab_idx < this.tabs.len() {
                         this.selected_idx = tab_idx;
+                        this.focus_handle(cx).focus(window, cx);
                         cx.notify();
                     }
                 }))
@@ -328,7 +340,17 @@ impl Pane {
             tabs_row = tabs_row.child(tab);
         }
 
-        let tabs_area = tabs_area.child(tabs_row);
+        let tabs_area = tabs_area
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .border_b_1()
+                    .border_color(chrome_border),
+            )
+            .child(tabs_row);
 
         // End section: action buttons
         let mut end_section = div()
@@ -337,6 +359,9 @@ impl Pane {
             .flex_row()
             .items_center()
             .h_full()
+            .border_l_1()
+            .border_b_1()
+            .border_color(chrome_border)
             .px(px(SECTION_PX))
             .gap(px(TAB_GAP));
 

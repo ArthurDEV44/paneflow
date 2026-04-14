@@ -1,19 +1,10 @@
 use gpui::{
-    AnyElement, Context, Decorations, IntoElement, MouseButton, Pixels, Render, Styled, Window,
-    WindowButton, WindowButtonLayout, WindowControlArea, WindowControls, div, prelude::*, px, svg,
+    AnyElement, ClickEvent, Context, Decorations, EventEmitter, IntoElement, MouseButton, Pixels,
+    Point, Render, Styled, Window, WindowButton, WindowControlArea, WindowControls, div,
+    prelude::*, px, svg,
 };
 
-/// Default button layout when the DE doesn't provide one.
-fn default_button_layout() -> WindowButtonLayout {
-    WindowButtonLayout {
-        left: [None, None, None],
-        right: [
-            Some(WindowButton::Minimize),
-            Some(WindowButton::Maximize),
-            Some(WindowButton::Close),
-        ],
-    }
-}
+use crate::csd::default_button_layout;
 
 pub struct TitleBar {
     should_move: bool,
@@ -30,6 +21,12 @@ impl TitleBar {
         }
     }
 }
+
+pub enum TitleBarEvent {
+    ToggleMenu(Point<Pixels>),
+}
+
+impl EventEmitter<TitleBarEvent> for TitleBar {}
 
 impl Render for TitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -62,6 +59,24 @@ impl Render for TitleBar {
             None
         };
 
+        let menu_button_side = if right_controls.is_some() || left_controls.is_none() {
+            "r"
+        } else {
+            "l"
+        };
+
+        let left_menu_button = if is_csd && menu_button_side == "l" {
+            Some(render_window_menu_button("l", cx))
+        } else {
+            None
+        };
+
+        let right_menu_button = if is_csd && menu_button_side == "r" {
+            Some(render_window_menu_button("r", cx))
+        } else {
+            None
+        };
+
         // --- Left section: "PaneFlow" brand, fixed width aligned with sidebar ---
         let ui = crate::theme::ui_colors();
         let brand = div()
@@ -88,6 +103,7 @@ impl Render for TitleBar {
         let mut bar = div()
             .id("title-bar")
             .window_control_area(WindowControlArea::Drag)
+            .relative()
             .flex()
             .flex_row()
             .items_center()
@@ -147,9 +163,20 @@ impl Render for TitleBar {
                 })
             })
             .children(left_controls)
+            .children(left_menu_button)
             .child(brand)
             .child(content)
             .children(right_controls)
+            .children(right_menu_button)
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(1.))
+                    .bg(ui.border),
+            )
     }
 }
 
@@ -252,6 +279,45 @@ fn render_window_button(
                 .size(px(16.))
                 .flex_none()
                 .path(icon_path)
+                .text_color(ui.text)
+        })
+        .into_any_element()
+}
+
+/// Render a title bar menu trigger that matches the window control buttons.
+fn render_window_menu_button(side: &'static str, cx: &mut Context<TitleBar>) -> AnyElement {
+    let element_id = format!("wc-menu-{side}");
+
+    div()
+        .id(gpui::SharedString::from(element_id))
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(28.))
+        .h(px(22.))
+        .ml(px(6.))
+        .rounded_sm()
+        .cursor_pointer()
+        .hover(|s| {
+            let ui = crate::theme::ui_colors();
+            s.bg(ui.subtle)
+        })
+        .active(|s| {
+            let ui = crate::theme::ui_colors();
+            s.bg(ui.subtle)
+        })
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(|_, event: &ClickEvent, _window, cx| {
+            cx.stop_propagation();
+            cx.emit(TitleBarEvent::ToggleMenu(event.position()));
+        }))
+        .child({
+            let ui = crate::theme::ui_colors();
+            svg()
+                .size(px(16.))
+                .flex_none()
+                .path("icons/menu_2.svg")
                 .text_color(ui.text)
         })
         .into_any_element()

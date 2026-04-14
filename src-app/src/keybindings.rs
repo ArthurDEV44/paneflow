@@ -8,12 +8,13 @@ use std::collections::HashMap;
 use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, Keystroke};
 
 use crate::{
-    ClosePane, CloseTab, CloseWindow, CloseWorkspace, FocusDown, FocusLeft, FocusRight, FocusUp,
-    LayoutEvenHorizontal, LayoutEvenVertical, LayoutMainVertical, LayoutTiled, NewTab,
-    NewWorkspace, NextWorkspace, ScrollPageDown, ScrollPageUp, SelectWorkspace1, SelectWorkspace2,
-    SelectWorkspace3, SelectWorkspace4, SelectWorkspace5, SelectWorkspace6, SelectWorkspace7,
-    SelectWorkspace8, SelectWorkspace9, SplitHorizontally, SplitVertically, TerminalCopy,
-    TerminalPaste, ToggleZoom,
+    ClosePane, CloseTab, CloseWindow, CloseWorkspace, CopyWorkspacePath, FocusDown, FocusLeft,
+    FocusRight, FocusUp, LayoutEvenHorizontal, LayoutEvenVertical, LayoutMainVertical, LayoutTiled,
+    NewTab, NewWorkspace, NextWorkspace, OpenWorkspaceInCursor, OpenWorkspaceInVsCode,
+    OpenWorkspaceInWindsurf, OpenWorkspaceInZed, RevealWorkspaceInFileManager, ScrollPageDown,
+    ScrollPageUp, SelectWorkspace1, SelectWorkspace2, SelectWorkspace3, SelectWorkspace4,
+    SelectWorkspace5, SelectWorkspace6, SelectWorkspace7, SelectWorkspace8, SelectWorkspace9,
+    SplitHorizontally, SplitVertically, TerminalCopy, TerminalPaste, ToggleZoom,
 };
 
 /// A default keybinding entry: keystroke string, action name, GPUI context filter.
@@ -48,6 +49,36 @@ const DEFAULTS: &[DefaultBinding] = &[
     DefaultBinding {
         key: "ctrl-shift-q",
         action_name: "close_workspace",
+        context: None,
+    },
+    DefaultBinding {
+        key: "ctrl-shift-alt-c",
+        action_name: "copy_workspace_path",
+        context: None,
+    },
+    DefaultBinding {
+        key: "ctrl-alt-r",
+        action_name: "reveal_workspace_in_file_manager",
+        context: None,
+    },
+    DefaultBinding {
+        key: "ctrl-alt-z",
+        action_name: "open_workspace_in_zed",
+        context: None,
+    },
+    DefaultBinding {
+        key: "ctrl-alt-c",
+        action_name: "open_workspace_in_cursor",
+        context: None,
+    },
+    DefaultBinding {
+        key: "ctrl-alt-v",
+        action_name: "open_workspace_in_vscode",
+        context: None,
+    },
+    DefaultBinding {
+        key: "ctrl-alt-w",
+        action_name: "open_workspace_in_windsurf",
         context: None,
     },
     DefaultBinding {
@@ -185,6 +216,12 @@ fn action_from_name(name: &str) -> Option<Box<dyn Action>> {
         "close_pane" => Box::new(ClosePane),
         "new_workspace" => Box::new(NewWorkspace),
         "close_workspace" => Box::new(CloseWorkspace),
+        "copy_workspace_path" => Box::new(CopyWorkspacePath),
+        "reveal_workspace_in_file_manager" => Box::new(RevealWorkspaceInFileManager),
+        "open_workspace_in_zed" => Box::new(OpenWorkspaceInZed),
+        "open_workspace_in_cursor" => Box::new(OpenWorkspaceInCursor),
+        "open_workspace_in_vscode" => Box::new(OpenWorkspaceInVsCode),
+        "open_workspace_in_windsurf" => Box::new(OpenWorkspaceInWindsurf),
         "next_workspace" => Box::new(NextWorkspace),
         "focus_left" => Box::new(FocusLeft),
         "focus_right" => Box::new(FocusRight),
@@ -301,6 +338,12 @@ fn action_description(name: &str) -> &'static str {
         "close_pane" => "Close pane",
         "new_workspace" => "New workspace",
         "close_workspace" => "Close workspace",
+        "copy_workspace_path" => "Copy path",
+        "reveal_workspace_in_file_manager" => "Reveal in file manager",
+        "open_workspace_in_zed" => "Open in Zed",
+        "open_workspace_in_cursor" => "Open in Cursor",
+        "open_workspace_in_vscode" => "Open in VS Code",
+        "open_workspace_in_windsurf" => "Open in Windsurf",
         "next_workspace" => "Next workspace",
         "focus_left" => "Focus left",
         "focus_right" => "Focus right",
