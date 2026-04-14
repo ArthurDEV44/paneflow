@@ -171,6 +171,7 @@ pub fn detect_branch(cwd: &str) -> (String, bool) {
 /// Returns the input PID plus all recursive descendants. On non-Linux or on
 /// read failure, returns only the input PID. Capped at 512 PIDs to bound
 /// memory usage in fork-bomb scenarios.
+#[cfg(target_os = "linux")]
 fn collect_descendant_pids(root_pid: u32) -> Vec<u32> {
     const MAX_PIDS: usize = 512;
     let mut visited = std::collections::HashSet::new();
@@ -204,6 +205,7 @@ fn collect_descendant_pids(root_pid: u32) -> Vec<u32> {
 ///
 /// Returns a sorted, deduplicated `Vec<u16>`. On non-Linux or on read failure,
 /// returns an empty Vec without panic.
+#[cfg(target_os = "linux")]
 pub fn detect_ports(pids: &[u32]) -> Vec<u16> {
     if pids.is_empty() {
         return vec![];
@@ -254,6 +256,7 @@ pub fn detect_ports(pids: &[u32]) -> Vec<u16> {
 }
 
 /// Collect all socket inodes from `/proc/{pid}/fd/` for the given PID set.
+#[cfg(target_os = "linux")]
 fn collect_socket_inodes(pids: &std::collections::HashSet<u32>) -> std::collections::HashSet<u64> {
     let mut inodes = std::collections::HashSet::new();
     for &pid in pids {
@@ -273,6 +276,13 @@ fn collect_socket_inodes(pids: &std::collections::HashSet<u32>) -> std::collecti
         }
     }
     inodes
+}
+
+/// Stub for non-Linux: port detection requires `/proc` (Linux-only).
+/// macOS: could use `lsof -i -P` or `libproc` bindings in the future.
+#[cfg(not(target_os = "linux"))]
+pub fn detect_ports(_pids: &[u32]) -> Vec<u16> {
+    vec![]
 }
 
 pub struct Workspace {
