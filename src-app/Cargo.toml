@@ -13,8 +13,8 @@ gpui = { path = "/home/arthur/dev/zed/crates/gpui" }
 gpui_platform = { path = "/home/arthur/dev/zed/crates/gpui_platform", features = ["wayland", "x11"] }
 collections = { path = "/home/arthur/dev/zed/crates/collections" }
 
-# Alacritty terminal (Zed's fork — local patch for OSC 7 support)
-alacritty_terminal = { path = "/home/arthur/dev/alacritty/alacritty_terminal" }
+# Alacritty terminal emulation (upstream crates.io — migrated from Zed fork in US-005)
+alacritty_terminal = "0.26"
 
 # Internal crates
 paneflow-config = { path = "../crates/paneflow-config" }
