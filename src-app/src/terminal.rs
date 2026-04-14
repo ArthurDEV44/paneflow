@@ -933,17 +933,18 @@ fn pty_reader_loop(
     match child.wait() {
         Ok(status) => {
             let code = status.exit_code() as i32;
+            // portable-pty ExitStatus → std ExitStatus. On Unix, from_raw() expects
+            // a raw wait(2) status where exit code lives in bits 8-15. Passing the
+            // plain exit code would misinterpret non-zero codes as signal numbers.
+            #[cfg(unix)]
             listener.send_event(AlacEvent::ChildExit(
-                // portable-pty ExitStatus → std ExitStatus via raw code
-                #[cfg(unix)]
-                std::os::unix::process::ExitStatusExt::from_raw(code),
-                #[cfg(not(unix))]
-                {
-                    // On non-Unix, synthesize via Command; ChildExit only needs .code()
-                    listener.send_event(AlacEvent::Exit);
-                    return;
-                },
+                std::os::unix::process::ExitStatusExt::from_raw(code << 8),
             ));
+            #[cfg(not(unix))]
+            {
+                let _ = code;
+                listener.send_event(AlacEvent::Exit);
+            }
         }
         Err(_) => {
             listener.send_event(AlacEvent::Exit);
