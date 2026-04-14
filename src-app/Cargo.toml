@@ -17,6 +17,9 @@ collections = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade
 # Alacritty terminal emulation (upstream crates.io — migrated from Zed fork in US-005)
 alacritty_terminal = "0.26"
 
+# Cross-platform PTY (US-007) — provides ConPTY on Windows, openpty on Unix
+portable-pty = "0.8"
+
 # Internal crates
 paneflow-config = { path = "../crates/paneflow-config" }
 

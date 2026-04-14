@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use alacritty_terminal::event::WindowSize;
-use alacritty_terminal::event_loop::{Msg, Notifier};
+use alacritty_terminal::event_loop::Msg;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::sync::FairMutex;
@@ -22,7 +22,7 @@ use gpui::{
     relative,
 };
 
-use crate::terminal::{SpikeTermSize, ZedListener};
+use crate::terminal::{PtyNotifier, SpikeTermSize, ZedListener};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -351,7 +351,7 @@ struct CellStyle {
 
 pub struct TerminalElement {
     term: Arc<FairMutex<Term<ZedListener>>>,
-    notifier: Notifier,
+    notifier: PtyNotifier,
     cursor_visible: bool,
     focused: bool,
     exited: Option<i32>,
@@ -365,7 +365,7 @@ pub struct TerminalElement {
 impl TerminalElement {
     pub fn new(
         term: Arc<FairMutex<Term<ZedListener>>>,
-        notifier: Notifier,
+        notifier: PtyNotifier,
         cursor_visible: bool,
         focused: bool,
         exited: Option<i32>,
