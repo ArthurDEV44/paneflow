@@ -318,13 +318,11 @@ impl TerminalState {
                 AlacEvent::Wakeup => {
                     self.dirty = true;
                 }
-                AlacEvent::CurrentWorkingDirectory(uri) => {
-                    if let Some(path) = parse_osc7_uri(&uri) {
-                        self.current_cwd = Some(path);
-                    }
-                }
+                // Upstream alacritty_terminal v0.26 uses ExitStatus instead of i32
+                // for ChildExit. CurrentWorkingDirectory was fork-only (OSC 7) —
+                // CWD tracking now relies on cwd_now() polling fallback.
                 AlacEvent::ChildExit(status) => {
-                    self.exited = Some(status);
+                    self.exited = Some(status.code().unwrap_or(-1));
                     self.dirty = true;
                     self.reported_ports.clear();
                 }
@@ -986,44 +984,6 @@ fn detect_framework(line: &str) -> (Option<String>, bool) {
 // ---------------------------------------------------------------------------
 // OSC 7 URI parsing
 // ---------------------------------------------------------------------------
-
-/// Parse an OSC 7 `file://` URI into a filesystem path.
-///
-/// Format: `file://hostname/path/to/dir` — hostname is ignored (local only),
-/// path is percent-decoded (e.g. `%20` → space). Returns `None` for malformed URIs.
-fn parse_osc7_uri(uri: &str) -> Option<String> {
-    let path_part = uri.strip_prefix("file://")?;
-    // Skip hostname: everything before the first `/` after `file://`
-    let path = match path_part.find('/') {
-        Some(idx) => &path_part[idx..],
-        None => return None,
-    };
-    if path.is_empty() {
-        return None;
-    }
-    Some(percent_decode(path))
-}
-
-/// Decode percent-encoded bytes in a URI path component.
-/// Handles `%XX` sequences where XX is a two-digit hex value.
-fn percent_decode(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut bytes = input.bytes();
-    while let Some(b) = bytes.next() {
-        if b == b'%' {
-            let hi = bytes.next().and_then(|c| (c as char).to_digit(16));
-            let lo = bytes.next().and_then(|c| (c as char).to_digit(16));
-            if let (Some(h), Some(l)) = (hi, lo) {
-                out.push((h * 16 + l) as u8 as char);
-            } else {
-                out.push('%');
-            }
-        } else {
-            out.push(b as char);
-        }
-    }
-    out
-}
 
 // ---------------------------------------------------------------------------
 // Terminal events
