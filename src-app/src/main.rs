@@ -10,6 +10,7 @@ mod ipc;
 mod keybindings;
 mod keys;
 mod pane;
+mod pty;
 mod settings_window;
 mod split;
 mod terminal;

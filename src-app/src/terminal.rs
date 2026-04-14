@@ -17,7 +17,9 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::term::TermMode;
 
-use portable_pty::{CommandBuilder, PtySize};
+use portable_pty::PtySize;
+
+use crate::pty::{PortablePtyBackend, PtyBackend};
 
 use gpui::{
     App, ClipboardItem, Context, EventEmitter, FocusHandle, InteractiveElement, IntoElement,
@@ -249,6 +251,7 @@ pub struct TerminalState {
 
 impl TerminalState {
     pub fn new(
+        backend: &dyn PtyBackend,
         working_directory: Option<std::path::PathBuf>,
         workspace_id: u64,
         surface_id: u64,
@@ -268,7 +271,7 @@ impl TerminalState {
         let term = Term::new(config, &dimensions, listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
-        // Create PTY via portable-pty (cross-platform: openpty on Unix, ConPTY on Windows)
+        // Build shell command and environment
         let shell = std::env::var("SHELL").unwrap_or_else(|_| {
             if cfg!(unix) {
                 "/bin/sh".to_string()
@@ -300,41 +303,8 @@ impl TerminalState {
         let cwd = working_directory
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
 
-        let pty_system = portable_pty::native_pty_system();
-        let pty_size = PtySize {
-            rows: rows as u16,
-            cols: cols as u16,
-            pixel_width: 0,
-            pixel_height: 0,
-        };
-        let pair = pty_system.openpty(pty_size).map_err(|e| {
-            log::error!("Failed to create PTY: {e}");
-            anyhow::anyhow!("Failed to create terminal: {e}")
-        })?;
-
-        let mut cmd = CommandBuilder::new(&shell);
-        for arg in &extra_args {
-            cmd.arg(arg);
-        }
-        cmd.cwd(&cwd);
-        for (k, v) in &env {
-            cmd.env(k, v);
-        }
-        let child = pair.slave.spawn_command(cmd).map_err(|e| {
-            log::error!("Failed to spawn shell '{shell}': {e}");
-            anyhow::anyhow!("Failed to spawn shell: {e}")
-        })?;
-        let child_pid = child.process_id().unwrap_or(0);
-
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| anyhow::anyhow!("Failed to clone PTY reader: {e}"))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| anyhow::anyhow!("Failed to take PTY writer: {e}"))?;
-        let master = Arc::new(Mutex::new(pair.master));
+        // Spawn PTY via the injected backend (US-008)
+        let pty = backend.spawn(&shell, &extra_args, &cwd, &env, rows as u16, cols as u16)?;
 
         // I/O threads replace AlacEventLoop (US-007).
         // Reader thread: reads PTY output → VTE parser → Term mutations → Wakeup.
@@ -342,14 +312,13 @@ impl TerminalState {
         let term_for_reader = term.clone();
         let listener_for_reader = ZedListener(events_tx.clone());
         std::thread::spawn(move || {
-            pty_reader_loop(reader, term_for_reader, listener_for_reader, child);
+            pty_reader_loop(pty.reader, term_for_reader, listener_for_reader, pty.child);
         });
 
         // Message handler thread: receives Notifier messages → writes to PTY / resizes.
         let (msg_tx, msg_rx) = std::sync::mpsc::channel::<Msg>();
-        let master_for_msgs = master.clone();
         std::thread::spawn(move || {
-            pty_message_loop(msg_rx, writer, master_for_msgs);
+            pty_message_loop(msg_rx, pty.writer, pty.master);
         });
 
         Ok(Self {
@@ -357,7 +326,7 @@ impl TerminalState {
             notifier: PtyNotifier(PtySender(msg_tx)),
             events_rx,
             exited: None,
-            child_pid,
+            child_pid: pty.child_pid,
             current_cwd: None,
             title: String::from("Terminal"),
             dirty: true, // Force initial render
@@ -574,8 +543,9 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> Self {
         let surface_id = cx.entity_id().as_u64();
-        let terminal =
-            TerminalState::new(cwd, workspace_id, surface_id).expect("Failed to create terminal");
+        let backend = PortablePtyBackend;
+        let terminal = TerminalState::new(&backend, cwd, workspace_id, surface_id)
+            .expect("Failed to create terminal");
         let focus_handle = cx.focus_handle();
 
         // Adaptive sync: poll fast (4ms) when active, slow (50ms) when idle.
@@ -1199,5 +1169,122 @@ impl Render for TerminalView {
             }))
             .size_full()
             .child(terminal_element)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pty::{PtyBackend, PtyProcess};
+    use std::collections::HashMap;
+    use std::io::Cursor;
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+
+    /// Mock PTY backend for testing — creates in-memory reader/writer pairs
+    /// without spawning a real shell process.
+    struct MockPtyBackend;
+
+    /// Minimal mock child process that reports exit code 0.
+    #[derive(Debug)]
+    struct MockChild;
+
+    impl portable_pty::ChildKiller for MockChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(MockChild)
+        }
+    }
+
+    impl portable_pty::Child for MockChild {
+        fn process_id(&self) -> Option<u32> {
+            Some(9999)
+        }
+
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            Ok(portable_pty::ExitStatus::with_exit_code(0))
+        }
+
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(Some(portable_pty::ExitStatus::with_exit_code(0)))
+        }
+    }
+
+    /// Minimal mock MasterPty — resize is a no-op.
+    struct MockMasterPty;
+
+    impl portable_pty::MasterPty for MockMasterPty {
+        fn resize(&self, _size: portable_pty::PtySize) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+
+        fn get_size(&self) -> Result<portable_pty::PtySize, anyhow::Error> {
+            Ok(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+        }
+
+        fn try_clone_reader(&self) -> Result<Box<dyn std::io::Read + Send>, anyhow::Error> {
+            Ok(Box::new(Cursor::new(Vec::new())))
+        }
+
+        fn take_writer(&self) -> Result<Box<dyn std::io::Write + Send>, anyhow::Error> {
+            Ok(Box::new(Vec::new()))
+        }
+
+        fn process_group_leader(&self) -> Option<i32> {
+            None
+        }
+
+        #[cfg(unix)]
+        fn as_raw_fd(&self) -> Option<i32> {
+            None
+        }
+    }
+
+    impl PtyBackend for MockPtyBackend {
+        fn spawn(
+            &self,
+            _command: &str,
+            _args: &[String],
+            _cwd: &Path,
+            _env: &HashMap<String, String>,
+            _rows: u16,
+            _cols: u16,
+        ) -> anyhow::Result<PtyProcess> {
+            // Return an empty reader that immediately reaches EOF,
+            // causing the reader thread to exit cleanly.
+            let reader: Box<dyn std::io::Read + Send> = Box::new(Cursor::new(Vec::new()));
+            let writer: Box<dyn std::io::Write + Send> = Box::new(Vec::new());
+            let child: Box<dyn portable_pty::Child + Send + Sync> = Box::new(MockChild);
+            let master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>> =
+                Arc::new(Mutex::new(Box::new(MockMasterPty)));
+
+            Ok(PtyProcess {
+                reader,
+                writer,
+                child,
+                master,
+                child_pid: 9999,
+            })
+        }
+    }
+
+    #[test]
+    fn mock_backend_creates_terminal_state() {
+        let backend = MockPtyBackend;
+        let state = TerminalState::new(&backend, None, 1, 1);
+        assert!(state.is_ok(), "TerminalState::new with mock backend failed");
+
+        let state = state.unwrap();
+        assert_eq!(state.child_pid, 9999);
+        assert!(state.exited.is_none());
+        assert_eq!(state.title, "Terminal");
     }
 }
