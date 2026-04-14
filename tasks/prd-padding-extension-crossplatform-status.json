@@ -48,12 +48,12 @@
       "id": "US-002",
       "title": "Vertical padding extension (top/bottom)",
       "epic": "EP-001",
-      "status": "TODO",
+      "status": "IN_REVIEW",
       "priority": "P1",
       "size": "S",
       "blocked_by": ["US-001"],
-      "started_at": null,
-      "completed_at": null,
+      "started_at": "2026-04-14",
+      "completed_at": "2026-04-14",
       "reviewed_at": null
     },
     {
