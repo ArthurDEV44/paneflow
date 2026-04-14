@@ -367,17 +367,19 @@ impl TerminalState {
         }
     }
 
-    /// Read the shell's CWD from `/proc/<pid>/cwd` on demand.
+    /// Read the shell's CWD from the OS on demand.
     /// Fallback for shells that don't emit OSC 7 — used at split time.
-    ///
-    /// # Platform gaps (for future porting)
-    /// - **macOS**: `/proc` doesn't exist. Use `proc_pidinfo()` with
-    ///   `PROC_PIDVNODEPATHINFO` instead.
-    /// - **Windows**: Use `NtQueryInformationProcess` with
-    ///   `ProcessCommandLineInformation`, or `GetFinalPathNameByHandle`.
+    #[cfg(target_os = "linux")]
     pub fn cwd_now(&self) -> Option<std::path::PathBuf> {
         let proc_path = format!("/proc/{}/cwd", self.child_pid);
         std::fs::read_link(&proc_path).ok()
+    }
+
+    /// Stub for non-Linux platforms. macOS: use `proc_pidinfo()` with
+    /// `PROC_PIDVNODEPATHINFO`. Windows: use `NtQueryInformationProcess`.
+    #[cfg(not(target_os = "linux"))]
+    pub fn cwd_now(&self) -> Option<std::path::PathBuf> {
+        None
     }
 
     /// Scan the last 100 lines of terminal output for server/service patterns.
