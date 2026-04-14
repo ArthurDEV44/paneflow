@@ -3,13 +3,13 @@
     "file": "tasks/prd-padding-extension-crossplatform.md",
     "title": "Padding Extension & Cross-Platform Foundation",
     "created_at": "2026-04-07",
-    "status": "IN_PROGRESS"
+    "status": "DONE"
   },
   "epics": [
     {
       "id": "EP-001",
       "title": "Padding Extension",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P0",
       "stories_total": 3,
       "stories_done": 3
@@ -17,7 +17,7 @@
     {
       "id": "EP-002",
       "title": "Dependency Decoupling",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P0",
       "stories_total": 3,
       "stories_done": 3
@@ -25,7 +25,7 @@
     {
       "id": "EP-003",
       "title": "Cross-Platform PTY Foundation",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P0",
       "stories_total": 3,
       "stories_done": 3
@@ -36,109 +36,109 @@
       "id": "US-001",
       "title": "Horizontal padding extension (left/right)",
       "epic": "EP-001",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P0",
       "size": "S",
       "blocked_by": [],
       "started_at": "2026-04-14",
       "completed_at": "2026-04-14",
-      "reviewed_at": null
+      "reviewed_at": "2026-04-14"
     },
     {
       "id": "US-002",
       "title": "Vertical padding extension (top/bottom)",
       "epic": "EP-001",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P1",
       "size": "S",
       "blocked_by": ["US-001"],
       "started_at": "2026-04-14",
       "completed_at": "2026-04-14",
-      "reviewed_at": null
+      "reviewed_at": "2026-04-14"
     },
     {
       "id": "US-003",
       "title": "neverExtendBg heuristic",
       "epic": "EP-001",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P1",
       "size": "M",
       "blocked_by": ["US-001"],
       "started_at": "2026-04-14",
       "completed_at": "2026-04-14",
-      "reviewed_at": null
+      "reviewed_at": "2026-04-14"
     },
     {
       "id": "US-004",
       "title": "Spike — Upstream alacritty_terminal API compatibility",
       "epic": "EP-002",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P0",
       "size": "M",
       "blocked_by": [],
       "started_at": "2026-04-14",
       "completed_at": "2026-04-14",
-      "reviewed_at": null
+      "reviewed_at": "2026-04-14"
     },
     {
       "id": "US-005",
       "title": "Migrate to upstream alacritty_terminal",
       "epic": "EP-002",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P0",
       "size": "L",
       "blocked_by": ["US-004"],
       "started_at": "2026-04-14",
       "completed_at": "2026-04-14",
-      "reviewed_at": null
+      "reviewed_at": "2026-04-14"
     },
     {
       "id": "US-006",
       "title": "GPUI git dependency with pinned rev",
       "epic": "EP-002",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P1",
       "size": "M",
       "blocked_by": [],
       "started_at": "2026-04-14",
       "completed_at": "2026-04-14",
-      "reviewed_at": null
+      "reviewed_at": "2026-04-14"
     },
     {
       "id": "US-007",
       "title": "Integrate portable-pty",
       "epic": "EP-003",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P0",
       "size": "M",
       "blocked_by": [],
       "started_at": "2026-04-14",
       "completed_at": "2026-04-14",
-      "reviewed_at": null
+      "reviewed_at": "2026-04-14"
     },
     {
       "id": "US-008",
       "title": "PTY trait abstraction",
       "epic": "EP-003",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P1",
       "size": "S",
       "blocked_by": ["US-007"],
       "started_at": "2026-04-14",
       "completed_at": "2026-04-14",
-      "reviewed_at": null
+      "reviewed_at": "2026-04-14"
     },
     {
       "id": "US-009",
       "title": "macOS build validation",
       "epic": "EP-003",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P2",
       "size": "S",
       "blocked_by": ["US-005", "US-006", "US-007"],
       "started_at": "2026-04-14",
       "completed_at": "2026-04-14",
-      "reviewed_at": null
+      "reviewed_at": "2026-04-14"
     }
   ]
 }
