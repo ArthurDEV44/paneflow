@@ -262,6 +262,14 @@ fn context_for_action(name: &str) -> Option<&'static str> {
     }
 }
 
+/// Normalize a user-friendly keystroke string to GPUI format.
+///
+/// Users may write `"ctrl+shift+d"` (plus separators) in `paneflow.json`,
+/// but GPUI expects `"ctrl-shift-d"` (dash separators).
+fn normalize_keystroke(keystrokes: &str) -> String {
+    keystrokes.replace('+', "-")
+}
+
 /// Build a `KeyBinding` from a boxed action, using `KeyBinding::load` to avoid
 /// the `A: Action` bound on `KeyBinding::new`. Returns `None` on invalid keystroke.
 fn make_binding(
@@ -269,13 +277,14 @@ fn make_binding(
     action: Box<dyn Action>,
     context: Option<&str>,
 ) -> Option<KeyBinding> {
+    let normalized = normalize_keystroke(keystrokes);
     let predicate = context.map(|ctx| {
         KeyBindingContextPredicate::parse(ctx)
             .expect("invalid context predicate")
             .into()
     });
     match KeyBinding::load(
-        keystrokes,
+        &normalized,
         action,
         predicate,
         false,
