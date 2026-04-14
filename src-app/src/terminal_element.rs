@@ -312,6 +312,8 @@ pub struct LayoutState {
     history_size: usize,
     /// Number of columns in the terminal grid (for padding extension)
     desired_cols: usize,
+    /// Number of rows in the terminal grid (for padding extension)
+    desired_rows: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -716,6 +718,7 @@ impl TerminalElement {
             display_offset,
             history_size,
             desired_cols,
+            desired_rows,
         }
     }
 }
@@ -911,14 +914,18 @@ impl Element for TerminalElement {
             window.paint_quad(fill(bounds, layout.background_color));
 
             // 2. Paint per-cell background rects (pixel-aligned to prevent gaps)
-            //    Edge cells extend into the gutter/padding to fill the full widget
-            //    width, matching Ghostty's EXTEND_LEFT/RIGHT behavior (EP-001/US-001).
+            //    Edge cells extend into gutter/padding to fill the full widget,
+            //    matching Ghostty's EXTEND_LEFT/RIGHT/UP/DOWN (EP-001/US-001+US-002).
             let widget_left = bounds.origin.x;
             let widget_right = bounds.origin.x + bounds.size.width;
+            let widget_top = bounds.origin.y;
+            let widget_bottom = bounds.origin.y + bounds.size.height;
+            let last_row = layout.desired_rows.saturating_sub(1) as i32;
             for rect in &layout.rects {
                 let mut x = (origin.x + cell_width * rect.col as f32).floor();
-                let y = origin.y + line_height * rect.line as f32;
+                let mut y = origin.y + line_height * rect.line as f32;
                 let mut right = (origin.x + cell_width * (rect.col + rect.num_cols) as f32).ceil();
+                let mut bottom = y + line_height;
 
                 // Extend left edge into gutter for column-0 rects
                 if rect.col == 0 {
@@ -928,12 +935,20 @@ impl Element for TerminalElement {
                 if rect.col + rect.num_cols >= layout.desired_cols {
                     right = widget_right;
                 }
+                // Extend top edge for first-row rects
+                if rect.line == 0 {
+                    y = widget_top;
+                }
+                // Extend bottom edge for last-row rects
+                if rect.line == last_row {
+                    bottom = widget_bottom;
+                }
 
                 let rect_bounds = Bounds::new(
                     Point { x, y },
                     gpui::Size {
                         width: (right - x).max(px(0.0)),
-                        height: line_height,
+                        height: (bottom - y).max(px(0.0)),
                     },
                 );
                 window.paint_quad(fill(rect_bounds, rect.color));
