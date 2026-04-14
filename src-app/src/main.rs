@@ -151,7 +151,11 @@ struct PaneFlowApp {
     active_idx: usize,
     renaming_idx: Option<usize>,
     rename_text: String,
-    last_config_mtime: Option<std::time::SystemTime>,
+    /// Shared slot for config changes from the background `ConfigWatcher` thread.
+    /// The watcher writes `Some(config)` on every successful reload; the main
+    /// thread `take()`s it in the 50ms poll loop to apply keybindings + theme.
+    pending_config:
+        std::sync::Arc<std::sync::Mutex<Option<paneflow_config::schema::PaneFlowConfig>>>,
     ipc_rx: std::sync::mpsc::Receiver<ipc::IpcRequest>,
     title_bar: Entity<title_bar::TitleBar>,
     /// File watcher for `.git/HEAD` and `.git/index` across all workspaces.
@@ -617,8 +621,26 @@ impl PaneFlowApp {
         let title_bar = cx.new(title_bar::TitleBar::new);
         cx.subscribe(&title_bar, Self::handle_title_bar_event)
             .detach();
-        let last_config_mtime = crate::theme::config_mtime();
         let ipc_rx = ipc::start_server();
+
+        // ConfigWatcher: background thread detects file changes (300ms debounce),
+        // stores parsed config in a shared slot for the 50ms poll loop to pick up.
+        // Note: `start()` moves the OS watcher into a background thread, so the
+        // `ConfigWatcher` struct itself can be safely dropped after starting.
+        let pending_config = std::sync::Arc::new(std::sync::Mutex::new(
+            None::<paneflow_config::schema::PaneFlowConfig>,
+        ));
+        let pending_config_writer = std::sync::Arc::clone(&pending_config);
+        let _config_watcher = paneflow_config::watcher::ConfigWatcher::new(std::sync::Arc::new(
+            move |cfg: paneflow_config::schema::PaneFlowConfig| {
+                *pending_config_writer
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(cfg);
+            },
+        ));
+        if let Err(e) = _config_watcher.start() {
+            log::warn!("config watcher failed to start: {e}; config hot-reload disabled");
+        }
 
         // Restore session or create a single default workspace
         let (workspaces, active_idx) = if let Some(session) = Self::load_session() {
@@ -789,7 +811,7 @@ impl PaneFlowApp {
         )
         .detach();
 
-        // Poll IPC requests every 50ms
+        // Poll IPC requests + config changes every 50ms
         cx.spawn(
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 loop {
@@ -797,6 +819,7 @@ impl PaneFlowApp {
                     let result = cx.update(|cx| {
                         this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
                             app.process_ipc_requests(cx);
+                            app.process_config_changes(cx);
                         })
                     });
                     if result.is_err() {
@@ -807,31 +830,8 @@ impl PaneFlowApp {
         )
         .detach();
 
-        // Poll config file for theme + keybinding changes every 500ms
-        cx.spawn(
-            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                loop {
-                    smol::Timer::after(std::time::Duration::from_millis(500)).await;
-                    let result = cx.update(|cx| {
-                        this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
-                            let current_mtime = crate::theme::config_mtime();
-                            if current_mtime != app.last_config_mtime {
-                                app.last_config_mtime = current_mtime;
-                                let config = paneflow_config::loader::load_config();
-                                keybindings::apply_keybindings(cx, &config.shortcuts);
-                                app.effective_shortcuts =
-                                    keybindings::effective_shortcuts(&config.shortcuts);
-                                cx.notify();
-                            }
-                        })
-                    });
-                    if result.is_err() {
-                        break;
-                    }
-                }
-            },
-        )
-        .detach();
+        // Config hot-reload is now driven by ConfigWatcher (notify crate, 300ms debounce).
+        // Changes are picked up in the 50ms IPC poll loop below via process_config_changes().
 
         // Fallback: poll git metadata for all workspaces every 30s.
         // Primary detection is event-driven (US-003 notify watcher above).
@@ -931,7 +931,7 @@ impl PaneFlowApp {
             active_idx,
             renaming_idx: None,
             rename_text: String::new(),
-            last_config_mtime,
+            pending_config,
             ipc_rx,
             title_bar,
             git_watcher,
@@ -1108,6 +1108,21 @@ impl PaneFlowApp {
         while let Ok(req) = self.ipc_rx.try_recv() {
             let result = self.handle_ipc(&req.method, &req.params, cx);
             let _ = req.response_tx.send(result);
+        }
+    }
+
+    /// Apply any pending config change deposited by the background `ConfigWatcher`.
+    fn process_config_changes(&mut self, cx: &mut Context<Self>) {
+        let new_config = self
+            .pending_config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(config) = new_config {
+            keybindings::apply_keybindings(cx, &config.shortcuts);
+            self.effective_shortcuts = keybindings::effective_shortcuts(&config.shortcuts);
+            crate::theme::invalidate_theme_cache();
+            cx.notify();
         }
     }
 
