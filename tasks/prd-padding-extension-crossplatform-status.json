@@ -17,7 +17,7 @@
     {
       "id": "EP-002",
       "title": "Dependency Decoupling",
-      "status": "TODO",
+      "status": "IN_PROGRESS",
       "priority": "P0",
       "stories_total": 3,
       "stories_done": 0
@@ -72,12 +72,12 @@
       "id": "US-004",
       "title": "Spike — Upstream alacritty_terminal API compatibility",
       "epic": "EP-002",
-      "status": "TODO",
+      "status": "IN_REVIEW",
       "priority": "P0",
       "size": "M",
       "blocked_by": [],
-      "started_at": null,
-      "completed_at": null,
+      "started_at": "2026-04-14",
+      "completed_at": "2026-04-14",
       "reviewed_at": null
     },
     {
