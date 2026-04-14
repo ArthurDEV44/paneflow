@@ -287,6 +287,7 @@ impl PaneFlowApp {
                         ws.root = Some(LayoutTree::Leaf(new_pane));
                     }
                 }
+                self.save_session(cx);
                 cx.notify();
             }
             pane::PaneEvent::Split(direction) => {
@@ -308,6 +309,7 @@ impl PaneFlowApp {
                 {
                     root.split_at_pane(&pane, direction, new_pane);
                 }
+                self.save_session(cx);
                 cx.notify();
             }
         }
@@ -1159,6 +1161,7 @@ impl PaneFlowApp {
                 self.watch_git_dir(&ws);
                 self.workspaces.push(ws);
                 let idx = self.workspaces.len() - 1;
+                self.save_session(cx);
                 cx.notify();
                 serde_json::json!({"index": idx, "title": name})
             }
@@ -1166,6 +1169,7 @@ impl PaneFlowApp {
                 let idx = params.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
                 if idx < self.workspaces.len() {
                     self.active_idx = idx;
+                    self.save_session(cx);
                     cx.notify();
                     serde_json::json!({"selected": idx})
                 } else {
@@ -1189,6 +1193,7 @@ impl PaneFlowApp {
                         if self.active_idx >= self.workspaces.len() {
                             self.active_idx = self.workspaces.len() - 1;
                         }
+                        self.save_session(cx);
                         cx.notify();
                         serde_json::json!({"closed": idx})
                     } else {
@@ -1251,6 +1256,7 @@ impl PaneFlowApp {
                 };
                 root.split_first_leaf(direction, new_pane);
                 let panes = ws.pane_count();
+                self.save_session(cx);
                 cx.notify();
                 serde_json::json!({"split": true, "direction": dir_str, "panes": panes})
             }
@@ -1516,6 +1522,7 @@ impl PaneFlowApp {
         if idx < self.workspaces.len() && idx != self.active_idx {
             self.active_idx = idx;
             self.workspaces[idx].focus_first(window, cx);
+            self.save_session(cx);
             cx.notify();
         }
     }
@@ -1535,6 +1542,7 @@ impl PaneFlowApp {
         self.workspaces.push(ws);
         self.active_idx = self.workspaces.len() - 1;
         self.workspaces[self.active_idx].focus_first(window, cx);
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -1573,6 +1581,7 @@ impl PaneFlowApp {
                                 app.workspaces.push(ws);
                             }
                             app.active_idx = app.workspaces.len() - 1;
+                            app.save_session(cx);
                             cx.notify();
                         })
                     });
@@ -1613,6 +1622,7 @@ impl PaneFlowApp {
         {
             new_pane.read(cx).focus_handle(cx).focus(window, cx);
         }
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -1675,6 +1685,7 @@ impl PaneFlowApp {
             }
         }
 
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -1711,6 +1722,7 @@ impl PaneFlowApp {
             ws.root = Some(LayoutTree::Leaf(focused.clone()));
             focused.read(cx).focus_handle(cx).focus(window, cx);
         }
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -1749,6 +1761,7 @@ impl PaneFlowApp {
         if let Some(ref r) = ws.root {
             r.focus_first(window, cx);
         }
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -1812,6 +1825,7 @@ impl PaneFlowApp {
             return Err("No active workspace".into());
         };
         ws.root = Some(tree);
+        self.save_session(cx);
         cx.notify();
         Ok(())
     }
@@ -1878,6 +1892,7 @@ impl PaneFlowApp {
         drop(ws.root.take());
         ws.root = LayoutTree::main_vertical(main_pane.clone(), others);
         main_pane.read(cx).focus_handle(cx).focus(window, cx);
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -1903,6 +1918,7 @@ impl PaneFlowApp {
                 p.add_tab(terminal, cx);
             });
             pane.read(cx).focus_handle(cx).focus(window, cx);
+            self.save_session(cx);
             cx.notify();
         }
     }
@@ -1925,6 +1941,7 @@ impl PaneFlowApp {
             {
                 root.focus_first(window, cx);
             }
+            self.save_session(cx);
             cx.notify();
         }
     }
@@ -2035,6 +2052,7 @@ impl PaneFlowApp {
             self.active_idx -= 1;
         }
         self.workspaces[self.active_idx].focus_first(window, cx);
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -2161,13 +2179,14 @@ impl PaneFlowApp {
         ));
     }
 
-    fn commit_rename(&mut self) {
+    fn commit_rename(&mut self, cx: &App) {
         if let Some(idx) = self.renaming_idx.take() {
             let text = std::mem::take(&mut self.rename_text);
             if !text.is_empty()
                 && let Some(ws) = self.workspaces.get_mut(idx)
             {
                 ws.title = text;
+                self.save_session(cx);
             }
         }
     }
@@ -2475,11 +2494,11 @@ impl PaneFlowApp {
                     this.title_bar_menu_open = None;
                     let is_double = matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2);
                     if is_double {
-                        this.commit_rename(); // commit any previous rename
+                        this.commit_rename(cx); // commit any previous rename
                         this.rename_text = this.workspaces[idx].title.clone();
                         this.renaming_idx = Some(idx);
                     } else {
-                        this.commit_rename();
+                        this.commit_rename(cx);
                         this.select_workspace(idx, window, cx);
                     }
                     cx.notify();
@@ -2488,7 +2507,7 @@ impl PaneFlowApp {
                     if e.is_right_click()
                         && let Some(position) = e.mouse_position()
                     {
-                        this.commit_rename();
+                        this.commit_rename(cx);
                         this.title_bar_menu_open = None;
                         this.workspace_menu_open = Some(WorkspaceContextMenu { idx, position });
                         cx.stop_propagation();
@@ -2502,7 +2521,7 @@ impl PaneFlowApp {
                     let key = e.keystroke.key.as_str();
                     match key {
                         "enter" => {
-                            this.commit_rename();
+                            this.commit_rename(cx);
                             cx.notify();
                         }
                         "escape" => {
