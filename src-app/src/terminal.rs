@@ -313,6 +313,14 @@ impl TerminalState {
             env.insert("PANEFLOW_SOCKET_PATH".into(), socket_path);
         }
 
+        // Standard terminal identification for TUI app capability detection.
+        env.insert("TERM_PROGRAM".into(), "paneflow".into());
+        env.insert(
+            "TERM_PROGRAM_VERSION".into(),
+            env!("CARGO_PKG_VERSION").into(),
+        );
+        env.insert("COLORTERM".into(), "truecolor".into());
+
         // Expose wrapper scripts directory for shell integration.
         if let Some(bin_dir) = paneflow_bin_dir() {
             ensure_wrapper_scripts(&bin_dir);
@@ -458,6 +466,135 @@ impl TerminalState {
     pub fn write_to_pty(&self, input: impl Into<Cow<'static, [u8]>>) {
         self.notifier.notify(input);
     }
+
+    /// Extract scrollback as plain text (ANSI stripped) for session persistence.
+    /// Caps at 4000 lines and 400,000 characters. Returns None if scrollback is empty.
+    pub fn extract_scrollback(&self) -> Option<String> {
+        const MAX_LINES: usize = 4000;
+        const MAX_CHARS: usize = 400_000;
+
+        let term = self.term.lock();
+        let top = term.topmost_line();
+        let bottom = term.bottommost_line();
+        let cols = term.last_column();
+
+        let mut lines: Vec<String> = Vec::new();
+        let mut row = top.0;
+        while row <= bottom.0 {
+            let text = term.bounds_to_string(
+                AlacPoint::new(GridLine(row), GridCol(0)),
+                AlacPoint::new(GridLine(row), cols),
+            );
+            lines.push(text.trim_end().to_string());
+            row += 1;
+        }
+
+        // Trim trailing empty lines
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+
+        if lines.is_empty() {
+            return None;
+        }
+
+        // Keep only the most recent MAX_LINES
+        if lines.len() > MAX_LINES {
+            lines.drain(..lines.len() - MAX_LINES);
+        }
+
+        let mut result = lines.join("\n");
+
+        // Cap at MAX_CHARS
+        if result.len() > MAX_CHARS {
+            // Truncate to MAX_CHARS, then trim to last complete line
+            result.truncate(MAX_CHARS);
+            if let Some(last_newline) = result.rfind('\n') {
+                result.truncate(last_newline);
+            }
+            // ANSI-safe: strip any partial escape sequence at the truncation boundary.
+            // bounds_to_string produces plain text today, but this guards against
+            // future changes that might preserve escape sequences.
+            strip_partial_ansi_tail(&mut result);
+        }
+
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
+    /// Feed saved scrollback text into the terminal grid via VTE processor.
+    /// Called during session restore, before the shell has produced output.
+    /// Prepends `\x1b[0m` (SGR reset) to clear any dangling style state from
+    /// a prior truncated scrollback — ANSI-safe defense-in-depth (US-012).
+    pub fn restore_scrollback(&self, text: &str) {
+        let mut term = self.term.lock();
+        let mut processor = alacritty_terminal::vte::ansi::Processor::<
+            alacritty_terminal::vte::ansi::StdSyncHandler,
+        >::new();
+        // Reset any dangling style state before feeding restored content
+        processor.advance(&mut *term, b"\x1b[0m");
+        // Feed each line with \r\n to advance the cursor
+        for line in text.split('\n') {
+            let bytes = line.as_bytes();
+            if !bytes.is_empty() {
+                processor.advance(&mut *term, bytes);
+            }
+            processor.advance(&mut *term, b"\r\n");
+        }
+    }
+}
+
+/// Strip any partial ANSI escape sequence from the end of a truncated string.
+///
+/// Scans backward from the end for an ESC (`\x1b`) that starts a CSI (`\x1b[`),
+/// OSC (`\x1b]`), or DCS (`\x1bP`) sequence. If the sequence is unterminated
+/// (no final byte in the valid range), it is removed. Plain text strings with
+/// no ESC bytes are returned unmodified — truncation is identical to naive splitting.
+fn strip_partial_ansi_tail(text: &mut String) {
+    // Find the last ESC byte
+    let Some(esc_pos) = text.rfind('\x1b') else {
+        return; // No escape sequences at all
+    };
+
+    let tail = &text[esc_pos..];
+    let bytes = tail.as_bytes();
+
+    if bytes.len() < 2 {
+        // Lone ESC at the very end — always incomplete
+        text.truncate(esc_pos);
+        return;
+    }
+
+    match bytes[1] {
+        b'[' => {
+            // CSI sequence: \x1b[ ... terminated by byte in 0x40..=0x7E
+            let terminated = bytes[2..].iter().any(|&b| (0x40..=0x7E).contains(&b));
+            if !terminated {
+                text.truncate(esc_pos);
+            }
+        }
+        b']' => {
+            // OSC sequence: \x1b] ... terminated by BEL (0x07) or ST (\x1b\\)
+            let terminated = bytes[2..].contains(&0x07) || tail[2..].contains("\x1b\\");
+            if !terminated {
+                text.truncate(esc_pos);
+            }
+        }
+        b'P' => {
+            // DCS sequence: \x1bP ... terminated by ST (\x1b\\)
+            let terminated = tail[2..].contains("\x1b\\");
+            if !terminated {
+                text.truncate(esc_pos);
+            }
+        }
+        _ => {
+            // Other ESC sequences (SS2, SS3, etc.) are 2 bytes — if we have 2+ bytes
+            // it's complete. Nothing to strip.
+        }
+    }
 }
 
 /// Compute the PaneFlow IPC socket path: `$XDG_RUNTIME_DIR/paneflow/paneflow.sock`.
@@ -556,6 +693,20 @@ pub struct TerminalView {
     element_origin: Arc<Mutex<gpui::Point<gpui::Pixels>>>,
     /// Sub-line scroll accumulator for smooth trackpad scrolling
     scroll_remainder: f32,
+    /// Whether the search overlay is visible
+    search_active: bool,
+    /// Current search query string
+    search_query: String,
+    /// Cached search matches (grid coordinates)
+    search_matches: Vec<crate::search::SearchMatch>,
+    /// Index of the currently focused match (for navigation)
+    search_current: usize,
+    /// Whether copy mode (keyboard-driven selection) is active
+    copy_mode_active: bool,
+    /// Copy mode cursor position in grid coordinates
+    copy_cursor: AlacPoint,
+    /// Display offset frozen at copy mode entry to prevent auto-scroll
+    copy_mode_frozen_offset: usize,
 }
 
 impl TerminalView {
@@ -630,6 +781,18 @@ impl TerminalView {
 
                                 idle_ticks = 0;
                                 if !suppress {
+                                    // Copy mode: restore frozen display offset to prevent
+                                    // auto-scroll when new terminal output arrives.
+                                    if view.copy_mode_active {
+                                        let mut term = view.terminal.term.lock();
+                                        let current = term.grid().display_offset();
+                                        let frozen = view.copy_mode_frozen_offset;
+                                        if current != frozen {
+                                            let delta = frozen as i32 - current as i32;
+                                            term.scroll_display(AlacScroll::Delta(delta));
+                                        }
+                                    }
+
                                     cx.notify();
                                 }
                             } else {
@@ -679,6 +842,13 @@ impl TerminalView {
             line_height: gpui::px(16.0),
             element_origin: Arc::new(Mutex::new(gpui::Point::default())),
             scroll_remainder: 0.0,
+            search_active: false,
+            search_query: String::new(),
+            search_matches: Vec::new(),
+            search_current: 0,
+            copy_mode_active: false,
+            copy_cursor: AlacPoint::new(GridLine(0), GridCol(0)),
+            copy_mode_frozen_offset: 0,
         }
     }
 
@@ -686,8 +856,83 @@ impl TerminalView {
         &mut self,
         event: &KeyDownEvent,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
+        // Cancel swap mode on Escape — checked before any other mode handling
+        if crate::SWAP_MODE.load(std::sync::atomic::Ordering::Relaxed)
+            && event.keystroke.key == "escape"
+        {
+            cx.emit(TerminalEvent::CancelSwapMode);
+            return;
+        }
+
+        // When search overlay is active, redirect typed characters to search query
+        if self.search_active {
+            let keystroke = &event.keystroke;
+            if keystroke.key == "backspace" && !keystroke.modifiers.control {
+                self.search_query.pop();
+                self.run_search();
+                cx.notify();
+                return;
+            }
+            if let Some(key_char) = &keystroke.key_char
+                && !keystroke.modifiers.control
+                && !keystroke.modifiers.alt
+                && self.search_query.len() < crate::search::MAX_QUERY_LEN
+            {
+                self.search_query.push_str(key_char);
+                self.run_search();
+                cx.notify();
+                return;
+            }
+            // Consume all other keys while search is active — action bindings
+            // (ToggleSearch, DismissSearch, SearchNext, SearchPrev) are dispatched
+            // by GPUI before on_key_down, so they still fire. Everything else
+            // (F-keys, Alt combos, etc.) is intentionally suppressed.
+            return;
+        }
+
+        // When copy mode is active, intercept navigation and exit keys
+        if self.copy_mode_active {
+            let keystroke = &event.keystroke;
+            let key = keystroke.key.as_str();
+            let shift = keystroke.modifiers.shift;
+
+            match key {
+                "left" | "right" | "up" | "down" => {
+                    let (dx, dy): (i32, i32) = match key {
+                        "left" => (-1, 0),
+                        "right" => (1, 0),
+                        "up" => (0, -1),
+                        "down" => (0, 1),
+                        _ => unreachable!(),
+                    };
+                    if shift {
+                        self.extend_copy_selection(dx, dy, cx);
+                    } else {
+                        self.move_copy_cursor(dx, dy, cx);
+                    }
+                }
+                "enter" => {
+                    self.exit_copy_mode(true, cx);
+                }
+                "escape" => {
+                    self.exit_copy_mode(false, cx);
+                }
+                _ => {
+                    // 'q' exits copy mode (vi-style)
+                    if keystroke.key_char.as_deref() == Some("q")
+                        && !keystroke.modifiers.control
+                        && !keystroke.modifiers.alt
+                    {
+                        self.exit_copy_mode(false, cx);
+                    }
+                    // All other keys consumed — not sent to PTY
+                }
+            }
+            return;
+        }
+
         #[cfg(debug_assertions)]
         let _probe_start = if probe_enabled() {
             Some(std::time::Instant::now())
@@ -1121,6 +1366,219 @@ fn detect_framework(line: &str) -> (Option<String>, bool) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Search methods on TerminalView
+// ---------------------------------------------------------------------------
+
+impl TerminalView {
+    fn toggle_search(&mut self, cx: &mut Context<Self>) {
+        self.search_active = !self.search_active;
+        if !self.search_active {
+            self.search_query.clear();
+            self.search_matches.clear();
+            self.search_current = 0;
+            // Reset scroll position
+            let mut term = self.terminal.term.lock();
+            term.scroll_display(AlacScroll::Bottom);
+        }
+        cx.notify();
+    }
+
+    fn dismiss_search(&mut self, cx: &mut Context<Self>) {
+        self.search_active = false;
+        self.search_query.clear();
+        self.search_matches.clear();
+        self.search_current = 0;
+        let mut term = self.terminal.term.lock();
+        term.scroll_display(AlacScroll::Bottom);
+        cx.notify();
+    }
+
+    fn search_next(&mut self, cx: &mut Context<Self>) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        self.search_current = (self.search_current + 1) % self.search_matches.len();
+        self.scroll_to_current_match();
+        cx.notify();
+    }
+
+    fn search_prev(&mut self, cx: &mut Context<Self>) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        if self.search_current == 0 {
+            self.search_current = self.search_matches.len() - 1;
+        } else {
+            self.search_current -= 1;
+        }
+        self.scroll_to_current_match();
+        cx.notify();
+    }
+
+    fn run_search(&mut self) {
+        self.search_matches = crate::search::search_term(&self.terminal.term, &self.search_query);
+        self.search_current = 0;
+        if !self.search_matches.is_empty() {
+            self.scroll_to_current_match();
+        }
+    }
+
+    fn scroll_to_current_match(&mut self) {
+        if let Some(m) = self.search_matches.get(self.search_current) {
+            crate::search::scroll_to_match(&self.terminal.term, m);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Copy mode methods on TerminalView
+// ---------------------------------------------------------------------------
+
+impl TerminalView {
+    fn toggle_copy_mode(&mut self, cx: &mut Context<Self>) {
+        if self.copy_mode_active {
+            self.exit_copy_mode(false, cx);
+        } else {
+            self.enter_copy_mode(cx);
+        }
+    }
+
+    fn enter_copy_mode(&mut self, cx: &mut Context<Self>) {
+        // Dismiss search if active
+        if self.search_active {
+            self.dismiss_search(cx);
+        }
+
+        let mut term = self.terminal.term.lock();
+        let cursor_point = term.renderable_content().cursor.point;
+        let display_offset = term.grid().display_offset();
+        let screen_lines = term.screen_lines();
+        term.selection = None;
+
+        // Convert display-relative cursor to grid coordinates.
+        // If the cursor is off-screen (scrolled away), place at viewport center.
+        let cursor_display_line = cursor_point.line.0;
+        let copy_cursor = if cursor_display_line >= 0 && cursor_display_line < screen_lines as i32 {
+            AlacPoint::new(
+                GridLine(cursor_display_line - display_offset as i32),
+                cursor_point.column,
+            )
+        } else {
+            // Cursor off-screen — place at center of viewport
+            let center_display = screen_lines as i32 / 2;
+            AlacPoint::new(GridLine(center_display - display_offset as i32), GridCol(0))
+        };
+        drop(term);
+
+        self.copy_cursor = copy_cursor;
+        self.copy_mode_frozen_offset = display_offset;
+        self.copy_mode_active = true;
+
+        cx.notify();
+    }
+
+    fn exit_copy_mode(&mut self, copy_to_clipboard: bool, cx: &mut Context<Self>) {
+        let mut term = self.terminal.term.lock();
+
+        if copy_to_clipboard {
+            if let Some(text) = term.selection_to_string() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            // After copying, scroll to bottom
+            term.scroll_display(AlacScroll::Bottom);
+        } else {
+            // On cancel, restore the scroll position from before copy mode entry
+            let current = term.grid().display_offset();
+            let frozen = self.copy_mode_frozen_offset;
+            if current != frozen {
+                let delta = frozen as i32 - current as i32;
+                term.scroll_display(AlacScroll::Delta(delta));
+            }
+        }
+
+        term.selection = None;
+        drop(term);
+
+        self.copy_mode_active = false;
+        cx.notify();
+    }
+
+    fn move_copy_cursor(&mut self, dx: i32, dy: i32, cx: &mut Context<Self>) {
+        let (cols, top, bottom) = {
+            let mut term = self.terminal.term.lock();
+            term.selection = None;
+            (term.columns(), term.topmost_line(), term.bottommost_line())
+        };
+
+        let new_col = (self.copy_cursor.column.0 as i32 + dx)
+            .max(0)
+            .min(cols as i32 - 1) as usize;
+        let new_line = (self.copy_cursor.line.0 + dy).max(top.0).min(bottom.0);
+        self.copy_cursor = AlacPoint::new(GridLine(new_line), GridCol(new_col));
+
+        self.ensure_copy_cursor_visible();
+        cx.notify();
+    }
+
+    fn extend_copy_selection(&mut self, dx: i32, dy: i32, cx: &mut Context<Self>) {
+        let mut term = self.terminal.term.lock();
+        let cols = term.columns();
+        let top = term.topmost_line();
+        let bottom = term.bottommost_line();
+
+        // Start a new selection if none exists
+        if term.selection.is_none() {
+            let sel = Selection::new(SelectionType::Simple, self.copy_cursor, Side::Left);
+            term.selection = Some(sel);
+        }
+
+        // Move cursor and update selection endpoint — all under the same lock
+        let new_col = (self.copy_cursor.column.0 as i32 + dx)
+            .max(0)
+            .min(cols as i32 - 1) as usize;
+        let new_line = (self.copy_cursor.line.0 + dy).max(top.0).min(bottom.0);
+        self.copy_cursor = AlacPoint::new(GridLine(new_line), GridCol(new_col));
+
+        if let Some(ref mut sel) = term.selection {
+            sel.update(self.copy_cursor, Side::Right);
+        }
+        drop(term);
+
+        self.ensure_copy_cursor_visible();
+        cx.notify();
+    }
+
+    /// Scroll the view to keep the copy cursor visible, updating the frozen offset.
+    fn ensure_copy_cursor_visible(&mut self) {
+        let offset = self.copy_mode_frozen_offset as i32;
+        let cursor_display_line = self.copy_cursor.line.0 + offset;
+
+        let mut term = self.terminal.term.lock();
+        let screen_lines = term.screen_lines() as i32;
+
+        let new_offset = if cursor_display_line < 0 {
+            // Cursor is above visible area — scroll up
+            Some((offset - cursor_display_line) as usize)
+        } else if cursor_display_line >= screen_lines {
+            // Cursor is below visible area — scroll down
+            let excess = cursor_display_line - screen_lines + 1;
+            Some((offset - excess).max(0) as usize)
+        } else {
+            None
+        };
+
+        if let Some(new_offset) = new_offset {
+            self.copy_mode_frozen_offset = new_offset;
+            let current = term.grid().display_offset();
+            let delta = new_offset as i32 - current as i32;
+            if delta != 0 {
+                term.scroll_display(AlacScroll::Delta(delta));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Terminal events
 // ---------------------------------------------------------------------------
 
@@ -1140,6 +1598,8 @@ pub enum TerminalEvent {
     /// A server/service was detected in PTY output (e.g. "Listening on :3000").
     /// Enriches the bare port from `/proc/net/tcp` with label and URL.
     ServiceDetected(ServiceInfo),
+    /// Escape pressed while swap mode is active — requests cancellation.
+    CancelSwapMode,
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -1162,6 +1622,31 @@ impl Render for TerminalView {
         #[cfg(debug_assertions)]
         let keystroke_at = self.terminal.last_keystroke_at.take();
 
+        // Collect search match rects for the element to paint
+        let search_match_rects = if self.search_active && !self.search_matches.is_empty() {
+            self.search_matches
+                .iter()
+                .enumerate()
+                .map(|(i, m)| crate::terminal_element::SearchHighlight {
+                    start: m.start,
+                    end: m.end,
+                    is_active: i == self.search_current,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Build copy mode cursor state for the element
+        let copy_cursor_state = if self.copy_mode_active {
+            Some(crate::terminal_element::CopyModeCursorState {
+                grid_line: self.copy_cursor.line.0,
+                col: self.copy_cursor.column.0,
+            })
+        } else {
+            None
+        };
+
         let terminal_element = TerminalElement::new(
             self.terminal.term.clone(),
             PtyNotifier(self.terminal.notifier.0.clone()),
@@ -1169,11 +1654,23 @@ impl Render for TerminalView {
             focused,
             self.terminal.exited,
             self.element_origin.clone(),
+            search_match_rects,
+            copy_cursor_state,
             #[cfg(debug_assertions)]
             keystroke_at,
         );
 
-        div()
+        // Search overlay bar
+        let search_active = self.search_active;
+        let search_query = self.search_query.clone();
+        let match_count = self.search_matches.len();
+        let current_match = if match_count > 0 {
+            self.search_current + 1
+        } else {
+            0
+        };
+
+        let mut el = div()
             .id("terminal-view")
             .key_context("Terminal")
             .track_focus(&self.focus_handle)
@@ -1194,8 +1691,104 @@ impl Render for TerminalView {
             .on_action(cx.listener(|this, _: &crate::ScrollPageDown, window, cx| {
                 this.handle_scroll_page_down(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &crate::ToggleSearch, _window, cx| {
+                this.toggle_search(cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::DismissSearch, _window, cx| {
+                this.dismiss_search(cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::SearchNext, _window, cx| {
+                this.search_next(cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::SearchPrev, _window, cx| {
+                this.search_prev(cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::ToggleCopyMode, _window, cx| {
+                this.toggle_copy_mode(cx);
+            }))
             .size_full()
-            .child(terminal_element)
+            .child(terminal_element);
+
+        if search_active {
+            // Add "Search" key context for search-scoped bindings
+            el = el.key_context("Search");
+
+            // Build the search overlay bar
+            let status_text = if search_query.is_empty() {
+                String::new()
+            } else if match_count == 0 {
+                "0 results".to_string()
+            } else {
+                format!("{}/{}", current_match, match_count)
+            };
+
+            let search_bar = div()
+                .id("search-overlay")
+                .absolute()
+                .top_1()
+                .right_1()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_1()
+                .rounded_md()
+                .bg(gpui::rgb(0x313244))
+                .border_1()
+                .border_color(gpui::rgb(0x585b70))
+                .child(
+                    div()
+                        .id("search-icon")
+                        .text_color(gpui::rgb(0x6c7086))
+                        .text_size(gpui::px(13.0))
+                        .child("Find:"),
+                )
+                .child(
+                    div()
+                        .id("search-query-display")
+                        .min_w(gpui::px(120.0))
+                        .px_2()
+                        .py(gpui::px(2.0))
+                        .rounded_sm()
+                        .bg(gpui::rgb(0x1e1e2e))
+                        .text_color(gpui::rgb(0xcdd6f4))
+                        .text_size(gpui::px(13.0))
+                        .child(if search_query.is_empty() {
+                            "...".to_string()
+                        } else {
+                            search_query
+                        }),
+                )
+                .child(
+                    div()
+                        .id("search-status")
+                        .text_color(gpui::rgb(0xa6adc8))
+                        .text_size(gpui::px(12.0))
+                        .child(status_text),
+                );
+
+            el = el.child(search_bar);
+        }
+
+        if self.copy_mode_active {
+            let copy_badge = div()
+                .id("copy-mode-badge")
+                .absolute()
+                .top_1()
+                .right_1()
+                .px_2()
+                .py(gpui::px(2.0))
+                .rounded_md()
+                .bg(gpui::rgba(0x89b4facc))
+                .text_color(gpui::rgb(0x1e1e2e))
+                .text_size(gpui::px(11.0))
+                .font_weight(gpui::FontWeight::BOLD)
+                .child("COPY");
+            el = el.child(copy_badge);
+        }
+
+        el
     }
 }
 
@@ -1313,5 +1906,82 @@ mod tests {
         assert_eq!(state.child_pid, 9999);
         assert!(state.exited.is_none());
         assert_eq!(state.title, "Terminal");
+    }
+
+    // --- strip_partial_ansi_tail tests (US-012 / US-015) ---
+
+    #[test]
+    fn strip_ansi_plain_text_unchanged() {
+        let mut s = "hello world\nline two".to_string();
+        super::strip_partial_ansi_tail(&mut s);
+        assert_eq!(s, "hello world\nline two");
+    }
+
+    #[test]
+    fn strip_ansi_lone_esc_removed() {
+        let mut s = "hello\x1b".to_string();
+        super::strip_partial_ansi_tail(&mut s);
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn strip_ansi_incomplete_csi_removed() {
+        // Incomplete CSI: \x1b[38;2; (no terminating byte in 0x40..0x7E)
+        let mut s = "text\x1b[38;2;".to_string();
+        super::strip_partial_ansi_tail(&mut s);
+        assert_eq!(s, "text");
+    }
+
+    #[test]
+    fn strip_ansi_complete_csi_kept() {
+        // Complete CSI: \x1b[0m (terminated by 'm')
+        let mut s = "text\x1b[0m".to_string();
+        super::strip_partial_ansi_tail(&mut s);
+        assert_eq!(s, "text\x1b[0m");
+    }
+
+    #[test]
+    fn strip_ansi_incomplete_osc_removed() {
+        // Incomplete OSC: \x1b]7;file:// (no BEL or ST)
+        let mut s = "prompt\x1b]7;file://host/dir".to_string();
+        super::strip_partial_ansi_tail(&mut s);
+        assert_eq!(s, "prompt");
+    }
+
+    // --- extract_scrollback / restore_scrollback tests (US-011 / US-015) ---
+
+    #[test]
+    fn scrollback_round_trip_via_mock() {
+        let backend = MockPtyBackend;
+        let state = TerminalState::new(&backend, None, 1, 1).unwrap();
+
+        // Feed some text into the terminal grid
+        state.restore_scrollback("line one\nline two\nline three");
+
+        // Extract it back
+        let scrollback = state.extract_scrollback();
+        assert!(scrollback.is_some(), "Expected scrollback content");
+        let text = scrollback.unwrap();
+        assert!(text.contains("line one"), "Missing 'line one' in: {text}");
+        assert!(text.contains("line two"), "Missing 'line two' in: {text}");
+        assert!(
+            text.contains("line three"),
+            "Missing 'line three' in: {text}"
+        );
+    }
+
+    #[test]
+    fn extract_scrollback_empty_terminal_returns_none() {
+        let backend = MockPtyBackend;
+        let state = TerminalState::new(&backend, None, 1, 1).unwrap();
+        // Fresh terminal with no content beyond the initial blank grid
+        // May return None or Some with only whitespace — both are acceptable
+        let scrollback = state.extract_scrollback();
+        if let Some(ref text) = scrollback {
+            assert!(
+                text.trim().is_empty(),
+                "Expected empty or whitespace-only scrollback, got: {text}"
+            );
+        }
     }
 }

@@ -3,40 +3,40 @@
     "file": "tasks/prd-stabilization-polish.md",
     "title": "Stabilization & Polish — cmux Feature Parity for Linux",
     "created_at": "2026-04-14",
-    "status": "IN_PROGRESS"
+    "status": "DONE"
   },
   "epics": [
     {
       "id": "EP-001",
       "title": "Stabilization — Fix Fragile Internals",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "priority": "P0",
       "stories_total": 5,
-      "stories_done": 0
+      "stories_done": 5
     },
     {
       "id": "EP-002",
       "title": "Terminal Power Features",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P0",
       "stories_total": 5,
-      "stories_done": 0
+      "stories_done": 5
     },
     {
       "id": "EP-003",
       "title": "Session Robustness",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P1",
       "stories_total": 4,
-      "stories_done": 0
+      "stories_done": 4
     },
     {
       "id": "EP-004",
       "title": "Quality & Testing Foundation",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P1",
       "stories_total": 3,
-      "stories_done": 0
+      "stories_done": 3
     }
   ],
   "stories": [
@@ -44,13 +44,13 @@
       "id": "US-001",
       "title": "Wire default_shell Config to Terminal Spawning",
       "epic": "EP-001",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P0",
       "size": "S",
       "blocked_by": [],
       "started_at": "2026-04-14",
       "completed_at": "2026-04-14",
-      "reviewed_at": null
+      "reviewed_at": "2026-04-15"
     },
     {
       "id": "US-002",
@@ -69,182 +69,183 @@
       "id": "US-003",
       "title": "Wire Shortcuts Config to Action Dispatch",
       "epic": "EP-001",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P0",
       "size": "L",
       "blocked_by": [],
       "started_at": "2026-04-14",
       "completed_at": "2026-04-14",
-      "reviewed_at": null,
+      "reviewed_at": "2026-04-15",
       "note": "Feature was already implemented in eea6c71 (settings window). This commit adds keystroke format normalization (+ to - conversion) for manually-edited configs."
     },
     {
       "id": "US-004",
       "title": "Replace Mtime Polling with ConfigWatcher",
       "epic": "EP-001",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P0",
       "size": "S",
       "blocked_by": [],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-14",
+      "completed_at": "2026-04-14",
+      "reviewed_at": "2026-04-15"
     },
     {
       "id": "US-005",
       "title": "Graceful Vulkan/GPU Error at Startup",
       "epic": "EP-001",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P0",
       "size": "S",
       "blocked_by": [],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-14",
+      "completed_at": "2026-04-14",
+      "reviewed_at": "2026-04-15"
     },
     {
       "id": "US-006",
       "title": "In-Buffer Scrollback Search",
       "epic": "EP-002",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P0",
       "size": "L",
       "blocked_by": [],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-14",
+      "completed_at": "2026-04-14",
+      "reviewed_at": "2026-04-15"
     },
     {
       "id": "US-007",
       "title": "Copy Mode (Keyboard-Driven Selection)",
       "epic": "EP-002",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P0",
       "size": "L",
       "blocked_by": [],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-15"
     },
     {
       "id": "US-008",
       "title": "Pane Zoom Toggle",
       "epic": "EP-002",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P0",
       "size": "M",
       "blocked_by": [],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-15",
+      "note": "Already fully implemented in v2 GPUI PRD — handle_toggle_zoom (main.rs:1713), zoom badge (pane.rs:369), close-while-zoomed (main.rs:1657), per-workspace state via Workspace::saved_layout"
     },
     {
       "id": "US-009",
       "title": "Split Equalize",
       "epic": "EP-002",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P1",
       "size": "S",
       "blocked_by": [],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-15"
     },
     {
       "id": "US-010",
       "title": "Pane Swap",
       "epic": "EP-002",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P1",
       "size": "M",
       "blocked_by": [],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-15"
     },
     {
       "id": "US-011",
       "title": "Scrollback Persistence in Session Save",
       "epic": "EP-003",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P1",
       "size": "L",
       "blocked_by": [],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-15"
     },
     {
       "id": "US-012",
       "title": "ANSI-Safe Scrollback Truncation",
       "epic": "EP-003",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P1",
       "size": "M",
       "blocked_by": ["US-011"],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-15"
     },
     {
       "id": "US-013",
       "title": "Crash-Safe Session Autosave",
       "epic": "EP-003",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P1",
       "size": "S",
       "blocked_by": [],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-15"
     },
     {
       "id": "US-014",
       "title": "Undo Close Pane",
       "epic": "EP-003",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P1",
       "size": "M",
       "blocked_by": [],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-15"
     },
     {
       "id": "US-015",
       "title": "Integration Test Harness for App Crate",
       "epic": "EP-004",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P1",
       "size": "M",
       "blocked_by": [],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-15"
     },
     {
       "id": "US-016",
       "title": "Keybinding Dispatch Integration Tests",
       "epic": "EP-004",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P1",
       "size": "M",
       "blocked_by": ["US-015", "US-003"],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-15"
     },
     {
       "id": "US-017",
       "title": "Session Persistence Round-Trip Tests",
       "epic": "EP-004",
-      "status": "TODO",
+      "status": "DONE",
       "priority": "P1",
       "size": "M",
       "blocked_by": ["US-015"],
-      "started_at": null,
-      "completed_at": null,
-      "reviewed_at": null
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-15"
     }
   ]
 }

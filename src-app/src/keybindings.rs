@@ -8,13 +8,14 @@ use std::collections::HashMap;
 use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, Keystroke};
 
 use crate::{
-    ClosePane, CloseTab, CloseWindow, CloseWorkspace, CopyWorkspacePath, FocusDown, FocusLeft,
-    FocusRight, FocusUp, LayoutEvenHorizontal, LayoutEvenVertical, LayoutMainVertical, LayoutTiled,
-    NewTab, NewWorkspace, NextWorkspace, OpenWorkspaceInCursor, OpenWorkspaceInVsCode,
+    ClosePane, CloseTab, CloseWindow, CloseWorkspace, CopyWorkspacePath, DismissSearch, FocusDown,
+    FocusLeft, FocusRight, FocusUp, LayoutEvenHorizontal, LayoutEvenVertical, LayoutMainVertical,
+    LayoutTiled, NewTab, NewWorkspace, NextWorkspace, OpenWorkspaceInCursor, OpenWorkspaceInVsCode,
     OpenWorkspaceInWindsurf, OpenWorkspaceInZed, RevealWorkspaceInFileManager, ScrollPageDown,
-    ScrollPageUp, SelectWorkspace1, SelectWorkspace2, SelectWorkspace3, SelectWorkspace4,
-    SelectWorkspace5, SelectWorkspace6, SelectWorkspace7, SelectWorkspace8, SelectWorkspace9,
-    SplitHorizontally, SplitVertically, TerminalCopy, TerminalPaste, ToggleZoom,
+    ScrollPageUp, SearchNext, SearchPrev, SelectWorkspace1, SelectWorkspace2, SelectWorkspace3,
+    SelectWorkspace4, SelectWorkspace5, SelectWorkspace6, SelectWorkspace7, SelectWorkspace8,
+    SelectWorkspace9, SplitEqualize, SplitHorizontally, SplitVertically, SwapPane, TerminalCopy,
+    TerminalPaste, ToggleCopyMode, ToggleSearch, ToggleZoom, UndoClosePane,
 };
 
 /// A default keybinding entry: keystroke string, action name, GPUI context filter.
@@ -153,6 +154,11 @@ const DEFAULTS: &[DefaultBinding] = &[
     },
     DefaultBinding {
         key: "ctrl-shift-t",
+        action_name: "undo_close_pane",
+        context: None,
+    },
+    DefaultBinding {
+        key: "ctrl-alt-t",
         action_name: "new_tab",
         context: None,
     },
@@ -206,6 +212,41 @@ const DEFAULTS: &[DefaultBinding] = &[
         action_name: "layout_tiled",
         context: None,
     },
+    DefaultBinding {
+        key: "ctrl-shift-=",
+        action_name: "split_equalize",
+        context: None,
+    },
+    DefaultBinding {
+        key: "ctrl-shift-s",
+        action_name: "swap_pane",
+        context: None,
+    },
+    DefaultBinding {
+        key: "ctrl-shift-x",
+        action_name: "toggle_copy_mode",
+        context: Some("Terminal"),
+    },
+    DefaultBinding {
+        key: "ctrl-shift-f",
+        action_name: "toggle_search",
+        context: Some("Terminal"),
+    },
+    DefaultBinding {
+        key: "enter",
+        action_name: "search_next",
+        context: Some("Search"),
+    },
+    DefaultBinding {
+        key: "shift-enter",
+        action_name: "search_prev",
+        context: Some("Search"),
+    },
+    DefaultBinding {
+        key: "escape",
+        action_name: "dismiss_search",
+        context: Some("Search"),
+    },
 ];
 
 /// Resolve an action name string to a boxed GPUI action.
@@ -248,6 +289,14 @@ fn action_from_name(name: &str) -> Option<Box<dyn Action>> {
         "layout_even_vertical" => Box::new(LayoutEvenVertical),
         "layout_main_vertical" => Box::new(LayoutMainVertical),
         "layout_tiled" => Box::new(LayoutTiled),
+        "split_equalize" => Box::new(SplitEqualize),
+        "swap_pane" => Box::new(SwapPane),
+        "undo_close_pane" => Box::new(UndoClosePane),
+        "toggle_copy_mode" => Box::new(ToggleCopyMode),
+        "toggle_search" => Box::new(ToggleSearch),
+        "search_next" => Box::new(SearchNext),
+        "search_prev" => Box::new(SearchPrev),
+        "dismiss_search" => Box::new(DismissSearch),
         _ => return None,
     })
 }
@@ -255,9 +304,9 @@ fn action_from_name(name: &str) -> Option<Box<dyn Action>> {
 /// Context for a given action name. Returns `Some("Terminal")` for terminal-scoped actions.
 fn context_for_action(name: &str) -> Option<&'static str> {
     match name {
-        "terminal_copy" | "terminal_paste" | "scroll_page_up" | "scroll_page_down" => {
-            Some("Terminal")
-        }
+        "terminal_copy" | "terminal_paste" | "scroll_page_up" | "scroll_page_down"
+        | "toggle_copy_mode" | "toggle_search" => Some("Terminal"),
+        "search_next" | "search_prev" | "dismiss_search" => Some("Search"),
         _ => None,
     }
 }
@@ -307,9 +356,31 @@ fn make_binding(
 pub fn apply_keybindings(cx: &mut App, user_shortcuts: &HashMap<String, String>) {
     cx.clear_key_bindings();
 
-    // Register defaults
+    // Collect keys that user has explicitly unbound via "none"
+    let unbound_keys: std::collections::HashSet<&str> = user_shortcuts
+        .iter()
+        .filter(|(_, v)| v.as_str() == "none")
+        .map(|(k, _)| k.as_str())
+        .collect();
+
+    // Collect actions that user has remapped to a different key
+    let remapped_actions: std::collections::HashSet<&str> = user_shortcuts
+        .iter()
+        .filter(|(_, v)| v.as_str() != "none")
+        .filter_map(|(_, action_name)| {
+            if action_from_name(action_name).is_some() {
+                Some(action_name.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Register defaults, skipping unbound keys and remapped actions
     let default_bindings: Vec<KeyBinding> = DEFAULTS
         .iter()
+        .filter(|d| !unbound_keys.contains(d.key))
+        .filter(|d| !remapped_actions.contains(d.action_name))
         .filter_map(|d| {
             let action = action_from_name(d.action_name)?;
             make_binding(d.key, action, d.context)
@@ -373,12 +444,16 @@ fn action_description(name: &str) -> &'static str {
         "terminal_paste" => "Paste",
         "scroll_page_up" => "Scroll up",
         "scroll_page_down" => "Scroll down",
+        "toggle_copy_mode" => "Toggle copy mode",
         "close_window" => "Close window",
         "toggle_zoom" => "Toggle zoom",
         "layout_even_horizontal" => "Layout even horizontal",
         "layout_even_vertical" => "Layout even vertical",
         "layout_main_vertical" => "Layout main vertical",
         "layout_tiled" => "Layout tiled",
+        "split_equalize" => "Equalize panes",
+        "swap_pane" => "Swap pane",
+        "undo_close_pane" => "Undo close pane",
         _ => "Unknown",
     }
 }
@@ -475,4 +550,160 @@ pub fn is_bare_modifier(keystroke: &Keystroke) -> bool {
 /// Returns `(default_key, action_name)` for the binding at that index.
 pub fn action_name_at(index: usize) -> Option<&'static str> {
     DEFAULTS.get(index).map(|d| d.action_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_keystroke_converts_plus_to_dash() {
+        assert_eq!(normalize_keystroke("ctrl+shift+d"), "ctrl-shift-d");
+        assert_eq!(normalize_keystroke("alt+left"), "alt-left");
+    }
+
+    #[test]
+    fn normalize_keystroke_already_dashed_unchanged() {
+        assert_eq!(normalize_keystroke("ctrl-shift-d"), "ctrl-shift-d");
+    }
+
+    #[test]
+    fn action_from_name_known_actions() {
+        assert!(action_from_name("split_horizontally").is_some());
+        assert!(action_from_name("close_pane").is_some());
+        assert!(action_from_name("toggle_zoom").is_some());
+        assert!(action_from_name("undo_close_pane").is_some());
+        assert!(action_from_name("swap_pane").is_some());
+        assert!(action_from_name("split_equalize").is_some());
+        assert!(action_from_name("toggle_copy_mode").is_some());
+    }
+
+    #[test]
+    fn action_from_name_unknown_returns_none() {
+        assert!(action_from_name("nonexistent_action").is_none());
+        assert!(action_from_name("").is_none());
+    }
+
+    #[test]
+    fn context_for_terminal_actions() {
+        assert_eq!(context_for_action("terminal_copy"), Some("Terminal"));
+        assert_eq!(context_for_action("toggle_copy_mode"), Some("Terminal"));
+        assert_eq!(context_for_action("toggle_search"), Some("Terminal"));
+        assert_eq!(context_for_action("split_horizontally"), None);
+    }
+
+    // --- effective_shortcuts tests (US-016) ---
+
+    #[test]
+    fn effective_shortcuts_defaults_include_core_actions() {
+        let entries = effective_shortcuts(&HashMap::new());
+        let descriptions: Vec<&str> = entries.iter().map(|e| e.description.as_str()).collect();
+        assert!(
+            descriptions.contains(&"Split horizontal"),
+            "Missing split horizontal"
+        );
+        assert!(
+            descriptions.contains(&"Split vertical"),
+            "Missing split vertical"
+        );
+        assert!(descriptions.contains(&"Close pane"), "Missing close pane");
+        assert!(
+            descriptions.contains(&"Next workspace"),
+            "Missing next workspace"
+        );
+        assert!(descriptions.contains(&"Focus left"), "Missing focus left");
+    }
+
+    #[test]
+    fn effective_shortcuts_user_override_replaces_key() {
+        let mut overrides = HashMap::new();
+        overrides.insert("ctrl-alt-h".to_string(), "split_horizontally".to_string());
+        let entries = effective_shortcuts(&overrides);
+        let split_h = entries
+            .iter()
+            .find(|e| e.description == "Split horizontal")
+            .expect("Split horizontal should be in effective list");
+        assert_eq!(
+            split_h.key, "Ctrl+Alt+H",
+            "User override should replace the default key"
+        );
+    }
+
+    #[test]
+    fn effective_shortcuts_none_unbinds_key() {
+        let mut overrides = HashMap::new();
+        overrides.insert("ctrl-shift-d".to_string(), "none".to_string());
+        let entries = effective_shortcuts(&overrides);
+        // The default ctrl-shift-d binding should be excluded
+        let has_ctrl_shift_d = entries.iter().any(|e| e.key == "Ctrl+Shift+D");
+        assert!(
+            !has_ctrl_shift_d,
+            "Unbound key should not appear in effective list"
+        );
+    }
+
+    #[test]
+    fn effective_shortcuts_invalid_action_ignored() {
+        let mut overrides = HashMap::new();
+        overrides.insert("ctrl+x".to_string(), "bogus_action".to_string());
+        let entries = effective_shortcuts(&overrides);
+        // Invalid action should not appear
+        let has_bogus = entries
+            .iter()
+            .any(|e| e.description == "Unknown" && e.key == "Ctrl+X");
+        assert!(!has_bogus, "Invalid action should not be in effective list");
+    }
+
+    #[test]
+    fn effective_shortcuts_preserves_unoverridden_defaults() {
+        let mut overrides = HashMap::new();
+        overrides.insert("ctrl+alt+h".to_string(), "split_horizontally".to_string());
+        let entries = effective_shortcuts(&overrides);
+        // close_pane should still be at its default key
+        let close = entries
+            .iter()
+            .find(|e| e.description == "Close pane")
+            .expect("Close pane should be in effective list");
+        assert_eq!(
+            close.key, "Ctrl+Shift+W",
+            "Unoverridden action should keep default key"
+        );
+    }
+
+    #[test]
+    fn default_bindings_cover_all_core_actions() {
+        // Verify all core actions are in DEFAULTS
+        let action_names: Vec<&str> = DEFAULTS.iter().map(|d| d.action_name).collect();
+        for name in &[
+            "split_horizontally",
+            "split_vertically",
+            "close_pane",
+            "next_workspace",
+            "focus_left",
+            "focus_right",
+            "focus_up",
+            "focus_down",
+            "terminal_copy",
+            "terminal_paste",
+            "toggle_zoom",
+            "toggle_copy_mode",
+            "toggle_search",
+            "split_equalize",
+            "swap_pane",
+            "undo_close_pane",
+        ] {
+            assert!(
+                action_names.contains(name),
+                "Action '{name}' missing from DEFAULTS"
+            );
+        }
+    }
+
+    #[test]
+    fn format_keystroke_produces_readable_output() {
+        assert_eq!(format_keystroke("ctrl-shift-d"), "Ctrl+Shift+D");
+        assert_eq!(format_keystroke("alt-left"), "Alt+Left");
+        assert_eq!(format_keystroke("ctrl-1"), "Ctrl+1");
+        assert_eq!(format_keystroke("shift-pageup"), "Shift+PageUp");
+    }
 }

@@ -11,6 +11,7 @@ mod keybindings;
 mod keys;
 mod pane;
 mod pty;
+mod search;
 mod settings_window;
 mod split;
 mod terminal;
@@ -99,7 +100,15 @@ actions!(
         LayoutEvenHorizontal,
         LayoutEvenVertical,
         LayoutMainVertical,
-        LayoutTiled
+        LayoutTiled,
+        SplitEqualize,
+        SwapPane,
+        ToggleSearch,
+        UndoClosePane,
+        SearchNext,
+        SearchPrev,
+        DismissSearch,
+        ToggleCopyMode
     ]
 );
 
@@ -145,6 +154,16 @@ const CODEX_SPINNER_FRAMES: [char; 4] = ['●', '○', '◉', '○'];
 const TOAST_ENTER_MS: u64 = 180;
 const TOAST_HOLD_MS: u64 = 1440;
 const TOAST_EXIT_MS: u64 = 180;
+
+/// Captured state of a closed pane for undo-close-pane (US-014).
+struct ClosedPaneRecord {
+    cwd: Option<std::path::PathBuf>,
+    scrollback: Option<String>,
+    workspace_idx: usize,
+}
+
+/// Maximum number of closed pane records to keep.
+const MAX_CLOSED_PANES: usize = 5;
 
 struct PaneFlowApp {
     workspaces: Vec<Workspace>,
@@ -195,7 +214,15 @@ struct PaneFlowApp {
     _toast_task: Option<gpui::Task<()>>,
     /// Whether the loader animation spawn is currently running.
     loader_anim_running: bool,
+    /// Source pane for swap mode, or `None` if not in swap mode.
+    swap_source: Option<Entity<crate::pane::Pane>>,
+    /// LIFO stack of recently closed panes for undo-close (US-014).
+    closed_panes: Vec<ClosedPaneRecord>,
 }
+
+/// Global flag for swap mode, checked by TerminalView to intercept Escape.
+/// Follows the same AtomicBool pattern as `SUPPRESS_REPAINTS`.
+pub static SWAP_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl PaneFlowApp {
     /// Add a workspace's `.git` directory to the file watcher.
@@ -355,6 +382,9 @@ impl PaneFlowApp {
                         cx.notify();
                     }
                 }
+            }
+            terminal::TerminalEvent::CancelSwapMode => {
+                self.cancel_swap_mode(cx);
             }
             // ChildExited + TitleChanged are handled by Pane's subscription
             _ => {}
@@ -954,6 +984,8 @@ impl PaneFlowApp {
             toast: None,
             _toast_task: None,
             loader_anim_running: false,
+            swap_source: None,
+            closed_panes: Vec::new(),
         }
     }
 
@@ -981,8 +1013,20 @@ impl PaneFlowApp {
         }
         match serde_json::to_string_pretty(&state) {
             Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
-                    log::warn!("session save failed: {e}");
+                // Atomic write: write to temp file, then rename. This prevents
+                // corruption if the process is killed mid-write (US-013).
+                let tmp_path = path.with_extension("json.tmp");
+                match std::fs::write(&tmp_path, &json) {
+                    Ok(()) => {
+                        if let Err(e) = std::fs::rename(&tmp_path, &path) {
+                            log::warn!("session save rename failed: {e}");
+                            let _ = std::fs::remove_file(&tmp_path);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("session save failed: {e}");
+                        let _ = std::fs::remove_file(&tmp_path);
+                    }
                 }
             }
             Err(e) => log::warn!("session serialize failed: {e}"),
@@ -1082,6 +1126,10 @@ impl PaneFlowApp {
                         .map(PathBuf::from)
                         .unwrap_or_else(|| fallback_cwd.to_path_buf());
                     let t = cx.new(|cx| TerminalView::with_cwd(workspace_id, Some(cwd), cx));
+                    // Restore saved scrollback into the terminal grid
+                    if let Some(ref scrollback) = surface.scrollback {
+                        t.read(cx).terminal.restore_scrollback(scrollback);
+                    }
                     cx.subscribe(&t, Self::handle_terminal_event).detach();
                     if surface.focus == Some(true) {
                         focus_idx = i;
@@ -1649,6 +1697,37 @@ impl PaneFlowApp {
     }
 
     fn handle_close_pane(&mut self, _: &ClosePane, window: &mut Window, cx: &mut Context<Self>) {
+        // Capture state of the pane being closed for undo (US-014).
+        // Must happen BEFORE the tree mutation that drops the pane entity.
+        let workspace_idx = self.active_idx;
+        if let Some(ws) = self.active_workspace()
+            && let Some(root) = &ws.root
+        {
+            let closing_pane = if ws.is_zoomed() {
+                root.first_leaf()
+            } else {
+                root.focused_pane(window, cx)
+            };
+            if let Some(pane) = closing_pane {
+                let tv = pane.read(cx).active_terminal();
+                let tv_ref = tv.read(cx);
+                let record = ClosedPaneRecord {
+                    cwd: tv_ref
+                        .terminal
+                        .current_cwd
+                        .as_ref()
+                        .map(std::path::PathBuf::from)
+                        .or_else(|| tv_ref.terminal.cwd_now()),
+                    scrollback: tv_ref.terminal.extract_scrollback(),
+                    workspace_idx,
+                };
+                if self.closed_panes.len() >= MAX_CLOSED_PANES {
+                    self.closed_panes.remove(0);
+                }
+                self.closed_panes.push(record);
+            }
+        }
+
         if let Some(ws) = self.active_workspace_mut()
             && ws.is_zoomed()
         {
@@ -1698,6 +1777,51 @@ impl PaneFlowApp {
                 }
                 self.workspaces[self.active_idx].focus_first(window, cx);
             }
+        }
+
+        self.save_session(cx);
+        cx.notify();
+    }
+
+    fn handle_undo_close_pane(
+        &mut self,
+        _: &UndoClosePane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(record) = self.closed_panes.pop() else {
+            return; // No closed panes to restore
+        };
+
+        // Switch to the workspace where the pane was closed, if it still exists
+        if record.workspace_idx < self.workspaces.len() {
+            self.active_idx = record.workspace_idx;
+        }
+
+        let ws_id = self.active_workspace().map(|ws| ws.id).unwrap_or(0);
+        let cwd = record.cwd;
+        let new_terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, cwd, cx));
+
+        // Restore scrollback into the new terminal's grid
+        if let Some(ref scrollback) = record.scrollback {
+            new_terminal
+                .read(cx)
+                .terminal
+                .restore_scrollback(scrollback);
+        }
+
+        let new_pane = self.create_pane(new_terminal, ws_id, cx);
+
+        // Insert via split from the currently focused pane
+        if let Some(ws) = self.active_workspace_mut()
+            && let Some(ref mut root) = ws.root
+            && root.split_at_focused(SplitDirection::Horizontal, new_pane.clone(), window, cx)
+        {
+            new_pane.read(cx).focus_handle(cx).focus(window, cx);
+        } else if let Some(ws) = self.active_workspace_mut() {
+            // No existing root (empty workspace) — set as the root
+            ws.root = Some(LayoutTree::Leaf(new_pane.clone()));
+            new_pane.read(cx).focus_handle(cx).focus(window, cx);
         }
 
         self.save_session(cx);
@@ -1920,6 +2044,21 @@ impl PaneFlowApp {
         self.apply_layout_preset(LayoutTree::tiled, window, cx);
     }
 
+    fn handle_split_equalize(
+        &mut self,
+        _: &SplitEqualize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ws) = self.active_workspace_mut()
+            && let Some(ref root) = ws.root
+        {
+            root.equalize_ratios();
+            self.save_session(cx);
+            cx.notify();
+        }
+    }
+
     fn handle_new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ws) = self.active_workspace()
             && let Some(root) = &ws.root
@@ -1961,7 +2100,60 @@ impl PaneFlowApp {
         }
     }
 
+    fn handle_swap_pane(&mut self, _: &SwapPane, window: &mut Window, cx: &mut Context<Self>) {
+        if self.swap_source.is_some() {
+            // Already in swap mode — toggle off (cancel)
+            self.swap_source = None;
+            SWAP_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+        } else if let Some(ws) = self.active_workspace()
+            && let Some(root) = &ws.root
+            && root.leaf_count() > 1
+        {
+            // Enter swap mode: record the currently focused pane
+            if let Some(pane) = root.focused_pane(window, cx) {
+                self.swap_source = Some(pane);
+                SWAP_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        cx.notify();
+    }
+
+    fn cancel_swap_mode(&mut self, cx: &mut Context<Self>) {
+        if self.swap_source.is_some() {
+            self.swap_source = None;
+            SWAP_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+            cx.notify();
+        }
+    }
+
     fn handle_focus(&mut self, dir: FocusDirection, window: &mut Window, cx: &mut Context<Self>) {
+        // When swap mode is active, perform the swap instead of just moving focus
+        if let Some(source) = self.swap_source.take() {
+            SWAP_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+
+            if let Some(ws) = self.active_workspace()
+                && let Some(root) = &ws.root
+            {
+                // Move focus to find the target pane
+                root.focus_in_direction(dir, window, cx);
+                if let Some(target) = root.focused_pane(window, cx)
+                    && target != source
+                {
+                    // Swap the panes in the tree
+                    if let Some(ws) = self.active_workspace_mut()
+                        && let Some(ref mut root) = ws.root
+                    {
+                        root.swap_panes(&source, &target);
+                    }
+                    // Focus the original source pane (now at the target's position)
+                    source.read(cx).focus_handle(cx).focus(window, cx);
+                }
+            }
+            self.save_session(cx);
+            cx.notify();
+            return;
+        }
+
         if let Some(ws) = self.active_workspace()
             && let Some(root) = &ws.root
         {
@@ -3441,6 +3633,9 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_layout_even_v))
             .on_action(cx.listener(Self::handle_layout_main_v))
             .on_action(cx.listener(Self::handle_layout_tiled))
+            .on_action(cx.listener(Self::handle_split_equalize))
+            .on_action(cx.listener(Self::handle_swap_pane))
+            .on_action(cx.listener(Self::handle_undo_close_pane))
             .on_action(cx.listener(Self::handle_ws1))
             .on_action(cx.listener(Self::handle_ws2))
             .on_action(cx.listener(Self::handle_ws3))
@@ -3867,19 +4062,17 @@ fn main() {
             match window_result {
                 Ok(_) => cx.activate(true),
                 Err(e) => {
-                    log::error!(
-                        "Failed to open PaneFlow window: {e}\n\n\
-                     This usually means your GPU driver does not support Vulkan (Linux) \
-                     or Metal (macOS).\n\n\
-                     Troubleshooting:\n\
-                     - Linux: install mesa-vulkan-drivers or your GPU vendor's Vulkan ICD\n\
-                     - Run `vulkaninfo` to verify Vulkan support\n\
-                     - Try setting WGPU_BACKEND=gl for OpenGL fallback"
-                    );
+                    log::error!("Failed to open PaneFlow window: {e}");
                     eprintln!(
-                        "Error: Failed to open PaneFlow window.\n\n\
-                     Your GPU driver may not support Vulkan. \
-                     Install mesa-vulkan-drivers or run with RUST_LOG=error for details."
+                        "Error: PaneFlow requires a GPU with Vulkan support.\n\n\
+                         Install mesa-vulkan-drivers (AMD/Intel) or your GPU's proprietary driver.\n\n\
+                         Install commands:\n\
+                         \x20 Debian/Ubuntu:  sudo apt install mesa-vulkan-drivers\n\
+                         \x20 Fedora/RHEL:    sudo dnf install mesa-vulkan-drivers\n\
+                         \x20 Arch:           sudo pacman -S vulkan-radeon vulkan-intel or nvidia-utils\n\n\
+                         Run `vulkaninfo` to verify Vulkan support.\n\
+                         If drivers are already installed, run with RUST_LOG=error for details.\n\n\
+                         Underlying error: {e}"
                     );
                     std::process::exit(1);
                 }

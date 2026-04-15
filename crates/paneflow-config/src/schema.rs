@@ -159,4 +159,7 @@ pub struct SurfaceDefinition {
     pub env: Option<HashMap<String, String>>,
     /// Whether this surface should receive initial focus.
     pub focus: Option<bool>,
+    /// Saved scrollback text (plain, ANSI stripped). Up to 4000 lines / 400K chars.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scrollback: Option<String>,
 }

@@ -102,7 +102,8 @@ impl Pane {
                 // by PaneFlowApp's direct subscription to each TerminalView.
                 TerminalEvent::CwdChanged(_)
                 | TerminalEvent::ActivityBurst
-                | TerminalEvent::ServiceDetected(_) => {}
+                | TerminalEvent::ServiceDetected(_)
+                | TerminalEvent::CancelSwapMode => {}
             }
         })
         .detach();

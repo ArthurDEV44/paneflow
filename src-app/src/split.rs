@@ -678,6 +678,47 @@ impl LayoutTree {
         }
     }
 
+    /// Set all split ratios to equal values at every level of the tree.
+    /// Each container's children get `1.0 / n` where `n` is the child count.
+    /// The last child absorbs floating-point remainder to ensure exact sum of 1.0.
+    /// Leaf nodes are unchanged. No-op on a single-pane or zoomed workspace.
+    /// Mutates interior state via `Rc<Cell<f32>>` ratios.
+    pub fn equalize_ratios(&self) {
+        if let LayoutTree::Container { children, .. } = self {
+            let n = children.len();
+            let equal = 1.0 / n as f32;
+            for (i, child) in children.iter().enumerate() {
+                if i == n - 1 {
+                    // Last child absorbs rounding error
+                    child.ratio.set(1.0 - equal * (n - 1) as f32);
+                } else {
+                    child.ratio.set(equal);
+                }
+                child.node.equalize_ratios();
+            }
+        }
+    }
+
+    /// Swap two pane entities in the tree. Walks recursively, replacing
+    /// every `Leaf(a)` with `Leaf(b)` and vice versa. Ratios and tree shape
+    /// are preserved — only the pane references move.
+    pub fn swap_panes(&mut self, a: &Entity<Pane>, b: &Entity<Pane>) {
+        match self {
+            LayoutTree::Leaf(pane) => {
+                if pane == a {
+                    *pane = b.clone();
+                } else if pane == b {
+                    *pane = a.clone();
+                }
+            }
+            LayoutTree::Container { children, .. } => {
+                for child in children {
+                    child.node.swap_panes(a, b);
+                }
+            }
+        }
+    }
+
     /// Build a flat container with all panes at equal ratios in the given direction.
     /// Returns `None` for empty, `Leaf` for single pane, `Container` for 2+.
     pub fn from_panes_equal(direction: SplitDirection, panes: Vec<Entity<Pane>>) -> Option<Self> {
@@ -910,6 +951,7 @@ impl LayoutTree {
                             tv_ref.terminal.current_cwd.clone().or_else(|| {
                                 tv_ref.terminal.cwd_now().map(|p| p.display().to_string())
                             });
+                        let scrollback = tv_ref.terminal.extract_scrollback();
                         SurfaceDefinition {
                             surface_type: Some("terminal".to_string()),
                             name,
@@ -921,6 +963,7 @@ impl LayoutTree {
                             } else {
                                 None
                             },
+                            scrollback,
                         }
                     })
                     .collect();

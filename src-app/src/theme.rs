@@ -358,7 +358,7 @@ pub fn ui_colors() -> UiColors {
         UiColors {
             base: h(0x181818),
             surface: h(0x212121),
-            overlay: h(0x2a2a2a),
+            overlay: h(0x141414),
             border: h(0x333333),
             subtle: h(0x2a2a2a),
             muted: h(0x888888),
