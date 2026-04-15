@@ -204,6 +204,7 @@ impl Default for crate::schema::SurfaceDefinition {
             cwd: None,
             env: None,
             focus: None,
+            scrollback: None,
         }
     }
 }
@@ -790,5 +791,159 @@ mod tests {
         for r in &rs {
             assert!((r - 1.0 / 3.0).abs() < f64::EPSILON);
         }
+    }
+
+    // --- Session persistence round-trip tests (US-017) ---
+
+    fn make_surface(cwd: &str) -> SurfaceDefinition {
+        SurfaceDefinition {
+            surface_type: Some("terminal".to_string()),
+            cwd: Some(cwd.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_session_roundtrip_single_workspace() {
+        let state = SessionState {
+            version: 1,
+            active_workspace: 0,
+            workspaces: vec![WorkspaceSession {
+                title: "main".to_string(),
+                cwd: "/home/user/project".to_string(),
+                layout: Some(LayoutNode::Pane {
+                    surfaces: vec![make_surface("/home/user/project")],
+                }),
+            }],
+        };
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let restored: SessionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, restored);
+    }
+
+    #[test]
+    fn test_session_roundtrip_multiple_workspaces() {
+        let state = SessionState {
+            version: 1,
+            active_workspace: 1,
+            workspaces: vec![
+                WorkspaceSession {
+                    title: "frontend".to_string(),
+                    cwd: "/home/user/web".to_string(),
+                    layout: Some(LayoutNode::Pane {
+                        surfaces: vec![make_surface("/home/user/web")],
+                    }),
+                },
+                WorkspaceSession {
+                    title: "backend".to_string(),
+                    cwd: "/home/user/api".to_string(),
+                    layout: Some(LayoutNode::Pane {
+                        surfaces: vec![make_surface("/home/user/api")],
+                    }),
+                },
+                WorkspaceSession {
+                    title: "devops".to_string(),
+                    cwd: "/home/user/infra".to_string(),
+                    layout: None,
+                },
+            ],
+        };
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let restored: SessionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, restored);
+        assert_eq!(restored.active_workspace, 1);
+        assert_eq!(restored.workspaces.len(), 3);
+    }
+
+    #[test]
+    fn test_session_roundtrip_nested_splits() {
+        let state = SessionState {
+            version: 1,
+            active_workspace: 0,
+            workspaces: vec![WorkspaceSession {
+                title: "dev".to_string(),
+                cwd: "/home/user".to_string(),
+                layout: Some(LayoutNode::Split {
+                    direction: "horizontal".to_string(),
+                    ratio: None,
+                    ratios: Some(vec![0.6, 0.4]),
+                    children: vec![
+                        LayoutNode::Pane {
+                            surfaces: vec![make_surface("/home/user/code")],
+                        },
+                        LayoutNode::Split {
+                            direction: "vertical".to_string(),
+                            ratio: None,
+                            ratios: Some(vec![0.5, 0.5]),
+                            children: vec![
+                                LayoutNode::Pane {
+                                    surfaces: vec![make_surface("/home/user/tests")],
+                                },
+                                LayoutNode::Pane {
+                                    surfaces: vec![make_surface("/home/user/logs")],
+                                },
+                            ],
+                        },
+                    ],
+                }),
+            }],
+        };
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let restored: SessionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, restored);
+        // Verify structure: root is split with 2 children, second child is also a split
+        let layout = restored.workspaces[0].layout.as_ref().unwrap();
+        assert_eq!(layout.leaf_count(), 3);
+    }
+
+    #[test]
+    fn test_session_roundtrip_with_scrollback() {
+        let state = SessionState {
+            version: 1,
+            active_workspace: 0,
+            workspaces: vec![WorkspaceSession {
+                title: "main".to_string(),
+                cwd: "/tmp".to_string(),
+                layout: Some(LayoutNode::Pane {
+                    surfaces: vec![SurfaceDefinition {
+                        surface_type: Some("terminal".to_string()),
+                        cwd: Some("/tmp".to_string()),
+                        scrollback: Some(
+                            "$ ls\nfile1.txt\nfile2.txt\n$ echo hello\nhello".to_string(),
+                        ),
+                        ..Default::default()
+                    }],
+                }),
+            }],
+        };
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let restored: SessionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, restored);
+        let surface = match &restored.workspaces[0].layout {
+            Some(LayoutNode::Pane { surfaces }) => &surfaces[0],
+            _ => panic!("expected pane"),
+        };
+        assert!(surface.scrollback.as_ref().unwrap().contains("hello"));
+    }
+
+    #[test]
+    fn test_session_corrupted_json_returns_none() {
+        // Truncated JSON — simulates crash during write
+        let corrupted = r#"{"version":1,"active_workspace":0,"workspaces":[{"title":"ma"#;
+        let result: Result<SessionState, _> = serde_json::from_str(corrupted);
+        assert!(result.is_err(), "Corrupted JSON should fail to parse");
+    }
+
+    #[test]
+    fn test_session_scrollback_none_omitted_from_json() {
+        let surface = SurfaceDefinition {
+            scrollback: None,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&surface).unwrap();
+        assert!(
+            !json.contains("scrollback"),
+            "None scrollback should be omitted from JSON"
+        );
     }
 }

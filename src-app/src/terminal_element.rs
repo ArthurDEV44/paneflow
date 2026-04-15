@@ -310,10 +310,18 @@ struct CursorInfo {
     italic: bool,
 }
 
+/// A search match highlight to be painted by TerminalElement.
+pub struct SearchHighlight {
+    pub start: alacritty_terminal::index::Point,
+    pub end: alacritty_terminal::index::Point,
+    pub is_active: bool,
+}
+
 pub struct LayoutState {
     batched_runs: Vec<BatchedTextRun>,
     rects: Vec<LayoutRect>,
     selection_rects: Vec<LayoutRect>,
+    search_rects: Vec<LayoutRect>,
     cursor: Option<CursorInfo>,
     dimensions: CellDimensions,
     background_color: Hsla,
@@ -349,6 +357,14 @@ struct CellStyle {
 // TerminalElement
 // ---------------------------------------------------------------------------
 
+/// Copy mode cursor state for rendering.
+pub struct CopyModeCursorState {
+    /// Grid-coordinate line of the copy cursor
+    pub grid_line: i32,
+    /// Column of the copy cursor
+    pub col: usize,
+}
+
 pub struct TerminalElement {
     term: Arc<FairMutex<Term<ZedListener>>>,
     notifier: PtyNotifier,
@@ -357,12 +373,17 @@ pub struct TerminalElement {
     exited: Option<i32>,
     /// Shared origin — updated in paint() so mouse handlers know the element position.
     element_origin: Arc<Mutex<Point<Pixels>>>,
+    /// Search match highlights to paint
+    search_highlights: Vec<SearchHighlight>,
+    /// Copy mode cursor position (grid coordinates), if copy mode is active
+    copy_mode_cursor: Option<CopyModeCursorState>,
     /// Timestamp of the keystroke that triggered this render, for latency measurement.
     #[cfg(debug_assertions)]
     last_keystroke_at: Option<std::time::Instant>,
 }
 
 impl TerminalElement {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         term: Arc<FairMutex<Term<ZedListener>>>,
         notifier: PtyNotifier,
@@ -370,6 +391,8 @@ impl TerminalElement {
         focused: bool,
         exited: Option<i32>,
         element_origin: Arc<Mutex<Point<Pixels>>>,
+        search_highlights: Vec<SearchHighlight>,
+        copy_mode_cursor: Option<CopyModeCursorState>,
         #[cfg(debug_assertions)] last_keystroke_at: Option<std::time::Instant>,
     ) -> Self {
         Self {
@@ -379,6 +402,8 @@ impl TerminalElement {
             focused,
             exited,
             element_origin,
+            search_highlights,
+            copy_mode_cursor,
             #[cfg(debug_assertions)]
             last_keystroke_at,
         }
@@ -527,6 +552,34 @@ impl TerminalElement {
                 })
                 .collect();
             (cells, cursor, sel_range, disp_offset, hist_size)
+        };
+
+        // Override cursor with copy mode cursor when active
+        let cursor_snapshot = if let Some(ref cm) = self.copy_mode_cursor {
+            let display_line = cm.grid_line + display_offset as i32;
+            if display_line >= 0 && display_line < desired_rows as i32 {
+                // Copy mode cursor: always a solid block with distinct color
+                let copy_cursor_color = Hsla {
+                    h: 0.5,
+                    s: 0.8,
+                    l: 0.65,
+                    a: 0.9,
+                }; // Bright cyan
+                Some(CursorInfo {
+                    line: display_line,
+                    col: cm.col,
+                    shape: CursorShape::Block,
+                    color: copy_cursor_color,
+                    wide: false,
+                    text: None,
+                    bold: false,
+                    italic: false,
+                })
+            } else {
+                None
+            }
+        } else {
+            cursor_snapshot
         };
 
         let mut batch = BatchAccumulator::new();
@@ -752,10 +805,53 @@ impl TerminalElement {
             }
         }
 
+        // Build search match highlight rects
+        let search_match_color = Hsla {
+            h: 0.11,
+            s: 0.9,
+            l: 0.55,
+            a: 0.45,
+        }; // Amber for inactive matches
+        let search_active_color = Hsla {
+            h: 0.08,
+            s: 1.0,
+            l: 0.6,
+            a: 0.7,
+        }; // Brighter orange for active match
+
+        let mut search_rects = Vec::new();
+        for highlight in &self.search_highlights {
+            // Convert grid coordinates to display-relative line numbers
+            // display_offset is the number of scrollback lines visible above the viewport
+            // Visible lines are: -(display_offset as i32) .. (screen_lines - 1 - display_offset as i32)
+            // A match at grid line L maps to display line: L.0 + display_offset as i32
+            let display_line = highlight.start.line.0 + display_offset as i32;
+
+            // Only paint if the match is in the visible area
+            if display_line >= 0 && display_line < desired_rows as i32 {
+                let color = if highlight.is_active {
+                    search_active_color
+                } else {
+                    search_match_color
+                };
+
+                // Single-line match (search matches are always single-line)
+                let col_start = highlight.start.column.0;
+                let col_end = highlight.end.column.0;
+                search_rects.push(LayoutRect {
+                    line: display_line,
+                    col: col_start,
+                    num_cols: col_end.saturating_sub(col_start) + 1,
+                    color,
+                });
+            }
+        }
+
         LayoutState {
             batched_runs: batch.runs,
             rects,
             selection_rects,
+            search_rects,
             cursor: cursor_snapshot,
             dimensions: dims,
             background_color,
@@ -1010,6 +1106,21 @@ impl Element for TerminalElement {
 
             // 2b. Paint selection highlight rects (pixel-aligned)
             for rect in &layout.selection_rects {
+                let x = (origin.x + cell_width * rect.col as f32).floor();
+                let y = origin.y + line_height * rect.line as f32;
+                let w = (cell_width * rect.num_cols as f32).ceil();
+                let rect_bounds = Bounds::new(
+                    Point { x, y },
+                    gpui::Size {
+                        width: w,
+                        height: line_height,
+                    },
+                );
+                window.paint_quad(fill(rect_bounds, rect.color));
+            }
+
+            // 2c. Paint search match highlight rects
+            for rect in &layout.search_rects {
                 let x = (origin.x + cell_width * rect.col as f32).floor();
                 let y = origin.y + line_height * rect.line as f32;
                 let w = (cell_width * rect.num_cols as f32).ceil();
