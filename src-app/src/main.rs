@@ -2924,6 +2924,8 @@ impl PaneFlowApp {
                     .child(format!("{}|", self.rename_text))
             } else {
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .text_color(ui.text)
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
