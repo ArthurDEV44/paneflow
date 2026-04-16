@@ -619,6 +619,7 @@ mod tests {
             line_height: None,
             font_family: None,
             font_size: None,
+            option_as_meta: None,
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();

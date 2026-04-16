@@ -8,14 +8,16 @@ use std::collections::HashMap;
 use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, Keystroke};
 
 use crate::{
-    ClosePane, CloseTab, CloseWindow, CloseWorkspace, CopyWorkspacePath, DismissSearch, FocusDown,
-    FocusLeft, FocusRight, FocusUp, LayoutEvenHorizontal, LayoutEvenVertical, LayoutMainVertical,
-    LayoutTiled, NewTab, NewWorkspace, NextWorkspace, OpenWorkspaceInCursor, OpenWorkspaceInVsCode,
-    OpenWorkspaceInWindsurf, OpenWorkspaceInZed, RevealWorkspaceInFileManager, ScrollPageDown,
-    ScrollPageUp, SearchNext, SearchPrev, SelectWorkspace1, SelectWorkspace2, SelectWorkspace3,
-    SelectWorkspace4, SelectWorkspace5, SelectWorkspace6, SelectWorkspace7, SelectWorkspace8,
-    SelectWorkspace9, SplitEqualize, SplitHorizontally, SplitVertically, SwapPane, TerminalCopy,
-    TerminalPaste, ToggleCopyMode, ToggleSearch, ToggleZoom, UndoClosePane,
+    ClearScrollHistory, ClosePane, CloseTab, CloseWindow, CloseWorkspace, CopyWorkspacePath,
+    DismissSearch, FocusDown, FocusLeft, FocusRight, FocusUp, JumpToPromptNext, JumpToPromptPrev,
+    LayoutEvenHorizontal, LayoutEvenVertical, LayoutMainVertical, LayoutTiled, NewTab,
+    NewWorkspace, NextWorkspace, OpenWorkspaceInCursor, OpenWorkspaceInVsCode,
+    OpenWorkspaceInWindsurf, OpenWorkspaceInZed, ResetTerminal, RevealWorkspaceInFileManager,
+    ScrollPageDown, ScrollPageUp, SearchNext, SearchPrev, SelectWorkspace1, SelectWorkspace2,
+    SelectWorkspace3, SelectWorkspace4, SelectWorkspace5, SelectWorkspace6, SelectWorkspace7,
+    SelectWorkspace8, SelectWorkspace9, SplitEqualize, SplitHorizontally, SplitVertically,
+    SwapPane, TerminalCopy, TerminalPaste, ToggleCopyMode, ToggleSearch, ToggleSearchRegex,
+    ToggleZoom, UndoClosePane,
 };
 
 /// A default keybinding entry: keystroke string, action name, GPUI context filter.
@@ -247,6 +249,21 @@ const DEFAULTS: &[DefaultBinding] = &[
         action_name: "dismiss_search",
         context: Some("Search"),
     },
+    DefaultBinding {
+        key: "alt-r",
+        action_name: "toggle_search_regex",
+        context: Some("Search"),
+    },
+    DefaultBinding {
+        key: "ctrl-shift-up",
+        action_name: "jump_to_prompt_prev",
+        context: Some("Terminal"),
+    },
+    DefaultBinding {
+        key: "ctrl-shift-down",
+        action_name: "jump_to_prompt_next",
+        context: Some("Terminal"),
+    },
 ];
 
 /// Resolve an action name string to a boxed GPUI action.
@@ -294,9 +311,14 @@ fn action_from_name(name: &str) -> Option<Box<dyn Action>> {
         "undo_close_pane" => Box::new(UndoClosePane),
         "toggle_copy_mode" => Box::new(ToggleCopyMode),
         "toggle_search" => Box::new(ToggleSearch),
+        "toggle_search_regex" => Box::new(ToggleSearchRegex),
         "search_next" => Box::new(SearchNext),
         "search_prev" => Box::new(SearchPrev),
         "dismiss_search" => Box::new(DismissSearch),
+        "jump_to_prompt_prev" => Box::new(JumpToPromptPrev),
+        "jump_to_prompt_next" => Box::new(JumpToPromptNext),
+        "clear_scroll_history" => Box::new(ClearScrollHistory),
+        "reset_terminal" => Box::new(ResetTerminal),
         _ => return None,
     })
 }
@@ -304,9 +326,17 @@ fn action_from_name(name: &str) -> Option<Box<dyn Action>> {
 /// Context for a given action name. Returns `Some("Terminal")` for terminal-scoped actions.
 fn context_for_action(name: &str) -> Option<&'static str> {
     match name {
-        "terminal_copy" | "terminal_paste" | "scroll_page_up" | "scroll_page_down"
-        | "toggle_copy_mode" | "toggle_search" => Some("Terminal"),
-        "search_next" | "search_prev" | "dismiss_search" => Some("Search"),
+        "terminal_copy"
+        | "terminal_paste"
+        | "scroll_page_up"
+        | "scroll_page_down"
+        | "toggle_copy_mode"
+        | "toggle_search"
+        | "jump_to_prompt_prev"
+        | "jump_to_prompt_next"
+        | "clear_scroll_history"
+        | "reset_terminal" => Some("Terminal"),
+        "search_next" | "search_prev" | "dismiss_search" | "toggle_search_regex" => Some("Search"),
         _ => None,
     }
 }

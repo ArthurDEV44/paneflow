@@ -9,6 +9,7 @@ mod csd;
 mod ipc;
 mod keybindings;
 mod keys;
+mod mouse;
 mod pane;
 mod pty;
 mod search;
@@ -20,6 +21,7 @@ pub mod theme;
 mod title_bar;
 mod workspace;
 
+use alacritty_terminal::grid::Dimensions;
 use gpui::{
     Animation, AnimationExt, App, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle,
     Decorations, Entity, FocusHandle, Focusable, HitboxBehavior, InteractiveElement, IntoElement,
@@ -53,6 +55,64 @@ fn send_text_to_first_leaf(node: &LayoutTree, text: &str, cx: &App) {
             if let Some(first) = children.first() {
                 send_text_to_first_leaf(&first.node, text, cx);
             }
+        }
+    }
+}
+
+/// Find the first terminal in a layout tree (for default routing).
+fn find_first_terminal(
+    node: &LayoutTree,
+    cx: &App,
+) -> Option<gpui::Entity<crate::terminal::TerminalView>> {
+    match node {
+        LayoutTree::Leaf(pane) => {
+            let pane = pane.read(cx);
+            Some(pane.active_terminal().clone())
+        }
+        LayoutTree::Container { children, .. } => children
+            .first()
+            .and_then(|child| find_first_terminal(&child.node, cx)),
+    }
+}
+
+/// Find a terminal view entity by its surface_id (GPUI entity ID) across all workspaces.
+fn find_terminal_by_surface_id(
+    workspaces: &[crate::workspace::Workspace],
+    surface_id: u64,
+    cx: &App,
+) -> Option<gpui::Entity<crate::terminal::TerminalView>> {
+    for ws in workspaces {
+        if let Some(root) = &ws.root
+            && let Some(t) = find_terminal_in_tree(root, surface_id, cx)
+        {
+            return Some(t);
+        }
+    }
+    None
+}
+
+fn find_terminal_in_tree(
+    node: &LayoutTree,
+    surface_id: u64,
+    cx: &App,
+) -> Option<gpui::Entity<crate::terminal::TerminalView>> {
+    match node {
+        LayoutTree::Leaf(pane) => {
+            let pane = pane.read(cx);
+            for terminal in &pane.tabs {
+                if terminal.entity_id().as_u64() == surface_id {
+                    return Some(terminal.clone());
+                }
+            }
+            None
+        }
+        LayoutTree::Container { children, .. } => {
+            for child in children {
+                if let Some(t) = find_terminal_in_tree(&child.node, surface_id, cx) {
+                    return Some(t);
+                }
+            }
+            None
         }
     }
 }
@@ -104,11 +164,16 @@ actions!(
         SplitEqualize,
         SwapPane,
         ToggleSearch,
+        ToggleSearchRegex,
+        JumpToPromptPrev,
+        JumpToPromptNext,
         UndoClosePane,
         SearchNext,
         SearchPrev,
         DismissSearch,
-        ToggleCopyMode
+        ToggleCopyMode,
+        ClearScrollHistory,
+        ResetTerminal
     ]
 );
 
@@ -330,10 +395,22 @@ impl PaneFlowApp {
                 {
                     return;
                 }
-                // Inherit CWD from the source pane's active terminal (fresh /proc read)
-                let source_cwd = pane.read(cx).active_terminal().read(cx).terminal.cwd_now();
+                // Inherit CWD and estimate initial grid size from the source terminal.
+                // Grid is halved in the split direction; refined to exact size on first prepaint.
+                let (source_cwd, initial_size) = {
+                    let view = pane.read(cx).active_terminal().read(cx);
+                    let cwd = view.terminal.cwd_now();
+                    let term = view.terminal.term.lock();
+                    let (cols, rows) = (term.columns(), term.screen_lines());
+                    let size = match direction {
+                        crate::split::SplitDirection::Horizontal => (cols, (rows / 2).max(1)),
+                        crate::split::SplitDirection::Vertical => ((cols / 2).max(1), rows),
+                    };
+                    (cwd, size)
+                };
                 let ws_id = self.active_workspace().map(|ws| ws.id).unwrap_or(0);
-                let new_terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, source_cwd, cx));
+                let new_terminal =
+                    cx.new(|cx| TerminalView::with_cwd(ws_id, source_cwd, Some(initial_size), cx));
                 let new_pane = self.create_pane(new_terminal, ws_id, cx);
                 if let Some(ws) = self.active_workspace_mut()
                     && let Some(root) = &mut ws.root
@@ -1077,7 +1154,8 @@ impl PaneFlowApp {
                 ));
             } else {
                 // No saved layout — single terminal in the workspace CWD
-                let terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, Some(cwd.clone()), cx));
+                let terminal =
+                    cx.new(|cx| TerminalView::with_cwd(ws_id, Some(cwd.clone()), None, cx));
                 cx.subscribe(&terminal, Self::handle_terminal_event)
                     .detach();
                 let pane = cx.new(|cx| Pane::new(terminal, ws_id, cx));
@@ -1111,7 +1189,7 @@ impl PaneFlowApp {
         let mut focus_idx: usize = 0;
         let terminals: Vec<Entity<TerminalView>> = if surfaces.is_empty() {
             let t = cx.new(|cx| {
-                TerminalView::with_cwd(workspace_id, Some(fallback_cwd.to_path_buf()), cx)
+                TerminalView::with_cwd(workspace_id, Some(fallback_cwd.to_path_buf()), None, cx)
             });
             cx.subscribe(&t, Self::handle_terminal_event).detach();
             vec![t]
@@ -1125,7 +1203,7 @@ impl PaneFlowApp {
                         .as_ref()
                         .map(PathBuf::from)
                         .unwrap_or_else(|| fallback_cwd.to_path_buf());
-                    let t = cx.new(|cx| TerminalView::with_cwd(workspace_id, Some(cwd), cx));
+                    let t = cx.new(|cx| TerminalView::with_cwd(workspace_id, Some(cwd), None, cx));
                     // Restore saved scrollback into the terminal grid
                     if let Some(ref scrollback) = surface.scrollback {
                         t.read(cx).terminal.restore_scrollback(scrollback);
@@ -1277,7 +1355,14 @@ impl PaneFlowApp {
                 if text.len() > MAX_TEXT_LEN {
                     return serde_json::json!({"error": "Text exceeds 64 KiB limit"});
                 }
-                // Write to the focused terminal's PTY in the active workspace
+                // Route by surface_id if provided, otherwise use first leaf
+                if let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64()) {
+                    if let Some(terminal) = find_terminal_by_surface_id(&self.workspaces, sid, cx) {
+                        terminal.read(cx).send_text(text);
+                        return serde_json::json!({"sent": true, "length": text.len()});
+                    }
+                    return serde_json::json!({"error": "Surface not found"});
+                }
                 if let Some(ws) = self.active_workspace()
                     && let Some(root) = &ws.root
                 {
@@ -1285,6 +1370,34 @@ impl PaneFlowApp {
                     return serde_json::json!({"sent": true, "length": text.len()});
                 }
                 serde_json::json!({"error": "No active terminal"})
+            }
+            "surface.send_keystroke" => {
+                let keystroke = params
+                    .get("keystroke")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("");
+                if keystroke.is_empty() {
+                    return serde_json::json!({"error": "Missing 'keystroke' parameter"});
+                }
+                // Route by surface_id if provided, otherwise use active terminal
+                let terminal = if let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64())
+                {
+                    find_terminal_by_surface_id(&self.workspaces, sid, cx)
+                } else if let Some(ws) = self.active_workspace()
+                    && let Some(root) = &ws.root
+                {
+                    // Use first leaf as default
+                    find_first_terminal(root, cx)
+                } else {
+                    None
+                };
+                match terminal {
+                    Some(t) => match t.read(cx).send_keystroke(keystroke) {
+                        Ok(()) => serde_json::json!({"sent": true}),
+                        Err(e) => serde_json::json!({"error": e}),
+                    },
+                    None => serde_json::json!({"error": "No active terminal"}),
+                }
             }
             "surface.split" => {
                 let dir_str = params
@@ -1636,8 +1749,8 @@ impl PaneFlowApp {
                                     .map(|n| n.to_string_lossy().into_owned())
                                     .unwrap_or_else(|| format!("Terminal {n}"));
                                 let ws_id = next_workspace_id();
-                                let terminal =
-                                    cx.new(|cx| TerminalView::with_cwd(ws_id, Some(path), cx));
+                                let terminal = cx
+                                    .new(|cx| TerminalView::with_cwd(ws_id, Some(path), None, cx));
                                 let pane = app.create_pane(terminal, ws_id, cx);
                                 let ws = Workspace::with_cwd_and_id(ws_id, title, dir, pane);
                                 app.watch_git_dir(&ws);
@@ -1677,7 +1790,7 @@ impl PaneFlowApp {
             .and_then(|root| root.focused_pane(window, cx))
             .and_then(|pane| pane.read(cx).active_terminal().read(cx).terminal.cwd_now());
         let ws_id = self.active_workspace().map(|ws| ws.id).unwrap_or(0);
-        let new_terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, source_cwd, cx));
+        let new_terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, source_cwd, None, cx));
         let new_pane = self.create_pane(new_terminal, ws_id, cx);
         if let Some(ws) = self.active_workspace_mut()
             && let Some(root) = &mut ws.root
@@ -1800,7 +1913,7 @@ impl PaneFlowApp {
 
         let ws_id = self.active_workspace().map(|ws| ws.id).unwrap_or(0);
         let cwd = record.cwd;
-        let new_terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, cwd, cx));
+        let new_terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, cwd, None, cx));
 
         // Restore scrollback into the new terminal's grid
         if let Some(ref scrollback) = record.scrollback {

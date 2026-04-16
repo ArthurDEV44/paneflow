@@ -37,6 +37,8 @@ dirs = "5.0"
 rust-embed = { version = "8.11", features = ["include-exclude"] }
 smol = "2.0"
 libc = "0.2"
+regex = "1"
+open = "5"
 
 # Linux: enable Wayland + X11 display backends for gpui_platform
 [target.'cfg(target_os = "linux")'.dependencies]

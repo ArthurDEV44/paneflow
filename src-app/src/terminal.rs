@@ -22,11 +22,14 @@ use portable_pty::PtySize;
 use crate::pty::{PortablePtyBackend, PtyBackend};
 
 use gpui::{
-    App, ClipboardItem, Context, EventEmitter, FocusHandle, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render,
-    ScrollWheelEvent, Styled, Window, div, prelude::*,
+    App, ClipboardEntry, ClipboardItem, Context, EventEmitter, ExternalPaths, FocusHandle,
+    InteractiveElement, IntoElement, KeyContext, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, Styled, Window, div, prelude::*,
 };
 
+use crate::mouse;
+
+use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
 use crate::terminal_element::TerminalElement;
@@ -218,13 +221,76 @@ impl Notify for PtyNotifier {
 }
 
 // ---------------------------------------------------------------------------
+// OSC 52 clipboard mode
+// ---------------------------------------------------------------------------
+
+/// Controls OSC 52 clipboard access. Default: CopyOnly (write-only).
+/// Read path (CopyPaste) is a security risk — clipboard exfiltration.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Osc52Mode {
+    Disabled,
+    CopyOnly,
+    CopyPaste,
+}
+
+/// Kind of OSC 133 prompt mark.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptMarkKind {
+    /// A — prompt start
+    PromptStart,
+    /// B — prompt end / command start
+    CommandStart,
+    /// C — command end / output start
+    OutputStart,
+    /// D — output end
+    OutputEnd,
+}
+
+/// A shell prompt boundary detected via OSC 133.
+#[derive(Clone, Debug)]
+pub struct PromptMark {
+    /// Grid line where the mark was detected (topmost_line..=bottommost_line coordinate).
+    pub line: i32,
+    pub kind: PromptMarkKind,
+}
+
+/// Deferred clipboard operation from sync() — executed in cx.update() closure.
+enum ClipboardOp {
+    Store(String),
+    Load(std::sync::Arc<dyn Fn(&str) -> String + Sync + Send + 'static>),
+}
+
+/// Deferred color query response (OSC 10/11/12) from sync().
+struct ColorOp {
+    index: usize,
+    format_fn: std::sync::Arc<dyn Fn(AlacRgb) -> String + Sync + Send + 'static>,
+}
+
+use alacritty_terminal::event::WindowSize as AlacWindowSize;
+use alacritty_terminal::vte::ansi::Rgb as AlacRgb;
+
+/// Convert GPUI Hsla to alacritty Rgb for color query responses.
+fn hsla_to_alac_rgb(hsla: gpui::Hsla) -> AlacRgb {
+    let rgba = gpui::Rgba::from(hsla);
+    AlacRgb {
+        r: (rgba.r.clamp(0.0, 1.0) * 255.0) as u8,
+        g: (rgba.g.clamp(0.0, 1.0) * 255.0) as u8,
+        b: (rgba.b.clamp(0.0, 1.0) * 255.0) as u8,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Terminal state
 // ---------------------------------------------------------------------------
 
 pub struct TerminalState {
     pub term: Arc<FairMutex<Term<ZedListener>>>,
     pub notifier: PtyNotifier,
-    events_rx: UnboundedReceiver<AlacEvent>,
+    events_rx: Option<UnboundedReceiver<AlacEvent>>,
+    cwd_rx: UnboundedReceiver<String>,
+    prompt_rx: UnboundedReceiver<PromptMark>,
+    /// Shell prompt marks detected via OSC 133 sequences.
+    pub prompt_marks: Vec<PromptMark>,
     pub exited: Option<i32>,
     /// PID of the shell child process, used for port detection.
     pub child_pid: u32,
@@ -234,6 +300,19 @@ pub struct TerminalState {
     /// Updated via OSC 7 escape sequence (push from shell) or on-demand
     /// via `cwd_now()` (fallback for shells that don't emit OSC 7).
     pub current_cwd: Option<String>,
+    /// OSC 52 clipboard access mode (default: copy-only for security).
+    pub osc52_mode: Osc52Mode,
+    /// Deferred clipboard operations from sync() — drained in the poll loop
+    /// where cx is available for clipboard read/write.
+    pending_clipboard_ops: Vec<ClipboardOp>,
+    /// Deferred color query responses (OSC 10/11/12) from sync().
+    pending_color_ops: Vec<ColorOp>,
+    /// Deferred text area size request responses from sync().
+    pending_size_ops: Vec<std::sync::Arc<dyn Fn(AlacWindowSize) -> String + Sync + Send + 'static>>,
+    /// Bell event received — triggers visual flash in poll loop.
+    pub bell_active: bool,
+    /// Whether the terminal wants the cursor to blink (from CursorBlinkingChange).
+    pub cursor_blinking: bool,
     /// Set when PTY output has been processed (Wakeup event received).
     /// Cleared after cx.notify() triggers a repaint.
     pub dirty: bool,
@@ -255,12 +334,14 @@ impl TerminalState {
         working_directory: Option<std::path::PathBuf>,
         workspace_id: u64,
         surface_id: u64,
+        initial_size: Option<(usize, usize)>,
     ) -> anyhow::Result<Self> {
         let (events_tx, events_rx) = unbounded();
+        let (cwd_tx, cwd_rx) = unbounded();
+        let (prompt_tx, prompt_rx) = unbounded();
         let listener = ZedListener(events_tx.clone());
 
-        let cols: usize = 80;
-        let rows: usize = 24;
+        let (cols, rows) = initial_size.unwrap_or((120, 40));
 
         let config = TermConfig::default();
         let dimensions = SpikeTermSize {
@@ -313,6 +394,15 @@ impl TerminalState {
             env.insert("PANEFLOW_SOCKET_PATH".into(), socket_path);
         }
 
+        // Explicit TERM so TUI apps detect capabilities correctly
+        // (don't rely on portable-pty's default).
+        env.insert("TERM".into(), "xterm-256color".into());
+
+        // Ensure UTF-8 locale in minimal environments (containers, etc.)
+        if std::env::var("LANG").map_or(true, |v| v.is_empty()) {
+            env.insert("LANG".into(), "en_US.UTF-8".into());
+        }
+
         // Standard terminal identification for TUI app capability detection.
         env.insert("TERM_PROGRAM".into(), "paneflow".into());
         env.insert(
@@ -340,11 +430,19 @@ impl TerminalState {
 
         // I/O threads replace AlacEventLoop (US-007).
         // Reader thread: reads PTY output → VTE parser → Term mutations → Wakeup.
+        // DEC 2026 sync gating is handled by vte's built-in Processor (150ms timeout).
         // Also owns the child handle to capture exit status after EOF.
         let term_for_reader = term.clone();
         let listener_for_reader = ZedListener(events_tx.clone());
         std::thread::spawn(move || {
-            pty_reader_loop(pty.reader, term_for_reader, listener_for_reader, pty.child);
+            pty_reader_loop(
+                pty.reader,
+                term_for_reader,
+                listener_for_reader,
+                pty.child,
+                cwd_tx,
+                prompt_tx,
+            );
         });
 
         // Message handler thread: receives Notifier messages → writes to PTY / resizes.
@@ -356,10 +454,19 @@ impl TerminalState {
         Ok(Self {
             term,
             notifier: PtyNotifier(PtySender(msg_tx)),
-            events_rx,
+            events_rx: Some(events_rx),
+            cwd_rx,
+            prompt_rx,
+            prompt_marks: Vec::new(),
             exited: None,
             child_pid: pty.child_pid,
             current_cwd: None,
+            osc52_mode: Osc52Mode::CopyOnly,
+            pending_clipboard_ops: Vec::new(),
+            pending_color_ops: Vec::new(),
+            pending_size_ops: Vec::new(),
+            bell_active: false,
+            cursor_blinking: true,
             title: String::from("Terminal"),
             dirty: true, // Force initial render
             output_scan_ticks: 0,
@@ -369,33 +476,176 @@ impl TerminalState {
         })
     }
 
-    /// Drain alacritty events. Sets `dirty = true` when PTY output was processed.
-    pub fn sync(&mut self) {
-        while let Ok(event) = self.events_rx.try_recv() {
-            match event {
-                AlacEvent::Wakeup => {
-                    self.dirty = true;
-                }
-                // Upstream alacritty_terminal v0.26 uses ExitStatus instead of i32
-                // for ChildExit. CurrentWorkingDirectory was fork-only (OSC 7) —
-                // CWD tracking now relies on cwd_now() polling fallback.
-                AlacEvent::ChildExit(status) => {
-                    self.exited = Some(status.code().unwrap_or(-1));
-                    self.dirty = true;
-                    self.reported_ports.clear();
-                }
-                AlacEvent::Exit => {
-                    self.exited = Some(-1);
-                    self.dirty = true;
-                }
-                AlacEvent::Title(t) => {
-                    self.title = t;
-                }
-                AlacEvent::ResetTitle => {
-                    self.title = String::from("Terminal");
-                }
-                _ => {} // Bell, ClipboardStore, etc.
+    /// Create a display-only terminal with no PTY, no reader thread, no message loop.
+    /// Content is rendered via `write_output()` which processes bytes through VTE directly.
+    /// The terminal supports full ANSI rendering but does not accept keyboard input.
+    #[allow(dead_code)]
+    pub fn new_display_only(rows: usize, cols: usize) -> Self {
+        // events_tx is kept alive inside Term's ZedListener (Term emits Wakeup after VTE mutations).
+        // cwd/prompt senders are dropped so their try_recv() always returns Err (no PTY scanner).
+        let (events_tx, events_rx) = unbounded();
+        let (_cwd_tx, cwd_rx) = unbounded::<String>();
+        let (_prompt_tx, prompt_rx) = unbounded::<PromptMark>();
+        let listener = ZedListener(events_tx);
+
+        let config = TermConfig::default();
+        let dimensions = SpikeTermSize {
+            columns: cols,
+            screen_lines: rows,
+        };
+        let term = Term::new(config, &dimensions, listener);
+        let term = Arc::new(FairMutex::new(term));
+
+        // Dummy notifier — sends are silently discarded (receiver dropped)
+        let (msg_tx, _msg_rx) = std::sync::mpsc::channel::<Msg>();
+
+        Self {
+            term,
+            notifier: PtyNotifier(PtySender(msg_tx)),
+            events_rx: Some(events_rx),
+            cwd_rx,
+            prompt_rx,
+            prompt_marks: Vec::new(),
+            exited: None,
+            child_pid: 0,
+            current_cwd: None,
+            osc52_mode: Osc52Mode::Disabled,
+            pending_clipboard_ops: Vec::new(),
+            pending_color_ops: Vec::new(),
+            pending_size_ops: Vec::new(),
+            bell_active: false,
+            cursor_blinking: false,
+            title: String::from("Display"),
+            dirty: true,
+            output_scan_ticks: 0,
+            reported_ports: Vec::new(),
+            #[cfg(debug_assertions)]
+            last_keystroke_at: None,
+        }
+    }
+
+    /// Write ANSI-formatted content to a display-only terminal.
+    /// Converts bare `\n` to `\r\n` (since there is no PTY to perform CR insertion).
+    /// Processes bytes through VTE for full ANSI color/attribute support.
+    /// Note: callers must not split a `\r\n` pair across two calls (the second call
+    /// would insert an extra `\r`, producing `\r\r\n`). Prefer complete chunks.
+    #[allow(dead_code)]
+    pub fn write_output(&self, bytes: &[u8]) {
+        // Convert \n to \r\n — bare LF without preceding CR needs CR insertion
+        let mut converted = Vec::with_capacity(bytes.len());
+        let mut prev = 0u8;
+        for &b in bytes {
+            if b == b'\n' && prev != b'\r' {
+                converted.push(b'\r');
             }
+            converted.push(b);
+            prev = b;
+        }
+
+        let mut term = self.term.lock();
+        let mut processor = alacritty_terminal::vte::ansi::Processor::<
+            alacritty_terminal::vte::ansi::StdSyncHandler,
+        >::new();
+        processor.advance(&mut *term, &converted);
+    }
+
+    /// Drain CWD and prompt mark channels, then drain any remaining events.
+    /// Sets `dirty = true` when PTY output was processed.
+    #[allow(dead_code)]
+    pub fn sync(&mut self) {
+        self.sync_channels();
+        if let Some(mut rx) = self.events_rx.take() {
+            while let Ok(event) = rx.try_recv() {
+                self.process_event(event);
+            }
+            self.events_rx = Some(rx);
+        }
+    }
+
+    /// Drain only the CWD and prompt mark channels (not events).
+    /// Used by the batched event loop which handles events directly.
+    pub fn sync_channels(&mut self) {
+        while let Ok(cwd) = self.cwd_rx.try_recv() {
+            self.current_cwd = Some(cwd);
+        }
+        while let Ok(mark) = self.prompt_rx.try_recv() {
+            self.prompt_marks.push(mark);
+        }
+    }
+
+    /// Defensively reset terminal modes that could corrupt the outer terminal.
+    /// Called on child exit before marking the terminal as exited.
+    /// Only resets modes that are actually active (clean exits won't trigger).
+    fn reset_active_modes(&mut self) {
+        let mode = *self.term.lock().mode();
+        if mode.contains(TermMode::BRACKETED_PASTE) {
+            self.notifier.notify(b"\x1b[?2004l" as &[u8]);
+        }
+        if mode.contains(TermMode::FOCUS_IN_OUT) {
+            self.notifier.notify(b"\x1b[?1004l" as &[u8]);
+        }
+        if mode.intersects(TermMode::MOUSE_MODE) {
+            self.notifier
+                .notify(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l" as &[u8]);
+        }
+        if mode.contains(TermMode::ALT_SCREEN) {
+            self.notifier.notify(b"\x1b[?1049l" as &[u8]);
+        }
+    }
+
+    /// Process a single alacritty event.
+    pub fn process_event(&mut self, event: AlacEvent) {
+        match event {
+            AlacEvent::Wakeup => {
+                self.dirty = true;
+            }
+            AlacEvent::ChildExit(status) => {
+                self.reset_active_modes();
+                self.exited = Some(status.code().unwrap_or(-1));
+                self.dirty = true;
+                self.reported_ports.clear();
+            }
+            AlacEvent::Exit => {
+                self.reset_active_modes();
+                self.exited = Some(-1);
+                self.dirty = true;
+            }
+            AlacEvent::Title(t) => {
+                self.title = t;
+            }
+            AlacEvent::ResetTitle => {
+                self.title = String::from("Terminal");
+            }
+            AlacEvent::PtyWrite(text) => {
+                self.notifier.notify(text.into_bytes());
+            }
+            AlacEvent::ClipboardStore(_selection, text) => {
+                // Cap at 100 KiB to prevent memory DoS from malicious programs
+                const MAX_OSC52_BYTES: usize = 100 * 1024;
+                if self.osc52_mode != Osc52Mode::Disabled && text.len() <= MAX_OSC52_BYTES {
+                    self.pending_clipboard_ops.push(ClipboardOp::Store(text));
+                }
+            }
+            AlacEvent::ClipboardLoad(_selection, format_fn) => {
+                if self.osc52_mode == Osc52Mode::CopyPaste {
+                    self.pending_clipboard_ops
+                        .push(ClipboardOp::Load(format_fn));
+                }
+            }
+            AlacEvent::ColorRequest(index, format_fn) => {
+                self.pending_color_ops.push(ColorOp { index, format_fn });
+            }
+            AlacEvent::Bell => {
+                self.bell_active = true;
+            }
+            AlacEvent::CursorBlinkingChange => {
+                let term = self.term.lock();
+                self.cursor_blinking = term.cursor_style().blinking;
+            }
+            AlacEvent::TextAreaSizeRequest(format_fn) => {
+                self.pending_size_ops.push(format_fn);
+            }
+            _ => {} // MouseCursorDirty, etc.
         }
     }
 
@@ -670,6 +920,21 @@ fn ensure_wrapper_scripts(bin_dir: &std::path::Path) {
 impl Drop for TerminalState {
     fn drop(&mut self) {
         let _ = self.notifier.0.send(Msg::Shutdown);
+
+        // Grace period + SIGKILL: if the child process ignores SIGHUP
+        // (from PTY master close), force-kill it after 100ms.
+        let pid = self.child_pid as i32;
+        if pid > 0 {
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                // Check if process is still alive before sending SIGKILL
+                unsafe {
+                    if libc::kill(pid, 0) == 0 {
+                        libc::kill(pid, libc::SIGKILL);
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -701,43 +966,194 @@ pub struct TerminalView {
     search_matches: Vec<crate::search::SearchMatch>,
     /// Index of the currently focused match (for navigation)
     search_current: usize,
+    /// Whether regex search mode is active (vs plain text)
+    search_regex_mode: bool,
+    /// Regex compilation error message (None when valid or plain text mode)
+    search_regex_error: Option<String>,
+    /// Current prompt mark navigation index (for jump-to-prompt cycling)
+    prompt_mark_current: Option<usize>,
+    /// Whether Alt key is treated as Meta (ESC prefix). Read from config.
+    option_as_meta: bool,
     /// Whether copy mode (keyboard-driven selection) is active
     copy_mode_active: bool,
     /// Copy mode cursor position in grid coordinates
     copy_cursor: AlacPoint,
     /// Display offset frozen at copy mode entry to prevent auto-scroll
     copy_mode_frozen_offset: usize,
+    /// Previous focus state, used to detect focus transitions for DEC 1004 events.
+    was_focused: bool,
+    /// Bell flash deadline — background pulse visible until this instant.
+    bell_flash_until: Option<std::time::Instant>,
+    /// Last hovered cell position for URL regex detection (US-015).
+    hovered_cell: Option<AlacPoint>,
+    /// Active hyperlink under Ctrl+hover — drives underline rendering and Ctrl+click.
+    ctrl_hovered_link: Option<crate::terminal_element::HyperlinkZone>,
+    /// IME preedit text (in-progress composition). Empty when no composition active.
+    ime_marked_text: String,
 }
 
 impl TerminalView {
     pub fn new(workspace_id: u64, cx: &mut Context<Self>) -> Self {
-        Self::with_cwd(workspace_id, None, cx)
+        Self::with_cwd(workspace_id, None, None, cx)
     }
 
     pub fn with_cwd(
         workspace_id: u64,
         cwd: Option<std::path::PathBuf>,
+        initial_size: Option<(usize, usize)>,
         cx: &mut Context<Self>,
     ) -> Self {
         let surface_id = cx.entity_id().as_u64();
         let backend = PortablePtyBackend;
-        let terminal = TerminalState::new(&backend, cwd, workspace_id, surface_id)
-            .expect("Failed to create terminal");
+        let mut terminal =
+            TerminalState::new(&backend, cwd, workspace_id, surface_id, initial_size)
+                .expect("Failed to create terminal");
         let focus_handle = cx.focus_handle();
 
-        // Adaptive sync: poll fast (4ms) when active, slow (50ms) when idle.
-        // Idle terminal = fewer lock acquisitions, less CPU.
+        // Event batch coalescing (Zed pattern):
+        // Phase 1: Block until first event (zero CPU when idle)
+        // Phase 2: Batch for 4ms, max 100 events, dedup Wakeup
+        // Phase 3: Process batch, yield to other GPUI tasks
+        let events_rx = terminal.events_rx.take().expect("events_rx already taken");
         cx.spawn(
-            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let mut idle_ticks: u32 = 0;
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut events_rx = events_rx;
                 loop {
-                    let interval = if idle_ticks > 10 { 50 } else { 4 };
-                    smol::Timer::after(std::time::Duration::from_millis(interval)).await;
+                    // Phase 1: Block until first event arrives (zero CPU when idle)
+                    let Some(first_event) = events_rx.next().await else {
+                        break; // Channel closed
+                    };
+
+                    // Phase 2: Batch additional events for 4ms, max 100
+                    let mut batch: Vec<AlacEvent> = Vec::with_capacity(32);
+                    let mut had_wakeup = matches!(first_event, AlacEvent::Wakeup);
+                    if !had_wakeup {
+                        batch.push(first_event);
+                    }
+
+                    {
+                        let timer = futures::FutureExt::fuse(smol::Timer::after(
+                            std::time::Duration::from_millis(4),
+                        ));
+                        futures::pin_mut!(timer);
+                        loop {
+                            futures::select_biased! {
+                                event = events_rx.next() => {
+                                    match event {
+                                        Some(AlacEvent::Wakeup) => had_wakeup = true,
+                                        Some(e) => batch.push(e),
+                                        None => break,
+                                    }
+                                    if batch.len() >= 100 { break; }
+                                }
+                                _ = timer => break,
+                            }
+                        }
+                    }
+
+                    // Phase 3: Process the batch in a single entity update
                     let result = cx.update(|cx| {
                         this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
                             let old_title = view.terminal.title.clone();
                             let old_cwd = view.terminal.current_cwd.clone();
-                            view.terminal.sync();
+                            view.terminal.sync_channels();
+                            if had_wakeup {
+                                view.terminal.process_event(AlacEvent::Wakeup);
+                            }
+                            for event in batch {
+                                view.terminal.process_event(event);
+                            }
+
+                            // Execute deferred clipboard operations (OSC 52)
+                            for op in view.terminal.pending_clipboard_ops.drain(..) {
+                                match op {
+                                    ClipboardOp::Store(text) => {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                    }
+                                    ClipboardOp::Load(format_fn) => {
+                                        let text = cx
+                                            .read_from_clipboard()
+                                            .and_then(|c| c.text())
+                                            .unwrap_or_default();
+                                        // Strip ESC and C1 control chars to prevent injection
+                                        let sanitized: String = text
+                                            .chars()
+                                            .filter(|&c| {
+                                                c != '\x1b'
+                                                    && !(('\u{0080}'..='\u{009f}').contains(&c))
+                                            })
+                                            .collect();
+                                        let response = format_fn(&sanitized);
+                                        view.terminal.notifier.notify(response.into_bytes());
+                                    }
+                                }
+                            }
+
+                            // Execute deferred color query responses (OSC 10/11/12)
+                            // Cap at 16 to prevent flooding from malicious programs
+                            view.terminal.pending_color_ops.truncate(16);
+                            if !view.terminal.pending_color_ops.is_empty() {
+                                let theme = crate::theme::active_theme();
+                                for op in view.terminal.pending_color_ops.drain(..) {
+                                    let color = match op.index {
+                                        // OSC 10: foreground
+                                        10 => Some(theme.foreground),
+                                        // OSC 11: background
+                                        11 => Some(theme.ansi_background),
+                                        // OSC 12: cursor
+                                        12 => Some(theme.cursor),
+                                        _ => None,
+                                    };
+                                    if let Some(hsla) = color {
+                                        let rgb = hsla_to_alac_rgb(hsla);
+                                        let response = (op.format_fn)(rgb);
+                                        view.terminal.notifier.notify(response.into_bytes());
+                                    }
+                                }
+                            }
+
+                            // Execute deferred text area size responses
+                            view.terminal.pending_size_ops.truncate(8);
+                            for format_fn in view.terminal.pending_size_ops.drain(..) {
+                                let term = view.terminal.term.lock();
+                                let size = AlacWindowSize {
+                                    num_cols: term.columns() as u16,
+                                    num_lines: term.screen_lines() as u16,
+                                    cell_width: view.cell_width.as_f32() as u16,
+                                    cell_height: view.line_height.as_f32() as u16,
+                                };
+                                drop(term);
+                                let response = format_fn(size);
+                                view.terminal.notifier.notify(response.into_bytes());
+                            }
+
+                            // Bell: trigger visual flash
+                            if view.terminal.bell_active {
+                                view.terminal.bell_active = false;
+                                view.bell_flash_until = Some(
+                                    std::time::Instant::now()
+                                        + std::time::Duration::from_millis(200),
+                                );
+                                cx.emit(TerminalEvent::Bell);
+                                // Schedule notify after flash duration to clear it
+                                cx.spawn(async |this, cx| {
+                                    smol::Timer::after(std::time::Duration::from_millis(200)).await;
+                                    let _ = cx.update(|cx| {
+                                        this.update(cx, |view, cx| {
+                                            // Only clear if no newer bell extended the deadline
+                                            if view
+                                                .bell_flash_until
+                                                .is_some_and(|t| t <= std::time::Instant::now())
+                                            {
+                                                view.bell_flash_until = None;
+                                            }
+                                            cx.notify();
+                                        })
+                                    });
+                                })
+                                .detach();
+                            }
+
                             if view.terminal.exited.is_some() {
                                 cx.emit(TerminalEvent::ChildExited);
                             }
@@ -755,17 +1171,9 @@ impl TerminalView {
                                 let suppress =
                                     SUPPRESS_REPAINTS.load(std::sync::atomic::Ordering::Relaxed);
 
-                                // Skip output scanning and event emission when
-                                // the settings overlay is visible — no point
-                                // locking the grid or triggering subscribers.
                                 if !suppress {
                                     view.terminal.output_scan_ticks += 1;
-                                    // Scan aggressively for first 10 ticks (~40ms each),
-                                    // then throttle to every 50th tick (~200ms).
-                                    // This catches server startup messages before they
-                                    // scroll out of view from rapid log output.
-                                    let should_scan = idle_ticks > 10
-                                        || view.terminal.output_scan_ticks <= 10
+                                    let should_scan = view.terminal.output_scan_ticks <= 10
                                         || view.terminal.output_scan_ticks >= 50;
                                     if should_scan {
                                         view.terminal.output_scan_ticks = 0;
@@ -774,15 +1182,7 @@ impl TerminalView {
                                         }
                                     }
 
-                                    if idle_ticks > 10 {
-                                        cx.emit(TerminalEvent::ActivityBurst);
-                                    }
-                                }
-
-                                idle_ticks = 0;
-                                if !suppress {
-                                    // Copy mode: restore frozen display offset to prevent
-                                    // auto-scroll when new terminal output arrives.
+                                    // Copy mode: restore frozen display offset
                                     if view.copy_mode_active {
                                         let mut term = view.terminal.term.lock();
                                         let current = term.grid().display_offset();
@@ -795,14 +1195,15 @@ impl TerminalView {
 
                                     cx.notify();
                                 }
-                            } else {
-                                idle_ticks = idle_ticks.saturating_add(1);
                             }
                         })
                     });
                     if result.is_err() {
                         break;
                     }
+
+                    // Yield to other GPUI tasks between batches
+                    smol::future::yield_now().await;
                 }
             },
         )
@@ -821,7 +1222,11 @@ impl TerminalView {
                             {
                                 return;
                             }
-                            view.cursor_visible = !view.cursor_visible;
+                            if view.terminal.cursor_blinking {
+                                view.cursor_visible = !view.cursor_visible;
+                            } else {
+                                view.cursor_visible = true;
+                            }
                             cx.notify();
                         })
                     });
@@ -846,9 +1251,20 @@ impl TerminalView {
             search_query: String::new(),
             search_matches: Vec::new(),
             search_current: 0,
+            search_regex_mode: false,
+            search_regex_error: None,
+            prompt_mark_current: None,
+            option_as_meta: paneflow_config::loader::load_config()
+                .option_as_meta
+                .unwrap_or(true),
             copy_mode_active: false,
             copy_cursor: AlacPoint::new(GridLine(0), GridCol(0)),
             copy_mode_frozen_offset: 0,
+            was_focused: false,
+            bell_flash_until: None,
+            hovered_cell: None,
+            ctrl_hovered_link: None,
+            ime_marked_text: String::new(),
         }
     }
 
@@ -951,7 +1367,7 @@ impl TerminalView {
         drop(term_guard);
 
         // Try the key mapping module first (handles ctrl, special keys, modifiers)
-        if let Some(seq) = crate::keys::to_esc_str(keystroke, &mode) {
+        if let Some(seq) = crate::keys::to_esc_str(keystroke, &mode, self.option_as_meta) {
             match seq {
                 Cow::Borrowed(s) => {
                     // Zero allocation — static byte slice
@@ -1012,6 +1428,40 @@ impl TerminalView {
         )
     }
 
+    /// Convert pixel position to viewport grid coordinates (for mouse reporting).
+    /// Unlike `pixel_to_grid`, this returns 0-based viewport coordinates without
+    /// the scrollback display_offset subtraction.
+    fn pixel_to_viewport(&self, pos: gpui::Point<gpui::Pixels>) -> AlacPoint {
+        let origin = *self.element_origin.lock().unwrap();
+        let relative_x = (pos.x - origin.x).max(gpui::px(0.0));
+        let relative_y = (pos.y - origin.y).max(gpui::px(0.0));
+        let col_f = relative_x / self.cell_width;
+        let term = self.terminal.term.lock();
+        let max_col = term.columns().saturating_sub(1);
+        let max_line = term.screen_lines().saturating_sub(1) as i32;
+        drop(term);
+        let col = (col_f as usize).min(max_col);
+        let line = ((relative_y / self.line_height) as i32).min(max_line);
+        AlacPoint::new(GridLine(line), GridCol(col))
+    }
+
+    /// Write a mouse report to the PTY using the appropriate encoding format.
+    fn write_mouse_report(&self, point: AlacPoint, button: u8, pressed: bool, mode: TermMode) {
+        let format = mouse::MouseFormat::from_mode(mode);
+        let bytes = match format {
+            mouse::MouseFormat::Sgr => mouse::sgr_mouse_report(point, button, pressed).into_bytes(),
+            mouse::MouseFormat::Normal { utf8 } => {
+                // Normal/UTF-8 encoding: release always uses button code 3 (no per-button release)
+                let btn = if pressed { button } else { 3 };
+                match mouse::normal_mouse_report(point, btn, utf8) {
+                    Some(b) => b,
+                    None => return, // position exceeds encoding limits
+                }
+            }
+        };
+        self.terminal.write_to_pty(bytes);
+    }
+
     // --- Mouse selection handlers ---
 
     fn handle_mouse_down(
@@ -1020,6 +1470,28 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Ctrl+Left-click: open hyperlink (US-016)
+        if event.button == MouseButton::Left && event.modifiers.control && event.click_count == 1 {
+            if let Some(ref link) = self.ctrl_hovered_link
+                && link.is_openable
+            {
+                let _ = open::that(&link.uri);
+            }
+            return;
+        }
+
+        let mode = { *self.terminal.term.lock().mode() };
+
+        // Forward to PTY when mouse reporting is active.
+        // Shift overrides mouse mode for text selection (standard terminal convention).
+        if mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift {
+            let point = self.pixel_to_viewport(event.position);
+            let button = mouse::mouse_button_code(event.button, event.modifiers);
+            self.write_mouse_report(point, button, true, mode);
+            return;
+        }
+
+        // Text selection (mouse mode inactive or Shift held)
         if event.button != MouseButton::Left {
             return;
         }
@@ -1048,6 +1520,65 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let mode = { *self.terminal.term.lock().mode() };
+
+        // Forward motion to PTY when mouse tracking is active.
+        // Shift overrides mouse mode for text selection.
+        if !event.modifiers.shift
+            && (mode.contains(TermMode::MOUSE_MOTION)
+                || (mode.contains(TermMode::MOUSE_DRAG) && event.pressed_button.is_some()))
+        {
+            let point = self.pixel_to_viewport(event.position);
+            let button_base = match event.pressed_button {
+                Some(btn) => mouse::mouse_button_code(btn, event.modifiers),
+                None => 3, // no button held = release code in motion reports
+            };
+            // Motion events add +32 to the button code per protocol spec
+            let button = button_base + 32;
+            self.write_mouse_report(point, button, true, mode);
+            return;
+        }
+
+        // Track hovered cell for URL regex detection (US-015)
+        let (hover_point, _) = self.pixel_to_grid(event.position);
+        self.hovered_cell = Some(hover_point);
+
+        // Ctrl+hover: detect URL under cursor for hyperlink rendering (US-016)
+        // OSC 8 takes priority over regex detection.
+        if event.modifiers.control {
+            // Check OSC 8 hyperlink on the hovered cell first
+            let osc8_link = {
+                let term = self.terminal.term.lock();
+                let cell = &term.grid()[hover_point.line][hover_point.column];
+                cell.hyperlink().map(|hl| {
+                    use crate::terminal_element::{
+                        HyperlinkSource, HyperlinkZone, is_url_scheme_openable,
+                    };
+                    HyperlinkZone {
+                        uri: hl.uri().to_string(),
+                        id: hl.id().to_string(),
+                        start: hover_point,
+                        end: hover_point, // Single cell — hover underline will cover it
+                        is_openable: is_url_scheme_openable(hl.uri()),
+                        source: HyperlinkSource::Osc8,
+                    }
+                })
+            };
+            self.ctrl_hovered_link = osc8_link.or_else(|| {
+                let zones = self.detect_url_at_hover();
+                zones.into_iter().find(|z| {
+                    hover_point.line == z.start.line
+                        && hover_point.column >= z.start.column
+                        && hover_point.column <= z.end.column
+                })
+            });
+            cx.notify();
+        } else if self.ctrl_hovered_link.is_some() {
+            self.ctrl_hovered_link = None;
+            cx.notify();
+        }
+
+        // Text selection (mouse mode inactive)
         if !self.selecting {
             return;
         }
@@ -1069,17 +1600,44 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let mode = { *self.terminal.term.lock().mode() };
+
+        // Forward release to PTY when mouse reporting is active.
+        // Shift overrides mouse mode for text selection.
+        if mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift {
+            let point = self.pixel_to_viewport(event.position);
+            let button = mouse::mouse_button_code(event.button, event.modifiers);
+            self.write_mouse_report(point, button, false, mode);
+            return;
+        }
+
+        // Middle-click: paste from primary selection
+        if event.button == MouseButton::Middle {
+            if let Some(item) = cx.read_from_primary()
+                && let Some(text) = item.text()
+            {
+                self.write_paste_text(&text, mode);
+            }
+            return;
+        }
+
+        // Text selection cleanup (mouse mode inactive or Shift held)
         if event.button != MouseButton::Left {
             return;
         }
         self.selecting = false;
 
-        // Clear empty selections (single click without drag)
+        // Clear empty selections, write non-empty selections to primary clipboard
         let mut term = self.terminal.term.lock();
         if let Some(ref sel) = term.selection
             && sel.is_empty()
         {
             term.selection = None;
+        } else if let Some(text) = term.selection_to_string() {
+            drop(term);
+            cx.write_to_primary(ClipboardItem::new_string(text));
+            cx.notify();
+            return;
         }
         drop(term);
 
@@ -1097,26 +1655,70 @@ impl TerminalView {
     }
 
     fn handle_paste(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(item) = cx.read_from_clipboard()
-            && let Some(text) = item.text()
+        let Some(clipboard) = cx.read_from_clipboard() else {
+            return;
+        };
+
+        // Image in clipboard: forward raw Ctrl+V (0x16) so TUI agents can read it
+        if let Some(ClipboardEntry::Image(image)) = clipboard.entries().first()
+            && !image.bytes.is_empty()
         {
-            let mode = {
-                let term = self.terminal.term.lock();
-                *term.mode()
-            };
-            let paste_text = if mode.contains(TermMode::BRACKETED_PASTE) {
-                // Strip ESC and C1 control chars (U+0080..U+009F) to prevent
-                // bracketed paste escape and CSI injection
-                let sanitized: String = text
-                    .chars()
-                    .filter(|&c| c != '\x1b' && !(('\u{0080}'..='\u{009f}').contains(&c)))
-                    .collect();
-                format!("\x1b[200~{sanitized}\x1b[201~")
-            } else {
-                text.replace("\r\n", "\r").replace('\n', "\r")
-            };
-            self.terminal.write_to_pty(paste_text.into_bytes());
+            self.terminal.write_to_pty(vec![0x16]);
+            return;
         }
+
+        // Text paste
+        if let Some(text) = clipboard.text() {
+            let mode = { *self.terminal.term.lock().mode() };
+            self.write_paste_text(&text, mode);
+        }
+    }
+
+    /// Prepare and write paste text to PTY, respecting bracketed paste mode.
+    /// Strips ESC and C1 control chars when bracketed paste is active.
+    fn handle_file_drop(
+        &mut self,
+        paths: &ExternalPaths,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        let quoted: Vec<String> = paths
+            .paths()
+            .iter()
+            .filter_map(|p| {
+                let s = p.to_string_lossy();
+                // Reject paths with newlines or null bytes — they break shell quoting
+                if s.contains('\n') || s.contains('\0') {
+                    return None;
+                }
+                if s.contains(' ') || s.contains('\'') || s.contains('"') || s.contains('\\') {
+                    Some(format!("'{}'", s.replace('\'', "'\\''")))
+                } else {
+                    Some(s.into_owned())
+                }
+            })
+            .collect();
+        if quoted.is_empty() {
+            return;
+        }
+        let text = quoted.join(" ");
+        let mode = *self.terminal.term.lock().mode();
+        self.write_paste_text(&text, mode);
+    }
+
+    fn write_paste_text(&self, text: &str, mode: TermMode) {
+        let paste_text = if mode.contains(TermMode::BRACKETED_PASTE) {
+            // Strip ESC and C1 control chars (U+0080..U+009F) to prevent
+            // bracketed paste escape and CSI injection
+            let sanitized: String = text
+                .chars()
+                .filter(|&c| c != '\x1b' && !(('\u{0080}'..='\u{009f}').contains(&c)))
+                .collect();
+            format!("\x1b[200~{sanitized}\x1b[201~")
+        } else {
+            text.replace("\r\n", "\r").replace('\n', "\r")
+        };
+        self.terminal.write_to_pty(paste_text.into_bytes());
     }
 
     // --- Scroll handlers ---
@@ -1127,6 +1729,65 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let mode = { *self.terminal.term.lock().mode() };
+
+        // Forward scroll to PTY when mouse reporting is active.
+        // Shift overrides mouse mode for scrollback.
+        if mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift {
+            let delta_y = event.delta.pixel_delta(self.line_height).y;
+            self.scroll_remainder += delta_y / self.line_height;
+            self.scroll_remainder = self.scroll_remainder.clamp(-500.0, 500.0);
+            let lines = self.scroll_remainder as i32;
+            if lines == 0 {
+                return;
+            }
+            self.scroll_remainder -= lines as f32;
+
+            let point = self.pixel_to_viewport(event.position);
+            let direction = if lines > 0 {
+                mouse::ScrollDirection::Up
+            } else {
+                mouse::ScrollDirection::Down
+            };
+            let button = mouse::scroll_button_code(direction, event.modifiers);
+            // Send one report per scroll line
+            for _ in 0..lines.unsigned_abs() {
+                self.write_mouse_report(point, button, true, mode);
+            }
+            return;
+        }
+
+        // Alternate scroll: ALT_SCREEN + ALTERNATE_SCROLL without MOUSE_MODE
+        // Synthesize arrow key sequences so scroll works in less, vim, htop, etc.
+        if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL)
+            && !event.modifiers.shift
+        {
+            let delta_y = event.delta.pixel_delta(self.line_height).y;
+            self.scroll_remainder += delta_y / self.line_height;
+            self.scroll_remainder = self.scroll_remainder.clamp(-500.0, 500.0);
+            let lines = self.scroll_remainder as i32;
+            if lines == 0 {
+                return;
+            }
+            self.scroll_remainder -= lines as f32;
+
+            let app_cursor = mode.contains(TermMode::APP_CURSOR);
+            let arrow: &[u8] = match (lines > 0, app_cursor) {
+                (true, true) => b"\x1bOA",
+                (true, false) => b"\x1b[A",
+                (false, true) => b"\x1bOB",
+                (false, false) => b"\x1b[B",
+            };
+            let count = lines.unsigned_abs() as usize;
+            let mut buf = Vec::with_capacity(arrow.len() * count);
+            for _ in 0..count {
+                buf.extend_from_slice(arrow);
+            }
+            self.terminal.write_to_pty(buf);
+            return;
+        }
+
+        // Scrollback (mouse mode inactive, not alt screen alternate scroll)
         // Convert pixel delta to fractional lines, accumulate sub-line remainders
         let delta_y = event.delta.pixel_delta(self.line_height).y;
         self.scroll_remainder += delta_y / self.line_height;
@@ -1168,29 +1829,380 @@ impl TerminalView {
 }
 
 // ---------------------------------------------------------------------------
+// DEC 2026 synchronized output scanner
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// XTVERSION query scanner
+// ---------------------------------------------------------------------------
+
+/// Byte-level scanner for XTVERSION queries (`\x1b[>0q` or `\x1b[>q`).
+/// When detected, emits a DCS response via the event listener.
+struct XtversionScanner {
+    match_pos: usize,
+}
+
+/// Sequence: ESC [ > 0 q  (also accept ESC [ > q with implicit 0 param)
+const XTVERSION_SEQ: [u8; 5] = [0x1b, b'[', b'>', b'0', b'q'];
+
+impl XtversionScanner {
+    fn new() -> Self {
+        Self { match_pos: 0 }
+    }
+
+    /// Scan `buf` for XTVERSION queries. If found, send a DCS response via `listener`.
+    fn scan(&mut self, buf: &[u8], listener: &ZedListener) {
+        for &byte in buf {
+            if self.match_pos < XTVERSION_SEQ.len() {
+                if byte == XTVERSION_SEQ[self.match_pos] {
+                    self.match_pos += 1;
+                } else if self.match_pos == 3 && byte == b'q' {
+                    // Accept `\x1b[>q` (no explicit 0 parameter)
+                    self.emit_response(listener);
+                    self.match_pos = 0;
+                } else if byte == 0x1b {
+                    self.match_pos = 1;
+                } else {
+                    self.match_pos = 0;
+                }
+            }
+            if self.match_pos == XTVERSION_SEQ.len() {
+                self.emit_response(listener);
+                self.match_pos = 0;
+            }
+        }
+    }
+
+    fn emit_response(&self, listener: &ZedListener) {
+        let version = env!("CARGO_PKG_VERSION");
+        let response = format!("\x1bP>|paneflow({version})\x1b\\");
+        listener.send_event(AlacEvent::PtyWrite(response));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OSC 7 CWD scanner
+// ---------------------------------------------------------------------------
+
+/// Byte-level scanner for OSC 7 (`\x1b]7;file://[host]/path{BEL|ST}`).
+/// The Alacritty fork silently ignores OSC 7, so we intercept it in the reader
+/// loop before VTE processing and send the parsed CWD through a channel.
+struct Osc7Scanner {
+    state: u8,
+    payload: Vec<u8>,
+}
+
+impl Osc7Scanner {
+    fn new() -> Self {
+        Self {
+            state: 0,
+            payload: Vec::new(),
+        }
+    }
+
+    fn scan(&mut self, buf: &[u8], cwd_tx: &UnboundedSender<String>) {
+        for &byte in buf {
+            match self.state {
+                0 => {
+                    if byte == 0x1b {
+                        self.state = 1;
+                    }
+                }
+                1 => {
+                    // After ESC, expect ]
+                    if byte == b']' {
+                        self.state = 2;
+                    } else if byte == 0x1b {
+                        self.state = 1;
+                    } else {
+                        self.state = 0;
+                    }
+                }
+                2 => {
+                    // After ESC ], expect 7
+                    if byte == b'7' {
+                        self.state = 3;
+                    } else if byte == 0x1b {
+                        self.state = 1;
+                    } else {
+                        self.state = 0;
+                    }
+                }
+                3 => {
+                    // After ESC ] 7, expect ;
+                    if byte == b';' {
+                        self.state = 4;
+                        self.payload.clear();
+                    } else if byte == 0x1b {
+                        self.state = 1;
+                    } else {
+                        self.state = 0;
+                    }
+                }
+                4 => {
+                    // Collecting payload until BEL or ST
+                    if byte == 0x07 {
+                        self.emit_cwd(cwd_tx);
+                        self.state = 0;
+                    } else if byte == 0x1b {
+                        self.state = 5; // Possible ST (\x1b\\)
+                    } else if self.payload.len() < 2048 {
+                        self.payload.push(byte);
+                    }
+                    // Silently drop bytes beyond 2048 limit
+                }
+                5 => {
+                    // After ESC in payload: ST terminator is \x1b followed by \\
+                    if byte == b'\\' {
+                        self.emit_cwd(cwd_tx);
+                        self.state = 0;
+                    } else if byte == 0x1b {
+                        self.state = 1; // New ESC sequence starting
+                    } else {
+                        self.state = 0;
+                    }
+                }
+                _ => {
+                    self.state = 0;
+                }
+            }
+        }
+    }
+
+    fn emit_cwd(&self, cwd_tx: &UnboundedSender<String>) {
+        if let Ok(uri) = std::str::from_utf8(&self.payload)
+            && let Some(path) = parse_osc7_uri(uri)
+        {
+            let _ = cwd_tx.unbounded_send(path);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OSC 133 scanner — detects shell prompt marks (A/B/C/D)
+// ---------------------------------------------------------------------------
+
+/// Byte-level scanner for OSC 133 sequences emitted by shell integration.
+/// Matches `ESC ] 133 ; {A|B|C|D} [; params] {BEL | ST}`.
+/// Only the mark kind (A/B/C/D) is captured; any trailing parameters after
+/// a second `;` are ignored.
+struct Osc133Scanner {
+    state: u8,
+}
+
+impl Osc133Scanner {
+    fn new() -> Self {
+        Self { state: 0 }
+    }
+
+    fn scan(
+        &mut self,
+        buf: &[u8],
+        term: &Arc<FairMutex<Term<ZedListener>>>,
+        prompt_tx: &UnboundedSender<PromptMark>,
+    ) {
+        for &byte in buf {
+            match self.state {
+                0 => {
+                    if byte == 0x1b {
+                        self.state = 1;
+                    }
+                }
+                1 => {
+                    if byte == b']' {
+                        self.state = 2;
+                    } else if byte == 0x1b {
+                        self.state = 1;
+                    } else {
+                        self.state = 0;
+                    }
+                }
+                2 => {
+                    // After ESC ], expect '1'
+                    if byte == b'1' {
+                        self.state = 3;
+                    } else if byte == 0x1b {
+                        self.state = 1;
+                    } else {
+                        self.state = 0;
+                    }
+                }
+                3 => {
+                    // After ESC ] 1, expect '3'
+                    if byte == b'3' {
+                        self.state = 4;
+                    } else if byte == 0x1b {
+                        self.state = 1;
+                    } else {
+                        self.state = 0;
+                    }
+                }
+                4 => {
+                    // After ESC ] 13, expect '3'
+                    if byte == b'3' {
+                        self.state = 5;
+                    } else if byte == 0x1b {
+                        self.state = 1;
+                    } else {
+                        self.state = 0;
+                    }
+                }
+                5 => {
+                    // After ESC ] 133, expect ';'
+                    if byte == b';' {
+                        self.state = 6;
+                    } else if byte == 0x1b {
+                        self.state = 1;
+                    } else {
+                        self.state = 0;
+                    }
+                }
+                6 => {
+                    // After ESC ] 133 ;, expect mark kind (A/B/C/D)
+                    let kind = match byte {
+                        b'A' => Some(PromptMarkKind::PromptStart),
+                        b'B' => Some(PromptMarkKind::CommandStart),
+                        b'C' => Some(PromptMarkKind::OutputStart),
+                        b'D' => Some(PromptMarkKind::OutputEnd),
+                        _ => None,
+                    };
+                    if let Some(k) = kind {
+                        self.emit_mark(k, term, prompt_tx);
+                    }
+                    // Skip remaining params until terminator
+                    if byte == 0x07 {
+                        self.state = 0;
+                    } else if byte == 0x1b {
+                        self.state = 8; // Possible ST
+                    } else {
+                        self.state = 7; // Skip params
+                    }
+                }
+                7 => {
+                    // Skipping optional parameters until BEL or ST
+                    if byte == 0x07 {
+                        self.state = 0;
+                    } else if byte == 0x1b {
+                        self.state = 8;
+                    }
+                }
+                8 => {
+                    // After ESC in skip mode — check for ST (\)
+                    if byte == b'\\' {
+                        self.state = 0;
+                    } else if byte == 0x1b {
+                        self.state = 1;
+                    } else {
+                        self.state = 0;
+                    }
+                }
+                _ => {
+                    self.state = 0;
+                }
+            }
+        }
+    }
+
+    fn emit_mark(
+        &self,
+        kind: PromptMarkKind,
+        term: &Arc<FairMutex<Term<ZedListener>>>,
+        prompt_tx: &UnboundedSender<PromptMark>,
+    ) {
+        // Read the current cursor line from the term grid.
+        // The cursor position at the time OSC 133 is emitted corresponds
+        // to the line where the prompt mark applies.
+        let line = {
+            let term = term.lock();
+            term.grid().cursor.point.line.0
+        };
+        let _ = prompt_tx.unbounded_send(PromptMark { line, kind });
+    }
+}
+
+/// Parse `file://[hostname]/path` URI from OSC 7 payload.
+/// Returns the percent-decoded path, ignoring hostname.
+fn parse_osc7_uri(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("file://")?;
+    let path = if rest.starts_with('/') {
+        rest // Empty hostname: file:///path
+    } else {
+        &rest[rest.find('/')?..] // hostname/path: skip to first /
+    };
+    Some(percent_decode(path))
+}
+
+/// Percent-decode a URI path component. Handles multi-byte UTF-8 encoded
+/// as consecutive %XX sequences. Uses lossy UTF-8 for non-UTF-8 bytes.
+fn percent_decode(s: &str) -> String {
+    let mut bytes = Vec::with_capacity(s.len());
+    let mut iter = s.as_bytes().iter();
+    while let Some(&b) = iter.next() {
+        if b == b'%' {
+            if let (Some(&hi), Some(&lo)) = (iter.next(), iter.next())
+                && let (Some(h), Some(l)) = (hex_val(hi), hex_val(lo))
+            {
+                bytes.push(h << 4 | l);
+                continue;
+            }
+            bytes.push(b'%');
+        } else {
+            bytes.push(b);
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // portable-pty I/O loops (US-007) — replace AlacEventLoop
 // ---------------------------------------------------------------------------
 
 /// Reader thread: reads PTY output, feeds through VTE parser into Term, sends Wakeup events.
 /// Owns the child handle to capture exit status after the read loop ends.
+/// DEC 2026: scans raw bytes for BSU/ESU before VTE processing, suppresses Wakeup during sync.
 fn pty_reader_loop(
     mut reader: Box<dyn Read + Send>,
     term: Arc<FairMutex<Term<ZedListener>>>,
     listener: ZedListener,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
+    cwd_tx: UnboundedSender<String>,
+    prompt_tx: UnboundedSender<PromptMark>,
 ) {
     let mut buf = [0u8; 4096];
     let mut processor = alacritty_terminal::vte::ansi::Processor::<
         alacritty_terminal::vte::ansi::StdSyncHandler,
     >::new();
+    let mut xtversion_scanner = XtversionScanner::new();
+    let mut osc7_scanner = Osc7Scanner::new();
+    let mut osc133_scanner = Osc133Scanner::new();
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                xtversion_scanner.scan(&buf[..n], &listener);
+                osc7_scanner.scan(&buf[..n], &cwd_tx);
+                osc133_scanner.scan(&buf[..n], &term, &prompt_tx);
+
                 let mut term = term.lock();
                 processor.advance(&mut *term, &buf[..n]);
                 drop(term);
-                listener.send_event(AlacEvent::Wakeup);
+                // Gate Wakeup on DEC 2026 sync state: the vte Processor buffers bytes
+                // during synchronized output (\e[?2026h..\e[?2026l) and reports them
+                // via sync_bytes_count(). Only send Wakeup when some bytes were processed
+                // outside the sync buffer — matches Alacritty event_loop.rs:166.
+                // Safety timeout (150ms) is built into vte's StdSyncHandler.
+                if processor.sync_bytes_count() < n {
+                    listener.send_event(AlacEvent::Wakeup);
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => {
@@ -1366,6 +2378,118 @@ fn detect_framework(line: &str) -> (Option<String>, bool) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// IME composition methods (US-017)
+// ---------------------------------------------------------------------------
+
+impl TerminalView {
+    /// Set preedit text during IME composition.
+    pub fn set_marked_text(&mut self, text: String, cx: &mut Context<Self>) {
+        self.ime_marked_text = text;
+        cx.notify();
+    }
+
+    /// Clear preedit text (cancel composition).
+    pub fn clear_marked_text(&mut self, cx: &mut Context<Self>) {
+        self.ime_marked_text.clear();
+        cx.notify();
+    }
+
+    /// Commit composed text to the PTY.
+    pub fn commit_text(&mut self, text: &str, _cx: &mut Context<Self>) {
+        self.terminal.write_to_pty(text.as_bytes().to_vec());
+    }
+
+    /// Send arbitrary text to the PTY (no bracketed paste wrapping).
+    /// Used by AI agents and automation tools via IPC.
+    pub fn send_text(&self, text: &str) {
+        self.terminal.write_to_pty(text.as_bytes().to_vec());
+    }
+
+    /// Send a keystroke to the PTY by converting it to an escape sequence.
+    /// `keystroke_str` is a dash-separated description like "ctrl-c", "enter", "alt-f".
+    /// Returns Ok(()) on success, Err(message) if the keystroke string is invalid.
+    pub fn send_keystroke(&self, keystroke_str: &str) -> Result<(), String> {
+        let keystroke = gpui::Keystroke::parse(keystroke_str).map_err(|e| format!("{e}"))?;
+        let mode = *self.terminal.term.lock().mode();
+        if let Some(seq) = crate::keys::to_esc_str(&keystroke, &mode, self.option_as_meta) {
+            self.terminal.write_to_pty(seq.as_bytes().to_vec());
+        } else if let Some(ref key_char) = keystroke.key_char {
+            self.terminal.write_to_pty(key_char.as_bytes().to_vec());
+        }
+        Ok(())
+    }
+
+    /// Return the UTF-16 range of the current preedit text, if any.
+    pub fn marked_text_range(&self) -> Option<std::ops::Range<usize>> {
+        if self.ime_marked_text.is_empty() {
+            None
+        } else {
+            let utf16_len: usize = self.ime_marked_text.encode_utf16().count();
+            Some(0..utf16_len)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// URL detection on hover (US-015)
+// ---------------------------------------------------------------------------
+
+impl TerminalView {
+    /// Detect regex URLs on the line at the given grid point.
+    /// Extracts line text from the locked term grid, runs the URL regex,
+    /// and returns zones that cover the given column (for hover hit-testing).
+    #[allow(dead_code)]
+    pub fn detect_url_at_hover(&self) -> Vec<crate::terminal_element::HyperlinkZone> {
+        let point = match self.hovered_cell {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let term = self.terminal.term.lock();
+        let grid = term.grid();
+        let line = point.line;
+
+        // Extract line text from grid cells, skipping wide-char spacer placeholders.
+        // Track a char-to-column mapping so regex byte offsets map to grid columns.
+        let cols = term.columns();
+        let mut line_text = String::with_capacity(cols);
+        let mut char_to_col: Vec<usize> = Vec::with_capacity(cols);
+        for col in 0..cols {
+            let cell = &grid[line][alacritty_terminal::index::Column(col)];
+            if cell
+                .flags
+                .contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER)
+            {
+                continue; // Skip trailing spacer of wide chars
+            }
+            char_to_col.push(col);
+            line_text.push(cell.c);
+        }
+
+        // Trim trailing whitespace for cleaner regex matching
+        let trimmed = line_text.trim_end();
+        crate::terminal_element::detect_urls_on_line_mapped(trimmed, line, &char_to_col)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Terminal control actions on TerminalView
+// ---------------------------------------------------------------------------
+
+impl TerminalView {
+    fn clear_scroll_history(&mut self, cx: &mut Context<Self>) {
+        let mut term = self.terminal.term.lock();
+        term.grid_mut().clear_history();
+        drop(term);
+        cx.notify();
+    }
+
+    fn reset_terminal(&mut self, cx: &mut Context<Self>) {
+        self.terminal.write_to_pty(b"\x1bc".as_ref());
+        cx.notify();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Search methods on TerminalView
 // ---------------------------------------------------------------------------
 
@@ -1376,6 +2500,7 @@ impl TerminalView {
             self.search_query.clear();
             self.search_matches.clear();
             self.search_current = 0;
+            self.search_regex_error = None;
             // Reset scroll position
             let mut term = self.terminal.term.lock();
             term.scroll_display(AlacScroll::Bottom);
@@ -1388,8 +2513,17 @@ impl TerminalView {
         self.search_query.clear();
         self.search_matches.clear();
         self.search_current = 0;
+        self.search_regex_error = None;
         let mut term = self.terminal.term.lock();
         term.scroll_display(AlacScroll::Bottom);
+        cx.notify();
+    }
+
+    fn toggle_search_regex(&mut self, cx: &mut Context<Self>) {
+        self.search_regex_mode = !self.search_regex_mode;
+        if !self.search_query.is_empty() {
+            self.run_search();
+        }
         cx.notify();
     }
 
@@ -1416,7 +2550,13 @@ impl TerminalView {
     }
 
     fn run_search(&mut self) {
-        self.search_matches = crate::search::search_term(&self.terminal.term, &self.search_query);
+        let result = crate::search::search_term(
+            &self.terminal.term,
+            &self.search_query,
+            self.search_regex_mode,
+        );
+        self.search_matches = result.matches;
+        self.search_regex_error = result.regex_error;
         self.search_current = 0;
         if !self.search_matches.is_empty() {
             self.scroll_to_current_match();
@@ -1426,6 +2566,68 @@ impl TerminalView {
     fn scroll_to_current_match(&mut self) {
         if let Some(m) = self.search_matches.get(self.search_current) {
             crate::search::scroll_to_match(&self.terminal.term, m);
+        }
+    }
+
+    fn jump_to_prompt_prev(&mut self, cx: &mut Context<Self>) {
+        let marks = &self.terminal.prompt_marks;
+        if marks.is_empty() {
+            return;
+        }
+        // Find prompt-start marks only (kind A) — these are the actual prompt boundaries
+        let prompt_indices: Vec<usize> = marks
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.kind == PromptMarkKind::PromptStart)
+            .map(|(i, _)| i)
+            .collect();
+        if prompt_indices.is_empty() {
+            return;
+        }
+        let current = self.prompt_mark_current.unwrap_or(prompt_indices.len());
+        let next = if current == 0 {
+            0 // Stay at first prompt
+        } else {
+            current.saturating_sub(1)
+        };
+        if let Some(&mark_idx) = prompt_indices.get(next) {
+            self.prompt_mark_current = Some(next);
+            let mark = &marks[mark_idx];
+            let search_match = crate::search::SearchMatch {
+                start: AlacPoint::new(alacritty_terminal::index::Line(mark.line), GridCol(0)),
+                end: AlacPoint::new(alacritty_terminal::index::Line(mark.line), GridCol(0)),
+            };
+            crate::search::scroll_to_match(&self.terminal.term, &search_match);
+            cx.notify();
+        }
+    }
+
+    fn jump_to_prompt_next(&mut self, cx: &mut Context<Self>) {
+        let marks = &self.terminal.prompt_marks;
+        if marks.is_empty() {
+            return;
+        }
+        let prompt_indices: Vec<usize> = marks
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.kind == PromptMarkKind::PromptStart)
+            .map(|(i, _)| i)
+            .collect();
+        if prompt_indices.is_empty() {
+            return;
+        }
+        let next = self
+            .prompt_mark_current
+            .map_or(0, |c| (c + 1).min(prompt_indices.len() - 1));
+        if let Some(&mark_idx) = prompt_indices.get(next) {
+            self.prompt_mark_current = Some(next);
+            let mark = &marks[mark_idx];
+            let search_match = crate::search::SearchMatch {
+                start: AlacPoint::new(alacritty_terminal::index::Line(mark.line), GridCol(0)),
+                end: AlacPoint::new(alacritty_terminal::index::Line(mark.line), GridCol(0)),
+            };
+            crate::search::scroll_to_match(&self.terminal.term, &search_match);
+            cx.notify();
         }
     }
 }
@@ -1593,11 +2795,14 @@ pub enum TerminalEvent {
     /// The shell's working directory changed (detected via OSC 7 escape sequence).
     CwdChanged(String),
     /// Terminal transitioned from idle to active (new output after idle period).
-    /// Used to trigger debounced port scans without polling.
+    /// No longer emitted by the batched event loop but kept for handler compatibility.
+    #[allow(dead_code)]
     ActivityBurst,
     /// A server/service was detected in PTY output (e.g. "Listening on :3000").
     /// Enriches the bare port from `/proc/net/tcp` with label and URL.
     ServiceDetected(ServiceInfo),
+    /// Terminal bell (\a) was triggered — visual flash notification.
+    Bell,
     /// Escape pressed while swap mode is active — requests cancellation.
     CancelSwapMode,
 }
@@ -1610,9 +2815,81 @@ impl gpui::Focusable for TerminalView {
     }
 }
 
+impl TerminalView {
+    /// Build a rich key context from the terminal's current mode flags.
+    /// Enables keybindings scoped to terminal state (e.g. `"Terminal && screen == alt"`).
+    fn dispatch_context(&self) -> KeyContext {
+        let mode = *self.terminal.term.lock().mode();
+        let mut ctx = KeyContext::default();
+        ctx.add("Terminal");
+
+        // Screen mode
+        if mode.contains(TermMode::ALT_SCREEN) {
+            ctx.set("screen", "alt");
+        } else {
+            ctx.set("screen", "normal");
+        }
+
+        // DEC private modes
+        if mode.contains(TermMode::APP_CURSOR) {
+            ctx.add("DECCKM");
+        }
+        if mode.contains(TermMode::APP_KEYPAD) {
+            ctx.add("DECPAM");
+        }
+        if mode.contains(TermMode::BRACKETED_PASTE) {
+            ctx.add("bracketed_paste");
+        }
+        if mode.contains(TermMode::FOCUS_IN_OUT) {
+            ctx.add("report_focus");
+        }
+        if mode.contains(TermMode::ALTERNATE_SCROLL) {
+            ctx.add("alternate_scroll");
+        }
+
+        // Mouse reporting mode
+        if mode.intersects(TermMode::MOUSE_MODE) {
+            ctx.add("any_mouse_reporting");
+            if mode.contains(TermMode::MOUSE_MOTION) {
+                ctx.set("mouse_reporting", "motion");
+            } else if mode.contains(TermMode::MOUSE_DRAG) {
+                ctx.set("mouse_reporting", "drag");
+            } else {
+                ctx.set("mouse_reporting", "click");
+            }
+        } else {
+            ctx.set("mouse_reporting", "off");
+        }
+
+        // Mouse encoding format
+        if mode.contains(TermMode::SGR_MOUSE) {
+            ctx.set("mouse_format", "sgr");
+        } else if mode.contains(TermMode::UTF8_MOUSE) {
+            ctx.set("mouse_format", "utf8");
+        } else {
+            ctx.set("mouse_format", "normal");
+        }
+
+        ctx
+    }
+}
+
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
+
+        // DEC 1004: send focus in/out events on focus transitions
+        if focused != self.was_focused {
+            let mode = { *self.terminal.term.lock().mode() };
+            if mode.contains(TermMode::FOCUS_IN_OUT) {
+                if focused {
+                    self.terminal.write_to_pty(b"\x1b[I".to_vec());
+                } else {
+                    self.terminal.write_to_pty(b"\x1b[O".to_vec());
+                }
+            }
+            self.was_focused = focused;
+        }
 
         // Update cell dimensions for mouse → grid mapping
         let dims = TerminalElement::measure_cell(window, cx);
@@ -1647,15 +2924,33 @@ impl Render for TerminalView {
             None
         };
 
+        // ALT_SCREEN: cursor always visible (no blink-off) for TUI apps
+        let cursor_visible = self.cursor_visible
+            || self
+                .terminal
+                .term
+                .lock()
+                .mode()
+                .contains(TermMode::ALT_SCREEN);
+
         let terminal_element = TerminalElement::new(
             self.terminal.term.clone(),
             PtyNotifier(self.terminal.notifier.0.clone()),
-            self.cursor_visible,
+            cursor_visible,
             focused,
             self.terminal.exited,
             self.element_origin.clone(),
             search_match_rects,
             copy_cursor_state,
+            self.bell_flash_until
+                .is_some_and(|t| std::time::Instant::now() < t),
+            self.ctrl_hovered_link
+                .as_ref()
+                .map(|link| (link.start.line, link.start.column.0, link.end.column.0)),
+            self.ctrl_hovered_link.as_ref().map(|link| link.uri.clone()),
+            self.ime_marked_text.clone(),
+            self.focus_handle.clone(),
+            cx.entity().clone(),
             #[cfg(debug_assertions)]
             keystroke_at,
         );
@@ -1663,6 +2958,8 @@ impl Render for TerminalView {
         // Search overlay bar
         let search_active = self.search_active;
         let search_query = self.search_query.clone();
+        let search_regex_mode = self.search_regex_mode;
+        let search_has_regex_error = self.search_regex_error.is_some();
         let match_count = self.search_matches.len();
         let current_match = if match_count > 0 {
             self.search_current + 1
@@ -1672,12 +2969,14 @@ impl Render for TerminalView {
 
         let mut el = div()
             .id("terminal-view")
-            .key_context("Terminal")
+            .key_context(self.dispatch_context())
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::handle_key_down))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
+            .on_any_mouse_down(cx.listener(Self::handle_mouse_down))
             .on_mouse_move(cx.listener(Self::handle_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_mouse_up))
+            .on_mouse_up(MouseButton::Right, cx.listener(Self::handle_mouse_up))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::handle_mouse_up))
             .on_action(cx.listener(|this, _: &crate::TerminalCopy, window, cx| {
                 this.handle_copy(window, cx);
             }))
@@ -1697,6 +2996,11 @@ impl Render for TerminalView {
             .on_action(cx.listener(|this, _: &crate::DismissSearch, _window, cx| {
                 this.dismiss_search(cx);
             }))
+            .on_action(
+                cx.listener(|this, _: &crate::ToggleSearchRegex, _window, cx| {
+                    this.toggle_search_regex(cx);
+                }),
+            )
             .on_action(cx.listener(|this, _: &crate::SearchNext, _window, cx| {
                 this.search_next(cx);
             }))
@@ -1705,6 +3009,25 @@ impl Render for TerminalView {
             }))
             .on_action(cx.listener(|this, _: &crate::ToggleCopyMode, _window, cx| {
                 this.toggle_copy_mode(cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::JumpToPromptPrev, _window, cx| {
+                    this.jump_to_prompt_prev(cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::JumpToPromptNext, _window, cx| {
+                    this.jump_to_prompt_next(cx);
+                }),
+            )
+            .on_drop(cx.listener(Self::handle_file_drop))
+            .on_action(
+                cx.listener(|this, _: &crate::ClearScrollHistory, _window, cx| {
+                    this.clear_scroll_history(cx);
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::ResetTerminal, _window, cx| {
+                this.reset_terminal(cx);
             }))
             .size_full()
             .child(terminal_element);
@@ -1720,6 +3043,58 @@ impl Render for TerminalView {
                 "0 results".to_string()
             } else {
                 format!("{}/{}", current_match, match_count)
+            };
+
+            // Regex toggle button: highlighted when active
+            let regex_toggle = div()
+                .id("search-regex-toggle")
+                .px(gpui::px(4.0))
+                .py(gpui::px(2.0))
+                .rounded_sm()
+                .cursor_pointer()
+                .text_size(gpui::px(12.0))
+                .when(search_regex_mode, |el| {
+                    el.bg(gpui::rgb(0x89b4fa)).text_color(gpui::rgb(0x1e1e2e))
+                })
+                .when(!search_regex_mode, |el| {
+                    el.bg(gpui::rgb(0x45475a)).text_color(gpui::rgb(0x6c7086))
+                })
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _window, cx| {
+                        this.toggle_search_regex(cx);
+                    }),
+                )
+                .child(".*");
+
+            // Query display — red border on regex error
+            let query_border_color = if search_has_regex_error {
+                gpui::rgb(0xf38ba8) // Catppuccin red
+            } else {
+                gpui::rgb(0x45475a) // Subtle border
+            };
+
+            let query_display = div()
+                .id("search-query-display")
+                .min_w(gpui::px(120.0))
+                .px_2()
+                .py(gpui::px(2.0))
+                .rounded_sm()
+                .bg(gpui::rgb(0x1e1e2e))
+                .border_1()
+                .border_color(query_border_color)
+                .text_color(gpui::rgb(0xcdd6f4))
+                .text_size(gpui::px(13.0))
+                .child(if search_query.is_empty() {
+                    "...".to_string()
+                } else {
+                    search_query
+                });
+
+            let status_text = if search_has_regex_error {
+                "Invalid regex".to_string()
+            } else {
+                status_text
             };
 
             let search_bar = div()
@@ -1744,26 +3119,16 @@ impl Render for TerminalView {
                         .text_size(gpui::px(13.0))
                         .child("Find:"),
                 )
-                .child(
-                    div()
-                        .id("search-query-display")
-                        .min_w(gpui::px(120.0))
-                        .px_2()
-                        .py(gpui::px(2.0))
-                        .rounded_sm()
-                        .bg(gpui::rgb(0x1e1e2e))
-                        .text_color(gpui::rgb(0xcdd6f4))
-                        .text_size(gpui::px(13.0))
-                        .child(if search_query.is_empty() {
-                            "...".to_string()
-                        } else {
-                            search_query
-                        }),
-                )
+                .child(regex_toggle)
+                .child(query_display)
                 .child(
                     div()
                         .id("search-status")
-                        .text_color(gpui::rgb(0xa6adc8))
+                        .text_color(if search_has_regex_error {
+                            gpui::rgb(0xf38ba8)
+                        } else {
+                            gpui::rgb(0xa6adc8)
+                        })
                         .text_size(gpui::px(12.0))
                         .child(status_text),
                 );
@@ -1899,7 +3264,7 @@ mod tests {
     #[test]
     fn mock_backend_creates_terminal_state() {
         let backend = MockPtyBackend;
-        let state = TerminalState::new(&backend, None, 1, 1);
+        let state = TerminalState::new(&backend, None, 1, 1, None);
         assert!(state.is_ok(), "TerminalState::new with mock backend failed");
 
         let state = state.unwrap();
@@ -1953,7 +3318,7 @@ mod tests {
     #[test]
     fn scrollback_round_trip_via_mock() {
         let backend = MockPtyBackend;
-        let state = TerminalState::new(&backend, None, 1, 1).unwrap();
+        let state = TerminalState::new(&backend, None, 1, 1, None).unwrap();
 
         // Feed some text into the terminal grid
         state.restore_scrollback("line one\nline two\nline three");
@@ -1973,7 +3338,7 @@ mod tests {
     #[test]
     fn extract_scrollback_empty_terminal_returns_none() {
         let backend = MockPtyBackend;
-        let state = TerminalState::new(&backend, None, 1, 1).unwrap();
+        let state = TerminalState::new(&backend, None, 1, 1, None).unwrap();
         // Fresh terminal with no content beyond the initial blank grid
         // May return None or Some with only whitespace — both are acceptable
         let scrollback = state.extract_scrollback();
