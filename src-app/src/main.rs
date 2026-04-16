@@ -3101,11 +3101,9 @@ impl PaneFlowApp {
                         })
                     },
                 )
-                .on_drop(cx.listener(
-                    move |this, drag: &WorkspaceDrag, _window, cx| {
-                        this.reorder_workspace(drag.id, idx, cx);
-                    },
-                ))
+                .on_drop(cx.listener(move |this, drag: &WorkspaceDrag, _window, cx| {
+                    this.reorder_workspace(drag.id, idx, cx);
+                }))
                 .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                     this.workspace_menu_open = None;
                     this.title_bar_menu_open = None;
