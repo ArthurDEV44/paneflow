@@ -492,9 +492,9 @@ impl SettingsWindow {
             theme_row_inner = theme_row_inner.child(
                 div()
                     .id(SharedString::from(format!("theme-{theme_id}")))
-                    .px(px(14.))
-                    .py(px(8.))
-                    .rounded(px(6.))
+                    .px(px(8.))
+                    .py(px(3.))
+                    .rounded(px(4.))
                     .cursor(CursorStyle::PointingHand)
                     .text_size(px(13.))
                     .when(is_active, |d| d.bg(ui.accent).text_color(ui.base))
@@ -518,7 +518,7 @@ impl SettingsWindow {
         let theme_row = div()
             .flex()
             .flex_col()
-            .pb(px(20.))
+            .pb(px(12.))
             .child(theme_label)
             .child(theme_row_inner);
 
@@ -546,8 +546,8 @@ impl SettingsWindow {
 
         let font_badge = div()
             .id("font-family-badge")
-            .px(px(12.))
-            .py(px(6.))
+            .px(px(8.))
+            .py(px(3.))
             .rounded(px(4.))
             .bg(ui.overlay)
             .cursor(CursorStyle::PointingHand)
@@ -568,7 +568,7 @@ impl SettingsWindow {
         let mut font_row = div()
             .flex()
             .flex_col()
-            .pb(px(20.))
+            .pb(px(12.))
             .child(font_label)
             .child(font_badge);
 
@@ -634,7 +634,7 @@ impl SettingsWindow {
         }
 
         let preview = div()
-            .pb(px(20.))
+            .pb(px(12.))
             .child(
                 div()
                     .text_size(px(13.))
@@ -685,7 +685,7 @@ impl SettingsWindow {
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .pb(px(16.))
+                    .pb(px(10.))
                     .child(section_header)
                     .child(reset_btn),
             )
