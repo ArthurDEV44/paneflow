@@ -616,6 +616,9 @@ pub struct LayoutState {
     selection_rects: Vec<LayoutRect>,
     search_rects: Vec<LayoutRect>,
     cursor: Option<CursorInfo>,
+    /// Selection anchor cursor in copy mode — rendered as a distinct amber hollow
+    /// block so the user can see where the selection started (tmux-style).
+    anchor_cursor: Option<CursorInfo>,
     dimensions: CellDimensions,
     background_color: Hsla,
     scrollbar_thumb: Hsla,
@@ -660,10 +663,15 @@ struct CellStyle {
 
 /// Copy mode cursor state for rendering.
 pub struct CopyModeCursorState {
-    /// Grid-coordinate line of the copy cursor
+    /// Grid-coordinate line of the copy cursor (current/end of selection)
     pub grid_line: i32,
     /// Column of the copy cursor
     pub col: usize,
+    /// Grid-coordinate line of the selection anchor (start), when a selection is active.
+    /// Rendered as a distinct tmux-style marker so the user can see where the selection began.
+    pub anchor_grid_line: Option<i32>,
+    /// Column of the selection anchor.
+    pub anchor_col: usize,
 }
 
 pub struct TerminalElement {
@@ -899,17 +907,24 @@ impl TerminalElement {
             (cells, cursor, sel_range, disp_offset, hist_size)
         };
 
-        // Override cursor with copy mode cursor when active
-        let cursor_snapshot = if let Some(ref cm) = self.copy_mode_cursor {
+        // Override cursor with copy mode cursor when active, and surface the
+        // selection anchor as a distinct secondary marker (tmux-style).
+        let (cursor_snapshot, anchor_cursor) = if let Some(ref cm) = self.copy_mode_cursor {
             let display_line = cm.grid_line + display_offset as i32;
-            if display_line >= 0 && display_line < desired_rows as i32 {
-                // Copy mode cursor: always a solid block with distinct color
-                let copy_cursor_color = Hsla {
-                    h: 0.5,
-                    s: 0.8,
-                    l: 0.65,
-                    a: 0.9,
-                }; // Bright cyan
+            let copy_cursor_color = Hsla {
+                h: 0.5,
+                s: 0.8,
+                l: 0.65,
+                a: 0.9,
+            }; // Bright cyan — the moving cursor (current position)
+            let anchor_color = Hsla {
+                h: 0.12,
+                s: 0.95,
+                l: 0.6,
+                a: 0.95,
+            }; // Amber — the anchor (selection start)
+
+            let main = if display_line >= 0 && display_line < desired_rows as i32 {
                 Some(CursorInfo {
                     line: display_line,
                     col: cm.col,
@@ -922,9 +937,83 @@ impl TerminalElement {
                 })
             } else {
                 None
-            }
+            };
+
+            let anchor = cm.anchor_grid_line.and_then(|anchor_line| {
+                let display_anchor = anchor_line + display_offset as i32;
+                if display_anchor >= 0 && display_anchor < desired_rows as i32 {
+                    Some(CursorInfo {
+                        line: display_anchor,
+                        col: cm.anchor_col,
+                        shape: CursorShape::HollowBlock,
+                        color: anchor_color,
+                        wide: false,
+                        text: None,
+                        bold: false,
+                        italic: false,
+                    })
+                } else {
+                    None
+                }
+            });
+
+            (main, anchor)
+        } else if let Some(sel) = &selection_range {
+            // Mouse selection (no copy mode): mark both endpoints with distinct
+            // hollow blocks so the user can see the selection bounds precisely
+            // before copying. Keep the normal shell cursor untouched.
+            let anchor_color = Hsla {
+                h: 0.12,
+                s: 0.95,
+                l: 0.6,
+                a: 0.95,
+            }; // Amber — selection start
+            let end_color = Hsla {
+                h: 0.5,
+                s: 0.8,
+                l: 0.65,
+                a: 0.9,
+            }; // Cyan — selection end
+
+            let start_line = sel.start.line.0 + display_offset as i32;
+            let end_line = sel.end.line.0 + display_offset as i32;
+
+            let anchor = if start_line >= 0 && start_line < desired_rows as i32 {
+                Some(CursorInfo {
+                    line: start_line,
+                    col: sel.start.column.0,
+                    shape: CursorShape::HollowBlock,
+                    color: anchor_color,
+                    wide: false,
+                    text: None,
+                    bold: false,
+                    italic: false,
+                })
+            } else {
+                None
+            };
+
+            // Overload cursor_snapshot with the selection end marker so both
+            // ends are visible. The shell's real cursor is hidden by the
+            // selection highlight anyway during a drag.
+            let end_marker = if end_line >= 0 && end_line < desired_rows as i32 {
+                Some(CursorInfo {
+                    line: end_line,
+                    col: sel.end.column.0,
+                    shape: CursorShape::HollowBlock,
+                    color: end_color,
+                    wide: false,
+                    text: None,
+                    bold: false,
+                    italic: false,
+                })
+            } else {
+                None
+            };
+
+            (end_marker.or(cursor_snapshot), anchor)
         } else {
-            cursor_snapshot
+            (cursor_snapshot, None)
         };
 
         let mut batch = BatchAccumulator::new();
@@ -1286,6 +1375,7 @@ impl TerminalElement {
             selection_rects,
             search_rects,
             cursor: cursor_snapshot,
+            anchor_cursor,
             dimensions: dims,
             background_color,
             scrollbar_thumb: theme.scrollbar_thumb,
@@ -1832,6 +1922,23 @@ impl Element for TerminalElement {
                     }
                     CursorShape::Hidden => {} // Already filtered in build_layout
                 }
+            }
+
+            // 4b. Paint selection anchor cursor (tmux-style distinct marker).
+            if let Some(anchor) = &layout.anchor_cursor {
+                let ax = origin.x + cell_width * anchor.col as f32;
+                let ay = origin.y + line_height * anchor.line as f32;
+                let anchor_bounds = Bounds::new(
+                    Point { x: ax, y: ay },
+                    gpui::Size {
+                        width: cell_width,
+                        height: line_height,
+                    },
+                );
+                window.paint_quad(
+                    outline(anchor_bounds, anchor.color, BorderStyle::Solid)
+                        .border_widths(1.5),
+                );
             }
 
             // 5. Paint scrollbar indicator (thin overlay, right edge)
