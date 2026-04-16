@@ -215,6 +215,36 @@ struct WorkspaceContextMenu {
     position: Point<Pixels>,
 }
 
+/// Drag payload used when reordering workspace cards in the sidebar.
+#[derive(Clone)]
+struct WorkspaceDrag {
+    id: u64,
+    title: SharedString,
+}
+
+/// Floating preview entity rendered under the cursor during a workspace drag.
+struct WorkspaceDragPreview {
+    title: SharedString,
+}
+
+impl Render for WorkspaceDragPreview {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = crate::theme::ui_colors();
+        div()
+            .px(px(10.))
+            .py(px(6.))
+            .rounded(px(6.))
+            .bg(ui.overlay)
+            .border_1()
+            .border_color(ui.border)
+            .shadow_lg()
+            .text_sm()
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(ui.text)
+            .child(self.title.clone())
+    }
+}
+
 /// Claude Code spinner glyphs — same characters Claude renders in the terminal.
 const CLAUDE_SPINNER_FRAMES: [char; 6] = ['·', '✻', '✽', '✶', '✳', '✢'];
 /// Codex spinner glyphs — pulsing dot from the dots animation variant.
@@ -365,6 +395,10 @@ impl PaneFlowApp {
                     Some(*position)
                 };
                 cx.notify();
+            }
+            title_bar::TitleBarEvent::CloseRequested => {
+                self.save_session(cx);
+                cx.quit();
             }
         }
     }
@@ -1147,9 +1181,6 @@ impl PaneFlowApp {
         let path = paneflow_config::loader::session_path()?;
         let data = std::fs::read_to_string(&path).ok()?;
         let state: paneflow_config::schema::SessionState = serde_json::from_str(&data).ok()?;
-        if state.workspaces.is_empty() {
-            return None;
-        }
         Some(state)
     }
 
@@ -2512,8 +2543,7 @@ impl PaneFlowApp {
     }
 
     fn close_workspace_at(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
-        // Guard: don't close the last workspace
-        if self.workspaces.len() <= 1 || idx >= self.workspaces.len() {
+        if idx >= self.workspaces.len() {
             return;
         }
         self.workspace_menu_open = None;
@@ -2521,14 +2551,70 @@ impl PaneFlowApp {
             self.unwatch_git_dir(&dir);
         }
         self.workspaces.remove(idx);
-        // Clamp active_idx
-        if self.active_idx >= self.workspaces.len() {
-            self.active_idx = self.workspaces.len() - 1;
-        } else if self.active_idx > idx {
-            self.active_idx -= 1;
+        if self.workspaces.is_empty() {
+            self.active_idx = 0;
+        } else {
+            // Clamp active_idx
+            if self.active_idx >= self.workspaces.len() {
+                self.active_idx = self.workspaces.len() - 1;
+            } else if self.active_idx > idx {
+                self.active_idx -= 1;
+            }
+            self.workspaces[self.active_idx].focus_first(window, cx);
         }
-        self.workspaces[self.active_idx].focus_first(window, cx);
         self.save_session(cx);
+        cx.notify();
+    }
+
+    /// Move a workspace (identified by `from_id`) so it ends up at `to_idx`
+    /// in the workspace list. Preserves which workspace is active across the
+    /// reorder and persists the new order.
+    fn reorder_workspace(&mut self, from_id: u64, to_idx: usize, cx: &mut Context<Self>) {
+        let Some(from_idx) = self.workspaces.iter().position(|ws| ws.id == from_id) else {
+            return;
+        };
+        let active_id = self.workspaces.get(self.active_idx).map(|ws| ws.id);
+        let ws = self.workspaces.remove(from_idx);
+        let insert_at = to_idx.min(self.workspaces.len());
+        if from_idx == insert_at {
+            self.workspaces.insert(insert_at, ws);
+            return;
+        }
+        self.workspaces.insert(insert_at, ws);
+        if let Some(id) = active_id {
+            self.active_idx = self
+                .workspaces
+                .iter()
+                .position(|ws| ws.id == id)
+                .unwrap_or(0);
+        }
+        self.save_session(cx);
+        cx.notify();
+    }
+
+    fn close_all_workspaces(&mut self, cx: &mut Context<Self>) {
+        if self.workspaces.is_empty() {
+            return;
+        }
+        self.workspace_menu_open = None;
+        let count = self.workspaces.len();
+        let git_dirs: Vec<_> = self
+            .workspaces
+            .iter()
+            .filter_map(|ws| ws.git_dir.clone())
+            .collect();
+        for dir in &git_dirs {
+            self.unwatch_git_dir(dir);
+        }
+        self.workspaces.clear();
+        self.active_idx = 0;
+        self.save_session(cx);
+        let msg = if count == 1 {
+            "Workspace cleared".to_string()
+        } else {
+            format!("{count} workspaces cleared")
+        };
+        self.show_toast(msg, cx);
         cx.notify();
     }
 
@@ -2822,7 +2908,16 @@ impl PaneFlowApp {
                             cx.listener(|this, _: &ClickEvent, w, cx| {
                                 this.create_workspace_with_picker(w, cx);
                             }),
-                        )),
+                        ))
+                        .when(!self.workspaces.is_empty(), |d| {
+                            d.child(self.sidebar_action_btn(
+                                "sidebar-clear-all",
+                                "icons/trash.svg",
+                                cx.listener(|this, _: &ClickEvent, _w, cx| {
+                                    this.close_all_workspaces(cx);
+                                }),
+                            ))
+                        }),
                 ),
         );
 
@@ -2931,6 +3026,34 @@ impl PaneFlowApp {
             .gap(px(6.))
             .py_2();
 
+        if self.workspaces.is_empty() {
+            list = list.child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(10.))
+                    .px(px(16.))
+                    .child(
+                        svg()
+                            .size(px(32.))
+                            .flex_none()
+                            .path("icons/folder_open.svg")
+                            .text_color(ui.muted),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(ui.muted)
+                            .child("No workspaces yet"),
+                    ),
+            );
+            sidebar = sidebar.child(list);
+            return sidebar;
+        }
+
         for (i, ws) in self.workspaces.iter().enumerate() {
             let is_active = i == self.active_idx;
 
@@ -2950,6 +3073,8 @@ impl PaneFlowApp {
             );
 
             let idx = i;
+            let ws_id = ws.id;
+            let ws_title: SharedString = ws.title.clone().into();
 
             let mut card = div()
                 .id(SharedString::from(format!("ws-{i}")))
@@ -2965,6 +3090,22 @@ impl PaneFlowApp {
                         s.bg(ui.subtle)
                     })
                 })
+                .on_drag(
+                    WorkspaceDrag {
+                        id: ws_id,
+                        title: ws_title.clone(),
+                    },
+                    |drag, _offset, _window, cx| {
+                        cx.new(|_| WorkspaceDragPreview {
+                            title: drag.title.clone(),
+                        })
+                    },
+                )
+                .on_drop(cx.listener(
+                    move |this, drag: &WorkspaceDrag, _window, cx| {
+                        this.reorder_workspace(drag.id, idx, cx);
+                    },
+                ))
                 .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                     this.workspace_menu_open = None;
                     this.title_bar_menu_open = None;
@@ -3077,17 +3218,31 @@ impl PaneFlowApp {
                     div()
                         .flex()
                         .flex_row()
-                        .gap(px(8.))
-                        .text_xs()
+                        .items_center()
+                        .gap(px(6.))
                         .child(
-                            div()
-                                .text_color(rgb(0xa6e3a1)) // Catppuccin Green
-                                .child(format!("+{ins}")),
+                            svg()
+                                .size(px(14.))
+                                .flex_none()
+                                .path("icons/git_commit.svg")
+                                .text_color(ui.muted),
                         )
                         .child(
                             div()
-                                .text_color(rgb(0xf38ba8)) // Catppuccin Red
-                                .child(format!("-{del}")),
+                                .flex()
+                                .flex_row()
+                                .gap(px(8.))
+                                .text_xs()
+                                .child(
+                                    div()
+                                        .text_color(rgb(0xa6e3a1)) // Catppuccin Green
+                                        .child(format!("+{ins}")),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(rgb(0xf38ba8)) // Catppuccin Red
+                                        .child(format!("-{del}")),
+                                ),
                         ),
                 );
             } else if ws.is_git_repo {
@@ -3851,7 +4006,40 @@ impl Render for PaneFlowApp {
                 .items_center()
                 .justify_center()
                 .size_full()
-                .child(div().text_color(rgb(0xffffff)).child("No workspaces"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .text_center()
+                        .gap(px(10.))
+                        .w(px(460.))
+                        .px(px(24.))
+                        .child(
+                            div()
+                                .text_color(rgb(0xffffff))
+                                .text_size(px(20.))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child("Welcome to PaneFlow"),
+                        )
+                        .child(
+                            div()
+                                .text_color(ui.muted)
+                                .text_size(px(13.))
+                                .child(
+                                    "The next-generation IDE for the AI era — \
+                                     a GPU-native terminal with workspace-aware panes, \
+                                     live git status, and first-class support for Claude Code and Codex.",
+                                ),
+                        )
+                        .child(
+                            div()
+                                .mt(px(6.))
+                                .text_color(ui.muted)
+                                .text_size(px(12.))
+                                .child("Click + in the sidebar to create your first workspace."),
+                        ),
+                )
                 .into_any_element()
         };
 
@@ -4163,7 +4351,7 @@ impl Render for PaneFlowApp {
             && menu.idx < self.workspaces.len()
         {
             let idx = menu.idx;
-            let can_delete = self.workspaces.len() > 1;
+            let can_delete = !self.workspaces.is_empty();
 
             // Data-driven editor entries: (id, label, command, shortcut_description)
             let editors: &[(&str, &str, &str, &str)] = &[
@@ -4477,7 +4665,9 @@ fn main() {
                         }
                     });
                     view.update(cx, |app, cx| {
-                        app.workspaces[0].focus_first(window, cx);
+                        if !app.workspaces.is_empty() {
+                            app.workspaces[0].focus_first(window, cx);
+                        }
                     });
                     view
                 },
