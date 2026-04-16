@@ -1010,27 +1010,22 @@ impl TerminalView {
     ) -> Self {
         let surface_id = cx.entity_id().as_u64();
         let backend = PortablePtyBackend;
-        let mut terminal = match TerminalState::new(
-            &backend,
-            cwd,
-            workspace_id,
-            surface_id,
-            initial_size,
-        ) {
-            Ok(t) => t,
-            Err(e) => {
-                log::error!("PTY creation failed: {e:#}");
-                eprintln!(
-                    "Error: Failed to create terminal PTY.\n\
+        let mut terminal =
+            match TerminalState::new(&backend, cwd, workspace_id, surface_id, initial_size) {
+                Ok(t) => t,
+                Err(e) => {
+                    log::error!("PTY creation failed: {e:#}");
+                    eprintln!(
+                        "Error: Failed to create terminal PTY.\n\
                      Possible causes:\n\
                      \x20 - /dev/pts exhausted (too many PTY sessions)\n\
                      \x20 - Shell not found (check default_shell in config or $SHELL)\n\
                      \x20 - Permission denied on /dev/ptmx\n\n\
                      Underlying error: {e:#}"
-                );
-                panic!("PTY creation failed: {e:#}");
-            }
-        };
+                    );
+                    panic!("PTY creation failed: {e:#}");
+                }
+            };
         let focus_handle = cx.focus_handle();
 
         // Event batch coalescing (Zed pattern):

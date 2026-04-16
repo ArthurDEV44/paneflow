@@ -294,7 +294,10 @@ fn ensure_minimum_contrast(fg: Hsla, bg: Hsla, min_lc: f32) -> Hsla {
 
     // Stage 2: reduce saturation + adjust lightness
     for &sat_mult in &[0.8, 0.6, 0.4, 0.2, 0.0] {
-        let desat = Hsla { s: fg.s * sat_mult, ..fg };
+        let desat = Hsla {
+            s: fg.s * sat_mult,
+            ..fg
+        };
         let adjusted = adjust_lightness_for_apca(desat, bg, min_lc);
         if apca_contrast(adjusted, bg).abs() >= min_lc {
             return adjusted;
@@ -302,8 +305,18 @@ fn ensure_minimum_contrast(fg: Hsla, bg: Hsla, min_lc: f32) -> Hsla {
     }
 
     // Stage 3: black or white
-    let black = Hsla { h: 0.0, s: 0.0, l: 0.0, a: fg.a };
-    let white = Hsla { h: 0.0, s: 0.0, l: 1.0, a: fg.a };
+    let black = Hsla {
+        h: 0.0,
+        s: 0.0,
+        l: 0.0,
+        a: fg.a,
+    };
+    let white = Hsla {
+        h: 0.0,
+        s: 0.0,
+        l: 1.0,
+        a: fg.a,
+    };
     if apca_contrast(white, bg).abs() > apca_contrast(black, bg).abs() {
         white
     } else {
@@ -329,7 +342,11 @@ fn adjust_lightness_for_apca(fg: Hsla, bg: Hsla, min_lc: f32) -> Hsla {
 
         if contrast >= min_lc {
             best_l = mid;
-            if should_darken { lo = mid; } else { hi = mid; }
+            if should_darken {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
         } else if should_darken {
             hi = mid;
         } else {
@@ -460,23 +477,23 @@ struct BlockQuad {
 /// Returns None for characters that should be rendered as normal glyphs.
 fn block_char_coverage(c: char) -> Option<(f32, f32, f32, f32)> {
     match c {
-        '▀' => Some((0.0, 0.0, 1.0, 0.5)),  // U+2580 Upper half
-        '▁' => Some((0.0, 7.0/8.0, 1.0, 1.0/8.0)), // U+2581 Lower 1/8
-        '▂' => Some((0.0, 6.0/8.0, 1.0, 2.0/8.0)), // U+2582 Lower 1/4
-        '▃' => Some((0.0, 5.0/8.0, 1.0, 3.0/8.0)), // U+2583 Lower 3/8
-        '▄' => Some((0.0, 0.5, 1.0, 0.5)),   // U+2584 Lower half
-        '▅' => Some((0.0, 3.0/8.0, 1.0, 5.0/8.0)), // U+2585 Lower 5/8
-        '▆' => Some((0.0, 2.0/8.0, 1.0, 6.0/8.0)), // U+2586 Lower 3/4
-        '▇' => Some((0.0, 1.0/8.0, 1.0, 7.0/8.0)), // U+2587 Lower 7/8
-        '█' => Some((0.0, 0.0, 1.0, 1.0)),   // U+2588 Full block
-        '▉' => Some((0.0, 0.0, 7.0/8.0, 1.0)), // U+2589 Left 7/8
-        '▊' => Some((0.0, 0.0, 6.0/8.0, 1.0)), // U+258A Left 3/4
-        '▋' => Some((0.0, 0.0, 5.0/8.0, 1.0)), // U+258B Left 5/8
-        '▌' => Some((0.0, 0.0, 0.5, 1.0)),   // U+258C Left half
-        '▍' => Some((0.0, 0.0, 3.0/8.0, 1.0)), // U+258D Left 3/8
-        '▎' => Some((0.0, 0.0, 2.0/8.0, 1.0)), // U+258E Left 1/4
-        '▏' => Some((0.0, 0.0, 1.0/8.0, 1.0)), // U+258F Left 1/8
-        '▐' => Some((0.5, 0.0, 0.5, 1.0)),   // U+2590 Right half
+        '▀' => Some((0.0, 0.0, 1.0, 0.5)),             // U+2580 Upper half
+        '▁' => Some((0.0, 7.0 / 8.0, 1.0, 1.0 / 8.0)), // U+2581 Lower 1/8
+        '▂' => Some((0.0, 6.0 / 8.0, 1.0, 2.0 / 8.0)), // U+2582 Lower 1/4
+        '▃' => Some((0.0, 5.0 / 8.0, 1.0, 3.0 / 8.0)), // U+2583 Lower 3/8
+        '▄' => Some((0.0, 0.5, 1.0, 0.5)),             // U+2584 Lower half
+        '▅' => Some((0.0, 3.0 / 8.0, 1.0, 5.0 / 8.0)), // U+2585 Lower 5/8
+        '▆' => Some((0.0, 2.0 / 8.0, 1.0, 6.0 / 8.0)), // U+2586 Lower 3/4
+        '▇' => Some((0.0, 1.0 / 8.0, 1.0, 7.0 / 8.0)), // U+2587 Lower 7/8
+        '█' => Some((0.0, 0.0, 1.0, 1.0)),             // U+2588 Full block
+        '▉' => Some((0.0, 0.0, 7.0 / 8.0, 1.0)),       // U+2589 Left 7/8
+        '▊' => Some((0.0, 0.0, 6.0 / 8.0, 1.0)),       // U+258A Left 3/4
+        '▋' => Some((0.0, 0.0, 5.0 / 8.0, 1.0)),       // U+258B Left 5/8
+        '▌' => Some((0.0, 0.0, 0.5, 1.0)),             // U+258C Left half
+        '▍' => Some((0.0, 0.0, 3.0 / 8.0, 1.0)),       // U+258D Left 3/8
+        '▎' => Some((0.0, 0.0, 2.0 / 8.0, 1.0)),       // U+258E Left 1/4
+        '▏' => Some((0.0, 0.0, 1.0 / 8.0, 1.0)),       // U+258F Left 1/8
+        '▐' => Some((0.5, 0.0, 0.5, 1.0)),             // U+2590 Right half
         _ => None,
     }
 }
@@ -989,8 +1006,7 @@ impl TerminalElement {
             } else {
                 (*cell_fg, *cell_bg)
             };
-            let is_default_bg =
-                matches!(raw_bg, AnsiColor::Named(NamedColor::Background));
+            let is_default_bg = matches!(raw_bg, AnsiColor::Named(NamedColor::Background));
 
             let mut fg = convert_color(raw_fg, &theme);
             let bg = convert_color(raw_bg, &theme);
@@ -1026,11 +1042,7 @@ impl TerminalElement {
             } else {
                 1
             };
-            let cell_bg_color = if is_default_bg {
-                ansi_background
-            } else {
-                bg
-            };
+            let cell_bg_color = if is_default_bg { ansi_background } else { bg };
             match &mut current_rect {
                 Some(rect)
                     if rect.line == point.line.0
@@ -1571,7 +1583,10 @@ impl Element for TerminalElement {
                 window.paint_quad(fill(
                     Bounds::new(
                         Point { x: qx, y: qy },
-                        gpui::Size { width: qw, height: qh },
+                        gpui::Size {
+                            width: qw,
+                            height: qh,
+                        },
                     ),
                     bq.color,
                 ));

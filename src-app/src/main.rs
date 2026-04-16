@@ -1301,9 +1301,8 @@ impl PaneFlowApp {
                     .map(std::path::PathBuf::from);
                 let ws_id = next_workspace_id();
                 let ws = if let Some(dir) = cwd {
-                    let terminal = cx.new(|cx| {
-                        TerminalView::with_cwd(ws_id, Some(dir.clone()), None, cx)
-                    });
+                    let terminal =
+                        cx.new(|cx| TerminalView::with_cwd(ws_id, Some(dir.clone()), None, cx));
                     let pane = self.create_pane(terminal, ws_id, cx);
                     Workspace::with_cwd_and_id(ws_id, name, dir, pane)
                 } else {
