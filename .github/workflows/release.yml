@@ -40,21 +40,21 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Prepare release archive
+      - name: Prepare release files
         run: |
           mkdir -p release/paneflow
           cp target/release/paneflow release/paneflow/
           cp LICENSE README.md release/paneflow/
           cp assets/paneflow.desktop release/paneflow/
           cp -r assets/icons release/paneflow/
-          cp scripts/install.sh release/paneflow/
-          chmod +x release/paneflow/install.sh
-          cd release && tar czf paneflow-${{ github.ref_name }}-x86_64-linux.tar.gz paneflow/
+
+      - name: Build self-extracting installer
+        run: bash scripts/make-installer.sh ${{ github.ref_name }} release
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: release/paneflow-${{ github.ref_name }}-x86_64-linux.tar.gz
+          files: paneflow-${{ github.ref_name }}-x86_64-linux.run
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
