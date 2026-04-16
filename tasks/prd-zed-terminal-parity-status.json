@@ -1,0 +1,417 @@
+{
+  "prd": {
+    "file": "tasks/prd-zed-terminal-parity.md",
+    "title": "Zed Terminal Parity \u2014 VT Protocol, Input, and Rendering Compliance",
+    "created_at": "2026-04-15",
+    "status": "DONE"
+  },
+  "epics": [
+    {
+      "id": "EP-001",
+      "title": "Input Pipeline Parity",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 5,
+      "stories_done": 5
+    },
+    {
+      "id": "EP-002",
+      "title": "Terminal Protocol Parity",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 5,
+      "stories_done": 5
+    },
+    {
+      "id": "EP-003",
+      "title": "Environment & Process Lifecycle",
+      "status": "DONE",
+      "priority": "P1",
+      "stories_total": 3,
+      "stories_done": 3
+    },
+    {
+      "id": "EP-004",
+      "title": "Hyperlink System",
+      "status": "DONE",
+      "priority": "P1",
+      "stories_total": 3,
+      "stories_done": 3
+    },
+    {
+      "id": "EP-005",
+      "title": "IME & Agent Interaction",
+      "status": "DONE",
+      "priority": "P1",
+      "stories_total": 2,
+      "stories_done": 2
+    },
+    {
+      "id": "EP-006",
+      "title": "Rendering Polish",
+      "status": "DONE",
+      "priority": "P2",
+      "stories_total": 3,
+      "stories_done": 3
+    },
+    {
+      "id": "EP-007",
+      "title": "Advanced Protocol Features",
+      "status": "DONE",
+      "priority": "P2",
+      "stories_total": 4,
+      "stories_done": 4
+    },
+    {
+      "id": "EP-008",
+      "title": "Performance & Housekeeping",
+      "status": "DONE",
+      "priority": "P2",
+      "stories_total": 3,
+      "stories_done": 3
+    }
+  ],
+  "stories": [
+    {
+      "id": "US-001",
+      "title": "Complete core keystroke mapping",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-002",
+      "title": "Extended keystroke mapping \u2014 modifier+function and modifier+navigation",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-003",
+      "title": "Alternate scroll mode and mouse release fix",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-004",
+      "title": "Middle-click paste and Linux primary selection",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-005",
+      "title": "Image paste forwarding for TUI agents",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-006",
+      "title": "Fix OSC 7 CWD tracking",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-007",
+      "title": "OSC 52 clipboard read/write",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-008",
+      "title": "ColorRequest (OSC 10/11/12) theme-aware response",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-009",
+      "title": "Handle Bell, CursorBlinkingChange, and TextAreaSizeRequest events",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-010",
+      "title": "Key context enrichment for GPUI dispatch",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-011",
+      "title": "Environment variable parity",
+      "epic": "EP-003",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "XS",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-012",
+      "title": "Shutdown grace period with SIGKILL",
+      "epic": "EP-003",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-013",
+      "title": "ALT_SCREEN cursor override and ligature disable",
+      "epic": "EP-003",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-014",
+      "title": "OSC 8 hyperlink detection from cell attributes",
+      "epic": "EP-004",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-015",
+      "title": "URL regex detection with box-drawing exclusion",
+      "epic": "EP-004",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "M",
+      "blocked_by": [
+        "US-014"
+      ],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-016",
+      "title": "Hyperlink hover rendering and click-to-open",
+      "epic": "EP-004",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "M",
+      "blocked_by": [
+        "US-014",
+        "US-015"
+      ],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-017",
+      "title": "IME composition rendering",
+      "epic": "EP-005",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "L",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-018",
+      "title": "SendText and SendKeystroke actions",
+      "epic": "EP-005",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-15",
+      "completed_at": "2026-04-15",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-019",
+      "title": "Theme-aware selection and scrollbar colors",
+      "epic": "EP-006",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-16",
+      "completed_at": "2026-04-16",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-020",
+      "title": "Background region vertical merging and Powerline range fix",
+      "epic": "EP-006",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-16",
+      "completed_at": "2026-04-16",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-021",
+      "title": "Rounded selection corners and hollow cursor refinement",
+      "epic": "EP-006",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-16",
+      "completed_at": "2026-04-16",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-022",
+      "title": "Search regex support",
+      "epic": "EP-007",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-16",
+      "completed_at": "2026-04-16",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-023",
+      "title": "OSC 133 shell prompt marks",
+      "epic": "EP-007",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": "2026-04-16",
+      "completed_at": "2026-04-16",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-024",
+      "title": "Display-only terminal mode",
+      "epic": "EP-007",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": "2026-04-16",
+      "completed_at": "2026-04-16",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-025",
+      "title": "Drag-and-drop file path paste",
+      "epic": "EP-007",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-16",
+      "completed_at": "2026-04-16",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-026",
+      "title": "Event batch coalescing with select_biased",
+      "epic": "EP-008",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-16",
+      "completed_at": "2026-04-16",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-027",
+      "title": "Viewport culling for embedded terminals",
+      "epic": "EP-008",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-16",
+      "completed_at": "2026-04-16",
+      "reviewed_at": "2026-04-16"
+    },
+    {
+      "id": "US-028",
+      "title": "ClearScrollHistory, ResetTerminal, and option_as_meta config",
+      "epic": "EP-008",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-16",
+      "completed_at": "2026-04-16",
+      "reviewed_at": "2026-04-16"
+    }
+  ]
+}
