@@ -65,25 +65,25 @@ Install via [rustup](https://rustup.rs/):
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
+## Install from release
+
+Download the latest release from [GitHub Releases](https://github.com/ArthurDEV44/paneflow/releases), then:
+
+```bash
+tar xzf paneflow-v0.1.0-x86_64-linux.tar.gz
+cd paneflow
+./install.sh
+```
+
+This installs the binary, desktop entry, and icons to `~/.local/`. PaneFlow will appear in your application launcher.
+
 ## Build from source
 
 ```bash
 git clone https://github.com/ArthurDEV44/paneflow.git
 cd paneflow
 cargo build --release
-```
-
-The binary is at `target/release/paneflow`.
-
-### Install (optional)
-
-```bash
-# Install binary
-sudo cp target/release/paneflow /usr/local/bin/
-
-# Install desktop entry and icons
-sudo cp assets/paneflow.desktop /usr/share/applications/
-sudo bash scripts/install-icons.sh
+./scripts/install.sh
 ```
 
 ## Usage

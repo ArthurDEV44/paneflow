@@ -47,7 +47,8 @@ jobs:
           cp LICENSE README.md release/paneflow/
           cp assets/paneflow.desktop release/paneflow/
           cp -r assets/icons release/paneflow/
-          cp scripts/install-icons.sh release/paneflow/
+          cp scripts/install.sh release/paneflow/
+          chmod +x release/paneflow/install.sh
           cd release && tar czf paneflow-${{ github.ref_name }}-x86_64-linux.tar.gz paneflow/
 
       - name: Create GitHub Release
