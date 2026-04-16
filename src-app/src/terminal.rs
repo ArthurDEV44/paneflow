@@ -626,12 +626,14 @@ impl TerminalState {
                     self.pending_clipboard_ops.push(ClipboardOp::Store(text));
                 }
             }
-            AlacEvent::ClipboardLoad(_selection, format_fn) => {
-                if self.osc52_mode == Osc52Mode::CopyPaste {
-                    self.pending_clipboard_ops
-                        .push(ClipboardOp::Load(format_fn));
-                }
+            AlacEvent::ClipboardLoad(_selection, format_fn)
+                if self.osc52_mode == Osc52Mode::CopyPaste =>
+            {
+                self.pending_clipboard_ops
+                    .push(ClipboardOp::Load(format_fn));
             }
+            AlacEvent::ClipboardLoad(..) => {}
+
             AlacEvent::ColorRequest(index, format_fn) => {
                 self.pending_color_ops.push(ColorOp { index, format_fn });
             }
