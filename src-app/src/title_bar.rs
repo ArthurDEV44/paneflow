@@ -1,7 +1,7 @@
 use gpui::{
-    div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Decorations, EventEmitter,
-    IntoElement, MouseButton, Pixels, Point, Render, Styled, Window, WindowButton,
-    WindowControlArea, WindowControls,
+    AnyElement, ClickEvent, Context, Decorations, EventEmitter, IntoElement, MouseButton, Pixels,
+    Point, Render, Styled, Window, WindowButton, WindowControlArea, WindowControls, div,
+    prelude::*, px, svg,
 };
 
 use crate::csd::default_button_layout;
