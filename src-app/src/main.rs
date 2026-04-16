@@ -13,6 +13,7 @@ mod mouse;
 mod pane;
 mod pty;
 mod search;
+mod self_update;
 mod settings_window;
 mod split;
 mod terminal;
@@ -174,7 +175,8 @@ actions!(
         DismissSearch,
         ToggleCopyMode,
         ClearScrollHistory,
-        ResetTerminal
+        ResetTerminal,
+        StartSelfUpdate
     ]
 );
 
@@ -290,6 +292,8 @@ struct PaneFlowApp {
     pending_update: update_checker::SharedUpdateSlot,
     /// Resolved update status (set once the background check completes).
     update_status: Option<update_checker::UpdateStatus>,
+    /// Live state of the in-app self-update flow (download → install → restart).
+    self_update_status: self_update::SelfUpdateStatus,
 }
 
 /// Global flag for swap mode, checked by TerminalView to intercept Escape.
@@ -1088,6 +1092,7 @@ impl PaneFlowApp {
             show_about_dialog: false,
             pending_update,
             update_status: None,
+            self_update_status: self_update::SelfUpdateStatus::default(),
         }
     }
 
@@ -1275,6 +1280,100 @@ impl PaneFlowApp {
             crate::theme::invalidate_theme_cache();
             cx.notify();
         }
+    }
+
+    /// Kick off the in-app self-update flow: download the `.run` installer,
+    /// run it, then ask GPUI to relaunch the freshly installed binary. The
+    /// pill label flips through `Downloading… → Installing…` along the way;
+    /// on failure a toast is shown and the pill falls back to "Update failed".
+    fn handle_start_self_update(
+        &mut self,
+        _: &StartSelfUpdate,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.self_update_status.is_busy() {
+            return;
+        }
+        let asset_url = match &self.update_status {
+            Some(update_checker::UpdateStatus::Available {
+                asset_url: Some(url),
+                ..
+            }) => url.clone(),
+            Some(update_checker::UpdateStatus::Available { url, .. }) => {
+                // No Linux asset on this release (edge case: draft, mis-tagged).
+                // Fall back to opening the release page so the user can grab it.
+                let _ = open::that(url);
+                return;
+            }
+            _ => return,
+        };
+
+        self.self_update_status = self_update::SelfUpdateStatus::Downloading;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            // Download off the GPUI main thread so the UI stays responsive.
+            let download_result = smol::unblock({
+                let url = asset_url.clone();
+                move || self_update::download_installer(&url)
+            })
+            .await;
+
+            let installer_path = match download_result {
+                Ok(path) => path,
+                Err(err) => {
+                    let err = std::sync::Arc::new(err);
+                    let _ = this.update(cx, |app, cx| {
+                        log::error!("self-update: download failed: {err:#}");
+                        app.self_update_status =
+                            self_update::SelfUpdateStatus::Errored(err.clone());
+                        app.show_toast(format!("Update failed: {err}"), cx);
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+
+            let _ = this.update(cx, |app, cx| {
+                app.self_update_status = self_update::SelfUpdateStatus::Installing;
+                cx.notify();
+            });
+
+            let install_result = smol::unblock({
+                let path = installer_path.clone();
+                move || self_update::run_installer(&path)
+            })
+            .await;
+
+            if let Err(err) = install_result {
+                let err = std::sync::Arc::new(err);
+                let _ = this.update(cx, |app, cx| {
+                    log::error!("self-update: install failed: {err:#}");
+                    app.self_update_status = self_update::SelfUpdateStatus::Errored(err.clone());
+                    app.show_toast(format!("Update failed: {err}"), cx);
+                    cx.notify();
+                });
+                return;
+            }
+
+            // Persist session, register the new binary path with GPUI, and
+            // trigger the launcher-based restart. GPUI's Linux platform
+            // spawns a detached bash script that waits for our PID to exit
+            // before exec'ing the new binary.
+            let _ = this.update(cx, |app, cx| {
+                app.save_session(cx);
+            });
+            cx.update(|cx| match self_update::installed_binary_path() {
+                Ok(path) => {
+                    log::info!("self-update: restarting into {}", path.display());
+                    cx.set_restart_path(path);
+                    cx.restart();
+                }
+                Err(e) => log::error!("self-update: cannot resolve install path: {e}"),
+            });
+        })
+        .detach();
     }
 
     /// Pick up the background update check result (runs once, then stops polling).
@@ -3756,10 +3855,22 @@ impl Render for PaneFlowApp {
         // Update title bar with current workspace name
         let ws_name = self.active_workspace().map(|ws| ws.title.clone());
         let update_info = match &self.update_status {
-            Some(update_checker::UpdateStatus::Available { version, url }) => {
+            Some(update_checker::UpdateStatus::Available { version, .. }) => {
+                let self_update = match &self.self_update_status {
+                    self_update::SelfUpdateStatus::Idle => title_bar::SelfUpdatePillState::Idle,
+                    self_update::SelfUpdateStatus::Downloading => {
+                        title_bar::SelfUpdatePillState::Downloading
+                    }
+                    self_update::SelfUpdateStatus::Installing => {
+                        title_bar::SelfUpdatePillState::Installing
+                    }
+                    self_update::SelfUpdateStatus::Errored(_) => {
+                        title_bar::SelfUpdatePillState::Errored
+                    }
+                };
                 Some(title_bar::UpdateInfo {
                     version: version.clone(),
-                    url: url.clone(),
+                    self_update,
                 })
             }
             _ => None,
@@ -3832,6 +3943,7 @@ impl Render for PaneFlowApp {
                     cx.quit();
                 }),
             )
+            .on_action(cx.listener(Self::handle_start_self_update))
             .on_mouse_move(|_e, _, cx| cx.stop_propagation())
             // Title bar (Entity with drag-to-move support)
             .child(self.title_bar.clone())
