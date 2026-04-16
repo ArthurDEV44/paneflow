@@ -1383,6 +1383,26 @@ impl TerminalView {
 
         let keystroke = &event.keystroke;
 
+        // End key (no modifiers) while scrolled back — snap to bottom instead of
+        // sending "end of line" to the shell. Lets the user return to the prompt
+        // after scrolling without walking back line-by-line. At the bottom,
+        // End falls through to its normal PTY behaviour.
+        if keystroke.key == "end"
+            && !keystroke.modifiers.shift
+            && !keystroke.modifiers.control
+            && !keystroke.modifiers.alt
+            && !keystroke.modifiers.platform
+        {
+            let mut term = self.terminal.term.lock();
+            if term.grid().display_offset() > 0 {
+                term.scroll_display(AlacScroll::Bottom);
+                self.terminal.dirty = true;
+                drop(term);
+                cx.notify();
+                return;
+            }
+        }
+
         // Get current TermMode for key mapping (APP_CURSOR, etc.)
         let term_guard = self.terminal.term.lock();
         let mode = *term_guard.mode();
