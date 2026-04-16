@@ -102,9 +102,9 @@ fi
 # Prefer socat, fall back to nc. Silently ignore errors.
 # ---------------------------------------------------------------------------
 if command -v socat &>/dev/null; then
-    printf '%s\n' "$REQUEST" | socat -t1 - "UNIX-CONNECT:${SOCKET}" 2>/dev/null || true
+    printf '%s\n' "$REQUEST" | socat -t1 - "UNIX-CONNECT:${SOCKET}" >/dev/null 2>&1 || true
 elif command -v nc &>/dev/null; then
-    printf '%s\n' "$REQUEST" | nc -w1 -U "$SOCKET" 2>/dev/null || true
+    printf '%s\n' "$REQUEST" | nc -w1 -U "$SOCKET" >/dev/null 2>&1 || true
 else
     # No socket tool available — silently skip
     :
