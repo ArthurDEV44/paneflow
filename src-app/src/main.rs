@@ -378,7 +378,7 @@ impl PaneFlowApp {
                 let ws_idx = self.workspaces.iter().position(|ws| {
                     ws.root
                         .as_ref()
-                        .is_some_and(|r| r.collect_leaves().iter().any(|p| *p == pane))
+                        .is_some_and(|r| r.collect_leaves().contains(&pane))
                 });
                 let Some(ws_idx) = ws_idx else {
                     return;
@@ -394,9 +394,9 @@ impl PaneFlowApp {
                 if self.workspaces[ws_idx].root.is_none() {
                     let ws_id = self.workspaces[ws_idx].id;
                     let cwd = std::path::PathBuf::from(&self.workspaces[ws_idx].cwd);
-                    let terminal =
-                        cx.new(|cx| TerminalView::with_cwd(ws_id, Some(cwd), None, cx));
-                    cx.subscribe(&terminal, Self::handle_terminal_event).detach();
+                    let terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, Some(cwd), None, cx));
+                    cx.subscribe(&terminal, Self::handle_terminal_event)
+                        .detach();
                     let new_pane = self.create_pane(terminal, ws_id, cx);
                     self.workspaces[ws_idx].root = Some(LayoutTree::Leaf(new_pane));
                 }
@@ -1937,7 +1937,8 @@ impl PaneFlowApp {
             let ws_id = ws.id;
             let cwd = std::path::PathBuf::from(&ws.cwd);
             let terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, Some(cwd), None, cx));
-            cx.subscribe(&terminal, Self::handle_terminal_event).detach();
+            cx.subscribe(&terminal, Self::handle_terminal_event)
+                .detach();
             let new_pane = self.create_pane(terminal, ws_id, cx);
             if let Some(ws) = self.active_workspace_mut() {
                 ws.root = Some(LayoutTree::Leaf(new_pane));
