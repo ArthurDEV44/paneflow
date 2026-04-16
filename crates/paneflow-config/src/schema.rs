@@ -23,6 +23,9 @@ pub struct PaneFlowConfig {
     pub font_family: Option<String>,
     /// Terminal font size in pixels (default: 14.0, valid range: 8.0–32.0).
     pub font_size: Option<f32>,
+    /// Treat Alt key as Meta (send ESC prefix). Default: true on Linux.
+    /// Set to false for future macOS where Option produces Unicode characters.
+    pub option_as_meta: Option<bool>,
 }
 
 /// A single command definition, compatible with the cmux workspace format.

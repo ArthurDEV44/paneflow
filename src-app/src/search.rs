@@ -1,13 +1,14 @@
 //! In-buffer scrollback search for terminal panes.
 //!
 //! Searches the alacritty_terminal grid (scrollback + visible area) for
-//! case-insensitive plain text matches, returning grid-coordinate spans
+//! plain text or regex matches, returning grid-coordinate spans
 //! that TerminalElement can highlight.
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column as GridCol, Point as AlacPoint};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
+use regex::Regex;
 use std::sync::Arc;
 
 use crate::terminal::ZedListener;
@@ -25,12 +26,42 @@ pub struct SearchMatch {
     pub end: AlacPoint,
 }
 
-/// Search the terminal's full grid (scrollback + visible) for case-insensitive
-/// plain text matches. Returns all matches ordered top-to-bottom.
-pub fn search_term(term: &Arc<FairMutex<Term<ZedListener>>>, query: &str) -> Vec<SearchMatch> {
+/// Result of a search operation.
+pub struct SearchResult {
+    pub matches: Vec<SearchMatch>,
+    /// If regex mode and the pattern is invalid, contains the error message.
+    pub regex_error: Option<String>,
+}
+
+/// Search the terminal's full grid (scrollback + visible) for matches.
+/// In plain text mode, performs case-insensitive substring matching.
+/// In regex mode, compiles the query as a regex pattern.
+pub fn search_term(
+    term: &Arc<FairMutex<Term<ZedListener>>>,
+    query: &str,
+    regex_mode: bool,
+) -> SearchResult {
     if query.is_empty() {
-        return Vec::new();
+        return SearchResult {
+            matches: Vec::new(),
+            regex_error: None,
+        };
     }
+
+    // In regex mode, compile the pattern (case-insensitive)
+    let compiled_regex = if regex_mode {
+        match Regex::new(&format!("(?i)(?:{})", query)) {
+            Ok(re) => Some(re),
+            Err(e) => {
+                return SearchResult {
+                    matches: Vec::new(),
+                    regex_error: Some(e.to_string()),
+                };
+            }
+        }
+    } else {
+        None
+    };
 
     let query_lower = query.to_lowercase();
     let query_char_count = query_lower.chars().count();
@@ -41,8 +72,6 @@ pub fn search_term(term: &Arc<FairMutex<Term<ZedListener>>>, query: &str) -> Vec
     let bottom = term.bottommost_line();
     let cols = term.columns();
 
-    // Iterate line by line, extract text as one char per column.
-    // Each grid column is one cell — wide chars use a spacer ('\0') in the next column.
     let mut line = top;
     while line <= bottom {
         let mut line_text = String::with_capacity(cols);
@@ -56,39 +85,64 @@ pub fn search_term(term: &Arc<FairMutex<Term<ZedListener>>>, query: &str) -> Vec
             }
         }
 
-        // Case-insensitive search within this line.
-        // Because each cell contributes exactly one char, byte offsets from
-        // single-byte-per-cell text are equal to column indices. For multi-byte
-        // content we use char counting to get the correct column offset.
-        let line_lower = line_text.to_lowercase();
-        let mut search_from = 0;
-        while let Some(byte_pos) = line_lower[search_from..].find(&query_lower) {
-            let byte_start = search_from + byte_pos;
-            // Convert byte offset to column (char) index
-            let col_start = line_lower[..byte_start].chars().count();
-            let col_end = col_start + query_char_count - 1;
+        if let Some(re) = &compiled_regex {
+            // Regex mode: use find_iter for all non-overlapping matches
+            for m in re.find_iter(&line_text) {
+                let col_start = line_text[..m.start()].chars().count();
+                let match_char_count = line_text[m.start()..m.end()].chars().count();
+                if match_char_count == 0 {
+                    continue;
+                }
+                let col_end = col_start + match_char_count - 1;
 
-            matches.push(SearchMatch {
-                start: AlacPoint::new(line, GridCol(col_start)),
-                end: AlacPoint::new(line, GridCol(col_end.min(cols.saturating_sub(1)))),
-            });
+                matches.push(SearchMatch {
+                    start: AlacPoint::new(line, GridCol(col_start)),
+                    end: AlacPoint::new(line, GridCol(col_end.min(cols.saturating_sub(1)))),
+                });
 
-            if matches.len() >= MAX_MATCHES {
-                return matches;
+                if matches.len() >= MAX_MATCHES {
+                    return SearchResult {
+                        matches,
+                        regex_error: None,
+                    };
+                }
             }
+        } else {
+            // Plain text mode: case-insensitive substring matching
+            let line_lower = line_text.to_lowercase();
+            let mut search_from = 0;
+            while let Some(byte_pos) = line_lower[search_from..].find(&query_lower) {
+                let byte_start = search_from + byte_pos;
+                let col_start = line_lower[..byte_start].chars().count();
+                let col_end = col_start + query_char_count - 1;
 
-            // Advance past this match start to find overlapping matches
-            search_from = byte_start
-                + line_lower[byte_start..]
-                    .chars()
-                    .next()
-                    .map_or(1, |c| c.len_utf8());
+                matches.push(SearchMatch {
+                    start: AlacPoint::new(line, GridCol(col_start)),
+                    end: AlacPoint::new(line, GridCol(col_end.min(cols.saturating_sub(1)))),
+                });
+
+                if matches.len() >= MAX_MATCHES {
+                    return SearchResult {
+                        matches,
+                        regex_error: None,
+                    };
+                }
+
+                search_from = byte_start
+                    + line_lower[byte_start..]
+                        .chars()
+                        .next()
+                        .map_or(1, |c| c.len_utf8());
+            }
         }
 
         line += 1;
     }
 
-    matches
+    SearchResult {
+        matches,
+        regex_error: None,
+    }
 }
 
 /// Compute the display offset for scrolling to a match, and apply the scroll

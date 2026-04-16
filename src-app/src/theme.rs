@@ -5,8 +5,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{Hsla, Rgba};
 
-/// Terminal color theme with 30 slots:
-/// 5 base colors + 24 ANSI colors (8 hues x 3 intensities) + cursor.
+/// Terminal color theme with 35 slots:
+/// 5 base + cursor + selection + scrollbar_thumb + link_text + 2 title bar + 24 ANSI (8 hues x 3 intensities).
 #[derive(Clone, Copy)]
 pub struct TerminalTheme {
     pub background: Hsla,
@@ -15,6 +15,10 @@ pub struct TerminalTheme {
     pub dim_foreground: Hsla,
     pub ansi_background: Hsla,
     pub cursor: Hsla,
+    pub selection: Hsla,
+    pub scrollbar_thumb: Hsla,
+    /// Color for hyperlink underline and text on Ctrl+hover.
+    pub link_text: Hsla,
     pub title_bar_background: Hsla,
     pub title_bar_inactive_background: Hsla,
     // 8 hues x 3 intensities = 24 ANSI colors
@@ -49,6 +53,12 @@ fn h(hex: u32) -> Hsla {
     let g = ((hex >> 8) & 0xFF) as f32 / 255.0;
     let b = (hex & 0xFF) as f32 / 255.0;
     Hsla::from(Rgba { r, g, b, a: 1.0 })
+}
+
+fn ha(hex: u32, alpha: f32) -> Hsla {
+    let mut color = h(hex);
+    color.a = alpha;
+    color
 }
 
 const CHROME_BACKGROUND_HEX: u32 = 0x141414;
@@ -95,6 +105,9 @@ pub fn catppuccin_mocha() -> TerminalTheme {
         dim_foreground: h(0x8b91a6),
         ansi_background: h(0x212121),
         cursor: h(0xf5e0dc),
+        selection: ha(0x89b4fa, 0.3),
+        scrollbar_thumb: ha(0xcdd6f4, 0.4),
+        link_text: h(0x89b4fa),
         title_bar_background: h(0x181818),
         title_bar_inactive_background: h(0x181818),
         black: h(0x45475a),
@@ -132,6 +145,9 @@ pub fn paneflow_light() -> TerminalTheme {
         dim_foreground: h(0x9ca0b0),
         ansi_background: h(0xf5f5f5),
         cursor: h(0x526fff),
+        selection: ha(0x4078f2, 0.25),
+        scrollbar_thumb: ha(0x383a42, 0.35),
+        link_text: h(0x4078f2),
         title_bar_background: h(0xe8e8e8),
         title_bar_inactive_background: h(0xededed),
         black: h(0x383a42),
@@ -169,6 +185,9 @@ pub fn one_dark() -> TerminalTheme {
         dim_foreground: h(0x5c6370),
         ansi_background: h(0x282c34),
         cursor: h(0x528bff),
+        selection: ha(0x528bff, 0.3),
+        scrollbar_thumb: ha(0xabb2bf, 0.4),
+        link_text: h(0x61afef),
         title_bar_background: h(0x21252b),
         title_bar_inactive_background: h(0x1b1f23),
         black: h(0x3f4451),
@@ -206,6 +225,9 @@ pub fn dracula() -> TerminalTheme {
         dim_foreground: h(0x6272a4),
         ansi_background: h(0x282a36),
         cursor: h(0xf8f8f2),
+        selection: ha(0xbd93f9, 0.3),
+        scrollbar_thumb: ha(0xf8f8f2, 0.4),
+        link_text: h(0x8be9fd),
         title_bar_background: h(0x21222c),
         title_bar_inactive_background: h(0x191a21),
         black: h(0x21222c),
@@ -243,6 +265,9 @@ pub fn gruvbox_dark() -> TerminalTheme {
         dim_foreground: h(0xa89984),
         ansi_background: h(0x282828),
         cursor: h(0xebdbb2),
+        selection: ha(0x458588, 0.35),
+        scrollbar_thumb: ha(0xebdbb2, 0.4),
+        link_text: h(0x83a598),
         title_bar_background: h(0x1d2021),
         title_bar_inactive_background: h(0x171819),
         black: h(0x282828),
@@ -280,6 +305,9 @@ pub fn solarized_dark() -> TerminalTheme {
         dim_foreground: h(0x586e75),
         ansi_background: h(0x002b36),
         cursor: h(0x839496),
+        selection: ha(0x268bd2, 0.3),
+        scrollbar_thumb: ha(0x839496, 0.4),
+        link_text: h(0x268bd2),
         title_bar_background: h(0x00252e),
         title_bar_inactive_background: h(0x001e26),
         black: h(0x073642),

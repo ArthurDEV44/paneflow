@@ -16,10 +16,10 @@ use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor};
 
 use gpui::{
-    App, Bounds, ContentMask, Element, ElementId, Font, FontFallbacks, FontStyle, FontWeight,
-    GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, Rgba,
-    SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window, fill, px,
-    relative,
+    App, BorderStyle, Bounds, ContentMask, Element, ElementId, Font, FontFallbacks, FontStyle,
+    FontWeight, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point,
+    Rgba, SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window,
+    fill, outline, px, relative,
 };
 
 use crate::terminal::{PtyNotifier, SpikeTermSize, ZedListener};
@@ -253,10 +253,14 @@ fn ensure_minimum_contrast(fg: Hsla, bg: Hsla, min_ratio: f32) -> Hsla {
 fn is_decorative_character(ch: char) -> bool {
     matches!(
         ch as u32,
-        0x2500..=0x257F  // Box Drawing (─ │ ┌ ┐ └ ┘ etc.)
+        0x2500..=0x257F   // Box Drawing (─ │ ┌ ┐ └ ┘ etc.)
         | 0x2580..=0x259F // Block Elements (▀ ▄ █ ░ ▒ ▓ etc.)
         | 0x25A0..=0x25FF // Geometric Shapes (■ ▶ ● etc.)
-        | 0xE0B0..=0xE0D7 // Powerline separators
+        | 0xE0B0..=0xE0B7 // Powerline: right/left arrows
+        | 0xE0B8..=0xE0BF // Powerline: bottom/top triangles
+        | 0xE0C0..=0xE0CA // Powerline: flame, pixel separators
+        | 0xE0CC..=0xE0D1 // Powerline: waveform, hex (excludes 0xE0CB)
+        | 0xE0D2..=0xE0D7 // Powerline: trapezoids, inverted triangles
     )
 }
 
@@ -268,8 +272,52 @@ fn is_powerline_or_boxdraw(ch: char) -> bool {
         ch as u32,
         0x2500..=0x257F   // Box Drawing (─ │ ┌ ┐ └ ┘ etc.)
         | 0x2580..=0x259F // Block Elements (▀ ▄ █ ░ ▒ ▓ — half-block color transitions)
-        | 0xE0B0..=0xE0D4 // Powerline separators (arrows, dividers)
+        | 0xE0B0..=0xE0B7 // Powerline: right/left arrows
+        | 0xE0B8..=0xE0BF // Powerline: bottom/top triangles
+        | 0xE0C0..=0xE0CA // Powerline: flame, pixel separators
+        | 0xE0CC..=0xE0D1 // Powerline: waveform, hex (excludes 0xE0CB)
+        | 0xE0D2..=0xE0D7 // Powerline: trapezoids, inverted triangles
     )
+}
+
+/// Merge vertically adjacent background rects that share the same column span
+/// and color, reducing the number of paint_quad() calls. The input rects are
+/// already horizontally merged (same-row, same-color, contiguous columns).
+fn merge_background_regions(mut rects: Vec<LayoutRect>) -> Vec<LayoutRect> {
+    if rects.len() <= 1 {
+        return rects;
+    }
+    // Sort by (col, num_cols, color bits, line) so vertically adjacent candidates
+    // are consecutive in the list.
+    rects.sort_unstable_by(|a, b| {
+        a.col
+            .cmp(&b.col)
+            .then(a.num_cols.cmp(&b.num_cols))
+            .then(a.color.h.total_cmp(&b.color.h))
+            .then(a.color.s.total_cmp(&b.color.s))
+            .then(a.color.l.total_cmp(&b.color.l))
+            .then(a.color.a.total_cmp(&b.color.a))
+            .then(a.line.cmp(&b.line))
+    });
+
+    let mut merged: Vec<LayoutRect> = Vec::with_capacity(rects.len());
+    let mut iter = rects.into_iter();
+    let mut current = iter.next().unwrap();
+
+    for next in iter {
+        if next.col == current.col
+            && next.num_cols == current.num_cols
+            && next.color == current.color
+            && next.line == current.line + current.num_lines as i32
+        {
+            current.num_lines += next.num_lines;
+        } else {
+            merged.push(current);
+            current = next;
+        }
+    }
+    merged.push(current);
+    merged
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +341,7 @@ struct BatchedTextRun {
 
 struct LayoutRect {
     line: i32,
+    num_lines: usize,
     col: usize,
     num_cols: usize,
     color: Hsla,
@@ -317,6 +366,97 @@ pub struct SearchHighlight {
     pub is_active: bool,
 }
 
+/// Where a hyperlink was detected.
+#[derive(Clone, Copy, PartialEq)]
+#[allow(dead_code)]
+pub enum HyperlinkSource {
+    /// Explicit OSC 8 escape sequence from the program.
+    Osc8,
+    /// Regex pattern match on terminal output.
+    Regex,
+}
+
+/// A detected OSC 8 hyperlink zone spanning one or more cells.
+/// Fields are populated here (US-014) and consumed by hover/click (US-015/US-016).
+#[allow(dead_code)]
+pub struct HyperlinkZone {
+    pub uri: String,
+    pub id: String,
+    pub start: alacritty_terminal::index::Point,
+    pub end: alacritty_terminal::index::Point,
+    /// Whether this URL's scheme is in the openable allowlist.
+    pub is_openable: bool,
+    /// How this hyperlink was detected (OSC 8 takes priority over regex).
+    pub source: HyperlinkSource,
+}
+
+/// URL regex pattern matching Zed's terminal_hyperlinks.rs.
+/// Excludes C0/C1 control chars, whitespace, angle brackets, quotes, and other
+/// non-URL characters. Box-drawing chars (U+2500-U+257F) are not valid URL
+/// characters and won't match the allowed character class.
+#[allow(dead_code)]
+const URL_REGEX_PATTERN: &str = r#"(mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://)[^\x00-\x1f\x7f-\x9f<>"\s{}\^⟨⟩`']+"#;
+
+/// Lazily compiled URL regex (compiled once, reused across all calls).
+#[allow(dead_code)]
+fn url_regex() -> &'static regex::Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(URL_REGEX_PATTERN).expect("URL regex compilation failed"))
+}
+
+/// Detect URLs on a single terminal line via regex with char-to-column mapping.
+/// `char_to_col` maps each character index in `line_text` to its grid column,
+/// accounting for wide-char spacers that were skipped during text extraction.
+#[allow(dead_code)]
+pub fn detect_urls_on_line_mapped(
+    line_text: &str,
+    line: alacritty_terminal::index::Line,
+    char_to_col: &[usize],
+) -> Vec<HyperlinkZone> {
+    let re = url_regex();
+    re.find_iter(line_text)
+        .filter_map(|m| {
+            // Convert byte offsets to char indices for column lookup
+            let char_start = line_text[..m.start()].chars().count();
+            let char_end = line_text[..m.end()].chars().count().saturating_sub(1);
+            let col_start = char_to_col.get(char_start)?;
+            let col_end = char_to_col.get(char_end)?;
+            let uri = m.as_str().to_string();
+            let is_openable = is_url_scheme_openable(&uri);
+            Some(HyperlinkZone {
+                uri,
+                id: String::new(),
+                start: alacritty_terminal::index::Point::new(
+                    line,
+                    alacritty_terminal::index::Column(*col_start),
+                ),
+                end: alacritty_terminal::index::Point::new(
+                    line,
+                    alacritty_terminal::index::Column(*col_end),
+                ),
+                is_openable,
+                source: HyperlinkSource::Regex,
+            })
+        })
+        .collect()
+}
+
+/// Check if a URL scheme is in the allowlist for opening.
+/// Allowed: http, https, mailto, file (with localhost/empty host validation).
+pub fn is_url_scheme_openable(uri: &str) -> bool {
+    if uri.starts_with("http://") || uri.starts_with("https://") || uri.starts_with("mailto:") {
+        return true;
+    }
+    if let Some(rest) = uri.strip_prefix("file://") {
+        // file:// must have empty host or localhost
+        return rest.starts_with('/')
+            || rest.starts_with("localhost/")
+            || rest.starts_with("localhost:");
+    }
+    false
+}
+
 pub struct LayoutState {
     batched_runs: Vec<BatchedTextRun>,
     rects: Vec<LayoutRect>,
@@ -325,6 +465,7 @@ pub struct LayoutState {
     cursor: Option<CursorInfo>,
     dimensions: CellDimensions,
     background_color: Hsla,
+    scrollbar_thumb: Hsla,
     exited: Option<i32>,
     /// Scroll position for scrollbar indicator (0 = at bottom)
     display_offset: usize,
@@ -337,6 +478,13 @@ pub struct LayoutState {
     /// Per-line (extend_left, extend_right) flags for neverExtendBg heuristic.
     /// Indexed by visible line number (0..desired_rows).
     extend_line_flags: Vec<(bool, bool)>,
+    /// OSC 8 hyperlink zones detected during cell iteration.
+    #[allow(dead_code)]
+    hyperlinks: Vec<HyperlinkZone>,
+    /// Theme color for hyperlink underline and tooltip text.
+    link_text_color: Hsla,
+    /// Cursor position bounds for IME popup positioning (pixel coordinates).
+    ime_cursor_bounds: Option<Bounds<Pixels>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -377,6 +525,18 @@ pub struct TerminalElement {
     search_highlights: Vec<SearchHighlight>,
     /// Copy mode cursor position (grid coordinates), if copy mode is active
     copy_mode_cursor: Option<CopyModeCursorState>,
+    /// Whether a bell flash is currently active (200ms visual pulse).
+    bell_flash_active: bool,
+    /// Ctrl+hovered hyperlink range for underline rendering (line, start_col, end_col).
+    hovered_link_range: Option<(alacritty_terminal::index::Line, usize, usize)>,
+    /// Full URI of the Ctrl+hovered link (for tooltip display).
+    hovered_link_uri: Option<String>,
+    /// IME preedit text to render at cursor position.
+    ime_marked_text: String,
+    /// Focus handle for IME input handler registration.
+    focus_handle: gpui::FocusHandle,
+    /// Terminal view entity for IME callbacks.
+    terminal_view: gpui::Entity<crate::terminal::TerminalView>,
     /// Timestamp of the keystroke that triggered this render, for latency measurement.
     #[cfg(debug_assertions)]
     last_keystroke_at: Option<std::time::Instant>,
@@ -393,6 +553,12 @@ impl TerminalElement {
         element_origin: Arc<Mutex<Point<Pixels>>>,
         search_highlights: Vec<SearchHighlight>,
         copy_mode_cursor: Option<CopyModeCursorState>,
+        bell_flash_active: bool,
+        hovered_link_range: Option<(alacritty_terminal::index::Line, usize, usize)>,
+        hovered_link_uri: Option<String>,
+        ime_marked_text: String,
+        focus_handle: gpui::FocusHandle,
+        terminal_view: gpui::Entity<crate::terminal::TerminalView>,
         #[cfg(debug_assertions)] last_keystroke_at: Option<std::time::Instant>,
     ) -> Self {
         Self {
@@ -404,6 +570,12 @@ impl TerminalElement {
             element_origin,
             search_highlights,
             copy_mode_cursor,
+            bell_flash_active,
+            hovered_link_range,
+            hovered_link_uri,
+            ime_marked_text,
+            focus_handle,
+            terminal_view,
             #[cfg(debug_assertions)]
             last_keystroke_at,
         }
@@ -413,7 +585,7 @@ impl TerminalElement {
         let (family, _, _) = cached_font_config();
         Font {
             family: SharedString::from(family),
-            features: Default::default(),
+            features: gpui::FontFeatures::disable_ligatures(),
             fallbacks: Some(FONT_FALLBACKS.clone()),
             weight: FontWeight::NORMAL,
             style: FontStyle::Normal,
@@ -461,12 +633,7 @@ impl TerminalElement {
 
         // Snapshot the grid, cursor, and selection under lock to minimize FairMutex hold time.
         let cursor_color = theme.cursor;
-        let selection_color = Hsla {
-            h: 0.58,
-            s: 0.6,
-            l: 0.5,
-            a: 0.35,
-        }; // Semi-transparent blue highlight
+        let selection_color = theme.selection;
 
         let (cells, cursor_snapshot, selection_range, display_offset, history_size): (
             Vec<_>,
@@ -541,6 +708,7 @@ impl TerminalElement {
                 .display_iter
                 .map(|ic| {
                     let zw = ic.cell.zerowidth().map(|chars| chars.to_vec());
+                    let hyperlink = ic.cell.hyperlink();
                     (
                         ic.point,
                         ic.cell.c,
@@ -548,6 +716,7 @@ impl TerminalElement {
                         ic.cell.bg,
                         ic.cell.flags,
                         zw,
+                        hyperlink,
                     )
                 })
                 .collect();
@@ -593,9 +762,53 @@ impl TerminalElement {
         let mut extend_line_flags: Vec<(bool, bool)> = vec![(true, true); desired_rows];
         let mut last_nondefault_is_powerline = false;
 
-        for (point, c, cell_fg, cell_bg, flags, zw) in &cells {
+        // Viewport culling: compute visible row range from content mask.
+        // Rows outside the visible clip rect are skipped during cell processing.
+        let content_mask = window.content_mask();
+        let visible_top = content_mask.bounds.origin.y;
+        let visible_bottom = visible_top + content_mask.bounds.size.height;
+        let first_visible_row = ((visible_top - bounds.origin.y) / dims.line_height)
+            .floor()
+            .max(0.0) as i32;
+        let last_visible_row = ((visible_bottom - bounds.origin.y) / dims.line_height)
+            .ceil()
+            .max(0.0) as i32;
+
+        // OSC 8 hyperlink zone accumulation
+        // Merge key is (id, uri) — empty IDs are common, so URI must also match.
+        // Zones are split at line boundaries for correct hit-test rectangles.
+        let mut hyperlinks: Vec<HyperlinkZone> = Vec::new();
+
+        for (point, c, cell_fg, cell_bg, flags, zw, hyperlink) in &cells {
             let point = *point;
             let flags = *flags;
+
+            // Accumulate OSC 8 hyperlink zones (before culling so offscreen links are tracked)
+            if let Some(hl) = hyperlink {
+                let can_extend = hyperlinks.last().is_some_and(|zone| {
+                    zone.id == hl.id() && zone.uri == hl.uri() && zone.end.line == point.line
+                });
+                if can_extend {
+                    hyperlinks.last_mut().unwrap().end = point;
+                } else {
+                    let uri = hl.uri().to_string();
+                    let is_openable = is_url_scheme_openable(&uri);
+                    hyperlinks.push(HyperlinkZone {
+                        uri,
+                        id: hl.id().to_string(),
+                        start: point,
+                        end: point,
+                        is_openable,
+                        source: HyperlinkSource::Osc8,
+                    });
+                }
+            }
+
+            // Viewport culling: skip rendering for rows outside the visible content mask.
+            // Hyperlink accumulation above is preserved so cross-line links work at boundaries.
+            if point.line.0 < first_visible_row || point.line.0 >= last_visible_row {
+                continue;
+            }
 
             // Skip wide char spacers (trailing cell of CJK chars)
             if flags.contains(CellFlags::WIDE_CHAR_SPACER) {
@@ -672,6 +885,7 @@ impl TerminalElement {
                         }
                         current_rect = Some(LayoutRect {
                             line: point.line.0,
+                            num_lines: 1,
                             col: point.column.0,
                             num_cols: cell_cols,
                             color: bg,
@@ -756,6 +970,8 @@ impl TerminalElement {
         if let Some(rect) = current_rect {
             rects.push(rect);
         }
+        // Vertical merge: coalesce same-column-span, same-color, adjacent-line rects
+        let rects = merge_background_regions(rects);
         // Finalize right-extension flag for the last line
         if last_line >= 0 && (last_line as usize) < desired_rows && last_nondefault_is_powerline {
             extend_line_flags[last_line as usize].1 = false;
@@ -772,6 +988,7 @@ impl TerminalElement {
                 // Single-line selection
                 selection_rects.push(LayoutRect {
                     line: start.line.0,
+                    num_lines: 1,
                     col: start.column.0,
                     num_cols: end.column.0.saturating_sub(start.column.0) + 1,
                     color: selection_color,
@@ -780,6 +997,7 @@ impl TerminalElement {
                 // Multi-line: first line from start.col to end of line
                 selection_rects.push(LayoutRect {
                     line: start.line.0,
+                    num_lines: 1,
                     col: start.column.0,
                     num_cols: num_cols.saturating_sub(start.column.0),
                     color: selection_color,
@@ -789,6 +1007,7 @@ impl TerminalElement {
                 while line < end.line.0 {
                     selection_rects.push(LayoutRect {
                         line,
+                        num_lines: 1,
                         col: 0,
                         num_cols,
                         color: selection_color,
@@ -798,6 +1017,7 @@ impl TerminalElement {
                 // Last line from col 0 to end.col
                 selection_rects.push(LayoutRect {
                     line: end.line.0,
+                    num_lines: 1,
                     col: 0,
                     num_cols: end.column.0 + 1,
                     color: selection_color,
@@ -840,12 +1060,26 @@ impl TerminalElement {
                 let col_end = highlight.end.column.0;
                 search_rects.push(LayoutRect {
                     line: display_line,
+                    num_lines: 1,
                     col: col_start,
                     num_cols: col_end.saturating_sub(col_start) + 1,
                     color,
                 });
             }
         }
+
+        // Compute IME cursor bounds for popup positioning
+        let ime_cursor_bounds = cursor_snapshot.as_ref().map(|c| {
+            let x = dims.cell_width * c.col as f32;
+            let y = dims.line_height * c.line as f32;
+            Bounds::new(
+                Point { x, y },
+                gpui::Size {
+                    width: dims.cell_width,
+                    height: dims.line_height,
+                },
+            )
+        });
 
         LayoutState {
             batched_runs: batch.runs,
@@ -855,12 +1089,16 @@ impl TerminalElement {
             cursor: cursor_snapshot,
             dimensions: dims,
             background_color,
+            scrollbar_thumb: theme.scrollbar_thumb,
             exited: self.exited,
             display_offset,
             history_size,
             desired_cols,
             desired_rows,
             extend_line_flags,
+            hyperlinks,
+            link_text_color: theme.link_text,
+            ime_cursor_bounds,
         }
     }
 }
@@ -1055,6 +1293,11 @@ impl Element for TerminalElement {
             // 1. Paint full terminal background
             window.paint_quad(fill(bounds, layout.background_color));
 
+            // Bell flash: semi-transparent white overlay
+            if self.bell_flash_active {
+                window.paint_quad(fill(bounds, gpui::hsla(0., 0., 1., 0.12)));
+            }
+
             // 2. Paint per-cell background rects (pixel-aligned to prevent gaps)
             //    Edge cells extend into gutter/padding to fill the full widget,
             //    matching Ghostty's EXTEND_LEFT/RIGHT/UP/DOWN (EP-001/US-001+US-002).
@@ -1067,9 +1310,11 @@ impl Element for TerminalElement {
                 let mut x = (origin.x + cell_width * rect.col as f32).floor();
                 let mut y = origin.y + line_height * rect.line as f32;
                 let mut right = (origin.x + cell_width * (rect.col + rect.num_cols) as f32).ceil();
-                let mut bottom = y + line_height;
+                let mut bottom = y + line_height * rect.num_lines as f32;
+                let last_rect_line = rect.line + rect.num_lines as i32 - 1;
 
                 // Look up per-line extension flags (neverExtendBg, US-003)
+                // For vertically merged rects, use the first line's flags for edges.
                 let (extend_left, extend_right) =
                     if rect.line >= 0 && (rect.line as usize) < layout.extend_line_flags.len() {
                         layout.extend_line_flags[rect.line as usize]
@@ -1090,7 +1335,7 @@ impl Element for TerminalElement {
                 if rect.line == 0 {
                     y = widget_top;
                 }
-                if rect.line == last_row {
+                if last_rect_line == last_row {
                     bottom = widget_bottom;
                 }
 
@@ -1104,7 +1349,8 @@ impl Element for TerminalElement {
                 window.paint_quad(fill(rect_bounds, rect.color));
             }
 
-            // 2b. Paint selection highlight rects (pixel-aligned)
+            // 2b. Paint selection highlight rects (pixel-aligned, rounded corners)
+            let selection_corner_radius = line_height * 0.15;
             for rect in &layout.selection_rects {
                 let x = (origin.x + cell_width * rect.col as f32).floor();
                 let y = origin.y + line_height * rect.line as f32;
@@ -1116,7 +1362,9 @@ impl Element for TerminalElement {
                         height: line_height,
                     },
                 );
-                window.paint_quad(fill(rect_bounds, rect.color));
+                window.paint_quad(
+                    fill(rect_bounds, rect.color).corner_radii(selection_corner_radius),
+                );
             }
 
             // 2c. Paint search match highlight rects
@@ -1160,6 +1408,97 @@ impl Element for TerminalElement {
                     window,
                     cx,
                 );
+            }
+
+            // 3b. Paint hyperlink underline (Ctrl+hover)
+            if let Some((link_line, col_start, col_end)) = self.hovered_link_range {
+                let display_offset = layout.display_offset as i32;
+                let screen_line = link_line.0 + display_offset;
+                if screen_line >= 0 && (screen_line as usize) < layout.desired_rows {
+                    let x_start = origin.x + cell_width * col_start as f32;
+                    let x_end = origin.x + cell_width * (col_end + 1) as f32;
+                    let y = origin.y + line_height * (screen_line + 1) as f32 - gpui::px(1.0);
+                    let underline_bounds = Bounds::new(
+                        Point { x: x_start, y },
+                        gpui::Size {
+                            width: x_end - x_start,
+                            height: gpui::px(1.0),
+                        },
+                    );
+                    window.paint_quad(fill(underline_bounds, layout.link_text_color));
+
+                    // Paint URL tooltip near the underline
+                    if let Some(ref uri) = self.hovered_link_uri {
+                        let tooltip_font_size = gpui::px(11.0);
+                        let tooltip_padding = gpui::px(4.0);
+                        // Char-safe truncation to avoid panics on multibyte URIs
+                        let display_uri: String = if uri.chars().count() > 80 {
+                            let mut s: String = uri.chars().take(77).collect();
+                            s.push_str("...");
+                            s
+                        } else {
+                            uri.clone()
+                        };
+                        let display_len = display_uri.len(); // UTF-8 byte count for TextRun
+                        let shaped = window.text_system().shape_line(
+                            SharedString::from(display_uri),
+                            tooltip_font_size,
+                            &[gpui::TextRun {
+                                len: display_len,
+                                font: gpui::Font {
+                                    family: "monospace".into(),
+                                    ..Default::default()
+                                },
+                                color: layout.link_text_color,
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            }],
+                            None,
+                        );
+                        let text_width = shaped.width;
+                        let tooltip_height = tooltip_font_size + tooltip_padding * 2.0;
+                        let tooltip_x = x_start;
+                        // Flip tooltip above the link when near the bottom of the terminal
+                        let tooltip_y = {
+                            let below = y + gpui::px(3.0);
+                            let bottom_edge = origin.y + line_height * layout.desired_rows as f32;
+                            if below + tooltip_height > bottom_edge {
+                                // Place above the link line
+                                origin.y + line_height * screen_line as f32
+                                    - tooltip_height
+                                    - gpui::px(2.0)
+                            } else {
+                                below
+                            }
+                        };
+                        let bg_bounds = Bounds::new(
+                            Point {
+                                x: tooltip_x - tooltip_padding,
+                                y: tooltip_y,
+                            },
+                            gpui::Size {
+                                width: text_width + tooltip_padding * 2.0,
+                                height: tooltip_height,
+                            },
+                        );
+                        // Semi-transparent overlay background for visibility
+                        let mut tooltip_bg = layout.background_color;
+                        tooltip_bg.a = 0.92;
+                        window.paint_quad(fill(bg_bounds, tooltip_bg));
+                        let _ = shaped.paint(
+                            Point {
+                                x: tooltip_x,
+                                y: tooltip_y + tooltip_padding,
+                            },
+                            line_height,
+                            TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        );
+                    }
+                }
             }
 
             // 4. Paint cursor
@@ -1257,57 +1596,18 @@ impl Element for TerminalElement {
                         window.paint_quad(fill(cursor_bounds, color));
                     }
                     CursorShape::HollowBlock => {
-                        let t = px(1.5);
-                        // Top edge
-                        window.paint_quad(fill(
-                            Bounds::new(
-                                Point { x: cx_, y: cy },
-                                gpui::Size {
-                                    width: cw,
-                                    height: t,
-                                },
-                            ),
-                            color,
-                        ));
-                        // Bottom edge
-                        window.paint_quad(fill(
-                            Bounds::new(
-                                Point {
-                                    x: cx_,
-                                    y: cy + ch - t,
-                                },
-                                gpui::Size {
-                                    width: cw,
-                                    height: t,
-                                },
-                            ),
-                            color,
-                        ));
-                        // Left edge
-                        window.paint_quad(fill(
-                            Bounds::new(
-                                Point { x: cx_, y: cy },
-                                gpui::Size {
-                                    width: t,
-                                    height: ch,
-                                },
-                            ),
-                            color,
-                        ));
-                        // Right edge
-                        window.paint_quad(fill(
-                            Bounds::new(
-                                Point {
-                                    x: cx_ + cw - t,
-                                    y: cy,
-                                },
-                                gpui::Size {
-                                    width: t,
-                                    height: ch,
-                                },
-                            ),
-                            color,
-                        ));
+                        let cursor_bounds = Bounds::new(
+                            Point { x: cx_, y: cy },
+                            gpui::Size {
+                                width: cw,
+                                height: ch,
+                            },
+                        );
+                        window.paint_quad(
+                            outline(cursor_bounds, color, BorderStyle::Solid)
+                                .border_widths(1.5)
+                                .corner_radii(px(2.0)),
+                        );
                     }
                     CursorShape::Hidden => {} // Already filtered in build_layout
                 }
@@ -1325,12 +1625,7 @@ impl Element for TerminalElement {
                 let thumb_y = bounds.size.height
                     - thumb_height
                     - (bounds.size.height - thumb_height) * scroll_ratio;
-                let scrollbar_color = Hsla {
-                    h: 0.0,
-                    s: 0.0,
-                    l: 0.6,
-                    a: 0.4,
-                };
+                let scrollbar_color = layout.scrollbar_thumb;
                 let scrollbar_bounds = Bounds::new(
                     Point {
                         x: origin.x + bounds.size.width - scrollbar_width,
@@ -1344,7 +1639,63 @@ impl Element for TerminalElement {
                 window.paint_quad(fill(scrollbar_bounds, scrollbar_color));
             }
 
-            // 6. Paint exit overlay if process has exited
+            // 6. Register IME input handler and paint preedit text
+            if self.focused {
+                let cursor_bounds = layout.ime_cursor_bounds.map(|b| {
+                    Bounds::new(
+                        Point {
+                            x: b.origin.x + origin.x,
+                            y: b.origin.y + origin.y,
+                        },
+                        b.size,
+                    )
+                });
+                let handler = TerminalInputHandler {
+                    terminal_view: self.terminal_view.clone(),
+                    term: self.term.clone(),
+                    cursor_bounds,
+                };
+                window.handle_input(&self.focus_handle, handler, cx);
+
+                // Paint preedit overlay
+                if !self.ime_marked_text.is_empty()
+                    && let Some(cb) = cursor_bounds
+                {
+                    let ime_font = Self::base_font();
+                    let ime_run = TextRun {
+                        len: self.ime_marked_text.len(),
+                        font: ime_font,
+                        color: layout.background_color,
+                        background_color: None,
+                        underline: Some(gpui::UnderlineStyle {
+                            color: None,
+                            thickness: px(1.0),
+                            wavy: false,
+                        }),
+                        strikethrough: None,
+                    };
+                    let shaped = window.text_system().shape_line(
+                        SharedString::from(self.ime_marked_text.clone()),
+                        font_size,
+                        &[ime_run],
+                        Some(cell_width),
+                    );
+                    // Background erase behind preedit
+                    let preedit_width = shaped.width();
+                    let preedit_bg = Bounds::new(
+                        cb.origin,
+                        gpui::Size {
+                            width: preedit_width,
+                            height: line_height,
+                        },
+                    );
+                    window.paint_quad(fill(preedit_bg, layout.background_color));
+                    // Paint preedit text
+                    let _ = shaped.paint(cb.origin, line_height, TextAlign::Left, None, window, cx);
+                }
+            }
+
+            // 7. Paint exit overlay if process has exited
             if let Some(code) = layout.exited {
                 let msg = format!("[Process exited with code {code}]");
                 let exit_fg = rgb_to_hsla(0x6c, 0x70, 0x86); // Overlay6
@@ -1513,4 +1864,104 @@ fn rgb_to_hsla(r: u8, g: u8, b: u8) -> Hsla {
         b: b as f32 / 255.0,
         a: 1.0,
     })
+}
+
+// ---------------------------------------------------------------------------
+// IME InputHandler (US-017)
+// ---------------------------------------------------------------------------
+
+struct TerminalInputHandler {
+    terminal_view: gpui::Entity<crate::terminal::TerminalView>,
+    term: Arc<FairMutex<Term<ZedListener>>>,
+    cursor_bounds: Option<Bounds<Pixels>>,
+}
+
+impl gpui::InputHandler for TerminalInputHandler {
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<gpui::UTF16Selection> {
+        // Disable IME on ALT_SCREEN (TUI apps handle their own input)
+        let mode = *self.term.lock().mode();
+        if mode.contains(alacritty_terminal::term::TermMode::ALT_SCREEN) {
+            return None;
+        }
+        Some(gpui::UTF16Selection {
+            range: 0..0,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Option<std::ops::Range<usize>> {
+        self.terminal_view.read(cx).marked_text_range()
+    }
+
+    fn text_for_range(
+        &mut self,
+        _range_utf16: std::ops::Range<usize>,
+        _adjusted_range: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<String> {
+        None
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _replacement_range: Option<std::ops::Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut App,
+    ) {
+        // Commit: clear preedit and write text to PTY
+        self.terminal_view.update(cx, |view, cx| {
+            view.clear_marked_text(cx);
+            view.commit_text(text, cx);
+        });
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range_utf16: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        cx: &mut App,
+    ) {
+        // Preedit: update marked text for rendering
+        self.terminal_view.update(cx, |view, cx| {
+            view.set_marked_text(new_text.to_string(), cx);
+        });
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut App) {
+        // Cancel composition
+        self.terminal_view.update(cx, |view, cx| {
+            view.clear_marked_text(cx);
+        });
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: std::ops::Range<usize>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<Bounds<Pixels>> {
+        self.cursor_bounds
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<usize> {
+        None
+    }
 }

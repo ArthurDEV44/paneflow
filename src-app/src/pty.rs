@@ -63,6 +63,8 @@ impl PtyBackend for PortablePtyBackend {
             cmd.arg(arg);
         }
         cmd.cwd(cwd);
+        // Remove SHLVL so the child shell starts fresh at 1 (not inherited+1)
+        cmd.env_remove("SHLVL");
         for (k, v) in env {
             cmd.env(k, v);
         }

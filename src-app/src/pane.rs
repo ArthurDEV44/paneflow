@@ -103,7 +103,8 @@ impl Pane {
                 TerminalEvent::CwdChanged(_)
                 | TerminalEvent::ActivityBurst
                 | TerminalEvent::ServiceDetected(_)
-                | TerminalEvent::CancelSwapMode => {}
+                | TerminalEvent::CancelSwapMode
+                | TerminalEvent::Bell => {}
             }
         })
         .detach();
