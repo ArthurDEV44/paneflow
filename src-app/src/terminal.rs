@@ -1692,6 +1692,7 @@ impl TerminalView {
         if let Some(text) = copied {
             cx.write_to_primary(ClipboardItem::new_string(text.clone()));
             cx.write_to_clipboard(ClipboardItem::new_string(text));
+            cx.emit(TerminalEvent::SelectionCopied);
         }
 
         cx.notify();
@@ -2857,6 +2858,9 @@ pub enum TerminalEvent {
     Bell,
     /// Escape pressed while swap mode is active — requests cancellation.
     CancelSwapMode,
+    /// A mouse selection was auto-copied to the clipboard on mouse release.
+    /// Consumed by `PaneFlowApp` to surface a "Copied" toast.
+    SelectionCopied,
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}

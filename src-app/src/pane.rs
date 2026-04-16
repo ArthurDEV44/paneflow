@@ -98,12 +98,13 @@ impl Pane {
                         cx.notify();
                     }
                 }
-                // CwdChanged, ActivityBurst, and ServiceDetected are handled
-                // by PaneFlowApp's direct subscription to each TerminalView.
+                // CwdChanged, ActivityBurst, ServiceDetected, SelectionCopied are
+                // handled by PaneFlowApp's direct subscription to each TerminalView.
                 TerminalEvent::CwdChanged(_)
                 | TerminalEvent::ActivityBurst
                 | TerminalEvent::ServiceDetected(_)
                 | TerminalEvent::CancelSwapMode
+                | TerminalEvent::SelectionCopied
                 | TerminalEvent::Bell => {}
             }
         })
