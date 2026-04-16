@@ -1,7 +1,7 @@
 use gpui::{
-    AnyElement, ClickEvent, Context, Decorations, EventEmitter, IntoElement, MouseButton, Pixels,
-    Point, Render, Styled, Window, WindowButton, WindowControlArea, WindowControls, div,
-    prelude::*, px, svg,
+    div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Decorations, EventEmitter,
+    IntoElement, MouseButton, Pixels, Point, Render, Styled, Window, WindowButton,
+    WindowControlArea, WindowControls,
 };
 
 use crate::csd::default_button_layout;
@@ -42,6 +42,7 @@ impl TitleBar {
 
 pub enum TitleBarEvent {
     ToggleMenu(Point<Pixels>),
+    CloseRequested,
 }
 
 impl EventEmitter<TitleBarEvent> for TitleBar {}
@@ -66,13 +67,13 @@ impl Render for TitleBar {
         let supported = window.window_controls();
 
         let left_controls = if is_csd {
-            render_button_group("l", &layout.left, is_maximized, &supported)
+            render_button_group("l", &layout.left, is_maximized, &supported, cx)
         } else {
             None
         };
 
         let right_controls = if is_csd {
-            render_button_group("r", &layout.right, is_maximized, &supported)
+            render_button_group("r", &layout.right, is_maximized, &supported, cx)
         } else {
             None
         };
@@ -242,6 +243,7 @@ fn render_button_group(
     buttons: &[Option<WindowButton>; 3],
     is_maximized: bool,
     supported: &WindowControls,
+    cx: &mut Context<TitleBar>,
 ) -> Option<AnyElement> {
     let children: Vec<AnyElement> = buttons
         .iter()
@@ -251,7 +253,7 @@ fn render_button_group(
             WindowButton::Maximize => supported.maximize,
             WindowButton::Close => true,
         })
-        .map(|button| render_window_button(side, button, is_maximized))
+        .map(|button| render_window_button(side, button, is_maximized, cx))
         .collect();
 
     if children.is_empty() {
@@ -275,6 +277,7 @@ fn render_window_button(
     side: &'static str,
     button: WindowButton,
     is_maximized: bool,
+    cx: &mut Context<TitleBar>,
 ) -> AnyElement {
     let id = match button {
         WindowButton::Minimize => "wc-minimize",
@@ -316,16 +319,14 @@ fn render_window_button(
             s.bg(ui.subtle)
         })
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(move |_, window, cx| {
+        .on_click(cx.listener(move |_this, _: &ClickEvent, window, cx| {
             cx.stop_propagation();
             match button {
                 WindowButton::Minimize => window.minimize_window(),
                 WindowButton::Maximize => window.zoom_window(),
-                WindowButton::Close => {
-                    window.dispatch_action(Box::new(crate::CloseWindow), cx);
-                }
+                WindowButton::Close => cx.emit(TitleBarEvent::CloseRequested),
             }
-        })
+        }))
         .child({
             let ui = crate::theme::ui_colors();
             svg()
