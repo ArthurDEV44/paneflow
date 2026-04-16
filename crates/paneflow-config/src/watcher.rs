@@ -65,6 +65,12 @@ impl ConfigWatcher {
             .expect("config path has no parent directory")
             .to_path_buf();
 
+        // notify can't watch a directory that doesn't exist yet — create it
+        // on first run so hot-reload works even before the user writes a config.
+        if !watch_dir.exists() {
+            std::fs::create_dir_all(&watch_dir).map_err(notify::Error::io)?;
+        }
+
         let config_path = self.config_path.clone();
         let callback = Arc::clone(&self.callback);
 
