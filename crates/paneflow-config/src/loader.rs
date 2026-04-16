@@ -86,6 +86,12 @@ pub fn parse_and_validate(json: &str) -> PaneFlowConfig {
         .into_iter()
         .filter(validate_command)
         .collect();
+    if !validated.is_empty() {
+        warn!(
+            "config contains {} command(s), but workspace commands are not yet implemented — they will be ignored",
+            validated.len()
+        );
+    }
     config.commands = validated;
 
     // Validate and fix layout nodes in-place.

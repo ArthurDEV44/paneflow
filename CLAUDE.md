@@ -1,6 +1,6 @@
 # CLAUDE.md — PaneFlow
 
-Cross-platform terminal multiplexer (cmux port) built in pure Rust with Zed's GPUI framework and Zed's Alacritty fork for VT emulation. Linux-first, targeting Wayland + X11.
+Cross-platform terminal multiplexer (cmux port) built in pure Rust with Zed's GPUI framework and upstream `alacritty_terminal` (crates.io) for VT emulation. Linux-first, targeting Wayland + X11.
 
 ## Commands
 
@@ -65,19 +65,19 @@ KeyDownEvent → TerminalView::handle_key_down() → keys::to_esc_str()
 
 ## Critical external dependencies
 
-GPUI and related crates are **local path dependencies** pointing to a Zed monorepo checkout:
+GPUI and related crates are **git dependencies** pinned to a specific Zed monorepo commit:
 
 ```toml
-gpui = { path = "/home/arthur/dev/zed/crates/gpui" }
-gpui_platform = { path = "/home/arthur/dev/zed/crates/gpui_platform", features = ["wayland", "x11"] }
-collections = { path = "/home/arthur/dev/zed/crates/collections" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "0b984b5..." }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "0b984b5..." }
+collections = { git = "https://github.com/zed-industries/zed", rev = "0b984b5..." }
 ```
 
-The Zed repo must exist at `/home/arthur/dev/zed` for the project to compile. Two crates-io patches are required by GPUI:
+Cargo fetches GPUI from the Zed repo automatically — no local checkout required. Two crates-io patches are required by GPUI:
 - `async-task` → `smol-rs/async-task` (specific git commit)
 - `calloop` → `zed-industries/calloop` fork
 
-Terminal emulation uses Zed's Alacritty fork: `git = "https://github.com/zed-industries/alacritty", rev = "9d9640d4"`.
+Terminal emulation uses upstream `alacritty_terminal = "0.26"` from crates.io (migrated from Zed fork).
 
 ## GPUI patterns
 
@@ -128,8 +128,8 @@ Location: `~/.config/paneflow/paneflow.json` (Linux XDG).
 
 - **Theme hot-reload**: 500ms mtime polling in a `cx.spawn` loop. 5 bundled themes: Catppuccin Mocha (default), One Dark, Dracula, Gruvbox Dark, Solarized Dark.
 - **`window_decorations`**: read at startup only — requires restart. `"client"` = CSD, `"server"` = SSD.
-- **`shortcuts`**: schema exists but is **not wired** to action dispatch — keybindings are hardcoded.
-- **`ConfigWatcher`** (notify crate, 300ms debounce): fully implemented in config crate but **not used** by the app — mtime polling is used instead.
+- **`shortcuts`**: wired via `keybindings::apply_keybindings()` at startup. Users can override default keybindings in config.
+- **`ConfigWatcher`** (notify crate, 300ms debounce): fully wired — background thread detects file changes and deposits new config for the GPUI main thread to apply.
 
 ## IPC (ipc.rs)
 
@@ -155,10 +155,10 @@ Stateful methods dispatch to GPUI main thread via `mpsc::channel`, polled every 
 - **GPUI is not on crates.io** — it's a local path dep from `/home/arthur/dev/zed`. Never suggest adding it as a crates-io dependency.
 - **Never recommend iced** for this project — it was evaluated and rejected (unstable, custom WGPU glyph atlas too complex). The decision is final.
 - **`SplitDirection::Horizontal`** means a horizontal divider bar (panes stacked top/bottom), NOT side-by-side. This is counterintuitive but consistent with the codebase.
-- **`alacritty_terminal` is Zed's fork**, not upstream Alacritty — APIs differ. Use `ZedListener`, `FairMutex`, and Zed-specific `Term` methods.
+- **`alacritty_terminal` is upstream** (crates.io `0.26`), migrated from Zed's fork. Uses `ZedListener` and `FairMutex` from the GPUI integration layer.
 - **No macOS/Windows code exists** — this is Linux-only right now. PTY uses POSIX APIs, display uses Wayland+X11.
 - **`dirs` version mismatch**: `src-app` uses `dirs = "5.0"`, config crate uses `dirs = "6"`. They coexist but are separate semver releases.
-- **Config `default_shell` is not wired** — `TerminalState::new()` reads `$SHELL` env var directly, ignoring the config value.
+- **Config `default_shell` is wired** — `TerminalState::new()` uses fallback chain: config `default_shell` → `$SHELL` → `/bin/sh`.
 - **The `_io_thread` handle is discarded** (`terminal.rs:139`) — PTY I/O threads run detached. Shutdown is via `Msg::Shutdown` in `Drop`.
 - **No tests in the app crate** — all 39 tests are in `paneflow-config`. UI is verified manually.
 - **No CI/CD** — no GitHub Actions or automation. Quality gates are developer-run.
