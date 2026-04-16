@@ -1200,6 +1200,7 @@ impl TerminalView {
                                         for service in view.terminal.scan_output() {
                                             cx.emit(TerminalEvent::ServiceDetected(service));
                                         }
+                                        cx.emit(TerminalEvent::ActivityBurst);
                                     }
 
                                     // Copy mode: restore frozen display offset
@@ -2819,9 +2820,8 @@ pub enum TerminalEvent {
     TitleChanged,
     /// The shell's working directory changed (detected via OSC 7 escape sequence).
     CwdChanged(String),
-    /// Terminal transitioned from idle to active (new output after idle period).
-    /// No longer emitted by the batched event loop but kept for handler compatibility.
-    #[allow(dead_code)]
+    /// Terminal output activity detected — triggers port scanning via `/proc/net/tcp`.
+    /// Emitted alongside `ServiceDetected` during output scan ticks.
     ActivityBurst,
     /// A server/service was detected in PTY output (e.g. "Listening on :3000").
     /// Enriches the bare port from `/proc/net/tcp` with label and URL.
