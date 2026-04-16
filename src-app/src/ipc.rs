@@ -8,6 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -28,6 +29,11 @@ pub struct IpcRequest {
 
 /// Start the IPC server on a dedicated OS thread.
 /// Returns the receiver for IPC requests to be polled by the GPUI thread.
+///
+/// The server monitors the socket file on disk and automatically re-binds
+/// when another instance (e.g. `cargo run`) clobbers it. Without this,
+/// the listener becomes orphaned (wrong inode) and all new connections
+/// get `ECONNREFUSED`, silently disabling AI hook integration.
 pub fn start_server() -> mpsc::Receiver<IpcRequest> {
     let (tx, rx) = mpsc::channel();
 
@@ -39,49 +45,90 @@ pub fn start_server() -> mpsc::Receiver<IpcRequest> {
                 return;
             };
 
-            // Ensure parent directory exists
             if let Some(parent) = socket_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
 
-            // Remove stale socket file
-            let _ = std::fs::remove_file(&socket_path);
-
-            let listener = match UnixListener::bind(&socket_path) {
-                Ok(l) => l,
-                Err(e) => {
-                    log::error!(
-                        "Failed to bind IPC socket at {}: {e}",
-                        socket_path.display()
-                    );
-                    return;
-                }
+            let mut listener = match bind_socket(&socket_path) {
+                Some(l) => l,
+                None => return,
             };
+            let mut our_ino = socket_inode(&socket_path).unwrap_or(0);
+            let mut last_health_check = std::time::Instant::now();
 
-            // Restrict socket to owner-only access
-            let _ = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600));
+            // Non-blocking accept so we can periodically verify the socket file
+            listener.set_nonblocking(true).ok();
 
-            log::info!("IPC server listening on {}", socket_path.display());
-
-            for stream in listener.incoming() {
-                match stream {
-                    Ok(stream) => {
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
                         let tx = tx.clone();
                         std::thread::spawn(move || handle_connection(stream, tx));
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // No pending connection — brief sleep to avoid busy-spin
+                        std::thread::sleep(Duration::from_millis(10));
                     }
                     Err(e) => {
                         log::error!("IPC accept error: {e}");
                         break;
                     }
                 }
+
+                // Every 5 seconds, verify our socket file hasn't been clobbered
+                if last_health_check.elapsed() >= Duration::from_secs(5) {
+                    last_health_check = std::time::Instant::now();
+                    let current_ino = socket_inode(&socket_path).unwrap_or(0);
+                    if current_ino != our_ino {
+                        log::warn!(
+                            "IPC socket clobbered (inode {} → {}), re-binding",
+                            our_ino,
+                            current_ino
+                        );
+                        drop(listener);
+                        match bind_socket(&socket_path) {
+                            Some(l) => {
+                                l.set_nonblocking(true).ok();
+                                listener = l;
+                                our_ino = socket_inode(&socket_path).unwrap_or(0);
+                            }
+                            None => return,
+                        }
+                    }
+                }
             }
 
-            // Cleanup socket file on exit
             let _ = std::fs::remove_file(&socket_path);
         })
         .expect("Failed to spawn IPC thread");
 
     rx
+}
+
+/// Bind a new Unix listener at the given path, removing any stale file first.
+fn bind_socket(socket_path: &std::path::Path) -> Option<UnixListener> {
+    let _ = std::fs::remove_file(socket_path);
+
+    let listener = match UnixListener::bind(socket_path) {
+        Ok(l) => l,
+        Err(e) => {
+            log::error!(
+                "Failed to bind IPC socket at {}: {e}",
+                socket_path.display()
+            );
+            return None;
+        }
+    };
+
+    let _ = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600));
+    log::info!("IPC server listening on {}", socket_path.display());
+    Some(listener)
+}
+
+/// Get the inode number of a filesystem path (0 if the file doesn't exist).
+fn socket_inode(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| m.ino())
 }
 
 fn handle_connection(stream: UnixStream, request_tx: mpsc::Sender<IpcRequest>) {
