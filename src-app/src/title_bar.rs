@@ -17,7 +17,16 @@ pub struct TitleBar {
 #[derive(Clone)]
 pub struct UpdateInfo {
     pub version: String,
-    pub url: String,
+    /// Live state of the in-app self-update flow — controls the pill label.
+    pub self_update: SelfUpdatePillState,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SelfUpdatePillState {
+    Idle,
+    Downloading,
+    Installing,
+    Errored,
 }
 
 impl TitleBar {
@@ -109,25 +118,36 @@ impl Render for TitleBar {
 
         // --- Update available pill ---
         let update_pill = self.update_available.clone().map(|info| {
-            let url = info.url.clone();
-            div()
+            let (label, is_clickable): (String, bool) = match info.self_update {
+                SelfUpdatePillState::Idle => (format!("v{} available", info.version), true),
+                SelfUpdatePillState::Downloading => ("Downloading…".to_string(), false),
+                SelfUpdatePillState::Installing => ("Installing…".to_string(), false),
+                SelfUpdatePillState::Errored => ("Update failed".to_string(), true),
+            };
+            let mut pill = div()
                 .id("update-pill")
                 .ml_auto()
                 .mr_2()
                 .px_2()
                 .py(px(2.))
-                .rounded(px(10.))
-                .bg(ui.accent)
-                .text_color(ui.base)
+                .rounded(px(4.))
+                .border_1()
+                .border_color(ui.accent)
+                .text_color(ui.accent)
                 .text_size(px(11.))
                 .font_weight(gpui::FontWeight::MEDIUM)
-                .cursor_pointer()
-                .hover(|s| s.opacity(0.85))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(move |_, _, _cx| {
-                    let _ = open::that(&url);
-                })
-                .child(format!("v{} available", info.version))
+                .child(label);
+            if is_clickable {
+                pill = pill.cursor_pointer().hover(|s| s.opacity(0.7)).on_click(
+                    move |_, window, cx| {
+                        window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
+                    },
+                );
+            } else {
+                pill = pill.opacity(0.75);
+            }
+            pill
         });
 
         let csd_rounding = px(10.);

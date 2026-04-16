@@ -9,7 +9,14 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Clone, Debug, PartialEq)]
 pub enum UpdateStatus {
     Checking,
-    Available { version: String, url: String },
+    Available {
+        version: String,
+        /// GitHub release HTML page — opened only as a fallback if self-update fails.
+        url: String,
+        /// Direct download URL for the Linux `.run` self-extracting installer.
+        /// `None` if the release is missing a Linux asset (e.g. a draft).
+        asset_url: Option<String>,
+    },
     UpToDate,
     Failed,
 }
@@ -33,6 +40,14 @@ pub fn spawn_check() -> SharedUpdateSlot {
 struct GitHubRelease {
     tag_name: String,
     html_url: String,
+    #[serde(default)]
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubAsset {
+    name: String,
+    browser_download_url: String,
 }
 
 fn check_github_release() -> UpdateStatus {
@@ -78,10 +93,16 @@ fn check_github_release() -> UpdateStatus {
     };
 
     if remote > local {
+        let asset_url = release
+            .assets
+            .into_iter()
+            .find(|a| a.name.ends_with("-x86_64-linux.run"))
+            .map(|a| a.browser_download_url);
         log::info!("update available: v{remote} (current: v{local})");
         UpdateStatus::Available {
             version: remote.to_string(),
             url: release.html_url,
+            asset_url,
         }
     } else {
         log::info!("up to date (v{local})");
