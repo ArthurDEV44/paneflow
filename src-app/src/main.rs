@@ -1295,10 +1295,22 @@ impl PaneFlowApp {
                     .get("name")
                     .and_then(|n| n.as_str())
                     .unwrap_or("Terminal");
+                let cwd = params
+                    .get("cwd")
+                    .and_then(|c| c.as_str())
+                    .map(std::path::PathBuf::from);
                 let ws_id = next_workspace_id();
-                let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
-                let pane = self.create_pane(terminal, ws_id, cx);
-                let ws = Workspace::with_id(ws_id, name, pane);
+                let ws = if let Some(dir) = cwd {
+                    let terminal = cx.new(|cx| {
+                        TerminalView::with_cwd(ws_id, Some(dir.clone()), None, cx)
+                    });
+                    let pane = self.create_pane(terminal, ws_id, cx);
+                    Workspace::with_cwd_and_id(ws_id, name, dir, pane)
+                } else {
+                    let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
+                    let pane = self.create_pane(terminal, ws_id, cx);
+                    Workspace::with_id(ws_id, name, pane)
+                };
                 self.watch_git_dir(&ws);
                 self.workspaces.push(ws);
                 let idx = self.workspaces.len() - 1;
@@ -2800,7 +2812,7 @@ impl PaneFlowApp {
                 .mx(px(6.))
                 .px(px(10.))
                 .py(px(8.))
-                .when(is_active, |d| d.bg(ui.overlay))
+                .when(is_active, |d| d.bg(ui.surface))
                 .rounded(px(6.))
                 .cursor_pointer()
                 .when(!is_active, |d| {

@@ -29,14 +29,16 @@ use crate::terminal::{PtyNotifier, SpikeTermSize, ZedListener};
 // ---------------------------------------------------------------------------
 
 const DEFAULT_FONT_SIZE: f32 = 14.0;
-const DEFAULT_LINE_HEIGHT: f32 = 1.4;
+const DEFAULT_LINE_HEIGHT: f32 = 1.3;
 
 const FONT_FALLBACK_EMOJI: &str = "Noto Color Emoji";
 const FONT_FALLBACK_SYMBOLS: &str = "Symbols Nerd Font Mono";
 const FONT_FALLBACK_SANS: &str = "Noto Sans";
 
-/// WCAG 2.0 AA minimum contrast ratio for normal text.
-const MIN_CONTRAST_RATIO: f32 = 4.5;
+/// APCA minimum Lc (lightness contrast) threshold.
+/// Lc 45 is "minimum for large fluent text" per ARC Bronze Simple Mode — matches Zed's default.
+/// APCA is more accurate than WCAG 2.0 on dark backgrounds (polarity-aware, perceptually uniform).
+const MIN_APCA_CONTRAST: f32 = 45.0;
 
 static FONT_FALLBACKS: LazyLock<FontFallbacks> = LazyLock::new(|| {
     FontFallbacks::from_fonts(vec![
@@ -183,68 +185,164 @@ fn cached_font_config() -> (String, f32, f32) {
 }
 
 // ---------------------------------------------------------------------------
-// Minimum contrast (WCAG 2.0 luminance ratio)
+// Minimum contrast (APCA — Accessible Perceptual Contrast Algorithm)
 // ---------------------------------------------------------------------------
 
-/// sRGB relative luminance per WCAG 2.0 §1.4.3.
-fn relative_luminance(color: Hsla) -> f32 {
+/// APCA constants (0.0.98G-4g W3 compatible).
+/// https://github.com/Myndex/apca-w3
+struct ApcaConstants {
+    main_trc: f32,
+    s_rco: f32,
+    s_gco: f32,
+    s_bco: f32,
+    norm_bg: f32,
+    norm_txt: f32,
+    rev_txt: f32,
+    rev_bg: f32,
+    blk_thrs: f32,
+    blk_clmp: f32,
+    scale_bow: f32,
+    scale_wob: f32,
+    lo_bow_offset: f32,
+    lo_wob_offset: f32,
+    delta_y_min: f32,
+    lo_clip: f32,
+}
+
+const APCA: ApcaConstants = ApcaConstants {
+    main_trc: 2.4,
+    s_rco: 0.2126729,
+    s_gco: 0.7151522,
+    s_bco: 0.0721750,
+    norm_bg: 0.56,
+    norm_txt: 0.57,
+    rev_txt: 0.62,
+    rev_bg: 0.65,
+    blk_thrs: 0.022,
+    blk_clmp: 1.414,
+    scale_bow: 1.14,
+    scale_wob: 1.14,
+    lo_bow_offset: 0.027,
+    lo_wob_offset: 0.027,
+    delta_y_min: 0.0005,
+    lo_clip: 0.1,
+};
+
+fn srgb_to_y(color: Hsla) -> f32 {
     let rgba = Rgba::from(color);
-    let linearize = |c: f32| -> f32 {
-        if c <= 0.04045 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
+    let r_linear = rgba.r.powf(APCA.main_trc);
+    let g_linear = rgba.g.powf(APCA.main_trc);
+    let b_linear = rgba.b.powf(APCA.main_trc);
+    APCA.s_rco * r_linear + APCA.s_gco * g_linear + APCA.s_bco * b_linear
+}
+
+fn apca_contrast(text: Hsla, bg: Hsla) -> f32 {
+    let text_y = srgb_to_y(text);
+    let bg_y = srgb_to_y(bg);
+
+    let text_y = if text_y > APCA.blk_thrs {
+        text_y
+    } else {
+        text_y + (APCA.blk_thrs - text_y).powf(APCA.blk_clmp)
     };
-    0.2126 * linearize(rgba.r) + 0.7152 * linearize(rgba.g) + 0.0722 * linearize(rgba.b)
+    let bg_y = if bg_y > APCA.blk_thrs {
+        bg_y
+    } else {
+        bg_y + (APCA.blk_thrs - bg_y).powf(APCA.blk_clmp)
+    };
+
+    if (bg_y - text_y).abs() < APCA.delta_y_min {
+        return 0.0;
+    }
+
+    let (sapc, offset) = if bg_y > text_y {
+        let s = (bg_y.powf(APCA.norm_bg) - text_y.powf(APCA.norm_txt)) * APCA.scale_bow;
+        (s, APCA.lo_bow_offset)
+    } else {
+        let s = (bg_y.powf(APCA.rev_bg) - text_y.powf(APCA.rev_txt)) * APCA.scale_wob;
+        (s, -APCA.lo_wob_offset)
+    };
+
+    if sapc.abs() < APCA.lo_clip {
+        0.0
+    } else {
+        (sapc - offset) * 100.0
+    }
 }
 
-/// WCAG 2.0 contrast ratio between two relative luminances.
-fn contrast_ratio(l1: f32, l2: f32) -> f32 {
-    let (lighter, darker) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
-    (lighter + 0.05) / (darker + 0.05)
-}
-
-/// Adjust `fg` lightness so that the WCAG 2.0 contrast ratio against `bg`
-/// meets `min_ratio`. Returns `fg` unchanged if contrast is already sufficient.
-fn ensure_minimum_contrast(fg: Hsla, bg: Hsla, min_ratio: f32) -> Hsla {
-    let bg_lum = relative_luminance(bg);
-    let fg_lum = relative_luminance(fg);
-
-    if contrast_ratio(fg_lum, bg_lum) >= min_ratio {
+/// Adjust `fg` lightness using APCA so that perceptual contrast against `bg`
+/// meets `min_lc`. Returns `fg` unchanged if contrast is already sufficient.
+///
+/// Three-stage fallback matching Zed's approach:
+/// 1. Adjust lightness only (preserves hue + saturation)
+/// 2. Reduce saturation + adjust lightness
+/// 3. Fall back to black or white
+fn ensure_minimum_contrast(fg: Hsla, bg: Hsla, min_lc: f32) -> Hsla {
+    if min_lc <= 0.0 {
         return fg;
     }
 
-    // Lighten fg when bg is dark, darken when bg is light.
-    let lighten = bg_lum < 0.5;
-    let mut result = fg;
-    let (mut lo, mut hi) = if lighten {
-        (result.l, 1.0)
-    } else {
-        (0.0, result.l)
-    };
+    if apca_contrast(fg, bg).abs() >= min_lc {
+        return fg;
+    }
 
-    for _ in 0..16 {
-        let mid = (lo + hi) * 0.5;
-        result.l = mid;
-        let new_lum = relative_luminance(result);
-        if contrast_ratio(new_lum, bg_lum) >= min_ratio {
-            // Found sufficient contrast — try to stay closer to original
-            if lighten {
-                hi = mid;
-            } else {
-                lo = mid;
-            }
-        } else if lighten {
-            lo = mid;
-        } else {
-            hi = mid;
+    // Stage 1: adjust lightness only
+    let adjusted = adjust_lightness_for_apca(fg, bg, min_lc);
+    if apca_contrast(adjusted, bg).abs() >= min_lc {
+        return adjusted;
+    }
+
+    // Stage 2: reduce saturation + adjust lightness
+    for &sat_mult in &[0.8, 0.6, 0.4, 0.2, 0.0] {
+        let desat = Hsla { s: fg.s * sat_mult, ..fg };
+        let adjusted = adjust_lightness_for_apca(desat, bg, min_lc);
+        if apca_contrast(adjusted, bg).abs() >= min_lc {
+            return adjusted;
         }
     }
 
-    // Snap to the bound guaranteed to pass the contrast threshold.
-    result.l = if lighten { hi } else { lo };
-    result
+    // Stage 3: black or white
+    let black = Hsla { h: 0.0, s: 0.0, l: 0.0, a: fg.a };
+    let white = Hsla { h: 0.0, s: 0.0, l: 1.0, a: fg.a };
+    if apca_contrast(white, bg).abs() > apca_contrast(black, bg).abs() {
+        white
+    } else {
+        black
+    }
+}
+
+fn adjust_lightness_for_apca(fg: Hsla, bg: Hsla, min_lc: f32) -> Hsla {
+    let bg_lum = srgb_to_y(bg);
+    let should_darken = bg_lum > 0.5;
+
+    let (mut lo, mut hi) = if should_darken {
+        (0.0, fg.l)
+    } else {
+        (fg.l, 1.0)
+    };
+    let mut best_l = fg.l;
+
+    for _ in 0..20 {
+        let mid = (lo + hi) * 0.5;
+        let test = Hsla { l: mid, ..fg };
+        let contrast = apca_contrast(test, bg).abs();
+
+        if contrast >= min_lc {
+            best_l = mid;
+            if should_darken { lo = mid; } else { hi = mid; }
+        } else if should_darken {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+
+        if (contrast - min_lc).abs() < 1.0 {
+            best_l = mid;
+            break;
+        }
+    }
+
+    Hsla { l: best_l, ..fg }
 }
 
 /// Returns `true` for characters whose colors should be preserved exactly
@@ -345,6 +443,42 @@ struct LayoutRect {
     col: usize,
     num_cols: usize,
     color: Hsla,
+}
+
+/// A block/half-block character rendered as a filled quad instead of a font glyph.
+/// This eliminates subpixel gaps between adjacent block elements in pixel art (logos, etc.).
+struct BlockQuad {
+    line: i32,
+    col: usize,
+    num_cols: usize, // 2 for wide chars
+    color: Hsla,
+    /// Fractional coverage of the cell: (x_start, y_start, width, height) in 0.0..1.0
+    coverage: (f32, f32, f32, f32),
+}
+
+/// If `c` is a Unicode block element, return its fractional cell coverage (x, y, w, h).
+/// Returns None for characters that should be rendered as normal glyphs.
+fn block_char_coverage(c: char) -> Option<(f32, f32, f32, f32)> {
+    match c {
+        '▀' => Some((0.0, 0.0, 1.0, 0.5)),  // U+2580 Upper half
+        '▁' => Some((0.0, 7.0/8.0, 1.0, 1.0/8.0)), // U+2581 Lower 1/8
+        '▂' => Some((0.0, 6.0/8.0, 1.0, 2.0/8.0)), // U+2582 Lower 1/4
+        '▃' => Some((0.0, 5.0/8.0, 1.0, 3.0/8.0)), // U+2583 Lower 3/8
+        '▄' => Some((0.0, 0.5, 1.0, 0.5)),   // U+2584 Lower half
+        '▅' => Some((0.0, 3.0/8.0, 1.0, 5.0/8.0)), // U+2585 Lower 5/8
+        '▆' => Some((0.0, 2.0/8.0, 1.0, 6.0/8.0)), // U+2586 Lower 3/4
+        '▇' => Some((0.0, 1.0/8.0, 1.0, 7.0/8.0)), // U+2587 Lower 7/8
+        '█' => Some((0.0, 0.0, 1.0, 1.0)),   // U+2588 Full block
+        '▉' => Some((0.0, 0.0, 7.0/8.0, 1.0)), // U+2589 Left 7/8
+        '▊' => Some((0.0, 0.0, 6.0/8.0, 1.0)), // U+258A Left 3/4
+        '▋' => Some((0.0, 0.0, 5.0/8.0, 1.0)), // U+258B Left 5/8
+        '▌' => Some((0.0, 0.0, 0.5, 1.0)),   // U+258C Left half
+        '▍' => Some((0.0, 0.0, 3.0/8.0, 1.0)), // U+258D Left 3/8
+        '▎' => Some((0.0, 0.0, 2.0/8.0, 1.0)), // U+258E Left 1/4
+        '▏' => Some((0.0, 0.0, 1.0/8.0, 1.0)), // U+258F Left 1/8
+        '▐' => Some((0.5, 0.0, 0.5, 1.0)),   // U+2590 Right half
+        _ => None,
+    }
 }
 
 struct CursorInfo {
@@ -460,6 +594,7 @@ pub fn is_url_scheme_openable(uri: &str) -> bool {
 pub struct LayoutState {
     batched_runs: Vec<BatchedTextRun>,
     rects: Vec<LayoutRect>,
+    block_quads: Vec<BlockQuad>,
     selection_rects: Vec<LayoutRect>,
     search_rects: Vec<LayoutRect>,
     cursor: Option<CursorInfo>,
@@ -623,7 +758,7 @@ impl TerminalElement {
         let dims = Self::measure_cell(window, cx);
         let theme = crate::theme::active_theme();
         let background_color = theme.background;
-        let default_bg = background_color;
+        let ansi_background = theme.ansi_background;
 
         // Compute desired terminal grid size from pixel bounds (accounting for left gutter)
         let gutter = dims.cell_width;
@@ -753,6 +888,7 @@ impl TerminalElement {
 
         let mut batch = BatchAccumulator::new();
         let mut rects: Vec<LayoutRect> = Vec::new();
+        let mut block_quads: Vec<BlockQuad> = Vec::new();
         let mut current_rect: Option<LayoutRect> = None;
         let mut last_line: i32 = i32::MIN;
         let mut previous_cell_had_extras = false;
@@ -832,24 +968,28 @@ impl TerminalElement {
                 last_nondefault_is_powerline = false;
             }
 
-            // Compute colors
-            let mut fg = convert_color(*cell_fg, &theme);
-            let mut bg = convert_color(*cell_bg, &theme);
+            // Compute colors — INVERSE swap on raw ANSI tags, then tag-based
+            // default-background skip (Zed parity: structural check, not HSLA compare).
+            let (raw_fg, raw_bg) = if flags.contains(CellFlags::INVERSE) {
+                (*cell_bg, *cell_fg)
+            } else {
+                (*cell_fg, *cell_bg)
+            };
+            let is_default_bg =
+                matches!(raw_bg, AnsiColor::Named(NamedColor::Background));
 
-            // Handle inverse video
-            if flags.contains(CellFlags::INVERSE) {
-                std::mem::swap(&mut fg, &mut bg);
-            }
+            let mut fg = convert_color(raw_fg, &theme);
+            let bg = convert_color(raw_bg, &theme);
 
             // neverExtendBg: track Powerline/box-drawing at edges (US-003)
             let line_idx = point.line.0;
             if line_idx >= 0 && (line_idx as usize) < desired_rows {
                 // Left suppression: column 0 has a non-default bg AND a Powerline/box-drawing char
-                if point.column.0 == 0 && bg != default_bg && is_powerline_or_boxdraw(*c) {
+                if point.column.0 == 0 && !is_default_bg && is_powerline_or_boxdraw(*c) {
                     extend_line_flags[line_idx as usize].0 = false;
                 }
                 // Right suppression: track if current non-default-bg cell is Powerline
-                if bg != default_bg {
+                if !is_default_bg {
                     last_nondefault_is_powerline = is_powerline_or_boxdraw(*c);
                 }
             }
@@ -861,39 +1001,42 @@ impl TerminalElement {
 
             // Enforce minimum foreground/background contrast (skip decorative chars)
             if !is_decorative_character(*c) {
-                fg = ensure_minimum_contrast(fg, bg, MIN_CONTRAST_RATIO);
+                fg = ensure_minimum_contrast(fg, bg, MIN_APCA_CONTRAST);
             }
 
-            // Background rect — only for non-default backgrounds
+            // Background rect — paint for ALL cells. Default-bg cells use
+            // ansi_background (the theme's actual background) to contrast with the
+            // slightly darker widget fill, creating visible depth for TUI content.
             let cell_cols = if flags.contains(CellFlags::WIDE_CHAR) {
                 2
             } else {
                 1
             };
-            if bg != default_bg {
-                match &mut current_rect {
-                    Some(rect)
-                        if rect.line == point.line.0
-                            && rect.color == bg
-                            && rect.col + rect.num_cols == point.column.0 =>
-                    {
-                        rect.num_cols += cell_cols;
-                    }
-                    _ => {
-                        if let Some(rect) = current_rect.take() {
-                            rects.push(rect);
-                        }
-                        current_rect = Some(LayoutRect {
-                            line: point.line.0,
-                            num_lines: 1,
-                            col: point.column.0,
-                            num_cols: cell_cols,
-                            color: bg,
-                        });
-                    }
+            let cell_bg_color = if is_default_bg {
+                ansi_background
+            } else {
+                bg
+            };
+            match &mut current_rect {
+                Some(rect)
+                    if rect.line == point.line.0
+                        && rect.color == cell_bg_color
+                        && rect.col + rect.num_cols == point.column.0 =>
+                {
+                    rect.num_cols += cell_cols;
                 }
-            } else if let Some(rect) = current_rect.take() {
-                rects.push(rect);
+                _ => {
+                    if let Some(rect) = current_rect.take() {
+                        rects.push(rect);
+                    }
+                    current_rect = Some(LayoutRect {
+                        line: point.line.0,
+                        num_lines: 1,
+                        col: point.column.0,
+                        num_cols: cell_cols,
+                        color: cell_bg_color,
+                    });
+                }
             }
 
             // Skip space fillers following cells with zero-width extras (emoji sequences)
@@ -910,6 +1053,21 @@ impl TerminalElement {
             if c == ' ' || c == '\0' {
                 previous_cell_had_extras = has_extras;
                 batch.flush();
+                continue;
+            }
+
+            // Render block elements as filled quads instead of font glyphs
+            // to eliminate subpixel gaps between adjacent cells (pixel art, logos).
+            if let Some(coverage) = block_char_coverage(c) {
+                batch.flush();
+                block_quads.push(BlockQuad {
+                    line: point.line.0,
+                    col: point.column.0,
+                    num_cols: cell_cols,
+                    color: fg,
+                    coverage,
+                });
+                previous_cell_had_extras = false;
                 continue;
             }
 
@@ -1084,6 +1242,7 @@ impl TerminalElement {
         LayoutState {
             batched_runs: batch.runs,
             rects,
+            block_quads,
             selection_rects,
             search_rects,
             cursor: cursor_snapshot,
@@ -1307,9 +1466,11 @@ impl Element for TerminalElement {
             let widget_bottom = bounds.origin.y + bounds.size.height;
             let last_row = layout.desired_rows.saturating_sub(1) as i32;
             for rect in &layout.rects {
+                // Zed-parity positioning: floor(x), ceil(width), raw y, single line_height.
                 let mut x = (origin.x + cell_width * rect.col as f32).floor();
                 let mut y = origin.y + line_height * rect.line as f32;
-                let mut right = (origin.x + cell_width * (rect.col + rect.num_cols) as f32).ceil();
+                let w = (cell_width * rect.num_cols as f32).ceil();
+                let mut right = x + w;
                 let mut bottom = y + line_height * rect.num_lines as f32;
                 let last_rect_line = rect.line + rect.num_lines as i32 - 1;
 
@@ -1380,6 +1541,26 @@ impl Element for TerminalElement {
                     },
                 );
                 window.paint_quad(fill(rect_bounds, rect.color));
+            }
+
+            // 2c. Paint block element quads (pixel-perfect, no font glyph gaps)
+            for bq in &layout.block_quads {
+                let cx_start = origin.x + cell_width * bq.col as f32;
+                let cy_start = origin.y + line_height * bq.line as f32;
+                let cw = cell_width * bq.num_cols as f32;
+                let ch = line_height;
+                let (fx, fy, fw, fh) = bq.coverage;
+                let qx = (cx_start + cw * fx).floor();
+                let qy = cy_start + ch * fy;
+                let qw = (cw * fw).ceil();
+                let qh = ch * fh;
+                window.paint_quad(fill(
+                    Bounds::new(
+                        Point { x: qx, y: qy },
+                        gpui::Size { width: qw, height: qh },
+                    ),
+                    bq.color,
+                ));
             }
 
             // 3. Paint batched text runs
@@ -1774,6 +1955,7 @@ impl IntoElement for TerminalElement {
 fn convert_color(color: AnsiColor, theme: &crate::theme::TerminalTheme) -> Hsla {
     match color {
         AnsiColor::Named(name) => named_color(name, theme),
+        AnsiColor::Spec(rgb) if rgb.r == 0 && rgb.g == 0 && rgb.b == 0 => theme.black,
         AnsiColor::Spec(rgb) => rgb_to_hsla(rgb.r, rgb.g, rgb.b),
         AnsiColor::Indexed(i) => indexed_color(i, theme),
     }

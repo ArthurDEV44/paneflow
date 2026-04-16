@@ -79,7 +79,6 @@ pub fn to_esc_str(
             "backspace" => Some("\x7f"),
             "delete" => Some("\x1b[3~"),
             "insert" => Some("\x1b[2~"),
-            "space" => Some(" "),
             // Cursor keys: application mode (SS3) vs normal mode (CSI)
             "up" if app_cursor => Some("\x1bOA"),
             "down" if app_cursor => Some("\x1bOB"),

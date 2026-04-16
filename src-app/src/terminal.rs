@@ -1379,8 +1379,12 @@ impl TerminalView {
                 }
             }
         } else if let Some(key_char) = &keystroke.key_char {
-            // Printable character input — single allocation (String → Vec<u8>)
-            self.terminal.write_to_pty(key_char.as_bytes().to_vec());
+            // Printable character input — only write directly when the IME InputHandler
+            // is disabled (ALT_SCREEN). On the normal screen the InputHandler's
+            // replace_text_in_range() commits text to PTY; writing here too would double it.
+            if mode.contains(alacritty_terminal::term::TermMode::ALT_SCREEN) {
+                self.terminal.write_to_pty(key_char.as_bytes().to_vec());
+            }
         }
 
         #[cfg(debug_assertions)]
