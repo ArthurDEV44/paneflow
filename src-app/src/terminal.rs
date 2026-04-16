@@ -1653,19 +1653,26 @@ impl TerminalView {
         }
         self.selecting = false;
 
-        // Clear empty selections, write non-empty selections to primary clipboard
+        // Clear empty selections, or auto-copy non-empty selections (tmux-style):
+        // write to both PRIMARY (middle-click paste) and CLIPBOARD (Ctrl+V),
+        // then clear the selection so the disappearing highlight signals the copy.
         let mut term = self.terminal.term.lock();
-        if let Some(ref sel) = term.selection
+        let copied = if let Some(ref sel) = term.selection
             && sel.is_empty()
         {
             term.selection = None;
-        } else if let Some(text) = term.selection_to_string() {
-            drop(term);
-            cx.write_to_primary(ClipboardItem::new_string(text));
-            cx.notify();
-            return;
-        }
+            None
+        } else {
+            term.selection_to_string().inspect(|_| {
+                term.selection = None;
+            })
+        };
         drop(term);
+
+        if let Some(text) = copied {
+            cx.write_to_primary(ClipboardItem::new_string(text.clone()));
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
 
         cx.notify();
     }
@@ -2939,11 +2946,23 @@ impl Render for TerminalView {
             Vec::new()
         };
 
-        // Build copy mode cursor state for the element
+        // Build copy mode cursor state for the element. When a selection is active,
+        // also expose the anchor (selection start) so the element can render it as
+        // a distinct tmux-style marker.
         let copy_cursor_state = if self.copy_mode_active {
+            let (anchor_grid_line, anchor_col) = {
+                let term = self.terminal.term.lock();
+                term.selection
+                    .as_ref()
+                    .and_then(|sel| sel.to_range(&term))
+                    .map(|range| (Some(range.start.line.0), range.start.column.0))
+                    .unwrap_or((None, 0))
+            };
             Some(crate::terminal_element::CopyModeCursorState {
                 grid_line: self.copy_cursor.line.0,
                 col: self.copy_cursor.column.0,
+                anchor_grid_line,
+                anchor_col,
             })
         } else {
             None
