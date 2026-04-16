@@ -9,8 +9,8 @@
 //! Tab bar UI is modeled after Zed's tab bar design.
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    Render, SharedString, Styled, Window, div, prelude::*, px, rgb, svg,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, Render, SharedString, Styled, Window, div, prelude::*, px, rgb, svg,
 };
 
 use crate::terminal::{TerminalEvent, TerminalView};
@@ -235,7 +235,20 @@ impl Pane {
             .bg(theme.title_bar_background);
 
         // Scrollable tab area (Zed pattern: overflow_x_scroll on inner row)
-        let tabs_area = div().relative().flex_1().h_full().overflow_x_hidden();
+        let tabs_area = div()
+            .id("pane-tabs-area")
+            .relative()
+            .flex_1()
+            .h_full()
+            .overflow_x_hidden()
+            .on_click(cx.listener(|this, e: &ClickEvent, _window, cx| {
+                if matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2) {
+                    let ws_id = this.workspace_id;
+                    let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
+                    this.add_tab(terminal, cx);
+                    cx.notify();
+                }
+            }));
 
         let mut tabs_row = div()
             .id("pane-tabs-scroll")
@@ -325,6 +338,7 @@ impl Pane {
                         this.focus_handle(cx).focus(window, cx);
                         cx.notify();
                     }
+                    cx.stop_propagation();
                 }))
                 .child(div().w(px(CLOSE_SIZE)).flex_shrink_0())
                 .child(
