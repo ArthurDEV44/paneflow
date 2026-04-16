@@ -373,22 +373,32 @@ impl PaneFlowApp {
     ) {
         match event {
             pane::PaneEvent::Remove => {
-                // Remove this pane from the split tree of the active workspace
-                if let Some(ws) = self.active_workspace_mut()
-                    && let Some(root) = ws.root.take()
-                {
-                    ws.root = root.remove_pane(&pane);
+                // Find the workspace that owns this pane (not necessarily the
+                // active one — shells can exit in background workspaces).
+                let ws_idx = self.workspaces.iter().position(|ws| {
+                    ws.root
+                        .as_ref()
+                        .is_some_and(|r| r.collect_leaves().iter().any(|p| *p == pane))
+                });
+                let Some(ws_idx) = ws_idx else {
+                    return;
+                };
+
+                // Remove this pane from the split tree
+                if let Some(root) = self.workspaces[ws_idx].root.take() {
+                    self.workspaces[ws_idx].root = root.remove_pane(&pane);
                 }
-                // Safety: never leave a workspace without a pane
-                if let Some(ws) = self.active_workspace()
-                    && ws.root.is_none()
-                {
-                    let ws_id = ws.id;
-                    let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
+
+                // Never leave a workspace without a pane — respawn at the
+                // workspace's root cwd so the user returns to the right folder.
+                if self.workspaces[ws_idx].root.is_none() {
+                    let ws_id = self.workspaces[ws_idx].id;
+                    let cwd = std::path::PathBuf::from(&self.workspaces[ws_idx].cwd);
+                    let terminal =
+                        cx.new(|cx| TerminalView::with_cwd(ws_id, Some(cwd), None, cx));
+                    cx.subscribe(&terminal, Self::handle_terminal_event).detach();
                     let new_pane = self.create_pane(terminal, ws_id, cx);
-                    if let Some(ws) = self.active_workspace_mut() {
-                        ws.root = Some(LayoutTree::Leaf(new_pane));
-                    }
+                    self.workspaces[ws_idx].root = Some(LayoutTree::Leaf(new_pane));
                 }
                 self.save_session(cx);
                 cx.notify();
@@ -703,9 +713,10 @@ impl PaneFlowApp {
                         if let Some(ref dir) = old_git_dir {
                             app.unwatch_git_dir(dir);
                         }
-                        // Update workspace
+                        // Update workspace git tracking (cwd stays fixed at creation —
+                        // it represents the workspace's root folder and must not drift
+                        // when the user `cd`s inside the shell).
                         let ws = &mut app.workspaces[ws_idx];
-                        ws.cwd = new_cwd.clone();
                         ws.git_dir = git_dir.clone();
                         ws.git_branch = branch.clone();
                         ws.is_git_repo = is_repo;
@@ -1917,22 +1928,21 @@ impl PaneFlowApp {
             }
         }
 
-        // Destroy workspace if its root is now empty (last pane was closed)
+        // Never destroy a workspace when its last pane closes — respawn a
+        // fresh terminal at the workspace's root cwd. Workspaces are only
+        // removed via the explicit "Close workspace" action.
         if let Some(ws) = self.active_workspace()
             && ws.root.is_none()
         {
             let ws_id = ws.id;
-            if self.workspaces.len() > 1 {
-                self.close_workspace_at(self.active_idx, window, cx);
-            } else {
-                // Last workspace: spawn a fresh pane instead of destroying
-                let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
-                let new_pane = self.create_pane(terminal, ws_id, cx);
-                if let Some(ws) = self.active_workspace_mut() {
-                    ws.root = Some(LayoutTree::Leaf(new_pane));
-                }
-                self.workspaces[self.active_idx].focus_first(window, cx);
+            let cwd = std::path::PathBuf::from(&ws.cwd);
+            let terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, Some(cwd), None, cx));
+            cx.subscribe(&terminal, Self::handle_terminal_event).detach();
+            let new_pane = self.create_pane(terminal, ws_id, cx);
+            if let Some(ws) = self.active_workspace_mut() {
+                ws.root = Some(LayoutTree::Leaf(new_pane));
             }
+            self.workspaces[self.active_idx].focus_first(window, cx);
         }
 
         self.save_session(cx);
