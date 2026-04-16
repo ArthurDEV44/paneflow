@@ -889,10 +889,8 @@ impl TerminalElement {
                 .map(|ic| {
                     let zw = ic.cell.zerowidth().map(|chars| chars.to_vec());
                     let hyperlink = ic.cell.hyperlink();
-                    let viewport_point = AlacPoint::new(
-                        GridLine(ic.point.line.0 + disp_offset_i),
-                        ic.point.column,
-                    );
+                    let viewport_point =
+                        AlacPoint::new(GridLine(ic.point.line.0 + disp_offset_i), ic.point.column);
                     (
                         viewport_point,
                         ic.cell.c,
@@ -1936,8 +1934,7 @@ impl Element for TerminalElement {
                     },
                 );
                 window.paint_quad(
-                    outline(anchor_bounds, anchor.color, BorderStyle::Solid)
-                        .border_widths(1.5),
+                    outline(anchor_bounds, anchor.color, BorderStyle::Solid).border_widths(1.5),
                 );
             }
 
