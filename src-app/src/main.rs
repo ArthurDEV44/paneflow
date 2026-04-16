@@ -19,6 +19,7 @@ mod terminal;
 mod terminal_element;
 pub mod theme;
 mod title_bar;
+mod update_checker;
 mod workspace;
 
 use alacritty_terminal::grid::Dimensions;
@@ -283,6 +284,12 @@ struct PaneFlowApp {
     swap_source: Option<Entity<crate::pane::Pane>>,
     /// LIFO stack of recently closed panes for undo-close (US-014).
     closed_panes: Vec<ClosedPaneRecord>,
+    /// Whether the "About PaneFlow" dialog is visible.
+    show_about_dialog: bool,
+    /// Shared slot for the background update checker result.
+    pending_update: update_checker::SharedUpdateSlot,
+    /// Resolved update status (set once the background check completes).
+    update_status: Option<update_checker::UpdateStatus>,
 }
 
 /// Global flag for swap mode, checked by TerminalView to intercept Escape.
@@ -749,6 +756,9 @@ impl PaneFlowApp {
             log::warn!("config watcher failed to start: {e}; config hot-reload disabled");
         }
 
+        // Background update check (startup-only, non-blocking)
+        let pending_update = update_checker::spawn_check();
+
         // Restore session or create a single default workspace
         let (workspaces, active_idx) = if let Some(session) = Self::load_session() {
             log::info!(
@@ -927,6 +937,7 @@ impl PaneFlowApp {
                         this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
                             app.process_ipc_requests(cx);
                             app.process_config_changes(cx);
+                            app.process_update_check(cx);
                         })
                     });
                     if result.is_err() {
@@ -1063,6 +1074,9 @@ impl PaneFlowApp {
             loader_anim_running: false,
             swap_source: None,
             closed_panes: Vec::new(),
+            show_about_dialog: false,
+            pending_update,
+            update_status: None,
         }
     }
 
@@ -1248,6 +1262,24 @@ impl PaneFlowApp {
             keybindings::apply_keybindings(cx, &config.shortcuts);
             self.effective_shortcuts = keybindings::effective_shortcuts(&config.shortcuts);
             crate::theme::invalidate_theme_cache();
+            cx.notify();
+        }
+    }
+
+    /// Pick up the background update check result (runs once, then stops polling).
+    fn process_update_check(&mut self, cx: &mut Context<Self>) {
+        if self.update_status.is_some() {
+            return; // Already resolved
+        }
+        let status = self
+            .pending_update
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(status) = status
+            && !matches!(status, update_checker::UpdateStatus::Checking)
+        {
+            self.update_status = Some(status);
             cx.notify();
         }
     }
@@ -2895,6 +2927,7 @@ impl PaneFlowApp {
                     .text_color(ui.text)
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .truncate()
                     .child(title)
             };
             let title_row = div()
@@ -2902,6 +2935,7 @@ impl PaneFlowApp {
                 .flex_row()
                 .items_center()
                 .justify_between()
+                .min_w_0()
                 .child(title_el);
 
             card = card.child(title_row);
@@ -3708,9 +3742,19 @@ impl Render for PaneFlowApp {
 
         // Update title bar with current workspace name
         let ws_name = self.active_workspace().map(|ws| ws.title.clone());
+        let update_info = match &self.update_status {
+            Some(update_checker::UpdateStatus::Available { version, url }) => {
+                Some(title_bar::UpdateInfo {
+                    version: version.clone(),
+                    url: url.clone(),
+                })
+            }
+            _ => None,
+        };
         self.title_bar.update(cx, |tb, _| {
             tb.workspace_name = ws_name;
             tb.sidebar_width = px(SIDEBAR_WIDTH);
+            tb.update_available = update_info;
         });
 
         // --- CSD resize backdrop ---
@@ -3888,6 +3932,18 @@ impl Render for PaneFlowApp {
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                         .child(self.render_context_menu_item(
+                            "title-bar-menu-about".into(),
+                            "About PaneFlow",
+                            None,
+                            ui,
+                            cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.title_bar_menu_open = None;
+                                this.show_about_dialog = true;
+                                cx.notify();
+                                cx.stop_propagation();
+                            }),
+                        ))
+                        .child(self.render_context_menu_item(
                             "title-bar-menu-settings".into(),
                             "Settings",
                             None,
@@ -3899,6 +3955,79 @@ impl Render for PaneFlowApp {
                         )),
                 )
                 .priority(3),
+            );
+        }
+
+        if self.show_about_dialog {
+            let version = env!("CARGO_PKG_VERSION");
+            app_content = app_content.child(
+                deferred(
+                    div()
+                        .id("about-dialog-backdrop")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(gpui::hsla(0., 0., 0., 0.5))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.show_about_dialog = false;
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .id("about-dialog")
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .gap(px(16.))
+                                .w(px(300.))
+                                .px(px(24.))
+                                .py(px(24.))
+                                .bg(ui.overlay)
+                                .border_1()
+                                .border_color(ui.border)
+                                .rounded(px(12.))
+                                .shadow_lg()
+                                .child(
+                                    div()
+                                        .text_color(ui.text)
+                                        .text_size(px(16.))
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .child("PaneFlow"),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(ui.muted)
+                                        .text_size(px(13.))
+                                        .child(format!("Version {version}")),
+                                )
+                                .child(
+                                    div()
+                                        .id("about-dialog-ok")
+                                        .px(px(24.))
+                                        .py(px(6.))
+                                        .mt(px(4.))
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .bg(ui.accent)
+                                        .text_color(ui.base)
+                                        .text_size(px(13.))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .hover(|s| s.opacity(0.85))
+                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                            this.show_about_dialog = false;
+                                            cx.notify();
+                                        }))
+                                        .child("Ok"),
+                                ),
+                        ),
+                )
+                .priority(10),
             );
         }
 
@@ -3921,12 +4050,22 @@ impl Render for PaneFlowApp {
                 ),
             ];
 
+            // Estimated menu height: 7 items × 25px + 2 separators × 7px + 8px padding
+            let menu_height = px(203.);
+            let win_h = window.window_bounds().get_bounds().size.height;
+            // Flip: if not enough space below the click, show the menu above it
+            let menu_y = if menu.position.y + menu_height > win_h {
+                (menu.position.y - menu_height).max(px(0.))
+            } else {
+                menu.position.y
+            };
+
             let mut context_menu = div()
                 .id("workspace-context-menu")
                 .occlude()
                 .absolute()
                 .left(menu.position.x)
-                .top(menu.position.y)
+                .top(menu_y)
                 .w(px(248.))
                 .bg(ui.overlay)
                 .border_1()

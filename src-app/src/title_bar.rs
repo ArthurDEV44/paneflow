@@ -10,6 +10,14 @@ pub struct TitleBar {
     should_move: bool,
     pub workspace_name: Option<String>,
     pub sidebar_width: Pixels,
+    /// Set by PaneFlowApp when a newer version is detected.
+    pub update_available: Option<UpdateInfo>,
+}
+
+#[derive(Clone)]
+pub struct UpdateInfo {
+    pub version: String,
+    pub url: String,
 }
 
 impl TitleBar {
@@ -18,6 +26,7 @@ impl TitleBar {
             should_move: false,
             workspace_name: None,
             sidebar_width: px(220.),
+            update_available: None,
         }
     }
 }
@@ -98,6 +107,29 @@ impl Render for TitleBar {
         // --- Right section: spacer (fills remaining space for drag area) ---
         let content = div().flex_1().flex().flex_row().items_center();
 
+        // --- Update available pill ---
+        let update_pill = self.update_available.clone().map(|info| {
+            let url = info.url.clone();
+            div()
+                .id("update-pill")
+                .ml_auto()
+                .mr_2()
+                .px_2()
+                .py(px(2.))
+                .rounded(px(10.))
+                .bg(ui.accent)
+                .text_color(ui.base)
+                .text_size(px(11.))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .cursor_pointer()
+                .hover(|s| s.opacity(0.85))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, _, _cx| {
+                    let _ = open::that(&url);
+                })
+                .child(format!("v{} available", info.version))
+        });
+
         let csd_rounding = px(10.);
 
         let mut bar = div()
@@ -166,6 +198,7 @@ impl Render for TitleBar {
             .children(left_menu_button)
             .child(brand)
             .child(content)
+            .children(update_pill)
             .children(right_controls)
             .children(right_menu_button)
             .child(
