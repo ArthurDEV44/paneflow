@@ -14,10 +14,15 @@ fi
 
 echo "Installing PaneFlow v$("$BINARY" --version | awk '{print $2}')..."
 
-# Install binary
+# Install binary atomically — stage to a sibling temp path then `mv`
+# (rename()), which swaps the inode. A direct `cp` over ~/.local/bin/paneflow
+# fails with ETXTBSY ("Text file busy") when the target is still running.
 mkdir -p "$HOME/.local/bin"
-cp "$BINARY" "$HOME/.local/bin/paneflow"
-chmod +x "$HOME/.local/bin/paneflow"
+TARGET="$HOME/.local/bin/paneflow"
+STAGING="$TARGET.new"
+cp "$BINARY" "$STAGING"
+chmod +x "$STAGING"
+mv -f "$STAGING" "$TARGET"
 echo "  Binary  → ~/.local/bin/paneflow"
 
 # Install desktop entry (patch Exec to use full path)
