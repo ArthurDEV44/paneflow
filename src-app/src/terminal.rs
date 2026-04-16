@@ -990,6 +990,11 @@ pub struct TerminalView {
     ctrl_hovered_link: Option<crate::terminal_element::HyperlinkZone>,
     /// IME preedit text (in-progress composition). Empty when no composition active.
     ime_marked_text: String,
+    /// Gate for clearing pre-resize shell startup content on first render.
+    /// The PTY is spawned before the first `build_layout()` measures the actual
+    /// window dimensions, so shell init bytes land in a 120×40 grid. After the
+    /// first resize we clear the grid so those garbled bytes don't appear.
+    needs_initial_clear: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TerminalView {
@@ -1005,9 +1010,27 @@ impl TerminalView {
     ) -> Self {
         let surface_id = cx.entity_id().as_u64();
         let backend = PortablePtyBackend;
-        let mut terminal =
-            TerminalState::new(&backend, cwd, workspace_id, surface_id, initial_size)
-                .expect("Failed to create terminal");
+        let mut terminal = match TerminalState::new(
+            &backend,
+            cwd,
+            workspace_id,
+            surface_id,
+            initial_size,
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                log::error!("PTY creation failed: {e:#}");
+                eprintln!(
+                    "Error: Failed to create terminal PTY.\n\
+                     Possible causes:\n\
+                     \x20 - /dev/pts exhausted (too many PTY sessions)\n\
+                     \x20 - Shell not found (check default_shell in config or $SHELL)\n\
+                     \x20 - Permission denied on /dev/ptmx\n\n\
+                     Underlying error: {e:#}"
+                );
+                panic!("PTY creation failed: {e:#}");
+            }
+        };
         let focus_handle = cx.focus_handle();
 
         // Event batch coalescing (Zed pattern):
@@ -1265,6 +1288,7 @@ impl TerminalView {
             hovered_cell: None,
             ctrl_hovered_link: None,
             ime_marked_text: String::new(),
+            needs_initial_clear: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -2955,6 +2979,7 @@ impl Render for TerminalView {
             self.ime_marked_text.clone(),
             self.focus_handle.clone(),
             cx.entity().clone(),
+            self.needs_initial_clear.clone(),
             #[cfg(debug_assertions)]
             keystroke_at,
         );

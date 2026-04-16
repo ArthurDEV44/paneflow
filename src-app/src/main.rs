@@ -376,7 +376,7 @@ impl PaneFlowApp {
                 if let Some(ws) = self.active_workspace()
                     && ws.root.is_none()
                 {
-                    let ws_id = self.active_workspace().unwrap().id;
+                    let ws_id = ws.id;
                     let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
                     let new_pane = self.create_pane(terminal, ws_id, cx);
                     if let Some(ws) = self.active_workspace_mut() {
@@ -1430,10 +1430,10 @@ impl PaneFlowApp {
                 let Some(root) = &ws.root else {
                     return serde_json::json!({"error": "No active workspace"});
                 };
+                let ws_id = ws.id;
                 if root.leaf_count() >= MAX_PANES {
                     return serde_json::json!({"error": "Maximum pane count reached"});
                 }
-                let ws_id = self.active_workspace().unwrap().id;
                 let new_terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
                 let new_pane = self.create_pane(new_terminal, ws_id, cx);
                 let Some(ws) = self.active_workspace_mut() else {
@@ -1890,11 +1890,11 @@ impl PaneFlowApp {
         if let Some(ws) = self.active_workspace()
             && ws.root.is_none()
         {
+            let ws_id = ws.id;
             if self.workspaces.len() > 1 {
                 self.close_workspace_at(self.active_idx, window, cx);
             } else {
                 // Last workspace: spawn a fresh pane instead of destroying
-                let ws_id = self.active_workspace().unwrap().id;
                 let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
                 let new_pane = self.create_pane(terminal, ws_id, cx);
                 if let Some(ws) = self.active_workspace_mut() {
@@ -2189,7 +2189,7 @@ impl PaneFlowApp {
             && let Some(root) = &ws.root
             && let Some(pane) = root.focused_pane(window, cx)
         {
-            let ws_id = self.active_workspace().unwrap().id;
+            let ws_id = ws.id;
             let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
             cx.subscribe(&terminal, Self::handle_terminal_event)
                 .detach();
@@ -4129,6 +4129,39 @@ impl Render for PaneFlowApp {
 // ---------------------------------------------------------------------------
 
 fn main() {
+    // Handle --help and --version before initializing GPUI
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "PaneFlow {version} — GPU-accelerated terminal multiplexer\n\
+             \n\
+             Usage: paneflow [OPTIONS]\n\
+             \n\
+             Options:\n\
+             \x20 -h, --help       Print this help message\n\
+             \x20 -v, --version    Print version\n\
+             \n\
+             Configuration: ~/.config/paneflow/paneflow.json\n\
+             IPC socket:    $XDG_RUNTIME_DIR/paneflow/paneflow.sock\n\
+             \n\
+             Keybindings:\n\
+             \x20 Ctrl+Shift+D/E   Split horizontal/vertical\n\
+             \x20 Ctrl+Shift+W     Close pane\n\
+             \x20 Alt+Arrow        Focus adjacent pane\n\
+             \x20 Ctrl+Shift+N     New workspace\n\
+             \x20 Ctrl+Tab         Next workspace\n\
+             \x20 Ctrl+1-9         Switch to workspace N\n\
+             \n\
+             https://github.com/ArthurDEV44/paneflow",
+            version = env!("CARGO_PKG_VERSION")
+        );
+        return;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-v") {
+        println!("paneflow {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
         "info,wgpu_hal=off,wgpu_core=warn,naga=warn,zbus=warn,tracing::span=warn",
     ))

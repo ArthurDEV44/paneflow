@@ -672,6 +672,8 @@ pub struct TerminalElement {
     focus_handle: gpui::FocusHandle,
     /// Terminal view entity for IME callbacks.
     terminal_view: gpui::Entity<crate::terminal::TerminalView>,
+    /// Gate for clearing pre-resize shell startup content on first render.
+    needs_initial_clear: Arc<std::sync::atomic::AtomicBool>,
     /// Timestamp of the keystroke that triggered this render, for latency measurement.
     #[cfg(debug_assertions)]
     last_keystroke_at: Option<std::time::Instant>,
@@ -694,6 +696,7 @@ impl TerminalElement {
         ime_marked_text: String,
         focus_handle: gpui::FocusHandle,
         terminal_view: gpui::Entity<crate::terminal::TerminalView>,
+        needs_initial_clear: Arc<std::sync::atomic::AtomicBool>,
         #[cfg(debug_assertions)] last_keystroke_at: Option<std::time::Instant>,
     ) -> Self {
         Self {
@@ -711,6 +714,7 @@ impl TerminalElement {
             ime_marked_text,
             focus_handle,
             terminal_view,
+            needs_initial_clear,
             #[cfg(debug_assertions)]
             last_keystroke_at,
         }
@@ -796,6 +800,16 @@ impl TerminalElement {
                     cell_width: dims.cell_width.as_f32() as u16,
                     cell_height: dims.line_height.as_f32() as u16,
                 }));
+            }
+            // On the very first resize, clear any shell startup content that
+            // landed in the grid before we knew the actual window dimensions.
+            // The shell receives SIGWINCH and redraws its prompt at the
+            // correct width, so nothing visible is lost.
+            if self
+                .needs_initial_clear
+                .swap(false, std::sync::atomic::Ordering::Relaxed)
+            {
+                term.grid_mut().reset();
             }
             let content = term.renderable_content();
             let sel_range = content.selection.as_ref().map(|sel| SelectionRange {

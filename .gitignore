@@ -1,17 +1,6 @@
 # Rust
 /target/
 **/*.rs.bk
-Cargo.lock
-
-# Node
-node_modules/
-dist/
-.output/
-
-# Tauri
-/src-tauri/target/
-/src-tauri/WixTools/
-/src-tauri/gen/
 
 # IDE
 .idea/
@@ -29,6 +18,8 @@ Thumbs.db
 .env.*
 !.env.example
 
+# Logs
+*.log
+
 # Local development artifacts
 .codex
-ai_debug.log
