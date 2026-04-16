@@ -1827,10 +1827,10 @@ impl TerminalView {
         }
         self.scroll_remainder -= lines as f32;
 
-        // Negate: positive pixel delta = scroll down, but AlacScroll::Delta
-        // positive = scroll toward history (up)
+        // Positive wheel delta means scrolling up (toward history in natural-scroll
+        // convention), which matches AlacScroll::Delta positive = scroll toward history.
         let mut term = self.terminal.term.lock();
-        term.scroll_display(AlacScroll::Delta(-lines));
+        term.scroll_display(AlacScroll::Delta(lines));
         self.terminal.dirty = true;
         drop(term);
 

@@ -9,6 +9,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use alacritty_terminal::event::WindowSize;
 use alacritty_terminal::event_loop::Msg;
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Line as GridLine, Point as AlacPoint};
 use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
@@ -870,13 +871,22 @@ impl TerminalElement {
                 };
             let disp_offset = content.display_offset;
             let hist_size = term.history_size();
+            // Transform grid-line coords (where scrollback rows are negative) into
+            // viewport-line coords so the rest of the paint pipeline — culling,
+            // Y positioning, hyperlink zones, batching — all speak the same
+            // coordinate system as the cursor and search-highlight code.
+            let disp_offset_i = disp_offset as i32;
             let cells: Vec<_> = content
                 .display_iter
                 .map(|ic| {
                     let zw = ic.cell.zerowidth().map(|chars| chars.to_vec());
                     let hyperlink = ic.cell.hyperlink();
+                    let viewport_point = AlacPoint::new(
+                        GridLine(ic.point.line.0 + disp_offset_i),
+                        ic.point.column,
+                    );
                     (
-                        ic.point,
+                        viewport_point,
                         ic.cell.c,
                         ic.cell.fg,
                         ic.cell.bg,
@@ -1161,34 +1171,38 @@ impl TerminalElement {
             extend_line_flags[last_line as usize].1 = false;
         }
 
-        // Build selection highlight rects from the SelectionRange
+        // Build selection highlight rects from the SelectionRange.
+        // SelectionRange carries alacritty grid-line coords (scrollback = negative);
+        // convert to viewport-line coords to match the cell coordinate system.
         let mut selection_rects = Vec::new();
         if let Some(sel) = &selection_range {
-            let start = sel.start;
-            let end = sel.end;
+            let start_line = sel.start.line.0 + display_offset as i32;
+            let end_line = sel.end.line.0 + display_offset as i32;
+            let start_col = sel.start.column.0;
+            let end_col = sel.end.column.0;
             let num_cols = desired_cols.max(1);
 
-            if start.line == end.line {
+            if start_line == end_line {
                 // Single-line selection
                 selection_rects.push(LayoutRect {
-                    line: start.line.0,
+                    line: start_line,
                     num_lines: 1,
-                    col: start.column.0,
-                    num_cols: end.column.0.saturating_sub(start.column.0) + 1,
+                    col: start_col,
+                    num_cols: end_col.saturating_sub(start_col) + 1,
                     color: selection_color,
                 });
             } else {
                 // Multi-line: first line from start.col to end of line
                 selection_rects.push(LayoutRect {
-                    line: start.line.0,
+                    line: start_line,
                     num_lines: 1,
-                    col: start.column.0,
-                    num_cols: num_cols.saturating_sub(start.column.0),
+                    col: start_col,
+                    num_cols: num_cols.saturating_sub(start_col),
                     color: selection_color,
                 });
                 // Middle full lines
-                let mut line = start.line.0 + 1;
-                while line < end.line.0 {
+                let mut line = start_line + 1;
+                while line < end_line {
                     selection_rects.push(LayoutRect {
                         line,
                         num_lines: 1,
@@ -1200,10 +1214,10 @@ impl TerminalElement {
                 }
                 // Last line from col 0 to end.col
                 selection_rects.push(LayoutRect {
-                    line: end.line.0,
+                    line: end_line,
                     num_lines: 1,
                     col: 0,
-                    num_cols: end.column.0 + 1,
+                    num_cols: end_col + 1,
                     color: selection_color,
                 });
             }
@@ -1536,8 +1550,7 @@ impl Element for TerminalElement {
                 window.paint_quad(fill(rect_bounds, rect.color));
             }
 
-            // 2b. Paint selection highlight rects (pixel-aligned, rounded corners)
-            let selection_corner_radius = line_height * 0.15;
+            // 2b. Paint selection highlight rects (pixel-aligned, square corners)
             for rect in &layout.selection_rects {
                 let x = (origin.x + cell_width * rect.col as f32).floor();
                 let y = origin.y + line_height * rect.line as f32;
@@ -1549,9 +1562,7 @@ impl Element for TerminalElement {
                         height: line_height,
                     },
                 );
-                window.paint_quad(
-                    fill(rect_bounds, rect.color).corner_radii(selection_corner_radius),
-                );
+                window.paint_quad(fill(rect_bounds, rect.color));
             }
 
             // 2c. Paint search match highlight rects
