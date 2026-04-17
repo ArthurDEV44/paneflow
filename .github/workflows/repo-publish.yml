@@ -130,7 +130,7 @@ jobs:
           mkdir -p ./assets
           # `gh release download` fetches matching assets from the tagged
           # release. `$TAG` and `$REPO` come from env (set via `env:`)
-          # rather than inlined `${{ … }}` expressions so a crafted tag
+          # rather than inlined `${{ ... }}` expressions so a crafted tag
           # can never be shell-interpreted as a command (injection-hardening).
           gh release download "$TAG" \
             --repo "$REPO" \
@@ -186,7 +186,7 @@ jobs:
           # silent security regression. Signing a throwaway payload
           # has no key-metadata side effect.
           #
-          # `--passphrase-file <(…)` uses bash process substitution to
+          # `--passphrase-file <(...)` uses bash process substitution to
           # give gpg a transient FD backed by the passphrase. This
           # avoids (a) leaking the passphrase via `/proc/<pid>/cmdline`
           # as with `--passphrase "$VAR"`, and (b) the stdin-collision
@@ -255,7 +255,7 @@ jobs:
           # `repo_gpgcheck=1` verify this signature before trusting the
           # metadata.
           #
-          # Use `--passphrase-file <(…)` (process-substituted FD) rather
+          # Use `--passphrase-file <(...)` (process-substituted FD) rather
           # than `--passphrase "$VAR"` so the passphrase never appears
           # in `/proc/<pid>/cmdline`. Consistent with the reprepro
           # priming step above.
@@ -273,7 +273,7 @@ jobs:
         run: |
           set -euo pipefail
           # Publish the public key at the repo root so clients can do
-          # `curl https://pkg.paneflow.dev/gpg | gpg --dearmor …`. The
+          # `curl https://pkg.paneflow.dev/gpg | gpg --dearmor ...`. The
           # ASCII-armored format is what apt's `signed-by` trust anchor
           # and dnf's `gpgkey=` expect.
           gpg --armor --export "$GPG_KEY_ID" > ./staging/gpg

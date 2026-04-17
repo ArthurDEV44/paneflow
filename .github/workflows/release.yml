@@ -99,7 +99,7 @@ jobs:
         # --target pins the test binary to the matrix-leg triple. On today's
         # native runners the host and target match (so the flag is
         # effectively a no-op), but declaring it explicitly keeps the step
-        # consistent with `cargo build --release --target …` below and
+        # consistent with `cargo build --release --target ...` below and
         # future-proofs against anyone introducing a `cross`-based leg.
         run: cargo test --workspace --target ${{ matrix.target }}
 
@@ -235,8 +235,8 @@ jobs:
           #
           # Passphrase handling: rpmsign invokes `%__gpg_sign_cmd` via
           # `/bin/sh -c`, which on Ubuntu is `dash` — and dash does NOT
-          # support bash process substitution `<(…)`. So we can't inline
-          # `--passphrase-file <(printf …)` into the macro. Instead we
+          # support bash process substitution `<(...)`. So we can't inline
+          # `--passphrase-file <(printf ...)` into the macro. Instead we
           # write the passphrase to a private 0600 temp file, reference
           # that path from the macro, and `trap` its cleanup. The temp
           # file is on the runner's ephemeral tmpfs — same blast radius
@@ -310,7 +310,7 @@ jobs:
           # non-zero otherwise. Verbose output is tee'd to a log for CI
           # debugging but is NOT grepped — the output format varies
           # across versions (modern rpm ≥4.17 emits "Header V4 RSA/SHA256
-          # Signature, key ID …: OK" while older rpm emits "pgp md5
+          # Signature, key ID ...: OK" while older rpm emits "pgp md5
           # OK"; dpkg-sig keeps GOODSIG stable but why couple to strings
           # when the exit code is canonical?).
           #
