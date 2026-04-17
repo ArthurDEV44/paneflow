@@ -1,7 +1,15 @@
 [package]
 name = "paneflow-app"
-version = "0.1.7"
+version.workspace = true
 edition = "2024"
+authors.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../README.md"
 
 [[bin]]
 name = "paneflow"
@@ -41,6 +49,14 @@ regex = "1"
 open = "5"
 ureq = { version = "3", features = ["json"] }
 semver = "1"
+# Resolve `appimageupdatetool` on $PATH before falling back to download (US-010).
+which = "8"
+# tar.gz self-update: SHA-256 verification + in-process extraction (US-011).
+# The sync `tar` crate guards against absolute paths and `..` traversal by
+# default, so we avoid shelling out to /bin/tar.
+sha2 = "0.11"
+tar = "0.4"
+flate2 = "1"
 
 # Linux: enable Wayland + X11 display backends for gpui_platform
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -49,3 +65,100 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "0b984b5a
 [dev-dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868", features = ["test-support"] }
 tempfile = "3"
+
+# Debian packaging (US-003) — explicit deps, never `$auto` (cargo-deb issue #170).
+# Build: cargo deb -p paneflow-app --target x86_64-unknown-linux-gnu
+[package.metadata.deb]
+name = "paneflow"
+maintainer = "Arthur Jean <arthur.jean@strivex.fr>"
+copyright = "2025 Arthur Jean"
+license-file = ["../LICENSE", "0"]
+changelog = "../debian/changelog"
+section = "utils"
+priority = "optional"
+revision = "1"
+# Debian maintainer scripts: `packaging/debian/` contains `postinst` (wires
+# the pkg.paneflow.dev apt source on first install; US-016). The directory
+# path is resolved relative to THIS Cargo.toml (cargo-deb convention —
+# differs from cargo-generate-rpm below, which resolves relative to the
+# workspace root). cargo-deb auto-sets 755 on all control scripts.
+maintainer-scripts = "../packaging/debian"
+depends = "libc6, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libx11-6, libvulkan1, libfontconfig1, libfreetype6"
+extended-description = """\
+PaneFlow is a GPU-accelerated terminal multiplexer for Linux that splits the
+terminal into panes and workspaces rendered natively with Vulkan via Zed's
+GPUI framework — no host terminal emulator required.
+
+Features horizontal and vertical split panes with drag-to-resize (up to 32
+panes), up to 20 workspaces with rename and quick-switch shortcuts, session
+persistence, hot-reloading themes, configurable keybindings, and a Unix
+socket JSON-RPC 2.0 interface for scripting and AI agent integration.
+Supports both Wayland and X11."""
+assets = [
+    ["target/release/paneflow", "usr/bin/", "755"],
+    ["../assets/paneflow.desktop", "usr/share/applications/paneflow.desktop", "644"],
+    ["../assets/icons/paneflow-16.png",  "usr/share/icons/hicolor/16x16/apps/paneflow.png",     "644"],
+    ["../assets/icons/paneflow-32.png",  "usr/share/icons/hicolor/32x32/apps/paneflow.png",     "644"],
+    ["../assets/icons/paneflow-48.png",  "usr/share/icons/hicolor/48x48/apps/paneflow.png",     "644"],
+    ["../assets/icons/paneflow-128.png", "usr/share/icons/hicolor/128x128/apps/paneflow.png",   "644"],
+    ["../assets/icons/paneflow-256.png", "usr/share/icons/hicolor/256x256/apps/paneflow.png",   "644"],
+    ["../assets/icons/paneflow-512.png", "usr/share/icons/hicolor/512x512/apps/paneflow.png",   "644"],
+    ["../assets/io.github.arthurdev44.paneflow.metainfo.xml", "usr/share/metainfo/io.github.arthurdev44.paneflow.metainfo.xml", "644"],
+]
+
+# RPM packaging (US-014) — mirrors the Debian asset list plus an explicit
+# LICENSE entry (on the deb side LICENSE comes in via `license-file`, not
+# the `assets` array). Built by cargo-generate-rpm 0.20.0:
+# `cargo generate-rpm -p src-app --target x86_64-unknown-linux-gnu`.
+# (Note: `-p src-app` is the DIRECTORY path — cargo-generate-rpm 0.20.0
+# resolves `-p` strictly as a path, not the crate name `paneflow-app`.)
+#
+# - Asset `source` paths are resolved relative to the workspace root by
+#   cargo-generate-rpm 0.20.0, NOT to this Cargo.toml's directory — hence
+#   `assets/` rather than `../assets/`. The special `target/release/*`
+#   prefix is auto-rewritten to the `--target` output directory.
+# - `auto-req = "no"` mirrors the reason we avoid `$auto` in cargo-deb
+#   (over-collection; issue #170 in cargo-deb). The explicit `requires`
+#   table below is the single source of truth for runtime deps on Fedora/
+#   RHEL/Rocky/openSUSE.
+# - `%license` is NOT a supported asset tag in cargo-generate-rpm 0.20.0
+#   (the crate exposes `doc` but not `license`). The LICENSE file is
+#   therefore installed with `%doc` instead — functionally equivalent for
+#   `rpm -qlp` inspection, but upstream RPM purists note the distinction.
+#   If we ever move to `rpmbuild`, restore the `%license` tag.
+[package.metadata.generate-rpm]
+# Override the RPM NAME to `paneflow` (dropping the `-app` suffix of the
+# crate itself). Keeps the artifact filename in sync with both cargo-deb
+# (which also renames to `paneflow`) and the `update_checker` asset
+# picker, which matches on the literal `paneflow-<version>-<arch>.rpm`.
+name = "paneflow"
+release = "1"
+auto-req = "no"
+# RPM `%post` scriptlet: wires /etc/yum.repos.d/paneflow.repo on first
+# install (US-016). Path is resolved relative to the workspace root
+# (cargo-generate-rpm's path-resolution convention — differs from the
+# crate-relative `maintainer-scripts` above).
+post_install_script = "packaging/rpm/postinst.sh"
+# RPM `%preun` scriptlet: removes /etc/yum.repos.d/paneflow.repo on full
+# uninstall only ($1 == 0). On upgrades ($1 >= 1) the file must stay so
+# `dnf check-update` keeps seeing pkg.paneflow.dev.
+pre_uninstall_script = "packaging/rpm/preun.sh"
+assets = [
+    { source = "target/release/paneflow",                                       dest = "/usr/bin/paneflow",                                                         mode = "755" },
+    { source = "assets/paneflow.desktop",                                       dest = "/usr/share/applications/paneflow.desktop",                                  mode = "644" },
+    { source = "assets/icons/paneflow-16.png",                                  dest = "/usr/share/icons/hicolor/16x16/apps/paneflow.png",                          mode = "644" },
+    { source = "assets/icons/paneflow-32.png",                                  dest = "/usr/share/icons/hicolor/32x32/apps/paneflow.png",                          mode = "644" },
+    { source = "assets/icons/paneflow-48.png",                                  dest = "/usr/share/icons/hicolor/48x48/apps/paneflow.png",                          mode = "644" },
+    { source = "assets/icons/paneflow-128.png",                                 dest = "/usr/share/icons/hicolor/128x128/apps/paneflow.png",                        mode = "644" },
+    { source = "assets/icons/paneflow-256.png",                                 dest = "/usr/share/icons/hicolor/256x256/apps/paneflow.png",                        mode = "644" },
+    { source = "assets/icons/paneflow-512.png",                                 dest = "/usr/share/icons/hicolor/512x512/apps/paneflow.png",                        mode = "644" },
+    { source = "assets/io.github.arthurdev44.paneflow.metainfo.xml",            dest = "/usr/share/metainfo/io.github.arthurdev44.paneflow.metainfo.xml",           mode = "644" },
+    { source = "LICENSE",                                                       dest = "/usr/share/doc/paneflow/LICENSE",                                           mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+vulkan-loader = "*"
+libxkbcommon = "*"
+libxkbcommon-x11 = "*"
+fontconfig = "*"
+freetype = "*"

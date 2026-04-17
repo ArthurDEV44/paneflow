@@ -1,0 +1,36 @@
+#!/bin/sh
+# Debian `postrm` maintainer script — cleans up artifacts our `postinst`
+# created (US-016 hygiene follow-up).
+#
+# Debian convention:
+#   remove → package binaries gone, config files preserved (so the user
+#            can reinstall without losing their repo setup).
+#   purge  → everything gone, including what postinst wrote outside the
+#            package payload (the APT source and the trust anchor).
+#
+# We ONLY act on `purge`. This matches how Chrome, VS Code, Brave, and
+# similar vendor packages behave: `apt remove paneflow` keeps the repo
+# source so `apt install paneflow` later works without re-running the
+# first-install flow; `apt purge paneflow` opts into full cleanup.
+#
+# Pure /bin/sh (no bashisms) — Debian Policy §4.9 compliance.
+
+set -e
+
+case "$1" in
+purge)
+    rm -f /etc/apt/sources.list.d/paneflow.list
+    rm -f /usr/share/keyrings/paneflow-archive.gpg
+    ;;
+
+remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+    # No-op. `remove` preserves config; the other phases are dpkg
+    # bookkeeping where we must not touch files.
+    ;;
+
+*)
+    # Unknown action — exit 0 for forward compatibility.
+    ;;
+esac
+
+exit 0

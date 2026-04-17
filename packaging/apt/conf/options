@@ -1,0 +1,11 @@
+# reprepro runtime options (US-015).
+#
+# `verbose` — echo each operation to stdout so CI logs show the package
+# names being added and the Release-file regeneration.
+#
+# We deliberately do NOT set `basedir` here — the workflow passes it
+# explicitly via `reprepro -b ./staging/apt`, which keeps this config
+# location-independent (works the same on a maintainer's laptop under a
+# different path).
+
+verbose

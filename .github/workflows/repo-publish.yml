@@ -1,0 +1,319 @@
+name: Publish APT + RPM repositories
+
+# Runs after a GitHub release is published (human-gated — the release.yml
+# workflow only uploads artifacts; a maintainer then clicks "Publish release"
+# on the draft, which fires this job). Can also be dispatched manually to
+# re-publish a previous release (e.g., after fixing a bucket issue).
+#
+# Output: pkg.paneflow.dev/apt + pkg.paneflow.dev/rpm, both GPG-signed.
+# Clients point their apt/dnf sources at those URLs and `apt upgrade` /
+# `dnf upgrade` pulls subsequent releases automatically.
+#
+# --- Failure-preservation contract (US-015 AC7) -----------------------------
+# All signing and metadata generation happens on the runner's local
+# filesystem. `rclone sync staging→R2` is the LAST step. `set -euo pipefail`
+# on every bash step aborts the whole script on signing failure, so the
+# remote R2 state is never mutated after a signing error.
+# ---------------------------------------------------------------------------
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to (re)publish (e.g., v0.2.0)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize repo publishes — two concurrent workflows racing on the
+  # same R2 prefix would corrupt reprepro's db/ and produce undefined
+  # final state. `cancel-in-progress: false` because we want the first
+  # one to finish cleanly rather than being interrupted half-way.
+  group: repo-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    env:
+      # Release tag we're publishing — sourced from either the release
+      # event or the manual dispatch input. Plumbed through `env:` so
+      # `${{ github.event.release.tag_name }}` never reaches bash as an
+      # expression-substituted string (injection-hardening).
+      TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+      # rclone — env-var-only config. `NO_CHECK_BUCKET=true` is mandatory
+      # for Cloudflare R2 (HEAD bucket returns 403 even with correct
+      # credentials, per Cloudflare's rclone guide).
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      RCLONE_CONFIG_R2_REGION: auto
+      RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install repo-publishing tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            reprepro \
+            createrepo-c \
+            rclone \
+            gnupg
+
+      - name: Verify required secrets are present
+        # Fail fast with a human-readable error rather than bubbling up
+        # the individual tool's "key not loaded" / 403 / etc later. This
+        # is US-015 AC7's "signing failure doesn't silently produce an
+        # unsigned release" guarantee, extended one step upstream.
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -z "${GPG_PRIVATE_KEY:-}" ] && missing+=("GPG_PRIVATE_KEY")
+          [ -z "${GPG_PASSPHRASE:-}"  ] && missing+=("GPG_PASSPHRASE")
+          [ -z "${GPG_KEY_ID:-}"      ] && missing+=("GPG_KEY_ID")
+          [ -z "${R2_BUCKET:-}"       ] && missing+=("R2_BUCKET")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing required secrets (US-017 + R2 setup): ${missing[*]}" >&2
+            echo "::error::See docs/pkg-repo-runbook.md for the full list + how to populate them." >&2
+            exit 1
+          fi
+          # GPG_KEY_ID must be the 40-char hex fingerprint. Short 16-char
+          # key IDs are collision-vulnerable (see https://evil32.com/) —
+          # an attacker who could populate `GPG_KEY_ID` with a short ID
+          # pointing at a rogue key would satisfy any later fingerprint
+          # match against keys whose full fingerprints end in those 16
+          # hex chars. This regex is harmonised with the equivalent
+          # validation in release.yml — both workflows MUST reject short
+          # key IDs identically to eliminate the attack class entirely.
+          if ! [[ "$GPG_KEY_ID" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+            echo "::error::GPG_KEY_ID must be the 40-char hex fingerprint (got ${#GPG_KEY_ID} chars)." >&2
+            echo "::error::Short key IDs are rejected because they are collision-vulnerable (evil32.com)." >&2
+            exit 1
+          fi
+
+      - name: Import GPG key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gnupg
+          chmod 700 ~/.gnupg
+          # `allow-loopback-pinentry` lets us pass the passphrase via
+          # `--pinentry-mode loopback --passphrase-fd 0` instead of
+          # requiring a TTY — GPG has no interactive pinentry in CI.
+          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          gpgconf --kill gpg-agent || true
+          # `--batch` silences prompts; `--import` reads the ASCII-armored
+          # private key from stdin. `<<<` here-string preserves newlines.
+          gpg --batch --import <<< "$GPG_PRIVATE_KEY"
+
+      - name: Download release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p ./assets
+          # `gh release download` fetches matching assets from the tagged
+          # release. `$TAG` and `$REPO` come from env (set via `env:`)
+          # rather than inlined `${{ … }}` expressions so a crafted tag
+          # can never be shell-interpreted as a command (injection-hardening).
+          gh release download "$TAG" \
+            --repo "$REPO" \
+            --pattern "*.deb" \
+            --pattern "*.rpm" \
+            --dir ./assets
+          ls -la ./assets
+
+      - name: Pull current R2 repo state into local staging
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          mkdir -p ./staging/apt ./staging/rpm/Packages
+          # `--fast-list` batches LIST calls (1000 per API call) — keeps
+          # R2 Class A operation costs under control. On an empty remote
+          # prefix rclone returns 0 with 0 files transferred (thanks to
+          # `NO_CHECK_BUCKET=true`), so no fallback is needed. A network
+          # / auth error MUST surface — a swallowed error here would let
+          # reprepro rebuild from an empty db/ and clobber a real pool.
+          rclone sync "R2:${R2_BUCKET}/apt/" ./staging/apt/ --fast-list
+          rclone sync "R2:${R2_BUCKET}/rpm/" ./staging/rpm/ --fast-list
+          # Copy `conf/` AFTER the sync. Doing it before (then syncing
+          # against an empty remote) would wipe it back out — `rclone
+          # sync` is mirror-semantics. Post-sync copy handles both the
+          # empty-bucket (first publish) case and the re-publish case
+          # uniformly: the checked-in `conf/distributions` + `options`
+          # are always the source of truth.
+          cp -af packaging/apt/conf/. ./staging/apt/conf/
+
+      - name: Publish .deb via reprepro
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          # Substitute the GPG fingerprint into conf/distributions. The
+          # checked-in file has `SignWith: REPLACE_WITH_GPG_KEY_ID` — we
+          # rewrite it per-run so the fingerprint never hits git history.
+          # GPG_KEY_ID is pre-validated to match ^[0-9A-Fa-f]{16,40}$ in
+          # the secrets-check step, so it's safe as a sed replacement.
+          sed -i "s/REPLACE_WITH_GPG_KEY_ID/${GPG_KEY_ID}/g" ./staging/apt/conf/distributions
+
+          # Prime the gpg-agent passphrase cache by signing a throwaway
+          # payload. reprepro invokes gpg through gpgme, which talks to
+          # the agent — we need the passphrase cached there BEFORE
+          # `includedeb` runs, otherwise the agent prompts for a TTY and
+          # the step hangs.
+          #
+          # An earlier draft of this workflow primed the cache via
+          # `gpg --quick-set-expire $KEY 0`, which has the side effect
+          # of setting the key's expiry to "never" on every run — a
+          # silent security regression. Signing a throwaway payload
+          # has no key-metadata side effect.
+          #
+          # `--passphrase-file <(…)` uses bash process substitution to
+          # give gpg a transient FD backed by the passphrase. This
+          # avoids (a) leaking the passphrase via `/proc/<pid>/cmdline`
+          # as with `--passphrase "$VAR"`, and (b) the stdin-collision
+          # we'd have with `--passphrase-fd 0` + a `--clearsign` that
+          # also wants to read from stdin.
+          printf 'prime-agent' | gpg --batch --yes \
+            --passphrase-file <(printf '%s' "$GPG_PASSPHRASE") \
+            --pinentry-mode loopback \
+            --local-user "$GPG_KEY_ID" \
+            --armor --clearsign \
+            --output /dev/null
+
+          # `includedeb stable <file.deb>` adds the package to the `stable`
+          # distribution's pool and regenerates + re-signs dists/stable/
+          # Release, Release.gpg, InRelease atomically. Multiple .deb
+          # files (e.g., amd64 + arm64) can be added in one run.
+          #
+          # Idempotency: reprepro refuses to add a (package, version,
+          # arch) that's already in the db. Re-dispatching the same tag
+          # without this check would fail at the first duplicate. We
+          # pre-check and skip instead — lets a maintainer safely
+          # rerun a failed publish.
+          for deb in ./assets/paneflow-*.deb; do
+            [ -f "$deb" ] || continue
+            version=$(dpkg-deb --field "$deb" Version)
+            arch=$(dpkg-deb --field "$deb" Architecture)
+            existing=$(reprepro -b ./staging/apt list stable paneflow | \
+              awk -v v="$version" -v a="$arch" \
+                '$0 ~ ":" && $NF == v { print }' || true)
+            if [ -n "$existing" ]; then
+              echo "→ paneflow $version ($arch) already in stable — skipping"
+              continue
+            fi
+            echo "→ reprepro includedeb stable $deb"
+            reprepro -b ./staging/apt includedeb stable "$deb"
+          done
+
+          # Sanity check: the signed Release files exist.
+          test -f ./staging/apt/dists/stable/Release
+          test -f ./staging/apt/dists/stable/Release.gpg
+          test -f ./staging/apt/dists/stable/InRelease
+
+      - name: Publish .rpm via createrepo_c + GPG sign
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          # Copy the new RPMs into the pool dir. `cp -n` (no-clobber)
+          # would let us preserve existing files, but reprepro-style
+          # idempotency for RPM means we just overwrite — the RPM
+          # filename includes the version, so old versions keep
+          # distinct names and stay in the pool until manual pruning.
+          for rpm in ./assets/paneflow-*.rpm; do
+            [ -f "$rpm" ] || continue
+            cp -f "$rpm" ./staging/rpm/Packages/
+          done
+
+          # Generate (or incrementally update) the repodata. `--update`
+          # reuses existing metadata for RPMs unchanged since the last
+          # run (size + mtime check) — essential for repos with dozens
+          # of packages.
+          createrepo_c --update ./staging/rpm/
+
+          # Sign repomd.xml — createrepo_c itself does not sign.
+          # `--detach-sign --armor` → repomd.xml.asc. Clients with
+          # `repo_gpgcheck=1` verify this signature before trusting the
+          # metadata.
+          #
+          # Use `--passphrase-file <(…)` (process-substituted FD) rather
+          # than `--passphrase "$VAR"` so the passphrase never appears
+          # in `/proc/<pid>/cmdline`. Consistent with the reprepro
+          # priming step above.
+          gpg --batch --yes \
+            --passphrase-file <(printf '%s' "$GPG_PASSPHRASE") \
+            --pinentry-mode loopback \
+            --detach-sign --armor \
+            ./staging/rpm/repodata/repomd.xml
+
+          test -f ./staging/rpm/repodata/repomd.xml.asc
+
+      - name: Export GPG public key for /gpg endpoint
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          # Publish the public key at the repo root so clients can do
+          # `curl https://pkg.paneflow.dev/gpg | gpg --dearmor …`. The
+          # ASCII-armored format is what apt's `signed-by` trust anchor
+          # and dnf's `gpgkey=` expect.
+          gpg --armor --export "$GPG_KEY_ID" > ./staging/gpg
+          test -s ./staging/gpg
+
+      # ─── POINT OF NO RETURN ────────────────────────────────────────────
+      # Everything above ran locally. The next step is the first (and
+      # only) write to R2. If we've gotten here, all signing succeeded,
+      # so the sync is safe. If any prior step failed, `set -euo pipefail`
+      # aborted the job before reaching this point — R2 stays untouched.
+      - name: Sync local staging → R2
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          # Push ordering matters for client atomicity:
+          #
+          #   1. GPG key — clients refreshing `/gpg` mid-publish must
+          #      not see a 404. Idempotent single-object copyto.
+          #   2. APT pool/ (the .deb binaries) — referenced by hash
+          #      from dists/**/Packages.gz. If a client fetched new
+          #      Packages.gz before we've uploaded the new .deb, the
+          #      subsequent GET would return 404 until the pool sync
+          #      completes. So: pool first, metadata last.
+          #   3. APT full tree — pool is already a no-op (same bytes),
+          #      only dists/* changes. Client sees new Release* pointing
+          #      at new Packages.gz pointing at a pool that already
+          #      exists. Worst case during sync: client sees new
+          #      InRelease with old Packages.gz — hash mismatch, `apt
+          #      update` errors, and a retry succeeds once Packages.gz
+          #      lands. Acceptable transient (seconds-long) window.
+          #   4. RPM Packages/ (the .rpm binaries) — same reason as pool.
+          #   5. RPM full tree — only repodata/* changes.
+          #
+          # `--fast-list --transfers 8` are the R2-recommended defaults;
+          # `--s3-no-head` is explicitly NOT set (we want rclone to
+          # verify each upload landed).
+          rclone copyto ./staging/gpg            "R2:${R2_BUCKET}/gpg"              --checksum
+          rclone sync   ./staging/apt/pool/      "R2:${R2_BUCKET}/apt/pool/"        --fast-list --transfers 8
+          rclone sync   ./staging/apt/           "R2:${R2_BUCKET}/apt/"             --fast-list --transfers 8
+          rclone sync   ./staging/rpm/Packages/  "R2:${R2_BUCKET}/rpm/Packages/"    --fast-list --transfers 8
+          rclone sync   ./staging/rpm/           "R2:${R2_BUCKET}/rpm/"             --fast-list --transfers 8
+          echo "✓ published $TAG to R2:${R2_BUCKET}"
