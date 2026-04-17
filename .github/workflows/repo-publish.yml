@@ -129,9 +129,10 @@ jobs:
           set -euo pipefail
           mkdir -p ./assets
           # `gh release download` fetches matching assets from the tagged
-          # release. `$TAG` and `$REPO` come from env (set via `env:`)
-          # rather than inlined `${{ ... }}` expressions so a crafted tag
-          # can never be shell-interpreted as a command (injection-hardening).
+          # release. `$TAG` and `$REPO` come from env (set via the step
+          # `env:` block above) rather than being inlined as GitHub Actions
+          # expression substitutions, so a crafted tag can never be
+          # shell-interpreted as a command (injection-hardening).
           gh release download "$TAG" \
             --repo "$REPO" \
             --pattern "*.deb" \
