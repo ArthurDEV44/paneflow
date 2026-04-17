@@ -6,6 +6,7 @@ mod ai_detector;
 mod assets;
 mod config_writer;
 mod csd;
+mod install_method;
 mod ipc;
 mod keybindings;
 mod keys;
@@ -207,6 +208,26 @@ struct Notification {
 
 struct Toast {
     message: String,
+    /// Optional action buttons shown inside the toast. Empty for the
+    /// ordinary confirmation toasts ("Path copied", etc); populated for
+    /// update-failure toasts (US-013) with Retry / "Open releases" buttons.
+    actions: Vec<ToastAction>,
+    /// How long the "hold" phase of the toast animation lasts, in ms.
+    /// Must match the auto-dismiss timer in [`push_toast`] — otherwise the
+    /// exit animation plays early and the element persists as a ghost at
+    /// opacity 0 until the dismiss task fires.
+    hold_ms: u64,
+}
+
+#[derive(Clone)]
+enum ToastAction {
+    /// "Retry" — re-dispatches the `StartSelfUpdate` action. The action
+    /// handler's existing guards (busy check, attempt counter) apply.
+    RetryUpdate,
+    /// "Open releases" — opens the given URL in the user's browser.
+    /// Used for the 4th-attempt fallback (AC: "Download manually from the
+    /// releases page").
+    OpenReleasesPage(String),
 }
 
 #[derive(Clone, Copy)]
@@ -324,6 +345,22 @@ struct PaneFlowApp {
     update_status: Option<update_checker::UpdateStatus>,
     /// Live state of the in-app self-update flow (download → install → restart).
     self_update_status: self_update::SelfUpdateStatus,
+    /// How the running binary was installed. Detected once at startup —
+    /// drives the update pill's label/click behaviour (US-012) and the
+    /// in-app updater's branch selection.
+    install_method: install_method::InstallMethod,
+    /// Count of consecutive in-app update failures since process start
+    /// (US-013). Bumped on every classified error; after 3 failures the
+    /// 4th click skips the network and shows the "download manually"
+    /// escape hatch toast.
+    ///
+    /// Never decremented. The only success path for an update calls
+    /// `cx.restart()`, which replaces this process — the fresh
+    /// `PaneFlowApp::new` initializes the counter back to 0. So "failures
+    /// since last success" and "failures since process start" coincide by
+    /// construction; the PRD's "three consecutive failures" requirement
+    /// holds without an explicit reset.
+    update_attempt_count: u32,
 }
 
 /// Global flag for swap mode, checked by TerminalView to intercept Escape.
@@ -1130,6 +1167,8 @@ impl PaneFlowApp {
             pending_update,
             update_status: None,
             self_update_status: self_update::SelfUpdateStatus::default(),
+            install_method: install_method::detect(),
+            update_attempt_count: 0,
         }
     }
 
@@ -1316,10 +1355,17 @@ impl PaneFlowApp {
         }
     }
 
-    /// Kick off the in-app self-update flow: download the `.run` installer,
-    /// run it, then ask GPUI to relaunch the freshly installed binary. The
-    /// pill label flips through `Downloading… → Installing…` along the way;
-    /// on failure a toast is shown and the pill falls back to "Update failed".
+    /// Kick off the in-app self-update flow. Dispatches on the detected
+    /// install method:
+    ///
+    /// - `InstallMethod::AppImage` → delegate to `appimageupdatetool` for a
+    ///   zsync delta update in place (US-010), then restart into the same
+    ///   source path.
+    /// - Everything else → legacy `.run` installer flow (downloads a
+    ///   self-extracting `.run` asset, spawns it, restarts into
+    ///   `~/.local/bin/paneflow`). Retired by later stories in EP-002.
+    ///
+    /// On failure a toast is shown and the pill falls back to "Update failed".
     fn handle_start_self_update(
         &mut self,
         _: &StartSelfUpdate,
@@ -1329,6 +1375,41 @@ impl PaneFlowApp {
         if self.self_update_status.is_busy() {
             return;
         }
+
+        // System-package installs (.deb/.rpm) are upgraded by apt/dnf, never
+        // by the in-app updater — writing to `/usr/bin/paneflow` would fail
+        // unprivileged and break immutable distros. Show the copy-pasteable
+        // upgrade command instead. Crucially: return BEFORE reading
+        // `asset_url`, so no network activity happens on click.
+        if let install_method::InstallMethod::SystemPackage { manager } = &self.install_method {
+            let version = match &self.update_status {
+                Some(update_checker::UpdateStatus::Available { version, .. }) => version.clone(),
+                _ => return,
+            };
+            let command = system_package_update_command(Some(manager), &version);
+            cx.write_to_clipboard(ClipboardItem::new_string(command.clone()));
+            self.show_toast(format!("Copied: {command}"), cx);
+            return;
+        }
+
+        // After 3 consecutive failures, the 4th click stops re-trying and
+        // points the user at the releases page (US-013). Skipping the
+        // network here is important — repeated fast retries against a
+        // flaky mirror are never the right answer.
+        if self.update_attempt_count >= 3 {
+            let releases_url = match &self.update_status {
+                Some(update_checker::UpdateStatus::Available { url, .. }) => url.clone(),
+                _ => "https://github.com/ArthurDEV44/paneflow/releases".to_string(),
+            };
+            self.push_toast(
+                "Update keeps failing. Download manually from the releases page.".to_string(),
+                vec![ToastAction::OpenReleasesPage(releases_url)],
+                TOAST_HOLD_MS * 4,
+                cx,
+            );
+            return;
+        }
+
         let asset_url = match &self.update_status {
             Some(update_checker::UpdateStatus::Available {
                 asset_url: Some(url),
@@ -1342,6 +1423,107 @@ impl PaneFlowApp {
             }
             _ => return,
         };
+
+        // Use the cached install method. The install location never changes
+        // at runtime, so one probe at startup is enough.
+        let method = self.install_method.clone();
+        if let install_method::InstallMethod::AppImage { source_path, .. } = &method {
+            let source_path = source_path.clone();
+            // `appimageupdatetool` does one opaque call that covers both the
+            // zsync download and the in-place rewrite. Most of the
+            // wall-clock time is spent fetching delta blocks, so `Downloading`
+            // matches what the user actually sees on a slow link.
+            self.self_update_status = self_update::SelfUpdateStatus::Downloading;
+            cx.notify();
+
+            cx.spawn(async move |this, cx| {
+                let result = smol::unblock({
+                    let source_path = source_path.clone();
+                    move || self_update::appimage::run_update(&source_path)
+                })
+                .await;
+
+                match result {
+                    Ok(updated_path) => {
+                        let _ = this.update(cx, |app, cx| {
+                            app.save_session(cx);
+                        });
+                        cx.update(|cx| {
+                            log::info!("self-update: restarting into {}", updated_path.display());
+                            cx.set_restart_path(updated_path);
+                            cx.restart();
+                        });
+                    }
+                    Err(err) => {
+                        let _ = this.update(cx, |app, cx| {
+                            app.record_update_failure("appimage", &err, cx);
+                        });
+                    }
+                }
+            })
+            .detach();
+            return;
+        }
+
+        if matches!(
+            &method,
+            install_method::InstallMethod::TarGz { .. } | install_method::InstallMethod::Unknown
+        ) {
+            // Atomic directory swap under `$HOME/.local/paneflow.app/`.
+            // `run_update` derives the target paths from `$HOME` internally,
+            // so we only need to hand it the release asset URL.
+            //
+            // `Unknown` (dev builds, legacy `.run` migrations) dispatches here
+            // too: `pick_asset` already returns a `.tar.gz` URL for Unknown
+            // (see `AssetFormat::from_install_method`), and since v0.2.0 no
+            // longer emits `.run` assets, falling through to the legacy
+            // installer below would try to `chmod +x` + execve a gzip file.
+            //
+            // Log the migration path so dev-build users (who hit the Unknown
+            // branch after `cargo run`) see what's happening. The updater
+            // still proceeds — the install lands at `$HOME/.local/paneflow.app/`
+            // regardless of where `current_exe()` was — but the log makes the
+            // directory change visible instead of silent.
+            if matches!(&method, install_method::InstallMethod::Unknown) {
+                log::warn!(
+                    "self-update: install method Unknown — downloading tar.gz release \
+                     into $HOME/.local/paneflow.app/; the updated binary will be at a \
+                     different path than the currently-running one."
+                );
+            }
+            let url = asset_url.clone();
+            self.self_update_status = self_update::SelfUpdateStatus::Downloading;
+            cx.notify();
+
+            cx.spawn(async move |this, cx| {
+                let result = smol::unblock(move || self_update::targz::run_update(&url)).await;
+
+                match result {
+                    Ok(restart_path) => {
+                        let _ = this.update(cx, |app, cx| {
+                            app.self_update_status = self_update::SelfUpdateStatus::Installing;
+                            app.save_session(cx);
+                            cx.notify();
+                        });
+                        cx.update(|cx| {
+                            log::info!(
+                                "self-update/targz: restarting into {}",
+                                restart_path.display()
+                            );
+                            cx.set_restart_path(restart_path);
+                            cx.restart();
+                        });
+                    }
+                    Err(err) => {
+                        let _ = this.update(cx, |app, cx| {
+                            app.record_update_failure("targz", &err, cx);
+                        });
+                    }
+                }
+            })
+            .detach();
+            return;
+        }
 
         self.self_update_status = self_update::SelfUpdateStatus::Downloading;
         cx.notify();
@@ -1357,13 +1539,8 @@ impl PaneFlowApp {
             let installer_path = match download_result {
                 Ok(path) => path,
                 Err(err) => {
-                    let err = std::sync::Arc::new(err);
                     let _ = this.update(cx, |app, cx| {
-                        log::error!("self-update: download failed: {err:#}");
-                        app.self_update_status =
-                            self_update::SelfUpdateStatus::Errored(err.clone());
-                        app.show_toast(format!("Update failed: {err}"), cx);
-                        cx.notify();
+                        app.record_update_failure("legacy-download", &err, cx);
                     });
                     return;
                 }
@@ -1381,12 +1558,8 @@ impl PaneFlowApp {
             .await;
 
             if let Err(err) = install_result {
-                let err = std::sync::Arc::new(err);
                 let _ = this.update(cx, |app, cx| {
-                    log::error!("self-update: install failed: {err:#}");
-                    app.self_update_status = self_update::SelfUpdateStatus::Errored(err.clone());
-                    app.show_toast(format!("Update failed: {err}"), cx);
-                    cx.notify();
+                    app.record_update_failure("legacy-install", &err, cx);
                 });
                 return;
             }
@@ -2718,18 +2891,58 @@ impl PaneFlowApp {
     }
 
     fn show_toast(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.push_toast(message.into(), Vec::new(), TOAST_HOLD_MS, cx);
+    }
+
+    /// Surface an update failure as a toast with a "Retry" action button
+    /// (US-013). Hold is extended so the user has time to click the button
+    /// before auto-dismiss.
+    fn show_update_error_toast(&mut self, err: &self_update::UpdateError, cx: &mut Context<Self>) {
+        self.push_toast(
+            err.user_message(),
+            vec![ToastAction::RetryUpdate],
+            TOAST_HOLD_MS * 4,
+            cx,
+        );
+    }
+
+    /// Centralised bookkeeping for a failed update attempt (US-013):
+    /// classify the error, log it, update state, show the retry toast,
+    /// and bump the attempt counter (which gates the 4th-click escape
+    /// hatch).
+    fn record_update_failure(
+        &mut self,
+        context: &str,
+        err: &anyhow::Error,
+        cx: &mut Context<Self>,
+    ) {
+        log::error!("self-update/{context}: {err:#}");
+        let tag = self_update::UpdateError::classify(err);
+        self.self_update_status = self_update::SelfUpdateStatus::Errored(tag.clone());
+        self.update_attempt_count = self.update_attempt_count.saturating_add(1);
+        self.show_update_error_toast(&tag, cx);
+        cx.notify();
+    }
+
+    fn push_toast(
+        &mut self,
+        message: String,
+        actions: Vec<ToastAction>,
+        hold_ms: u64,
+        cx: &mut Context<Self>,
+    ) {
         self.toast = Some(Toast {
-            message: message.into(),
+            message,
+            actions,
+            hold_ms,
         });
         cx.notify();
 
         // Dropping the previous task cancels its timer automatically.
+        let total = TOAST_ENTER_MS + hold_ms + TOAST_EXIT_MS;
         self._toast_task = Some(cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                smol::Timer::after(std::time::Duration::from_millis(
-                    TOAST_ENTER_MS + TOAST_HOLD_MS + TOAST_EXIT_MS,
-                ))
-                .await;
+                smol::Timer::after(std::time::Duration::from_millis(total)).await;
                 let _ = cx.update(|cx| {
                     this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
                         app.toast = None;
@@ -4045,21 +4258,42 @@ impl Render for PaneFlowApp {
         let ws_name = self.active_workspace().map(|ws| ws.title.clone());
         let update_info = match &self.update_status {
             Some(update_checker::UpdateStatus::Available { version, .. }) => {
-                let self_update = match &self.self_update_status {
-                    self_update::SelfUpdateStatus::Idle => title_bar::SelfUpdatePillState::Idle,
-                    self_update::SelfUpdateStatus::Downloading => {
-                        title_bar::SelfUpdatePillState::Downloading
+                let kind = match &self.install_method {
+                    install_method::InstallMethod::SystemPackage { manager } => {
+                        let system_kind = match manager {
+                            install_method::PackageManager::Apt => {
+                                title_bar::SystemPackageKind::Apt
+                            }
+                            install_method::PackageManager::Dnf => {
+                                title_bar::SystemPackageKind::Dnf
+                            }
+                            install_method::PackageManager::Other => {
+                                title_bar::SystemPackageKind::Other
+                            }
+                        };
+                        title_bar::UpdatePillKind::SystemManaged(system_kind)
                     }
-                    self_update::SelfUpdateStatus::Installing => {
-                        title_bar::SelfUpdatePillState::Installing
-                    }
-                    self_update::SelfUpdateStatus::Errored(_) => {
-                        title_bar::SelfUpdatePillState::Errored
+                    _ => {
+                        let state = match &self.self_update_status {
+                            self_update::SelfUpdateStatus::Idle => {
+                                title_bar::SelfUpdatePillState::Idle
+                            }
+                            self_update::SelfUpdateStatus::Downloading => {
+                                title_bar::SelfUpdatePillState::Downloading
+                            }
+                            self_update::SelfUpdateStatus::Installing => {
+                                title_bar::SelfUpdatePillState::Installing
+                            }
+                            self_update::SelfUpdateStatus::Errored(_) => {
+                                title_bar::SelfUpdatePillState::Errored
+                            }
+                        };
+                        title_bar::UpdatePillKind::InApp(state)
                     }
                 };
                 Some(title_bar::UpdateInfo {
                     version: version.clone(),
-                    self_update,
+                    kind,
                 })
             }
             _ => None,
@@ -4155,6 +4389,80 @@ impl Render for PaneFlowApp {
             );
 
         if let Some(toast) = &self.toast {
+            let has_actions = !toast.actions.is_empty();
+            // Error toasts (those with action buttons) get a warning glyph
+            // + wider panel so the message + button have room. Ordinary
+            // confirmation toasts keep the tight 320-px "✓ …" layout.
+            let (icon, max_w) = if has_actions {
+                ("!", px(420.))
+            } else {
+                ("✓", px(320.))
+            };
+
+            let header = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .w(px(18.))
+                        .h(px(18.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(11.))
+                        .text_color(ui.accent)
+                        .child(icon),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(ui.text)
+                        .child(toast.message.clone()),
+                );
+
+            let action_row = if has_actions {
+                let mut row = div().flex().flex_row().gap(px(8.)).mt(px(8.)).pl(px(28.));
+                for (idx, action) in toast.actions.iter().enumerate() {
+                    let (label, button_id): (&str, String) = match action {
+                        ToastAction::RetryUpdate => ("Retry", format!("toast-retry-{idx}")),
+                        ToastAction::OpenReleasesPage(_) => {
+                            ("Open releases", format!("toast-releases-{idx}"))
+                        }
+                    };
+                    let action_clone = action.clone();
+                    let btn = div()
+                        .id(SharedString::from(button_id))
+                        .px(px(10.))
+                        .py(px(4.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(ui.accent)
+                        .text_color(ui.accent)
+                        .text_size(px(11.))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .cursor_pointer()
+                        .hover(|s| s.opacity(0.7))
+                        .child(label)
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |_, window, cx| match &action_clone {
+                            ToastAction::RetryUpdate => {
+                                window.dispatch_action(Box::new(StartSelfUpdate), cx);
+                            }
+                            ToastAction::OpenReleasesPage(url) => {
+                                let _ = open::that(url);
+                            }
+                        });
+                    row = row.child(btn);
+                }
+                Some(row)
+            } else {
+                None
+            };
+
             app_content = app_content.child(
                 deferred(
                     div()
@@ -4162,7 +4470,7 @@ impl Render for PaneFlowApp {
                         .absolute()
                         .right(px(20.))
                         .bottom(px(20.))
-                        .max_w(px(320.))
+                        .max_w(max_w)
                         .px(px(14.))
                         .py(px(10.))
                         .rounded(px(8.))
@@ -4173,34 +4481,15 @@ impl Render for PaneFlowApp {
                         .text_sm()
                         .text_color(ui.text)
                         .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(10.))
-                        .child(
-                            div()
-                                .w(px(18.))
-                                .h(px(18.))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(11.))
-                                .text_color(ui.accent)
-                                .child("✓"),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(ui.text)
-                                .child(toast.message.clone()),
-                        )
+                        .flex_col()
+                        .child(header)
+                        .children(action_row)
                         .with_animations(
                             SharedString::from("copy-toast-anim"),
                             vec![
                                 Animation::new(std::time::Duration::from_millis(TOAST_ENTER_MS))
                                     .with_easing(ease_in_out),
-                                Animation::new(std::time::Duration::from_millis(TOAST_HOLD_MS)),
+                                Animation::new(std::time::Duration::from_millis(toast.hold_ms)),
                                 Animation::new(std::time::Duration::from_millis(TOAST_EXIT_MS))
                                     .with_easing(ease_in_out),
                             ],
@@ -4580,6 +4869,66 @@ impl Render for PaneFlowApp {
 // App entry point
 // ---------------------------------------------------------------------------
 
+/// Detect the legacy `.run`-installer layout and log a migration hint.
+///
+/// Build the copy-pasteable upgrade command for a system-package install.
+///
+/// `version` is safe to interpolate into a shell string without escaping: it
+/// comes from `UpdateStatus::Available { version }`, which is set from a
+/// `semver::Version::to_string()` — the semver parser rejects any input that
+/// would survive into `;`/`$()`/whitespace/bidi, so malformed GitHub tags
+/// short-circuit to `UpdateStatus::Failed` long before this function runs.
+///
+/// Version format notes:
+/// - apt pinning uses `name=upstream-debrev`. `cargo-deb` emits `-1` as the
+///   debian revision by default, so `paneflow=<v>-1` targets the exact tag.
+/// - dnf accepts `name-upstream` as a NEVR prefix match. The `<v>` we pass is
+///   already the raw upstream version from GitHub Releases.
+/// - `PackageManager::Other` gets a plain-English hint rather than a command,
+///   because we don't know the syntax (eopkg/xbps/apk all differ).
+fn system_package_update_command(
+    manager: Option<&install_method::PackageManager>,
+    version: &str,
+) -> String {
+    match manager {
+        Some(install_method::PackageManager::Apt) => {
+            format!("sudo apt update && sudo apt install paneflow={version}-1")
+        }
+        Some(install_method::PackageManager::Dnf) => {
+            format!("sudo dnf upgrade paneflow-{version}")
+        }
+        Some(install_method::PackageManager::Other) | None => {
+            "Update PaneFlow via your system's package manager".to_string()
+        }
+    }
+}
+
+/// The old `.run` installer (removed in US-007) dropped a standalone binary
+/// at `~/.local/bin/paneflow`. The new tar.gz installer instead drops a
+/// `~/.local/paneflow.app/` directory and symlinks `~/.local/bin/paneflow`
+/// into it. We warn when the old layout is detected so users know why the
+/// in-app updater can no longer fetch a `.run` asset (there are none).
+fn warn_if_legacy_run_install() {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let app_dir = home.join(".local/paneflow.app");
+    let legacy_bin = home.join(".local/bin/paneflow");
+
+    let legacy_bin_is_regular_file = legacy_bin
+        .symlink_metadata()
+        .map(|m| m.file_type().is_file())
+        .unwrap_or(false);
+
+    if !app_dir.exists() && legacy_bin_is_regular_file {
+        log::warn!(
+            "legacy .run install detected at {} — see README for migration \
+             to the .tar.gz / .deb / .AppImage formats",
+            legacy_bin.display()
+        );
+    }
+}
+
 fn main() {
     // Handle --help and --version before initializing GPUI
     let args: Vec<String> = std::env::args().collect();
@@ -4618,6 +4967,8 @@ fn main() {
         "info,wgpu_hal=off,wgpu_core=warn,naga=warn,zbus=warn,tracing::span=warn",
     ))
     .init();
+
+    warn_if_legacy_run_install();
 
     application()
         .with_assets(assets::Assets)

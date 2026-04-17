@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.arthurdev44.paneflow</id>
+  <name>PaneFlow</name>
+  <summary>GPU-accelerated terminal multiplexer</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="io.github.arthurdev44">
+    <name>Arthur Jean</name>
+  </developer>
+
+  <description>
+    <p>
+      PaneFlow is a GPU-accelerated terminal multiplexer for Linux. It splits
+      your terminal into panes and workspaces rendered natively with Vulkan via
+      Zed's GPUI framework — no host terminal emulator required.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Horizontal and vertical split panes with drag-to-resize, up to 32 panes</li>
+      <li>Up to 20 workspaces with rename and quick-switch shortcuts</li>
+      <li>Session persistence — layouts, working directories, and workspace names restored on relaunch</li>
+      <li>Hot-reloading themes (Catppuccin Mocha, One Dark, Dracula, Gruvbox Dark, Solarized Dark)</li>
+      <li>Customizable keybindings via JSON configuration</li>
+      <li>Unix socket JSON-RPC 2.0 IPC for scripting and AI agent integration</li>
+      <li>Native Wayland and X11 support</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">paneflow.desktop</launchable>
+
+  <url type="homepage">https://github.com/ArthurDEV44/paneflow</url>
+  <url type="bugtracker">https://github.com/ArthurDEV44/paneflow/issues</url>
+  <url type="vcs-browser">https://github.com/ArthurDEV44/paneflow</url>
+
+  <categories>
+    <category>System</category>
+    <category>TerminalEmulator</category>
+  </categories>
+
+  <keywords>
+    <keyword>terminal</keyword>
+    <keyword>multiplexer</keyword>
+    <keyword>pane</keyword>
+    <keyword>split</keyword>
+    <keyword>gpui</keyword>
+    <keyword>tmux</keyword>
+  </keywords>
+
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.1.7" date="2026-04-17">
+      <description>
+        <p>Maintenance release.</p>
+        <ul>
+          <li>Sidebar: empty state, clear-all, drag-and-drop reorder</li>
+          <li>Tabs: double-click the tab bar to open a new terminal</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+</component>

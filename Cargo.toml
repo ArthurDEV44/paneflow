@@ -10,6 +10,11 @@ version = "0.1.7"
 edition = "2021"
 license = "MIT"
 authors = ["Arthur"]
+description = "GPU-accelerated terminal multiplexer for Linux, built in Rust with Zed's GPUI framework"
+repository = "https://github.com/ArthurDEV44/paneflow"
+homepage = "https://github.com/ArthurDEV44/paneflow"
+keywords = ["terminal", "multiplexer", "gpui", "tmux", "tty"]
+categories = ["command-line-utilities"]
 
 [workspace.dependencies]
 # Serialization

@@ -28,3 +28,34 @@ Recent history uses Conventional Commit-style prefixes plus scope, for example `
 
 ## Configuration Notes
 Do not replace the local-path GPUI dependencies with crates.io versions. Linux is the active target; config files live under `~/.config/paneflow/paneflow.json`.
+
+## Anti-Friction Rules (claude-doctor)
+
+Règles pour éviter les patterns de friction détectés par `claude-doctor` sur ce projet : edit-thrashing, restart-cluster, repeated-instructions, negative-drift, error-loop, excessive-exploration.
+
+### Editing discipline (anti edit-thrashing)
+
+- Read the full file before editing. Plan all changes, then make ONE complete edit.
+- If you've edited the same file 3+ times, STOP. Re-read the user's original requirements and re-plan from scratch.
+- Prefer one large coherent edit over multiple small incremental ones.
+
+### Stay aligned with the user (anti repeated-instructions, rapid-corrections)
+
+- Re-read the user's last message before responding. Follow through on every instruction completely — don't partially address requests.
+- Every few turns on a long task, re-read the original request to verify you haven't drifted from the goal.
+- When the user corrects you: stop, re-read their message, quote back what they actually asked for, and confirm understanding before proceeding.
+
+### Act, don't explore (anti excessive-exploration)
+
+- Don't read more than 3-5 files before making a change. Get a basic understanding, make the change, then iterate.
+- Prefer acting early and correcting via feedback over prolonged reading and planning.
+
+### Break loops (anti error-loop, restart-cluster)
+
+- After 2 consecutive tool failures or the same error twice, STOP. Change your approach entirely — don't retry the same strategy. Explain what failed and try something genuinely different.
+- When truly stuck, summarize what you've tried and ask the user for guidance rather than retrying.
+
+### Verify output (anti negative-drift)
+
+- Before presenting your result, double-check it actually addresses what the user asked for.
+- If the diff doesn't map cleanly to the user's request, don't ship it — re-plan.

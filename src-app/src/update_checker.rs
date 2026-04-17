@@ -1,21 +1,83 @@
 //! Background update checker — queries GitHub Releases API at startup,
 //! deposits the result into a shared slot for the main thread to pick up.
+//!
+//! US-009 adds arch-+-format asset matching so users only ever see an asset
+//! that matches both their CPU architecture and their install method (never
+//! a .deb handed to a Fedora user).
 
 use semver::Version;
 
+use crate::install_method::{self, InstallMethod, PackageManager};
+
 const GITHUB_API: &str = "https://api.github.com/repos/ArthurDEV44/paneflow/releases/latest";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Release-asset format the update checker advertises to the UI.
+///
+/// Filename convention: `paneflow-<version>-<arch>.<format-suffix>`, e.g.
+/// `paneflow-v0.2.0-x86_64.deb`. See [`AssetFormat::filename_suffix`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AssetFormat {
+    Deb,
+    Rpm,
+    AppImage,
+    TarGz,
+}
+
+impl AssetFormat {
+    /// Canonical filename suffix the CI emits for this format. Matching is
+    /// performed case-insensitively so a release with `.DEB` still works.
+    fn filename_suffix(&self) -> &'static str {
+        match self {
+            AssetFormat::Deb => ".deb",
+            AssetFormat::Rpm => ".rpm",
+            AssetFormat::AppImage => ".AppImage",
+            AssetFormat::TarGz => ".tar.gz",
+        }
+    }
+
+    /// Pick the right asset format for a given install method.
+    ///
+    /// `Unknown` falls back to `.tar.gz` because that's the only format that
+    /// works without root and without a specific package manager — the safe
+    /// default for dev builds and legacy `.run` migrations.
+    fn from_install_method(method: &InstallMethod) -> Self {
+        match method {
+            InstallMethod::SystemPackage {
+                manager: PackageManager::Apt,
+            } => AssetFormat::Deb,
+            InstallMethod::SystemPackage {
+                manager: PackageManager::Dnf,
+            } => AssetFormat::Rpm,
+            // A system install on a non-apt/dnf distro is effectively a dead
+            // end for the in-app updater (the click handler short-circuits to
+            // the hint toast), so any format works. TarGz is the neutral
+            // fallback mirroring `InstallMethod::Unknown`.
+            InstallMethod::SystemPackage {
+                manager: PackageManager::Other,
+            } => AssetFormat::TarGz,
+            InstallMethod::AppImage { .. } => AssetFormat::AppImage,
+            InstallMethod::TarGz { .. } => AssetFormat::TarGz,
+            InstallMethod::Unknown => AssetFormat::TarGz,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum UpdateStatus {
     Checking,
     Available {
         version: String,
-        /// GitHub release HTML page — opened only as a fallback if self-update fails.
+        /// GitHub release HTML page — always populated. The title bar opens
+        /// this in a browser as a fallback when `asset_url` is `None`.
         url: String,
-        /// Direct download URL for the Linux `.run` self-extracting installer.
-        /// `None` if the release is missing a Linux asset (e.g. a draft).
+        /// Direct download URL for the arch-+-format-matched asset. `None`
+        /// when the release has no asset matching the current host+method.
         asset_url: Option<String>,
+        /// Format of the picked asset. Drives UI messaging in US-010/011/012
+        /// ("Update via apt" vs "Download new AppImage"). `None` when
+        /// `asset_url` is also `None`.
+        asset_format: Option<AssetFormat>,
     },
     UpToDate,
     Failed,
@@ -45,9 +107,34 @@ struct GitHubRelease {
 }
 
 #[derive(serde::Deserialize)]
-struct GitHubAsset {
-    name: String,
-    browser_download_url: String,
+pub(crate) struct GitHubAsset {
+    pub(crate) name: String,
+    pub(crate) browser_download_url: String,
+}
+
+/// Pick the release asset that matches both the host architecture and the
+/// install method's expected format.
+///
+/// Matching is strict: a Fedora (`Dnf`) user is never handed a `.deb`; an
+/// AppImage user is never handed a `.tar.gz`. When the release is missing
+/// the expected format, the function returns `None` and the UI falls back
+/// to opening the release page in a browser.
+///
+/// # Filename convention
+/// Expects assets named `paneflow-<version>-<arch>.<format-suffix>`, e.g.
+/// `paneflow-v0.2.0-x86_64.deb`. Sibling files like
+/// `paneflow-v0.2.0-x86_64.AppImage.zsync` are naturally rejected because
+/// their suffix is `.zsync`, not `.AppImage`.
+pub fn pick_asset<'a>(
+    assets: &'a [GitHubAsset],
+    arch: &str,
+    method: InstallMethod,
+) -> Option<&'a GitHubAsset> {
+    let format = AssetFormat::from_install_method(&method);
+    let expected = format!("-{arch}{}", format.filename_suffix()).to_ascii_lowercase();
+    assets
+        .iter()
+        .find(|a| a.name.to_ascii_lowercase().ends_with(&expected))
 }
 
 fn check_github_release() -> UpdateStatus {
@@ -93,19 +180,229 @@ fn check_github_release() -> UpdateStatus {
     };
 
     if remote > local {
-        let asset_url = release
-            .assets
-            .into_iter()
-            .find(|a| a.name.ends_with("-x86_64-linux.run"))
-            .map(|a| a.browser_download_url);
-        log::info!("update available: v{remote} (current: v{local})");
+        let method = install_method::detect();
+        let picked = pick_asset(&release.assets, std::env::consts::ARCH, method.clone());
+        let (asset_url, asset_format) = match picked {
+            Some(asset) => (
+                Some(asset.browser_download_url.clone()),
+                Some(AssetFormat::from_install_method(&method)),
+            ),
+            None => (None, None),
+        };
+        log::info!(
+            "update available: v{remote} (current: v{local}) — asset_format: {asset_format:?}"
+        );
         UpdateStatus::Available {
             version: remote.to_string(),
             url: release.html_url,
             asset_url,
+            asset_format,
         }
     } else {
         log::info!("up to date (v{local})");
         UpdateStatus::UpToDate
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn make_asset(name: &str) -> GitHubAsset {
+        GitHubAsset {
+            name: name.to_string(),
+            browser_download_url: format!("https://example.com/{name}"),
+        }
+    }
+
+    fn apt() -> InstallMethod {
+        InstallMethod::SystemPackage {
+            manager: PackageManager::Apt,
+        }
+    }
+    fn dnf() -> InstallMethod {
+        InstallMethod::SystemPackage {
+            manager: PackageManager::Dnf,
+        }
+    }
+    fn tar_gz() -> InstallMethod {
+        InstallMethod::TarGz {
+            app_dir: PathBuf::from("/home/u/.local/paneflow.app"),
+        }
+    }
+    fn app_image() -> InstallMethod {
+        InstallMethod::AppImage {
+            mount_point: PathBuf::from("/tmp/.mount_x"),
+            source_path: PathBuf::from("/home/u/Downloads/paneflow.AppImage"),
+        }
+    }
+
+    #[test]
+    fn apt_picks_deb() {
+        let assets = vec![
+            make_asset("paneflow-v0.2.0-x86_64.deb"),
+            make_asset("paneflow-v0.2.0-x86_64.tar.gz"),
+            make_asset("paneflow-v0.2.0-x86_64.AppImage"),
+        ];
+        let r = pick_asset(&assets, "x86_64", apt());
+        assert_eq!(
+            r.map(|a| a.name.as_str()),
+            Some("paneflow-v0.2.0-x86_64.deb")
+        );
+    }
+
+    #[test]
+    fn dnf_picks_rpm() {
+        let assets = vec![
+            make_asset("paneflow-v0.2.0-x86_64.rpm"),
+            make_asset("paneflow-v0.2.0-x86_64.deb"),
+            make_asset("paneflow-v0.2.0-x86_64.tar.gz"),
+        ];
+        let r = pick_asset(&assets, "x86_64", dnf());
+        assert_eq!(
+            r.map(|a| a.name.as_str()),
+            Some("paneflow-v0.2.0-x86_64.rpm")
+        );
+    }
+
+    #[test]
+    fn appimage_method_picks_appimage() {
+        let assets = vec![
+            make_asset("paneflow-v0.2.0-x86_64.AppImage"),
+            make_asset("paneflow-v0.2.0-x86_64.deb"),
+        ];
+        let r = pick_asset(&assets, "x86_64", app_image());
+        assert_eq!(
+            r.map(|a| a.name.as_str()),
+            Some("paneflow-v0.2.0-x86_64.AppImage")
+        );
+    }
+
+    #[test]
+    fn tar_gz_method_picks_tar_gz() {
+        let assets = vec![
+            make_asset("paneflow-v0.2.0-x86_64.tar.gz"),
+            make_asset("paneflow-v0.2.0-x86_64.deb"),
+        ];
+        let r = pick_asset(&assets, "x86_64", tar_gz());
+        assert_eq!(
+            r.map(|a| a.name.as_str()),
+            Some("paneflow-v0.2.0-x86_64.tar.gz")
+        );
+    }
+
+    #[test]
+    fn tar_gz_method_picks_tar_gz_aarch64() {
+        // US-019 AC5 regression test. A multi-arch release carries both
+        // x86_64 and aarch64 assets; an aarch64 host using the TarGz
+        // install method must receive the aarch64 tar.gz, never the
+        // x86_64 one and never an arch-mismatched .deb.
+        let assets = vec![
+            make_asset("paneflow-v0.2.0-x86_64.tar.gz"),
+            make_asset("paneflow-v0.2.0-x86_64.deb"),
+            make_asset("paneflow-v0.2.0-aarch64.tar.gz"),
+            make_asset("paneflow-v0.2.0-aarch64.deb"),
+        ];
+        let r = pick_asset(&assets, "aarch64", tar_gz());
+        assert_eq!(
+            r.map(|a| a.name.as_str()),
+            Some("paneflow-v0.2.0-aarch64.tar.gz")
+        );
+    }
+
+    #[test]
+    fn unknown_method_falls_back_to_tar_gz() {
+        let assets = vec![
+            make_asset("paneflow-v0.2.0-x86_64.tar.gz"),
+            make_asset("paneflow-v0.2.0-x86_64.deb"),
+            make_asset("paneflow-v0.2.0-x86_64.AppImage"),
+        ];
+        let r = pick_asset(&assets, "x86_64", InstallMethod::Unknown);
+        assert_eq!(
+            r.map(|a| a.name.as_str()),
+            Some("paneflow-v0.2.0-x86_64.tar.gz")
+        );
+    }
+
+    #[test]
+    fn fedora_never_handed_deb_fallback() {
+        // Release has .deb + .tar.gz but NO .rpm. Fedora user must get
+        // `None`, not a cross-format `.deb`.
+        let assets = vec![
+            make_asset("paneflow-v0.2.0-x86_64.deb"),
+            make_asset("paneflow-v0.2.0-x86_64.tar.gz"),
+        ];
+        let r = pick_asset(&assets, "x86_64", dnf());
+        assert!(r.is_none(), "Fedora user must NOT receive a .deb");
+    }
+
+    #[test]
+    fn multi_arch_release_picks_correct_arch() {
+        let assets = vec![
+            make_asset("paneflow-v0.2.0-aarch64.deb"),
+            make_asset("paneflow-v0.2.0-x86_64.deb"),
+        ];
+        let x = pick_asset(&assets, "x86_64", apt());
+        assert_eq!(
+            x.map(|a| a.name.as_str()),
+            Some("paneflow-v0.2.0-x86_64.deb")
+        );
+        let a = pick_asset(&assets, "aarch64", apt());
+        assert_eq!(
+            a.map(|a| a.name.as_str()),
+            Some("paneflow-v0.2.0-aarch64.deb")
+        );
+    }
+
+    #[test]
+    fn match_is_case_insensitive() {
+        let assets = vec![make_asset("PaneFlow-v0.2.0-X86_64.DEB")];
+        let r = pick_asset(&assets, "x86_64", apt());
+        assert!(r.is_some(), "case-insensitive match failed");
+    }
+
+    #[test]
+    fn returns_none_when_no_matching_asset() {
+        let assets = vec![
+            make_asset("README.md"),
+            make_asset("paneflow-v0.2.0-x86_64.AppImage.zsync"),
+        ];
+        let r = pick_asset(&assets, "x86_64", tar_gz());
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn zsync_sidecar_never_picked_for_appimage() {
+        // The CI produces both paneflow-*.AppImage and its .AppImage.zsync
+        // sidecar. The matcher must prefer the runnable .AppImage, never the
+        // .zsync metadata file.
+        let assets = vec![
+            make_asset("paneflow-v0.2.0-x86_64.AppImage.zsync"),
+            make_asset("paneflow-v0.2.0-x86_64.AppImage"),
+        ];
+        let r = pick_asset(&assets, "x86_64", app_image());
+        assert_eq!(
+            r.map(|a| a.name.as_str()),
+            Some("paneflow-v0.2.0-x86_64.AppImage")
+        );
+    }
+
+    #[test]
+    fn format_from_install_method_mapping() {
+        assert_eq!(AssetFormat::from_install_method(&apt()), AssetFormat::Deb);
+        assert_eq!(AssetFormat::from_install_method(&dnf()), AssetFormat::Rpm);
+        assert_eq!(
+            AssetFormat::from_install_method(&tar_gz()),
+            AssetFormat::TarGz
+        );
+        assert_eq!(
+            AssetFormat::from_install_method(&app_image()),
+            AssetFormat::AppImage
+        );
+        assert_eq!(
+            AssetFormat::from_install_method(&InstallMethod::Unknown),
+            AssetFormat::TarGz
+        );
     }
 }

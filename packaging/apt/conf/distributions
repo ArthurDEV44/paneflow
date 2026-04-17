@@ -1,0 +1,29 @@
+# reprepro distribution config for PaneFlow's APT repo (US-015).
+#
+# Consumed by: `reprepro -b <repo-root> includedeb stable <file.deb>`
+# Emits:       dists/stable/{Release,Release.gpg,InRelease} + pool entries
+#
+# The `SignWith:` line uses a placeholder `REPLACE_WITH_GPG_KEY_ID` that
+# the repo-publish.yml workflow sed-substitutes at runtime with the
+# 40-character fingerprint from the `GPG_KEY_ID` secret (US-017). We do
+# NOT commit the real fingerprint to git — it would be mildly sensitive
+# cross-reference to the signing key, and keeping the placeholder forces
+# anyone hand-running `reprepro` locally to substitute it explicitly
+# (no silent drift to an un-signed repo).
+#
+# `Codename` and `Suite` are both `stable` — clients write `deb … stable
+# main` in their sources.list and apt matches either field.
+#
+# `Architectures: amd64 arm64` — cargo-deb emits `amd64` for x86_64
+# (EP-001) and will emit `arm64` for aarch64 (EP-004 / US-019). Phase 1
+# only ships amd64, but listing arm64 here is a no-op until the first
+# arm64 .deb is included — reprepro only populates what you give it.
+
+Origin: PaneFlow
+Label: PaneFlow
+Suite: stable
+Codename: stable
+Architectures: amd64 arm64
+Components: main
+Description: PaneFlow APT repository
+SignWith: REPLACE_WITH_GPG_KEY_ID

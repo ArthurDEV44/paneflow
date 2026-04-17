@@ -1,6 +1,10 @@
 # Rust
 /target/
 **/*.rs.bk
+# Occasional rustc `--emit=link` leftovers at the repo root (name chosen by
+# the compiler when stdout is piped to a file). Ignored because they can be
+# multi-MB binaries with no reason to exist in the tree.
+/rust_out
 
 # IDE
 .idea/

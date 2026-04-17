@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# PaneFlow AppImage entry point.
+#
+# Responsibilities:
+#   1. Add the AppImage's bundled usr/lib to LD_LIBRARY_PATH so that
+#      the libraries linuxdeploy bundled (xcb, xkbcommon, fontconfig,
+#      freetype, wayland-client, ...) are resolved inside the AppImage.
+#   2. exec the real binary.
+#
+# Intentionally does NOT:
+#   - set VK_ICD_FILENAMES or bundle Vulkan ICDs. The Vulkan loader must
+#     use the host's ICDs (mesa, nvidia, amdvlk, ...). Bundling an ICD
+#     makes the AppImage break across GPU vendors.
+#   - set LD_PRELOAD, GTK_MODULES, or any env var that could leak
+#     host-incompatible libraries into the process.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd -P)"
+
+export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+exec "$HERE/usr/bin/paneflow" "$@"

@@ -17,8 +17,17 @@ pub struct TitleBar {
 #[derive(Clone)]
 pub struct UpdateInfo {
     pub version: String,
-    /// Live state of the in-app self-update flow — controls the pill label.
-    pub self_update: SelfUpdatePillState,
+    /// Which pill to render — the in-app flow or the system-package hint.
+    pub kind: UpdatePillKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UpdatePillKind {
+    /// In-app self-update flow (AppImage / tar.gz / unknown fallback).
+    InApp(SelfUpdatePillState),
+    /// Managed by the host's package manager (US-012). Clicking the pill
+    /// never downloads — it shows a toast with the exact upgrade command.
+    SystemManaged(SystemPackageKind),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -27,6 +36,28 @@ pub enum SelfUpdatePillState {
     Downloading,
     Installing,
     Errored,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SystemPackageKind {
+    Apt,
+    Dnf,
+    /// `SystemPackage` was detected but neither apt nor dnf markers were
+    /// present (e.g., `eopkg` on Solus, `xbps` on Void).
+    Other,
+}
+
+/// Internal visual/interaction mode for the update pill.
+#[derive(Clone, Copy)]
+enum PillStyle {
+    /// Default accent pill; pointer cursor + hover fade. Dispatches the
+    /// in-app update action.
+    Clickable,
+    /// De-emphasized, non-interactive (download/install in flight).
+    Busy,
+    /// System-managed install: de-emphasized, default cursor, still clickable
+    /// to reveal the package-manager hint toast.
+    SystemHint,
 }
 
 impl TitleBar {
@@ -119,12 +150,33 @@ impl Render for TitleBar {
 
         // --- Update available pill ---
         let update_pill = self.update_available.clone().map(|info| {
-            let (label, is_clickable): (String, bool) = match info.self_update {
-                SelfUpdatePillState::Idle => (format!("v{} available", info.version), true),
-                SelfUpdatePillState::Downloading => ("Downloading…".to_string(), false),
-                SelfUpdatePillState::Installing => ("Installing…".to_string(), false),
-                SelfUpdatePillState::Errored => ("Update failed".to_string(), true),
+            // Decide label + visual style per install method. The click handler
+            // always dispatches `StartSelfUpdate`; the action handler in
+            // `PaneFlowApp` decides whether to download (in-app) or show the
+            // package-manager hint toast (system-managed).
+            let (label, style): (String, PillStyle) = match info.kind {
+                UpdatePillKind::InApp(state) => match state {
+                    SelfUpdatePillState::Idle => {
+                        (format!("v{} available", info.version), PillStyle::Clickable)
+                    }
+                    SelfUpdatePillState::Downloading => {
+                        ("Downloading…".to_string(), PillStyle::Busy)
+                    }
+                    SelfUpdatePillState::Installing => ("Installing…".to_string(), PillStyle::Busy),
+                    SelfUpdatePillState::Errored => {
+                        ("Update failed".to_string(), PillStyle::Clickable)
+                    }
+                },
+                UpdatePillKind::SystemManaged(kind) => {
+                    let label = match kind {
+                        SystemPackageKind::Apt => "Update via apt".to_string(),
+                        SystemPackageKind::Dnf => "Update via dnf".to_string(),
+                        SystemPackageKind::Other => "Update via package manager".to_string(),
+                    };
+                    (label, PillStyle::SystemHint)
+                }
             };
+
             let mut pill = div()
                 .id("update-pill")
                 .ml_auto()
@@ -139,14 +191,25 @@ impl Render for TitleBar {
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(label);
-            if is_clickable {
-                pill = pill.cursor_pointer().hover(|s| s.opacity(0.7)).on_click(
-                    move |_, window, cx| {
+            match style {
+                PillStyle::Clickable => {
+                    pill = pill.cursor_pointer().hover(|s| s.opacity(0.7)).on_click(
+                        move |_, window, cx| {
+                            window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
+                        },
+                    );
+                }
+                PillStyle::Busy => {
+                    pill = pill.opacity(0.75);
+                }
+                // De-emphasized but still clickable so the hint toast shows.
+                // Cursor stays default (per US-012 AC) to signal that clicking
+                // doesn't perform the update itself.
+                PillStyle::SystemHint => {
+                    pill = pill.opacity(0.7).on_click(move |_, window, cx| {
                         window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
-                    },
-                );
-            } else {
-                pill = pill.opacity(0.75);
+                    });
+                }
             }
             pill
         });
