@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
+import Image from "next/image";
 import { GitHubIcon } from "./icons";
 
 export function Navbar() {
@@ -22,17 +24,34 @@ export function Navbar() {
     >
       <div className="mx-auto max-w-6xl px-6">
         <nav className="flex items-center justify-between h-16">
-          <a href="/" className="text-sm font-semibold tracking-tight">
+          <Link
+            href="/"
+            className="flex items-center gap-2 text-sm font-semibold tracking-tight"
+          >
+            <Image
+              src="/logos/paneflow-web-300.png"
+              alt="PaneFlow"
+              width={28}
+              height={28}
+              priority
+              className="h-7 w-7"
+            />
             PaneFlow
-          </a>
+          </Link>
 
           <div className="flex items-center gap-6">
-            <a
-              href="#features"
+            <Link
+              href="/#features"
               className="text-sm text-text-muted hover:text-text transition-colors duration-200 hidden sm:block"
             >
               Features
-            </a>
+            </Link>
+            <Link
+              href="/download"
+              className="text-sm text-text-muted hover:text-text transition-colors duration-200 hidden sm:block"
+            >
+              Download
+            </Link>
             <a
               href="https://github.com/ArthurDEV44/paneflow#readme"
               className="text-sm text-text-muted hover:text-text transition-colors duration-200 hidden sm:block"

@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import { motion } from "framer-motion";
 import { Download } from "lucide-react";
 import { GitHubIcon } from "./icons";
@@ -53,13 +54,13 @@ export function Hero() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.5 }}
         >
-          <a
-            href="https://github.com/ArthurDEV44/paneflow/releases"
+          <Link
+            href="/download"
             className="inline-flex items-center gap-2.5 px-6 py-3 bg-accent text-bg font-semibold rounded-lg hover:brightness-110 transition-all duration-200"
           >
             <Download className="w-4 h-4" />
             Download for Linux
-          </a>
+          </Link>
           <a
             href="https://github.com/ArthurDEV44/paneflow"
             className="inline-flex items-center gap-2.5 px-6 py-3 border border-surface-border text-text-muted rounded-lg hover:border-surface-border-hover hover:text-text transition-all duration-200"
