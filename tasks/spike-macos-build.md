@@ -112,3 +112,24 @@ PaneFlow has no Vulkan-specific assumptions — all rendering goes through GPUI'
 ## Conclusion
 
 PaneFlow's codebase is now macOS-compilation-ready at the source level. The one compile blocker (Cargo.toml feature gating) and one functional issue (`/proc` path) have been resolved. All remaining code uses cross-platform APIs (POSIX Unix, portable-pty, GPUI abstractions). Full validation awaits macOS hardware.
+
+## Addendum: US-002 finding (2026-04-17) — core-graphics coexistence, patch not applied
+
+`prd-macos-port.md` US-002 calls for a `[patch.crates-io] core-graphics = "0.24"` block if US-001's CI surfaces duplicate `core-graphics` symbols at link time. AC4 allows the story to be cancelled if no conflict manifests.
+
+Cargo.lock inspection confirms the expected dual-version presence:
+
+| Version | Depender | Notes |
+|---------|----------|-------|
+| `core-graphics 0.23.2` | `zed-scap` (git) → `cocoa 0.25.0` | macOS-only closure; screen-capture branch |
+| `core-graphics 0.24.0` | Direct + `cocoa 0.26.0` closure | Primary GPUI macOS path |
+
+Rust's symbol mangling namespaces each crate instantiation distinctly, so the two versions are expected to co-link without collision. This matches the PRD's baseline assumption (Overview → Assumptions → core-graphics note).
+
+The prescribed simple remediation (`core-graphics = "0.24"` in `[patch.crates-io]`) would NOT resolve cleanly because `cocoa 0.25.0` pins `core-graphics ^0.23` — a 0.24 replacement violates that constraint and Cargo would reject the patch. A real remediation, if ever required, would need either:
+1. a targeted patch redirect with a version spoof, or
+2. an upstream bump of `zed-scap` to a rev using `cocoa 0.26` (removing the 0.23 branch entirely).
+
+Both are out of scope for US-002 as written.
+
+**Resolution:** US-002 marked `CANCELLED`. If the US-001 CI run on `macos-14` surfaces duplicate-symbol link errors, reopen US-002 and re-scope to option (1) or (2) above.
