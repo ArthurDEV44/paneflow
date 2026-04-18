@@ -11,6 +11,34 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # US-018 AC1 + AC5: compute whether this event touches Rust-relevant code
+  # so the (expensive) macos-14 runner only spins up when it would actually
+  # catch a regression. Exports `rust=true|false`; downstream macos-check
+  # job gates on it.
+  #
+  # Filter scope (AC1): Rust sources and their manifests, plus this very
+  # workflow file — because a PR that edits ci.yml to tune the macOS gate
+  # MUST also exercise the gate it's tuning, otherwise "fix the CI" PRs
+  # self-skip and ship broken.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'src-app/**/*.rs'
+              - 'crates/**/*.rs'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+
   check:
     name: Check, Lint & Test
     runs-on: ubuntu-latest
@@ -47,3 +75,126 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  # US-001 (prd-macos-port.md): smoke build on Apple Silicon so the PaneFlow
+  # dependency closure at the pinned GPUI rev (0b984b5) is proven to compile
+  # on aarch64-apple-darwin before any of EP-002..EP-005 lands. The job runs
+  # on every PR so a regression in platform-gated code is caught at the PR
+  # gate rather than at release cut.
+  #
+  # Runner: macos-14 (Apple Silicon M1, 3 vCPU / 7 GB, Xcode + CLT preinstalled).
+  # Fallback: if a PR consistently exceeds 20 min wall time on macos-14,
+  # swap to `macos-14-xlarge` (6 vCPU, paid tier) and note the rationale
+  # in the PR description per US-001 AC5.
+  macos-check:
+    name: macOS aarch64 smoke build
+    # US-018 AC5: only run when Rust-relevant files change. `needs: changes`
+    # waits for the cheap filter job (runs on ubuntu-latest, ~seconds) and
+    # short-circuits the 14× pricier macos-14 runner on docs-only /
+    # non-workflow .github/** PRs.
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # US-003 — fail fast if the runner image drifts away from a full Xcode
+      # install. The macos-14 hosted image ships Xcode 15+ with the Metal
+      # toolchain preinstalled, so under normal conditions every check here
+      # succeeds silently; the value is turning an otherwise cryptic mid-compile
+      # "Metal.h: no such file" error into a clearly labelled preflight failure
+      # that points at the runner configuration rather than the Rust source.
+      #
+      # The same step is expected to be ported to release.yml's macos-14 matrix
+      # leg when US-019 adds it — keep this block in sync across workflows.
+      - name: Verify Xcode CLT + Metal toolchain
+        run: |
+          set -euo pipefail
+
+          CLT_PATH="$(xcode-select -p 2>/dev/null || true)"
+          if [ -z "$CLT_PATH" ] || [ ! -d "$CLT_PATH" ]; then
+            echo "::error::Xcode Command Line Tools not found (xcode-select -p returned '$CLT_PATH'). GitHub macos-14 runners should ship Xcode preinstalled — this indicates a runner image drift or a misconfigured self-hosted runner."
+            exit 1
+          fi
+          echo "Xcode CLT path: $CLT_PATH"
+
+          SDK_PATH="$(xcrun --show-sdk-path 2>/dev/null || true)"
+          if [ -z "$SDK_PATH" ] || [ ! -d "$SDK_PATH" ]; then
+            echo "::error::macOS SDK not found (xcrun --show-sdk-path returned '$SDK_PATH')."
+            exit 1
+          fi
+          echo "macOS SDK path: $SDK_PATH"
+
+          if ! xcrun --find metal >/dev/null 2>&1; then
+            echo "::error::Metal compiler (xcrun --find metal) not available — the Metal Developer Tools component is missing from this Xcode install. gpui_macos compiles .metal shaders and will fail without it."
+            exit 1
+          fi
+          echo "Metal compiler: $(xcrun --find metal)"
+
+          METAL_HEADERS="$SDK_PATH/System/Library/Frameworks/Metal.framework/Headers"
+          if [ ! -d "$METAL_HEADERS" ]; then
+            echo "::error::Metal framework headers not found at $METAL_HEADERS. gpui_macos Objective-C bridging will fail with header-not-found errors."
+            exit 1
+          fi
+          echo "Metal framework headers: $METAL_HEADERS"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+          # US-018 AC2 adds cargo fmt + cargo clippy steps below — those
+          # need the rustfmt + clippy components, which dtolnay's action
+          # does NOT install by default even when `targets:` is set.
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64-apple-darwin
+
+      # US-018 AC2 — formatting + lint on macOS. fmt is platform-agnostic
+      # but runs here too so formatter version drift between local Linux
+      # dev machines and the macOS runner never sneaks past the gate.
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      # clippy is scoped to the aarch64-apple-darwin target so it
+      # type-checks platform-gated modules (runtime_paths.rs macOS arm,
+      # install_method::AppBundle, update_checker::AssetFormat::Dmg,
+      # etc.) that the ubuntu `check` job would otherwise miss.
+      - name: cargo clippy (aarch64-apple-darwin)
+        run: cargo clippy --workspace --target aarch64-apple-darwin -- -D warnings
+
+      # cargo test on the config crate (39 tests) + app crate (testable
+      # modules like keybindings / update_checker with 150+ tests).
+      # `--target` pins compilation to aarch64-apple-darwin so test
+      # binaries are native Mach-O and the test run exercises the real
+      # macOS codepath, not a Linux-host proxy.
+      - name: cargo test --workspace
+        run: cargo test --workspace --target aarch64-apple-darwin
+
+      # AC1 — cargo check must exit 0 with no linker errors.
+      - name: cargo check (aarch64-apple-darwin)
+        run: cargo check --workspace --target aarch64-apple-darwin
+
+      # AC2 — release build produces the expected binary path.
+      - name: cargo build --release (aarch64-apple-darwin)
+        run: cargo build --release -p paneflow-app --target aarch64-apple-darwin
+
+      # AC3 — verify the produced binary is a Mach-O arm64 executable.
+      - name: Verify Mach-O arm64 binary
+        run: |
+          BIN=target/aarch64-apple-darwin/release/paneflow
+          test -f "$BIN"
+          file "$BIN"
+          file "$BIN" | grep -q 'Mach-O 64-bit executable arm64'
+
+      # AC4 — on failure the job logs already capture the failing crate and
+      # error; uploading the binary on success gives reviewers an artifact
+      # they can `file`/`otool` locally if something downstream misbehaves.
+      - name: Upload aarch64 binary artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paneflow-aarch64-apple-darwin
+          path: target/aarch64-apple-darwin/release/paneflow
+          if-no-files-found: error
+          retention-days: 7

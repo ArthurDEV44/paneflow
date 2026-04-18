@@ -1,0 +1,188 @@
+name: Update Homebrew Cask
+
+# US-017 AC4. Triggered whenever a GitHub Release is *published* (not just
+# a tag push): grabs the freshly-attached .dmg assets, computes their
+# SHA-256s, renders Casks/paneflow.rb from the canonical template at
+# packaging/homebrew/paneflow.rb, and pushes the result into the external
+# tap repo https://github.com/ArthurDEV44/homebrew-paneflow.
+#
+# Prereqs (one-time, manual):
+#   - ArthurDEV44/homebrew-paneflow exists (empty Casks/ dir).
+#   - Repo secret HOMEBREW_TAP_TOKEN holds a PAT scoped to the tap repo
+#     with `contents: read-and-write`. The default GITHUB_TOKEN cannot
+#     push to an external repo.
+#
+# Why `release: published` and not `push: tags`:
+#   - The release workflow must finish (produce + upload the .dmg) before
+#     this one can compute SHAs. `release: published` fires after the
+#     release is fully created, so the assets exist when we download.
+#   - A `push: tags` trigger would race the release workflow's asset
+#     upload and often fail with "404 Not Found" on `gh release download`.
+
+on:
+  release:
+    types: [published]
+  # Allow manual re-runs so operator can recover from a transient network
+  # hiccup without cutting a new release tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to mirror (e.g. v0.2.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  update-cask:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Resolve tag
+        id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "release" ]; then
+            tag="$RELEASE_TAG"
+          else
+            tag="$DISPATCH_TAG"
+          fi
+          if [ -z "$tag" ]; then
+            echo "::error::could not resolve tag from event payload"
+            exit 1
+          fi
+          # The tag comes from an attacker-controllable input in the
+          # workflow_dispatch branch, and is later interpolated into
+          # `sed` substitution patterns (lines below that render
+          # Casks/paneflow.rb). Validate strictly before use: leading
+          # `v`, then semver major.minor.patch, optional `-prerelease`
+          # where prerelease is dot-separated alphanumerics. Anything
+          # else rejects the run — no sed injection via crafted tag.
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "::error::tag '$tag' does not match expected format vMAJOR.MINOR.PATCH[-PRERELEASE]"
+            exit 1
+          fi
+          # Cask DSL `version` is tag-minus-leading-v (matches cargo's SemVer).
+          version="${tag#v}"
+          echo "tag=$tag"      | tee -a "$GITHUB_OUTPUT"
+          echo "version=$version" | tee -a "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+
+      - name: Download .dmg assets from the release
+        # `gh release download --pattern` globs by filename; our naming
+        # convention is paneflow-<version>-{aarch64,x86_64}-apple-darwin.dmg
+        # (US-016). Download to a scratch dir so we don't pollute cwd.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dmg-staging
+          cd dmg-staging
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'paneflow-*-apple-darwin.dmg'
+          ls -la
+
+      - name: Compute SHA-256s
+        id: sha
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          arm_dmg="dmg-staging/paneflow-${VERSION}-aarch64-apple-darwin.dmg"
+          intel_dmg="dmg-staging/paneflow-${VERSION}-x86_64-apple-darwin.dmg"
+          # Apple Silicon is P0 (required). x86_64 is best-effort (release.yml
+          # marks the Intel matrix leg `continue-on-error: true`, so a broken
+          # macos-13 runner must not block the cask update for ARM users).
+          # When Intel is missing we reuse the ARM SHA as a placeholder — users
+          # on Intel get a 404 on the `.dmg` URL rather than a checksum error,
+          # which is a cleaner failure mode and self-heals the moment a later
+          # release ships both arches.
+          if [ ! -f "$arm_dmg" ]; then
+            echo "::error::missing aarch64 .dmg — Apple Silicon is a P0 artifact and must be present for a cask update"
+            ls -la dmg-staging/ >&2
+            exit 1
+          fi
+          arm_sha="$(shasum -a 256 "$arm_dmg" | awk '{print $1}')"
+          if [ -f "$intel_dmg" ]; then
+            intel_sha="$(shasum -a 256 "$intel_dmg" | awk '{print $1}')"
+          else
+            echo "::warning::x86_64 .dmg absent for v${VERSION} — falling back to aarch64 SHA for the intel slot (Intel users will hit a 404 until the next release that ships x86_64)"
+            intel_sha="$arm_sha"
+          fi
+          echo "arm=$arm_sha"   | tee -a "$GITHUB_OUTPUT"
+          echo "intel=$intel_sha" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Render updated Casks/paneflow.rb
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          ARM_SHA: ${{ steps.sha.outputs.arm }}
+          INTEL_SHA: ${{ steps.sha.outputs.intel }}
+        run: |
+          set -euo pipefail
+          # sed is deliberately pinned to the three version/sha lines
+          # — any other change to paneflow.rb flows through unmodified,
+          # so non-version edits (zap paths, depends_on bumps) make it
+          # into the tap on the next release.
+          #
+          # Using `|` as the sed delimiter to avoid clashes with the
+          # URL's `/` characters; the version/sha values we substitute
+          # never contain `|`.
+          sed \
+            -e "s|^  version \".*\"|  version \"${VERSION}\"|" \
+            -e "s|^  sha256 arm:   \".*\",|  sha256 arm:   \"${ARM_SHA}\",|" \
+            -e "s|^         intel: \".*\"|         intel: \"${INTEL_SHA}\"|" \
+            packaging/homebrew/paneflow.rb > /tmp/paneflow.rb
+          echo "--- rendered Casks/paneflow.rb ---"
+          cat /tmp/paneflow.rb
+
+      - name: Push to tap repo
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN secret is not set — cannot push to tap repo. See packaging/homebrew/paneflow.rb header for setup steps."
+            exit 1
+          fi
+          tmp="$(mktemp -d)"
+          # Authenticate via a stdin-fed credential helper so the token
+          # never lands in argv (visible via /proc/<pid>/cmdline to any
+          # same-uid process), the reflog, or shell history. `git -c`
+          # options ARE recorded in /proc/<pid>/cmdline — so passing the
+          # bearer token that way (even via env-expanded $VAR) leaks it
+          # for the lifetime of the clone and push processes.
+          #
+          # `credential.helper=!f() { ... }; f` defines an inline shell
+          # helper that git invokes when it needs credentials. The helper
+          # replies `username=x-access-token` + `password=<token>` on
+          # stdout; git consumes it internally without ever placing the
+          # token on the command line. The token is read from the
+          # HOMEBREW_TAP_TOKEN env var already exported to this step.
+          helper='!f() { echo "username=x-access-token"; echo "password=$HOMEBREW_TAP_TOKEN"; }; f'
+          git -c credential.helper="" \
+              -c credential.helper="$helper" \
+              clone --depth=1 https://github.com/ArthurDEV44/homebrew-paneflow.git "$tmp"
+          mkdir -p "$tmp/Casks"
+          cp /tmp/paneflow.rb "$tmp/Casks/paneflow.rb"
+          cd "$tmp"
+          # Identity is the "github-actions[bot]" synthetic user; commits
+          # from a workflow default to this when no committer is
+          # configured, and GitHub renders them with the automation badge.
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/paneflow.rb
+          if git diff --cached --quiet; then
+            echo "Cask already up-to-date for v${VERSION} — nothing to commit."
+            exit 0
+          fi
+          git commit -m "paneflow ${VERSION}" -m "Automated update from ArthurDEV44/paneflow release v${VERSION}."
+          git -c credential.helper="" \
+              -c credential.helper="$helper" \
+              push origin HEAD
