@@ -139,13 +139,129 @@ if set -q __PANEFLOW_BIN_DIR; and test "$PATH[1]" != "$__PANEFLOW_BIN_DIR"
 end
 "#;
 
+/// PowerShell 5.1 / 7 (pwsh): dot-sourced via `-NoExit -Command ". <path>"`,
+/// which runs AFTER the user's `$PROFILE`, so any `prompt` function they
+/// defined is already in place. We capture it as a ScriptBlock and wrap it
+/// non-destructively so their prompt still renders while we emit OSC 7.
+///
+/// BEL terminator (``a``) matches the zsh/bash/fish emitters so PaneFlow's
+/// shared OSC 7 parser handles Windows and Unix identically.
+///
+/// US-012 — prd-windows-port.md.
+const PWSH_OSC7: &str = r#"# PaneFlow shell integration - OSC 7 CWD reporting (US-012)
+# Non-destructive: wraps the existing `prompt` function so the user's
+# prompt still renders. Loaded via `pwsh -NoExit -Command ". <this>"`.
+
+$__paneflow_prev_prompt = Get-Item function:prompt
+function global:prompt {
+    $cwd = (Get-Location).ProviderPath
+    # OSC 7 with BEL terminator (matches zsh/bash/fish emitters).
+    [Console]::Write("`e]7;file://$env:COMPUTERNAME$cwd`a")
+    & $__paneflow_prev_prompt.ScriptBlock
+}
+"#;
+
+/// Resolve the default shell path following a platform-specific fallback chain
+/// (US-006 — prd-windows-port.md). Returns the path that should be passed to
+/// `portable-pty`'s `CommandBuilder::new`.
+///
+/// Unix chain: configured (if executable) → `$SHELL` → `/bin/sh`.
+/// Windows chain: configured (if present, resolved via PATH when it has no
+/// separators) → `%ComSpec%` → `C:\Windows\System32\cmd.exe` → `powershell.exe`
+/// on PATH → bare `"cmd.exe"` (last-ditch; the spawner will search PATH and
+/// surface a clearly-located error if even this fails).
+fn resolve_default_shell(configured: Option<&str>) -> String {
+    if let Some(path) = configured {
+        if let Some(resolved) = configured_shell_if_usable(path) {
+            return resolved;
+        }
+        log::warn!(
+            "Configured default_shell {:?} not found or not executable, \
+             falling back to platform defaults",
+            path
+        );
+    }
+    resolve_default_shell_fallback()
+}
+
+/// Validate that a user-configured shell entry resolves to an executable file.
+/// Bare names (no path separators) are searched on PATH via `which` — this is
+/// what lets `"default_shell": "pwsh.exe"` work on Windows without the user
+/// having to hard-code `C:\Program Files\PowerShell\7\pwsh.exe`.
+fn configured_shell_if_usable(path: &str) -> Option<String> {
+    let has_separator = path.contains('/') || path.contains('\\');
+    let candidate: std::path::PathBuf = if has_separator {
+        std::path::PathBuf::from(path)
+    } else {
+        which::which(path).ok()?
+    };
+    let is_executable = candidate.is_file() && {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(&candidate)
+                .map(|m| m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+        }
+        #[cfg(windows)]
+        {
+            std::fs::metadata(&candidate).is_ok()
+        }
+    };
+    if is_executable {
+        Some(candidate.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
+#[cfg(unix)]
+fn resolve_default_shell_fallback() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+}
+
+#[cfg(windows)]
+fn resolve_default_shell_fallback() -> String {
+    // %ComSpec% — Windows convention for "the command interpreter",
+    // respected by every console app on the platform.
+    if let Ok(com_spec) = std::env::var("ComSpec") {
+        if std::path::Path::new(&com_spec).is_file() {
+            return com_spec;
+        }
+    }
+    // Canonical cmd.exe location (works on every supported Windows since
+    // 10 1809; we pin the 64-bit System32 path — WOW64 users still see
+    // cmd.exe there via redirection).
+    const CMD_FALLBACK: &str = r"C:\Windows\System32\cmd.exe";
+    if std::path::Path::new(CMD_FALLBACK).is_file() {
+        return CMD_FALLBACK.to_string();
+    }
+    // PowerShell 5.1 (bundled with Windows) or pwsh.exe (PowerShell 7) —
+    // `which` appends PATHEXT extensions when resolving.
+    if let Ok(pwsh) = which::which("powershell.exe") {
+        return pwsh.to_string_lossy().into_owned();
+    }
+    // Last-ditch: return bare "cmd.exe" and let the spawner search PATH.
+    log::error!(
+        "Windows shell fallback chain exhausted: %ComSpec%, C:\\Windows\\System32\\cmd.exe, \
+         and powershell.exe on PATH all unavailable. Falling back to bare 'cmd.exe'; \
+         PTY spawn will fail with a clear error if even this is missing."
+    );
+    "cmd.exe".to_string()
+}
+
 /// Write OSC 7 shell integration scripts and return the extra shell args
 /// and env vars needed to activate them. Scripts are written to
-/// `$XDG_DATA_HOME/paneflow/shell/{zsh,bash,fish}/`.
+/// `$XDG_DATA_HOME/paneflow/shell/{zsh,bash,fish,pwsh}/` (`%APPDATA%\paneflow\shell\`
+/// on Windows).
 ///
-/// # Platform gaps (for future porting)
-/// - **Windows**: PowerShell needs a `prompt` function override;
-///   cmd.exe has no hook mechanism (consider ConPTY passthrough).
+/// Supported shells:
+/// - **zsh, bash, fish** — BEL-terminated OSC 7 via per-prompt hooks.
+/// - **PowerShell 5.1 / pwsh 7** (US-012) — `prompt` function wrapper,
+///   dot-sourced so the user's `$PROFILE`-defined prompt still renders.
+/// - **cmd.exe** — `info!` log only; cmd has no per-prompt scripting hook,
+///   so split-pane CWD inheritance from a cmd.exe pane is v1-unsupported
+///   (documented in `docs/WINDOWS.md` per US-022).
 /// - **Shells without injection** (nushell, elvish, xonsh): rely on
 ///   `cwd_now()` fallback. On macOS this requires `proc_pidinfo()`.
 fn setup_shell_integration(
@@ -156,8 +272,20 @@ fn setup_shell_integration(
         return vec![];
     };
 
-    let basename = shell.rsplit('/').next().unwrap_or(shell);
-    match basename {
+    // US-006 — `Path::file_name()` is path-separator-agnostic:
+    //   /bin/zsh  → "zsh"      (Unix)
+    //   C:\Windows\System32\cmd.exe → "cmd.exe"  (Windows)
+    //   zsh (bare) → "zsh"     (either platform)
+    let basename = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(shell);
+    // US-012 — normalize for case-insensitive match + optional `.exe`
+    // suffix. Windows allows `pwsh` and `pwsh.exe` interchangeably on
+    // PATH; Unix shell names (lowercase, no suffix) are unaffected.
+    let normalized = basename.to_ascii_lowercase();
+    let key = normalized.trim_end_matches(".exe");
+    match key {
         "zsh" => {
             let dir = base.join("zsh");
             if std::fs::create_dir_all(&dir).is_err() {
@@ -190,6 +318,42 @@ fn setup_shell_integration(
                 "--init-command".into(),
                 format!("source {}", initfile.display()),
             ]
+        }
+        // US-012 — PowerShell 7 (pwsh) and Windows PowerShell 5.1 share
+        // the same `function prompt { ... }` hook mechanism, so one
+        // script serves both. `-NoExit` keeps the shell interactive after
+        // the init command; `-Command ". 'path'"` dot-sources our script
+        // AFTER the user's `$PROFILE` has loaded any `prompt` they
+        // defined (so we can wrap rather than replace it).
+        "pwsh" | "powershell" => {
+            let dir = base.join("pwsh");
+            if std::fs::create_dir_all(&dir).is_err() {
+                return vec![];
+            }
+            let initfile = dir.join("osc7.ps1");
+            let _ = std::fs::write(&initfile, PWSH_OSC7);
+            // Single-quote the path and escape any embedded single
+            // quotes ('' is the literal single-quote inside a single-
+            // quoted PowerShell string). Guards against pathological
+            // usernames without breaking the common case.
+            let escaped = initfile.display().to_string().replace('\'', "''");
+            vec![
+                "-NoExit".into(),
+                "-Command".into(),
+                format!(". '{escaped}'"),
+            ]
+        }
+        // US-012 AC-5 — cmd.exe has no scripting hook for per-prompt
+        // actions (its `$PROMPT` env var controls only the displayed
+        // text, not arbitrary execution). Split-pane CWD inheritance
+        // from cmd.exe panes is v1-unsupported; users can `cd` manually
+        // or switch to PowerShell for the integrated experience.
+        "cmd" => {
+            log::info!(
+                "paneflow: cmd.exe has no OSC 7 scripting hook; split-pane CWD \
+                 inheritance from cmd.exe panes is v1-unsupported (docs/WINDOWS.md)"
+            );
+            vec![]
         }
         _ => vec![],
     }
@@ -353,7 +517,10 @@ impl TerminalState {
         let term = Arc::new(FairMutex::new(term));
 
         // Build shell command and environment.
-        // Fallback chain: config default_shell → $SHELL → /bin/sh
+        // Fallback chain handled by `resolve_default_shell` (US-006):
+        // Unix:    config → $SHELL → /bin/sh
+        // Windows: config → %ComSpec% → C:\Windows\System32\cmd.exe →
+        //          powershell.exe on PATH → bare "cmd.exe"
         let shell = {
             let config = paneflow_config::loader::load_config();
             let configured = config
@@ -361,28 +528,7 @@ impl TerminalState {
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
-            match configured {
-                Some(path) => {
-                    let p = std::path::Path::new(path);
-                    let is_executable = p.is_file() && {
-                        use std::os::unix::fs::PermissionsExt;
-                        std::fs::metadata(p)
-                            .map(|m| m.permissions().mode() & 0o111 != 0)
-                            .unwrap_or(false)
-                    };
-                    if is_executable {
-                        path.to_string()
-                    } else {
-                        log::warn!(
-                            "Configured default_shell {:?} not found or not executable, \
-                             falling back to $SHELL",
-                            path
-                        );
-                        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-                    }
-                }
-                None => std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()),
-            }
+            resolve_default_shell(configured)
         };
         let mut env = std::collections::HashMap::new();
         let extra_args = setup_shell_integration(&shell, &mut env);
@@ -417,8 +563,10 @@ impl TerminalState {
             let bin_dir_str = bin_dir.display().to_string();
             env.insert("__PANEFLOW_BIN_DIR".into(), bin_dir_str.clone());
             let current_path = std::env::var("PATH").unwrap_or_default();
-            if !current_path.split(':').any(|p| p == bin_dir_str) {
-                env.insert("PATH".into(), format!("{bin_dir_str}:{current_path}"));
+            // PATH separator: `;` on Windows (drive letters collide with `:`), `:` on POSIX.
+            let sep = if cfg!(windows) { ';' } else { ':' };
+            if !current_path.split(sep).any(|p| p == bin_dir_str) {
+                env.insert("PATH".into(), format!("{bin_dir_str}{sep}{current_path}"));
             }
         }
 
@@ -735,6 +883,16 @@ impl TerminalState {
 
     /// Stub for other non-Linux platforms (Windows, BSDs). Windows would
     /// use `NtQueryInformationProcess` with PEB traversal.
+    ///
+    /// US-008 (prd-windows-port.md) — verified: this cfg predicate covers
+    /// `target_os = "windows"` (no Linux, no macOS → stub selected). Returning
+    /// `None` means split-time CWD inheritance on Windows v1 relies entirely
+    /// on the OSC 7 cache populated by the shell integration — PowerShell 7
+    /// via US-012, zsh/bash/fish via the existing Linux path. cmd.exe has no
+    /// scripting hook for OSC 7, so splits from a cmd.exe pane fall back to
+    /// the parent shell's startup cwd. A real Windows impl via
+    /// `NtQueryInformationProcess(ProcessBasicInformation) + PEB.ProcessParameters.CurrentDirectoryPath`
+    /// is deferred post-v1. US-022 surfaces this limitation in `docs/WINDOWS.md`.
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub fn cwd_now(&self) -> Option<std::path::PathBuf> {
         None
@@ -943,6 +1101,9 @@ fn paneflow_bin_dir() -> Option<std::path::PathBuf> {
 /// avoid race conditions when multiple terminals spawn concurrently.
 fn ensure_wrapper_scripts(bin_dir: &std::path::Path) {
     use crate::assets::Assets;
+    // US-005 — POSIX-only; Windows uses NTFS ACLs, not mode bits. The
+    // chmod call below is cfg-guarded symmetrically.
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     if let Err(e) = std::fs::create_dir_all(bin_dir) {
@@ -972,6 +1133,7 @@ fn ensure_wrapper_scripts(bin_dir: &std::path::Path) {
         // Atomic write: temp file → chmod → rename (same filesystem guarantees atomicity)
         let tmp = bin_dir.join(format!(".{name}.tmp"));
         if std::fs::write(&tmp, file.data.as_ref()).is_ok() {
+            #[cfg(unix)]
             let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
             if let Err(e) = std::fs::rename(&tmp, &dest) {
                 log::warn!("paneflow: failed to install wrapper script {name}: {e}");
@@ -987,19 +1149,69 @@ impl Drop for TerminalState {
     fn drop(&mut self) {
         let _ = self.notifier.0.send(Msg::Shutdown);
 
-        // Grace period + SIGKILL: if the child process ignores SIGHUP
-        // (from PTY master close), force-kill it after 100ms.
-        let pid = self.child_pid as i32;
-        if pid > 0 {
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                // Check if process is still alive before sending SIGKILL
-                unsafe {
-                    if libc::kill(pid, 0) == 0 {
-                        libc::kill(pid, libc::SIGKILL);
+        // Grace period + force-kill: if the child process ignores the PTY
+        // master close signal (SIGHUP on Unix, ClosePseudoConsole on Windows),
+        // force-kill it after 100ms. Linux/macOS use libc::kill + SIGKILL;
+        // Windows uses TerminateProcess via windows-sys. Both paths run on a
+        // detached thread so Drop stays non-blocking.
+        #[cfg(unix)]
+        {
+            let pid = self.child_pid as i32;
+            if pid > 0 {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    // Check if process is still alive before sending SIGKILL
+                    unsafe {
+                        if libc::kill(pid, 0) == 0 {
+                            libc::kill(pid, libc::SIGKILL);
+                        }
                     }
-                }
-            });
+                });
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+            };
+            // SYNCHRONIZE access right is required for WaitForSingleObject on the
+            // returned handle; PROCESS_TERMINATE alone makes WaitForSingleObject
+            // return WAIT_FAILED. Value mirrors winnt.h (0x0010_0000). Declared
+            // locally to avoid pulling the Win32_Storage_FileSystem feature flag.
+            const SYNCHRONIZE: u32 = 0x0010_0000;
+
+            let pid = self.child_pid;
+            if pid != 0 {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    unsafe {
+                        let handle = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid);
+                        if handle.is_null() {
+                            // Child already exited — OpenProcess returns NULL
+                            // with ERROR_INVALID_PARAMETER for gone PIDs. Not
+                            // an error path; log at debug level per AC-3.
+                            log::debug!(
+                                "paneflow: OpenProcess({pid}) returned NULL (child likely already exited)"
+                            );
+                            return;
+                        }
+                        if TerminateProcess(handle, 1) == 0 {
+                            log::warn!("paneflow: TerminateProcess({pid}) failed");
+                            let _ = CloseHandle(handle);
+                            return;
+                        }
+                        let wait = WaitForSingleObject(handle, 5000);
+                        if wait != WAIT_OBJECT_0 {
+                            log::warn!(
+                                "paneflow: WaitForSingleObject({pid}) returned {wait:#x} (expected WAIT_OBJECT_0)"
+                            );
+                        }
+                        let _ = CloseHandle(handle);
+                    }
+                });
+            }
         }
     }
 }

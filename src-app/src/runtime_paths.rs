@@ -13,14 +13,23 @@
 //! Keeping the chain in one place prevents the three sites from drifting —
 //! a difference in one branch would silently break AI-hook IPC on macOS
 //! without any visible error.
+//!
+//! US-009 (prd-windows-port.md) — on Windows, `socket_path` returns the named
+//! pipe path `\\.\pipe\paneflow` instead. The XDG/TMPDIR chain and sun_path
+//! guard remain Unix-only; `bin_dir` continues to use the cross-platform
+//! `dirs::cache_dir()` fallback on Windows.
 
 use std::path::PathBuf;
 
 /// macOS `sockaddr_un.sun_path` is `[c_char; 104]`. Linux allows 108, but
 /// using the smaller ceiling keeps paths portable across both targets.
+/// Unused on Windows (named pipes are limited to 256 chars, well above
+/// anything we compose).
+#[cfg(unix)]
 pub(crate) const MAX_SOCKET_PATH_BYTES: usize = 104;
 
 const PANEFLOW_SUBDIR: &str = "paneflow";
+#[cfg(unix)]
 const SOCKET_FILE: &str = "paneflow.sock";
 const BIN_SUBDIR: &str = "bin";
 
@@ -49,13 +58,25 @@ fn runtime_dir() -> Option<PathBuf> {
         .or_else(|| dirs::cache_dir().map(|d| d.join("run")))
 }
 
-/// Full path to the IPC Unix-domain socket, or `None` if the runtime dir
-/// cannot be resolved or the composed path would exceed the `sun_path`
+/// Full path to the IPC socket.
+///
+/// Unix: `<runtime_dir>/paneflow/paneflow.sock`, or `None` if the runtime
+/// dir cannot be resolved or the composed path would exceed the `sun_path`
 /// limit. A `log::warn!` is emitted in the over-length case so the user
 /// can see why IPC is disabled.
+///
+/// Windows (US-009): the named-pipe path `\\.\pipe\paneflow`, unconditionally.
+/// Named pipes live in a global kernel namespace — there is no runtime dir
+/// to resolve, no sun_path limit to enforce, and no XDG fallback chain.
+#[cfg(unix)]
 pub(crate) fn socket_path() -> Option<PathBuf> {
     let path = runtime_dir()?.join(PANEFLOW_SUBDIR).join(SOCKET_FILE);
     check_sun_path_fits(&path).then_some(path)
+}
+
+#[cfg(windows)]
+pub(crate) fn socket_path() -> Option<PathBuf> {
+    Some(PathBuf::from(r"\\.\pipe\paneflow"))
 }
 
 /// Directory where wrapper scripts (`claude`, `codex`, `paneflow-hook`) are
@@ -65,6 +86,7 @@ pub(crate) fn bin_dir() -> Option<PathBuf> {
     Some(runtime_dir()?.join(PANEFLOW_SUBDIR).join(BIN_SUBDIR))
 }
 
+#[cfg(unix)]
 fn check_sun_path_fits(path: &std::path::Path) -> bool {
     let bytes = path.as_os_str().len();
     if bytes > MAX_SOCKET_PATH_BYTES {
@@ -80,7 +102,10 @@ fn check_sun_path_fits(path: &std::path::Path) -> bool {
     }
 }
 
-#[cfg(test)]
+// US-009 — these tests assert Unix socket path composition and sun_path
+// length limits; Windows `socket_path()` always returns `\\.\pipe\paneflow`
+// regardless of env vars, so the assertions here are structurally Unix-only.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::sync::Mutex;

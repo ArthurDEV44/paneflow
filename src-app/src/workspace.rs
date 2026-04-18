@@ -422,6 +422,14 @@ pub fn detect_ports(pids: &[u32]) -> Vec<u16> {
 
 /// Stub for other non-Linux platforms (BSDs, Windows). Port detection is
 /// a platform-specific syscall on each, outside the v0.2.0 scope.
+///
+/// US-008 (prd-windows-port.md) — verified: this cfg predicate covers
+/// `target_os = "windows"` (no Linux, no macOS → stub selected). The
+/// services sidebar renders empty on Windows v1 as a deliberate design
+/// choice. A real Windows implementation would use
+/// `GetExtendedTcpTable` / `GetExtendedUdpTable` with `TCPIP_OWNER_MODULE_BASIC_INFO`
+/// to attribute listening ports to owning PIDs; that work is deferred to a
+/// post-v1 PRD. US-022 surfaces this limitation in `docs/WINDOWS.md`.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn detect_ports(_pids: &[u32]) -> Vec<u16> {
     vec![]

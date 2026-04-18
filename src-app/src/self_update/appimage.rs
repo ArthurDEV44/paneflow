@@ -168,10 +168,18 @@ fn download_tool(arch: &str, dest: &Path) -> Result<()> {
 
     // `0o700`: cached binary is a user-private cache, no need to expose it
     // to other users on shared hosts.
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(&tmp)?.permissions();
-    perms.set_mode(0o700);
-    std::fs::set_permissions(&tmp, perms)?;
+    //
+    // US-005 — Unix-only. AppImage is itself a Linux-only format, so this
+    // function never executes on Windows; the cfg guard exists purely so
+    // the module still compiles on `x86_64-pc-windows-msvc` for the shared
+    // dep closure (the module stays unconditionally declared in mod.rs).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&tmp)?.permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(&tmp, perms)?;
+    }
 
     std::fs::rename(&tmp, dest)
         .with_context(|| format!("rename {} → {}", tmp.display(), dest.display()))?;
@@ -274,7 +282,10 @@ fn classify_error(output: &str) -> UpdateError {
     )
 }
 
-#[cfg(test)]
+// US-005 — tests module gated to Unix because the fixtures use
+// `std::os::unix::fs::PermissionsExt` and the behaviors under test
+// (AppImage bundle permissions) are Linux-only by definition.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::Write;

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { ChevronDown, Download } from "lucide-react";
+import { type ComponentType, useEffect, useRef, useState } from "react";
+import { Check, ChevronDown, Copy, Download, Terminal } from "lucide-react";
 import { AppleIcon, LinuxIcon, WindowsIcon } from "../os-icons";
 import { MeshHeader } from "./mesh-header";
 
@@ -29,10 +29,10 @@ export function DownloadView() {
 
         <div className="mb-12">
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-            PaneFlow est disponible pour Linux.
+            PaneFlow est disponible pour Linux et Windows.
           </h1>
           <p className="mt-2 text-text-muted">
-            macOS et Windows arrivent prochainement.
+            macOS arrive prochainement.
           </p>
         </div>
 
@@ -87,8 +87,7 @@ function VersionRow({
             <PlatformColumn
               Icon={WindowsIcon}
               label="Windows"
-              items={[]}
-              placeholder="Bientôt disponible"
+              items={windowsItems(entry.version)}
             />
             <PlatformColumn
               Icon={LinuxIcon}
@@ -109,9 +108,17 @@ function VersionRow({
   );
 }
 
+// Items are either a regular download link (`href`) or a copy-to-clipboard
+// command (`copyText`) — exactly one is set. Per-item `icon` overrides the
+// default download arrow on the right; useful for copy-items that should
+// signal "this is a command, not a download".
 interface DownloadItem {
   label: string;
-  href: string;
+  href?: string;
+  copyText?: string;
+  // ComponentType accepts both lucide-react forward-refs (which return
+  // ReactNode) and the plain-function icon components in `../os-icons`.
+  icon?: ComponentType<{ className?: string }>;
 }
 
 function PlatformColumn({
@@ -139,19 +146,110 @@ function PlatformColumn({
         <ul>
           {items.map((item) => (
             <li key={item.label}>
-              <a
-                href={item.href}
-                className="flex items-center justify-between px-2 py-2.5 rounded-md text-sm text-text-muted hover:text-text hover:bg-bg-elevated transition-colors"
-              >
-                <span>{item.label}</span>
-                <Download className="w-4 h-4 text-text-subtle" />
-              </a>
+              <DownloadRow item={item} />
             </li>
           ))}
         </ul>
       )}
     </div>
   );
+}
+
+// Renders one row in a PlatformColumn. Link items become <a>, copy items
+// become <button> that writes to the clipboard + swaps the trailing icon
+// to a Check for 2s (the "toast confirmation" per US-020 AC-4). Pattern
+// matches install.tsx:58 — kept inline here rather than factored out so
+// the component file stays self-contained.
+function DownloadRow({ item }: { item: DownloadItem }) {
+  const [copied, setCopied] = useState(false);
+  // timerRef lets us cancel the pending setCopied(false) on rapid
+  // re-clicks (so the badge re-resets 2s after the LAST click, not the
+  // first) and on unmount (so React 18+ doesn't whine about setting
+  // state on an unmounted component).
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  const LeadingIcon = item.icon;
+  const baseClass =
+    "flex items-center justify-between w-full px-2 py-2.5 rounded-md text-sm text-text-muted hover:text-text hover:bg-bg-elevated transition-colors text-left";
+  // Linux rows carry no per-item icon — keep the pre-US-020 layout (just
+  // a label on the left, download arrow on the right). Windows rows
+  // carry WindowsIcon / Terminal which render as a leading glyph.
+  const Label = (
+    <span className="flex items-center gap-2">
+      {LeadingIcon && <LeadingIcon className="w-4 h-4 text-text-subtle" />}
+      <span>{item.label}</span>
+    </span>
+  );
+
+  if (item.copyText) {
+    const copyText = item.copyText;
+    const handleCopy = () => {
+      // navigator.clipboard is only available in secure contexts (https
+      // or localhost). On the production site both hold. Flip the UI to
+      // "copied" state ONLY after the write resolves — a rejection (e.g.
+      // Firefox's occasional permission quirk) leaves the Copy icon
+      // visible so the user knows to try again instead of seeing a false
+      // success check.
+      navigator.clipboard.writeText(copyText).then(
+        () => {
+          if (timerRef.current !== null) clearTimeout(timerRef.current);
+          setCopied(true);
+          timerRef.current = setTimeout(() => setCopied(false), 2000);
+        },
+        () => {
+          // Swallow — the button stays in "Copy" state, user retries.
+        },
+      );
+    };
+    return (
+      <button
+        type="button"
+        onClick={handleCopy}
+        aria-label={`Copier la commande: ${copyText}`}
+        className={baseClass}
+      >
+        {Label}
+        {copied ? (
+          <Check className="w-4 h-4 text-accent-green" />
+        ) : (
+          <Copy className="w-4 h-4 text-text-subtle" />
+        )}
+      </button>
+    );
+  }
+
+  return (
+    <a href={item.href} className={baseClass}>
+      {Label}
+      <Download className="w-4 h-4 text-text-subtle" />
+    </a>
+  );
+}
+
+// US-020. Two rows: (1) direct MSI link, (2) `winget install` copy-command.
+// The MSI filename matches US-016's Stage step output
+// (paneflow-<ver>-x86_64-pc-windows-msvc.msi — the `v` prefix is in the
+// release tag URL segment, NOT the filename, mirroring macOS conventions
+// and unlike the Linux `paneflow-v<ver>-...` naming).
+function windowsItems(version: string): DownloadItem[] {
+  const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
+  return [
+    {
+      label: "Windows x86_64 MSI",
+      href: `${base}/paneflow-${version}-x86_64-pc-windows-msvc.msi`,
+      icon: WindowsIcon,
+    },
+    {
+      label: "winget install",
+      copyText: "winget install ArthurDev44.PaneFlow",
+      icon: Terminal,
+    },
+  ];
 }
 
 function linuxItems(version: string): DownloadItem[] {

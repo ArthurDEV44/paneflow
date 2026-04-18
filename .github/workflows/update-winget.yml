@@ -1,0 +1,255 @@
+name: Update Winget Manifests
+
+# US-019 AC-3. Triggered whenever a GitHub Release is *published*: grabs
+# the signed MSI asset from the release (produced by US-016's Windows
+# matrix leg), computes its SHA-256, renders the three manifest templates
+# at `packaging/winget/`, and opens a PR against `microsoft/winget-pkgs`
+# under `manifests/a/ArthurDev44/PaneFlow/<ver>/`.
+#
+# Prereqs (one-time, manual — documented here so the first failure is
+# self-explanatory):
+#   1. Fork https://github.com/microsoft/winget-pkgs under ArthurDEV44
+#      (the fork must exist before this workflow runs; winget-pkgs PRs
+#      are only accepted from forks of the upstream repo).
+#   2. FIRST SUBMISSION IS MANUAL. winget-pkgs requires the initial
+#      package entry to be hand-authored and reviewed. Render these
+#      templates locally for v<first> and submit via `wingetcreate
+#      submit` or manual PR; this workflow handles every release after
+#      that.
+#   3. Create a classic GitHub PAT with `public_repo` scope (classic
+#      tokens — wingetcreate and komac both document that fine-grained
+#      PATs don't work with the winget-pkgs fork/PR flow as of 2026).
+#      Store as `WINGET_PAT` in the repo's Actions secrets.
+#   4. Commit the MIT LICENSE file at the repo root. The locale manifest
+#      declares `License: MIT` + `LicenseUrl: .../blob/main/LICENSE`;
+#      winget-pkgs automated validators probe LicenseUrl and reject PRs
+#      that 404 there. Project currently has no LICENSE file (flagged in
+#      CLAUDE.md Gotchas); land it before the first submission or the
+#      first winget PR will be rejected.
+#
+# Why `release: published` and not `push: tags` (same rationale as
+# update-cask.yml): the release workflow must finish (produce + sign
+# + upload the MSI) before this one can compute the SHA. `release:
+# published` fires after all assets are attached.
+#
+# Pre-release policy: winget does not have a first-class pre-release
+# channel; submitting `v1.0.0-rc.1` creates a real entry visible to
+# `winget upgrade --all`. Community consensus is to skip pre-releases.
+# The `if:` gate below rejects prereleases on `release` triggers while
+# still allowing `workflow_dispatch` overrides for operator recovery.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to resubmit — STABLE tags only, format vMAJOR.MINOR.PATCH (e.g. v0.2.0). Pre-release tags (-rc/-beta/-alpha) are rejected by winget policy."
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  update-winget:
+    name: Render + submit winget manifests
+    runs-on: ubuntu-22.04
+    # Skip pre-releases on `release` events; allow operator override via
+    # `workflow_dispatch`. The tag-format check in the "Resolve tag" step
+    # below is a second line of defense against prerelease tags.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.release.prerelease &&
+       !contains(github.event.release.tag_name, '-rc') &&
+       !contains(github.event.release.tag_name, '-beta') &&
+       !contains(github.event.release.tag_name, '-alpha'))
+    steps:
+      - name: Resolve tag
+        id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "release" ]; then
+            tag="$RELEASE_TAG"
+          else
+            tag="$DISPATCH_TAG"
+          fi
+          if [ -z "$tag" ]; then
+            echo "::error title=Winget submission::could not resolve tag from event payload"
+            exit 1
+          fi
+          # Strict semver (no prerelease suffix) — winget-pkgs consumers
+          # expect stable-only versions. The `tag` value flows into sed
+          # substitutions below, so validate BEFORE anything reaches sed:
+          # an unchecked tag like `v1.0.0|evil` could break a sed delimiter.
+          # Applies to BOTH the `release` trigger and `workflow_dispatch`:
+          # a dispatched pre-release tag fails here even though the
+          # job-level `if:` waved it through (dispatch has no prerelease
+          # boolean to gate on).
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Winget submission::tag '$tag' is not a stable semver (expected vMAJOR.MINOR.PATCH with no -rc/-beta/-alpha suffix). Winget submissions are stable-only by policy."
+            exit 1
+          fi
+          version="${tag#v}"
+          echo "tag=$tag"         | tee -a "$GITHUB_OUTPUT"
+          echo "version=$version" | tee -a "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+
+      - name: Download signed MSI from the release
+        # `gh release download --pattern` globs by filename; AC-3 of US-016
+        # produces `paneflow-<version>-x86_64-pc-windows-msvc.msi`. Stage
+        # into a scratch dir so the computed SHA is unambiguous.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p msi-staging
+          cd msi-staging
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "paneflow-${VERSION}-x86_64-pc-windows-msvc.msi"
+          ls -la
+
+      - name: Compute SHA-256 of MSI
+        id: sha
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          msi="msi-staging/paneflow-${VERSION}-x86_64-pc-windows-msvc.msi"
+          if [ ! -f "$msi" ]; then
+            echo "::error title=Winget submission::signed MSI not found at $msi — Windows release matrix leg may have failed (it is continue-on-error: true per US-017). A winget update cannot proceed without the MSI." >&2
+            exit 1
+          fi
+          # Winget convention: SHA-256 as uppercase hex. The schema
+          # accepts either case but upstream manifests overwhelmingly
+          # use uppercase; matching that convention keeps diffs in the
+          # winget-pkgs repo visually consistent.
+          sha="$(sha256sum "$msi" | awk '{print $1}' | tr '[:lower:]' '[:upper:]')"
+          echo "sha256=$sha" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Render winget manifests
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          SHA256: ${{ steps.sha.outputs.sha256 }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/${REPO}/releases/download/${TAG}/paneflow-${VERSION}-x86_64-pc-windows-msvc.msi"
+          dst="/tmp/rendered-manifests/ArthurDev44.PaneFlow/${VERSION}"
+          mkdir -p "$dst"
+          # sed `|` delimiter avoids clash with URL's `/`. VERSION is
+          # pure digits+dots, SHA256 is hex, and URL's substitution
+          # value contains no `|`, so the delimiter is safe.
+          for f in packaging/winget/*.yaml; do
+            name="$(basename "$f")"
+            sed \
+              -e "s|__VERSION__|${VERSION}|g" \
+              -e "s|__URL__|${url}|g" \
+              -e "s|__SHA256__|${SHA256}|g" \
+              "$f" > "$dst/$name"
+          done
+          echo "--- rendered manifests ---"
+          for f in "$dst"/*.yaml; do
+            echo "=== $f ==="
+            cat "$f"
+          done
+
+      - name: Open PR to microsoft/winget-pkgs
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WINGET_PAT:-}" ]; then
+            echo "::error title=Winget submission::WINGET_PAT secret is not set. Create a classic GitHub PAT with 'public_repo' scope and add it as a repo secret. See the header of this workflow for prereqs."
+            exit 1
+          fi
+
+          # Inline credential helper pattern (mirrors update-cask.yml).
+          # What IS in argv: the helper string itself (below), passed via
+          # `git -c credential.helper=...`. What is NOT in argv: the PAT
+          # VALUE. The string contains the literal text `$WINGET_PAT`;
+          # single quotes prevent bash from expanding it here. Git later
+          # invokes the helper via `sh -c`, which inherits the env var
+          # from the step's `env:` block and expands it INSIDE that child
+          # process. The token's expanded value never reaches argv of
+          # any parent process.
+          # shellcheck disable=SC2016
+          helper='!f() { echo "username=x-access-token"; echo "password=$WINGET_PAT"; }; f'
+
+          tmp="$(mktemp -d)"
+          git -c credential.helper="" \
+              -c credential.helper="$helper" \
+              clone --depth=1 https://github.com/ArthurDEV44/winget-pkgs.git "$tmp"
+          cd "$tmp"
+
+          # Sync fork's master with upstream before branching. Without this
+          # a stale fork would accumulate merge conflicts with upstream; by
+          # always branching off `upstream/master`, every PR is mergeable.
+          git remote add upstream https://github.com/microsoft/winget-pkgs.git
+          git fetch upstream master
+          branch="paneflow-${VERSION}"
+          git checkout -B "$branch" upstream/master
+
+          # Manifest path is case-sensitive on the upstream filesystem:
+          # `manifests/a/ArthurDev44/PaneFlow/<ver>/` (lowercase bucket
+          # letter, then exact PackageIdentifier casing).
+          manifest_dir="manifests/a/ArthurDev44/PaneFlow/${VERSION}"
+          mkdir -p "$manifest_dir"
+          cp "/tmp/rendered-manifests/ArthurDev44.PaneFlow/${VERSION}"/*.yaml "$manifest_dir/"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$manifest_dir"
+          if git diff --cached --quiet; then
+            echo "Manifest for ${VERSION} already exists on fork — nothing to commit."
+            exit 0
+          fi
+          git commit -m "New version: ArthurDev44.PaneFlow version ${VERSION}" \
+                     -m "Automated submission from ArthurDEV44/paneflow release ${TAG}."
+
+          # Force-push: we own both the fork and the ephemeral branch
+          # name, so a retry (e.g. after a reviewer-requested template
+          # tweak that lands post-release) should overwrite the prior
+          # state, not reject on non-fast-forward.
+          git -c credential.helper="" \
+              -c credential.helper="$helper" \
+              push origin "$branch" --force
+
+          # `gh pr create --head owner:branch` opens a PR from a fork.
+          # The token must have push access to the fork + public_repo on
+          # the destination. WINGET_PAT's `public_repo` scope covers both
+          # (default GITHUB_TOKEN cannot — it's scoped to this repo only).
+          export GH_TOKEN="$WINGET_PAT"
+
+          # Idempotency: if a PR for this branch already exists (e.g. a
+          # manual workflow_dispatch retry), skip creation. AC-6 parity
+          # with update-cask.yml's "already up-to-date" path.
+          existing_pr="$(gh pr list \
+            --repo microsoft/winget-pkgs \
+            --head "ArthurDEV44:${branch}" \
+            --state open \
+            --json number \
+            --jq '.[0].number' 2>/dev/null || echo "")"
+          if [ -n "$existing_pr" ]; then
+            echo "PR #${existing_pr} already open for ${branch} — skipping create. Force-push above updated the branch, so the PR now reflects the latest manifests."
+            exit 0
+          fi
+
+          gh pr create \
+            --repo microsoft/winget-pkgs \
+            --head "ArthurDEV44:${branch}" \
+            --base master \
+            --title "New version: ArthurDev44.PaneFlow version ${VERSION}" \
+            --body "Automated submission from ArthurDEV44/paneflow release [${TAG}](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}).
+
+            Signed MSI built by \`.github/workflows/release.yml\` Windows matrix leg, code-signed via Azure Artifact Signing under the Strivex (EU France SAS) certificate profile."

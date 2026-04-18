@@ -262,15 +262,24 @@ fn extract_and_swap(tarball: &Path, app_dir: &Path, new_dir: &Path, old_dir: &Pa
         // downgrade to 0o777 (world-writable — local-priv-esc on shared
         // HOMEs) or upgrade to 0o700 (unexecutable by other session-id
         // processes). Force 0o755, which is the tarball's original mode.
-        let bin_path = new_dir.join("bin").join("paneflow");
-        if bin_path.exists() {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&bin_path)
-                .with_context(|| format!("stat {}", bin_path.display()))?
-                .permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin_path, perms)
-                .with_context(|| format!("chmod 0o755 {}", bin_path.display()))?;
+        //
+        // US-005 — Unix-only belt. Windows has no POSIX mode bits, so the
+        // threat model above (mode-based priv-esc) does not apply; the
+        // analogous concern would be ACL tampering, handled separately
+        // if/when Windows ever ships a tar.gz update path (today it
+        // uses MSI from EP-W4).
+        #[cfg(unix)]
+        {
+            let bin_path = new_dir.join("bin").join("paneflow");
+            if bin_path.exists() {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&bin_path)
+                    .with_context(|| format!("stat {}", bin_path.display()))?
+                    .permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&bin_path, perms)
+                    .with_context(|| format!("chmod 0o755 {}", bin_path.display()))?;
+            }
         }
         Ok(())
     })();
@@ -719,6 +728,17 @@ mod tests {
         out
     }
 
+    // US-007 (prd-windows-port.md) — Unix-only. The test fixture calls
+    // `std::os::unix::fs::symlink` to inject an "evil symlink" entry into
+    // a tarball. Creating that entry on Windows would require
+    // `std::os::windows::fs::symlink_file` plus `SeCreateSymbolicLinkPrivilege`,
+    // which GH Actions non-admin runs lack. The property under test — that
+    // `reject_symlinks_recursively` refuses any symlink in an extracted
+    // update payload — is platform-neutral at runtime, but exercising it
+    // requires constructing a malicious tarball, which itself is a
+    // Unix-only fixture. Windows gets the same safety via the same
+    // post-extract walker; this fixture just can't be built there.
+    #[cfg(unix)]
     #[test]
     fn extract_rejects_tarball_with_symlink() {
         // Build a tarball that includes a symlink and verify that

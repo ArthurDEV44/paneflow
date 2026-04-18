@@ -1,0 +1,179 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!--
+  PaneFlow Windows installer (US-013 — prd-windows-port.md).
+  Seeded from `cargo wix init` on the paneflow-app crate (cargo-wix 0.3.9),
+  then customized for US-013 AC-2:
+    - Install dir: %ProgramFiles%\PaneFlow\
+    - paneflow.exe at the install root (no `bin` subdirectory — matches
+      the PRD `%ProgramFiles%\PaneFlow\paneflow.exe` detection rule
+      used by `InstallMethod::WindowsMsi` in US-010).
+    - Start Menu shortcut under "PaneFlow".
+    - ARP (Add or Remove Programs) entry with publisher "Strivex" and
+      the multi-resolution icon at `packaging/wix/paneflow.ico`.
+    - User config at %APPDATA%\paneflow\ is preserved on uninstall
+      (AC-6); WiX only removes the files it installed.
+
+  GUIDs baked in here MUST match `[package.metadata.wix]` in
+  src-app/Cargo.toml:
+    * UpgradeCode           = upgrade-guid (breaking this breaks
+                              in-place upgrades for existing users).
+    * Component Id='Path'   = path-guid    (breaks the PATH entry for
+                              existing users if changed).
+    * Component Id='ApplicationShortcut' = Start Menu shortcut GUID
+                              (AC-2b). Stable for the lifetime of the
+                              installer product line.
+-->
+
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='PaneFlow'
+        UpgradeCode='177D8F43-1642-4212-9CB0-FD14B299058D'
+        Manufacturer='Strivex'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='PaneFlow — GPU-accelerated terminal multiplexer with split panes and workspaces, built in Rust on Zed&#39;s GPUI framework.'
+            Manufacturer='Strivex'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'
+            />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='PaneFlow Installation'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <!-- Install root: %ProgramFiles%\PaneFlow\ -->
+            <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='PaneFlow'>
+
+                    <!-- License sidecar. -->
+                    <Component Id='License' Guid='*'>
+                        <File Id='LicenseFile'
+                            DiskId='1'
+                            Source='License.rtf'
+                            KeyPath='yes'/>
+                    </Component>
+
+                    <!-- paneflow.exe lives directly under %ProgramFiles%\PaneFlow\
+                         (no `bin\` subdir), matching the canonical MSI layout
+                         assumed by `InstallMethod::WindowsMsi` (US-010). -->
+                    <Component Id='binary0' Guid='*'>
+                        <File
+                            Id='exe0'
+                            Name='paneflow.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\paneflow.exe'
+                            KeyPath='yes'/>
+                    </Component>
+
+                    <!-- PATH environment variable: add the install dir so
+                         `paneflow` is discoverable in cmd.exe, PowerShell,
+                         and Windows Terminal without the full path. -->
+                    <Component Id='Path' Guid='49700ADE-7E1B-466E-A25E-A138A2FC96F3' KeyPath='yes'>
+                        <Environment
+                            Id='PATH'
+                            Name='PATH'
+                            Value='[APPLICATIONFOLDER]'
+                            Permanent='no'
+                            Part='last'
+                            Action='set'
+                            System='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <!-- Start Menu → PaneFlow\PaneFlow shortcut (AC-2b). -->
+            <Directory Id='ProgramMenuFolder'>
+                <Directory Id='ApplicationProgramsFolder' Name='PaneFlow'>
+                    <Component Id='ApplicationShortcut' Guid='E369E12B-8CFA-4A4E-BDBF-5EA5BD50DA28'>
+                        <Shortcut Id='ApplicationStartMenuShortcut'
+                                  Name='PaneFlow'
+                                  Description='GPU-accelerated terminal multiplexer'
+                                  Target='[APPLICATIONFOLDER]paneflow.exe'
+                                  WorkingDirectory='APPLICATIONFOLDER'
+                                  Icon='PaneflowICO'
+                                  IconIndex='0'/>
+                        <!-- RemoveFolder keeps the uninstall clean; the
+                             ApplicationProgramsFolder is dropped when
+                             the component is removed. -->
+                        <RemoveFolder Id='CleanUpShortCut'
+                                      Directory='ApplicationProgramsFolder'
+                                      On='uninstall'/>
+                        <!-- Per-user registry key gives the Start Menu
+                             shortcut component a KeyPath; required by
+                             WiX 3 because Shortcut elements can't be
+                             KeyPaths directly. HKCU avoids needing
+                             admin at uninstall for this key. -->
+                        <RegistryValue Root='HKCU'
+                                       Key='Software\Strivex\PaneFlow'
+                                       Name='installed'
+                                       Type='integer'
+                                       Value='1'
+                                       KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+        </Directory>
+
+        <Feature
+            Id='Binaries'
+            Title='PaneFlow'
+            Description='Installs PaneFlow, its license, Start Menu shortcut, and an entry on PATH.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+            <ComponentRef Id='License'/>
+            <ComponentRef Id='binary0'/>
+            <ComponentRef Id='ApplicationShortcut'/>
+
+            <Feature
+                Id='Environment'
+                Title='PATH Environment Variable'
+                Description='Adds the install location of the [ProductName] executable to the PATH system environment variable so `paneflow` can be called from any shell.'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='Path'/>
+            </Feature>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <!-- AC-2c — ARP icon + publisher. ARPPRODUCTICON is referenced
+             from "Apps & features" and the legacy "Programs and Features"
+             control panel. Multi-resolution (16/32/48/128/256) built
+             from packaging/wix/paneflow.ico. -->
+        <Icon Id='PaneflowICO' SourceFile='paneflow.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='PaneflowICO'/>
+
+        <Property Id='ARPHELPLINK' Value='https://github.com/ArthurDEV44/paneflow'/>
+        <Property Id='ARPURLINFOABOUT' Value='https://paneflow.dev'/>
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+        </UI>
+
+        <WixVariable Id='WixUILicenseRtf' Value='License.rtf'/>
+
+    </Product>
+
+</Wix>

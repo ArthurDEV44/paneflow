@@ -24,6 +24,10 @@
 pub mod appimage;
 pub mod targz;
 
+// US-005 — Unix-only; the `set_mode` callsite in `download_and_chmod_installer`
+// is cfg-guarded symmetrically. Windows self-update takes the MSI path
+// (EP-W4) and never chmods.
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -248,10 +252,14 @@ pub fn download_installer(asset_url: &str) -> Result<PathBuf> {
     file.sync_all().ok();
 
     // chmod +x — the installer is a bash self-extracting script, it needs
-    // execute permission to run.
-    let mut perms = std::fs::metadata(&target)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&target, perms)?;
+    // execute permission to run. Windows never takes this path (the .run
+    // flow is Linux-only; Windows uses the MSI flow from EP-W4).
+    #[cfg(unix)]
+    {
+        let mut perms = std::fs::metadata(&target)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&target, perms)?;
+    }
 
     log::info!("self-update: downloaded {}", target.display());
     Ok(target)

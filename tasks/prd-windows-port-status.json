@@ -1,0 +1,399 @@
+{
+  "prd": {
+    "file": "tasks/prd-windows-port.md",
+    "title": "Windows Port \u2014 Cross-Platform Expansion to Windows 10/11 x86_64",
+    "created_at": "2026-04-18",
+    "status": "DONE"
+  },
+  "epics": [
+    {
+      "id": "EP-W1",
+      "title": "Build Unblocking & GPUI Windows Enablement",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 3,
+      "stories_done": 3
+    },
+    {
+      "id": "EP-W2",
+      "title": "Runtime Parity",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 5,
+      "stories_done": 5
+    },
+    {
+      "id": "EP-W3",
+      "title": "IPC Named-Pipes Migration",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 1,
+      "stories_done": 1
+    },
+    {
+      "id": "EP-W4",
+      "title": "Install Detection + Update Asset Matching",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 2,
+      "stories_done": 2
+    },
+    {
+      "id": "EP-W5",
+      "title": "PowerShell Shell Integration",
+      "status": "DONE",
+      "priority": "P1",
+      "stories_total": 1,
+      "stories_done": 1
+    },
+    {
+      "id": "EP-W6",
+      "title": "WiX Packaging + Azure Trusted Signing",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 4,
+      "stories_done": 4
+    },
+    {
+      "id": "EP-W7",
+      "title": "CI, Distribution, Website",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 4,
+      "stories_done": 4
+    },
+    {
+      "id": "EP-W8",
+      "title": "QA, Smoke Tests, Known-Risks Documentation",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 2,
+      "stories_done": 2
+    }
+  ],
+  "stories": [
+    {
+      "id": "US-001",
+      "title": "Spike \u2014 Identify Zed commit with stable DirectX 11 Windows backend",
+      "epic": "EP-W1",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-002",
+      "title": "Bump GPUI pin + validate Linux/macOS regression",
+      "epic": "EP-W1",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "no-op \u2014 current pin 0b984b5 already 8 months post-DX11 (PR #34374, 2025-07-30). Evidence + AC disposition in tasks/spike-windows-build.md \u00a7 US-002 resolution addendum."
+    },
+    {
+      "id": "US-003",
+      "title": "Provision windows-2022 CI runner with WiX + VS Build Tools",
+      "epic": "EP-W1",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-002"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-004",
+      "title": "Cfg-guard POSIX process kill + add Windows TerminateProcess path",
+      "epic": "EP-W2",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-003"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-005",
+      "title": "Cfg-guard PermissionsExt chmod calls",
+      "epic": "EP-W2",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "XS",
+      "blocked_by": [
+        "US-003"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-006",
+      "title": "Windows shell fallback chain",
+      "epic": "EP-W2",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-003"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-007",
+      "title": "Platform-neutral symlink in install_method.rs",
+      "epic": "EP-W2",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "XS",
+      "blocked_by": [
+        "US-003"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "No runtime symlink creators exist; two test-only sites gated on cfg(unix) per AC-6 (skip symlink creation on Windows). Breadcrumb comments flag future runtime implementers to use symlink_file + copy fallback per AC-1/AC-2."
+    },
+    {
+      "id": "US-008",
+      "title": "Windows stubs for workspace port scan + cwd_now",
+      "epic": "EP-W2",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-003"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Verification-only: existing cfg(not(any(target_os = linux, target_os = macos))) stubs at workspace.rs:427 (detect_ports \u2192 vec![]) and terminal.rs:817 (cwd_now \u2192 None) already cover Windows. Comments strengthened with design-choice language for US-022 to transpose into docs/WINDOWS.md. Zero runtime change."
+    },
+    {
+      "id": "US-009",
+      "title": "Migrate ipc.rs to interprocess crate + runtime_paths Windows branch",
+      "epic": "EP-W3",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-003"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-010",
+      "title": "InstallMethod::WindowsMsi variant + detection logic",
+      "epic": "EP-W4",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-007"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-011",
+      "title": "AssetFormat::Msi variant + pick_asset matching",
+      "epic": "EP-W4",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-010"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-012",
+      "title": "PowerShell setup_shell_integration branch",
+      "epic": "EP-W5",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "M",
+      "blocked_by": [
+        "US-006",
+        "US-009"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-013",
+      "title": "Initialize WiX config (packaging/wix + Cargo.toml metadata)",
+      "epic": "EP-W6",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-003"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "packaging/wix/{main.wxs,License.rtf,paneflow.ico} committed (cargo-wix 0.3.9 seed, WiX v3 namespace). src-app/Cargo.toml [package.metadata.wix] declares wxs path + stable upgrade-guid/path-guid. Follow-up for US-015/US-016: cargo-wix 0.3.x generates WiX v3 XML but US-003 CI installs WiX v5 via `dotnet tool install --global wix` \u2014 version mismatch needs resolution at build-wiring time."
+    },
+    {
+      "id": "US-014",
+      "title": "Azure Trusted Signing onboarding + secret provisioning",
+      "epic": "EP-W6",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "L",
+      "blocked_by": [],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Playbook authored at memory/project_windows_signing.md (AC-5 \u2713 + AC-6 fallback \u2713). Azure Portal actions AC-1..AC-4 (account, cert profile, service principal, 6 GH Secrets) pending Arthur + Microsoft business-verification SLA (days to 6 weeks). Memory file contains the literal secret names US-015/US-016 consume; those stories can proceed with the names in place and fail at runtime if the secrets aren't yet populated. If onboarding exceeds 6 weeks, reopen with `resolution: fallback-to-OV-cert` per AC-6 and spawn a Sectigo OV cert procurement story."
+    },
+    {
+      "id": "US-015",
+      "title": "scripts/sign-windows.ps1 signtool wrapper",
+      "epic": "EP-W6",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-013",
+        "US-014"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "scripts/sign-windows.ps1 authored (316 LOC). Implements canonical signtool invocation (/fd SHA256 /tr <server> /td SHA256 /dlib <dll> /dmdf <json> <msi>) with 3-host timestamp retry (acs.microsoft.com -> digicert -> sectigo), metadata.json generation with ExcludeCredentials (prevents managed-identity hang), signtool verify + Get-AuthenticodeSignature self-checks with O=Strivex anchor. NuGet Microsoft.ArtifactSigning.Client pinned to 1.0.128. AC-5 (missing env vars) and input-validation paths verified on pwsh 7.4 via container; AC-2/AC-3/AC-6 runtime paths deferred to US-016 CI dry-run (require Windows + populated Azure secrets). Memory/project_windows_signing.md updated with rebrand note (Trusted Signing -> Artifact Signing)."
+    },
+    {
+      "id": "US-016",
+      "title": "MSI build + sign steps in release.yml",
+      "epic": "EP-W6",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-013",
+        "US-015",
+        "US-017"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "release.yml gains 5 Windows-gated dormant steps (152 LOC insertion): preflight WiX v3, install cargo-wix 0.3.9 (pinned, --locked), Produce MSI (cargo wix build --no-build --package paneflow-app --target x86_64-pc-windows-msvc --install-version ${TAG#v}), Sign MSI (pwsh -File scripts/sign-windows.ps1 with all 6 Azure secrets + semver glob guard), Stage Windows assets (rename to paneflow-<ver>-x86_64-pc-windows-msvc.msi + sha256 sidecar, nullglob array). Mirrors the dormant-macOS precedent (lines 448-522); activates when US-017 adds the windows-2022 matrix entry. AC-4 (continue-on-error: true on matrix entry) is called out in an inline block-comment for the US-017 implementer \u2014 not in scope for US-016. signtool preflight removed because sign-windows.ps1 self-resolves (review feedback: avoid false-confidence dual resolution). cargo-wix re-used existing Swatinem/rust-cache (~/.cargo/bin). actionlint + shellcheck clean on all added lines."
+    },
+    {
+      "id": "US-017",
+      "title": "release.yml 5th matrix leg (windows-2022)",
+      "epic": "EP-W7",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-002",
+        "US-003"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Matrix expanded to 5 entries \u2014 added `{target: x86_64-pc-windows-msvc, arch: x86_64, runs-on: windows-2022, continue-on-error: true}` after the Intel Mac entry. Activates the Windows-gated steps from US-016 (preflight WiX \u2192 cargo-wix install \u2192 Produce MSI \u2192 Sign MSI \u2192 Stage Windows assets). Best-effort parity with Intel Mac: the continue-on-error flag lifts via the pre-existing expression at release.yml line 21. Also corrected the release job's atomic-release comment (was imprecise about fail-fast interaction with continue-on-error legs). AC-5 (cargo build <20/35 min) + AC-6 (dry-run produces signed MSI) measurable only on first real tagged release with US-014's Azure secrets populated. actionlint clean, matrix count verified (5 entries)."
+    },
+    {
+      "id": "US-018",
+      "title": "ci.yml windows-check job",
+      "epic": "EP-W7",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-002",
+        "US-003"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Promoted US-003's windows-check smoke job to a full PR quality gate. Three edits to ci.yml: (1) added `components: rustfmt, clippy` to dtolnay/rust-toolchain@stable step, (2) inserted cargo fmt --all --check + cargo clippy --target x86_64-pc-windows-msvc -- -D warnings + cargo test --workspace --target x86_64-pc-windows-msvc in AC-2's exact order before the pre-existing cargo check step, (3) removed `continue-on-error: true` from cargo check so the gate is required. Comment block updated to reflect post-EP-W2/W3 state. Linux `check` and `macos-check` jobs untouched (AC-6 verified via `git diff --unified=0` showing a single hunk at line 200+). US-003's WiX install/verify steps kept \u2014 removing would regress US-003 AC-3 and wall-clock impact (~5-10s cached) is inside AC-4's <5 min budget (estimated ~2.5 min cached total). AC-5 (POSIX regression \u2192 file:line error) verified by inspection: clippy `-D warnings` + cargo check without continue-on-error would fail PR on any `use std::os::unix::*` addition. actionlint clean."
+    },
+    {
+      "id": "US-019",
+      "title": "Winget manifest files + update-winget.yml bot",
+      "epic": "EP-W7",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-016"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Four new files authored. 3 manifest templates in packaging/winget/ at ManifestVersion 1.12.0 (installer.yaml with wix InstallerType + UpgradeBehavior: uninstallPrevious; locale.en-US.yaml with Publisher=Strivex + License=MIT + LicenseUrl + Tags; version manifest) using __VERSION__/__URL__/__SHA256__ sed placeholders (verified by local dry-run sed rendering + schema field checks). update-winget.yml (~220 lines) triggers on release:published + workflow_dispatch, resolves strict-semver tag (rejects pre-releases), downloads MSI via gh release download, computes uppercase-hex SHA-256, sed-renders to /tmp/rendered-manifests/, clones fork ArthurDEV44/winget-pkgs, syncs upstream master, branches paneflow-<ver>, commits, force-pushes, opens PR to microsoft/winget-pkgs via gh pr create with idempotency check (gh pr list --head). Inline credential helper pattern (single-quoted) keeps WINGET_PAT value out of argv \u2014 mirrors update-cask.yml. Pre-merge prereqs: (1) fork microsoft/winget-pkgs under ArthurDEV44, (2) add LICENSE file at repo root (project-wide gap per CLAUDE.md), (3) WINGET_PAT secret (classic PAT, public_repo scope), (4) first submission manual. AC-4/AC-5 verification deferred to first real release."
+    },
+    {
+      "id": "US-020",
+      "title": "Website download page Windows column",
+      "epic": "EP-W7",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "XS",
+      "blocked_by": [
+        "US-016"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Single-file edit to paneflow-site/src/components/download/download-view.tsx: (1) extended DownloadItem to support href-or-copyText plus optional ComponentType icon, (2) new DownloadRow component handling link-vs-copy rendering with promise-guarded clipboard write + 2s Copy\u2192Check icon swap + useRef-backed timer cancellation on re-click/unmount, (3) new windowsItems(version) yielding MSI link (paneflow-<ver>-x86_64-pc-windows-msvc.msi matching US-016 AC-3) + winget install copy button, (4) wired into the existing Windows column (removed placeholder), (5) headline updated 'Linux' \u2192 'Linux et Windows'. Linux row visual appearance preserved (leading icon gated behind item.icon set). bun run build clean, 5 static pages generated. All 5 ACs verified live via Chrome MCP: MSI href matches expected URL, clipboard write captures exact winget command, icon swap Copy\u2192Check\u2192Copy fires correctly on happy path, Promise rejection keeps Copy icon (no false success), 3-column grid stacks vertically at 553px viewport with no horizontal overflow. install.tsx has the same (pre-existing) clipboard pattern without the Promise/timer hardening \u2014 out of scope for US-020 but noted as a follow-up."
+    },
+    {
+      "id": "US-021",
+      "title": "Windows 10 1809 + Windows 11 smoke test suite",
+      "epic": "EP-W8",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-016"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "docs/WINDOWS-SMOKE-TEST.md authored (417 lines). Structure mirrors docs/validation-aarch64.md (sibling aarch64 runbook). 10 scenarios per PRD AC-1 verbatim: (1) fresh MSI install, (2) SmartScreen Strivex, (3) Start Menu launch, (4) Ctrl+Shift+N workspace, (5) Ctrl+Shift+D split, (6) PowerShell 7 spawn, (7) 100 chars + resize ConPTY stability, (8) Ctrl+C interrupt (alacritty#3075 caveat documented), (9) close+reopen config persistence, (10) uninstall %APPDATA% preservation. Each scenario has a [\ud83d\udcf8] marker (10 total, mapped to smoke/<tag>/win{10,11}-<N>-<slug>.png naming convention per AC-5). AC-4 triage: 3-bucket workflow (fix-in-PRD / known-v1 / block-release) with concrete story-ID examples per bucket + default-to-C tie-breaker. AC-2/AC-3 (actual Win 10 1809 + Win 11 runs) deferred to first real release. Review verdict APPROVE_WITH_NITS; 5 of 7 findings applied \u2014 skipped: WiX casing check (already correct in main.wxs:%ProgramFiles%\\PaneFlow\\) and run-log note template (stylistic)."
+    },
+    {
+      "id": "US-022",
+      "title": "docs/WINDOWS.md \u2014 known upstream risks + user guide",
+      "epic": "EP-W8",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-021"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Three deliverables. (1) docs/WINDOWS.md (226 lines) with the 5 required sections: Supported versions (x86_64 only v1, 10 1809+, 11), Installation (winget + direct MSI), Known limitations (services sidebar, cmd.exe OSC 7, CJK IME caution, cwd_now stub, self-update prompt-only), Known upstream risks (5 entries \u2014 IME CJK panic zed#12563, ConPTY Ctrl+C alacritty#3075, RDP broken zed#26692, devcontainer freeze zed#49072, GPU NoSupportedDeviceFound zed#28683 \u2014 each with title/description/URL/severity/workaround per AC-2), Reporting issues. (2) README.md +43 lines: new ## Windows subsection after macOS mirroring the sibling's structure, with two links to docs/WINDOWS.md (AC-3). (3) .github/ISSUE_TEMPLATE/windows-bug-report.md (114 lines) paralleling the existing aarch64-bug-report.md with a REQUIRED 'Windows version + build' field (winver + systeminfo guidance) + architecture/CPU/GPU/install-format/display-environment fields (AC-5). AC-5 deviation from PRD's literal 'bug_report.yml' filename: project convention is markdown templates (not YAML forms) \u2014 matched aarch64 template. AC-4 no-site-duplication decision documented in docs/WINDOWS.md preamble. Review verdict APPROVE_WITH_NITS; single SHOULD_FIX applied (display-text-vs-href consistency on WINDOWS-SMOKE-TEST.md cross-reference). Install path casing PaneFlow matches packaging/wix/main.wxs Directory Name; publisher Strivex matches sign-windows.ps1 O=Strivex anchor."
+    }
+  ]
+}
