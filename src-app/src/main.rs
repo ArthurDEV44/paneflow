@@ -13,6 +13,7 @@ mod keys;
 mod mouse;
 mod pane;
 mod pty;
+mod runtime_paths;
 mod search;
 mod self_update;
 mod settings_window;
@@ -32,6 +33,8 @@ use gpui::{
     Styled, Window, WindowBounds, WindowDecorations, WindowOptions, actions, canvas, deferred, div,
     ease_in_out, point, prelude::*, px, rgb, size, svg, transparent_black,
 };
+#[cfg(target_os = "macos")]
+use gpui::{Menu, MenuItem, OsAction};
 use gpui_platform::application;
 use notify::Watcher;
 
@@ -177,7 +180,16 @@ actions!(
         ToggleCopyMode,
         ClearScrollHistory,
         ResetTerminal,
-        StartSelfUpdate
+        StartSelfUpdate,
+        // US-012: macOS native menu-bar actions. Dispatched by `cx.set_menus`
+        // via GPUI's `on_app_menu_action` → `cx.dispatch_action`, then caught
+        // by the `.on_action(...)` handlers on the PaneFlowApp render root.
+        Quit,
+        About,
+        Copy,
+        Paste,
+        SelectAll,
+        OpenHelp
     ]
 );
 
@@ -4366,6 +4378,36 @@ impl Render for PaneFlowApp {
                     cx.quit();
                 }),
             )
+            // US-012: macOS menu-bar actions. `Quit` mirrors `CloseWindow`.
+            // `About` is a placeholder; clicking it logs until we ship a
+            // real About surface. `Copy` / `Paste` delegate to the existing
+            // terminal clipboard actions so Edit > Copy works when a
+            // terminal pane is focused (matches the ⌘C keybinding from
+            // US-010). `SelectAll` is a no-op until the terminal exposes
+            // a select-all action.
+            .on_action(cx.listener(|this: &mut Self, _: &Quit, _window, cx| {
+                this.save_session(cx);
+                cx.quit();
+            }))
+            .on_action(cx.listener(|_this: &mut Self, _: &About, _window, _cx| {
+                log::info!("About PaneFlow: v{}", env!("CARGO_PKG_VERSION"));
+            }))
+            .on_action(cx.listener(|_this: &mut Self, _: &Copy, _window, cx| {
+                cx.dispatch_action(&TerminalCopy);
+            }))
+            .on_action(cx.listener(|_this: &mut Self, _: &Paste, _window, cx| {
+                cx.dispatch_action(&TerminalPaste);
+            }))
+            .on_action(
+                cx.listener(|_this: &mut Self, _: &SelectAll, _window, _cx| {
+                    log::debug!("Edit > Select All dispatched (terminal select-all not yet wired)");
+                }),
+            )
+            .on_action(cx.listener(|_this: &mut Self, _: &OpenHelp, _window, _cx| {
+                if let Err(e) = open::that("https://github.com/ArthurDEV44/paneflow#readme") {
+                    log::warn!("Help > PaneFlow Help: could not open browser: {e}");
+                }
+            }))
             .on_action(cx.listener(Self::handle_start_self_update))
             .on_mouse_move(|_e, _, cx| cx.stop_propagation())
             // Title bar (Entity with drag-to-move support)
@@ -4908,6 +4950,88 @@ fn system_package_update_command(
 /// `~/.local/paneflow.app/` directory and symlinks `~/.local/bin/paneflow`
 /// into it. We warn when the old layout is detected so users know why the
 /// in-app updater can no longer fetch a `.run` asset (there are none).
+/// Install the macOS menu bar.
+///
+/// US-012: three top-level menus — PaneFlow / Edit / Window — populated with
+/// the actions listed in the PRD. The `PaneFlow` menu name matches the
+/// `CFBundleName` from the future US-013 Info.plist (AC6). Keyboard shortcuts
+/// are derived from the global keybindings table (e.g. Quit shows `⌘Q`
+/// because US-010's `MACOS_ONLY_DEFAULTS` binds `cmd-q → quit`; Window items
+/// show `⌘⇧N` / `⌘⇧Q` / `⌘Tab` from US-009's `secondary-*` bindings).
+/// Copy / Paste / Select All carry an `OsAction` hint so macOS routes them
+/// through the native responder chain and renders `⌘C` / `⌘V` / `⌘A`.
+#[cfg(target_os = "macos")]
+fn install_macos_menu_bar(cx: &mut App) {
+    cx.set_menus(vec![
+        Menu::new("PaneFlow").items(vec![
+            MenuItem::action("About PaneFlow", About),
+            MenuItem::separator(),
+            MenuItem::action("Quit PaneFlow", Quit),
+        ]),
+        Menu::new("Edit").items(vec![
+            MenuItem::os_action("Copy", Copy, OsAction::Copy),
+            MenuItem::os_action("Paste", Paste, OsAction::Paste),
+            MenuItem::separator(),
+            MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+        ]),
+        Menu::new("Window").items(vec![
+            MenuItem::action("New Workspace", NewWorkspace),
+            MenuItem::action("Close Workspace", CloseWorkspace),
+            MenuItem::separator(),
+            MenuItem::action("Next Workspace", NextWorkspace),
+        ]),
+        // macOS convention: every app ships a Help menu (even if it only
+        // points to an online doc/repo). Without one, Apple's HIG-conforming
+        // users perceive the app as unfinished. "PaneFlow Help" dispatches
+        // `OpenHelp` which opens the GitHub README in the default browser.
+        Menu::new("Help").items(vec![MenuItem::action("PaneFlow Help", OpenHelp)]),
+    ]);
+}
+
+/// Detect whether the Apple Silicon binary is running under Rosetta 2
+/// translation on an Intel Mac (or, more commonly, an Intel binary on
+/// Apple Silicon — which Apple translates transparently). Either way it
+/// warns once at startup so a user who grabbed the wrong `.dmg` knows
+/// why GPU performance is degraded instead of silently eating the hit.
+///
+/// Edge case 4 of the macOS port PRD. Uses `sysctl.proc_translated`: returns
+/// `1` for a translated process, `0` native, ENOENT → native Intel kernel
+/// (no Rosetta available at all). Failure to read the sysctl is silent —
+/// this warning is diagnostic, not load-bearing.
+#[cfg(target_os = "macos")]
+fn warn_if_rosetta_translated() {
+    use std::ffi::CString;
+    use std::mem::size_of;
+
+    let name = match CString::new("sysctl.proc_translated") {
+        Ok(n) => n,
+        Err(_) => return,
+    };
+    let mut translated: i32 = 0;
+    let mut size = size_of::<i32>();
+    // SAFETY: `sysctlbyname` reads a small integer into a stack buffer whose
+    // size is passed by pointer. `name.as_ptr()` is a valid NUL-terminated
+    // C string from a CString we just constructed. `translated` and `size`
+    // are live stack variables for the duration of the call. Zero-initialized
+    // buffer means a kernel short-write can't expose uninitialized memory.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            &mut translated as *mut _ as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc == 0 && translated == 1 {
+        log::warn!(
+            "running under Rosetta 2 translation — GPU rendering will be \
+             degraded. For best performance, download the matching \
+             architecture from https://github.com/ArthurDEV44/paneflow/releases"
+        );
+    }
+}
+
 fn warn_if_legacy_run_install() {
     let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
         return;
@@ -4969,6 +5093,8 @@ fn main() {
     .init();
 
     warn_if_legacy_run_install();
+    #[cfg(target_os = "macos")]
+    warn_if_rosetta_translated();
 
     application()
         .with_assets(assets::Assets)
@@ -4976,6 +5102,12 @@ fn main() {
             // Load config early — needed for keybindings and window decorations
             let config = paneflow_config::loader::load_config();
             keybindings::apply_keybindings(cx, &config.shortcuts);
+
+            // US-012: macOS native menu bar. On Linux/Windows the call is
+            // elided — GPUI's non-macOS platforms don't render a menu bar
+            // and AC5 forbids any Linux UI change.
+            #[cfg(target_os = "macos")]
+            install_macos_menu_bar(cx);
 
             let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
             let decorations = match config.window_decorations.as_deref() {
@@ -4998,6 +5130,12 @@ fn main() {
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some("PaneFlow".into()),
                         appears_transparent: true,
+                        // US-011: reserve space on the left of the custom
+                        // titlebar for macOS traffic lights. The three
+                        // red/yellow/green circles live at x≈12-78px; the
+                        // brand text starts at x=80 (see title_bar.rs).
+                        #[cfg(target_os = "macos")]
+                        traffic_light_position: Some(point(px(12.0), px(12.0))),
                         ..Default::default()
                     }),
                     app_id: Some("paneflow".into()),

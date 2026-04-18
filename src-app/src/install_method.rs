@@ -52,6 +52,13 @@ pub enum InstallMethod {
     /// Update flow downloads a new tarball and atomically swaps the app dir.
     TarGz { app_dir: PathBuf },
 
+    /// macOS `.app` bundle layout (US-007) — the running binary lives at
+    /// `<bundle_path>/Contents/MacOS/paneflow`, whether under
+    /// `/Applications`, `$HOME/Applications`, or anywhere the user dragged
+    /// the bundle. The updater pairs this with `AssetFormat::Dmg`
+    /// (US-008) to download a matching `.dmg`.
+    AppBundle { bundle_path: PathBuf },
+
     /// Binary location doesn't match any known layout (legacy `.run` install,
     /// manual copy, dev build). Updater disables in-app updates.
     Unknown,
@@ -67,17 +74,39 @@ pub fn detect() -> InstallMethod {
     // fall back to the raw exe path.
     let canonical = std::fs::canonicalize(&exe).unwrap_or(exe);
 
-    classify(
+    let result = classify(
         &canonical,
         std::env::var_os("HOME"),
         std::env::var_os("APPIMAGE"),
-    )
+    );
+
+    // US-007 AC3 — on macOS, a binary that is NOT inside a .app bundle means
+    // someone extracted paneflow ad-hoc (e.g. copied to ~/bin/). In-app
+    // updates can't target such installs, so surface the reason once at
+    // startup instead of silently showing a never-firing update prompt.
+    #[cfg(target_os = "macos")]
+    if matches!(result, InstallMethod::Unknown) {
+        log::warn!(
+            "paneflow: running binary at {} is not inside a .app bundle — in-app updates disabled",
+            canonical.display()
+        );
+    }
+
+    result
 }
 
 /// Pure classifier — no I/O beyond the `/etc/*-release` probe for package
 /// manager inference, which is only reached on the SystemPackage arm. All
 /// other inputs are parameters so callers (and tests) control them.
 fn classify(canonical: &Path, home: Option<OsString>, appimage: Option<OsString>) -> InstallMethod {
+    // 0. macOS `.app` bundle (US-007). Structural check on the path
+    //    components: `<bundle>/Contents/MacOS/<binary>`. Placed first
+    //    because it's the cheapest and cannot false-positive on a Linux
+    //    path (no Linux layout has `Contents/MacOS/` in the tail).
+    if let Some(bundle_path) = app_bundle_path(canonical) {
+        return InstallMethod::AppBundle { bundle_path };
+    }
+
     // 1. System package (apt/dnf).
     if canonical == Path::new("/usr/bin/paneflow")
         || canonical == Path::new("/usr/local/bin/paneflow")
@@ -124,6 +153,30 @@ fn detect_package_manager() -> PackageManager {
     } else {
         PackageManager::Other
     }
+}
+
+/// Return the enclosing `.app` bundle path if `path` points at a binary
+/// inside a macOS app bundle, else `None`. We check structurally — parent
+/// must be `MacOS`, grandparent `Contents`, great-grandparent ends with
+/// `.app` — so drag-installs to arbitrary locations (e.g. `~/Downloads/`)
+/// are still detected, not just the canonical `/Applications` path.
+fn app_bundle_path(path: &Path) -> Option<PathBuf> {
+    let macos_dir = path.parent()?;
+    if macos_dir.file_name()?.to_str()? != "MacOS" {
+        return None;
+    }
+    let contents_dir = macos_dir.parent()?;
+    if contents_dir.file_name()?.to_str()? != "Contents" {
+        return None;
+    }
+    let bundle = contents_dir.parent()?;
+    let bundle_name = bundle.file_name()?.to_str()?;
+    // `.app` is an extension; a directory literally named `.app` with no
+    // prefix isn't a real bundle.
+    if !bundle_name.ends_with(".app") || bundle_name == ".app" {
+        return None;
+    }
+    Some(bundle.to_path_buf())
 }
 
 /// Return the `/tmp/.mount_XXXXXX/` directory if `path` lives inside a
@@ -239,6 +292,89 @@ mod tests {
             None,
         );
         assert_eq!(r, InstallMethod::Unknown);
+    }
+
+    // ---- US-007 tests ----
+
+    #[test]
+    fn app_bundle_in_slash_applications() {
+        let r = classify(
+            Path::new("/Applications/PaneFlow.app/Contents/MacOS/paneflow"),
+            Some(OsString::from("/Users/alice")),
+            None,
+        );
+        match r {
+            InstallMethod::AppBundle { bundle_path } => {
+                assert_eq!(bundle_path, Path::new("/Applications/PaneFlow.app"));
+            }
+            other => panic!("expected AppBundle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn app_bundle_in_home_applications() {
+        let r = classify(
+            Path::new("/Users/alice/Applications/PaneFlow.app/Contents/MacOS/paneflow"),
+            Some(OsString::from("/Users/alice")),
+            None,
+        );
+        match r {
+            InstallMethod::AppBundle { bundle_path } => {
+                assert_eq!(
+                    bundle_path,
+                    Path::new("/Users/alice/Applications/PaneFlow.app")
+                );
+            }
+            other => panic!("expected AppBundle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn app_bundle_at_arbitrary_drag_install_location() {
+        // Structural check matches any location, not just /Applications.
+        let r = classify(
+            Path::new("/opt/third-party/PaneFlow.app/Contents/MacOS/paneflow"),
+            None,
+            None,
+        );
+        assert!(matches!(r, InstallMethod::AppBundle { .. }));
+    }
+
+    #[test]
+    fn macos_binary_outside_bundle_is_unknown() {
+        // A user who extracted paneflow to ~/bin/ gets Unknown (AC3).
+        let r = classify(
+            Path::new("/Users/alice/bin/paneflow"),
+            Some(OsString::from("/Users/alice")),
+            None,
+        );
+        assert_eq!(r, InstallMethod::Unknown);
+    }
+
+    #[test]
+    fn app_bundle_parser_rejects_wrong_layout() {
+        // Wrong MacOS directory name
+        assert!(
+            app_bundle_path(Path::new(
+                "/Applications/PaneFlow.app/Contents/bin/paneflow"
+            ))
+            .is_none()
+        );
+        // Wrong Contents directory name
+        assert!(
+            app_bundle_path(Path::new(
+                "/Applications/PaneFlow.app/Payload/MacOS/paneflow"
+            ))
+            .is_none()
+        );
+        // Bundle dir not ending in .app
+        assert!(
+            app_bundle_path(Path::new("/Applications/PaneFlow/Contents/MacOS/paneflow")).is_none()
+        );
+        // Bundle dir named literally `.app` (edge case)
+        assert!(app_bundle_path(Path::new("/Applications/.app/Contents/MacOS/paneflow")).is_none());
+        // Missing parent entirely (root-level binary)
+        assert!(app_bundle_path(Path::new("/paneflow")).is_none());
     }
 
     #[test]

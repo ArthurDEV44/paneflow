@@ -14,14 +14,18 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Release-asset format the update checker advertises to the UI.
 ///
-/// Filename convention: `paneflow-<version>-<arch>.<format-suffix>`, e.g.
-/// `paneflow-v0.2.0-x86_64.deb`. See [`AssetFormat::filename_suffix`].
+/// Filename convention: `paneflow-<version>-<arch>[<target-qualifier>].<format-suffix>`.
+/// Linux formats carry no qualifier (e.g. `paneflow-v0.2.0-x86_64.deb`),
+/// while macOS `Dmg` uses the Rust target-triple tail `-apple-darwin`
+/// (e.g. `paneflow-0.2.0-aarch64-apple-darwin.dmg`). See
+/// [`AssetFormat::filename_suffix`] and [`AssetFormat::target_qualifier`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AssetFormat {
     Deb,
     Rpm,
     AppImage,
     TarGz,
+    Dmg,
 }
 
 impl AssetFormat {
@@ -33,6 +37,21 @@ impl AssetFormat {
             AssetFormat::Rpm => ".rpm",
             AssetFormat::AppImage => ".AppImage",
             AssetFormat::TarGz => ".tar.gz",
+            AssetFormat::Dmg => ".dmg",
+        }
+    }
+
+    /// Target-triple qualifier inserted between the arch and the suffix.
+    ///
+    /// Linux formats emit bare `<arch><suffix>` (historical convention,
+    /// preserved for regression safety). macOS `.dmg` files carry the
+    /// `-apple-darwin` tail because GitHub Releases host Linux and macOS
+    /// artifacts side by side, and a bare `-aarch64.dmg` would collide
+    /// visually with `-aarch64.deb` in the releases listing.
+    fn target_qualifier(&self) -> &'static str {
+        match self {
+            AssetFormat::Dmg => "-apple-darwin",
+            _ => "",
         }
     }
 
@@ -58,6 +77,7 @@ impl AssetFormat {
             } => AssetFormat::TarGz,
             InstallMethod::AppImage { .. } => AssetFormat::AppImage,
             InstallMethod::TarGz { .. } => AssetFormat::TarGz,
+            InstallMethod::AppBundle { .. } => AssetFormat::Dmg,
             InstallMethod::Unknown => AssetFormat::TarGz,
         }
     }
@@ -121,17 +141,23 @@ pub(crate) struct GitHubAsset {
 /// to opening the release page in a browser.
 ///
 /// # Filename convention
-/// Expects assets named `paneflow-<version>-<arch>.<format-suffix>`, e.g.
-/// `paneflow-v0.2.0-x86_64.deb`. Sibling files like
-/// `paneflow-v0.2.0-x86_64.AppImage.zsync` are naturally rejected because
-/// their suffix is `.zsync`, not `.AppImage`.
+/// Expects assets named `paneflow-<version>-<arch>[<qualifier>].<format-suffix>`:
+/// Linux: `paneflow-v0.2.0-x86_64.deb` (no qualifier).
+/// macOS: `paneflow-0.2.0-aarch64-apple-darwin.dmg` (target-triple qualifier).
+/// Sibling files like `paneflow-v0.2.0-x86_64.AppImage.zsync` are naturally
+/// rejected because their suffix is `.zsync`, not `.AppImage`.
 pub fn pick_asset<'a>(
     assets: &'a [GitHubAsset],
     arch: &str,
     method: InstallMethod,
 ) -> Option<&'a GitHubAsset> {
     let format = AssetFormat::from_install_method(&method);
-    let expected = format!("-{arch}{}", format.filename_suffix()).to_ascii_lowercase();
+    let expected = format!(
+        "-{arch}{}{}",
+        format.target_qualifier(),
+        format.filename_suffix()
+    )
+    .to_ascii_lowercase();
     assets
         .iter()
         .find(|a| a.name.to_ascii_lowercase().ends_with(&expected))
@@ -235,6 +261,11 @@ mod tests {
         InstallMethod::AppImage {
             mount_point: PathBuf::from("/tmp/.mount_x"),
             source_path: PathBuf::from("/home/u/Downloads/paneflow.AppImage"),
+        }
+    }
+    fn app_bundle() -> InstallMethod {
+        InstallMethod::AppBundle {
+            bundle_path: PathBuf::from("/Applications/PaneFlow.app"),
         }
     }
 
@@ -404,5 +435,88 @@ mod tests {
             AssetFormat::from_install_method(&InstallMethod::Unknown),
             AssetFormat::TarGz
         );
+        // US-008 AC6: AppBundle pairs with Dmg.
+        assert_eq!(
+            AssetFormat::from_install_method(&app_bundle()),
+            AssetFormat::Dmg
+        );
+    }
+
+    // -- US-008 ---------------------------------------------------------
+
+    #[test]
+    fn app_bundle_picks_dmg_aarch64() {
+        // AC2: aarch64 macOS host picks the aarch64-apple-darwin.dmg.
+        let assets = vec![
+            make_asset("paneflow-0.2.0-aarch64-apple-darwin.dmg"),
+            make_asset("paneflow-0.2.0-x86_64-apple-darwin.dmg"),
+            make_asset("paneflow-0.2.0-aarch64.tar.gz"),
+        ];
+        let r = pick_asset(&assets, "aarch64", app_bundle());
+        assert_eq!(
+            r.map(|a| a.name.as_str()),
+            Some("paneflow-0.2.0-aarch64-apple-darwin.dmg")
+        );
+    }
+
+    #[test]
+    fn app_bundle_picks_dmg_x86_64() {
+        // AC3: x86_64 macOS host picks the x86_64-apple-darwin.dmg.
+        let assets = vec![
+            make_asset("paneflow-0.2.0-aarch64-apple-darwin.dmg"),
+            make_asset("paneflow-0.2.0-x86_64-apple-darwin.dmg"),
+            make_asset("paneflow-0.2.0-x86_64.deb"),
+        ];
+        let r = pick_asset(&assets, "x86_64", app_bundle());
+        assert_eq!(
+            r.map(|a| a.name.as_str()),
+            Some("paneflow-0.2.0-x86_64-apple-darwin.dmg")
+        );
+    }
+
+    #[test]
+    fn app_bundle_returns_none_when_release_has_no_dmg() {
+        // AC4: Linux-only hotfix release — macOS user gets None, not a .deb.
+        let assets = vec![
+            make_asset("paneflow-0.2.0-x86_64.deb"),
+            make_asset("paneflow-0.2.0-aarch64.tar.gz"),
+            make_asset("paneflow-0.2.0-x86_64.AppImage"),
+        ];
+        let r = pick_asset(&assets, "aarch64", app_bundle());
+        assert!(
+            r.is_none(),
+            "AppBundle user must NOT be handed a Linux asset"
+        );
+    }
+
+    #[test]
+    fn linux_never_picks_dmg() {
+        // AC5 regression: an apt user on aarch64 must not accidentally match
+        // a `.dmg` just because its filename starts with `-aarch64`.
+        let assets = vec![
+            make_asset("paneflow-0.2.0-aarch64-apple-darwin.dmg"),
+            make_asset("paneflow-0.2.0-aarch64.deb"),
+        ];
+        let r = pick_asset(&assets, "aarch64", apt());
+        assert_eq!(
+            r.map(|a| a.name.as_str()),
+            Some("paneflow-0.2.0-aarch64.deb")
+        );
+    }
+
+    #[test]
+    fn dmg_match_is_case_insensitive() {
+        // AC1: filename matching stays case-insensitive for Dmg too.
+        let assets = vec![make_asset("PaneFlow-0.2.0-AArch64-Apple-Darwin.DMG")];
+        let r = pick_asset(&assets, "aarch64", app_bundle());
+        assert!(r.is_some(), "case-insensitive .dmg match failed");
+    }
+
+    #[test]
+    fn dmg_arch_mismatch_returns_none() {
+        // x86_64 host on a release that only shipped an aarch64 .dmg.
+        let assets = vec![make_asset("paneflow-0.2.0-aarch64-apple-darwin.dmg")];
+        let r = pick_asset(&assets, "x86_64", app_bundle());
+        assert!(r.is_none());
     }
 }

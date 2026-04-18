@@ -129,13 +129,23 @@ impl Render for TitleBar {
 
         // --- Left section: "PaneFlow" brand, fixed width aligned with sidebar ---
         let ui = crate::theme::ui_colors();
+        // US-011: on macOS, reserve the leftmost ~80px of the custom titlebar
+        // for the native red/yellow/green traffic lights (positioned at
+        // x=12,y=12 by WindowOptions::titlebar::traffic_light_position in
+        // main.rs). On Linux the window controls are rendered elsewhere,
+        // so the brand keeps the historical `pl_3()` (12px) padding.
+        let brand_pl = if cfg!(target_os = "macos") {
+            gpui::px(80.0)
+        } else {
+            gpui::px(12.0)
+        };
         let brand = div()
             .w(self.sidebar_width)
             .flex_shrink_0()
             .flex()
             .flex_row()
             .items_center()
-            .pl_3()
+            .pl(brand_pl)
             .overflow_x_hidden()
             .child(
                 div()

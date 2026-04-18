@@ -278,9 +278,151 @@ fn collect_socket_inodes(pids: &std::collections::HashSet<u32>) -> std::collecti
     inodes
 }
 
-/// Stub for non-Linux: port detection requires `/proc` (Linux-only).
-/// macOS: could use `lsof -i -P` or `libproc` bindings in the future.
-#[cfg(not(target_os = "linux"))]
+/// macOS descendant PID walker — kernel equivalent of the Linux
+/// `/proc/{pid}/task/{pid}/children` traversal used above. BFS via
+/// `libc::proc_listchildpids`, capped at 512 PIDs to bound memory if a
+/// workspace ever hosts a fork-bomb (mirrors the Linux branch).
+#[cfg(target_os = "macos")]
+fn collect_descendant_pids_macos(root_pid: u32) -> Vec<u32> {
+    const MAX_PIDS: usize = 512;
+    const MAX_CHILDREN_PER_PROC: usize = 256;
+
+    let mut visited: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    visited.insert(root_pid);
+    let mut result = vec![root_pid];
+    let mut queue = vec![root_pid];
+
+    while let Some(pid) = queue.pop() {
+        if visited.len() >= MAX_PIDS {
+            break;
+        }
+
+        let mut children_buf = vec![0i32; MAX_CHILDREN_PER_PROC];
+        let buf_size = (children_buf.len() * std::mem::size_of::<i32>()) as libc::c_int;
+
+        // SAFETY: `children_buf` is a mutable Vec<i32> with its full capacity
+        // written (len == MAX_CHILDREN_PER_PROC). The kernel writes at most
+        // `buf_size` bytes of `pid_t` (== i32) values; any tail beyond the
+        // return value is ignored and truncated below.
+        let written = unsafe {
+            libc::proc_listchildpids(
+                pid as libc::pid_t,
+                children_buf.as_mut_ptr() as *mut libc::c_void,
+                buf_size,
+            )
+        };
+
+        if written <= 0 {
+            // Either no children or the kernel denied the call (EPERM under
+            // sandbox / SIP). Either way, skip this PID — AC4 requires no
+            // panic and no noise on a routine permission denial.
+            continue;
+        }
+
+        let count = (written as usize) / std::mem::size_of::<i32>();
+        for &child_i32 in &children_buf[..count.min(MAX_CHILDREN_PER_PROC)] {
+            if child_i32 <= 0 {
+                continue;
+            }
+            let child = child_i32 as u32;
+            if visited.insert(child) {
+                result.push(child);
+                queue.push(child);
+            }
+        }
+    }
+
+    result
+}
+
+/// Detect TCP listening ports owned by any of the given PIDs or their
+/// descendants on macOS.
+///
+/// Walks each PID's file descriptors via `libproc::listpidinfo::<ListFDs>`,
+/// queries `pidfdinfo::<SocketFDInfo>` for every Socket FD, and filters to
+/// TCP sockets in the `Listen` state.
+///
+/// `insi_lport` in `TcpSockInfo.tcpsi_ini` is the kernel's inpcb local port
+/// cast to `c_int`; the low 16 bits hold the network-byte-order u16, so we
+/// mask + `from_be` to get the host-order port.
+#[cfg(target_os = "macos")]
+pub fn detect_ports(pids: &[u32]) -> Vec<u16> {
+    use libproc::libproc::file_info::{ListFDs, ProcFDType};
+    use libproc::libproc::net_info::{SocketFDInfo, SocketInfoKind, TcpSIState};
+    use libproc::libproc::proc_pid::{listpidinfo, pidfdinfo};
+
+    if pids.is_empty() {
+        return vec![];
+    }
+
+    // Mirror the Linux flow: expand to include descendants so a dev server
+    // launched under `npm run dev` (node → vite-child → ...) is captured.
+    let mut all_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for &pid in pids {
+        for descendant in collect_descendant_pids_macos(pid) {
+            all_pids.insert(descendant);
+        }
+    }
+
+    // Typical ulimit default on macOS is 256–4096 FDs per process. 1024 is
+    // a sensible over-provisioning ceiling — the buffer is uninitialised
+    // memory so allocation cost is a single malloc, not a zeroing pass.
+    const MAX_FDS_PER_PROC: usize = 1024;
+    let mut ports: Vec<u16> = Vec::new();
+
+    for pid in all_pids {
+        let Ok(fds) = listpidinfo::<ListFDs>(pid as i32, MAX_FDS_PER_PROC) else {
+            // EPERM / dead-process races / SIP-restricted targets → skip
+            // silently (AC4). `listpidinfo` already wraps the error string
+            // which is more noise than signal at warn level during normal
+            // port-detection runs triggered by UI refresh.
+            continue;
+        };
+
+        for fd in fds {
+            if !matches!(ProcFDType::from(fd.proc_fdtype), ProcFDType::Socket) {
+                continue;
+            }
+
+            let Ok(sfi) = pidfdinfo::<SocketFDInfo>(pid as i32, fd.proc_fd) else {
+                continue;
+            };
+
+            if sfi.psi.soi_kind != SocketInfoKind::Tcp as libc::c_int {
+                continue;
+            }
+
+            // SAFETY: when `soi_kind == Tcp`, the kernel guarantees the
+            // `soi_proto` union's `pri_tcp` arm is the active one. The
+            // union is POD (`SocketInfoProto` holds `#[repr(C)]` structs
+            // all the way down) so reading a different arm would only
+            // produce garbage port bytes, not UB — but we gate on
+            // `soi_kind` to keep the data meaningful.
+            let tcp = unsafe { sfi.psi.soi_proto.pri_tcp };
+
+            if TcpSIState::from(tcp.tcpsi_state) as i32 != TcpSIState::Listen as i32 {
+                continue;
+            }
+
+            // `insi_lport` stores the inpcb's local port as `c_int` with the
+            // network-byte-order u16 sitting in the low 16 bits. Mask to u16
+            // then `from_be` to recover host-order.
+            let net_port = (tcp.tcpsi_ini.insi_lport as u32 & 0xFFFF) as u16;
+            let port = u16::from_be(net_port);
+            if port != 0 {
+                ports.push(port);
+            }
+        }
+    }
+
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+/// Stub for other non-Linux platforms (BSDs, Windows). Port detection is
+/// a platform-specific syscall on each, outside the v0.2.0 scope.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn detect_ports(_pids: &[u32]) -> Vec<u16> {
     vec![]
 }

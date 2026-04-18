@@ -1,6 +1,8 @@
 //! JSON-RPC socket server for AI agent control.
 //!
-//! Listens on `$XDG_RUNTIME_DIR/paneflow/paneflow.sock`.
+//! Listens on `<runtime_dir>/paneflow/paneflow.sock`, where `<runtime_dir>`
+//! resolves via `crate::runtime_paths` (Linux: `$XDG_RUNTIME_DIR`, macOS:
+//! `$TMPDIR`, with further fallbacks).
 //! Each connection reads newline-delimited JSON-RPC requests and writes responses.
 
 use std::io::{BufRead, BufReader, Write};
@@ -41,7 +43,10 @@ pub fn start_server() -> mpsc::Receiver<IpcRequest> {
         .name("paneflow-ipc".into())
         .spawn(move || {
             let Some(socket_path) = socket_path() else {
-                log::warn!("Cannot determine XDG_RUNTIME_DIR — IPC server disabled");
+                log::warn!(
+                    "paneflow: could not resolve a usable IPC socket path — IPC server disabled. \
+                     See earlier runtime_paths warnings for the specific cause."
+                );
                 return;
             };
 
@@ -231,9 +236,5 @@ fn dispatch_to_gpui(
 }
 
 fn socket_path() -> Option<PathBuf> {
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(dirs::runtime_dir)?;
-    Some(runtime_dir.join("paneflow").join("paneflow.sock"))
+    crate::runtime_paths::socket_path()
 }
