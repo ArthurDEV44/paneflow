@@ -57,6 +57,25 @@ jobs:
             arch: x86_64
             runs-on: macos-13
             continue-on-error: true
+          # US-017: Windows x86_64. Best-effort (continue-on-error: true)
+          # for the same reasons as Intel Mac — an Azure Artifact Signing
+          # outage, cargo-wix regression, or transient windows-2022
+          # image issue should not block Linux + macOS from publishing.
+          # US-016 added the Windows-gated MSI produce + sign + stage
+          # steps (activated via `if: runner.os == 'Windows'`); this
+          # matrix entry is what turns them on. When the leg succeeds,
+          # the signed MSI + SHA-256 sidecar are uploaded as
+          # `release-assets-x86_64-Windows` and picked up by the
+          # `release` job's `release-assets-*` glob. The existing
+          # unconditional steps (cargo fmt/clippy/test/build) also run
+          # on this leg; EP-W2/EP-W3 (US-004..US-009) cfg-guarded all
+          # POSIX-locked code so they compile, and continue-on-error
+          # absorbs any residual clippy noise until US-018's stricter
+          # windows-check CI gate catches regressions pre-merge.
+          - target: x86_64-pc-windows-msvc
+            arch: x86_64
+            runs-on: windows-2022
+            continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
@@ -522,6 +541,174 @@ jobs:
           ( cd release-assets && shasum -a 256 "${dmg}" > "${dmg}.sha256" )
           ls -la release-assets/
 
+      # ─── US-016 Windows MSI: toolchain preflight ─────────────────────────
+      # Dormant today (no windows-2022 matrix leg) — activates when US-017
+      # adds the leg. The `if: runner.os == 'Windows'` guard keeps Linux
+      # and macOS legs untouched. Mirrors the dormant macOS sign/notarize
+      # steps that pre-dated the macOS matrix leg (US-015/US-016 macOS).
+      #
+      # ┌─ NOTE to US-017 implementer ────────────────────────────────────┐
+      # │ AC-4 of US-016 requires the Windows matrix entry to carry       │
+      # │ `continue-on-error: true` (parity with Intel Mac, line 59), so  │
+      # │ an Azure signing outage does not block Linux/macOS legs from    │
+      # │ publishing. Copy the Intel Mac entry pattern — do NOT omit.     │
+      # └─────────────────────────────────────────────────────────────────┘
+      #
+      # windows-2022 preinstalls WiX 3.14.1.8722. signtool.exe lives in
+      # the Windows 10/11 SDK but is NOT resolved here: sign-windows.ps1
+      # does its own SDK scan (defense in depth — if the runner image
+      # ever drops it, the script's clear error is better than a silent
+      # PATH mismatch between this step and the script). Preflight only
+      # handles WiX because cargo-wix errors are cryptic otherwise.
+      - name: Preflight WiX v3 toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # cargo-wix 0.3.9 needs candle.exe + light.exe. Preinstalled
+          # on windows-2022 at C:\Program Files (x86)\WiX Toolset v3.14\bin\.
+          # v3.11 retained as a defensive fallback — if the image ever
+          # rolls back, emit a Write-Warning so the drift is visible in
+          # the CI log rather than silently selecting an older toolset
+          # that may emit subtly different MSIs.
+          $wixRoots = @(
+              'C:\Program Files (x86)\WiX Toolset v3.14\bin',
+              'C:\Program Files (x86)\WiX Toolset v3.11\bin'
+          )
+          $wixBin = $wixRoots | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $wixBin) {
+              throw "WiX v3 not found under any known path. cargo-wix 0.3.9 requires WiX v3 (candle.exe/light.exe). Runner image may have dropped the preinstalled toolset — add an explicit install step (choco install wixtoolset --version 3.14.1)."
+          }
+          if ($wixBin -match 'v3\.11') {
+              Write-Warning "Falling back to WiX v3.11 — windows-2022 image normally ships v3.14. Verify runner-image changelog for a silent WiX downgrade."
+          }
+          Write-Output "Using WiX: $wixBin"
+          Add-Content -Path $env:GITHUB_PATH -Value $wixBin
+
+      # cargo-wix itself is NOT preinstalled on windows-2022. Pinned to
+      # 0.3.9 (latest 2025-03 release; no 0.4.x exists yet that supports
+      # WiX v4 — tracked upstream as volks73/cargo-wix#202). The
+      # Swatinem/rust-cache step above caches `~/.cargo/bin`, so this is
+      # ~2 min cold / ~10 s cached.
+      - name: Install cargo-wix (pinned)
+        if: runner.os == 'Windows'
+        run: cargo install cargo-wix --version 0.3.9 --locked
+
+      # ─── US-016 AC-1: Produce MSI ────────────────────────────────────────
+      # cargo-wix reads [package.metadata.wix] in src-app/Cargo.toml (US-013)
+      # and `packaging/wix/main.wxs` to drive candle → light. The
+      # `--install-version` flag overrides the MSI's ProductVersion with
+      # the bare semver (no leading `v`) — required because WiX's
+      # ProductVersion schema rejects `v0.1.7` and accepts only `0.1.7`.
+      #
+      # Output: `target/wix/paneflow-<ver>-x86_64.msi`. The `--target`
+      # flag tells cargo-wix which release binary to pick up
+      # (`target/x86_64-pc-windows-msvc/release/paneflow.exe`) but the
+      # installer output directory is always `target/wix/` regardless —
+      # do NOT assume the triple folder.
+      - name: Produce MSI
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          # --no-build: the "Build release binary" step above already
+          # produced target/x86_64-pc-windows-msvc/release/paneflow.exe.
+          # Without this flag cargo-wix 0.3.9 internally re-runs
+          # `cargo build --release`, duplicating ~3-5 min of compile on
+          # a cold runner. Matches the macOS pattern where
+          # bundle-macos.sh consumes a pre-built binary.
+          cargo wix build \
+            --no-build \
+            --package paneflow-app \
+            --target x86_64-pc-windows-msvc \
+            --install-version "$version"
+          ls -la target/wix/
+
+      # ─── US-016 AC-2: Sign MSI via Azure Artifact Signing ────────────────
+      # Invokes the US-015 script, which fetches the
+      # `Microsoft.ArtifactSigning.Client` NuGet (pinned 1.0.128) into a
+      # temp dir, writes a metadata.json with ExcludeCredentials, and
+      # calls `signtool.exe sign` with the 3-host timestamp retry chain
+      # (acs.microsoft.com → digicert → sectigo). Verification
+      # (`signtool verify /pa` + `Get-AuthenticodeSignature`) is
+      # embedded in the script.
+      #
+      # Secrets (all 6 required — populated per US-014 onboarding):
+      #   AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
+      #       — service principal for EnvironmentCredential auth
+      #   AZURE_TRUSTED_SIGNING_ENDPOINT / _ACCOUNT / _CERT_PROFILE
+      #       — addressing for the code-signing account / cert profile
+      - name: Sign MSI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = $env:TAG -replace '^v', ''
+          # Hard-validate $version as strict semver before it flows into
+          # a glob pattern. github.ref_name is attacker-controlled; a
+          # tag like `v1.0.0*;evil` would produce a malformed glob. This
+          # doesn't enable command injection (Get-ChildItem -Filter is
+          # not an eval surface), but a crafted tag could match the
+          # wrong MSI or skip signing silently. Belt-and-suspenders.
+          if ($version -notmatch '^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') {
+              throw "TAG '$env:TAG' does not strip to a valid semver (got '$version'). Refusing to glob for MSI."
+          }
+          $msi = Get-ChildItem -Path 'target/wix' -Filter "paneflow-$version-*.msi" |
+              Select-Object -First 1 -ExpandProperty FullName
+          if (-not $msi) {
+              throw "No MSI found under target/wix/ matching paneflow-$version-*.msi — cargo wix build may have failed or emitted an unexpected filename."
+          }
+          Write-Output "Signing: $msi"
+          # Quoted "$msi" so a path with spaces (unlikely with cargo-wix
+          # defaults but defensive) is passed as one argv element.
+          pwsh -NoProfile -File ./scripts/sign-windows.ps1 -InputFile "$msi"
+
+      # ─── US-016 AC-3: Stage the signed MSI + SHA-256 sidecar ─────────────
+      # Rename from cargo-wix's default (paneflow-<ver>-x86_64.msi) to the
+      # canonical release asset name paneflow-<ver>-x86_64-pc-windows-msvc.msi
+      # that `update_checker::pick_asset` (US-011) matches against. The
+      # `-pc-windows-msvc` suffix is the Rust triple, kept in the filename
+      # so the in-app updater's asset picker can key on the triple without
+      # an explicit per-OS branch.
+      #
+      # Same env-routing hardening as the Linux/macOS stage steps: `TAG`
+      # goes via the `env:` block, never inlined as `${{ ... }}` inside
+      # the shell body — so an attacker-controlled tag cannot shell-inject.
+      - name: Stage Windows assets
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          version="${TAG#v}"
+          # Resolve the MSI via shell glob (shellcheck SC2012: `ls | head`
+          # mishandles non-alphanumeric filenames; a bash array from glob
+          # does not). `nullglob` + array-length check distinguishes
+          # "no match" from a literal unexpanded glob string.
+          shopt -s nullglob
+          matches=( target/wix/paneflow-"${version}"-*.msi )
+          shopt -u nullglob
+          if [ "${#matches[@]}" -eq 0 ]; then
+              echo "::error::No MSI found at target/wix/paneflow-${version}-*.msi" >&2
+              exit 1
+          fi
+          src="${matches[0]}"
+          dst="paneflow-${version}-x86_64-pc-windows-msvc.msi"
+          cp "${src}" "release-assets/${dst}"
+          ( cd release-assets && sha256sum "${dst}" > "${dst}.sha256" )
+          ls -la release-assets/
+
       # --- Stage all 4 artifacts with canonical names ---
       # Linux-leg-only: the macOS .dmg is staged by its own step above.
       # Context values are passed via `env:` rather than inlined as
@@ -591,9 +778,15 @@ jobs:
   # GitHub Release exactly once with the merged file set.
   #
   # Atomic-release guarantee (PRD AC6): `needs: [build]` waits for
-  # the whole matrix to succeed. Combined with `fail-fast: true` on
-  # the matrix, a single-arch failure cancels the sibling leg and
-  # fails `build`, so this job never runs — no half-matrix ships.
+  # every matrix leg to finish. `fail-fast: true` + hard-required legs
+  # (Linux x64/aarch64, macOS aarch64) propagate a failure to cancel
+  # siblings and fail `build`, so this job never runs on a broken
+  # hard-required leg. Best-effort legs (Intel Mac, Windows — both
+  # `continue-on-error: true`) are excluded from `fail-fast`: a failure
+  # there is allowed, the `build` job is still marked success, and the
+  # release ships without those assets. This keeps the release-day
+  # blast radius bounded to the platforms the user base actually
+  # depends on while letting experimental/best-effort legs ride along.
   release:
     name: Publish GitHub Release
     needs: build

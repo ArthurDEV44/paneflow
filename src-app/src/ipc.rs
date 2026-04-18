@@ -1,17 +1,23 @@
 //! JSON-RPC socket server for AI agent control.
 //!
-//! Listens on `<runtime_dir>/paneflow/paneflow.sock`, where `<runtime_dir>`
-//! resolves via `crate::runtime_paths` (Linux: `$XDG_RUNTIME_DIR`, macOS:
-//! `$TMPDIR`, with further fallbacks).
-//! Each connection reads newline-delimited JSON-RPC requests and writes responses.
+//! Listens on `<runtime_dir>/paneflow/paneflow.sock` on Unix and
+//! `\\.\pipe\paneflow` on Windows (US-009). Each connection reads
+//! newline-delimited JSON-RPC requests and writes responses.
+//!
+//! Cross-platform IPC is handled by the `interprocess` crate's
+//! `local_socket` module, which dispatches to Unix domain sockets on
+//! POSIX and named pipes on Windows transparently. The wire protocol
+//! (newline-delimited JSON-RPC 2.0) is byte-identical across platforms.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use interprocess::TryClone;
+use interprocess::local_socket::{
+    GenericFilePath, Listener, ListenerNonblockingMode, ListenerOptions, Stream, prelude::*,
+};
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
@@ -32,10 +38,13 @@ pub struct IpcRequest {
 /// Start the IPC server on a dedicated OS thread.
 /// Returns the receiver for IPC requests to be polled by the GPUI thread.
 ///
-/// The server monitors the socket file on disk and automatically re-binds
-/// when another instance (e.g. `cargo run`) clobbers it. Without this,
-/// the listener becomes orphaned (wrong inode) and all new connections
-/// get `ECONNREFUSED`, silently disabling AI hook integration.
+/// On Unix, the server monitors the socket file on disk and automatically
+/// re-binds when another instance (e.g. `cargo run`) clobbers it. Without
+/// this, the listener becomes orphaned (wrong inode) and all new connections
+/// get `ECONNREFUSED`, silently disabling AI hook integration. Named pipes
+/// on Windows have different lifecycle semantics (the second process to
+/// claim the pipe name fails at creation, not silently), so the clobber
+/// detection is Unix-only.
 pub fn start_server() -> mpsc::Receiver<IpcRequest> {
     let (tx, rx) = mpsc::channel();
 
@@ -50,23 +59,38 @@ pub fn start_server() -> mpsc::Receiver<IpcRequest> {
                 return;
             };
 
+            // Only Unix needs the containing directory to exist — the
+            // Windows named-pipe path lives in the kernel namespace, not
+            // the filesystem.
+            #[cfg(unix)]
             if let Some(parent) = socket_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
 
-            let mut listener = match bind_socket(&socket_path) {
+            let listener = match bind_socket(&socket_path) {
                 Some(l) => l,
                 None => return,
             };
-            let mut our_ino = socket_inode(&socket_path).unwrap_or(0);
-            let mut last_health_check = std::time::Instant::now();
 
-            // Non-blocking accept so we can periodically verify the socket file
-            listener.set_nonblocking(true).ok();
+            #[cfg(unix)]
+            let mut our_ino = socket_inode(&socket_path).unwrap_or(0);
+            #[cfg(unix)]
+            let mut last_health_check = std::time::Instant::now();
+            #[cfg(unix)]
+            let mut listener = listener;
+            #[cfg(not(unix))]
+            let listener = listener;
+
+            // Non-blocking accept so we can periodically verify the socket
+            // file (Unix) without starving connections. Stream I/O itself
+            // stays blocking so `handle_connection` can use plain `BufRead`.
+            listener
+                .set_nonblocking(ListenerNonblockingMode::Accept)
+                .ok();
 
             loop {
                 match listener.accept() {
-                    Ok((stream, _)) => {
+                    Ok(stream) => {
                         let tx = tx.clone();
                         std::thread::spawn(move || handle_connection(stream, tx));
                     }
@@ -80,7 +104,11 @@ pub fn start_server() -> mpsc::Receiver<IpcRequest> {
                     }
                 }
 
-                // Every 5 seconds, verify our socket file hasn't been clobbered
+                // Every 5 seconds, verify our socket file hasn't been
+                // clobbered (Unix inode check). Skipped on Windows: named
+                // pipes don't have inodes and a concurrent `CreateNamedPipe`
+                // fails loudly rather than silently orphaning us.
+                #[cfg(unix)]
                 if last_health_check.elapsed() >= Duration::from_secs(5) {
                     last_health_check = std::time::Instant::now();
                     let current_ino = socket_inode(&socket_path).unwrap_or(0);
@@ -93,7 +121,7 @@ pub fn start_server() -> mpsc::Receiver<IpcRequest> {
                         drop(listener);
                         match bind_socket(&socket_path) {
                             Some(l) => {
-                                l.set_nonblocking(true).ok();
+                                l.set_nonblocking(ListenerNonblockingMode::Accept).ok();
                                 listener = l;
                                 our_ino = socket_inode(&socket_path).unwrap_or(0);
                             }
@@ -103,6 +131,11 @@ pub fn start_server() -> mpsc::Receiver<IpcRequest> {
                 }
             }
 
+            // interprocess' auto name reclamation unlinks the socket file
+            // on `Listener::drop` for Unix; this explicit remove is a
+            // belt-and-braces no-op there and never runs on Windows
+            // (nothing to remove in the named-pipe namespace).
+            #[cfg(unix)]
             let _ = std::fs::remove_file(&socket_path);
         })
         .expect("Failed to spawn IPC thread");
@@ -110,11 +143,28 @@ pub fn start_server() -> mpsc::Receiver<IpcRequest> {
     rx
 }
 
-/// Bind a new Unix listener at the given path, removing any stale file first.
-fn bind_socket(socket_path: &std::path::Path) -> Option<UnixListener> {
+/// Bind a new listener at the given path/pipe name.
+fn bind_socket(socket_path: &std::path::Path) -> Option<Listener> {
+    // Unix: remove any stale socket file from a crashed prior run. The
+    // interprocess crate's name reclamation handles graceful shutdown;
+    // this pre-clean covers `kill -9` / SIGKILL / crash paths.
+    // Windows: no-op; the kernel pipe namespace does not retain stale
+    // entries after the owning process exits.
+    #[cfg(unix)]
     let _ = std::fs::remove_file(socket_path);
 
-    let listener = match UnixListener::bind(socket_path) {
+    let name = match socket_path.to_fs_name::<GenericFilePath>() {
+        Ok(n) => n,
+        Err(e) => {
+            log::error!(
+                "Failed to build IPC socket name for {}: {e}",
+                socket_path.display()
+            );
+            return None;
+        }
+    };
+
+    let listener = match ListenerOptions::new().name(name).create_sync() {
         Ok(l) => l,
         Err(e) => {
             log::error!(
@@ -125,18 +175,34 @@ fn bind_socket(socket_path: &std::path::Path) -> Option<UnixListener> {
         }
     };
 
-    let _ = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600));
+    // chmod 0o600 — Unix only. Named pipes on Windows use ACLs; the
+    // default DACL from `CreateNamedPipe` grants access to LocalSystem,
+    // Administrators, and the owning user only, which matches the intent
+    // of 0o600. A custom SecurityDescriptor could be set via
+    // `ListenerOptions::security_descriptor` if we ever need to lock it
+    // down further, but v1 accepts the default.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600));
+    }
     log::info!("IPC server listening on {}", socket_path.display());
     Some(listener)
 }
 
 /// Get the inode number of a filesystem path (0 if the file doesn't exist).
+/// Unix-only: used by the clobber-detection health check.
+#[cfg(unix)]
 fn socket_inode(path: &std::path::Path) -> Option<u64> {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata(path).ok().map(|m| m.ino())
 }
 
-fn handle_connection(stream: UnixStream, request_tx: mpsc::Sender<IpcRequest>) {
+fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
+    // `Stream::try_clone` is provided by `interprocess::TryClone` and
+    // works on both Unix domain sockets and Windows named pipes. One
+    // handle reads, the other writes, so request/response flow does not
+    // fight over a single mutable cursor.
     let Ok(writer_stream) = stream.try_clone() else {
         return;
     };

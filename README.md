@@ -340,6 +340,49 @@ open dist/PaneFlow.app
 Release builds downloaded from GitHub are always signed + notarized and
 skip this step.
 
+## Windows
+
+PaneFlow supports Windows 10 build 1809+ and Windows 11 on x86_64
+(`x86_64-pc-windows-msvc`). Distribution is via a signed MSI on GitHub
+Releases and the winget Microsoft Store catalog. ARM64 is deferred —
+see [`docs/WINDOWS.md`](docs/WINDOWS.md) for the supported-versions
+matrix and known limitations.
+
+**Install (end users):**
+
+```powershell
+# winget (recommended)
+winget install ArthurDev44.PaneFlow
+
+# Or direct download — double-click the signed MSI from the latest
+# GitHub Release (publisher "Strivex" via Azure Artifact Signing).
+```
+
+**Build from source (contributors):**
+
+```powershell
+# 1. Install the Rust MSVC toolchain target (one-time)
+rustup target add x86_64-pc-windows-msvc
+
+# 2. Compile the binary
+cargo build --release -p paneflow-app --target x86_64-pc-windows-msvc
+
+# 3. (Optional) Produce an MSI via cargo-wix + WiX 3.14 (preinstalled
+#    on the windows-2022 CI runner; locally, install via
+#    `choco install wixtoolset --version 3.14.1`)
+cargo install cargo-wix --version 0.3.9 --locked
+cargo wix build --no-build \
+    --package paneflow-app \
+    --target x86_64-pc-windows-msvc \
+    --install-version "$(cargo pkgid -p paneflow-app | ForEach-Object { $_ -replace '.*#','' })"
+```
+
+**Reporting Windows-specific bugs:** use the
+[Windows bug report](https://github.com/ArthurDEV44/paneflow/issues/new?template=windows-bug-report.md)
+template (captures Windows version + build automatically) and see
+[`docs/WINDOWS.md`](docs/WINDOWS.md) for the full v1 limitations
+catalog + upstream-risk tracker.
+
 ## Usage
 
 ```bash

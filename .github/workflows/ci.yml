@@ -198,3 +198,134 @@ jobs:
           path: target/aarch64-apple-darwin/release/paneflow
           if-no-files-found: error
           retention-days: 7
+
+  # US-003 + US-018 (prd-windows-port.md): windows-2022 PR gate. Runs the
+  # full Rust quality suite (fmt + clippy + test + check) against the
+  # x86_64-pc-windows-msvc target, plus toolchain/WiX verification. US-003
+  # stood up the runner + WiX scaffolding; US-018 promotes the job from
+  # "smoke cargo check with continue-on-error" to a required quality gate
+  # now that EP-W2 (US-004..US-008) + EP-W3 (US-009) have cfg-guarded the
+  # POSIX-locked code that previously broke the cross-compile.
+  #
+  # Runner: windows-2022 hosted image ships VS 2022 Build Tools + the
+  # Windows SDK preinstalled but does NOT expose cl/link/signtool on the
+  # default shell PATH. ilammy/msvc-dev-cmd loads the VS dev env (cl,
+  # link, lib) and an inline PowerShell step prepends the latest SDK
+  # bin dir (for signtool.exe) to $GITHUB_PATH.
+  #
+  # Time budget (US-018 AC-4): <5 min cached. Swatinem/rust-cache handles
+  # cargo's share (keyed on `x86_64-pc-windows-msvc` so Linux/macOS cache
+  # slots don't collide); actions/cache covers WiX's ~10 MB global tool
+  # install. `timeout-minutes: 30` is a runaway guard, not the SLA.
+  windows-check:
+    name: Windows x86_64 smoke check
+    # US-003 AC1 + matches macos-check behavior: skip on docs-only PRs so
+    # Windows minutes aren't burned on README tweaks. The filter in the
+    # `changes` job already includes .github/workflows/ci.yml, so any
+    # edit to this file retriggers the gate.
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Load VS 2022 Build Tools env: cl.exe, link.exe, lib.exe on PATH,
+      # INCLUDE/LIB/LIBPATH set. Required by AC-2's `where cl.exe link.exe`.
+      # x64 arch targets the same toolchain the rustc msvc triple uses.
+      - name: Setup MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # signtool.exe ships in the Windows 10 SDK bin dir but is not on the
+      # VS Dev Cmd PATH. Resolve the highest-versioned SDK bin subdir and
+      # append it to $GITHUB_PATH so later steps (and US-015's signing
+      # script work) see it. Explicit `throw` on not-found turns a silent
+      # drift of the runner image into a labelled preflight failure.
+      - name: Add Windows SDK bin to PATH (for signtool)
+        shell: pwsh
+        run: |
+          $sdkRoot = "C:\Program Files (x86)\Windows Kits\10\bin"
+          $sdkBin = Get-ChildItem $sdkRoot -Directory |
+            Where-Object { $_.Name -match '^10\.' } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          if (-not $sdkBin) {
+            throw "Windows 10 SDK bin directory not found under $sdkRoot — runner image drift?"
+          }
+          $signtoolDir = Join-Path $sdkBin.FullName 'x64'
+          Write-Output "Using SDK bin: $signtoolDir"
+          Add-Content -Path $env:GITHUB_PATH -Value $signtoolDir
+
+      # AC-2 — toolchain binaries all on PATH.
+      - name: Verify signtool.exe / cl.exe / link.exe on PATH
+        shell: pwsh
+        run: |
+          where.exe signtool.exe
+          where.exe cl.exe
+          where.exe link.exe
+
+      # US-003 AC-1 + US-018 AC-1: Rust toolchain with rustfmt + clippy
+      # components (required by the fmt/clippy steps below) and the MSVC
+      # cross-compile target.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-pc-windows-msvc
+
+      # Note: WiX toolset is NOT installed in this PR gate. The MSI build
+      # lives in release.yml only (US-016), which uses WiX v3 (candle.exe +
+      # light.exe) via the windows-2022 preinstalled toolset paired with
+      # cargo-wix 0.3.9 (cargo-wix has no WiX v4/v5 backend — see
+      # volks73/cargo-wix#202). Installing `dotnet tool install --global wix`
+      # here would surface WiX v5 — incompatible with the release pipeline
+      # and unused by the fmt/clippy/test/check gate below, so it's omitted
+      # to keep the CI check accurate to what it verifies.
+
+      # ─── US-018 AC-2: quality-gate steps in mandated order ────────────────
+      # fmt → clippy → test → check. Each step fails the job fast (`-D
+      # warnings` on clippy, `set -e` semantics from GitHub Actions on
+      # every step) so a Windows-specific regression surfaces at the PR
+      # gate with the exact file:line from rustc/clippy output rather
+      # than slipping into release.yml's best-effort Windows leg.
+
+      # AC-2 step 1/4: formatting. `--all` forces every workspace member;
+      # `--check` is the non-destructive mode that fails on unformatted
+      # code. Runs first because a format failure is cheap and the 3
+      # later steps then operate on consistently-formatted source.
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+
+      # AC-2 step 2/4: clippy. `--target x86_64-pc-windows-msvc` selects
+      # the Windows codepaths — cfg-gated modules (terminal::TerminateProcess,
+      # install_method::WindowsMsi, ipc's interprocess branch, etc.) are
+      # only type-checked when this target is chosen. `-D warnings`
+      # promotes every clippy lint + unused-import warning to an error,
+      # matching the Linux `check` job pattern (line 74) and the release
+      # pipeline's clippy gate.
+      - name: cargo clippy --target x86_64-pc-windows-msvc
+        run: cargo clippy --workspace --target x86_64-pc-windows-msvc -- -D warnings
+
+      # AC-2 step 3/4: tests. Currently all 39 tests live in paneflow-config
+      # (platform-neutral: JSON schema, file watcher, keybinding parser);
+      # the app crate has no tests per the project convention. Running
+      # `--target x86_64-pc-windows-msvc` builds + runs the test binaries
+      # as native x86_64 PE executables, proving the Windows test runner
+      # picks up the same test set and nothing regresses on the MSVC toolchain.
+      - name: cargo test --workspace --target x86_64-pc-windows-msvc
+        run: cargo test --workspace --target x86_64-pc-windows-msvc
+
+      # AC-2 step 4/4: final check. Redundant with clippy in practice
+      # (clippy is a superset), but kept as a belt-and-braces signal and
+      # because the PRD AC lists it explicitly — a bare `cargo check`
+      # failure is a clearer error surface than clippy's noisier output
+      # when the problem is a pure compile error (missing API, linker
+      # symbol, etc.) rather than a lint. No `continue-on-error` anymore
+      # (US-003 set it; EP-W2/W3 landing made it unnecessary).
+      - name: cargo check --workspace --target x86_64-pc-windows-msvc
+        run: cargo check --workspace --target x86_64-pc-windows-msvc

@@ -1,0 +1,41 @@
+# PaneFlow winget default-locale manifest (template).
+#
+# US-019. See ArthurDev44.PaneFlow.installer.yaml for the rendering
+# pipeline overview. Only __VERSION__ is substituted in this file; all
+# other fields (Publisher, PackageName, License, ShortDescription, etc.)
+# are static and edited here when they need to change.
+#
+# Schema: ManifestVersion 1.12.0. `License` (not `LicenseUrl`) is the
+# REQUIRED field per the default-locale JSON schema; `LicenseUrl` is
+# optional-but-recommended and included for winget UI discoverability.
+#
+# Note on LICENSE file: the project is declared MIT in Cargo.toml but
+# the top-level LICENSE file is not yet committed (flagged in
+# CLAUDE.md §Gotchas). The LicenseUrl below will 404 until that file
+# ships; winget-pkgs maintainers may flag this on the first submission.
+# Land the LICENSE file before the first winget release.
+PackageIdentifier: ArthurDev44.PaneFlow
+PackageVersion: __VERSION__
+PackageLocale: en-US
+Publisher: Strivex
+PublisherUrl: https://github.com/ArthurDEV44
+PublisherSupportUrl: https://github.com/ArthurDEV44/paneflow/issues
+PackageName: PaneFlow
+PackageUrl: https://github.com/ArthurDEV44/paneflow
+License: MIT
+LicenseUrl: https://github.com/ArthurDEV44/paneflow/blob/main/LICENSE
+ShortDescription: Cross-platform terminal multiplexer built with Rust and GPUI.
+Description: |-
+  PaneFlow is a cross-platform terminal multiplexer — panes, splits, and
+  workspaces in a native GPU-rendered window. Built in Rust with the GPUI
+  framework used by the Zed editor. A port of the cmux terminal multiplexer
+  to Linux, macOS, and Windows.
+Tags:
+  - terminal
+  - multiplexer
+  - tmux
+  - rust
+  - gpui
+  - developer-tools
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0

@@ -59,6 +59,20 @@ pub enum InstallMethod {
     /// (US-008) to download a matching `.dmg`.
     AppBundle { bundle_path: PathBuf },
 
+    /// Windows MSI install (US-010 — prd-windows-port.md). The running
+    /// `paneflow.exe` lives under one of two canonical PaneFlow install
+    /// directories:
+    ///
+    /// - `%ProgramFiles%\PaneFlow\paneflow.exe` — machine-wide MSI install
+    ///   (the default target of `msiexec /i` with admin rights).
+    /// - `%LocalAppData%\Programs\PaneFlow\paneflow.exe` — per-user MSI
+    ///   install (non-admin / ALLUSERS="" deployment).
+    ///
+    /// `install_path` is the containing PaneFlow directory (not the exe).
+    /// The updater pairs this with `AssetFormat::Msi` (US-011) to match
+    /// the correct `.msi` release asset for x86_64 Windows.
+    WindowsMsi { install_path: PathBuf },
+
     /// Binary location doesn't match any known layout (legacy `.run` install,
     /// manual copy, dev build). Updater disables in-app updates.
     Unknown,
@@ -78,6 +92,10 @@ pub fn detect() -> InstallMethod {
         &canonical,
         std::env::var_os("HOME"),
         std::env::var_os("APPIMAGE"),
+        // US-010 — Windows MSI install detection. On non-Windows these two
+        // env vars are None and the classifier's Windows branch short-circuits.
+        std::env::var_os("ProgramFiles"),
+        std::env::var_os("LocalAppData"),
     );
 
     // US-007 AC3 — on macOS, a binary that is NOT inside a .app bundle means
@@ -98,13 +116,31 @@ pub fn detect() -> InstallMethod {
 /// Pure classifier — no I/O beyond the `/etc/*-release` probe for package
 /// manager inference, which is only reached on the SystemPackage arm. All
 /// other inputs are parameters so callers (and tests) control them.
-fn classify(canonical: &Path, home: Option<OsString>, appimage: Option<OsString>) -> InstallMethod {
+fn classify(
+    canonical: &Path,
+    home: Option<OsString>,
+    appimage: Option<OsString>,
+    program_files: Option<OsString>,
+    local_app_data: Option<OsString>,
+) -> InstallMethod {
     // 0. macOS `.app` bundle (US-007). Structural check on the path
     //    components: `<bundle>/Contents/MacOS/<binary>`. Placed first
     //    because it's the cheapest and cannot false-positive on a Linux
     //    path (no Linux layout has `Contents/MacOS/` in the tail).
     if let Some(bundle_path) = app_bundle_path(canonical) {
         return InstallMethod::AppBundle { bundle_path };
+    }
+
+    // 0.5. Windows MSI install (US-010). Same no-false-positive reasoning
+    //      as AppBundle: Linux/macOS never set `ProgramFiles` or
+    //      `LocalAppData`, so the helper returns None and this branch
+    //      short-circuits on non-Windows. Cheap to keep ungated.
+    if let Some(install_path) = windows_msi_install_path(
+        canonical,
+        program_files.as_deref(),
+        local_app_data.as_deref(),
+    ) {
+        return InstallMethod::WindowsMsi { install_path };
     }
 
     // 1. System package (apt/dnf).
@@ -137,6 +173,28 @@ fn classify(canonical: &Path, home: Option<OsString>, appimage: Option<OsString>
     }
 
     InstallMethod::Unknown
+}
+
+/// Return the PaneFlow MSI install directory if `canonical` points at a binary
+/// under one of the two standard Windows locations:
+/// `%ProgramFiles%\PaneFlow\` or `%LocalAppData%\Programs\PaneFlow\`
+/// (US-010 — prd-windows-port.md).
+///
+/// Pure path manipulation — no FS access, no env-var reads. The two env
+/// var values come in as parameters so tests can mock `ProgramFiles` and
+/// `LocalAppData` on any host (this file's tests run on Linux CI).
+fn windows_msi_install_path(
+    canonical: &Path,
+    program_files: Option<&std::ffi::OsStr>,
+    local_app_data: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    [
+        program_files.map(|p| PathBuf::from(p).join("PaneFlow")),
+        local_app_data.map(|p| PathBuf::from(p).join("Programs").join("PaneFlow")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|candidate| canonical.starts_with(candidate))
 }
 
 /// Infer the system package manager from distro-identifier files.
@@ -212,13 +270,13 @@ mod tests {
 
     #[test]
     fn system_package_usr_bin() {
-        let r = classify(Path::new("/usr/bin/paneflow"), None, None);
+        let r = classify(Path::new("/usr/bin/paneflow"), None, None, None, None);
         assert!(matches!(r, InstallMethod::SystemPackage { .. }));
     }
 
     #[test]
     fn system_package_usr_local_bin() {
-        let r = classify(Path::new("/usr/local/bin/paneflow"), None, None);
+        let r = classify(Path::new("/usr/local/bin/paneflow"), None, None, None, None);
         assert!(matches!(r, InstallMethod::SystemPackage { .. }));
     }
 
@@ -228,6 +286,8 @@ mod tests {
             Path::new("/tmp/.mount_abc123/usr/bin/paneflow"),
             None,
             Some(OsString::from("/home/u/Downloads/paneflow.AppImage")),
+            None,
+            None,
         );
         match r {
             InstallMethod::AppImage {
@@ -246,7 +306,13 @@ mod tests {
 
     #[test]
     fn appimage_without_env_still_detected() {
-        let r = classify(Path::new("/tmp/.mount_abc123/usr/bin/paneflow"), None, None);
+        let r = classify(
+            Path::new("/tmp/.mount_abc123/usr/bin/paneflow"),
+            None,
+            None,
+            None,
+            None,
+        );
         match r {
             InstallMethod::AppImage {
                 mount_point,
@@ -265,6 +331,8 @@ mod tests {
             Path::new("/home/u/.local/paneflow.app/bin/paneflow"),
             Some(OsString::from("/home/u")),
             None,
+            None,
+            None,
         );
         match r {
             InstallMethod::TarGz { app_dir } => {
@@ -280,6 +348,8 @@ mod tests {
             Path::new("/home/u/.local/bin/paneflow"),
             Some(OsString::from("/home/u")),
             None,
+            None,
+            None,
         );
         assert_eq!(r, InstallMethod::Unknown);
     }
@@ -289,6 +359,8 @@ mod tests {
         let r = classify(
             Path::new("/opt/random/paneflow"),
             Some(OsString::from("/home/u")),
+            None,
+            None,
             None,
         );
         assert_eq!(r, InstallMethod::Unknown);
@@ -301,6 +373,8 @@ mod tests {
         let r = classify(
             Path::new("/Applications/PaneFlow.app/Contents/MacOS/paneflow"),
             Some(OsString::from("/Users/alice")),
+            None,
+            None,
             None,
         );
         match r {
@@ -316,6 +390,8 @@ mod tests {
         let r = classify(
             Path::new("/Users/alice/Applications/PaneFlow.app/Contents/MacOS/paneflow"),
             Some(OsString::from("/Users/alice")),
+            None,
+            None,
             None,
         );
         match r {
@@ -336,6 +412,8 @@ mod tests {
             Path::new("/opt/third-party/PaneFlow.app/Contents/MacOS/paneflow"),
             None,
             None,
+            None,
+            None,
         );
         assert!(matches!(r, InstallMethod::AppBundle { .. }));
     }
@@ -346,6 +424,8 @@ mod tests {
         let r = classify(
             Path::new("/Users/alice/bin/paneflow"),
             Some(OsString::from("/Users/alice")),
+            None,
+            None,
             None,
         );
         assert_eq!(r, InstallMethod::Unknown);
@@ -394,6 +474,17 @@ mod tests {
     /// Proves that `canonicalize` resolves a symlink chain mimicking the
     /// tar.gz install layout. Detection in `detect()` relies on this so the
     /// symlink at `~/.local/bin/paneflow` doesn't get misclassified.
+    ///
+    /// US-007 (prd-windows-port.md) — Unix-only. `TarGz` is a Linux/macOS
+    /// install method; Windows uses `WindowsMsi` from US-010 which installs
+    /// `paneflow.exe` directly to `%ProgramFiles%\PaneFlow\` with no
+    /// symlink indirection. Creating symlinks on Windows also requires
+    /// `SeCreateSymbolicLinkPrivilege`, which non-admin users lack by
+    /// default. AC-6 of US-007 explicitly permits "self-update skips
+    /// symlink creation on Windows entirely" — this codebase has no
+    /// runtime symlink creators anywhere, so there is no `make_symlink`
+    /// helper to document; the cfg-gate here IS the design choice.
+    #[cfg(unix)]
     #[test]
     fn canonicalize_resolves_tar_gz_symlink() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -408,12 +499,100 @@ mod tests {
         std::os::unix::fs::symlink(&real_bin, &sym).unwrap();
 
         let canonical = std::fs::canonicalize(&sym).unwrap();
-        let r = classify(&canonical, Some(OsString::from(tmp.path())), None);
+        let r = classify(
+            &canonical,
+            Some(OsString::from(tmp.path())),
+            None,
+            None,
+            None,
+        );
         match r {
             InstallMethod::TarGz { app_dir } => {
                 assert_eq!(app_dir, tmp.path().join(".local/paneflow.app"));
             }
             other => panic!("expected TarGz, got {other:?}"),
         }
+    }
+
+    // ---- US-010 tests — Windows MSI install detection. ----
+    //
+    // Pure string/path manipulation; mocked env-var values (ProgramFiles,
+    // LocalAppData) fed directly to `classify`. No Windows-only types, so
+    // these run on Linux CI and prove the detection logic without having
+    // to stand up a Windows runner for a unit test.
+    //
+    // Path literals intentionally use forward slashes. On Windows, `Path`
+    // treats both `/` and `\` as separators, so the production code path
+    // (which sees backslashes from `current_exe()` and `ProgramFiles`)
+    // and the test path both resolve into the same component sequence.
+    // On Linux, `Path::starts_with` is component-based and only honors
+    // `/` as a separator — using backslashes here would collapse the
+    // whole Windows path into a single component and break `starts_with`.
+
+    #[test]
+    fn windows_msi_machine_wide_program_files() {
+        let r = classify(
+            Path::new("C:/Program Files/PaneFlow/paneflow.exe"),
+            None,
+            None,
+            Some(OsString::from("C:/Program Files")),
+            Some(OsString::from("C:/Users/alice/AppData/Local")),
+        );
+        match r {
+            InstallMethod::WindowsMsi { install_path } => {
+                assert_eq!(install_path, PathBuf::from("C:/Program Files/PaneFlow"));
+            }
+            other => panic!("expected WindowsMsi, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn windows_msi_per_user_local_app_data() {
+        let r = classify(
+            Path::new("C:/Users/alice/AppData/Local/Programs/PaneFlow/paneflow.exe"),
+            None,
+            None,
+            Some(OsString::from("C:/Program Files")),
+            Some(OsString::from("C:/Users/alice/AppData/Local")),
+        );
+        match r {
+            InstallMethod::WindowsMsi { install_path } => {
+                assert_eq!(
+                    install_path,
+                    PathBuf::from("C:/Users/alice/AppData/Local/Programs/PaneFlow")
+                );
+            }
+            other => panic!("expected WindowsMsi, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn windows_binary_outside_standard_paths_is_unknown() {
+        // A dev build running from `target/release/paneflow.exe` — not
+        // inside %ProgramFiles%\PaneFlow\ nor %LocalAppData%\Programs\PaneFlow\.
+        let r = classify(
+            Path::new("C:/dev/paneflow/target/release/paneflow.exe"),
+            None,
+            None,
+            Some(OsString::from("C:/Program Files")),
+            Some(OsString::from("C:/Users/alice/AppData/Local")),
+        );
+        assert_eq!(r, InstallMethod::Unknown);
+    }
+
+    #[test]
+    fn windows_msi_detection_ignored_when_env_vars_missing() {
+        // Linux / macOS call site — `ProgramFiles` and `LocalAppData` are
+        // None. Even if someone crafts a path that looks like a Windows
+        // install, the detection short-circuits (no candidate dirs to
+        // test against).
+        let r = classify(
+            Path::new("C:/Program Files/PaneFlow/paneflow.exe"),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(r, InstallMethod::Unknown);
     }
 }
