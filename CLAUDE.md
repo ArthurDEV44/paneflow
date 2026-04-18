@@ -184,6 +184,24 @@ chore: description
 
 Atomic commits per user story. Branch naming: `feat/description`.
 
+## Cross-platform compatibility (mandatory)
+
+Any new code, refactor, or change that touches the codebase in any way **must** be fully compatible with all three target platforms:
+
+- **Linux** — every major distribution (Fedora, Ubuntu/Debian, Arch, openSUSE, etc.), both Wayland and X11.
+- **macOS (Apple)** — Intel and Apple Silicon.
+- **Windows** — Windows 10 and 11 (x64, and ARM64 where applicable).
+
+Concretely this means:
+
+- Never hardcode POSIX-only paths, shell commands, env vars, or separators. Use `std::path::PathBuf`, `std::env`, and the `dirs` crate (or equivalent) for all filesystem and environment access.
+- Guard platform-specific code with `#[cfg(target_os = "…")]` and always provide a working path for the other two platforms (at minimum a graceful fallback or documented stub).
+- Prefer cross-platform crates (`portable-pty`, `notify`, `dirs`, `which`, etc.) over POSIX-only APIs. If a POSIX-only crate is unavoidable, isolate it behind a trait with per-OS implementations.
+- PTY, IPC, packaging, auto-update, keybindings, fonts, and file watching must each have Linux + macOS + Windows paths — never Linux-only.
+- Before shipping a change, mentally (or actually) verify it compiles and behaves correctly on all three platforms. If you cannot verify, say so explicitly rather than assume.
+
+This rule overrides any older "Linux-only" gotcha in this file — the project is actively porting to macOS and Windows, and all new work must land cross-platform by default.
+
 ## Anti-Friction Rules (claude-doctor)
 
 Règles pour éviter les patterns de friction détectés par `claude-doctor` sur ce projet : edit-thrashing, restart-cluster, repeated-instructions, negative-drift, error-loop, excessive-exploration.
