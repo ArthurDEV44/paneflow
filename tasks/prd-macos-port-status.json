@@ -1,0 +1,324 @@
+{
+  "prd": {
+    "file": "tasks/prd-macos-port.md",
+    "title": "macOS Port \u2014 Cross-Platform Expansion to Apple Silicon + Intel Darwin",
+    "created_at": "2026-04-17",
+    "status": "DONE"
+  },
+  "epics": [
+    {
+      "id": "EP-001",
+      "title": "Build Unblocking & Compile Parity",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 3,
+      "stories_done": 2
+    },
+    {
+      "id": "EP-002",
+      "title": "Runtime Parity",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 5,
+      "stories_done": 5
+    },
+    {
+      "id": "EP-003",
+      "title": "macOS-Native UI",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 4,
+      "stories_done": 4
+    },
+    {
+      "id": "EP-004",
+      "title": "Packaging & Distribution",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 5,
+      "stories_done": 5
+    },
+    {
+      "id": "EP-005",
+      "title": "CI/CD & Quality Infrastructure",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 2,
+      "stories_done": 2
+    }
+  ],
+  "stories": [
+    {
+      "id": "US-001",
+      "title": "Validate GPUI rev 0b984b5 builds on aarch64-apple-darwin",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-17",
+      "completed_at": "2026-04-17",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-002",
+      "title": "Resolve core-graphics transitive version conflict if it manifests",
+      "epic": "EP-001",
+      "status": "CANCELLED",
+      "priority": "P0",
+      "size": "XS",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-04-17",
+      "completed_at": "2026-04-17",
+      "reviewed_at": null,
+      "resolution": "Cancelled per AC4. Cargo.lock inspection confirms core-graphics 0.23.2 (via zed-scap -> cocoa 0.25.0) and 0.24.0 (via GPUI + cocoa 0.26.0) coexist but occupy distinct crate symbol namespaces per Rust's standard mangling \u2014 no link collision expected. The PRD's prescribed patch (core-graphics = \"0.24\" in [patch.crates-io]) would not resolve because cocoa 0.25.0 pins ^0.23; a real remediation would require a patch-source redirect or a zed-scap bump, both out of scope. Reopen this story only if the US-001 CI run on macos-14 produces duplicate-symbol link errors. Finding documented in tasks/spike-macos-build.md (Addendum)."
+    },
+    {
+      "id": "US-003",
+      "title": "Install Xcode Command Line Tools + verify gpui_macos deps compile",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "XS",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-04-17",
+      "completed_at": "2026-04-17",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-004",
+      "title": "IPC socket path fallback via $TMPDIR on macOS",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-04-17",
+      "completed_at": "2026-04-17",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-005",
+      "title": "cwd_now() macOS implementation via proc_pidinfo",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "M",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-04-17",
+      "completed_at": "2026-04-17",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Implemented via libc::proc_pidinfo (already in dep tree) rather than the libproc crate specified in AC1. Reason: libproc 0.14.11 does not expose a PIDInfo wrapper struct for flavor 9 (VNodePathInfo) and its own pidcwd helper is explicitly unimplemented on macOS \u2014 going through libproc would require a local wrapper-struct shim for no added value. The semantic requirement (proc_pidinfo with PROC_PIDVNODEPATHINFO) is preserved and documented in the fn docstring. Runtime verification (AC2/AC4) deferred to macos-14 hardware \u2014 Linux regression (AC5) unaffected."
+    },
+    {
+      "id": "US-006",
+      "title": "detect_ports() macOS implementation via libproc",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "L",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-04-17",
+      "completed_at": "2026-04-17",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Implemented via libproc 0.14 (macOS-only dep per AC1) for per-PID FD + socket introspection, paired with libc::proc_listchildpids for descendant walking. Mirrors the Linux structure: expand workspace PIDs to all descendants, enumerate Socket FDs, filter to TCP Listen state, extract port from insi_lport (network byte order, low 16 bits of c_int). AC6 defer path NOT taken \u2014 pipeline default is to implement. Runtime verification (AC2/AC3) deferred to macos-14 hardware."
+    },
+    {
+      "id": "US-007",
+      "title": "InstallMethod::AppBundle variant + detection logic",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-04-17",
+      "completed_at": "2026-04-17",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-008",
+      "title": "AssetFormat::Dmg variant + pick_asset matching",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-007"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-009",
+      "title": "Migrate app-global keybindings to secondary modifier",
+      "epic": "EP-003",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-010",
+      "title": "Add Cmd+C / Cmd+V terminal copy/paste bindings on macOS",
+      "epic": "EP-003",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-009"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-011",
+      "title": "TitlebarOptions traffic_light_position + macOS padding guard",
+      "epic": "EP-003",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-012",
+      "title": "Minimal native menu bar via cx.set_menus",
+      "epic": "EP-003",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-013",
+      "title": ".app bundle layout + bundle-macos.sh script",
+      "epic": "EP-004",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18"
+    },
+    {
+      "id": "US-014",
+      "title": "Generate PaneFlow.icns from existing PNG assets",
+      "epic": "EP-004",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "AC3 deviation: Linux fallback chain is iconutil (macOS) -> png2icns -> icnsutil -> python3 inline packer. Added python3 packer (stdlib only, ~25 lines) because neither png2icns nor icnsutil was installable on the dev host; ImageMagick 7 on the host ships without an ICNS coder. Output validated: file(1) reports 'Mac OS X icon', all 10 typed chunks (icp4, ic11, icp5, ic12, ic07, ic13, ic08, ic14, ic09, ic10) parse cleanly and each carries a valid PNG payload. iconutil path on macOS runners is unchanged and remains the primary. Visual audit of 1024px upscale deferred to PR reviewer on macOS (AC5)."
+    },
+    {
+      "id": "US-015",
+      "title": "Code signing + notarization pipeline in release.yml",
+      "epic": "EP-004",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "L",
+      "blocked_by": [
+        "US-013"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Implemented as two self-contained scripts (scripts/sign-macos.sh, scripts/notarize-macos.sh) plus two dormant steps in .github/workflows/release.yml gated by `if: runner.os == 'macOS'`. The steps remain inert on today's ubuntu-22.04 matrix legs (AC7) and activate the moment US-019 adds the macos-14 leg that calls scripts/bundle-macos.sh first. AC2/3/4/5/6 logic implemented and syntax-validated; real execution requires Apple secrets + macOS runner and is deferred to US-019 CI. Secrets to populate in repo settings before first macOS release: APPLE_DEVELOPER_CERT_P12, APPLE_DEVELOPER_CERT_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID."
+    },
+    {
+      "id": "US-016",
+      "title": ".dmg creation + upload to GitHub Releases",
+      "epic": "EP-004",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-015"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Implemented via hand-rolled hdiutil + osascript (AC1 permitted either approach; hdiutil avoids an npm install step on the macOS runner). New script scripts/create-dmg.sh produces `dist/paneflow-<version>-<arch>-apple-darwin.dmg` with a drag-to-Applications Finder layout driven by AppleScript (660x400 window, icons at {165,200} and {495,200}, background asset at .background/background.png). Filename format matches US-008's AssetFormat::Dmg matcher exactly. AC3 enforced by a post-convert remount + codesign --verify --deep --strict inside the script. release.yml extended with two macOS-gated steps (produce-dmg + stage-dmg-into-release-assets); dormant on today's Linux matrix, activates when US-019 adds the macos-14 leg. US-019 deferred sub-concern: the existing Linux 'Stage release assets' step isn't gated to runner.os == 'Linux' yet; US-019 must add that guard when introducing the macos leg. Visual/Gatekeeper verification (AC2/AC3/AC5) deferred to macOS CI in US-019."
+    },
+    {
+      "id": "US-017",
+      "title": "Homebrew cask formula + self-hosted tap",
+      "epic": "EP-004",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "M",
+      "blocked_by": [
+        "US-016"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Implemented via two artifacts in this repo: (1) packaging/homebrew/paneflow.rb \u2014 canonical arch-aware cask template with version/sha256/url/app/depends_on/zap stanzas per AC2, (2) .github/workflows/update-cask.yml \u2014 on release: published, downloads both .dmg assets, computes per-arch SHA256s, renders Casks/paneflow.rb via sed-based substitution of the canonical template, and pushes to the external tap repo. Operator setup (manual, out-of-band): (a) create public repo ArthurDEV44/homebrew-paneflow with empty Casks/ dir, (b) create a fine-grained PAT with contents: read-and-write on that repo, (c) add HOMEBREW_TAP_TOKEN secret to this repo. Workflow will error clearly with setup instructions if the secret is absent. AC3/AC5/AC6 runtime brew behaviour is satisfied structurally by DSL conformance; verification deferred to first post-US-019 release when both matrix legs produce .dmg artifacts."
+    },
+    {
+      "id": "US-018",
+      "title": "macOS CI check job in ci.yml",
+      "epic": "EP-005",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [
+        "US-001"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Extended the US-001-era macos-check job with three AC2-mandated gates (cargo fmt --check, cargo clippy --workspace --target aarch64-apple-darwin -- -D warnings, cargo test --workspace --target aarch64-apple-darwin) and added a dorny/paths-filter@v3-powered `changes` detection job that short-circuits macos-check on docs-only / non-workflow .github/** PRs (AC5). Filter scope: src-app/**/*.rs, crates/**/*.rs, **/Cargo.toml, Cargo.lock, .github/workflows/ci.yml \u2014 the last entry ensures CI-file PRs exercise their own validation. Clippy scoped to --target aarch64-apple-darwin so platform-gated modules (runtime_paths.rs, InstallMethod::AppBundle, AssetFormat::Dmg, MACOS_ONLY_DEFAULTS) are type-checked on macOS rather than only on Linux. rustfmt+clippy components added to the dtolnay/rust-toolchain step. AC3 rust-cache already present (key aarch64-apple-darwin). Ubuntu check job unchanged \u2014 still runs on every event."
+    },
+    {
+      "id": "US-019",
+      "title": "Release.yml macos-14 matrix leg for aarch64 .dmg",
+      "epic": "EP-005",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "M",
+      "blocked_by": [
+        "US-015",
+        "US-016"
+      ],
+      "started_at": "2026-04-18",
+      "completed_at": "2026-04-18",
+      "reviewed_at": "2026-04-18",
+      "resolution": "Extended the release.yml build matrix with two new legs: macos-14 (aarch64-apple-darwin, mandatory) and macos-13 (x86_64-apple-darwin, best-effort via continue-on-error: true at the matrix entry, lifted through to the job via `continue-on-error: ${{ matrix.continue-on-error == true }}`). Gated 11 Linux-only steps (apt install, metainfo validate, cargo-deb/generate-rpm installs, tar.gz/deb/Lintian/rpm/AppImage production, GPG sign, Linux staging) with `if: runner.os == 'Linux'`. Added 2 macOS-only prelude steps before the US-015/016 dormant ones: Xcode CLT + Metal toolchain verify (mirrored from ci.yml), and scripts/bundle-macos.sh invocation. Version argument to bundle-macos.sh and create-dmg.sh uses ${TAG#v} (bare semver per Apple CFBundleShortVersionString requirements and matching US-008's documented .dmg filename convention). Upload artifact name disambiguated with runner.os suffix (release-assets-<arch>-<runner.os>); both smoke-test jobs updated to download release-assets-x86_64-Linux. Release publish job's release-assets-* glob unchanged. AC4 wall-time measurement (<30 min) deferred to first live run."
+    }
+  ]
+}

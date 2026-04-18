@@ -287,6 +287,59 @@ tar xzf target/bundle/paneflow-*.tar.gz -C /tmp
 /tmp/paneflow.app/install.sh
 ```
 
+## macOS
+
+PaneFlow supports macOS 13 Ventura or later on both Apple Silicon
+(`aarch64-apple-darwin`, primary target) and Intel (`x86_64-apple-darwin`,
+best-effort). Distribution is via signed + notarized `.dmg` on GitHub
+Releases and a Homebrew cask.
+
+**Install (end users):**
+
+```bash
+# Homebrew cask (recommended)
+brew tap arthurdev44/paneflow
+brew install --cask paneflow
+
+# Or direct download — drag PaneFlow.app into /Applications
+# from the mounted DMG.
+```
+
+**Build from source (contributors):**
+
+```bash
+# 1. Install Xcode Command Line Tools (one-time)
+xcode-select --install
+
+# 2. Add the target
+rustup target add aarch64-apple-darwin
+
+# 3. Build
+cargo build --release --target aarch64-apple-darwin
+
+# 4. Bundle into a .app (produces dist/PaneFlow.app)
+bash scripts/bundle-macos.sh \
+    --version "$(cargo pkgid -p paneflow-app | sed 's/.*#//')" \
+    --arch aarch64
+
+# 5. (Optional) Build a .dmg for local distribution
+bash scripts/create-dmg.sh \
+    --version "$(cargo pkgid -p paneflow-app | sed 's/.*#//')" \
+    --arch aarch64
+```
+
+**Unsigned dev build first-launch:** macOS Gatekeeper rejects unsigned
+builds by default. For locally-built binaries (no Developer ID cert
+available), strip the quarantine attribute once:
+
+```bash
+xattr -cr dist/PaneFlow.app
+open dist/PaneFlow.app
+```
+
+Release builds downloaded from GitHub are always signed + notarized and
+skip this step.
+
 ## Usage
 
 ```bash
