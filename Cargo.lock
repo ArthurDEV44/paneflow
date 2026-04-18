@@ -592,6 +592,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.72.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
+dependencies = [
+ "bitflags 2.11.0",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.13.0",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 2.1.2",
+ "shlex",
+ "syn",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2364,7 +2382,7 @@ dependencies = [
  "async-channel 2.5.0",
  "async-task",
  "backtrace",
- "bindgen",
+ "bindgen 0.71.1",
  "bitflags 2.11.0",
  "block",
  "cbindgen",
@@ -3353,6 +3371,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
+name = "libproc"
+version = "0.14.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a54ad7278b8bc5301d5ffd2a94251c004feb971feba96c971ea4063645990757"
+dependencies = [
+ "bindgen 0.72.1",
+ "errno",
+ "libc",
+]
+
+[[package]]
 name = "libredox"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3524,7 +3553,7 @@ version = "0.1.0"
 source = "git+https://github.com/zed-industries/zed?rev=0b984b5ade7604e3f1c618c0ef77879de800b868#0b984b5ade7604e3f1c618c0ef77879de800b868"
 dependencies = [
  "anyhow",
- "bindgen",
+ "bindgen 0.71.1",
  "core-foundation 0.10.0",
  "core-video",
  "ctor",
@@ -4146,6 +4175,7 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "libc",
+ "libproc",
  "log",
  "notify",
  "open",

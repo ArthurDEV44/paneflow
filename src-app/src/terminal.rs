@@ -659,9 +659,83 @@ impl TerminalState {
         std::fs::read_link(&proc_path).ok()
     }
 
-    /// Stub for non-Linux platforms. macOS: use `proc_pidinfo()` with
-    /// `PROC_PIDVNODEPATHINFO`. Windows: use `NtQueryInformationProcess`.
-    #[cfg(not(target_os = "linux"))]
+    /// macOS implementation of `cwd_now`: read the PTY child shell's current
+    /// working directory from the kernel via
+    /// `proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &buf, size)`.
+    ///
+    /// We call the syscall through `libc` (already in the workspace dep tree)
+    /// rather than the `libproc` wrapper crate because `libproc 0.14.x` ships
+    /// `pidcwd` explicitly returning `Err("pidcwd is not implemented for
+    /// macos")` and exposes no `PIDInfo` struct for flavor 9
+    /// (`VNodePathInfo`). A thin libc call is ~40 lines and keeps a single
+    /// dep in play; PRD US-005 AC1's semantic requirement (the kernel call
+    /// and flavor) is preserved.
+    ///
+    /// Returns `None` on every failure path — dead shell race (AC3),
+    /// sandboxed / SIP-restricted target (AC6), or a short write. A single
+    /// `log::warn!` per failure keeps diagnostics visible without killing
+    /// the terminal.
+    #[cfg(target_os = "macos")]
+    pub fn cwd_now(&self) -> Option<std::path::PathBuf> {
+        use std::ffi::CStr;
+        use std::mem::MaybeUninit;
+        use std::os::raw::c_void;
+
+        let pid = self.child_pid as libc::c_int;
+        let mut info = MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
+        let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+
+        // SAFETY: `info` is a stack-allocated MaybeUninit zeroed above; we
+        // only read from it if the syscall reports the full struct size
+        // was written. Zeroing first leaves it in a defined state on any
+        // partial-write error path.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDVNODEPATHINFO,
+                0,
+                info.as_mut_ptr() as *mut c_void,
+                size,
+            )
+        };
+
+        if written <= 0 {
+            let err = std::io::Error::last_os_error();
+            log::warn!(
+                "cwd_now: proc_pidinfo(pid={pid}) returned {written} ({err}) — shell may have exited or SIP / sandbox is denying the read"
+            );
+            return None;
+        }
+
+        if written < size {
+            log::warn!(
+                "cwd_now: proc_pidinfo(pid={pid}) wrote {written} of {size} bytes — truncated result discarded"
+            );
+            return None;
+        }
+
+        // SAFETY: `written == size` implies the kernel fully populated the
+        // buffer with a valid `proc_vnodepathinfo`.
+        let info = unsafe { info.assume_init() };
+
+        // `vip_path` is `[[c_char; 32]; 32]` in libc's binding (a workaround
+        // for an older rustc's const-generic limitation). The underlying
+        // memory is still a contiguous 1024-byte (`MAXPATHLEN`) region;
+        // casting to `*const c_char` gives us the first-byte pointer.
+        let ptr = info.pvi_cdir.vip_path.as_ptr() as *const libc::c_char;
+        // SAFETY: the kernel guarantees `vip_path` holds a NUL-terminated
+        // C string not exceeding `MAXPATHLEN` bytes when the syscall
+        // succeeds with full size.
+        let cstr = unsafe { CStr::from_ptr(ptr) };
+        match cstr.to_str() {
+            Ok(s) if !s.is_empty() => Some(std::path::PathBuf::from(s)),
+            _ => None,
+        }
+    }
+
+    /// Stub for other non-Linux platforms (Windows, BSDs). Windows would
+    /// use `NtQueryInformationProcess` with PEB traversal.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub fn cwd_now(&self) -> Option<std::path::PathBuf> {
         None
     }
@@ -849,28 +923,18 @@ fn strip_partial_ansi_tail(text: &mut String) {
     }
 }
 
-/// Compute the PaneFlow IPC socket path: `$XDG_RUNTIME_DIR/paneflow/paneflow.sock`.
+/// Compute the PaneFlow IPC socket path, delegating to `runtime_paths` so
+/// the fallback chain (XDG_RUNTIME_DIR → dirs::runtime_dir → TMPDIR →
+/// cache_dir/run) and the sun_path ceiling guard stay in sync with
+/// `ipc::socket_path`.
 fn paneflow_socket_path() -> Option<String> {
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(dirs::runtime_dir)?;
-    Some(
-        runtime_dir
-            .join("paneflow")
-            .join("paneflow.sock")
-            .display()
-            .to_string(),
-    )
+    crate::runtime_paths::socket_path().map(|p| p.display().to_string())
 }
 
-/// Compute the PaneFlow wrapper scripts directory: `$XDG_RUNTIME_DIR/paneflow/bin/`.
+/// Compute the PaneFlow wrapper scripts directory using the same runtime-dir
+/// resolution as the socket path.
 fn paneflow_bin_dir() -> Option<std::path::PathBuf> {
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(dirs::runtime_dir)?;
-    Some(runtime_dir.join("paneflow").join("bin"))
+    crate::runtime_paths::bin_dir()
 }
 
 /// Extract embedded wrapper scripts (claude, paneflow-hook) to the runtime bin

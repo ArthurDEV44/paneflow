@@ -62,6 +62,12 @@ flate2 = "1"
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868", features = ["wayland", "x11"] }
 
+# macOS: libproc powers detect_ports() (US-006) — walks per-PID socket FDs
+# via proc_pidinfo/proc_pidfdinfo wrappers. The macOS-only gate keeps it
+# out of the Linux dep closure entirely.
+[target.'cfg(target_os = "macos")'.dependencies]
+libproc = "0.14"
+
 [dev-dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868", features = ["test-support"] }
 tempfile = "3"
