@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    PaneFlow macOS .app Info.plist template (US-013).
+
+    scripts/bundle-macos.sh replaces @VERSION@ with the value of its
+    version flag at bundle-assembly time (e.g. "0.2.0"), populating both
+    CFBundleVersion (build number) and CFBundleShortVersionString
+    (user-visible release). This keeps the two fields in lock-step: we
+    ship one version number per release and never increment a separate
+    build counter.
+
+    CFBundleIconFile=PaneFlow matches the filename PaneFlow.icns that
+    US-014 drops into Contents/Resources/ (macOS resolves the filename
+    without the .icns extension).
+
+    LSMinimumSystemVersion=13.0 (Ventura) is the floor because GPUI's
+    macOS backend targets that era. Bumping this up would break older
+    machines that otherwise support Apple Silicon.
+
+    Note: XML 1.0 Section 2.5 forbids the double-hyphen sequence inside
+    comments, which is why flags like the version CLI flag are spelled
+    without the literal prefix in this note.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>paneflow</string>
+    <key>CFBundleIconFile</key>
+    <string>PaneFlow</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.arthurdev44.paneflow</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>PaneFlow</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@VERSION@</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
