@@ -392,12 +392,18 @@ impl TerminalView {
             return;
         }
 
-        // Middle-click: paste from primary selection
+        // Middle-click: paste from primary selection (X11/Wayland only;
+        // `read_from_primary` is gated to linux+freebsd in GPUI — mirror
+        // the same gate here. On macOS/Windows middle-click has no primary
+        // paste convention, so the block is a no-op and we just return.
         if event.button == MouseButton::Middle {
-            if let Some(item) = cx.read_from_primary()
-                && let Some(text) = item.text()
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             {
-                self.write_paste_text(&text, mode);
+                if let Some(item) = cx.read_from_primary()
+                    && let Some(text) = item.text()
+                {
+                    self.write_paste_text(&text, mode);
+                }
             }
             return;
         }
@@ -425,6 +431,7 @@ impl TerminalView {
         drop(term);
 
         if let Some(text) = copied {
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             cx.write_to_primary(ClipboardItem::new_string(text.clone()));
             cx.write_to_clipboard(ClipboardItem::new_string(text));
             cx.emit(TerminalEvent::SelectionCopied);

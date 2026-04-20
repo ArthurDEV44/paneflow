@@ -211,7 +211,6 @@ Stateful methods dispatch to GPUI main thread via `mpsc::channel`, polled every 
 - **Never recommend iced** for this project — it was evaluated and rejected (unstable, custom WGPU glyph atlas too complex). The decision is final.
 - **`SplitDirection::Horizontal`** means a horizontal divider bar (panes stacked top/bottom), NOT side-by-side. This is counterintuitive but consistent with the codebase.
 - **`alacritty_terminal` is upstream** (crates.io `0.26`), migrated from Zed's fork. Uses `ZedListener` and `FairMutex` from the GPUI integration layer.
-- **AI hook scripts** at `assets/bin/{claude,codex,paneflow-hook}` are Unix-only shell scripts; Windows equivalents are tracked in `prd-windows-port.md`.
 - **`dirs` version mismatch**: `src-app` uses `dirs = "5.0"`, config crate uses `dirs = "6"`. They coexist but are separate semver releases.
 - **Config `default_shell` is wired** — `TerminalState::new()` uses fallback chain: config `default_shell` → `$SHELL` → `/bin/sh`.
 - **The `_io_thread` handle is discarded** (`terminal.rs:139`) — PTY I/O threads run detached. Shutdown is via `Msg::Shutdown` in `Drop`.

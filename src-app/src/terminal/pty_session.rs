@@ -225,18 +225,11 @@ impl TerminalState {
         );
         env.insert("COLORTERM".into(), "truecolor".into());
 
-        // Expose wrapper scripts directory for shell integration.
-        if let Some(bin_dir) = paneflow_bin_dir() {
-            ensure_wrapper_scripts(&bin_dir);
-            let bin_dir_str = bin_dir.display().to_string();
-            env.insert("__PANEFLOW_BIN_DIR".into(), bin_dir_str.clone());
-            let current_path = std::env::var("PATH").unwrap_or_default();
-            // PATH separator: `;` on Windows (drive letters collide with `:`), `:` on POSIX.
-            let sep = if cfg!(windows) { ';' } else { ':' };
-            if !current_path.split(sep).any(|p| p == bin_dir_str) {
-                env.insert("PATH".into(), format!("{bin_dir_str}{sep}{current_path}"));
-            }
-        }
+        // US-013: the AI-hook wrapper-scripts system was removed. The
+        // embed targets never shipped, so extraction was a no-op and the
+        // PATH-prepend step pointed at an empty directory. A future
+        // cross-platform AI-hook system will live in its own PRD and
+        // plumb through a fresh env-var + extraction point.
 
         let cwd = working_directory
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
@@ -720,61 +713,6 @@ pub(super) fn strip_partial_ansi_tail(text: &mut String) {
 /// the fallback chain stays in sync with `ipc::socket_path`.
 fn paneflow_socket_path() -> Option<String> {
     crate::runtime_paths::socket_path().map(|p| p.display().to_string())
-}
-
-/// Compute the PaneFlow wrapper scripts directory using the same runtime-dir
-/// resolution as the socket path.
-fn paneflow_bin_dir() -> Option<std::path::PathBuf> {
-    crate::runtime_paths::bin_dir()
-}
-
-/// Extract embedded wrapper scripts (claude, paneflow-hook) to the runtime bin
-/// directory with executable permissions. Idempotent: only writes if the file
-/// is missing or content has changed. Uses atomic write (temp + rename) to
-/// avoid race conditions when multiple terminals spawn concurrently.
-fn ensure_wrapper_scripts(bin_dir: &std::path::Path) {
-    use crate::assets::Assets;
-    // US-005 — POSIX-only; Windows uses NTFS ACLs, not mode bits.
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-
-    if let Err(e) = std::fs::create_dir_all(bin_dir) {
-        log::warn!(
-            "paneflow: failed to create wrapper bin dir {}: {e}",
-            bin_dir.display()
-        );
-        return;
-    }
-
-    for name in &["claude", "codex", "paneflow-hook"] {
-        let asset_path = format!("bin/{name}");
-        let Some(file) = Assets::get(&asset_path) else {
-            continue;
-        };
-
-        let dest = bin_dir.join(name);
-
-        // Skip write if content matches (avoid unnecessary disk I/O)
-        if dest.exists()
-            && let Ok(existing) = std::fs::read(&dest)
-            && existing == file.data.as_ref()
-        {
-            continue;
-        }
-
-        // Atomic write: temp file → chmod → rename (same filesystem guarantees atomicity)
-        let tmp = bin_dir.join(format!(".{name}.tmp"));
-        if std::fs::write(&tmp, file.data.as_ref()).is_ok() {
-            #[cfg(unix)]
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
-            if let Err(e) = std::fs::rename(&tmp, &dest) {
-                log::warn!("paneflow: failed to install wrapper script {name}: {e}");
-                let _ = std::fs::remove_file(&tmp);
-            }
-        } else {
-            log::warn!("paneflow: failed to write wrapper script {name}");
-        }
-    }
 }
 
 impl Drop for TerminalState {
