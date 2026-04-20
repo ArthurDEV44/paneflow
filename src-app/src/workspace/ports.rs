@@ -196,9 +196,9 @@ fn collect_descendant_pids_macos(root_pid: u32) -> Vec<u32> {
 /// mask + `from_be` to get the host-order port.
 #[cfg(target_os = "macos")]
 pub fn detect_ports(pids: &[u32]) -> Vec<u16> {
-    use libproc::libproc::file_info::{ListFDs, ProcFDType};
+    use libproc::libproc::file_info::{ListFDs, ProcFDType, pidfdinfo};
     use libproc::libproc::net_info::{SocketFDInfo, SocketInfoKind, TcpSIState};
-    use libproc::libproc::proc_pid::{listpidinfo, pidfdinfo};
+    use libproc::libproc::proc_pid::listpidinfo;
 
     if pids.is_empty() {
         return vec![];

@@ -501,10 +501,29 @@ impl PaneFlowApp {
                                 .text_color(ui.accent)
                                 .cursor_pointer()
                                 .hover(|s| s.text_color(rgb(0xa0e8ff)))
-                                .on_click(move |_, _, _| {
-                                    let _ =
-                                        std::process::Command::new("xdg-open").arg(&url).spawn();
-                                })
+                                // US-011 AC4/5/6 + AC7: delegate to the
+                                // `open` crate which already dispatches
+                                // per-OS (xdg-open on Linux, `open` on
+                                // macOS, `cmd /C start ""` on Windows
+                                // — byte-identical to the PRD-mandated
+                                // commands). On failure show a toast
+                                // instead of the previous silent
+                                // `let _ = ...` swallow.
+                                .on_click(cx.listener(
+                                    move |this, _: &ClickEvent, _w, cx| {
+                                        if let Err(err) = open::that(&url) {
+                                            let msg = if err.kind()
+                                                == std::io::ErrorKind::NotFound
+                                            {
+                                                "Could not open URL — install xdg-utils (Linux), or check your default browser".to_string()
+                                            } else {
+                                                format!("Could not open URL: {err}")
+                                            };
+                                            log::warn!("sidebar: open URL failed: {err}");
+                                            this.show_toast(msg, cx);
+                                        }
+                                    },
+                                ))
                                 .child(label),
                         );
                     } else {

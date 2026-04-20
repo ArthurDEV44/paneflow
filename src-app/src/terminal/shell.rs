@@ -12,7 +12,12 @@ use std::collections::HashMap;
 
 /// zsh: ZDOTDIR-based injection. Our `.zshenv` restores the original ZDOTDIR
 /// so all other dotfiles (`.zshrc`, `.zprofile`) load from `$HOME` as usual.
-const ZSH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting + wrapper PATH
+///
+/// US-013 scrubbed the former AI-hook PATH-prepend block — the wrapper
+/// scripts it targeted were never actually shipped. A future cross-
+/// platform AI-hook system will plumb through its own env var and can
+/// reintroduce a matching shell integration block then.
+const ZSH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
 if [[ -n "${PANEFLOW_ORIG_ZDOTDIR+x}" ]]; then
     ZDOTDIR="${PANEFLOW_ORIG_ZDOTDIR}"
     unset PANEFLOW_ORIG_ZDOTDIR
@@ -24,40 +29,23 @@ __paneflow_osc7() { printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}"; }
 autoload -Uz add-zsh-hook
 add-zsh-hook chpwd __paneflow_osc7
 __paneflow_osc7
-# Prepend wrapper bin dir to PATH after .zshrc has loaded.
-# Uses precmd (fires once before first prompt) so it runs AFTER all rc files.
-if [[ -n "$__PANEFLOW_BIN_DIR" ]]; then
-    __paneflow_path_inject() {
-        [[ "$PATH" != "$__PANEFLOW_BIN_DIR:"* ]] && export PATH="$__PANEFLOW_BIN_DIR:$PATH"
-        add-zsh-hook -d precmd __paneflow_path_inject
-    }
-    add-zsh-hook precmd __paneflow_path_inject
-fi
 "#;
 
 /// bash: `--rcfile` replacement. Sources the real `.bashrc`, then appends
 /// our OSC 7 function to PROMPT_COMMAND (preserving starship/oh-my-bash/etc.).
-const BASH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting + wrapper PATH
+const BASH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
 [[ -f ~/.bashrc ]] && source ~/.bashrc
 __paneflow_osc7() { printf '\e]7;file://%s%s\a' "${HOSTNAME}" "${PWD}"; }
 PROMPT_COMMAND="__paneflow_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
-# Prepend wrapper bin dir to PATH after .bashrc has loaded.
-if [[ -n "$__PANEFLOW_BIN_DIR" && "$PATH" != "$__PANEFLOW_BIN_DIR:"* ]]; then
-    export PATH="$__PANEFLOW_BIN_DIR:$PATH"
-fi
 "#;
 
 /// fish: `--init-command` sourced script. Uses `--on-variable PWD` so it
 /// fires on every directory change independently of the prompt function.
-const FISH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting + wrapper PATH
+const FISH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
 function __paneflow_osc7 --on-variable PWD
     printf '\e]7;file://%s%s\a' (hostname) "$PWD"
 end
 __paneflow_osc7
-# Prepend wrapper bin dir to PATH after config.fish has loaded.
-if set -q __PANEFLOW_BIN_DIR; and test "$PATH[1]" != "$__PANEFLOW_BIN_DIR"
-    set -gx PATH $__PANEFLOW_BIN_DIR $PATH
-end
 "#;
 
 /// PowerShell 5.1 / 7 (pwsh): dot-sourced via `-NoExit -Command ". <path>"`,

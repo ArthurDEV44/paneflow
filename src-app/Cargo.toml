@@ -54,7 +54,13 @@ which = "8"
 # tar.gz self-update: SHA-256 verification + in-process extraction (US-011).
 # The sync `tar` crate guards against absolute paths and `..` traversal by
 # default, so we avoid shelling out to /bin/tar.
-sha2 = "0.11"
+#
+# Pinned to the 0.10 stable line (US-006). 0.11 is a pre-release series and
+# a direct 0.11 requirement pulls a second copy of `sha2` into the binary
+# when any transitive dep resolves 0.10. We only touch the `Sha256` core API
+# (`new`/`update`/`finalize`) which is byte-stable across 0.10 ↔ 0.11, so
+# the downgrade is compile-clean.
+sha2 = "0.10"
 tar = "0.4"
 flate2 = "1"
 
@@ -71,8 +77,15 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "0b984b5a
 # macOS: libproc powers detect_ports() (US-006) — walks per-PID socket FDs
 # via proc_pidinfo/proc_pidfdinfo wrappers. The macOS-only gate keeps it
 # out of the Linux dep closure entirely.
+#
+# core-text (US-012) powers the Core-Text-backed monospace enumeration in
+# fonts.rs — the macOS path no longer shells out to fc-list (which needs
+# Homebrew fontconfig). Already a transitive dep via gpui_macos +
+# zed-font-kit, so declaring it direct here adds zero compile units; the
+# explicit entry just makes the direct use discoverable.
 [target.'cfg(target_os = "macos")'.dependencies]
 libproc = "0.14"
+core-text = "21"
 
 # Windows: windows-sys powers the TerminateProcess path in TerminalState::drop
 # (US-004 — prd-windows-port.md). Feature set kept minimal on purpose: adding
