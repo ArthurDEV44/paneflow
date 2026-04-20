@@ -2,7 +2,6 @@
 //!
 //! All functions operate on raw JSON to preserve unknown fields and formatting.
 
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 /// Load the raw JSON config, or an empty object if missing/invalid.
@@ -95,35 +94,4 @@ pub fn reset_shortcuts() {
         root.remove("shortcuts");
     }
     write_config(&path, &json);
-}
-
-/// Enumerate monospace font families installed on the system via `fontconfig`.
-///
-/// Falls back to an empty list if `fc-list` is not available.
-pub fn load_mono_fonts() -> Vec<String> {
-    let output = match std::process::Command::new("fc-list")
-        .args([":spacing=mono", "family"])
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            log::warn!("config: fc-list failed: {e}");
-            return Vec::new();
-        }
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut families = BTreeSet::new();
-
-    for line in stdout.lines() {
-        // fc-list may output "Family1,Family2" on a single line
-        for part in line.split(',') {
-            let name = part.trim();
-            if !name.is_empty() {
-                families.insert(name.to_string());
-            }
-        }
-    }
-
-    families.into_iter().collect()
 }

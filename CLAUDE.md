@@ -27,14 +27,69 @@ cargo fmt --check
 ## Architecture
 
 ```
-PaneFlowApp (Entity<Render>)              ← src-app/src/main.rs
-├── Entity<TitleBar>                      ← title_bar.rs — CSD window controls, drag-to-move
-├── Sidebar (inline in render_sidebar)    ← main.rs:481 — workspace list, rename, "+" button
-└── Vec<Workspace>                        ← workspace.rs
-    └── Option<SplitNode>                 ← split.rs — binary tree enum
-        ├── Leaf(Entity<TerminalView>)    ← terminal.rs — PTY + alacritty Term wrapper
-        │   └── TerminalElement           ← terminal_element.rs — GPUI Element, cell-by-cell paint
-        └── Split { direction, ratio, first, second }
+PaneFlowApp (Entity<Render>)           ← src-app/src/main.rs
+├── app/                               ← PaneFlowApp impl, split across modules
+│   ├── actions.rs                     ← 57 GPUI action types (paneflow namespace)
+│   ├── bootstrap.rs                   ← app init, window creation, GPUI setup
+│   ├── event_handlers.rs              ← title-bar/pane/terminal event subscribers + stale-PID sweep
+│   ├── ipc_handler.rs                 ← JSON-RPC handler dispatched to GPUI main thread
+│   ├── self_update_flow.rs            ← check/download/install orchestration
+│   ├── session.rs                     ← persist/restore workspaces to session.json
+│   ├── settings.rs                    ← legacy inline settings (being migrated to settings/)
+│   ├── sidebar/                       ← sidebar list + context menus
+│   └── workspace_ops/                 ← create/close/select/rename/reveal
+├── window_chrome/
+│   ├── csd.rs                         ← client-side decorations, resize edges
+│   └── title_bar.rs                   ← window controls, drag-to-move
+├── workspace/                         ← Vec<Workspace> state
+│   ├── mod.rs                         ← Workspace struct, AI agent PIDs, ports
+│   ├── git.rs                         ← branch detection for badges
+│   └── ports.rs                       ← TCP port scan (Linux /proc, macOS libproc, Windows stub)
+├── layout/                            ← N-ary tree of panes (replaces old binary SplitNode)
+│   ├── tree.rs / mutations.rs / navigation.rs / close.rs
+│   ├── presets.rs                     ← even_h, even_v, main_vertical, tiled
+│   ├── render.rs                      ← GPUI flex emission
+│   └── queries.rs / serde.rs
+├── pane.rs                            ← Pane: tab strip + active terminal
+├── terminal/                          ← PTY session + VT emulation + rendering
+│   ├── view.rs                        ← TerminalView (Entity<Render>)
+│   ├── pty_session.rs / pty_loops.rs  ← portable-pty session, I/O threads
+│   ├── listener.rs / input.rs         ← ZedListener, keystroke translation
+│   ├── scanners.rs / search.rs        ← grid scan, find-in-buffer
+│   ├── service_detector.rs / shell.rs ← dev-server detection, shell resolution
+│   ├── types.rs                       ← shared terminal types
+│   └── element/                       ← low-level GPUI Element rendering
+│       ├── mod.rs                     ← TerminalElement: layout → prepaint → paint
+│       ├── color.rs                   ← ANSI→Hsla, APCA contrast
+│       ├── geometry.rs                ← cell geometry
+│       ├── hyperlink.rs               ← OSC 8 + URL scanning
+│       └── paint/                     ← paint-pass helpers
+├── theme/                             ← theme model + hot-reload (6 bundled themes)
+│   ├── mod.rs                         ← re-exports
+│   ├── model.rs                       ← TerminalTheme (35 slots), UiColors, ui_colors()
+│   ├── builtin.rs                     ← 6 themes + THEMES table + theme_by_name
+│   └── watcher.rs                     ← 500 ms mtime cache, active_theme()
+├── keybindings/
+│   ├── defaults.rs / registry.rs      ← default bindings, action registry
+│   ├── apply.rs                       ← apply_keybindings() wires cx.bind_keys
+│   └── display.rs                     ← human-readable binding strings
+├── settings/                          ← settings window (extracted from settings_window.rs)
+│   ├── window.rs                      ← SettingsWindow root
+│   ├── sidebar.rs / keyboard.rs       ← sidebar nav, keyboard-shortcut editor
+│   └── tabs/                          ← appearance, shortcuts, …
+├── update/                            ← self-update (replaces self_update/)
+│   ├── checker.rs / error.rs          ← release checker, structured UpdateError
+│   ├── install_method.rs              ← detect install mode (AppImage / .deb / .msi / .app / .tar.gz)
+│   ├── linux/ / macos/ / windows/     ← per-OS install paths
+│   └── mod.rs
+├── fonts.rs                           ← load_mono_fonts (Linux/macOS fc-list, Windows stub)
+├── ai_types.rs                        ← AiToolState enum shared by workspace/event_handlers
+├── ipc.rs                             ← JSON-RPC server over interprocess (cross-platform)
+├── keys.rs / mouse.rs / pty.rs        ← key/mouse translation, portable-pty helpers
+├── search.rs                          ← find-in-buffer UI glue
+├── runtime_paths.rs                   ← XDG + %APPDATA% path helpers
+├── config_writer.rs                   ← read-modify-write paneflow.json
+└── assets.rs                          ← rust-embed asset registry
 ```
 
 ### Thread model
@@ -98,7 +153,7 @@ Terminal emulation uses upstream `alacritty_terminal = "0.26"` from crates.io (m
 
 ## Keybindings
 
-All registered at `main.rs:710–734` via `cx.bind_keys()`. 24 total actions.
+All registered in `keybindings::apply_keybindings()` via `cx.bind_keys()`. 57 total actions (see `app/actions.rs`).
 
 | Key | Action | Context |
 |-----|--------|---------|
@@ -126,7 +181,7 @@ Location: `~/.config/paneflow/paneflow.json` (Linux XDG).
 }
 ```
 
-- **Theme hot-reload**: 500ms mtime polling in a `cx.spawn` loop. 5 bundled themes: Catppuccin Mocha (default), One Dark, Dracula, Gruvbox Dark, Solarized Dark.
+- **Theme hot-reload**: 500ms mtime polling in a `cx.spawn` loop. 6 bundled themes: Catppuccin Mocha (default), PaneFlow Light, One Dark, Dracula, Gruvbox Dark, Solarized Dark.
 - **`window_decorations`**: read at startup only — requires restart. `"client"` = CSD, `"server"` = SSD.
 - **`shortcuts`**: wired via `keybindings::apply_keybindings()` at startup. Users can override default keybindings in config.
 - **`ConfigWatcher`** (notify crate, 300ms debounce): fully wired — background thread detects file changes and deposits new config for the GPUI main thread to apply.
@@ -156,7 +211,7 @@ Stateful methods dispatch to GPUI main thread via `mpsc::channel`, polled every 
 - **Never recommend iced** for this project — it was evaluated and rejected (unstable, custom WGPU glyph atlas too complex). The decision is final.
 - **`SplitDirection::Horizontal`** means a horizontal divider bar (panes stacked top/bottom), NOT side-by-side. This is counterintuitive but consistent with the codebase.
 - **`alacritty_terminal` is upstream** (crates.io `0.26`), migrated from Zed's fork. Uses `ZedListener` and `FairMutex` from the GPUI integration layer.
-- **No macOS/Windows code exists** — this is Linux-only right now. PTY uses POSIX APIs, display uses Wayland+X11.
+- **AI hook scripts** at `assets/bin/{claude,codex,paneflow-hook}` are Unix-only shell scripts; Windows equivalents are tracked in `prd-windows-port.md`.
 - **`dirs` version mismatch**: `src-app` uses `dirs = "5.0"`, config crate uses `dirs = "6"`. They coexist but are separate semver releases.
 - **Config `default_shell` is wired** — `TerminalState::new()` uses fallback chain: config `default_shell` → `$SHELL` → `/bin/sh`.
 - **The `_io_thread` handle is discarded** (`terminal.rs:139`) — PTY I/O threads run detached. Shutdown is via `Msg::Shutdown` in `Drop`.
