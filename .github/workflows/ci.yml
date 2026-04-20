@@ -72,6 +72,8 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
 
       - name: Format check
         run: cargo fmt --check
@@ -154,6 +156,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: "v1-rust"
           key: aarch64-apple-darwin
 
       # US-018 AC2 — formatting + lint on macOS. fmt is platform-agnostic
@@ -282,6 +285,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: "v1-rust"
           key: x86_64-pc-windows-msvc
 
       # Note: WiX toolset is NOT installed in this PR gate. The MSI build

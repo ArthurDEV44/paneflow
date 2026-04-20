@@ -133,10 +133,10 @@ fn resolve_default_shell_fallback() -> String {
 fn resolve_default_shell_fallback() -> String {
     // %ComSpec% — Windows convention for "the command interpreter",
     // respected by every console app on the platform.
-    if let Ok(com_spec) = std::env::var("ComSpec") {
-        if std::path::Path::new(&com_spec).is_file() {
-            return com_spec;
-        }
+    if let Ok(com_spec) = std::env::var("ComSpec")
+        && std::path::Path::new(&com_spec).is_file()
+    {
+        return com_spec;
     }
     // Canonical cmd.exe location (works on every supported Windows since
     // 10 1809; we pin the 64-bit System32 path — WOW64 users still see

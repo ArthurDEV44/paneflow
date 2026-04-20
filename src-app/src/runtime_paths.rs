@@ -30,6 +30,7 @@ use std::path::PathBuf;
 #[cfg(unix)]
 pub(crate) const MAX_SOCKET_PATH_BYTES: usize = 104;
 
+#[cfg(unix)]
 const PANEFLOW_SUBDIR: &str = "paneflow";
 #[cfg(unix)]
 const SOCKET_FILE: &str = "paneflow.sock";
@@ -44,6 +45,7 @@ const SOCKET_FILE: &str = "paneflow.sock";
 /// caller runs on an environment with neither XDG nor TMPDIR nor a cache
 /// dir (e.g. a broken container). Callers should `log::warn!` and disable
 /// IPC rather than panic.
+#[cfg(unix)]
 fn runtime_dir() -> Option<PathBuf> {
     std::env::var("XDG_RUNTIME_DIR")
         .ok()
