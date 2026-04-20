@@ -3,7 +3,7 @@
 use crate::loader::{config_path, load_config_from_path};
 use crate::schema::PaneFlowConfig;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
@@ -71,18 +71,7 @@ impl ConfigWatcher {
             std::fs::create_dir_all(&watch_dir).map_err(notify::Error::io)?;
         }
 
-        // Canonicalize the watched directory so `event_targets_config` can
-        // match what the OS reports. macOS FSEvents resolves `/var/folders/...`
-        // to `/private/var/folders/...` before emitting events, so a raw
-        // comparison against the non-canonical path never matches. On Linux
-        // and Windows without symlinks this is a no-op. Falls back to the
-        // raw dir if canonicalization fails (best-effort).
-        let canonical_dir = std::fs::canonicalize(&watch_dir).unwrap_or_else(|_| watch_dir.clone());
-        let file_name = self
-            .config_path
-            .file_name()
-            .expect("config path has no file name");
-        let config_path = canonical_dir.join(file_name);
+        let config_path = self.config_path.clone();
         let callback = Arc::clone(&self.callback);
 
         // Channel for notify -> processing thread.
@@ -124,8 +113,17 @@ fn is_relevant_event(kind: &EventKind) -> bool {
 }
 
 /// Returns `true` if any path in the event matches the config file.
-fn event_targets_config(event: &Event, config_path: &PathBuf) -> bool {
-    event.paths.iter().any(|p| p == config_path)
+///
+/// Matches by file name rather than full path: platforms rewrite watched
+/// paths before emitting events (macOS FSEvents canonicalizes
+/// `/var/folders/...` to `/private/var/folders/...`, Windows sometimes uses
+/// UNC `\\?\C:\...` prefixes) so a full-path comparison is inherently
+/// fragile. Because the watcher is installed `NonRecursive` on the parent
+/// directory, every event we receive already belongs to that directory —
+/// basename equality is sufficient and portable.
+fn event_targets_config(event: &Event, config_path: &Path) -> bool {
+    let target_name = config_path.file_name();
+    target_name.is_some() && event.paths.iter().any(|p| p.file_name() == target_name)
 }
 
 /// The main event-processing loop running on the background thread.
