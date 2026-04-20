@@ -45,7 +45,7 @@ pub enum PaneEvent {
     /// The last tab was closed — parent should remove this pane from the split tree.
     Remove,
     /// Request a split in the given direction from this pane.
-    Split(crate::split::SplitDirection),
+    Split(crate::layout::SplitDirection),
 }
 
 // ---------------------------------------------------------------------------
@@ -416,7 +416,7 @@ impl Pane {
                 "pane-btn-split-v",
                 "icons/split_vertical.svg",
                 cx.listener(|_this, _, _window, cx| {
-                    cx.emit(PaneEvent::Split(crate::split::SplitDirection::Vertical));
+                    cx.emit(PaneEvent::Split(crate::layout::SplitDirection::Vertical));
                 }),
             ))
             // Split horizontal (panes top/bottom)
@@ -424,7 +424,7 @@ impl Pane {
                 "pane-btn-split-h",
                 "icons/split_horizontal.svg",
                 cx.listener(|_this, _, _window, cx| {
-                    cx.emit(PaneEvent::Split(crate::split::SplitDirection::Horizontal));
+                    cx.emit(PaneEvent::Split(crate::layout::SplitDirection::Horizontal));
                 }),
             ));
 

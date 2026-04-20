@@ -238,7 +238,7 @@ fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
                                 "workspace.list", "workspace.create", "workspace.select",
                                 "workspace.close", "workspace.current",
                                 "workspace.restore_layout",
-                                "surface.list", "surface.send_text", "surface.split",
+                                "surface.list", "surface.send_text", "surface.send_keystroke", "surface.split",
                                 "ai.session_start",
                                 "ai.prompt_submit",
                                 "ai.tool_use",
