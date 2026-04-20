@@ -971,11 +971,6 @@ mod tests {
         fn as_raw_fd(&self) -> Option<i32> {
             None
         }
-
-        #[cfg(windows)]
-        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
-            None
-        }
     }
 
     impl PtyBackend for MockPtyBackend {

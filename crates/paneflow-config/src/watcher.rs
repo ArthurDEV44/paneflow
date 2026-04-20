@@ -239,6 +239,21 @@ mod tests {
         fs::write(path, "this is not valid json {{{").unwrap();
     }
 
+    /// Poll `condition` every 50ms until it returns `true` or `timeout` elapses.
+    /// Why: macOS FSEvents on CI runners can take >1s to deliver file events vs
+    /// near-instant inotify on Linux; a fixed sleep is inherently flaky across
+    /// platforms, so we poll instead.
+    fn wait_for<F: FnMut() -> bool>(mut condition: F, timeout: Duration) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if condition() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        condition()
+    }
+
     #[test]
     fn test_config_watcher_new_with_path() {
         let dir = TempDir::new().unwrap();
@@ -374,17 +389,16 @@ mod tests {
         // Give the watcher time to initialize.
         thread::sleep(Duration::from_millis(100));
 
-        // Modify the file.
         write_updated_config(&path);
 
-        // Wait for debounce + processing.
-        thread::sleep(Duration::from_millis(800));
+        let received_poll = Arc::clone(&received);
+        let fired = wait_for(
+            move || !received_poll.lock().unwrap().is_empty(),
+            Duration::from_secs(5),
+        );
+        assert!(fired, "callback should have been invoked at least once");
 
         let configs = received.lock().unwrap();
-        assert!(
-            !configs.is_empty(),
-            "callback should have been invoked at least once"
-        );
         let last = configs.last().unwrap();
         assert_eq!(last.default_shell, Some("/bin/zsh".to_string()));
     }
@@ -435,21 +449,23 @@ mod tests {
 
         thread::sleep(Duration::from_millis(100));
 
-        // Delete the file.
+        // Delete the file, then recreate with new content. macOS FSEvents may
+        // coalesce both into a single event batch, so we only wait on the
+        // post-recreation callback rather than pausing between steps.
         fs::remove_file(&path).unwrap();
-        thread::sleep(Duration::from_millis(800));
-
-        // Recreate with new content.
         write_updated_config(&path);
-        thread::sleep(Duration::from_millis(800));
 
-        let configs = received.lock().unwrap();
-        assert!(
-            !configs.is_empty(),
-            "callback should fire after file recreation"
+        let received_poll = Arc::clone(&received);
+        let fired = wait_for(
+            move || {
+                let guard = received_poll.lock().unwrap();
+                guard
+                    .last()
+                    .is_some_and(|cfg| cfg.default_shell.as_deref() == Some("/bin/zsh"))
+            },
+            Duration::from_secs(5),
         );
-        let last = configs.last().unwrap();
-        assert_eq!(last.default_shell, Some("/bin/zsh".to_string()));
+        assert!(fired, "callback should fire after file recreation");
     }
 
     #[test]
@@ -476,8 +492,16 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
         }
 
-        // Wait for debounce to settle.
-        thread::sleep(Duration::from_millis(800));
+        // Wait for at least one callback to fire (up to 5s for macOS CI).
+        let call_count_poll = Arc::clone(&call_count);
+        let fired = wait_for(
+            move || *call_count_poll.lock().unwrap() >= 1,
+            Duration::from_secs(5),
+        );
+        assert!(fired, "at least one reload should have occurred");
+
+        // Then settle for an extra second so any trailing debounce flushes.
+        thread::sleep(Duration::from_secs(1));
 
         let count = *call_count.lock().unwrap();
         // With debouncing, we should see fewer callbacks than writes.
@@ -486,6 +510,5 @@ mod tests {
             count <= 2,
             "debounce should coalesce rapid writes, got {count} callbacks for 5 writes"
         );
-        assert!(count >= 1, "at least one reload should have occurred");
     }
 }
