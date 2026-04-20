@@ -9,10 +9,10 @@
     {
       "id": "EP-001",
       "title": "Phase 1 — Multi-format packaging (x86_64)",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P0",
       "stories_total": 7,
-      "stories_done": 6
+      "stories_done": 7
     },
     {
       "id": "EP-002",
@@ -25,10 +25,10 @@
     {
       "id": "EP-003",
       "title": "Phase 2 — RPM + hosted APT/RPM repositories",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P1",
       "stories_total": 4,
-      "stories_done": 3
+      "stories_done": 4
     },
     {
       "id": "EP-004",
@@ -64,14 +64,13 @@
       "id": "US-002",
       "title": "Author AppStream metainfo XML",
       "epic": "EP-001",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P0",
       "size": "S",
       "blocked_by": [],
       "started_at": "2026-04-17",
       "completed_at": "2026-04-17",
-      "reviewed_at": null,
-      "review_note": "AC gap: `appstreamcli validate` is not wired into CI; release.yml has no step invoking it. Metainfo XML itself is well-formed."
+      "reviewed_at": "2026-04-20"
     },
     {
       "id": "US-003",
@@ -250,14 +249,13 @@
       "id": "US-017",
       "title": "GPG signing infrastructure — packages and repo metadata",
       "epic": "EP-003",
-      "status": "IN_REVIEW",
+      "status": "DONE",
       "priority": "P1",
       "size": "M",
       "blocked_by": [],
       "started_at": "2026-04-17",
       "completed_at": "2026-04-17",
-      "reviewed_at": null,
-      "review_note": "AC gaps: (a) packaging/paneflow-release.asc is a comment-only stub, not the real ASCII-armored public key (AC2) — pending operator action. (b) repo-publish.yml:99 accepts 16-40 char GPG_KEY_ID while release.yml:163 enforces 40-char only; harmonize to 40-char everywhere (evil32.com collision risk). (c) docs/pkg-repo-runbook.md:61 exports the PRIVATE key to `paneflow-release.asc` (same base name as the committed public file, no path prefix) — high risk of accidental git commit; change to `/tmp/paneflow-release-private.asc` like docs/release-signing.md already does."
+      "reviewed_at": "2026-04-20"
     },
     {
       "id": "US-018",

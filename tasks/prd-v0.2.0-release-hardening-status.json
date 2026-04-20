@@ -1,0 +1,208 @@
+{
+  "prd": {
+    "file": "tasks/prd-v0.2.0-release-hardening.md",
+    "title": "PaneFlow v0.2.0 Release Hardening",
+    "created_at": "2026-04-20",
+    "status": "DONE"
+  },
+  "epics": [
+    {
+      "id": "EP-001",
+      "title": "v0.2.0 pre-tag hardening",
+      "status": "DONE",
+      "priority": "P0",
+      "stories_total": 1,
+      "stories_done": 1
+    },
+    {
+      "id": "EP-002",
+      "title": "v0.2.1 post-release hardening",
+      "status": "DONE",
+      "priority": "P1",
+      "stories_total": 7,
+      "stories_done": 7
+    },
+    {
+      "id": "EP-003",
+      "title": "Cross-platform release readiness",
+      "status": "DONE",
+      "priority": "P2",
+      "stories_total": 6,
+      "stories_done": 6
+    }
+  ],
+  "stories": [
+    {
+      "id": "US-001",
+      "title": "Bound auto-updater network calls with a 30-second timeout",
+      "epic": "EP-001",
+      "status": "DONE",
+      "priority": "P0",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20"
+    },
+    {
+      "id": "US-002",
+      "title": "Emit SHA256 sidecars for .deb, .rpm, and .AppImage release artifacts",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20"
+    },
+    {
+      "id": "US-003",
+      "title": "Purge Cloudflare cache after R2 repo sync",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20",
+      "review_note": "CONSIDER (not blocking): AC2 observable-property (`curl -I ... | grep cf-cache-status`) is verifiable post-release but no CI step asserts it. Risks table row #2 suggested a smoke-test step as defense-in-depth. Primary purge + retry-with-backoff correctly implemented."
+    },
+    {
+      "id": "US-004",
+      "title": "Pin CI workflow base image to ubuntu-22.04",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "XS",
+      "blocked_by": [],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20"
+    },
+    {
+      "id": "US-005",
+      "title": "Pin appimageupdatetool to a versioned tag with SHA256 verification",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20"
+    },
+    {
+      "id": "US-006",
+      "title": "Downgrade sha2 from 0.11 -> 0.10 stable line",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P1",
+      "size": "XS",
+      "blocked_by": [],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20"
+    },
+    {
+      "id": "US-007",
+      "title": "Clear stale review notes from the Linux packaging migration status file",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "XS",
+      "blocked_by": [],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20"
+    },
+    {
+      "id": "US-008",
+      "title": "Gate the legacy .run installer code path with #[cfg(unix)]",
+      "epic": "EP-002",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "XS",
+      "blocked_by": [],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20"
+    },
+    {
+      "id": "US-009",
+      "title": "Wire macOS .dmg update install flow into self-update dispatch",
+      "epic": "EP-003",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "L",
+      "blocked_by": [],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20",
+      "review_note": "Hardware smoke-test (hdiutil + /Applications replace) still required on real macOS before first macOS release cut per Risks row #3. CONSIDER: switch `cp -R` at macos/dmg.rs:276 to `ditto --rsrc` (Apple-mandated for signed bundles with nested frameworks) — current PaneFlow.app is simple enough that cp -R works, but ditto future-proofs for richer bundle layouts."
+    },
+    {
+      "id": "US-010",
+      "title": "Wire Windows .msi update install flow into self-update dispatch",
+      "epic": "EP-003",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "L",
+      "blocked_by": [],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20",
+      "review_note": "Hardware smoke-test (msiexec UAC + exit codes) still required on Windows 11 before first Windows release cut per Risks row #3. CONSIDER: add explicit handling for msiexec exit 1618 (another install in progress — currently falls through to generic `Other` arm in map_exit_code at msi.rs:223-236)."
+    },
+    {
+      "id": "US-011",
+      "title": "Dispatch xdg-open / open / explorer.exe per-OS in reveal-in-file-manager sites",
+      "epic": "EP-003",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20",
+      "review_note": "SHOULD_FIX before Windows release cut: workspace_ops/mod.rs:688-691 uses `.arg(\"/select,\").arg(path)` which passes as two arguments — Windows Explorer expects `/select,<path>` concatenated in a single token. The comment at line 685-687 correctly states this invariant but the code violates it. Fix: `let mut flag = OsString::from(\"/select,\"); flag.push(path.as_os_str()); Command::new(\"explorer\").arg(flag).spawn()`. Also CONSIDER: sidebar/mod.rs:504-509 comment claims `open::that` is \"byte-identical\" to `cmd /C start \"\"` on Windows — actually uses ShellExecuteW. Functionally equivalent for https URLs; correct the comment wording to avoid misleading future maintainers. Neither blocks v0.2.0/v0.2.1; both should land before first Windows release."
+    },
+    {
+      "id": "US-012",
+      "title": "Fall back to Core Text for font enumeration on macOS",
+      "epic": "EP-003",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "M",
+      "blocked_by": [],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20"
+    },
+    {
+      "id": "US-013",
+      "title": "Remove orphaned AI-hook extraction code",
+      "epic": "EP-003",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "S",
+      "blocked_by": [],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20"
+    },
+    {
+      "id": "US-014",
+      "title": "Purge stale assets/bin reference from CLAUDE.md",
+      "epic": "EP-003",
+      "status": "DONE",
+      "priority": "P2",
+      "size": "XS",
+      "blocked_by": ["US-013"],
+      "started_at": "2026-04-20",
+      "completed_at": "2026-04-20",
+      "reviewed_at": "2026-04-20"
+    }
+  ]
+}

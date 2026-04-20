@@ -19,7 +19,7 @@ The `paneflow-app` crate has drifted into a maintainability crisis. **56 % of it
 
 4. **Circular coupling between `terminal.rs` ↔ `terminal_element.rs`.** `terminal_element.rs:26` imports `PtyNotifier, SpikeTermSize, ZedListener` from `terminal`; `terminal.rs:35` imports `TerminalElement`. Three types cross the boundary (`CopyModeCursorState`, `HyperlinkZone`, `SearchHighlight`) with no shared owner.
 
-5. **Cross-platform hidden bug.** `self_update/mod.rs:225` references `libc::ENOSPC` un-gated — Windows builds will break when `libc` is unavailable. Additional Unix-only paths (`fc-list` spawn in `config_writer.rs:104`, shell scripts in `assets/bin/`) have no Windows equivalent.
+5. **Cross-platform hidden bug.** `self_update/mod.rs:225` references `libc::ENOSPC` un-gated — Windows builds will break when `libc` is unavailable. An additional Unix-only path (`fc-list` spawn in `config_writer.rs:104`) has no Windows equivalent.
 
 **Why now.** The project has just completed its v2 GPUI rewrite, its Linux packaging migration, and is mid-port to macOS + Windows. Shipping cross-platform on the current code shape will multiply these three bottlenecks: each target adds conditional code paths into already-bloated files. A structural reset now, before platform divergence lands, costs weeks; delaying costs months.
 
@@ -145,7 +145,6 @@ Zed (source of GPUI) splits its terminal UI exactly as we propose: `terminal_vie
 
 - Adding tests — tracked in `prd-stabilization-polish.md`.
 - Behavior changes, features, bug fixes beyond the three explicitly enumerated (dead code removal, misleading rename, cross-platform ENOSPC).
-- Windows/macOS shell hook scripts for `assets/bin/` — flagged as future work in the Windows port PRD.
 - Upstream GPUI bumps.
 - Performance optimization.
 
@@ -278,7 +277,7 @@ If the feature touched by the story has a specific manual check (e.g. search ove
 - [ ] `terminal/mod.rs` (ex `terminal.rs`) has ≥ 380 fewer lines
 - [ ] `pty_reader_loop` (in `pty_loops.rs` after US-011) or current location imports scanners from `crate::terminal::scanners`
 - [ ] All scanner structs use `pub(super)` or narrower visibility — none pushed to `pub`
-- [ ] Unhappy path: terminal emits and responds to OSC 7 / OSC 133 sequences — smoke test: open a shell with OSC 133 prompt integration (bash/zsh with the wrappers from `assets/bin/`), observe prompt jumps work
+- [ ] Unhappy path: terminal emits and responds to OSC 7 / OSC 133 sequences — smoke test: open a shell with OSC 133 prompt integration (e.g. starship, oh-my-bash, or any shell rc that emits the command-boundary escapes), observe prompt jumps work
 - [ ] Quality gates pass
 - [ ] Commit: `refactor(terminal): US-005 — extract OSC/Xtversion scanners into scanners.rs`
 
@@ -836,7 +835,7 @@ If the feature touched by the story has a specific manual check (e.g. search ove
 - [ ] `CLAUDE.md` — "5 bundled themes" → "6 bundled themes"
 - [ ] `CLAUDE.md` — architecture ASCII tree updated to reflect the new module directories (`app/`, `terminal/`, `terminal/element/`, `layout/`, `workspace/`, `window_chrome/`, `settings/`, `keybindings/`, `update/`, `theme/`, `fonts.rs`, `ai_types.rs`)
 - [ ] `CLAUDE.md` — the "No macOS/Windows code exists — this is Linux-only right now" gotcha is REMOVED (project is now cross-platform — confirmed by the `Cross-platform compatibility (mandatory)` section)
-- [ ] `CLAUDE.md` — add one sentence under Gotchas: "AI hook scripts at `assets/bin/{claude,codex,paneflow-hook}` are Unix-only shell scripts; Windows equivalents are tracked in prd-windows-port.md"
+- [ ] ~~`CLAUDE.md` — add one sentence under Gotchas about AI hook scripts.~~ Superseded by prd-v0.2.0-release-hardening US-013 (code deleted) + US-014 (doc line removed).
 - [ ] Git diff on `CLAUDE.md` reviewed by human (Arthur) before commit
 - [ ] Quality gates pass (trivially — markdown doesn't compile)
 - [ ] Commit: `docs: US-035 — sync CLAUDE.md with refactored structure and corrected action/theme counts`
