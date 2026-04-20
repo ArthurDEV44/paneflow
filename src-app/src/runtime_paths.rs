@@ -3,21 +3,23 @@
 //! Linux: 108 — we use the smaller ceiling so a path built here works on both
 //! platforms without a second guard at bind time).
 //!
-//! The three public helpers are used by:
-//! - `ipc::start_server` for the main JSON-RPC socket,
-//! - `terminal::paneflow_socket_path` for the `PANEFLOW_SOCKET_PATH` env var
-//!   passed into each PTY child shell,
-//! - `terminal::paneflow_bin_dir` for the wrapper-scripts directory prepended
-//!   to each PTY child's `PATH`.
+//! Public helpers:
+//! - `ipc::start_server` consumes `socket_path()` for the main JSON-RPC socket,
+//! - `terminal::paneflow_socket_path` propagates the same path as the
+//!   `PANEFLOW_SOCKET_PATH` env var passed into each PTY child shell.
 //!
-//! Keeping the chain in one place prevents the three sites from drifting —
-//! a difference in one branch would silently break AI-hook IPC on macOS
+//! Keeping the chain in one place prevents the two sites from drifting —
+//! a difference in one branch would silently break IPC on macOS
 //! without any visible error.
+//!
+//! US-013 removed the former third consumer (the AI-hook wrapper-scripts
+//! bin-dir helper) along with its call sites — the extraction targets
+//! never existed in the embed set, so the helper and its PATH-injection
+//! caller were dead code.
 //!
 //! US-009 (prd-windows-port.md) — on Windows, `socket_path` returns the named
 //! pipe path `\\.\pipe\paneflow` instead. The XDG/TMPDIR chain and sun_path
-//! guard remain Unix-only; `bin_dir` continues to use the cross-platform
-//! `dirs::cache_dir()` fallback on Windows.
+//! guard remain Unix-only.
 
 use std::path::PathBuf;
 
@@ -31,7 +33,6 @@ pub(crate) const MAX_SOCKET_PATH_BYTES: usize = 104;
 const PANEFLOW_SUBDIR: &str = "paneflow";
 #[cfg(unix)]
 const SOCKET_FILE: &str = "paneflow.sock";
-const BIN_SUBDIR: &str = "bin";
 
 /// Resolve the PaneFlow runtime directory. Fallback chain:
 /// 1. `$XDG_RUNTIME_DIR` — explicit Linux XDG (usually `/run/user/<uid>`).
@@ -77,13 +78,6 @@ pub(crate) fn socket_path() -> Option<PathBuf> {
 #[cfg(windows)]
 pub(crate) fn socket_path() -> Option<PathBuf> {
     Some(PathBuf::from(r"\\.\pipe\paneflow"))
-}
-
-/// Directory where wrapper scripts (`claude`, `codex`, `paneflow-hook`) are
-/// extracted. No `sun_path` guard here — the scripts themselves live in the
-/// directory but never bind a socket.
-pub(crate) fn bin_dir() -> Option<PathBuf> {
-    Some(runtime_dir()?.join(PANEFLOW_SUBDIR).join(BIN_SUBDIR))
 }
 
 #[cfg(unix)]
@@ -196,29 +190,5 @@ mod tests {
             socket_path().is_none(),
             "AC6: over-long sun_path must return None rather than a bind-time error"
         );
-    }
-
-    #[test]
-    fn bin_dir_mirrors_socket_runtime_dir() {
-        let g = EnvGuard::take();
-        g.clear();
-        // SAFETY: ENV_LOCK held.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000") };
-        assert_eq!(
-            bin_dir().unwrap(),
-            PathBuf::from("/run/user/1000/paneflow/bin")
-        );
-    }
-
-    #[test]
-    fn bin_dir_ignores_sun_path_limit() {
-        // The bin dir itself is not used as a socket path, so it is allowed
-        // to exceed 104 bytes. Only `socket_path()` applies the guard.
-        let g = EnvGuard::take();
-        g.clear();
-        let long = "/".to_string() + &"y".repeat(119);
-        // SAFETY: ENV_LOCK held.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", &long) };
-        assert!(bin_dir().is_some());
     }
 }

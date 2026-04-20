@@ -48,6 +48,17 @@ pub use error::UpdateError;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+// US-008 — timeout constant is only referenced from the Unix-only legacy
+// `.run` downloader. Gate it symmetrically so non-Unix builds don't carry
+// a dead const (clippy `dead_code` is `-D warnings` in release.yml).
+#[cfg(unix)]
+use std::time::Duration;
+
+/// Upper bound on the legacy `.run` installer download (US-001). Kept in
+/// sync with the constant of the same name in `checker.rs`, `linux/targz.rs`,
+/// and `linux/appimage.rs`; a bump here should bump those too.
+#[cfg(unix)]
+const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 use anyhow::{Context, Result};
 
@@ -79,10 +90,20 @@ impl SelfUpdateStatus {
 /// Streamed straight to disk (no full-file buffering) so large installers
 /// don't spike memory. Blocking ureq is fine here — the caller runs us in
 /// `smol::unblock` / `cx.background_spawn`.
+///
+/// US-008: Unix-only. The `.run` installer is a bash self-extracting script
+/// that never runs on Windows/macOS — those platforms take the MSI (EP-W4 /
+/// US-010) and DMG (EP-M / US-009) paths respectively. Gating at compile
+/// time makes the invariant enforceable by the compiler and prevents a
+/// future dispatch regression from silently reaching this code on non-Unix.
+#[cfg(unix)]
 pub fn download_installer(asset_url: &str) -> Result<PathBuf> {
     let target = std::env::temp_dir().join(format!("paneflow-update-{}.run", std::process::id()));
 
     let mut response = ureq::get(asset_url)
+        .config()
+        .timeout_global(Some(UPDATE_HTTP_TIMEOUT))
+        .build()
         .header(
             "User-Agent",
             &format!("paneflow/{}", env!("CARGO_PKG_VERSION")),
@@ -94,11 +115,21 @@ pub fn download_installer(asset_url: &str) -> Result<PathBuf> {
         anyhow::bail!("download returned HTTP {}", response.status());
     }
 
-    let mut reader = response.body_mut().as_reader();
-    let mut file =
-        std::fs::File::create(&target).with_context(|| format!("create {}", target.display()))?;
-    std::io::copy(&mut reader, &mut file).context("stream body to disk")?;
-    file.sync_all().ok();
+    // Stream the body in an inner scope so `file` drops before any
+    // cleanup — required for `remove_file` to actually unlink on Windows,
+    // where `DeleteFile` fails while a handle is open. US-001 AC7.
+    let stream_result = {
+        let mut reader = response.body_mut().as_reader();
+        let mut file = std::fs::File::create(&target)
+            .with_context(|| format!("create {}", target.display()))?;
+        let r = std::io::copy(&mut reader, &mut file).context("stream body to disk");
+        file.sync_all().ok();
+        r.map(|_| ())
+    };
+    if let Err(e) = stream_result {
+        let _ = std::fs::remove_file(&target);
+        return Err(e);
+    }
 
     // chmod +x — the installer is a bash self-extracting script, it needs
     // execute permission to run. Windows never takes this path (the .run
@@ -118,6 +149,9 @@ pub fn download_installer(asset_url: &str) -> Result<PathBuf> {
 ///
 /// The installer is non-interactive: it extracts its payload and copies the
 /// new binary to `~/.local/bin/paneflow`, then exits. No stdin is forwarded.
+///
+/// US-008: Unix-only — see [`download_installer`] for rationale.
+#[cfg(unix)]
 pub fn run_installer(path: &std::path::Path) -> Result<()> {
     let output = std::process::Command::new(path)
         .stdin(std::process::Stdio::null())
@@ -145,7 +179,48 @@ pub fn run_installer(path: &std::path::Path) -> Result<()> {
 /// Resolve the expected install location of the paneflow binary. The
 /// installer writes here; we pass this path to `cx.set_restart_path()` so
 /// GPUI's relaunch script execs the freshly installed binary.
+///
+/// Per-OS semantics:
+///
+/// - **Linux / BSD** (US-008): `~/.local/bin/paneflow` — the legacy
+///   `.run` installer target. Reached only by the (runtime-dead on a
+///   clean Linux install) fall-through in the dispatcher.
+/// - **macOS** (US-009 AC3): `/Applications/PaneFlow.app/Contents/MacOS/paneflow`
+///   — the canonical bundle binary the DMG updater replaces. A
+///   user-dragged bundle in `$HOME/Applications/` isn't honoured here;
+///   the dispatcher passes `InstallMethod::AppBundle { bundle_path }`
+///   directly to the DMG install flow instead.
+/// - **Windows** (US-010 AC3): `%ProgramFiles%\PaneFlow\paneflow.exe`.
+///   Extension comes from `std::env::consts::EXE_EXTENSION` rather than
+///   a literal `"exe"` so the helper is cross-target clean; the MSI
+///   installer targets `%ProgramFiles%\PaneFlow\` by default (non-admin
+///   per-user installs under `%LocalAppData%\Programs\PaneFlow\` are
+///   covered by `InstallMethod::WindowsMsi { install_path }` directly,
+///   not by this helper).
 pub fn installed_binary_path() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").context("HOME environment variable is not set")?;
-    Ok(PathBuf::from(home).join(".local/bin/paneflow"))
+    #[cfg(target_os = "macos")]
+    {
+        return Ok(PathBuf::from(
+            "/Applications/PaneFlow.app/Contents/MacOS/paneflow",
+        ));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let program_files = std::env::var_os("ProgramFiles")
+            .context("ProgramFiles environment variable is not set")?;
+        let mut exe = PathBuf::from(program_files)
+            .join("PaneFlow")
+            .join("paneflow");
+        // `EXE_EXTENSION` = "exe" on windows, "" elsewhere — keeps this
+        // cross-target clean and avoids hardcoding the literal suffix.
+        if !std::env::consts::EXE_EXTENSION.is_empty() {
+            exe.set_extension(std::env::consts::EXE_EXTENSION);
+        }
+        return Ok(exe);
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let home = std::env::var_os("HOME").context("HOME environment variable is not set")?;
+        Ok(PathBuf::from(home).join(".local/bin/paneflow"))
+    }
 }

@@ -31,6 +31,33 @@ pub enum UpdateError {
     /// don't always know which write failed, in which case this is an empty
     /// `PathBuf` and the toast renders without the "at {path}" clause.
     DiskFull { path: PathBuf },
+    /// Pinned release asset returned 404 (US-005). Distinct from `Network`:
+    /// the user isn't offline, the upstream dated tag or asset path
+    /// disappeared — PaneFlow itself needs a new release with an updated
+    /// pin. `url` is the missing asset so the user can report it verbatim.
+    ReleaseAssetMissing { url: String },
+    /// Install step was declined by the OS or user (US-009 / US-010).
+    /// Distinct from `DiskFull` / `Other`: the update was downloaded and
+    /// verified cleanly, but the actual installation couldn't proceed —
+    /// typical causes are `/Applications/` being non-writable, SIP
+    /// blocking the replace, Windows UAC cancel (msiexec 1602), or the
+    /// running process holding a lock on the install path. The wrapped
+    /// `message` is user-visible verbatim so the toast can be specific
+    /// about the reason ("reinstall manually", "administrator required").
+    InstallDeclined { message: String },
+    /// msiexec (US-010) returned a fatal install error (typically 1603).
+    /// Distinct from `InstallDeclined`: the user consented and the OS
+    /// tried to install, but something in the transaction failed — disk
+    /// corruption, a conflicting component, an orphaned prior install.
+    /// `log_path` points at the `/l*v` verbose log that msiexec writes;
+    /// surfacing it in the toast lets the user attach it to a bug report.
+    InstallFailed { log_path: PathBuf },
+    /// A critical OS tool the updater depends on was not found on PATH
+    /// (US-010). On Windows this means `msiexec.exe` is missing from
+    /// `%SystemRoot%\System32\`, which indicates a broken or tampered
+    /// install. The wrapped `message` is user-visible verbatim so the
+    /// toast can name the missing tool and suggest a reinstall path.
+    EnvironmentBroken { message: String },
     /// Classifier couldn't bucket the error. The wrapped message is shown
     /// verbatim so the user sees *something* actionable instead of a
     /// generic "update failed".
@@ -64,6 +91,15 @@ impl UpdateError {
                     )
                 }
             }
+            UpdateError::ReleaseAssetMissing { url } => format!(
+                "Update blocked: a required asset is no longer published ({url}). Please file a bug — PaneFlow needs a refreshed release pin."
+            ),
+            UpdateError::InstallDeclined { message } => message.clone(),
+            UpdateError::InstallFailed { log_path } => format!(
+                "Update install failed. Verbose log saved to `{}` — attach it to a bug report.",
+                log_path.display()
+            ),
+            UpdateError::EnvironmentBroken { message } => message.clone(),
             UpdateError::Other(msg) => msg.clone(),
         }
     }
@@ -93,6 +129,14 @@ impl UpdateError {
                     got: mm.got.clone(),
                 };
             }
+            // US-001: the update flow bounds every ureq call with a 30 s
+            // global timeout. When it fires at the request/response layer,
+            // the error surfaces as `ureq::Error::Timeout(_)` — treat it as
+            // a network failure so the title bar renders the "no connection"
+            // toast instead of the generic `Other` catch-all.
+            if let Some(ureq::Error::Timeout(_)) = cause.downcast_ref::<ureq::Error>() {
+                return UpdateError::Network(format!("{err:#}"));
+            }
             if let Some(io) = cause.downcast_ref::<std::io::Error>()
                 && is_disk_full(io)
             {
@@ -115,18 +159,12 @@ impl UpdateError {
                 path: PathBuf::new(),
             };
         }
-        if lower.contains("could not fetch integrity checksum")
-            || lower.contains("could not download update")
-            || lower.contains("could not download update tool")
-            || lower.contains("try again when online")
-            || lower.contains("could not resolve host")
-            || lower.contains("could not connect")
-            || lower.contains("failed to connect")
-            || lower.contains("network is unreachable")
-            || lower.contains("no such host")
-        {
-            return UpdateError::Network(full);
-        }
+        // Integrity keywords are checked BEFORE network keywords so a
+        // crafted error like "checksum timed out" cannot silently route a
+        // genuine integrity failure into the Network toast. Typed
+        // `IntegrityMismatch` downcasts happen earlier in the cause-chain
+        // walk, so real SHA mismatches are unaffected — this ordering only
+        // matters for stringly-typed errors coming from external tools.
         if lower.contains("failed integrity check")
             || lower.contains("integrity check")
             || lower.contains("checksum")
@@ -136,6 +174,23 @@ impl UpdateError {
                 expected: String::new(),
                 got: String::new(),
             };
+        }
+        if lower.contains("could not fetch integrity checksum")
+            || lower.contains("could not download update")
+            || lower.contains("could not download update tool")
+            || lower.contains("try again when online")
+            || lower.contains("could not resolve host")
+            || lower.contains("could not connect")
+            || lower.contains("failed to connect")
+            || lower.contains("network is unreachable")
+            || lower.contains("no such host")
+            // US-001: body-stream timeouts arrive as io::Error wrapped by
+            // std::io::copy — the typed downcast above misses them because
+            // the chain no longer carries the original ureq::Error.
+            || lower.contains("timed out")
+            || lower.contains("timeout")
+        {
+            return UpdateError::Network(full);
         }
         UpdateError::Other(full)
     }
@@ -318,6 +373,52 @@ mod tests {
     }
 
     #[test]
+    fn classify_ureq_timeout_variant_as_network() {
+        // US-001 AC4: a direct `ureq::Error::Timeout(_)` in the cause chain
+        // is classified as `Network`, not `Other`. The context is
+        // intentionally neutral — it contains no pre-existing network
+        // keyword — so this test actually exercises the typed-downcast arm
+        // and would fail if that arm were removed.
+        let err = anyhow::Error::new(ureq::Error::Timeout(ureq::Timeout::Global))
+            .context("update checker main loop");
+        assert!(matches!(
+            UpdateError::classify(&err),
+            UpdateError::Network(_)
+        ));
+    }
+
+    #[test]
+    fn classify_integrity_keyword_shadowed_by_timeout_substring() {
+        // Regression: a crafted error message that mixes an integrity
+        // keyword with a timeout keyword must classify as IntegrityMismatch,
+        // not Network. Before the substring reordering, "checksum timed out"
+        // hit the Network arm first and suppressed the corruption toast.
+        let err = anyhow::anyhow!("zsync2: checksum timed out waiting for block");
+        assert!(matches!(
+            UpdateError::classify(&err),
+            UpdateError::IntegrityMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn classify_ureq_timeout_via_substring_fallback() {
+        // US-001: when the timeout surfaces mid-body (std::io::copy wraps
+        // it as io::Error, so the typed downcast above misses it), the
+        // "timed out" / "timeout" substring fallback must still route it
+        // to `Network` instead of `Other`.
+        let err = anyhow::anyhow!("stream tarball to disk: request timed out");
+        assert!(matches!(
+            UpdateError::classify(&err),
+            UpdateError::Network(_)
+        ));
+        let err = anyhow::anyhow!("ureq: timeout");
+        assert!(matches!(
+            UpdateError::classify(&err),
+            UpdateError::Network(_)
+        ));
+    }
+
+    #[test]
     fn classify_other_for_unclassifiable_error() {
         let err = anyhow::anyhow!("some totally unexpected garbage");
         match UpdateError::classify(&err) {
@@ -379,5 +480,94 @@ mod tests {
     fn user_message_other_passes_through_raw() {
         let err = UpdateError::Other("raw detail".into());
         assert_eq!(err.user_message(), "raw detail");
+    }
+
+    #[test]
+    fn classify_release_asset_missing_roundtrips() {
+        // US-005 AC8: a 404 on the pinned appimageupdatetool asset must
+        // surface as ReleaseAssetMissing (not silently reclassified as
+        // Network or Other).
+        let tagged = UpdateError::ReleaseAssetMissing {
+            url: "https://example.test/asset.AppImage".into(),
+        };
+        let err = anyhow::Error::new(tagged.clone()).context("self-update/appimage");
+        assert_eq!(UpdateError::classify(&err), tagged);
+    }
+
+    #[test]
+    fn user_message_release_asset_missing_includes_url() {
+        let err = UpdateError::ReleaseAssetMissing {
+            url: "https://example.test/tool.AppImage".into(),
+        };
+        let msg = err.user_message();
+        assert!(
+            msg.contains("https://example.test/tool.AppImage"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("no longer published"), "got: {msg}");
+    }
+
+    #[test]
+    fn classify_install_declined_roundtrips() {
+        // US-009 AC8: InstallDeclined survives a downcast through the
+        // cause chain so its user-visible message isn't flattened into
+        // the generic Other bucket.
+        let tagged = UpdateError::InstallDeclined {
+            message: "Unable to replace /Applications/PaneFlow.app — reinstall manually".into(),
+        };
+        let err = anyhow::Error::new(tagged.clone()).context("self-update/dmg");
+        assert_eq!(UpdateError::classify(&err), tagged);
+    }
+
+    #[test]
+    fn user_message_install_declined_passes_through() {
+        let err = UpdateError::InstallDeclined {
+            message: "Unable to replace /Applications/PaneFlow.app — reinstall manually".into(),
+        };
+        assert_eq!(
+            err.user_message(),
+            "Unable to replace /Applications/PaneFlow.app — reinstall manually"
+        );
+    }
+
+    #[test]
+    fn classify_install_failed_roundtrips() {
+        // US-010 AC7: InstallFailed carries its verbose log path through
+        // the cause chain so the toast can name it verbatim for bug
+        // reports — flattening to Other would lose the path.
+        let tagged = UpdateError::InstallFailed {
+            log_path: PathBuf::from("C:\\Users\\u\\AppData\\Local\\Temp\\paneflow-msi-1234.log"),
+        };
+        let err = anyhow::Error::new(tagged.clone()).context("self-update/msi");
+        assert_eq!(UpdateError::classify(&err), tagged);
+    }
+
+    #[test]
+    fn user_message_install_failed_includes_log_path() {
+        let err = UpdateError::InstallFailed {
+            log_path: PathBuf::from("C:\\Temp\\paneflow-msi-9.log"),
+        };
+        let msg = err.user_message();
+        assert!(msg.contains("C:\\Temp\\paneflow-msi-9.log"), "got: {msg}");
+        assert!(msg.contains("Update install failed"), "got: {msg}");
+    }
+
+    #[test]
+    fn classify_environment_broken_roundtrips() {
+        // US-010 AC9: EnvironmentBroken survives the cause chain so the
+        // "msiexec not found" toast is specific rather than generic.
+        let tagged = UpdateError::EnvironmentBroken {
+            message: "msiexec.exe not found on PATH — Windows system install appears broken".into(),
+        };
+        let err = anyhow::Error::new(tagged.clone()).context("self-update/msi");
+        assert_eq!(UpdateError::classify(&err), tagged);
+    }
+
+    #[test]
+    fn user_message_environment_broken_passes_through() {
+        let err = UpdateError::EnvironmentBroken {
+            message: "msiexec.exe not found on PATH".into(),
+        };
+        assert_eq!(err.user_message(), "msiexec.exe not found on PATH");
     }
 }
