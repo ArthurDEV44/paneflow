@@ -1,3 +1,24 @@
+paneflow (0.2.0-1) stable; urgency=medium
+
+  * feat(packaging): multi-format Linux distribution —
+    .tar.gz + .deb + .rpm + AppImage, built for x86_64 and aarch64.
+  * feat(repo): hosted APT + RPM repositories at pkg.paneflow.dev,
+    GPG-signed with key fingerprint 9809948F4433CF93DD1329449A252F0C183F2711.
+  * feat(updater): install-method detection with per-format update flow
+    (AppImage via appimageupdatetool, tar.gz via atomic swap,
+    .deb/.rpm routed to the system package manager).
+  * fix(updater): 30-second timeout on every network call so the
+    update-checker thread never hangs on flaky connections (US-001).
+  * feat(release): SHA256 sidecars for every published artifact,
+    plus Cloudflare cache purge after every R2 sync (US-002, US-003).
+  * feat(update): appimageupdatetool now pinned to dated tag
+    2.0.0-alpha-1-20251018 with per-arch SHA256 verification (US-005).
+  * feat(platform): foundation work for upcoming macOS / Windows
+    releases — per-OS dispatch for reveal-in-file-manager, Core Text
+    font fallback on macOS, DMG/MSI install flows wired (US-009..012).
+
+ -- Arthur Jean <arthur.jean@strivex.fr>  Tue, 21 Apr 2026 00:32:00 +0200
+
 paneflow (0.1.7-1) stable; urgency=medium
 
   * Initial Debian package for PaneFlow.
