@@ -123,6 +123,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: "v1-rust"
           key: ${{ matrix.target }}
 
       - name: Install cargo-deb (pinned)
