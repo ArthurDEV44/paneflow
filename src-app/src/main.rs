@@ -1352,22 +1352,29 @@ fn main() {
                 }
             };
 
+            // US-011: reserve space on the left of the custom titlebar
+            // for macOS traffic lights. The three red/yellow/green circles
+            // live at x≈12-78px; the brand text starts at x=80 (see
+            // title_bar.rs). `..Default::default()` is load-bearing on
+            // non-macOS (GPUI's TitlebarOptions may grow platform-specific
+            // fields we don't set); clippy only flags it needless under
+            // target_os = "macos" where traffic_light_position makes the
+            // field list complete.
+            #[cfg_attr(target_os = "macos", allow(clippy::needless_update))]
+            let titlebar_options = gpui::TitlebarOptions {
+                title: Some("PaneFlow".into()),
+                appears_transparent: true,
+                #[cfg(target_os = "macos")]
+                traffic_light_position: Some(point(px(12.0), px(12.0))),
+                ..Default::default()
+            };
+
             let window_result = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(800.0), px(500.0))),
                     window_decorations: Some(decorations),
-                    titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("PaneFlow".into()),
-                        appears_transparent: true,
-                        // US-011: reserve space on the left of the custom
-                        // titlebar for macOS traffic lights. The three
-                        // red/yellow/green circles live at x≈12-78px; the
-                        // brand text starts at x=80 (see title_bar.rs).
-                        #[cfg(target_os = "macos")]
-                        traffic_light_position: Some(point(px(12.0), px(12.0))),
-                        ..Default::default()
-                    }),
+                    titlebar: Some(titlebar_options),
                     app_id: Some("paneflow".into()),
                     ..Default::default()
                 },

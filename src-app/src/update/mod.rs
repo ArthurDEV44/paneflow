@@ -200,9 +200,9 @@ pub fn run_installer(path: &std::path::Path) -> Result<()> {
 pub fn installed_binary_path() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        return Ok(PathBuf::from(
+        Ok(PathBuf::from(
             "/Applications/PaneFlow.app/Contents/MacOS/paneflow",
-        ));
+        ))
     }
     #[cfg(target_os = "windows")]
     {
@@ -216,7 +216,7 @@ pub fn installed_binary_path() -> Result<PathBuf> {
         if !std::env::consts::EXE_EXTENSION.is_empty() {
             exe.set_extension(std::env::consts::EXE_EXTENSION);
         }
-        return Ok(exe);
+        Ok(exe)
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
