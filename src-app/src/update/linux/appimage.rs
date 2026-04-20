@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 
 use super::super::error::{IntegrityMismatch, UpdateError};
@@ -417,10 +417,13 @@ fn classify_error(output: &str) -> UpdateError {
     )
 }
 
-// US-005 — tests module gated to Unix because the fixtures use
-// `std::os::unix::fs::PermissionsExt` and the behaviors under test
-// (AppImage bundle permissions) are Linux-only by definition.
-#[cfg(all(test, unix))]
+// US-005 — tests module gated to Linux because the fixtures use
+// `std::os::unix::fs::PermissionsExt` AND invoke real binaries like
+// `/bin/true` / `/bin/sh` with AppImage-specific semantics. macOS is
+// `cfg(unix)` but: (1) `/bin/true` spawn fails under the sandboxed
+// macOS Actions runner, and (2) AppImage is a Linux-only runtime
+// concept — exercising the tool-invoker on macOS has no value.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::io::Write;

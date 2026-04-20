@@ -434,19 +434,15 @@ mod tests {
     #[test]
     fn app_bundle_parser_rejects_wrong_layout() {
         // Wrong MacOS directory name
-        assert!(
-            app_bundle_path(Path::new(
-                "/Applications/PaneFlow.app/Contents/bin/paneflow"
-            ))
-            .is_none()
-        );
+        assert!(app_bundle_path(Path::new(
+            "/Applications/PaneFlow.app/Contents/bin/paneflow"
+        ))
+        .is_none());
         // Wrong Contents directory name
-        assert!(
-            app_bundle_path(Path::new(
-                "/Applications/PaneFlow.app/Payload/MacOS/paneflow"
-            ))
-            .is_none()
-        );
+        assert!(app_bundle_path(Path::new(
+            "/Applications/PaneFlow.app/Payload/MacOS/paneflow"
+        ))
+        .is_none());
         // Bundle dir not ending in .app
         assert!(
             app_bundle_path(Path::new("/Applications/PaneFlow/Contents/MacOS/paneflow")).is_none()
@@ -484,7 +480,13 @@ mod tests {
     /// symlink creation on Windows entirely" — this codebase has no
     /// runtime symlink creators anywhere, so there is no `make_symlink`
     /// helper to document; the cfg-gate here IS the design choice.
-    #[cfg(unix)]
+    ///
+    /// Linux-only: on macOS the `.local/paneflow.app` suffix collides with
+    /// the `.app` bundle detector and the classifier returns `AppBundle`
+    /// instead of `TarGz`. The tar.gz install layout is a Linux convention
+    /// (Zed/Ghostty-style `$HOME/.local/paneflow.app/`) that doesn't exist
+    /// on macOS, so the test has no meaning there.
+    #[cfg(target_os = "linux")]
     #[test]
     fn canonicalize_resolves_tar_gz_symlink() {
         let tmp = tempfile::TempDir::new().unwrap();

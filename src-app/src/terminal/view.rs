@@ -921,6 +921,16 @@ mod tests {
         fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
             Ok(Some(portable_pty::ExitStatus::with_exit_code(0)))
         }
+
+        // portable_pty::Child adds an `as_raw_handle` method on Windows
+        // that mirrors `as_raw_fd` on Unix. The trait method is gated on
+        // the portable_pty side; we stub it here so MockChild satisfies
+        // the Windows trait surface during CI `cargo test` on the
+        // x86_64-pc-windows-msvc target.
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            None
+        }
     }
 
     /// Minimal mock MasterPty — resize is a no-op.
@@ -948,12 +958,22 @@ mod tests {
             Ok(Box::new(Vec::new()))
         }
 
+        // `process_group_leader` is a Unix-only trait method in
+        // portable_pty 0.8 (the concept doesn't map to Windows process
+        // groups); gating the impl to cfg(unix) keeps the Windows build
+        // from erroring with E0407.
+        #[cfg(unix)]
         fn process_group_leader(&self) -> Option<i32> {
             None
         }
 
         #[cfg(unix)]
         fn as_raw_fd(&self) -> Option<i32> {
+            None
+        }
+
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
             None
         }
     }
