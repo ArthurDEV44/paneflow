@@ -744,12 +744,49 @@ jobs:
           # can match it (US-009's asset picker matches on `-${arch}.rpm`).
           cp target/"${TARGET}"/generate-rpm/paneflow-*.rpm \
              "release-assets/paneflow-${TAG}-${ARCH}.rpm"
-          # Emit a SHA-256 sibling for the tar.gz — the in-app updater
-          # fetches `<asset>.sha256` and verifies the download before
-          # swapping `$HOME/.local/paneflow.app/` (US-011).
+          # Emit SHA-256 siblings for every primary Linux artifact.
+          # Rationale:
+          #   - `.tar.gz` → consumed by the in-app updater (US-011), which
+          #     fetches `<asset>.sha256` and verifies the download before
+          #     swapping `$HOME/.local/paneflow.app/`.
+          #   - `.deb` / `.rpm` / `.AppImage` (US-002) → out-of-band
+          #     verification by downstream mirrors, security scanners, and
+          #     users downloading artifacts directly from GitHub Releases.
+          #
+          # `test -s` guards catch the pathological case where an earlier
+          # `cp` silently produced a zero-byte file (e.g. disk pressure on
+          # the runner). Without them, `sha256sum` would happily hash an
+          # empty file and publish a valid-but-wrong sidecar. `sha256sum`
+          # itself is part of coreutils on ubuntu-22.04; it is always
+          # present.
+          #
+          # Staying inside a single `cd release-assets` subshell keeps the
+          # canonical coreutils output format `<64-hex>  <filename>` (no
+          # path prefix) — essential for `sha256sum -c <asset>.sha256` to
+          # work after a user downloads both files into the same directory.
+          # `set -e` / `set -o pipefail` are inherited by the subshell, so
+          # any single `sha256sum` failure aborts the chain and fails the
+          # whole step rather than publishing a partial sidecar set.
+          for art in \
+              "paneflow-${TAG}-${ARCH}.tar.gz" \
+              "paneflow-${TAG}-${ARCH}.AppImage" \
+              "paneflow-${TAG}-${ARCH}.deb" \
+              "paneflow-${TAG}-${ARCH}.rpm"
+          do
+              if [ ! -s "release-assets/${art}" ]; then
+                  echo "::error::release-assets/${art} is missing or empty — refusing to hash." >&2
+                  exit 1
+              fi
+          done
           ( cd release-assets \
             && sha256sum "paneflow-${TAG}-${ARCH}.tar.gz" \
-                 > "paneflow-${TAG}-${ARCH}.tar.gz.sha256" )
+                 > "paneflow-${TAG}-${ARCH}.tar.gz.sha256" \
+            && sha256sum "paneflow-${TAG}-${ARCH}.AppImage" \
+                 > "paneflow-${TAG}-${ARCH}.AppImage.sha256" \
+            && sha256sum "paneflow-${TAG}-${ARCH}.deb" \
+                 > "paneflow-${TAG}-${ARCH}.deb.sha256" \
+            && sha256sum "paneflow-${TAG}-${ARCH}.rpm" \
+                 > "paneflow-${TAG}-${ARCH}.rpm.sha256" )
           ls -la release-assets/
 
       # Upload artifacts so the smoke-test jobs below can install them
