@@ -71,7 +71,18 @@ impl ConfigWatcher {
             std::fs::create_dir_all(&watch_dir).map_err(notify::Error::io)?;
         }
 
-        let config_path = self.config_path.clone();
+        // Canonicalize the watched directory so `event_targets_config` can
+        // match what the OS reports. macOS FSEvents resolves `/var/folders/...`
+        // to `/private/var/folders/...` before emitting events, so a raw
+        // comparison against the non-canonical path never matches. On Linux
+        // and Windows without symlinks this is a no-op. Falls back to the
+        // raw dir if canonicalization fails (best-effort).
+        let canonical_dir = std::fs::canonicalize(&watch_dir).unwrap_or_else(|_| watch_dir.clone());
+        let file_name = self
+            .config_path
+            .file_name()
+            .expect("config path has no file name");
+        let config_path = canonical_dir.join(file_name);
         let callback = Arc::clone(&self.callback);
 
         // Channel for notify -> processing thread.
