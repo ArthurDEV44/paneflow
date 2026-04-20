@@ -41,7 +41,13 @@ jobs:
 
   check:
     name: Check, Lint & Test
-    runs-on: ubuntu-latest
+    # US-004 (prd-v0.2.0-release-hardening): pinned to ubuntu-22.04 to match
+    # release.yml's Linux matrix legs (runs-on: ubuntu-22.04 / ubuntu-22.04-arm)
+    # so a green PR check guarantees the release build environment — same
+    # glibc (2.35), same system library set. Do NOT revert to ubuntu-latest;
+    # GitHub began rolling that label to 24.04 in early 2025 and the drift
+    # would silently diverge CI from release.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
