@@ -434,15 +434,19 @@ mod tests {
     #[test]
     fn app_bundle_parser_rejects_wrong_layout() {
         // Wrong MacOS directory name
-        assert!(app_bundle_path(Path::new(
-            "/Applications/PaneFlow.app/Contents/bin/paneflow"
-        ))
-        .is_none());
+        assert!(
+            app_bundle_path(Path::new(
+                "/Applications/PaneFlow.app/Contents/bin/paneflow"
+            ))
+            .is_none()
+        );
         // Wrong Contents directory name
-        assert!(app_bundle_path(Path::new(
-            "/Applications/PaneFlow.app/Payload/MacOS/paneflow"
-        ))
-        .is_none());
+        assert!(
+            app_bundle_path(Path::new(
+                "/Applications/PaneFlow.app/Payload/MacOS/paneflow"
+            ))
+            .is_none()
+        );
         // Bundle dir not ending in .app
         assert!(
             app_bundle_path(Path::new("/Applications/PaneFlow/Contents/MacOS/paneflow")).is_none()
