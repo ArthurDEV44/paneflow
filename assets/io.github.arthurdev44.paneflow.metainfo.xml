@@ -57,6 +57,18 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.0" date="2026-04-21">
+      <description>
+        <p>Linux packaging migration release — complete Phase 1 + Phase 2.</p>
+        <ul>
+          <li>Native .deb, .rpm, .AppImage, and .tar.gz artifacts for x86_64 and aarch64</li>
+          <li>GPG-signed APT + RPM repositories hosted at pkg.paneflow.dev</li>
+          <li>Per-install-method auto-updater with 30s network timeout and SHA256 integrity verification</li>
+          <li>SHA256 sidecars on every release asset</li>
+          <li>Cross-platform polish: per-OS reveal-in-file-manager dispatch, macOS Core Text font fallback</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.7" date="2026-04-17">
       <description>
         <p>Maintenance release.</p>
