@@ -176,61 +176,175 @@ impl PaneFlowApp {
             return;
         }
 
-        self.self_update_status = update::SelfUpdateStatus::Downloading;
-        cx.notify();
+        // US-010: Windows MSI install — download, SHA-verify, invoke
+        // msiexec, map exit codes. `InstallMethod::WindowsMsi` is only
+        // produced on Windows by install_method::detect(), so on
+        // Linux/macOS this branch is a runtime-dead `if let` — the
+        // `msiexec.exe` lookup inside `msi::install` would otherwise
+        // fail there, but the branch guard prevents ever reaching it.
+        if let update::install_method::InstallMethod::WindowsMsi { .. } = &method {
+            let url = asset_url.clone();
+            self.self_update_status = update::SelfUpdateStatus::Downloading;
+            cx.notify();
 
-        cx.spawn(async move |this, cx| {
-            // Download off the GPUI main thread so the UI stays responsive.
-            let download_result = smol::unblock({
-                let url = asset_url.clone();
-                move || update::download_installer(&url)
+            cx.spawn(async move |this, cx| {
+                let result = smol::unblock(move || update::windows::msi::install(&url)).await;
+                match result {
+                    Ok(restart_path) => {
+                        let _ = this.update(cx, |app, cx| {
+                            app.self_update_status = update::SelfUpdateStatus::Installing;
+                            app.save_session(cx);
+                            cx.notify();
+                        });
+                        cx.update(|cx| {
+                            log::info!(
+                                "self-update/msi: restarting into {}",
+                                restart_path.display()
+                            );
+                            cx.set_restart_path(restart_path);
+                            cx.restart();
+                        });
+                    }
+                    Err(err) => {
+                        let _ = this.update(cx, |app, cx| {
+                            app.record_update_failure("msi", &err, cx);
+                        });
+                    }
+                }
             })
-            .await;
+            .detach();
+            return;
+        }
 
-            let installer_path = match download_result {
-                Ok(path) => path,
-                Err(err) => {
+        // US-009: macOS `.app` bundle — mount the DMG, swap bundle
+        // atomically, restart into the new `Contents/MacOS/paneflow`.
+        // Dispatch is an `if let` (not a cfg guard) so the code remains
+        // a single compile-closure across all targets; the
+        // `InstallMethod::AppBundle` variant is only produced on macOS
+        // by `install_method::detect()`, so on Linux / Windows this
+        // branch is runtime-dead without needing a `#[cfg(target_os)]`.
+        if let update::install_method::InstallMethod::AppBundle { .. } = &method {
+            let url = asset_url.clone();
+            self.self_update_status = update::SelfUpdateStatus::Downloading;
+            cx.notify();
+
+            cx.spawn(async move |this, cx| {
+                let result = smol::unblock(move || update::macos::dmg::install(&url)).await;
+                match result {
+                    Ok(restart_path) => {
+                        let _ = this.update(cx, |app, cx| {
+                            app.self_update_status = update::SelfUpdateStatus::Installing;
+                            app.save_session(cx);
+                            cx.notify();
+                        });
+                        cx.update(|cx| {
+                            log::info!(
+                                "self-update/dmg: restarting into {}",
+                                restart_path.display()
+                            );
+                            cx.set_restart_path(restart_path);
+                            cx.restart();
+                        });
+                    }
+                    Err(err) => {
+                        let _ = this.update(cx, |app, cx| {
+                            app.record_update_failure("dmg", &err, cx);
+                        });
+                    }
+                }
+            })
+            .detach();
+            return;
+        }
+
+        // US-008: the legacy `.run` fall-through is Unix-only. On Linux,
+        // this branch is runtime-dead for the already-handled install
+        // methods above (AppImage / TarGz / SystemPackage) plus Unknown,
+        // and reachable only for older dev builds that slipped past the
+        // `TarGz | Unknown` match. On Windows/macOS the branch is
+        // cfg-eliminated at compile time — those platforms route via
+        // `InstallMethod::WindowsMsi` (US-010) and `AppBundle` (US-009)
+        // respectively, and the fall-through below must never be reached.
+        //
+        // If US-009/US-010 land before those dispatch arms are fully
+        // wired, the `#[cfg(not(unix))]` sibling below records a
+        // deliberate error-toast rather than bubbling up a mysterious
+        // "no updater wired" runtime failure.
+        #[cfg(unix)]
+        {
+            self.self_update_status = update::SelfUpdateStatus::Downloading;
+            cx.notify();
+
+            cx.spawn(async move |this, cx| {
+                // Download off the GPUI main thread so the UI stays responsive.
+                let download_result = smol::unblock({
+                    let url = asset_url.clone();
+                    move || update::download_installer(&url)
+                })
+                .await;
+
+                let installer_path = match download_result {
+                    Ok(path) => path,
+                    Err(err) => {
+                        let _ = this.update(cx, |app, cx| {
+                            app.record_update_failure("legacy-download", &err, cx);
+                        });
+                        return;
+                    }
+                };
+
+                let _ = this.update(cx, |app, cx| {
+                    app.self_update_status = update::SelfUpdateStatus::Installing;
+                    cx.notify();
+                });
+
+                let install_result = smol::unblock({
+                    let path = installer_path.clone();
+                    move || update::run_installer(&path)
+                })
+                .await;
+
+                if let Err(err) = install_result {
                     let _ = this.update(cx, |app, cx| {
-                        app.record_update_failure("legacy-download", &err, cx);
+                        app.record_update_failure("legacy-install", &err, cx);
                     });
                     return;
                 }
-            };
 
-            let _ = this.update(cx, |app, cx| {
-                app.self_update_status = update::SelfUpdateStatus::Installing;
-                cx.notify();
-            });
-
-            let install_result = smol::unblock({
-                let path = installer_path.clone();
-                move || update::run_installer(&path)
-            })
-            .await;
-
-            if let Err(err) = install_result {
+                // Persist session, register the new binary path with GPUI, and
+                // trigger the launcher-based restart. GPUI's Linux platform
+                // spawns a detached bash script that waits for our PID to exit
+                // before exec'ing the new binary.
                 let _ = this.update(cx, |app, cx| {
-                    app.record_update_failure("legacy-install", &err, cx);
+                    app.save_session(cx);
                 });
-                return;
-            }
+                cx.update(|cx| match update::installed_binary_path() {
+                    Ok(path) => {
+                        log::info!("self-update: restarting into {}", path.display());
+                        cx.set_restart_path(path);
+                        cx.restart();
+                    }
+                    Err(e) => log::error!("self-update: cannot resolve install path: {e}"),
+                });
+            })
+            .detach();
+        }
 
-            // Persist session, register the new binary path with GPUI, and
-            // trigger the launcher-based restart. GPUI's Linux platform
-            // spawns a detached bash script that waits for our PID to exit
-            // before exec'ing the new binary.
-            let _ = this.update(cx, |app, cx| {
-                app.save_session(cx);
-            });
-            cx.update(|cx| match update::installed_binary_path() {
-                Ok(path) => {
-                    log::info!("self-update: restarting into {}", path.display());
-                    cx.set_restart_path(path);
-                    cx.restart();
-                }
-                Err(e) => log::error!("self-update: cannot resolve install path: {e}"),
-            });
-        })
-        .detach();
+        // US-008: non-Unix fall-through. Reached only when the caller is
+        // running on macOS (`InstallMethod::AppBundle`) or Windows
+        // (`InstallMethod::WindowsMsi`) AND the platform-specific updater
+        // story (US-009 / US-010) has not yet landed. Surfaces a toast
+        // instead of silently attempting the legacy `.run` flow, which on
+        // these platforms would download an MSI/DMG and attempt to
+        // `chmod +x`/execve it. The `asset_url` binding is consumed here
+        // via the error message so it's not flagged as unused.
+        #[cfg(not(unix))]
+        {
+            let msg = anyhow::anyhow!(
+                "Self-update for this platform is not yet available. Download the new \
+                 release manually from {asset_url}"
+            );
+            self.record_update_failure("legacy-dispatch", &msg, cx);
+        }
     }
 }

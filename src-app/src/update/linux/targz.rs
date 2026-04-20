@@ -25,6 +25,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
@@ -35,6 +36,11 @@ use super::super::error::IntegrityMismatch;
 /// a malicious mirror returning an unbounded stream would otherwise fill
 /// `$HOME/.cache`.
 const MAX_TARBALL_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Upper bound on any single HTTP call (US-001). 30 seconds is long enough
+/// for a cold-start tethered connection, short enough that a zombie thread
+/// never forms on a dropped TCP half-open.
+const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Run the tar.gz self-update end-to-end. Resolves `$HOME`, delegates to
 /// [`run_update_in`], then returns the path of the post-swap binary
@@ -125,6 +131,9 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
     // network failure.
     let sha_url = format!("{asset_url}.sha256");
     let mut sha_response = ureq::get(&sha_url)
+        .config()
+        .timeout_global(Some(UPDATE_HTTP_TIMEOUT))
+        .build()
         .header(
             "User-Agent",
             &format!("paneflow/{}", env!("CARGO_PKG_VERSION")),
@@ -157,6 +166,9 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
     // from US-010 so a crashed download doesn't poison the cache.
     let partial = append_suffix(dest, ".partial")?;
     let mut response = ureq::get(asset_url)
+        .config()
+        .timeout_global(Some(UPDATE_HTTP_TIMEOUT))
+        .build()
         .header(
             "User-Agent",
             &format!("paneflow/{}", env!("CARGO_PKG_VERSION")),
@@ -170,20 +182,32 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
         );
     }
 
-    {
+    // Stream to `.partial`. `file` is scoped to this block so its handle is
+    // closed before the caller attempts any `remove_file` — on Windows,
+    // `DeleteFile` fails with ERROR_SHARING_VIOLATION while a handle is open,
+    // so keeping this scope tight is a cross-platform requirement. US-001 AC7.
+    let stream_result = {
         let reader = response.body_mut().as_reader();
         let mut reader = Read::take(reader, MAX_TARBALL_BYTES + 1);
         let mut file = std::fs::File::create(&partial)
             .with_context(|| format!("create {}", partial.display()))?;
-        let written = std::io::copy(&mut reader, &mut file).context("stream tarball to disk")?;
-        if written > MAX_TARBALL_BYTES {
-            let _ = std::fs::remove_file(&partial);
-            bail!(
-                "Update download exceeded {} MiB — aborting.",
-                MAX_TARBALL_BYTES / 1024 / 1024
-            );
-        }
+        let written = std::io::copy(&mut reader, &mut file).context("stream tarball to disk");
         file.sync_all().ok();
+        written
+    };
+    let written = match stream_result {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = std::fs::remove_file(&partial);
+            return Err(e);
+        }
+    };
+    if written > MAX_TARBALL_BYTES {
+        let _ = std::fs::remove_file(&partial);
+        bail!(
+            "Update download exceeded {} MiB — aborting.",
+            MAX_TARBALL_BYTES / 1024 / 1024
+        );
     }
 
     // 3. Verify SHA-256. Mismatch → delete and bail with the unhappy-path

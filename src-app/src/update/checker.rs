@@ -5,9 +5,21 @@
 //! that matches both their CPU architecture and their install method (never
 //! a .deb handed to a Fedora user).
 
+use std::time::Duration;
+
 use semver::Version;
 
 use super::install_method::{self, InstallMethod, PackageManager};
+
+/// Upper bound on any single HTTP call made by the update flow (US-001).
+///
+/// ureq 3 defaults to no timeout — a half-open TCP connection or a server
+/// that accepts then never responds would otherwise hang the checker thread
+/// indefinitely, leaving the title bar stuck on "Checking…" until the app
+/// is killed. 30 seconds is generous enough for a cold-start GitHub API
+/// request over tethered 3G yet short enough that a flaky-network user sees
+/// a toast well before they give up.
+const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 const GITHUB_API: &str = "https://api.github.com/repos/ArthurDEV44/paneflow/releases/latest";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -179,6 +191,9 @@ pub fn pick_asset<'a>(
 
 fn check_github_release() -> UpdateStatus {
     let response = ureq::get(GITHUB_API)
+        .config()
+        .timeout_global(Some(UPDATE_HTTP_TIMEOUT))
+        .build()
         .header("User-Agent", &format!("paneflow/{CURRENT_VERSION}"))
         .header("Accept", "application/vnd.github.v3+json")
         .call();
