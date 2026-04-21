@@ -44,33 +44,40 @@ jobs:
           # TAG value as the Linux legs; the macOS-only prelude below
           # strips the leading `v` before feeding it to Info.plist
           # (CFBundleShortVersionString requires bare semver).
+          #
+          # Deferred-posture for BOTH macOS legs (US-008, v0.2.1): this
+          # Apple Silicon leg is kept IN-matrix as `continue-on-error:
+          # true` because macos-14 queue times are acceptable (<10 min)
+          # and the leg catches Rust-level cross-compile regressions
+          # even without signing. The x86_64-apple-darwin (Intel Mac)
+          # entry was dropped entirely (see closed-target note below).
+          # Flip this back to hard-required on the commit that lands
+          # the first signed macOS release (v0.3.0), simultaneously
+          # with the Apple Dev secrets provisioning documented in
+          # docs/release-runbook.md §"Supported release targets" and
+          # the tasks/prd-macos-port.md release cut.
           - target: aarch64-apple-darwin
             arch: aarch64
             runs-on: macos-14
-            # TEMPORARILY best-effort until Apple Dev secrets
-            # (APPLE_DEVELOPER_CERT_P12, APPLE_DEVELOPER_CERT_PASSWORD,
-            # APPLE_TEAM_ID) are provisioned on the repo. v0.2.0 is a
-            # Linux-only release; the aarch64-apple-darwin leg currently
-            # fails at the "Sign macOS .app bundle" step with missing
-            # secrets. Revert this flag back to hard-required on the
-            # commit that lands the first signed macOS release.
             continue-on-error: true
-          # TEMPORARILY REMOVED FROM MATRIX — Intel Mac (macos-13).
-          # Even with `continue-on-error: true`, the release-gating job
-          # waits for EVERY matrix leg to complete. GitHub Actions
-          # macos-13 runner queue times have been 30-60 min+ in recent
-          # weeks, blocking the release pipeline on a best-effort leg
-          # we don't actually need for v0.2.0 (Linux-only release, no
-          # Apple Dev secrets anyway). Restore the entry below when
-          # either (a) Apple Dev secrets land and the first signed
-          # macOS release is cut, or (b) the matrix strategy is
-          # refactored to let `Publish GitHub Release` run on a subset
-          # of green legs without waiting for the best-effort queue.
-          #
-          # - target: x86_64-apple-darwin
-          #   arch: x86_64
-          #   runs-on: macos-13
-          #   continue-on-error: true
+          # CLOSED TARGET — x86_64-apple-darwin (Intel Mac / macos-13)
+          # Decision: 2026-04-21 (US-008, v0.2.1). Removed from the
+          # matrix entirely until v0.3.0's macOS release cut. Two
+          # blockers, either of which would have been enough on its
+          # own: (1) Apple Dev secrets (APPLE_DEVELOPER_CERT_P12,
+          # APPLE_DEVELOPER_CERT_PASSWORD, APPLE_TEAM_ID) are not yet
+          # provisioned, so the leg would fail at the `Sign macOS .app
+          # bundle` step regardless of the runner queue; (2) macos-13
+          # runner queue times have been 30-60 min+, which would block
+          # the `Publish GitHub Release` job even with
+          # `continue-on-error: true` (GHA waits for every matrix leg
+          # to complete before downstream `needs:` fires). Restoration
+          # requires both: Apple Dev secrets provisioning per
+          # memory/project_macos_signing.md AND either (a) queue-SLA
+          # improvement at GitHub Actions or (b) a matrix-strategy
+          # refactor of the `Publish` job's `needs:` to not block on
+          # best-effort legs. See docs/release-runbook.md §"Supported
+          # release targets" for the authoritative status list.
           # US-017: Windows x86_64. Best-effort (continue-on-error: true)
           # for the same reasons as Intel Mac — an Azure Artifact Signing
           # outage, cargo-wix regression, or transient windows-2022
@@ -92,7 +99,7 @@ jobs:
             continue-on-error: true
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install system dependencies
         if: runner.os == 'Linux'
@@ -297,6 +304,18 @@ jobs:
               --output /dev/null
           fi
 
+          # --- Pre-warm the GPG agent cache (US-001 research step 2) ---
+          # Explicit `gpg --list-secret-keys` call to ensure the imported
+          # secret key is loaded into the running gpg-agent BEFORE the
+          # first rpmsign invocation. Without this, on a fresh runner
+          # agent, rpmsign can race the agent's lazy key-load path and
+          # abort mid-sign with a stdin-read error (upstream
+          # https://github.com/rpm-software-management/rpm/issues/3740).
+          # The earlier fingerprint-check call already reads the key, but
+          # we keep this as a distinct step so the intent is obvious if
+          # a future maintainer refactors the fingerprint check away.
+          gpg --list-secret-keys >/dev/null
+
           # --- Write ~/.rpmmacros for rpmsign --------------------------
           # `rpmsign` without a macros file would spawn an interactive
           # pinentry. Override `%__gpg_sign_cmd` so it runs in batch mode
@@ -366,19 +385,20 @@ jobs:
           # Glob note: cargo-generate-rpm emits `.x86_64.rpm` and
           # `.aarch64.rpm`. Same target-scoped-directory reasoning as the
           # .deb loop above (US-019).
-          # v0.2.0 KNOWN LIMITATION: per-package RPM signing is disabled.
-          # `rpmsign --addsign` on ubuntu-22.04 (rpm 4.17.0) fails with
-          # "/dev/stdin: import read failed(0)" despite a fully-populated
-          # ~/.rpmmacros with %__gpg_sign_cmd / loopback pinentry. Likely
-          # an rpm-Ubuntu-packaging quirk where rpmsign reads from /dev/stdin
-          # for something unrelated to the macro. Ship unsigned .rpm on
-          # GitHub Releases; dnf clients installing from pkg.paneflow.dev
-          # still get repomd.xml signature verification (repo_gpgcheck=1
-          # in packaging/rpm/postinst.sh) which is the primary integrity
-          # guarantee. Track fix as v0.2.1 priority.
+          #
+          # US-001 (v0.2.1) re-enable: prior v0.2.0 failure signature was
+          # "/dev/stdin: import read failed(0)". Root cause was bundled
+          # with the rpm-pubkey-import path (fixed separately in commit
+          # 92729d0 via tempfile); the rpmsign path depends on a warmed
+          # gpg-agent (see Pre-warm step above) plus the Ubuntu-specific
+          # `%__gpg` override. If CI regresses on a future release,
+          # fallbacks ranked: (a) rpmsign with inline `--define` flags
+          # (sidesteps ~/.rpmmacros entirely), (b) revert to the echo-only
+          # placeholder and ship unsigned for a single hotfix release.
           for rpm in target/"${TARGET}"/generate-rpm/paneflow-*.rpm; do
             [ -f "$rpm" ] || continue
-            echo "→ rpmsign --addsign $rpm (SKIPPED — tracking as v0.2.1 priority)"
+            echo "→ rpmsign --addsign $rpm"
+            rpmsign --addsign "$rpm"
           done
 
           # --- Verify (hard assert; a failed verify aborts the run) ----
@@ -424,14 +444,20 @@ jobs:
               exit 1
             fi
           done
-          # v0.2.0: rpm --checksig verification skipped because the sign
-          # step above is disabled (see comment on the rpmsign block).
-          # `rpm --checksig` on an unsigned .rpm returns NOKEY non-zero,
-          # which would fail the release with a misleading error. Tracked
-          # as v0.2.1 priority alongside the rpmsign fix.
+          # US-001 (v0.2.1): verify every signed .rpm with
+          # `rpm --checksig -v`. Exits 0 iff every signature component is
+          # OK (Header V4 RSA/SHA256, Header SHA1, Payload, MD5). Any
+          # NOKEY/BAD bubbles up as non-zero and fails the release — no
+          # silent-unsigned-rpm path. `PIPESTATUS[0]` reads rpm's own
+          # status, independent of `tee`'s always-0 exit.
           for rpm_path in target/"${TARGET}"/generate-rpm/paneflow-*.rpm; do
             [ -f "$rpm_path" ] || continue
-            echo "→ rpm --checksig -v $rpm_path (SKIPPED — rpm signing disabled in v0.2.0)"
+            echo "→ rpm --checksig -v $rpm_path"
+            rpm --checksig -v "$rpm_path" | tee /tmp/rpm-checksig-verify.log
+            if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+              echo "::error::rpm --checksig failed on $rpm_path (NOKEY or BAD signature)"
+              exit 1
+            fi
           done
 
       - name: Produce AppImage
