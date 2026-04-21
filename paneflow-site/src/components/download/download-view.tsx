@@ -1,15 +1,37 @@
 "use client";
 
-import { type ComponentType, useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Copy, Download, Terminal } from "lucide-react";
+import {
+  type ComponentType,
+  type ReactElement,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  Check,
+  ChevronDown,
+  Copy,
+  Download,
+  Package,
+  Terminal,
+} from "lucide-react";
 import { AppleIcon, LinuxIcon, WindowsIcon } from "../os-icons";
-import { MeshHeader } from "./mesh-header";
+import { LATEST_VERSION } from "../../lib/release";
+
+// LATEST_VERSION is imported from `lib/release` — single source of
+// truth shared with the Hero CTA. Bump it there to propagate
+// everywhere. Historical versions below stay local to this component
+// since they're only surfaced on the download page.
 
 const VERSIONS: VersionEntry[] = [
   {
-    version: "0.1.7",
+    version: LATEST_VERSION,
     latest: true,
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/latest",
+    releaseNotes: `https://github.com/ArthurDEV44/paneflow/releases/tag/v${LATEST_VERSION}`,
+  },
+  {
+    version: "0.2.0",
+    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.0",
   },
 ];
 
@@ -24,16 +46,19 @@ export function DownloadView() {
     <section className="pt-36 sm:pt-40 pb-24">
       <div className="max-w-5xl mx-auto px-6">
         <div className="mb-10">
-          <MeshHeader />
-        </div>
-
-        <div className="mb-12">
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-            PaneFlow est disponible pour Linux et Windows.
+            PaneFlow est disponible pour Linux.
           </h1>
           <p className="mt-2 text-text-muted">
-            macOS arrive prochainement.
+            macOS et Windows arrivent très prochainement.
           </p>
+        </div>
+
+        {/* Primary "download for your system" card — client-side OS sniff
+            picks the best format per platform and renders one big button.
+            Users who want a different format scroll to the matrix below. */}
+        <div className="mb-10">
+          <PrimaryDownloadCard version={LATEST_VERSION} />
         </div>
 
         <div className="divide-y divide-surface-border border-y border-surface-border">
@@ -43,6 +68,197 @@ export function DownloadView() {
         </div>
       </div>
     </section>
+  );
+}
+
+// ─── OS + arch detection ──────────────────────────────────────────────────
+//
+// Runs after mount (SSR has no navigator). Until the detection resolves,
+// the primary card renders a neutral fallback so the server-rendered
+// HTML matches the first client paint (no hydration flash).
+//
+// Arch detection uses `navigator.userAgentData.architecture` when the
+// Client Hints API is available (Chrome 90+ / Edge 90+ on HTTPS origins).
+// Firefox and Safari don't expose it; fallback is x86_64 — ARM64 users
+// still get correct packages from the matrix below.
+
+type DetectedOs = "linux" | "macos" | "windows" | "unknown";
+type DetectedArch = "x86_64" | "aarch64";
+
+interface DetectedPlatform {
+  os: DetectedOs;
+  arch: DetectedArch;
+}
+
+type UserAgentDataLike = {
+  architecture?: string;
+  platform?: string;
+  getHighEntropyValues?: (hints: string[]) => Promise<Record<string, string>>;
+};
+
+function useDetectedPlatform(): DetectedPlatform | null {
+  const [platform, setPlatform] = useState<DetectedPlatform | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const uaData = (navigator as unknown as { userAgentData?: UserAgentDataLike })
+      .userAgentData;
+    const ua = navigator.userAgent || "";
+
+    const os: DetectedOs = (() => {
+      // Order matters: /Android/ contains "Linux", so Android must be
+      // ruled out first to avoid falsely matching Linux for mobile users
+      // (irrelevant audience for PaneFlow but correct-is-better-than-
+      // lucky on the sniff).
+      if (/Android/i.test(ua)) return "unknown";
+      if (/Linux/i.test(ua)) return "linux";
+      if (/Mac OS X|Macintosh/i.test(ua)) return "macos";
+      if (/Windows/i.test(ua)) return "windows";
+      return "unknown";
+    })();
+
+    // Low-entropy userAgentData.platform is exposed synchronously on
+    // supporting browsers. `getHighEntropyValues(["architecture"])`
+    // returns "arm" for aarch64 on an async promise — we use it when
+    // available to upgrade the default.
+    let arch: DetectedArch = "x86_64";
+    if (uaData?.architecture === "arm") arch = "aarch64";
+
+    if (uaData?.getHighEntropyValues) {
+      uaData
+        .getHighEntropyValues(["architecture"])
+        .then((values: Record<string, string>) => {
+          if (cancelled) return;
+          const upgraded: DetectedArch =
+            values.architecture === "arm" ? "aarch64" : "x86_64";
+          setPlatform({ os, arch: upgraded });
+        })
+        .catch(() => {
+          // Fall back to the sync guess if the async call rejects
+          // (permission policy, transient error, etc.).
+          if (!cancelled) setPlatform({ os, arch });
+        });
+    } else {
+      // Defer to the next microtask so the setState call does not land
+      // synchronously inside the effect body — the Next.js-strict
+      // react-hooks/set-state-in-effect rule rejects the sync variant,
+      // and calling setState in an effect callback is the documented
+      // way to satisfy it (react.dev "You Might Not Need an Effect").
+      queueMicrotask(() => {
+        if (!cancelled) setPlatform({ os, arch });
+      });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return platform;
+}
+
+// For each OS, the "primary format" is the one most users should pick.
+// Linux → .AppImage is universal (no root needed, no apt/dnf, just run).
+// macOS + Windows → placeholders until signed builds ship in v0.3.0.
+type PrimaryDownload =
+  | {
+      available: true;
+      href: string;
+      format: string;
+      icon: ComponentType<{ className?: string }>;
+    }
+  | {
+      available: false;
+      reason: string;
+      icon: ComponentType<{ className?: string }>;
+    };
+
+function primaryDownload(
+  version: string,
+  platform: DetectedPlatform,
+): PrimaryDownload {
+  const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
+  if (platform.os === "linux") {
+    return {
+      available: true,
+      href: `${base}/paneflow-v${version}-${platform.arch}.AppImage`,
+      format: `AppImage (${platform.arch})`,
+      icon: LinuxIcon,
+    };
+  }
+  if (platform.os === "macos") {
+    return {
+      available: false,
+      reason: "macOS signé + notarisé arrive très prochainement.",
+      icon: AppleIcon,
+    };
+  }
+  if (platform.os === "windows") {
+    return {
+      available: false,
+      reason: "Windows MSI signé arrive très prochainement.",
+      icon: WindowsIcon,
+    };
+  }
+  return {
+    available: false,
+    reason: "OS non détecté — choisis un format dans la liste ci-dessous.",
+    icon: Package,
+  };
+}
+
+function PrimaryDownloadCard({ version }: { version: string }) {
+  const platform = useDetectedPlatform();
+
+  // Server-render a neutral placeholder that matches the first client
+  // paint so hydration doesn't flash. Same container dimensions as the
+  // ready state.
+  if (!platform) {
+    return (
+      <div className="rounded-2xl border border-surface-border bg-surface/40 p-6 sm:p-8 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6">
+        <div className="w-12 h-12 rounded-xl bg-bg-elevated" />
+        <div className="flex-1">
+          <div className="h-5 w-48 rounded bg-bg-elevated mb-2" />
+          <div className="h-4 w-32 rounded bg-bg-elevated" />
+        </div>
+      </div>
+    );
+  }
+
+  const pick = primaryDownload(version, platform);
+  const Icon = pick.icon;
+
+  return (
+    <div className="rounded-2xl border border-surface-border bg-surface/40 p-6 sm:p-8 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6">
+      <div className="w-12 h-12 rounded-xl bg-bg-elevated flex items-center justify-center shrink-0">
+        <Icon className="w-6 h-6 text-text" />
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <div className="text-sm text-text-subtle font-mono uppercase tracking-wider">
+          Téléchargement recommandé
+        </div>
+        <div className="text-lg sm:text-xl font-medium mt-0.5">
+          {pick.available ? `PaneFlow ${version} — ${pick.format}` : pick.reason}
+        </div>
+        {!pick.available && platform.os !== "unknown" && (
+          <div className="text-sm text-text-muted mt-1">
+            En attendant, utilise Linux ou choisis un format dans la liste ci-dessous.
+          </div>
+        )}
+      </div>
+
+      {pick.available ? (
+        <a
+          href={pick.href}
+          className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg bg-accent text-bg font-medium hover:bg-accent-warm transition-colors shrink-0"
+        >
+          <Download className="w-4 h-4" />
+          Télécharger
+        </a>
+      ) : null}
+    </div>
   );
 }
 
@@ -82,12 +298,13 @@ function VersionRow({
               Icon={AppleIcon}
               label="macOS"
               items={[]}
-              placeholder="Bientôt disponible"
+              placeholder="Arrive très prochainement"
             />
             <PlatformColumn
               Icon={WindowsIcon}
               label="Windows"
-              items={windowsItems(entry.version)}
+              items={[]}
+              placeholder="Arrive très prochainement"
             />
             <PlatformColumn
               Icon={LinuxIcon}
@@ -127,7 +344,7 @@ function PlatformColumn({
   items,
   placeholder,
 }: {
-  Icon: (props: { className?: string }) => React.ReactElement;
+  Icon: (props: { className?: string }) => ReactElement;
   label: string;
   items: DownloadItem[];
   placeholder?: string;
@@ -231,12 +448,59 @@ function DownloadRow({ item }: { item: DownloadItem }) {
   );
 }
 
-// US-020. Two rows: (1) direct MSI link, (2) `winget install` copy-command.
-// The MSI filename matches US-016's Stage step output
-// (paneflow-<ver>-x86_64-pc-windows-msvc.msi — the `v` prefix is in the
-// release tag URL segment, NOT the filename, mirroring macOS conventions
-// and unlike the Linux `paneflow-v<ver>-...` naming).
-function windowsItems(version: string): DownloadItem[] {
+function linuxItems(version: string): DownloadItem[] {
+  const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
+  const asset = (name: string) => `${base}/${name}`;
+  return [
+    {
+      label: "AppImage (x64)",
+      href: asset(`paneflow-v${version}-x86_64.AppImage`),
+    },
+    {
+      label: "AppImage (ARM64)",
+      href: asset(`paneflow-v${version}-aarch64.AppImage`),
+    },
+    {
+      label: ".deb (x64)",
+      href: asset(`paneflow-v${version}-x86_64.deb`),
+    },
+    {
+      label: ".deb (ARM64)",
+      href: asset(`paneflow-v${version}-aarch64.deb`),
+    },
+    {
+      label: ".rpm (x64)",
+      href: asset(`paneflow-v${version}-x86_64.rpm`),
+    },
+    {
+      label: ".rpm (ARM64)",
+      href: asset(`paneflow-v${version}-aarch64.rpm`),
+    },
+    {
+      label: "tar.gz (x64)",
+      href: asset(`paneflow-v${version}-x86_64.tar.gz`),
+    },
+    {
+      label: "tar.gz (ARM64)",
+      href: asset(`paneflow-v${version}-aarch64.tar.gz`),
+    },
+  ];
+}
+
+// Unused on the v0.2.1 download page (Windows artifacts arrive in
+// v0.3.0). Kept as a reference for the future Windows release cut — the
+// `windowsItems(entry.version)` call site inside `VersionRow` is the
+// hook-point to re-enable; also drop the `items={[]}` on the Windows
+// PlatformColumn there. Filename convention mirrors cargo-wix output
+// from release.yml's US-016 stage step:
+// `paneflow-<ver>-x86_64-pc-windows-msvc.msi` — the `v` prefix lives in
+// the tag URL segment, not the filename.
+//
+// `Terminal` import is used by this function's winget row; if the
+// function stays dead-code past v0.3.0's release cut, delete it + the
+// Terminal import together.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function _windowsItems(version: string): DownloadItem[] {
   const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
   return [
     {
@@ -248,45 +512,6 @@ function windowsItems(version: string): DownloadItem[] {
       label: "winget install",
       copyText: "winget install ArthurDev44.PaneFlow",
       icon: Terminal,
-    },
-  ];
-}
-
-function linuxItems(version: string): DownloadItem[] {
-  const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
-  const asset = (name: string) => `${base}/${name}`;
-  return [
-    {
-      label: "Linux .deb (x64)",
-      href: asset(`paneflow-v${version}-x86_64.deb`),
-    },
-    {
-      label: "Linux .deb (ARM64)",
-      href: asset(`paneflow-v${version}-aarch64.deb`),
-    },
-    {
-      label: "Linux RPM (x64)",
-      href: asset(`paneflow-v${version}-x86_64.rpm`),
-    },
-    {
-      label: "Linux RPM (ARM64)",
-      href: asset(`paneflow-v${version}-aarch64.rpm`),
-    },
-    {
-      label: "Linux AppImage (x64)",
-      href: asset(`paneflow-v${version}-x86_64.AppImage`),
-    },
-    {
-      label: "Linux AppImage (ARM64)",
-      href: asset(`paneflow-v${version}-aarch64.AppImage`),
-    },
-    {
-      label: "Linux tar.gz (x64)",
-      href: asset(`paneflow-v${version}-x86_64.tar.gz`),
-    },
-    {
-      label: "Linux tar.gz (ARM64)",
-      href: asset(`paneflow-v${version}-aarch64.tar.gz`),
     },
   ];
 }
