@@ -503,12 +503,19 @@ impl PaneFlowApp {
                                 .hover(|s| s.text_color(rgb(0xa0e8ff)))
                                 // US-011 AC4/5/6 + AC7: delegate to the
                                 // `open` crate which already dispatches
-                                // per-OS (xdg-open on Linux, `open` on
-                                // macOS, `cmd /C start ""` on Windows
-                                // — byte-identical to the PRD-mandated
-                                // commands). On failure show a toast
-                                // instead of the previous silent
-                                // `let _ = ...` swallow.
+                                // per-OS — `xdg-open` subprocess on
+                                // Linux, `open` subprocess on macOS,
+                                // and `ShellExecuteW` (Win32 API call,
+                                // NOT a `cmd /C start ""` subprocess)
+                                // on Windows. For `https://` URLs the
+                                // Windows path is functionally
+                                // equivalent to `cmd /C start`, but
+                                // the mechanism is distinct —
+                                // clarified here because the prior
+                                // "byte-identical" phrasing misled a
+                                // v0.2.0 audit (US-007). On failure
+                                // show a toast instead of the previous
+                                // silent `let _ = ...` swallow.
                                 .on_click(cx.listener(
                                     move |this, _: &ClickEvent, _w, cx| {
                                         if let Err(err) = open::that(&url) {
