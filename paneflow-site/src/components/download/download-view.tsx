@@ -203,7 +203,7 @@ function primaryDownload(
   }
   return {
     available: false,
-    reason: "OS non détecté — choisis un format dans la liste ci-dessous.",
+    reason: "OS non détecté. Choisis un format dans la liste ci-dessous.",
     icon: Package,
   };
 }
@@ -240,7 +240,7 @@ function PrimaryDownloadCard({ version }: { version: string }) {
           Téléchargement recommandé
         </div>
         <div className="text-lg sm:text-xl font-medium mt-0.5">
-          {pick.available ? `PaneFlow ${version} — ${pick.format}` : pick.reason}
+          {pick.available ? `PaneFlow ${version}, ${pick.format}` : pick.reason}
         </div>
         {!pick.available && platform.os !== "unknown" && (
           <div className="text-sm text-text-muted mt-1">
@@ -357,7 +357,7 @@ function PlatformColumn({
       </div>
       {items.length === 0 ? (
         <p className="px-2 py-3 text-sm text-text-subtle">
-          {placeholder ?? "—"}
+          {placeholder ?? "-"}
         </p>
       ) : (
         <ul>

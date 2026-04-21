@@ -14,9 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "PaneFlow — GPU-accelerated terminal multiplexer",
+  title: "PaneFlow: GPU-accelerated terminal multiplexer",
   description:
-    "A terminal multiplexer built in pure Rust with Zed's GPUI framework. Split, organize, and control your terminal — GPU-accelerated.",
+    "A terminal multiplexer built in pure Rust with Zed's GPUI framework. Split, organize, and control your terminal. GPU-accelerated.",
   keywords: [
     "terminal",
     "multiplexer",
@@ -28,7 +28,7 @@ export const metadata: Metadata = {
     "pane",
   ],
   openGraph: {
-    title: "PaneFlow — GPU-accelerated terminal multiplexer",
+    title: "PaneFlow: GPU-accelerated terminal multiplexer",
     description:
       "Split, organize, and control your terminal. Built in pure Rust with Zed's rendering engine.",
     type: "website",

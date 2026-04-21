@@ -31,7 +31,7 @@ const sections: FeatureSection[] = [
     badge: "Layouts",
     title: "Splits that just work",
     description:
-      "A binary tree layout engine gives you arbitrary nesting. Split horizontal, vertical, zoom to fullscreen, or pick a preset \u2014 the layout adapts to your workflow, not the other way around.",
+      "A binary tree layout engine gives you arbitrary nesting. Split horizontal, vertical, zoom to fullscreen, or pick a preset. The layout adapts to your workflow, not the other way around.",
     details: [
       { icon: PanelTopDashed, label: "4 preset layouts" },
       { icon: ArrowUpDown, label: "Drag-to-resize dividers" },
@@ -43,7 +43,7 @@ const sections: FeatureSection[] = [
     badge: "Context-aware",
     title: "Dev server detection",
     description:
-      "PaneFlow detects running HTTP servers in each workspace automatically. Frontend and backend ports are labeled and displayed in the sidebar \u2014 no configuration, no guessing which port is which.",
+      "PaneFlow detects running HTTP servers in each workspace automatically. Frontend and backend ports are labeled and displayed in the sidebar. No configuration, no guessing which port is which.",
     details: [
       { icon: Search, label: "Auto-detect HTTP ports" },
       { icon: Terminal, label: "Frontend / backend labels" },

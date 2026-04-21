@@ -52,7 +52,7 @@ export function Hero() {
           transition={{ duration: 0.6, delay: 0.35 }}
         >
           GPU-accelerated terminal multiplexer. Split, organize, and
-          control&nbsp;&mdash; powered by Zed&apos;s rendering engine.
+          control. Powered by Zed&apos;s rendering engine.
         </motion.p>
 
         {/* CTAs */}
@@ -97,7 +97,7 @@ export function Hero() {
           <div className="relative rounded-xl border border-surface-border overflow-hidden shadow-2xl shadow-black/50">
             <Image
               src="/images/hero.png"
-              alt="PaneFlow terminal multiplexer — split panes, workspaces, and GPU-accelerated rendering"
+              alt="PaneFlow terminal multiplexer: split panes, workspaces, and GPU-accelerated rendering"
               width={1920}
               height={1080}
               priority
