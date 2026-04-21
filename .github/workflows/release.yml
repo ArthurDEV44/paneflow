@@ -440,7 +440,15 @@ jobs:
           # fingerprint's last 8 hex chars lowercased are what rpm uses
           # for the gpg-pubkey-<keyid>-<creation> package name.
           KEY_SHORT=$(echo "$GPG_KEY_ID" | tail -c9 | tr 'A-F' 'a-f')
-          if ! rpm --dbpath "$RPM_DB" -qa "gpg-pubkey-${KEY_SHORT}*" | grep -q "gpg-pubkey-${KEY_SHORT}"; then
+          # rpm -qa with a pattern matches the NAME column only. gpg-pubkey
+          # packages all share the name "gpg-pubkey" — the key-id lives in
+          # the Version-Release ("gpg-pubkey-<keyid>-<creation>"). So the
+          # pattern `"gpg-pubkey-${KEY_SHORT}*"` matches NOTHING even when
+          # the key is present (v0.2.1 retry #2 surface: keyring dump
+          # confirmed "gpg-pubkey-183f2711-69e67caa" was imported, but the
+          # pattern-match check failed). Grep the full `rpm -qa 'gpg-pubkey*'`
+          # listing for the short key-id substring instead.
+          if ! rpm --dbpath "$RPM_DB" -qa 'gpg-pubkey*' | grep -qi "${KEY_SHORT}"; then
             echo "::error::Public key ${KEY_SHORT} not imported into rpm DB at ${RPM_DB}. Dumping keyring for diagnostics:"
             rpm --dbpath "$RPM_DB" -qa 'gpg-pubkey*' >&2 || true
             exit 1
