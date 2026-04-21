@@ -412,24 +412,40 @@ jobs:
           # OK"; dpkg-sig keeps GOODSIG stable but why couple to strings
           # when the exit code is canonical?).
           #
-          # Import the public half of our own key into the RPM DB first
-          # — `rpm --checksig` returns NOKEY (non-zero) if the key is
-          # only in GPG's keyring, not in rpm's. `rpm --import` writes
-          # to the system keyring at /var/lib/rpm, so sudo is required.
-          # GitHub's ubuntu-22.04 runner grants passwordless sudo to the
-          # `runner` user. Piping via `gpg --armor --export` keeps the
-          # ASCII-armored key in memory — no filesystem intermediate.
-          # `sudo rpm --import /dev/stdin` fails on ubuntu-22.04 rpm 4.17.0
-          # with "/dev/stdin: import read failed(0)" — sudo re-opens the
-          # subprocess with a fresh stdin that the rpm file-reader can't
-          # rewind. Write the pubkey to a tempfile under /tmp (tmpfs on
-          # the runner, safe) and import from there. The file is cleaned
-          # up by the parent trap below.
+          # Import the public half of our own key into an RPM DB so
+          # `rpm --checksig` can verify. Use a USER-SCOPED DB via
+          # `--dbpath` instead of the system DB at `/var/lib/rpm`:
+          #
+          # 1. No sudo needed — avoids the `sudo rpm --import /dev/stdin`
+          #    subprocess-stdin-reopen bug (rpm#3740) AND avoids any
+          #    silent-failure on Ubuntu's `rpm` package, which ships
+          #    without an initialized `/var/lib/rpm/Packages` db (v0.2.1
+          #    retry #1 surface: rpmsign signed OK, dpkg-sig verified OK,
+          #    but `rpm --checksig` returned NOKEY for key ID 183f2711
+          #    despite `sudo rpm --import` running to silent-success).
+          # 2. Fully isolated — cleaned up by the trap at EXIT along with
+          #    PASS_FILE and PUBKEY_FILE. No state leaks into the runner.
+          # 3. Cross-distro portable — the same `--dbpath "$RPM_DB"`
+          #    arguments work on Fedora / RHEL / openSUSE runners too if
+          #    we ever add them to the matrix.
           PUBKEY_FILE=$(mktemp --suffix=.asc)
           chmod 600 "$PUBKEY_FILE"
-          trap 'rm -f "$PASS_FILE" "$HOME/.rpmmacros" "$PUBKEY_FILE"' EXIT
+          RPM_DB=$(mktemp -d)
+          trap 'rm -f "$PASS_FILE" "$HOME/.rpmmacros" "$PUBKEY_FILE"; rm -rf "$RPM_DB"' EXIT
           gpg --armor --export "$GPG_KEY_ID" > "$PUBKEY_FILE"
-          sudo rpm --import "$PUBKEY_FILE"
+          rpm --dbpath "$RPM_DB" --initdb
+          rpm --dbpath "$RPM_DB" --import "$PUBKEY_FILE"
+          # Sanity-check the import actually landed — failure mode on
+          # rpm 4.17 is silent (exit 0 + empty keyring). The signing key
+          # fingerprint's last 8 hex chars lowercased are what rpm uses
+          # for the gpg-pubkey-<keyid>-<creation> package name.
+          KEY_SHORT=$(echo "$GPG_KEY_ID" | tail -c9 | tr 'A-F' 'a-f')
+          if ! rpm --dbpath "$RPM_DB" -qa "gpg-pubkey-${KEY_SHORT}*" | grep -q "gpg-pubkey-${KEY_SHORT}"; then
+            echo "::error::Public key ${KEY_SHORT} not imported into rpm DB at ${RPM_DB}. Dumping keyring for diagnostics:"
+            rpm --dbpath "$RPM_DB" -qa 'gpg-pubkey*' >&2 || true
+            exit 1
+          fi
+          echo "→ Imported gpg-pubkey-${KEY_SHORT} into isolated rpm DB at ${RPM_DB}"
           # `${PIPESTATUS[0]}` reads the exit code of the FIRST command
           # in a bash pipeline, independent of `tee`'s exit code. Using
           # `set -o pipefail` wouldn't work here because `tee` always
@@ -452,8 +468,8 @@ jobs:
           # status, independent of `tee`'s always-0 exit.
           for rpm_path in target/"${TARGET}"/generate-rpm/paneflow-*.rpm; do
             [ -f "$rpm_path" ] || continue
-            echo "→ rpm --checksig -v $rpm_path"
-            rpm --checksig -v "$rpm_path" | tee /tmp/rpm-checksig-verify.log
+            echo "→ rpm --dbpath $RPM_DB --checksig -v $rpm_path"
+            rpm --dbpath "$RPM_DB" --checksig -v "$rpm_path" | tee /tmp/rpm-checksig-verify.log
             if [ "${PIPESTATUS[0]}" -ne 0 ]; then
               echo "::error::rpm --checksig failed on $rpm_path (NOKEY or BAD signature)"
               exit 1
