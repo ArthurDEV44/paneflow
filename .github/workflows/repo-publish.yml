@@ -253,6 +253,14 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
           set -euo pipefail
+          # Recreate Packages/ AFTER the rclone sync (upstream task).
+          # `rclone sync` has mirror semantics: on a first publish the
+          # R2 rpm/ prefix is empty, so the earlier `mkdir -p ./staging/
+          # rpm/Packages` gets wiped when sync aligns the local dir
+          # with the empty remote. Recreating here makes the step
+          # idempotent for both first-publish and re-publish cases.
+          mkdir -p ./staging/rpm/Packages
+
           # Copy the new RPMs into the pool dir. `cp -n` (no-clobber)
           # would let us preserve existing files, but reprepro-style
           # idempotency for RPM means we just overwrite — the RPM
