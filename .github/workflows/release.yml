@@ -47,6 +47,14 @@ jobs:
           - target: aarch64-apple-darwin
             arch: aarch64
             runs-on: macos-14
+            # TEMPORARILY best-effort until Apple Dev secrets
+            # (APPLE_DEVELOPER_CERT_P12, APPLE_DEVELOPER_CERT_PASSWORD,
+            # APPLE_TEAM_ID) are provisioned on the repo. v0.2.0 is a
+            # Linux-only release; the aarch64-apple-darwin leg currently
+            # fails at the "Sign macOS .app bundle" step with missing
+            # secrets. Revert this flag back to hard-required on the
+            # commit that lands the first signed macOS release.
+            continue-on-error: true
           # US-019 AC5: best-effort Intel Mac. `continue-on-error: true`
           # keeps a flaky Intel leg (rarer hardware, slower hosted
           # runners, x86_64 GPUI code paths see less daily use) from
