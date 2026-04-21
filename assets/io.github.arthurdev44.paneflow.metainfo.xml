@@ -7,9 +7,10 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
 
-  <developer id="io.github.arthurdev44">
-    <name>Arthur Jean</name>
-  </developer>
+  <!-- Legacy pre-AppStream-1.0 form. The newer <developer id=..> block
+       is rejected by the appstream package on ubuntu-22.04 (release.yml
+       build base). -->
+  <developer_name>Arthur Jean</developer_name>
 
   <description>
     <p>
@@ -33,7 +34,10 @@
 
   <url type="homepage">https://github.com/ArthurDEV44/paneflow</url>
   <url type="bugtracker">https://github.com/ArthurDEV44/paneflow/issues</url>
-  <url type="vcs-browser">https://github.com/ArthurDEV44/paneflow</url>
+  <!-- vcs-browser URL type is flagged url-invalid-type by the
+       appstream package on ubuntu-22.04; homepage already points at
+       the repo so no information is lost. -->
+
 
   <categories>
     <category>System</category>
