@@ -232,9 +232,18 @@ jobs:
             [ -f "$deb" ] || continue
             version=$(dpkg-deb --field "$deb" Version)
             arch=$(dpkg-deb --field "$deb" Architecture)
+            # `reprepro list` output format is
+            #   stable|main|<arch>: paneflow <version>
+            # The previous awk check only matched the version on $NF and
+            # ignored $arch entirely — so after the first `.deb` in the
+            # loop was included, every subsequent arch was skipped because
+            # reprepro already had paneflow 0.2.0-1 (for some arch) in the
+            # db, and the awk predicate `$NF == v` matched regardless of
+            # which arch it was. The symptom in v0.2.0 was a repo with
+            # arm64 packages only and an empty `binary-amd64/Packages`
+            # file. Match on the full `stable|main|<arch>` prefix instead.
             existing=$(reprepro -b ./staging/apt list stable paneflow | \
-              awk -v v="$version" -v a="$arch" \
-                '$0 ~ ":" && $NF == v { print }' || true)
+              grep -E "^stable\\|main\\|${arch}: paneflow ${version}$" || true)
             if [ -n "$existing" ]; then
               echo "→ paneflow $version ($arch) already in stable — skipping"
               continue
