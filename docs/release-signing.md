@@ -124,6 +124,51 @@ The `repo-publish.yml` workflow (US-015) additionally needs
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`, `R2_BUCKET`.
 See `docs/pkg-repo-runbook.md` for those.
 
+### Setting GPG secrets on GitHub (US-005)
+
+The three secrets above are best populated via the `gh` CLI rather
+than pasted through the GitHub UI (the UI silently line-wraps long
+PEM blocks at field boundaries). But `gh secret set` has ONE
+non-obvious quirk for multi-line values — **always feed them via a
+stdin-redirect from a file, never via a pipe from `gpg`**:
+
+```bash
+# ❌ DO NOT — the pipe form has been observed to truncate the exported
+# key at a buffer boundary, storing a malformed blob. A 4096-bit RSA
+# ASCII-armored private key block is long enough to hit this.
+gpg --armor --export-secret-keys "$FPR" | gh secret set GPG_PRIVATE_KEY
+
+# ✅ DO — export to a file, set permissions, upload via stdin-redirect,
+# then securely erase the local copy. `gh secret set < file` reads the
+# full file contents in one go:
+gpg --armor --export-secret-keys "$FPR" > /tmp/paneflow-release-private.asc
+chmod 600 /tmp/paneflow-release-private.asc
+gh secret set GPG_PRIVATE_KEY -R <owner>/<repo> < /tmp/paneflow-release-private.asc
+shred -u /tmp/paneflow-release-private.asc
+```
+
+Substitute `<owner>/<repo>` for the repository slug (e.g.,
+`ArthurDEV44/paneflow`). If you run `gh secret set` from inside a
+checked-out clone, the `-R` flag is optional — `gh` auto-detects the
+repo from `.git` config.
+
+Single-line secrets (`GPG_KEY_ID`, `GPG_PASSPHRASE`) do NOT hit the
+truncation risk and can use the `--body` form:
+
+```bash
+gh secret set GPG_KEY_ID     -R <owner>/<repo> --body "$FPR"
+gh secret set GPG_PASSPHRASE -R <owner>/<repo> --body "$PASSPHRASE"
+```
+
+**Historical note (v0.2.0 retry #5, 2026-04-21):** using the pipe form
+for `GPG_PRIVATE_KEY` during that release cycle stored a truncated blob,
+and the next CI run hard-failed at the GPG-import step with:
+
+> GPG_PRIVATE_KEY failed to import. Secret may be truncated or missing the ASCII-armor header.
+
+If that error surfaces on a future rotation, the fix is always the same
+four lines above — re-export to a file, `chmod 600`, `gh secret set ... < /tmp/file`, `shred`. This recipe is robust regardless of the `gh` CLI version, the terminal used, or whether the original pipe-truncation root cause still exists in the current `gh` release.
+
 ---
 
 ## 3. Committing the public key
@@ -276,8 +321,11 @@ If the private key is known-compromised:
 The workflow's fail-fast check. One of:
 
 - `GPG_PRIVATE_KEY` secret is unset or empty. Populate per step 2.
-- The secret value is truncated (pasting got cut off — PEM blocks are
-  long). Re-copy from the password manager.
+- The secret value is truncated — often because a `gpg ... | gh secret
+  set` pipe cut the key at a buffer boundary. Re-upload via the
+  stdin-redirect recipe in §2 "Setting GPG secrets on GitHub". The
+  literal upstream error is:
+  `GPG_PRIVATE_KEY failed to import. Secret may be truncated or missing the ASCII-armor header.`
 - `GPG_KEY_ID` doesn't match the key inside `GPG_PRIVATE_KEY`. The
   workflow's imported-fingerprint check catches this. Re-copy both
   secrets from the same source.
