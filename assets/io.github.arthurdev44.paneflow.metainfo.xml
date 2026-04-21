@@ -61,6 +61,20 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.1" date="2026-04-21">
+      <description>
+        <p>Linux release hardening patch — closes 10 debt items from v0.2.0.</p>
+        <ul>
+          <li>Per-package RPM signing re-enabled — `rpm --checksig` now returns OK on every shipped .rpm</li>
+          <li>Release → repo-publish auto-chain via workflow_run (no more manual dispatch after each tag)</li>
+          <li>Post-publish Ubuntu + Fedora end-to-end smoke tests in CI</li>
+          <li>reprepro arch-idempotency CI regression guard</li>
+          <li>cargo-deny advisory scanning on every PR (warn-only)</li>
+          <li>Windows Explorer reveal-in-file-manager argument concatenation fix</li>
+          <li>GitHub Actions upgraded to Node.js 24 runtime</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-04-21">
       <description>
         <p>Linux packaging migration release — complete Phase 1 + Phase 2.</p>
