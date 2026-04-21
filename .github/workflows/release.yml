@@ -956,6 +956,14 @@ jobs:
     needs: build
     runs-on: ubuntu-22.04
     container: ubuntu:22.04
+    # ubuntu:22.04's default /bin/sh is dash, which does NOT support
+    # `set -o pipefail`. v0.2.1 retry #3 failed at step 1 with
+    # `/tmp/XXX.sh: 1: set: Illegal option -o pipefail` before reaching
+    # any PaneFlow logic. Pin bash at the job level so every step uses
+    # a POSIX-extension-supporting shell by default.
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Install baseline tools
         # `apt-get install` inside the container — not the host runner.
@@ -1034,6 +1042,13 @@ jobs:
     needs: build
     runs-on: ubuntu-22.04
     container: fedora:40
+    # fedora:40 ships bash as /bin/sh already, but pin it explicitly
+    # here too — keeps the smoke jobs uniform and survives a future
+    # base-image swap (e.g., fedora:41+ or a minimal variant) without
+    # silently regressing pipefail support.
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Download built .rpm
         uses: actions/download-artifact@v4
