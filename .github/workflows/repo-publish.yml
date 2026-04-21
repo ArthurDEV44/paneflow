@@ -1,9 +1,15 @@
 name: Publish APT + RPM repositories
 
-# Runs after a GitHub release is published (human-gated — the release.yml
-# workflow only uploads artifacts; a maintainer then clicks "Publish release"
-# on the draft, which fires this job). Can also be dispatched manually to
-# re-publish a previous release (e.g., after fixing a bucket issue).
+# Runs automatically after release.yml completes (US-003). The chain uses
+# GitHub Actions' `workflow_run` trigger rather than `release: types:
+# [published]` because a release created via GITHUB_TOKEN in the same
+# workflow run does NOT fire the release.published event (GitHub
+# anti-loop protection) — v0.2.0 required a manual `gh workflow run`
+# after every tag push. `workflow_run` bypasses the anti-loop because
+# it keys off the parent workflow's completion, not the release event.
+# Can also be dispatched manually via the UI or
+# `gh workflow run repo-publish.yml -f tag=vX.Y.Z` to re-publish a
+# previous release (e.g., after fixing a bucket issue).
 #
 # Output: pkg.paneflow.dev/apt + pkg.paneflow.dev/rpm, both GPG-signed.
 # Clients point their apt/dnf sources at those URLs and `apt upgrade` /
@@ -17,8 +23,16 @@ name: Publish APT + RPM repositories
 # ---------------------------------------------------------------------------
 
 on:
-  release:
-    types: [published]
+  # US-003 auto-chain. `workflows: ["Release"]` MUST match the parent
+  # workflow's `name:` field VERBATIM — not the filename. GitHub pairs
+  # `workflow_run` events by the declared name, so a typo here produces
+  # a silent no-fire (the parent succeeds, this workflow never starts,
+  # and there is no error surface). Cross-ref: release.yml line 1.
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  # Manual fallback for re-publishing a previous tag after fixing a
+  # bucket issue, or for operator-driven re-publishes from the UI.
   workflow_dispatch:
     inputs:
       tag:
@@ -39,12 +53,38 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-22.04
+    # US-003 chain guard. Three cases:
+    #   (a) workflow_dispatch: operator-driven — always allow. No filter
+    #       on prerelease markers, the maintainer chose this tag
+    #       intentionally (e.g., staging validation of an -rc.N tag).
+    #   (b) workflow_run (chained from release.yml): only fire if the
+    #       parent run SUCCEEDED (prevents partial-failure artifacts
+    #       from reaching the repo) AND was originally triggered by a
+    #       tag push (filters out `gh run rerun` of release.yml — a
+    #       rerun only re-uploads existing assets, there's nothing new
+    #       for repo-publish to index).
+    #   (c) workflow_run with a prerelease tag (rc/alpha/beta): SKIP.
+    #       Preserves v0.2.0 behavior that only stable tags hit the
+    #       stable apt/rpm repo. An operator who wants to push a
+    #       prerelease can still do so via `workflow_dispatch`.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push'
+        && !contains(github.event.workflow_run.head_branch, 'rc')
+        && !contains(github.event.workflow_run.head_branch, 'alpha')
+        && !contains(github.event.workflow_run.head_branch, 'beta'))
     env:
-      # Release tag we're publishing — sourced from either the release
-      # event or the manual dispatch input. Plumbed through `env:` so
-      # `${{ github.event.release.tag_name }}` never reaches bash as an
-      # expression-substituted string (injection-hardening).
-      TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+      # Release tag we're publishing — sourced from either the parent
+      # workflow_run event (tag-push-triggered release.yml: head_branch
+      # holds the tag name for tag-push parents) or the manual dispatch
+      # input. Plumbed through `env:` so the expression never reaches
+      # bash as an expression-substituted string (injection-hardening).
+      # The first step below sanity-checks the resolved TAG to catch the
+      # community-reported risk that `workflow_run.head_branch` might
+      # not populate as expected on some GitHub Actions edge cases
+      # (PRD v0.2.1 US-003 Open Question / Risk #10).
+      TAG: ${{ github.event.workflow_run.head_branch || github.event.inputs.tag }}
       # rclone — env-var-only config. `NO_CHECK_BUCKET=true` is mandatory
       # for Cloudflare R2 (HEAD bucket returns 403 even with correct
       # credentials, per Cloudflare's rclone guide).
@@ -57,7 +97,38 @@ jobs:
       RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Sanity-check resolved TAG (US-003 defensive)
+        # First step, before checkout. Logs the exact trigger context so
+        # the v0.2.2+ first-real-fire leaves a searchable breadcrumb if
+        # `workflow_run.head_branch` ever populates differently than
+        # GitHub's docs suggest. Fails fast on an empty / non-semver TAG
+        # so a misconfiguration aborts loudly here instead of silently
+        # publishing under the wrong pool path downstream.
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WORKFLOW_RUN_EVENT: ${{ github.event.workflow_run.event }}
+          WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          echo "Trigger: event=${GITHUB_EVENT_NAME}"
+          echo "  workflow_run.head_branch='${WORKFLOW_RUN_HEAD_BRANCH:-<unset>}'"
+          echo "  workflow_run.event='${WORKFLOW_RUN_EVENT:-<unset>}'"
+          echo "  workflow_run.conclusion='${WORKFLOW_RUN_CONCLUSION:-<unset>}'"
+          echo "  resolved TAG='${TAG:-<unset>}'"
+          if [ -z "${TAG:-}" ]; then
+            echo "::error::TAG is empty. Probable cause: workflow_run.head_branch did not populate (see release-runbook.md troubleshooting)."
+            exit 1
+          fi
+          # Semver with optional -qualifier (alpha, beta, rc.N, etc).
+          # Anchored `^` / `$` so a malformed-but-longer string like
+          # "v1.2.3 && rm -rf /" does not sneak through.
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "::error::TAG='${TAG}' does not look like a semver tag (expected vX.Y.Z[-qualifier])."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v5
 
       - name: Install repo-publishing tools
         run: |
@@ -491,3 +562,230 @@ jobs:
           # context for the maintainer reading the failed job.
           echo "::error::Cloudflare API unreachable — metadata may be stale up to the edge TTL (failed after ${max_attempts} retries)" >&2
           exit 1
+
+      # ─── US-002 reprepro arch-idempotency regression guard ──────────────
+      # Commit 83a3333 fixed an awk predicate bug that caused
+      # `binary-amd64/Packages` to stay empty after the arm64 deb was
+      # included first in the reprepro index. This step is a post-publish
+      # assertion that both arch `Packages` files are non-empty in the
+      # freshly-signed InRelease, so a silent re-introduction of the bug
+      # (or any future reprepro-wrapper regression) fails the release job
+      # instead of reaching users.
+      #
+      # Placement rationale: after BOTH rclone-upload and Cloudflare
+      # purge. Fetching before purge would hit the edge-cached InRelease
+      # from the previous release (up to 4 h TTL) — defeating the check.
+      # Purge is instant in P95 < 60 s; the retry loop below absorbs the
+      # propagation window.
+      #
+      # Parser: `awk` section-state machine. The clearsigned InRelease
+      # has four hash sections (`MD5Sum`/`SHA1`/`SHA256`/`SHA512`); we
+      # only parse the MD5Sum block to keep the match unambiguous, and
+      # compare against the universal empty-file MD5
+      # `d41d8cd98f00b204e9800998ecf8427e` AND size==0 (both should
+      # match for an empty file, but we check both as belt-and-braces
+      # against an awk edit that breaks one path).
+      - name: Verify InRelease binary-<arch>/Packages are non-empty (US-002)
+        run: |
+          set -euo pipefail
+
+          INRELEASE_URL="https://pkg.paneflow.dev/apt/dists/stable/InRelease"
+          INRELEASE_FILE="$(mktemp)"
+          trap 'rm -f "$INRELEASE_FILE"' EXIT
+
+          # --- Fetch with retry ----------------------------------------
+          # max_attempts=4 (1 initial + 3 retries). Sleep BEFORE each
+          # retry with backoff 2^(n-1): 1s, 2s, 4s — matches AC6.
+          max_attempts=4
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            if curl -sSfL --max-time 30 -o "$INRELEASE_FILE" "$INRELEASE_URL"; then
+              echo "✓ InRelease fetched (attempt ${attempt}/${max_attempts})"
+              break
+            fi
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              echo "::error::InRelease fetch failed after ${max_attempts} attempts against ${INRELEASE_URL}"
+              exit 1
+            fi
+            backoff=$(( 1 << (attempt - 1) ))
+            echo "→ InRelease fetch failed (attempt ${attempt}/${max_attempts}) — sleeping ${backoff}s and retrying…" >&2
+            sleep "$backoff"
+            attempt=$(( attempt + 1 ))
+          done
+
+          # --- Parse MD5Sum entries for both arches --------------------
+          # awk toggles `section` on each hash-section header, then emits
+          # `<md5> <size>` for the first exact match of
+          # `main/binary-<arch>/Packages` inside the MD5Sum block. `$3 ==`
+          # (exact) avoids picking up the `.gz` variants.
+          parse_entry() {
+            local arch="$1"
+            awk -v arch="$arch" '
+              /^MD5Sum:/  { section = "MD5Sum"; next }
+              /^SHA1:/    { section = "SHA1";   next }
+              /^SHA256:/  { section = "SHA256"; next }
+              /^SHA512:/  { section = "SHA512"; next }
+              section == "MD5Sum" && $3 == ("main/binary-" arch "/Packages") {
+                print $1, $2
+                exit
+              }
+            ' "$INRELEASE_FILE"
+          }
+
+          EMPTY_MD5="d41d8cd98f00b204e9800998ecf8427e"
+          fail=0
+
+          for arch in amd64 arm64; do
+            entry="$(parse_entry "$arch")"
+            if [ -z "$entry" ]; then
+              echo "::error::binary-${arch}/Packages entry missing from InRelease MD5Sum block"
+              fail=1
+              continue
+            fi
+            md5="${entry%% *}"
+            size="${entry##* }"
+            if [ "$size" = "0" ] || [ "$md5" = "$EMPTY_MD5" ]; then
+              echo "::error::binary-${arch}/Packages is empty — reprepro arch-idempotency regression (md5=${md5}, size=${size})"
+              fail=1
+              continue
+            fi
+            echo "✓ binary-${arch}/Packages non-empty (md5=${md5}, size=${size})"
+          done
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::reprepro InRelease arch-idempotency guard failed — see per-arch errors above"
+            exit 1
+          fi
+
+  # ─── US-004 Post-publish end-to-end smoke tests ─────────────────────────
+  # Two ephemeral container jobs per release that EXERCISE THE PUBLISHED
+  # REPO from a user's perspective — fetch GPG key from pkg.paneflow.dev,
+  # wire the sources/repo file, run `apt install` / `dnf install`, and
+  # assert the installed binary's version matches the tag we just
+  # published. These are strictly DIFFERENT from the pre-publish smoke
+  # jobs in release.yml (which install from workflow artifacts, not from
+  # the CDN) — US-004 catches repo-level regressions that artifact-based
+  # smoke cannot (the v0.2.0 reprepro arch-blind bug being the canonical
+  # example: per-arch Packages indexes were wrong ON R2, not in the
+  # built .deb itself).
+  #
+  # Container-runtime choice: GHA's `container:` directive, matching the
+  # existing release.yml smoke-test-ubuntu/smoke-test-fedora convention.
+  # PRD AC wording is "podman run" but no workflow in this repo uses
+  # podman or docker CLI directly — `container:` abstracts the runtime
+  # and keeps the pattern uniform across the workflow suite.
+  #
+  # `needs: publish` + `if: needs.publish.result == 'success'` gate these
+  # on a successful publish. A failed publish or a skipped one (e.g.,
+  # the workflow_run chain filtered out a prerelease) short-circuits
+  # these jobs cleanly.
+  #
+  # Version-assertion note: the expected version string is derived from
+  # $TAG at runtime — drop the leading `v` and any `-rc.N`/`-beta.N`
+  # qualifier so the assertion works for both stable and (operator-
+  # dispatched) prerelease publishes. Cargo.toml tracks only the base
+  # semver `X.Y.Z`; `paneflow --version` prints `paneflow X.Y.Z`.
+
+  smoke-post-publish-ubuntu:
+    name: Post-publish smoke — Ubuntu 24.04 (apt)
+    needs: publish
+    if: ${{ needs.publish.result == 'success' }}
+    runs-on: ubuntu-22.04
+    container: ubuntu:24.04
+    env:
+      # Resolved the same way as the publish job — `workflow_run.head_branch`
+      # carries the tag name for tag-push parent runs (US-003).
+      TAG: ${{ github.event.workflow_run.head_branch || github.event.inputs.tag }}
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install baseline tools + paneflow from published apt repo
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y --no-install-recommends ca-certificates curl gnupg
+          # `signed-by=<path>` is the post-`apt-key`-deprecation way to
+          # scope a keyring to one repo. Matches the canonical path the
+          # debian postinst writes to (packaging/debian/postinst:21:
+          # /usr/share/keyrings/paneflow-archive.gpg) AND the path the
+          # existing release.yml smoke-test-ubuntu asserts on
+          # (release.yml:963-964) — so after `apt install paneflow` runs,
+          # postinst's idempotent guard `[ ! -f "$KEYRING" ]` sees the
+          # file already in place and skips re-fetching, and
+          # sources.list stays coherent with the shipped artifact.
+          curl -fsSL --max-time 30 https://pkg.paneflow.dev/gpg \
+            | gpg --dearmor -o /usr/share/keyrings/paneflow-archive.gpg
+          chmod 644 /usr/share/keyrings/paneflow-archive.gpg
+          echo 'deb [signed-by=/usr/share/keyrings/paneflow-archive.gpg] https://pkg.paneflow.dev/apt stable main' \
+            > /etc/apt/sources.list.d/paneflow.list
+          apt-get update
+          apt-get install -y --no-install-recommends paneflow
+
+      - name: Assert paneflow --version matches TAG
+        run: |
+          set -euo pipefail
+          # Strip leading `v` and any `-qualifier` — Cargo.toml tracks
+          # only base semver so the binary prints `paneflow X.Y.Z`
+          # regardless of whether the git tag is v0.2.1 or v0.2.1-rc.1.
+          BARE="${TAG#v}"
+          BASE="${BARE%%-*}"
+          EXPECTED="paneflow ${BASE}"
+          got="$(paneflow --version)"
+          echo "→ got:      $got"
+          echo "→ expected: $EXPECTED"
+          # Summary lines use `\`` (escaped backtick) inside double quotes
+          # so markdown code-span rendering works in $GITHUB_STEP_SUMMARY
+          # and shellcheck doesn't flag single-quoted format strings.
+          if ! printf '%s\n' "$got" | grep -Fq "$EXPECTED"; then
+            echo "::error::paneflow --version='$got' does not contain '$EXPECTED'"
+            echo "- Ubuntu 24.04: ❌ (expected \`$EXPECTED\`, got \`$got\`)" \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "- Ubuntu 24.04: ✅ (installed \`$got\` from pkg.paneflow.dev/apt)" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  smoke-post-publish-fedora:
+    name: Post-publish smoke — Fedora 40 (dnf)
+    needs: publish
+    if: ${{ needs.publish.result == 'success' }}
+    runs-on: ubuntu-22.04
+    container: fedora:40
+    env:
+      TAG: ${{ github.event.workflow_run.head_branch || github.event.inputs.tag }}
+    steps:
+      - name: Set up paneflow.repo and install paneflow from published dnf repo
+        run: |
+          set -euo pipefail
+          # Mirror of the file produced by packaging/rpm/postinst.sh —
+          # `gpgcheck=1` (per-package, US-001) AND `repo_gpgcheck=1`
+          # (repomd.xml.asc) BOTH on, so this smoke doubles as the
+          # downstream validator for US-001's re-enabled rpmsign path.
+          # If rpmsign regresses, `dnf install` will NOKEY here.
+          cat > /etc/yum.repos.d/paneflow.repo <<'EOF'
+          [paneflow]
+          name=PaneFlow
+          baseurl=https://pkg.paneflow.dev/rpm
+          enabled=1
+          gpgcheck=1
+          repo_gpgcheck=1
+          gpgkey=https://pkg.paneflow.dev/gpg
+          EOF
+          dnf install -y paneflow
+
+      - name: Assert paneflow --version matches TAG
+        run: |
+          set -euo pipefail
+          BARE="${TAG#v}"
+          BASE="${BARE%%-*}"
+          EXPECTED="paneflow ${BASE}"
+          got="$(paneflow --version)"
+          echo "→ got:      $got"
+          echo "→ expected: $EXPECTED"
+          if ! printf '%s\n' "$got" | grep -Fq "$EXPECTED"; then
+            echo "::error::paneflow --version='$got' does not contain '$EXPECTED'"
+            echo "- Fedora 40: ❌ (expected \`$EXPECTED\`, got \`$got\`)" \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "- Fedora 40: ✅ (installed \`$got\` from pkg.paneflow.dev/rpm)" \
+            >> "$GITHUB_STEP_SUMMARY"
