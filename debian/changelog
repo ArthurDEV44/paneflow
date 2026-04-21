@@ -1,3 +1,31 @@
+paneflow (0.2.1-1) stable; urgency=medium
+
+  * fix(rpm): per-package RPM signing re-enabled. v0.2.0 shipped
+    with `rpmsign --addsign` disabled (ubuntu-22.04 rpm 4.17.0
+    GPG-agent-state bug). GPG agent is now pre-warmed after import
+    so every .rpm carries a valid signature; rpm --checksig returns
+    OK on every signature component.
+  * feat(release): repo-publish.yml auto-triggers after release.yml
+    via workflow_run chain. No more manual `gh workflow run` step
+    after every release tag push.
+  * feat(ci): post-publish end-to-end smoke tests exercise Ubuntu
+    24.04 (apt) and Fedora 40 (dnf) installs against the freshly
+    populated pkg.paneflow.dev repo, asserting the installed binary
+    reports the expected version.
+  * feat(ci): CI regression guard for reprepro arch idempotency
+    verifies both binary-amd64/Packages and binary-arm64/Packages
+    are non-empty on every publish.
+  * feat(ci): cargo-deny advisory scanning (warn-only) surfaces
+    RustSec vulnerabilities + stale yanked crates on every PR.
+  * fix(ui): Windows Explorer "/select,<path>" reveal-in-file-manager
+    passes the flag and target as a single concatenated argument,
+    matching Windows Explorer's argument-parsing contract.
+  * chore(ci): GitHub Actions bumped to Node.js 24 runtime (actions/
+    checkout@v5, dorny/paths-filter@v4) ahead of GitHub's 2026-06-02
+    forced migration.
+
+ -- Arthur Jean <arthur.jean@strivex.fr>  Tue, 21 Apr 2026 12:30:00 +0200
+
 paneflow (0.2.0-1) stable; urgency=medium
 
   * feat(packaging): multi-format Linux distribution —
