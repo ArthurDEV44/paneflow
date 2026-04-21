@@ -1,0 +1,64 @@
+# cargo-deny configuration — US-006 (prd-v0.2.1-release-hardening.md)
+#
+# Fail-forward posture for v0.2.1:
+#   * Licenses + sources + unmaintained + yanked — WARN only.
+#     Allows the CI step to SURFACE findings without blocking merges.
+#   * Advisory vulnerabilities — no warn-mode in cargo-deny 0.14+
+#     (upstream removed the downgrade path). An active RustSec CVE
+#     will fail the `security-audit` job. The JOB has
+#     `continue-on-error: true` so the red-X is visible but the CI
+#     pipeline does not block. Tighten to hard-block in v0.2.2 once
+#     the lockfile is audit-clean.
+#
+# Reference: https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# Treat unmaintained crates as a workspace-scoped warn (not a blanket
+# dep-tree warn). "workspace" scope: only direct workspace members'
+# own dependencies are flagged, not 10-hop transitive deps that we
+# cannot influence without bumping the root dep.
+unmaintained = "workspace"
+# Yanked crates: warn-only for now. A yanked transitive dep often
+# lingers in lockfiles until the parent publishes a bump; blocking
+# on yanked would create bandwidth-vs-noise pressure that isn't
+# warranted for a release-engineering PRD.
+yanked = "warn"
+# Fail if the local copy of the RustSec advisory DB is older than 30
+# days — guards against a stale CI runner silently missing recent
+# advisories. P30D is ISO 8601 duration syntax (30 days).
+maximum-db-staleness = "P30D"
+
+[licenses]
+# Permissive-license allow list. An unlisted license raises a warning
+# per the sources warn-posture below. Covers the full Rust ecosystem
+# mainstream + the specific ones present in our current Cargo.lock
+# (Unicode-3.0 for the Unicode crates, Zlib for miniz_oxide, BSD
+# variants for misc parsers).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[sources]
+# Warn (don't block) on unknown crate registries or git sources so a
+# new GPUI-side fork added to `[patch.crates-io]` surfaces in CI
+# review but doesn't gate the merge. Promote to "deny" when the
+# GPUI pin stabilizes and the fork list stops churning.
+unknown-registry = "warn"
+unknown-git      = "warn"
+# Pin the crates.io registry explicitly; anything else is "unknown".
+allow-registry   = ["https://github.com/rust-lang/crates.io-index"]
+
+[sources.allow-org]
+# Pre-declared GitHub orgs that host the known git deps transitively
+# pulled in by GPUI. Verified against the current Cargo.lock via
+#   grep -E '^source = "git\+' Cargo.lock | sed 's|.*github.com/\([^/]*\)/.*|\1|' | sort -u
+# which returns exactly these three orgs. When bumping the GPUI pin,
+# re-run that check and update the list if new orgs appear.
+github = ["zed-industries", "smol-rs", "proptest-rs"]

@@ -97,7 +97,7 @@ jobs:
           echo "tag=$tag"         | tee -a "$GITHUB_OUTPUT"
           echo "version=$version" | tee -a "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download signed MSI from the release
         # `gh release download --pattern` globs by filename; AC-3 of US-016
