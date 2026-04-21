@@ -4,7 +4,7 @@ import { Footer } from "@/components/footer";
 import { DownloadView } from "@/components/download/download-view";
 
 export const metadata: Metadata = {
-  title: "Télécharger PaneFlow — Linux, macOS, Windows",
+  title: "Télécharger PaneFlow: Linux, macOS, Windows",
   description:
     "Télécharge PaneFlow, le multiplexeur de terminal GPU‑accéléré écrit en Rust. Disponible pour Linux (.deb, .rpm, AppImage, .tar.gz). macOS et Windows bientôt.",
   openGraph: {
