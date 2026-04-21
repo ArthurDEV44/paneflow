@@ -1,14 +1,22 @@
 "use client";
 
 import Image from "next/image";
-import Link from "next/link";
 import { motion } from "framer-motion";
 import { Download } from "lucide-react";
 import { GitHubIcon } from "./icons";
+import { linuxAppImageUrl } from "../lib/release";
+import { useDetectedLinuxArch } from "../lib/use-detected-arch";
 
 export function Hero() {
+  // Client-side arch sniff. Defaults to x86_64 on SSR + first client
+  // paint; swaps to aarch64 post-mount if Client Hints reports ARM.
+  // Gives the "Download for Linux" CTA a direct file URL that matches
+  // the user's CPU without an interstitial OS-picker page.
+  const arch = useDetectedLinuxArch();
+
   return (
     <section className="relative overflow-hidden pt-36 sm:pt-44 pb-24 sm:pb-32">
+
       <div className="hero-glow" />
 
       <div className="relative z-10 max-w-4xl mx-auto px-6 text-center">
@@ -54,13 +62,22 @@ export function Hero() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.5 }}
         >
-          <Link
-            href="/download"
+          {/*
+            Direct AppImage download — NOT a navigation to /download.
+            The href resolves to a raw file on the GitHub Releases CDN;
+            browser dispatches it as a file save, no github.com
+            interstitial. AppImage is the right default for Linux
+            because it runs on every modern distro with zero setup.
+            Users who want .deb / .rpm / .tar.gz / ARM64 go through
+            /download via the smaller "All downloads" link below.
+          */}
+          <a
+            href={linuxAppImageUrl(arch)}
             className="inline-flex items-center gap-2.5 px-6 py-3 bg-accent text-bg font-semibold rounded-lg hover:brightness-110 transition-all duration-200"
           >
             <Download className="w-4 h-4" />
             Download for Linux
-          </Link>
+          </a>
           <a
             href="https://github.com/ArthurDEV44/paneflow"
             className="inline-flex items-center gap-2.5 px-6 py-3 border border-surface-border text-text-muted rounded-lg hover:border-surface-border-hover hover:text-text transition-all duration-200"
