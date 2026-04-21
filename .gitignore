@@ -31,3 +31,9 @@ Thumbs.db
 
 # Local development artifacts
 .codex
+
+# Local-only release plans and internal deep-dives (kept out of the public repo)
+/RELEASE_MACOS_PLAN.md
+/RELEASE_V0.2.0_PLAN.md
+/RELEASE_WINDOWS_PLAN.md
+/ZED_TERMINAL_DEEP_DIVE.md
