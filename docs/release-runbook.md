@@ -34,6 +34,38 @@ Prerequisites (one-time, not part of the per-release cadence):
 
 ---
 
+## Supported release targets (US-008)
+
+Authoritative status of every platform target PaneFlow releases can
+ship to. Cross-reference `.github/workflows/release.yml`'s matrix.
+
+| Target | Status | Ships | Gate level | Restore requires |
+|---|---|---|---|---|
+| `x86_64-unknown-linux-gnu` | **Active** | .deb, .rpm, AppImage, .tar.gz | Hard-required (gates the whole release) | — |
+| `aarch64-unknown-linux-gnu` | **Active** | .deb, .rpm, AppImage, .tar.gz | Hard-required (gates the whole release) | — |
+| `aarch64-apple-darwin` | **Best-effort** | (none today — leg fails at codesign) | `continue-on-error: true` (in matrix, does not block release) | Apple Dev secrets provisioning (see `memory/project_macos_signing.md`) → flip `continue-on-error: false` |
+| `x86_64-apple-darwin` | **Closed — pending v0.3.0** | — | Removed from matrix entirely | (a) Apple Dev secrets + (b) macos-13 queue-SLA improvement OR matrix `needs:` refactor so `Publish` doesn't block on best-effort legs |
+| `x86_64-pc-windows-msvc` | **Best-effort** | .msi (unsigned until Azure Trusted Signing lands) | `continue-on-error: true` | Azure Trusted Signing secrets (see `memory/project_windows_signing.md`) → flip `continue-on-error: false` |
+| `aarch64-pc-windows-msvc` | **Closed — pending v0.3.0** | — | Not in matrix | Scope decision at v0.3.0 cut (Windows on ARM — real hardware is rare; evaluate demand before committing runner hours) |
+
+**Interpretation:**
+- *Hard-required*: a failure blocks the release. The `Publish GitHub
+  Release` job's `needs:` waits for a green result.
+- *Best-effort*: in the matrix with `continue-on-error: true`.
+  Catches Rust-level cross-compile regressions at PR time but a
+  failure does NOT prevent the release from being published.
+- *Closed — pending vX.Y.Z*: deliberately not in the matrix. Restoring
+  the entry is tracked against the listed version's release PRD. Do
+  not silently re-add a closed target — adding back requires the
+  listed prerequisites AND a status update to this table.
+
+**v0.3.0 commitment:** both macOS legs (`aarch64-apple-darwin`
+restored to hard-required, `x86_64-apple-darwin` re-added to matrix)
+land together in the first signed macOS release cut, alongside Apple
+Dev secrets provisioning. Tracked in `tasks/prd-macos-port.md`.
+
+---
+
 ## Step 1 — Pre-flight (≈ 3 min, manual judgement required)
 
 Work on `main`. All changes for this release must already be merged.
@@ -207,12 +239,15 @@ A missing or renamed asset breaks the in-app updater's asset matcher
 
 ---
 
-## Step 5 — Verify repo-publish.yml (≈ 10 min, gated by human click)
+## Step 5 — Verify repo-publish.yml (≈ 10 min, auto-chained from release.yml)
 
-`repo-publish.yml` fires on the `release:published` event. For a final
-release (non-prerelease) that event fires automatically; for a
-`-rc.N` tag, it does NOT fire — which is intentional: pre-releases
-don't push to the stable apt/rpm repo.
+`repo-publish.yml` auto-chains off `release.yml` completion via GitHub
+Actions' `workflow_run` trigger (US-003). A successful tag-push
+`release.yml` run fires `repo-publish.yml` within ~30 s of the parent
+job finishing — no manual `gh workflow run` is needed on the happy path.
+Prerelease tags (`-rc.N`, `-alpha.N`, `-beta.N`) are filtered out on the
+auto-chain path, so they do NOT push to the stable repo (intentional:
+stable is stable-only).
 
 ```bash
 gh run watch --exit-status $(gh run list --workflow=repo-publish.yml --limit=1 --json databaseId --jq '.[0].databaseId')
@@ -235,7 +270,7 @@ curl --fail --silent https://pkg.paneflow.dev/rpm/repodata/repomd.xml \
 
 | Symptom | Top 3 recoveries |
 |---|---|
-| `repo-publish.yml` didn't fire | 1. Check whether the release is still marked pre-release in the GitHub UI — the workflow skips pre-releases by design. 2. Dispatch manually: `gh workflow run repo-publish.yml -f tag=vX.Y.Z`. 3. If the manual dispatch also fails, the `release:published` event didn't register — check Settings → Actions → Workflow permissions. |
+| `repo-publish.yml` didn't fire | 1. Check whether the tag is a pre-release (`-rc.N`/`-alpha.N`/`-beta.N`) — the auto-chain filters those out by design; manually re-publish via `gh workflow run repo-publish.yml -f tag=vX.Y.Z` if you really want a prerelease on the stable repo. 2. Check the `release.yml` parent run succeeded — the `workflow_run` guard requires `conclusion == 'success'` AND `event == 'push'` (a `gh run rerun` of release.yml will NOT re-fire repo-publish). 3. If release.yml succeeded on a final tag but repo-publish still didn't fire, confirm `release.yml`'s `name:` field is still `Release` (verbatim match required by `workflow_run`), then fall back to `gh workflow run repo-publish.yml -f tag=vX.Y.Z`. |
 | `rclone sync` step fails with 403 | 1. R2 credentials rotated. Refresh `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` from Cloudflare (see `docs/pkg-repo-runbook.md` §2) and update the GitHub secrets. 2. Re-run the workflow. 3. If the bucket itself was deleted or renamed, restore from the rclone `--dry-run` diff before re-syncing — never blast-write an empty local staging dir to a bucket that still has user-visible content. |
 | `InRelease` returns stale date | 1. Cloudflare edge cache — invalidate via the dashboard (or wait 60s for the default TTL). 2. Check whether `reprepro` actually ran by inspecting the workflow log for the "signing Release file" step. 3. If reprepro ran but the InRelease has wrong dists/version, the repo DB on R2 may be corrupted; rebuild from scratch per `docs/pkg-repo-runbook.md` §Bootstrap. |
 

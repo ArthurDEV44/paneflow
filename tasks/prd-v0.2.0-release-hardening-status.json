@@ -67,7 +67,7 @@
       "started_at": "2026-04-20",
       "completed_at": "2026-04-20",
       "reviewed_at": "2026-04-20",
-      "review_note": "CONSIDER (not blocking): AC2 observable-property (`curl -I ... | grep cf-cache-status`) is verifiable post-release but no CI step asserts it. Risks table row #2 suggested a smoke-test step as defense-in-depth. Primary purge + retry-with-backoff correctly implemented."
+      "review_note": "CLOSED (v0.2.1 US-010): original CONSIDER about a cf-cache-status smoke assertion is addressed by prd-v0.2.1-release-hardening US-002 (regression guard on binary-<arch>/Packages in InRelease) + US-004 (post-publish end-to-end apt/dnf install smoke). Both land in v0.2.1. Primary purge + retry-with-backoff remain correctly implemented."
     },
     {
       "id": "US-004",
@@ -140,7 +140,7 @@
       "started_at": "2026-04-20",
       "completed_at": "2026-04-20",
       "reviewed_at": "2026-04-20",
-      "review_note": "Hardware smoke-test (hdiutil + /Applications replace) still required on real macOS before first macOS release cut per Risks row #3. CONSIDER: switch `cp -R` at macos/dmg.rs:276 to `ditto --rsrc` (Apple-mandated for signed bundles with nested frameworks) — current PaneFlow.app is simple enough that cp -R works, but ditto future-proofs for richer bundle layouts."
+      "review_note": "CLOSED (v0.2.1 US-010): Deferred to v0.3.0 macOS release cut — `cp -R` is adequate for the current PaneFlow.app layout (no nested frameworks with resource forks). Reopen if bundle gains Swift dylibs or embedded frameworks. Hardware smoke-test (hdiutil + /Applications replace) is tracked in prd-macos-port.md and remains a v0.3.0 gate."
     },
     {
       "id": "US-010",
@@ -153,7 +153,7 @@
       "started_at": "2026-04-20",
       "completed_at": "2026-04-20",
       "reviewed_at": "2026-04-20",
-      "review_note": "Hardware smoke-test (msiexec UAC + exit codes) still required on Windows 11 before first Windows release cut per Risks row #3. CONSIDER: add explicit handling for msiexec exit 1618 (another install in progress — currently falls through to generic `Other` arm in map_exit_code at msi.rs:223-236)."
+      "review_note": "CLOSED (v0.2.1 US-010): Deferred to v0.3.0 Windows release cut — requires hardware-validated test case. Track as WIN-001 in the v0.3.0 port PRD (prd-windows-port.md). Hardware smoke-test (msiexec UAC + exit codes) remains a v0.3.0 gate; the msiexec 1618 'another install in progress' arm will be added alongside the hardware smoke test that can actually exercise it."
     },
     {
       "id": "US-011",
@@ -166,7 +166,7 @@
       "started_at": "2026-04-20",
       "completed_at": "2026-04-20",
       "reviewed_at": "2026-04-20",
-      "review_note": "SHOULD_FIX before Windows release cut: workspace_ops/mod.rs:688-691 uses `.arg(\"/select,\").arg(path)` which passes as two arguments — Windows Explorer expects `/select,<path>` concatenated in a single token. The comment at line 685-687 correctly states this invariant but the code violates it. Fix: `let mut flag = OsString::from(\"/select,\"); flag.push(path.as_os_str()); Command::new(\"explorer\").arg(flag).spawn()`. Also CONSIDER: sidebar/mod.rs:504-509 comment claims `open::that` is \"byte-identical\" to `cmd /C start \"\"` on Windows — actually uses ShellExecuteW. Functionally equivalent for https URLs; correct the comment wording to avoid misleading future maintainers. Neither blocks v0.2.0/v0.2.1; both should land before first Windows release."
+      "review_note": "CLOSED (v0.2.1 US-010): both the SHOULD_FIX (workspace_ops/mod.rs two-argv explorer bug) AND the CONSIDER (sidebar/mod.rs open::that comment) addressed by prd-v0.2.1-release-hardening US-007. The Rust source is verifiable: OsString flag + push(path.as_os_str()) single-token pattern at workspace_ops/mod.rs, and the sidebar comment now accurately describes ShellExecuteW vs `cmd /C start`. Runtime validation on a Windows 11 host is operator-gated and belongs to the v0.3.0 Windows release cut."
     },
     {
       "id": "US-012",
