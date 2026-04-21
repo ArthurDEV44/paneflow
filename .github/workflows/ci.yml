@@ -26,9 +26,9 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -49,7 +49,7 @@ jobs:
     # would silently diverge CI from release.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install system dependencies
         run: |
@@ -84,6 +84,66 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # US-006 (prd-v0.2.1-release-hardening.md): dependency advisory scan via
+  # cargo-deny. Fail-forward posture:
+  #   * licenses / sources / unmaintained / yanked → WARN only (surfaces
+  #     findings without blocking merges).
+  #   * advisories.vulnerabilities → has no warn-mode in cargo-deny 0.14+
+  #     (upstream removed the downgrade path), so an active RustSec CVE
+  #     will fail this step.
+  # `continue-on-error: true` on the JOB means the red-X is visible in
+  # the CI UI but the PR merge gate is NOT blocked for v0.2.1. Tighten
+  # by flipping to `false` and elevating license severity to `deny` in
+  # v0.2.2 once the lockfile is audit-clean.
+  #
+  # Gate on `changes.rust` for consistency with the `check` job above —
+  # Cargo.toml/Cargo.lock edits are in that filter, so any change that
+  # could affect the advisory result triggers the scan.
+  security-audit:
+    name: Security Audit (cargo-deny)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Reuse the same cache prefix as `check` so the advisory job
+      # shares target/ with the main Linux build (no extra minutes
+      # spent re-compiling for cargo-deny's own resolve).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: security-audit
+
+      - name: Install cargo-deny (pinned 0.14.x)
+        # `--locked` pins cargo-deny's own dep graph for reproducibility.
+        # `--version '^0.14'` accepts any 0.14.x patch but not 0.15+
+        # (matches PRD US-006 research pin; upstream 0.15 may change
+        # severity semantics — bump explicitly when validating the
+        # new behavior).
+        run: cargo install cargo-deny --locked --version '^0.14'
+
+      - name: cargo deny check advisories licenses sources
+        # Retry once with 30s backoff on a DB-fetch failure (GitHub's
+        # RustSec mirror occasionally rate-limits). A second failure
+        # surfaces `cargo deny check advisories --help` for debugging
+        # alongside the RustSec advisory site URL in the job output.
+        # AC7: advisory DB unreachable must not silently pass.
+        run: |
+          set -euo pipefail
+          if ! cargo deny check advisories licenses sources; then
+            echo "→ cargo-deny failed on first attempt — sleeping 30s and retrying once (probable RustSec DB rate-limit)" >&2
+            sleep 30
+            if ! cargo deny check advisories licenses sources; then
+              echo "::error::cargo-deny check failed after retry. See https://embarkstudios.github.io/cargo-deny/ and the --help output below."
+              cargo deny check advisories --help || true
+              exit 1
+            fi
+          fi
+
   # US-001 (prd-macos-port.md): smoke build on Apple Silicon so the PaneFlow
   # dependency closure at the pinned GPUI rev (0b984b5) is proven to compile
   # on aarch64-apple-darwin before any of EP-002..EP-005 lands. The job runs
@@ -104,7 +164,7 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # US-003 — fail fast if the runner image drifts away from a full Xcode
       # install. The macos-14 hosted image ships Xcode 15+ with the Metal
@@ -236,8 +296,22 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     runs-on: windows-2022
     timeout-minutes: 30
+    env:
+      # US-009 (v0.2.1): `ilammy/msvc-dev-cmd@v1` (latest v1.13.0 as of
+      # 2026-04-21) still declares `runs: using: node20` in its
+      # action.yml. Upstream issue #99 + PR #101 are open but not
+      # merged. GitHub Actions force-migrates to Node 24 on 2026-06-02
+      # and removes Node 20 on 2026-09-16. This env shim instructs the
+      # runner to execute the action on the node24 binary regardless
+      # of its declared runtime — documented in
+      # https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+      # Remove this env once `ilammy/msvc-dev-cmd` publishes a tag
+      # that declares `using: node24` natively, and pin to that tag.
+      # Scoped to this job so other jobs don't silently accept
+      # stragglers elsewhere.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Load VS 2022 Build Tools env: cl.exe, link.exe, lib.exe on PATH,
       # INCLUDE/LIB/LIBPATH set. Required by AC-2's `where cl.exe link.exe`.
