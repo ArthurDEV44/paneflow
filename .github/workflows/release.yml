@@ -55,16 +55,22 @@ jobs:
             # secrets. Revert this flag back to hard-required on the
             # commit that lands the first signed macOS release.
             continue-on-error: true
-          # US-019 AC5: best-effort Intel Mac. `continue-on-error: true`
-          # keeps a flaky Intel leg (rarer hardware, slower hosted
-          # runners, x86_64 GPUI code paths see less daily use) from
-          # blocking a release. When it succeeds, the produced .dmg
-          # is attached to the release alongside the other artifacts;
-          # when it fails, the release still ships without x86_64.
-          - target: x86_64-apple-darwin
-            arch: x86_64
-            runs-on: macos-13
-            continue-on-error: true
+          # TEMPORARILY REMOVED FROM MATRIX — Intel Mac (macos-13).
+          # Even with `continue-on-error: true`, the release-gating job
+          # waits for EVERY matrix leg to complete. GitHub Actions
+          # macos-13 runner queue times have been 30-60 min+ in recent
+          # weeks, blocking the release pipeline on a best-effort leg
+          # we don't actually need for v0.2.0 (Linux-only release, no
+          # Apple Dev secrets anyway). Restore the entry below when
+          # either (a) Apple Dev secrets land and the first signed
+          # macOS release is cut, or (b) the matrix strategy is
+          # refactored to let `Publish GitHub Release` run on a subset
+          # of green legs without waiting for the best-effort queue.
+          #
+          # - target: x86_64-apple-darwin
+          #   arch: x86_64
+          #   runs-on: macos-13
+          #   continue-on-error: true
           # US-017: Windows x86_64. Best-effort (continue-on-error: true)
           # for the same reasons as Intel Mac — an Azure Artifact Signing
           # outage, cargo-wix regression, or transient windows-2022
