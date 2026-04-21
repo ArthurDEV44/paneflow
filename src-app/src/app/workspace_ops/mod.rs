@@ -682,13 +682,19 @@ fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        // `/select,<path>` highlights the file in its parent folder —
-        // the comma is part of the flag spelling Microsoft documents
-        // and must be concatenated into the same argument.
-        let result = std::process::Command::new("explorer")
-            .arg("/select,")
-            .arg(path)
-            .spawn();
+        // `/select,<path>` highlights the file in its parent folder.
+        // The comma is part of the flag spelling Microsoft documents,
+        // and the flag + path MUST form a SINGLE argv token — passing
+        // `/select,` and `<path>` as two separate `.arg(...)` calls
+        // makes Explorer ignore the selection hint and silently open
+        // the user's Documents folder instead (US-007 / v0.2.0 US-011
+        // SHOULD_FIX review note). Concatenate via `OsString` so
+        // non-UTF-8 path bytes (e.g., NTFS filenames that don't
+        // round-trip through `&str`) survive; `as_os_str()` keeps the
+        // raw wide-char representation intact.
+        let mut flag = std::ffi::OsString::from("/select,");
+        flag.push(path.as_os_str());
+        let result = std::process::Command::new("explorer").arg(flag).spawn();
         return result
             .map(|_| ())
             .map_err(|err| format!("Could not open Explorer: {err}"));
