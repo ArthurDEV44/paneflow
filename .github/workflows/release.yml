@@ -393,8 +393,17 @@ jobs:
           # GitHub's ubuntu-22.04 runner grants passwordless sudo to the
           # `runner` user. Piping via `gpg --armor --export` keeps the
           # ASCII-armored key in memory — no filesystem intermediate.
-          gpg --armor --export "$GPG_KEY_ID" \
-            | sudo rpm --import /dev/stdin
+          # `sudo rpm --import /dev/stdin` fails on ubuntu-22.04 rpm 4.17.0
+          # with "/dev/stdin: import read failed(0)" — sudo re-opens the
+          # subprocess with a fresh stdin that the rpm file-reader can't
+          # rewind. Write the pubkey to a tempfile under /tmp (tmpfs on
+          # the runner, safe) and import from there. The file is cleaned
+          # up by the parent trap below.
+          PUBKEY_FILE=$(mktemp --suffix=.asc)
+          chmod 600 "$PUBKEY_FILE"
+          trap 'rm -f "$PASS_FILE" "$HOME/.rpmmacros" "$PUBKEY_FILE"' EXIT
+          gpg --armor --export "$GPG_KEY_ID" > "$PUBKEY_FILE"
+          sudo rpm --import "$PUBKEY_FILE"
           # `${PIPESTATUS[0]}` reads the exit code of the FIRST command
           # in a bash pipeline, independent of `tee`'s exit code. Using
           # `set -o pipefail` wouldn't work here because `tee` always
