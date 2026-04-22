@@ -1,6 +1,9 @@
+use std::time::Duration;
+
 use gpui::{
-    div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Decorations, EventEmitter,
-    IntoElement, MouseButton, Pixels, Point, Render, Styled, Window, WindowControlArea,
+    Animation, AnimationExt, AnyElement, ClickEvent, Context, Decorations, EventEmitter,
+    IntoElement, MouseButton, Pixels, Point, Render, Styled, Transformation, Window,
+    WindowControlArea, div, percentage, prelude::*, px, svg,
 };
 
 use super::csd::default_button_layout;
@@ -18,13 +21,6 @@ pub struct UpdateInfo {
     pub version: String,
     /// Which pill to render — the in-app flow or the system-package hint.
     pub kind: UpdatePillKind,
-    /// Current angle (radians, 0..TAU) of the update spinner. Re-pushed
-    /// by PaneFlowApp on every render while `self_update_status.is_busy()`
-    /// — the anim loop ticks `update_spinner_angle` ~60fps and the
-    /// render path translates the angle into a frame of
-    /// `UPDATE_SPINNER_FRAMES`. Ignored when `kind` is `Clickable`
-    /// (Idle/Errored) or `SystemHint` — only consumed on the `Busy` arm.
-    pub spinner_angle: f32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -249,34 +245,26 @@ impl Render for TitleBar {
                 }
             };
 
-            // Icon reflects the pill's intent:
-            //   Clickable   → download (offer the update)
-            //   Busy        → refresh  (download/install in flight)
-            //   SystemHint  → tool     (external package manager does the work)
-            // Leading icon/glyph — the Busy arms swap the static
-            // refresh.svg for an animated braille glyph driven by
-            // `info.spinner_angle`. The in-flight motion reassures
-            // users who otherwise wouldn't see anything happen for
-            // the ~15-30s subprocess + restart window.
+            // Leading icon. Clickable/SystemHint render a static SVG;
+            // Busy renders a `loader-circle.svg` arc continuously
+            // rotating via GPUI's declarative Animation+Transformation
+            // API (one full revolution per second, repeat forever).
+            // Pattern mirrors `crates/gpui/examples/animation.rs` in
+            // the upstream Zed repo.
             let leading_icon: AnyElement = match style {
-                PillStyle::Busy => {
-                    let frames = &crate::UPDATE_SPINNER_FRAMES;
-                    let idx = ((info.spinner_angle / std::f32::consts::TAU) * frames.len() as f32)
-                        as usize
-                        % frames.len();
-                    let glyph = frames[idx];
-                    div()
-                        .w(px(11.))
-                        .h(px(11.))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_color(ui.muted)
-                        .text_size(px(10.))
-                        .child(format!("{glyph}"))
-                        .into_any_element()
-                }
+                PillStyle::Busy => svg()
+                    .size(px(11.))
+                    .flex_none()
+                    .path("icons/loader-circle.svg")
+                    .text_color(ui.muted)
+                    .with_animation(
+                        "update-pill-spinner",
+                        Animation::new(Duration::from_secs(1)).repeat(),
+                        |svg, delta| {
+                            svg.with_transformation(Transformation::rotate(percentage(delta)))
+                        },
+                    )
+                    .into_any_element(),
                 PillStyle::Clickable => svg()
                     .size(px(11.))
                     .flex_none()

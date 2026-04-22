@@ -212,14 +212,6 @@ impl Render for WorkspaceDragPreview {
 const CLAUDE_SPINNER_FRAMES: [char; 6] = ['·', '✻', '✽', '✶', '✳', '✢'];
 /// Codex spinner glyphs — pulsing dot from the dots animation variant.
 const CODEX_SPINNER_FRAMES: [char; 4] = ['●', '○', '◉', '○'];
-/// Update-pill spinner glyphs — classic 10-frame braille cycle shown on the
-/// title-bar update pill while `self_update_status.is_busy()` (download or
-/// install in flight). Neutral glyphs (not tied to a specific AI tool) so
-/// the motion reads as "generic progress, something's happening, don't
-/// click again yet". One full revolution per 0.9s matches `loader_angle`
-/// cadence so the two indicators feel coherent when both are on screen.
-pub(crate) const UPDATE_SPINNER_FRAMES: [char; 10] =
-    ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const TOAST_ENTER_MS: u64 = 180;
 const TOAST_HOLD_MS: u64 = 1440;
 const TOAST_EXIT_MS: u64 = 180;
@@ -290,16 +282,6 @@ struct PaneFlowApp {
     _toast_task: Option<gpui::Task<()>>,
     /// Whether the loader animation spawn is currently running.
     loader_anim_running: bool,
-    /// Current angle of the title-bar update-pill spinner (radians, 0..TAU).
-    /// Advanced at ~60fps while `self_update_status.is_busy()` is true.
-    /// Consumed at render-time to pick a frame from UPDATE_SPINNER_FRAMES;
-    /// the angle (not a frame index) is stored so the cadence can be tuned
-    /// uniformly with the sidebar's Claude/Codex spinner.
-    update_spinner_angle: f32,
-    /// Whether the update-spinner anim spawn is currently running. Mirrors
-    /// `loader_anim_running` for the AI thinking spinner — guards against
-    /// stacking multiple anim loops on repeated pkexec prompts.
-    update_spinner_anim_running: bool,
     /// Source pane for swap mode, or `None` if not in swap mode.
     swap_source: Option<Entity<crate::pane::Pane>>,
     /// LIFO stack of recently closed panes for undo-close (US-014).
@@ -578,7 +560,6 @@ impl Render for PaneFlowApp {
                 Some(title_bar::UpdateInfo {
                     version: version.clone(),
                     kind,
-                    spinner_angle: self.update_spinner_angle,
                 })
             }
             _ => None,
