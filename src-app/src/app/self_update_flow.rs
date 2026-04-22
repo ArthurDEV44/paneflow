@@ -166,6 +166,7 @@ impl PaneFlowApp {
                     update::install_method::PackageManager::RpmOstree => "rpm-ostree",
                 };
                 self.self_update_status = update::SelfUpdateStatus::Downloading;
+                self.start_update_spinner_animation(cx);
                 cx.notify();
 
                 cx.spawn(async move |this, cx| {
@@ -313,6 +314,7 @@ impl PaneFlowApp {
             // wall-clock time is spent fetching delta blocks, so `Downloading`
             // matches what the user actually sees on a slow link.
             self.self_update_status = update::SelfUpdateStatus::Downloading;
+            self.start_update_spinner_animation(cx);
             cx.notify();
 
             cx.spawn(async move |this, cx| {
@@ -373,6 +375,7 @@ impl PaneFlowApp {
             }
             let url = asset_url.clone();
             self.self_update_status = update::SelfUpdateStatus::Downloading;
+            self.start_update_spinner_animation(cx);
             cx.notify();
 
             cx.spawn(async move |this, cx| {
@@ -414,6 +417,7 @@ impl PaneFlowApp {
         if let update::install_method::InstallMethod::WindowsMsi { .. } = &method {
             let url = asset_url.clone();
             self.self_update_status = update::SelfUpdateStatus::Downloading;
+            self.start_update_spinner_animation(cx);
             cx.notify();
 
             cx.spawn(async move |this, cx| {
@@ -455,6 +459,7 @@ impl PaneFlowApp {
         if let update::install_method::InstallMethod::AppBundle { .. } = &method {
             let url = asset_url.clone();
             self.self_update_status = update::SelfUpdateStatus::Downloading;
+            self.start_update_spinner_animation(cx);
             cx.notify();
 
             cx.spawn(async move |this, cx| {
@@ -502,6 +507,7 @@ impl PaneFlowApp {
         #[cfg(unix)]
         {
             self.self_update_status = update::SelfUpdateStatus::Downloading;
+            self.start_update_spinner_animation(cx);
             cx.notify();
 
             cx.spawn(async move |this, cx| {

@@ -1,6 +1,6 @@
 use gpui::{
-    AnyElement, ClickEvent, Context, Decorations, EventEmitter, IntoElement, MouseButton, Pixels,
-    Point, Render, Styled, Window, WindowControlArea, div, prelude::*, px, svg,
+    div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Decorations, EventEmitter,
+    IntoElement, MouseButton, Pixels, Point, Render, Styled, Window, WindowControlArea,
 };
 
 use super::csd::default_button_layout;
@@ -18,6 +18,13 @@ pub struct UpdateInfo {
     pub version: String,
     /// Which pill to render — the in-app flow or the system-package hint.
     pub kind: UpdatePillKind,
+    /// Current angle (radians, 0..TAU) of the update spinner. Re-pushed
+    /// by PaneFlowApp on every render while `self_update_status.is_busy()`
+    /// — the anim loop ticks `update_spinner_angle` ~60fps and the
+    /// render path translates the angle into a frame of
+    /// `UPDATE_SPINNER_FRAMES`. Ignored when `kind` is `Clickable`
+    /// (Idle/Errored) or `SystemHint` — only consumed on the `Busy` arm.
+    pub spinner_angle: f32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -246,10 +253,42 @@ impl Render for TitleBar {
             //   Clickable   → download (offer the update)
             //   Busy        → refresh  (download/install in flight)
             //   SystemHint  → tool     (external package manager does the work)
-            let icon_path = match style {
-                PillStyle::Clickable => "icons/download.svg",
-                PillStyle::Busy => "icons/refresh.svg",
-                PillStyle::SystemHint => "icons/tool.svg",
+            // Leading icon/glyph — the Busy arms swap the static
+            // refresh.svg for an animated braille glyph driven by
+            // `info.spinner_angle`. The in-flight motion reassures
+            // users who otherwise wouldn't see anything happen for
+            // the ~15-30s subprocess + restart window.
+            let leading_icon: AnyElement = match style {
+                PillStyle::Busy => {
+                    let frames = &crate::UPDATE_SPINNER_FRAMES;
+                    let idx = ((info.spinner_angle / std::f32::consts::TAU) * frames.len() as f32)
+                        as usize
+                        % frames.len();
+                    let glyph = frames[idx];
+                    div()
+                        .w(px(11.))
+                        .h(px(11.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(ui.muted)
+                        .text_size(px(10.))
+                        .child(format!("{glyph}"))
+                        .into_any_element()
+                }
+                PillStyle::Clickable => svg()
+                    .size(px(11.))
+                    .flex_none()
+                    .path("icons/download.svg")
+                    .text_color(ui.muted)
+                    .into_any_element(),
+                PillStyle::SystemHint => svg()
+                    .size(px(11.))
+                    .flex_none()
+                    .path("icons/tool.svg")
+                    .text_color(ui.muted)
+                    .into_any_element(),
             };
 
             let mut pill = div()
@@ -270,13 +309,7 @@ impl Render for TitleBar {
                 .text_size(px(11.))
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    svg()
-                        .size(px(11.))
-                        .flex_none()
-                        .path(icon_path)
-                        .text_color(ui.muted),
-                )
+                .child(leading_icon)
                 .child(label);
             match style {
                 PillStyle::Clickable => {
