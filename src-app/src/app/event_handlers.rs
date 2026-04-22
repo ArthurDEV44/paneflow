@@ -287,6 +287,58 @@ impl PaneFlowApp {
         }
     }
 
+    /// Start the title-bar update-pill spinner animation loop. Runs at
+    /// ~60fps while `self_update_status.is_busy()` (Downloading or
+    /// Installing). Self-stops when the status leaves the busy arms.
+    ///
+    /// The angle advances uniformly; `UpdateInfo.spinner_angle` is read
+    /// on every PaneFlowApp render (the title bar is an independent
+    /// entity, but PaneFlowApp's render re-pushes UpdateInfo via
+    /// `self.title_bar.update(...)`, which marks the title bar dirty —
+    /// so a single `cx.notify()` here cascades into the title bar).
+    ///
+    /// Cadence: `TAU / (0.9 * 60)` rad/frame ≈ 0.1164 rad/frame → one
+    /// full revolution per 0.9s. Matches `start_loader_animation` so
+    /// the AI-thinking and update spinners feel unified when co-visible.
+    pub(crate) fn start_update_spinner_animation(&mut self, cx: &mut Context<Self>) {
+        if self.update_spinner_anim_running {
+            return;
+        }
+        self.update_spinner_anim_running = true;
+        cx.spawn(
+            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                loop {
+                    smol::Timer::after(std::time::Duration::from_millis(16)).await;
+                    let result = cx.update(|cx| {
+                        this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                            if !app.self_update_status.is_busy() {
+                                app.update_spinner_anim_running = false;
+                                // One last notify so the title bar drops
+                                // back to the static icon immediately on
+                                // transition out of busy — otherwise the
+                                // last rendered frame sticks until the
+                                // next unrelated re-render.
+                                cx.notify();
+                                return false;
+                            }
+                            // 0.9s per revolution ≈ 0.1164 rad/frame at 60fps
+                            let delta = std::f32::consts::TAU / (0.9 * 60.0);
+                            app.update_spinner_angle =
+                                (app.update_spinner_angle + delta) % std::f32::consts::TAU;
+                            cx.notify();
+                            true
+                        })
+                    });
+                    match result {
+                        Ok(true) => {}
+                        _ => break,
+                    }
+                }
+            },
+        )
+        .detach();
+    }
+
     /// Start the spinner animation loop. Runs at ~60fps, advancing
     /// `loader_angle` on all Thinking workspaces. Self-stops when no
     /// workspace is in Thinking state.

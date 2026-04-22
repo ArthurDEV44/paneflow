@@ -430,6 +430,8 @@ impl PaneFlowApp {
             toast: None,
             _toast_task: None,
             loader_anim_running: false,
+            update_spinner_angle: 0.0,
+            update_spinner_anim_running: false,
             swap_source: None,
             closed_panes: Vec::new(),
             show_about_dialog: false,
