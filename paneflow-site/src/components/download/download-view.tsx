@@ -15,7 +15,6 @@ import {
   Package,
   Terminal,
 } from "lucide-react";
-import posthog from "posthog-js";
 import { AppleIcon, LinuxIcon, WindowsIcon } from "../os-icons";
 import { LATEST_VERSION } from "../../lib/release";
 
@@ -70,10 +69,7 @@ export function DownloadView() {
           <PrimaryDownloadCard version={LATEST_VERSION} />
         </div>
 
-        <div
-          data-track-section="download_matrix"
-          className="divide-y divide-surface-border border-y border-surface-border"
-        >
+        <div className="divide-y divide-surface-border border-y border-surface-border">
           {VERSIONS.map((entry, i) => (
             <VersionRow key={entry.version} entry={entry} defaultOpen={i === 0} />
           ))}
@@ -264,15 +260,6 @@ function PrimaryDownloadCard({ version }: { version: string }) {
       {pick.available ? (
         <a
           href={pick.href}
-          onClick={() => {
-            posthog.capture("download_cta_clicked", {
-              source: "primary_card",
-              format: pick.format,
-              platform: platform.os,
-              arch: platform.arch,
-              version,
-            });
-          }}
           className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg bg-accent text-bg font-medium hover:bg-accent-warm transition-colors shrink-0"
         >
           <Download className="w-4 h-4" />
@@ -294,14 +281,7 @@ function VersionRow({
   return (
     <div>
       <button
-        onClick={() => {
-          const next = !open;
-          posthog.capture("version_accordion_toggled", {
-            version: entry.version,
-            action: next ? "open" : "close",
-          });
-          setOpen(next);
-        }}
+        onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center justify-between py-5 text-left"
       >
         <div className="flex items-center gap-3">
@@ -327,23 +307,17 @@ function VersionRow({
               label="macOS"
               items={[]}
               placeholder="Arrive très prochainement"
-              platform="macos"
-              version={entry.version}
             />
             <PlatformColumn
               Icon={WindowsIcon}
               label="Windows"
               items={[]}
               placeholder="Arrive très prochainement"
-              platform="windows"
-              version={entry.version}
             />
             <PlatformColumn
               Icon={LinuxIcon}
               label="Linux"
               items={linuxItems(entry.version)}
-              platform="linux"
-              version={entry.version}
             />
           </div>
 
@@ -367,30 +341,21 @@ interface DownloadItem {
   label: string;
   href?: string;
   copyText?: string;
-  // Optional per-item architecture for matrix-row analytics — set on
-  // Linux items so `download_cta_clicked` can attribute x64 vs ARM64.
-  arch?: DetectedArch;
   // ComponentType accepts both lucide-react forward-refs (which return
   // ReactNode) and the plain-function icon components in `../os-icons`.
   icon?: ComponentType<{ className?: string }>;
 }
-
-type TrackedPlatform = "linux" | "macos" | "windows";
 
 function PlatformColumn({
   Icon,
   label,
   items,
   placeholder,
-  platform,
-  version,
 }: {
   Icon: (props: { className?: string }) => ReactElement;
   label: string;
   items: DownloadItem[];
   placeholder?: string;
-  platform: TrackedPlatform;
-  version: string;
 }) {
   return (
     <div className="rounded-xl border border-surface-border bg-surface/30 p-4">
@@ -406,7 +371,7 @@ function PlatformColumn({
         <ul>
           {items.map((item) => (
             <li key={item.label}>
-              <DownloadRow item={item} platform={platform} version={version} />
+              <DownloadRow item={item} />
             </li>
           ))}
         </ul>
@@ -420,15 +385,7 @@ function PlatformColumn({
 // to a Check for 2s (the "toast confirmation" per US-020 AC-4). Pattern
 // matches install.tsx:58 — kept inline here rather than factored out so
 // the component file stays self-contained.
-function DownloadRow({
-  item,
-  platform,
-  version,
-}: {
-  item: DownloadItem;
-  platform: TrackedPlatform;
-  version: string;
-}) {
+function DownloadRow({ item }: { item: DownloadItem }) {
   const [copied, setCopied] = useState(false);
   // timerRef lets us cancel the pending setCopied(false) on rapid
   // re-clicks (so the badge re-resets 2s after the LAST click, not the
@@ -457,14 +414,6 @@ function DownloadRow({
   if (item.copyText) {
     const copyText = item.copyText;
     const handleCopy = () => {
-      // Fire analytics on click intent, before the clipboard call —
-      // captures the event even if the write rejects (Firefox permission
-      // quirks, non-secure context fallback). posthog.capture is
-      // fire-and-forget and never blocks the UX.
-      posthog.capture("install_command_copied", {
-        command: copyText,
-        platform,
-      });
       // navigator.clipboard is only available in secure contexts (https
       // or localhost). On the production site both hold. Flip the UI to
       // "copied" state ONLY after the write resolves — a rejection (e.g.
@@ -500,19 +449,7 @@ function DownloadRow({
   }
 
   return (
-    <a
-      href={item.href}
-      onClick={() => {
-        posthog.capture("download_cta_clicked", {
-          source: "matrix",
-          format: item.label,
-          platform,
-          arch: item.arch,
-          version,
-        });
-      }}
-      className={baseClass}
-    >
+    <a href={item.href} className={baseClass}>
       {Label}
       <Download className="w-4 h-4 text-text-subtle" />
     </a>
@@ -526,42 +463,34 @@ function linuxItems(version: string): DownloadItem[] {
     {
       label: "AppImage (x64)",
       href: asset(`paneflow-v${version}-x86_64.AppImage`),
-      arch: "x86_64",
     },
     {
       label: "AppImage (ARM64)",
       href: asset(`paneflow-v${version}-aarch64.AppImage`),
-      arch: "aarch64",
     },
     {
       label: ".deb (x64)",
       href: asset(`paneflow-v${version}-x86_64.deb`),
-      arch: "x86_64",
     },
     {
       label: ".deb (ARM64)",
       href: asset(`paneflow-v${version}-aarch64.deb`),
-      arch: "aarch64",
     },
     {
       label: ".rpm (x64)",
       href: asset(`paneflow-v${version}-x86_64.rpm`),
-      arch: "x86_64",
     },
     {
       label: ".rpm (ARM64)",
       href: asset(`paneflow-v${version}-aarch64.rpm`),
-      arch: "aarch64",
     },
     {
       label: "tar.gz (x64)",
       href: asset(`paneflow-v${version}-x86_64.tar.gz`),
-      arch: "x86_64",
     },
     {
       label: "tar.gz (ARM64)",
       href: asset(`paneflow-v${version}-aarch64.tar.gz`),
-      arch: "aarch64",
     },
   ];
 }
