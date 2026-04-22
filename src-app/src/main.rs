@@ -20,6 +20,7 @@ mod settings;
 mod terminal;
 pub mod theme;
 mod update;
+mod widgets;
 mod window_chrome;
 mod workspace;
 
@@ -262,12 +263,19 @@ struct PaneFlowApp {
     font_search: String,
     /// Notifications from Claude Code state changes (bell menu).
     notifications: Vec<Notification>,
-    /// Whether the notification bell dropdown is open.
-    notif_menu_open: bool,
+    /// Notification bell dropdown anchor (click position). `None` = closed.
+    /// Uses the same `Option<Point<Pixels>>` pattern as `profile_menu_open` /
+    /// `title_bar_menu_open` so every dropdown is rendered via `deferred()`
+    /// and clamped to the window bounds.
+    notif_menu_open: Option<Point<Pixels>>,
     /// Workflow action menu currently open in the sidebar (`None` = closed).
     workspace_menu_open: Option<WorkspaceContextMenu>,
     /// Burger menu currently open in the title bar (`None` = closed).
     title_bar_menu_open: Option<Point<Pixels>>,
+    /// Profile menu currently open at the right of the title bar.
+    /// Stores the click position so the menu can anchor near the profile
+    /// button. `None` = closed.
+    profile_menu_open: Option<Point<Pixels>>,
     /// Ephemeral bottom-right toast.
     toast: Option<Toast>,
     /// Dismiss timer for the active toast — dropped on new toast to cancel the old timer.
@@ -280,6 +288,14 @@ struct PaneFlowApp {
     closed_panes: Vec<ClosedPaneRecord>,
     /// Whether the "About PaneFlow" dialog is visible.
     show_about_dialog: bool,
+    /// Whether the command-palette-style theme picker is visible.
+    show_theme_picker: bool,
+    /// Typeahead filter for the theme picker (case-insensitive substring).
+    theme_picker_query: String,
+    /// Index into the *filtered* theme list for the currently highlighted row.
+    theme_picker_selected_idx: usize,
+    /// Focus handle routing key events to the theme picker while it's open.
+    theme_picker_focus: FocusHandle,
     /// Shared slot for the background update checker result.
     pending_update: update::checker::SharedUpdateSlot,
     /// Resolved update status (set once the background check completes).
@@ -302,6 +318,11 @@ struct PaneFlowApp {
     /// construction; the PRD's "three consecutive failures" requirement
     /// holds without an explicit reset.
     update_attempt_count: u32,
+    /// State of the "Custom Buttons" management modal opened from the
+    /// workspace context menu. `None` = closed.
+    custom_buttons_modal: Option<app::custom_buttons_modal::CustomButtonsModal>,
+    /// Focus handle routing key events to the custom-buttons modal while open.
+    custom_buttons_modal_focus: FocusHandle,
 }
 
 /// Global flag for swap mode, checked by TerminalView to intercept Escape.
@@ -827,83 +848,41 @@ impl Render for PaneFlowApp {
                                 this.open_settings_window(window, cx);
                                 cx.stop_propagation();
                             }),
+                        ))
+                        .child(self.render_context_menu_item(
+                            "title-bar-menu-themes".into(),
+                            "Themes…",
+                            None,
+                            ui,
+                            cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.title_bar_menu_open = None;
+                                this.open_theme_picker(window, cx);
+                                cx.stop_propagation();
+                            }),
                         )),
                 )
                 .priority(3),
             );
         }
 
+        if let Some(anchor) = self.profile_menu_open {
+            app_content = app_content.child(self.render_profile_menu(anchor, window, cx));
+        }
+
+        if let Some(anchor) = self.notif_menu_open {
+            app_content = app_content.child(self.render_notif_menu(anchor, window, cx));
+        }
+
+        if self.show_theme_picker {
+            app_content = app_content.child(self.render_theme_picker(cx));
+        }
+
+        if self.custom_buttons_modal.is_some() {
+            app_content = app_content.child(self.render_custom_buttons_modal(cx));
+        }
+
         if self.show_about_dialog {
-            let version = env!("CARGO_PKG_VERSION");
-            app_content = app_content.child(
-                deferred(
-                    div()
-                        .id("about-dialog-backdrop")
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .bg(gpui::hsla(0., 0., 0., 0.5))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.show_about_dialog = false;
-                            cx.notify();
-                        }))
-                        .child(
-                            div()
-                                .id("about-dialog")
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .gap(px(16.))
-                                .w(px(300.))
-                                .px(px(24.))
-                                .py(px(24.))
-                                .bg(ui.overlay)
-                                .border_1()
-                                .border_color(ui.border)
-                                .rounded(px(12.))
-                                .shadow_lg()
-                                .child(
-                                    div()
-                                        .text_color(ui.text)
-                                        .text_size(px(16.))
-                                        .font_weight(gpui::FontWeight::BOLD)
-                                        .child("PaneFlow"),
-                                )
-                                .child(
-                                    div()
-                                        .text_color(ui.muted)
-                                        .text_size(px(13.))
-                                        .child(format!("Version {version}")),
-                                )
-                                .child(
-                                    div()
-                                        .id("about-dialog-ok")
-                                        .px(px(24.))
-                                        .py(px(6.))
-                                        .mt(px(4.))
-                                        .rounded(px(6.))
-                                        .cursor_pointer()
-                                        .bg(ui.accent)
-                                        .text_color(ui.base)
-                                        .text_size(px(13.))
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .hover(|s| s.opacity(0.85))
-                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                            this.show_about_dialog = false;
-                                            cx.notify();
-                                        }))
-                                        .child("Ok"),
-                                ),
-                        ),
-                )
-                .priority(10),
-            );
+            app_content = app_content.child(self.render_about_dialog(cx));
         }
 
         if let Some(menu) = self.workspace_menu_open
@@ -925,8 +904,8 @@ impl Render for PaneFlowApp {
                 ),
             ];
 
-            // Estimated menu height: 7 items × 25px + 2 separators × 7px + 8px padding
-            let menu_height = px(203.);
+            // Estimated menu height: 8 items × 25px + 2 separators × 7px + 8px padding
+            let menu_height = px(228.);
             let win_h = window.window_bounds().get_bounds().size.height;
             // Flip: if not enough space below the click, show the menu above it
             let menu_y = if menu.position.y + menu_height > win_h {
@@ -1004,6 +983,18 @@ impl Render for PaneFlowApp {
                 ui,
                 cx.listener(move |this, _: &ClickEvent, _window, cx| {
                     this.copy_workspace_path(idx, cx);
+                    cx.stop_propagation();
+                }),
+            ));
+
+            // Manage Custom Buttons — opens the per-workspace button editor modal.
+            context_menu = context_menu.child(self.render_context_menu_item(
+                "workspace-context-custom-buttons".into(),
+                "Manage Custom Buttons…",
+                None,
+                ui,
+                cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.open_custom_buttons_modal(idx, window, cx);
                     cx.stop_propagation();
                 }),
             ));
@@ -1332,6 +1323,7 @@ fn main() {
             // Load config early — needed for keybindings and window decorations
             let config = paneflow_config::loader::load_config();
             keybindings::apply_keybindings(cx, &config.shortcuts);
+            widgets::text_input::register_keybindings(cx);
 
             // US-012: macOS native menu bar. On Linux/Windows the call is
             // elided — GPUI's non-macOS platforms don't render a menu bar

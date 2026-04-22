@@ -9,9 +9,11 @@
 //! Tab bar UI is modeled after Zed's tab bar design.
 
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, Render, SharedString, Styled, Window, div, prelude::*, px, rgb, svg,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
+    InteractiveElement, IntoElement, Render, SharedString, Styled, Window, div, prelude::*, px,
+    rgb, svg,
 };
+use paneflow_config::schema::ButtonCommand;
 
 use crate::terminal::{TerminalEvent, TerminalView};
 
@@ -59,6 +61,9 @@ pub struct Pane {
     pub zoomed: bool,
     /// Workspace ID for spawning new terminals with correct env vars.
     pub workspace_id: u64,
+    /// Workspace-specific command buttons rendered in the tab bar after the
+    /// built-in defaults. Populated/updated by `Workspace::propagate_custom_buttons`.
+    pub custom_buttons: Vec<ButtonCommand>,
 }
 
 impl EventEmitter<PaneEvent> for Pane {}
@@ -72,6 +77,7 @@ impl Pane {
             selected_idx: 0,
             zoomed: false,
             workspace_id,
+            custom_buttons: Vec::new(),
         }
     }
 
@@ -165,6 +171,23 @@ impl Pane {
         icon_path: &'static str,
         handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
+        Self::command_button(
+            SharedString::from(id),
+            SharedString::from(icon_path),
+            tab_colors().muted,
+            handler,
+        )
+    }
+
+    /// Render a small icon button with a caller-supplied tint colour.
+    /// Used for the 2 built-in defaults (Claude / Codex brand colours) and
+    /// for user-defined `custom_buttons` (muted, matching the other controls).
+    fn command_button(
+        id: SharedString,
+        icon_path: SharedString,
+        tint: Hsla,
+        handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
         div()
             .id(id)
             .flex()
@@ -184,7 +207,7 @@ impl Pane {
                     .size(px(14.))
                     .flex_none()
                     .path(icon_path)
-                    .text_color(tab_colors().muted),
+                    .text_color(tint),
             )
     }
 
@@ -426,7 +449,43 @@ impl Pane {
                 cx.listener(|_this, _, _window, cx| {
                     cx.emit(PaneEvent::Split(crate::layout::SplitDirection::Horizontal));
                 }),
+            ))
+            // Built-in default command buttons (always present, not removable).
+            .child(Self::command_button(
+                "pane-btn-claude".into(),
+                "icons/claude-color.svg".into(),
+                rgb(0xd97757).into(),
+                cx.listener(|this, _, _window, cx| {
+                    this.active_terminal()
+                        .read(cx)
+                        .send_command("clear && claude");
+                }),
+            ))
+            .child(Self::command_button(
+                "pane-btn-codex".into(),
+                "icons/codex-color.svg".into(),
+                rgb(0x7a9dff).into(),
+                cx.listener(|this, _, _window, cx| {
+                    this.active_terminal()
+                        .read(cx)
+                        .send_command("clear && codex");
+                }),
             ));
+
+        // User-defined command buttons (persisted per workspace).
+        for btn in &self.custom_buttons {
+            let command = btn.command.clone();
+            let id = SharedString::from(format!("pane-btn-custom-{}", btn.id));
+            let icon = SharedString::from(btn.icon.clone());
+            end_section = end_section.child(Self::command_button(
+                id,
+                icon,
+                ui.muted,
+                cx.listener(move |this, _, _window, cx| {
+                    this.active_terminal().read(cx).send_command(&command);
+                }),
+            ));
+        }
 
         bar.child(tabs_area).child(end_section)
     }

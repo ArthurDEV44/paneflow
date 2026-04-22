@@ -52,9 +52,10 @@ impl PaneFlowApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.notif_menu_open = false;
+        self.notif_menu_open = None;
         self.workspace_menu_open = None;
         self.title_bar_menu_open = None;
+        self.profile_menu_open = None;
         if idx < self.workspaces.len() && idx != self.active_idx {
             self.active_idx = idx;
             self.workspaces[idx].focus_first(window, cx);

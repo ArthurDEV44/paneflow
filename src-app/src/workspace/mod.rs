@@ -18,7 +18,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{App, Entity, Window};
-use paneflow_config::schema::LayoutNode;
+use paneflow_config::schema::{ButtonCommand, LayoutNode};
 
 use crate::ai_types::AiToolState;
 use crate::layout::LayoutTree;
@@ -70,6 +70,9 @@ pub struct Workspace {
     /// Name of the Claude tool currently being used (e.g., "Edit", "Bash").
     /// Set by `ai.tool_use`, cleared on state transitions. For future verbose display.
     pub active_tool_name: Option<String>,
+    /// User-defined tab-bar buttons for this workspace.
+    /// Rendered after the 2 built-in defaults (Claude / Codex).
+    pub custom_buttons: Vec<ButtonCommand>,
 }
 
 impl Workspace {
@@ -101,6 +104,7 @@ impl Workspace {
             loader_angle: Rc::new(Cell::new(0.0)),
             agent_pids: std::collections::HashMap::new(),
             active_tool_name: None,
+            custom_buttons: Vec::new(),
         }
     }
 
@@ -135,6 +139,7 @@ impl Workspace {
             loader_angle: Rc::new(Cell::new(0.0)),
             agent_pids: std::collections::HashMap::new(),
             active_tool_name: None,
+            custom_buttons: Vec::new(),
         }
     }
 
@@ -169,6 +174,7 @@ impl Workspace {
             loader_angle: Rc::new(Cell::new(0.0)),
             agent_pids: std::collections::HashMap::new(),
             active_tool_name: None,
+            custom_buttons: Vec::new(),
         }
     }
 
@@ -178,6 +184,18 @@ impl Workspace {
 
     pub fn pane_count(&self) -> usize {
         self.root.as_ref().map_or(0, |r| r.leaf_count())
+    }
+
+    /// Total number of terminal tabs across every pane in the layout.
+    /// A pane holds 1..N tabbed terminals, so this is ≥ `pane_count()`.
+    pub fn terminal_count(&self, cx: &App) -> usize {
+        let Some(root) = self.root.as_ref() else {
+            return 0;
+        };
+        root.collect_leaves()
+            .iter()
+            .map(|pane| pane.read(cx).tabs.len())
+            .sum()
     }
 
     pub fn focus_first(&self, window: &mut Window, cx: &mut App) {
@@ -193,5 +211,33 @@ impl Workspace {
     pub fn serialize_layout(&self, cx: &App) -> Option<LayoutNode> {
         let tree = self.saved_layout.as_ref().or(self.root.as_ref())?;
         Some(tree.serialize(cx))
+    }
+
+    /// Push the current `custom_buttons` list to every `Pane` in the
+    /// workspace's layout tree so the tab bar re-renders with the new set.
+    /// Call after mutating `self.custom_buttons` (add / edit / delete).
+    pub fn propagate_custom_buttons(&self, cx: &mut App) {
+        if let Some(root) = &self.root {
+            walk_and_push_buttons(root, &self.custom_buttons, cx);
+        }
+        if let Some(saved) = &self.saved_layout {
+            walk_and_push_buttons(saved, &self.custom_buttons, cx);
+        }
+    }
+}
+
+fn walk_and_push_buttons(node: &LayoutTree, buttons: &[ButtonCommand], cx: &mut App) {
+    match node {
+        LayoutTree::Leaf(pane) => {
+            pane.update(cx, |p, cx| {
+                p.custom_buttons = buttons.to_vec();
+                cx.notify();
+            });
+        }
+        LayoutTree::Container { children, .. } => {
+            for child in children {
+                walk_and_push_buttons(&child.node, buttons, cx);
+            }
+        }
     }
 }

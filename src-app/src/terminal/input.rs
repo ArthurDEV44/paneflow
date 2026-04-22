@@ -141,7 +141,11 @@ impl TerminalView {
         let mode = *term_guard.mode();
         drop(term_guard);
 
-        // Try the key mapping module first (handles ctrl, special keys, modifiers)
+        // Special keys / modifiers → write the escape sequence directly.
+        // Printable characters are NOT handled here: GPUI's InputHandler
+        // (replace_text_in_range) is the single source of truth for them on
+        // both normal and alt screens. Writing them here as well caused
+        // character doubling in ALT_SCREEN mode (e.g. Claude Code fullscreen TUI).
         if let Some(seq) = crate::keys::to_esc_str(keystroke, &mode, self.option_as_meta) {
             match seq {
                 Cow::Borrowed(s) => {
@@ -150,13 +154,6 @@ impl TerminalView {
                 Cow::Owned(s) => {
                     self.terminal.write_to_pty(s.into_bytes());
                 }
-            }
-        } else if let Some(key_char) = &keystroke.key_char {
-            // Printable character input — only write directly when the IME InputHandler
-            // is disabled (ALT_SCREEN). On the normal screen the InputHandler's
-            // replace_text_in_range() commits text to PTY; writing here too would double it.
-            if mode.contains(alacritty_terminal::term::TermMode::ALT_SCREEN) {
-                self.terminal.write_to_pty(key_char.as_bytes().to_vec());
             }
         }
 

@@ -8,9 +8,9 @@
 //! Extracted from `settings_window.rs` per US-021 of the src-app refactor PRD.
 
 use gpui::{
-    App, Bounds, Context, CursorStyle, Decorations, FocusHandle, Focusable, HitboxBehavior,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, ResizeEdge,
-    Styled, Window, WindowControlArea, canvas, div, point, prelude::*, px, rgb, transparent_black,
+    canvas, div, point, prelude::*, px, rgb, transparent_black, App, Bounds, Context, CursorStyle,
+    Decorations, FocusHandle, Focusable, HitboxBehavior, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Pixels, Render, ResizeEdge, Styled, Window, WindowControlArea,
 };
 
 use crate::keybindings;
@@ -279,10 +279,18 @@ impl Render for SettingsWindow {
                             .flex_1()
                             .bg(settings_content_bg())
                             .overflow_y_scroll()
-                            .px(px(24.))
-                            .pt(px(20.))
-                            .pb(px(12.))
-                            .child(content),
+                            .flex()
+                            .flex_col()
+                            .items_start()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .max_w(px(720.))
+                                    .px(px(28.))
+                                    .pt(px(24.))
+                                    .pb(px(16.))
+                                    .child(content),
+                            ),
                     ),
             );
 

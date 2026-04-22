@@ -86,8 +86,20 @@ impl PaneFlowApp {
         match event {
             title_bar::TitleBarEvent::ToggleMenu(position) => {
                 self.workspace_menu_open = None;
-                self.notif_menu_open = false;
+                self.notif_menu_open = None;
+                self.profile_menu_open = None;
                 self.title_bar_menu_open = if self.title_bar_menu_open.is_some() {
+                    None
+                } else {
+                    Some(*position)
+                };
+                cx.notify();
+            }
+            title_bar::TitleBarEvent::ToggleProfile(position) => {
+                self.workspace_menu_open = None;
+                self.notif_menu_open = None;
+                self.title_bar_menu_open = None;
+                self.profile_menu_open = if self.profile_menu_open.is_some() {
                     None
                 } else {
                     Some(*position)
@@ -135,6 +147,10 @@ impl PaneFlowApp {
                         .detach();
                     let new_pane = self.create_pane(terminal, ws_id, cx);
                     self.workspaces[ws_idx].root = Some(LayoutTree::Leaf(new_pane));
+                    // The freshly-spawned replacement pane starts with an
+                    // empty `custom_buttons` list — push the workspace's
+                    // persisted set so the tab bar renders them again.
+                    self.workspaces[ws_idx].propagate_custom_buttons(cx);
                 }
                 self.save_session(cx);
                 cx.notify();
@@ -169,6 +185,12 @@ impl PaneFlowApp {
                     && let Some(root) = &mut ws.root
                 {
                     root.split_at_pane(&pane, direction, new_pane);
+                }
+                // The freshly-spawned pane starts with an empty
+                // `custom_buttons` list — push the workspace's current set
+                // so the new pane's tab bar matches its siblings.
+                if let Some(ws) = self.workspaces.get(self.active_idx) {
+                    ws.propagate_custom_buttons(cx);
                 }
                 self.save_session(cx);
                 cx.notify();

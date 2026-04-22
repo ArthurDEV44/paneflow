@@ -821,6 +821,7 @@ mod tests {
                 layout: Some(LayoutNode::Pane {
                     surfaces: vec![make_surface("/home/user/project")],
                 }),
+                custom_buttons: vec![],
             }],
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
@@ -840,6 +841,7 @@ mod tests {
                     layout: Some(LayoutNode::Pane {
                         surfaces: vec![make_surface("/home/user/web")],
                     }),
+                    custom_buttons: vec![],
                 },
                 WorkspaceSession {
                     title: "backend".to_string(),
@@ -847,11 +849,13 @@ mod tests {
                     layout: Some(LayoutNode::Pane {
                         surfaces: vec![make_surface("/home/user/api")],
                     }),
+                    custom_buttons: vec![],
                 },
                 WorkspaceSession {
                     title: "devops".to_string(),
                     cwd: "/home/user/infra".to_string(),
                     layout: None,
+                    custom_buttons: vec![],
                 },
             ],
         };
@@ -870,6 +874,7 @@ mod tests {
             workspaces: vec![WorkspaceSession {
                 title: "dev".to_string(),
                 cwd: "/home/user".to_string(),
+                custom_buttons: vec![],
                 layout: Some(LayoutNode::Split {
                     direction: "horizontal".to_string(),
                     ratio: None,
@@ -911,6 +916,7 @@ mod tests {
             workspaces: vec![WorkspaceSession {
                 title: "main".to_string(),
                 cwd: "/tmp".to_string(),
+                custom_buttons: vec![],
                 layout: Some(LayoutNode::Pane {
                     surfaces: vec![SurfaceDefinition {
                         surface_type: Some("terminal".to_string()),

@@ -70,6 +70,11 @@ flate2 = "1"
 # across platforms.
 interprocess = "2"
 
+# Grapheme-cluster boundaries for the cursor-aware TextInput widget
+# (widgets/text_input.rs). Already a transitive dep via GPUI, so Cargo
+# deduplicates — the direct declaration is only needed to `use` the trait.
+unicode-segmentation = "1"
+
 # Linux: enable Wayland + X11 display backends for gpui_platform
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868", features = ["wayland", "x11"] }

@@ -145,6 +145,25 @@ pub struct WorkspaceSession {
     pub cwd: String,
     /// Layout tree (splits + panes). `None` means a single default pane.
     pub layout: Option<LayoutNode>,
+    /// User-defined command buttons rendered in this workspace's tab bar.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_buttons: Vec<ButtonCommand>,
+}
+
+/// A user-defined command button rendered in a workspace's tab bar.
+/// Clicking the button sends `{command}\r` to the active terminal.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ButtonCommand {
+    /// Stable identifier (opaque string) — survives reorderings and renames.
+    pub id: String,
+    /// Display name (also used as hover tooltip).
+    pub name: String,
+    /// Icon asset path relative to the `assets/` folder (e.g. `"icons/rocket.svg"`).
+    pub icon: String,
+    /// Shell command string, executed verbatim in the active terminal
+    /// with a trailing `\r` appended (no bracketed-paste wrapping).
+    pub command: String,
 }
 
 /// A surface within a pane (terminal, browser, etc.).

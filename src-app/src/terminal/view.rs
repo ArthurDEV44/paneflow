@@ -423,6 +423,14 @@ impl TerminalView {
         self.terminal.write_to_pty(text.as_bytes().to_vec());
     }
 
+    /// Send a shell command to the PTY and execute it (appends `\r`).
+    /// Used by tab-bar command buttons.
+    pub fn send_command(&self, command: &str) {
+        let mut bytes = command.as_bytes().to_vec();
+        bytes.push(b'\r');
+        self.terminal.write_to_pty(bytes);
+    }
+
     /// Send a keystroke to the PTY by converting it to an escape sequence.
     /// `keystroke_str` is a dash-separated description like "ctrl-c", "enter", "alt-f".
     /// Returns Ok(()) on success, Err(message) if the keystroke string is invalid.

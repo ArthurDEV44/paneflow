@@ -5,13 +5,13 @@
 //! Extracted from `settings_window.rs` per US-021 of the src-app refactor PRD.
 
 use gpui::{
-    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled, div, prelude::*, px,
+    div, prelude::*, px, ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement,
+    ParentElement, SharedString, Styled,
 };
 
 use crate::keybindings;
 
-use super::window::{SETTINGS_SIDEBAR_WIDTH, SettingsSection, SettingsWindow, settings_sidebar_bg};
+use super::window::{settings_sidebar_bg, SettingsSection, SettingsWindow, SETTINGS_SIDEBAR_WIDTH};
 
 impl SettingsWindow {
     pub(crate) fn render_settings_sidebar(
@@ -34,22 +34,41 @@ impl SettingsWindow {
             .border_r_1()
             .border_color(ui.border)
             .bg(settings_sidebar_bg())
-            .pt(px(4.));
+            .pt(px(10.))
+            .px(px(8.));
 
         for (label, section) in sections {
             let is_active = section == active;
             nav = nav.child(
                 div()
                     .id(SharedString::from(format!("nav-{label}")))
-                    .mx(px(4.))
-                    .px(px(10.))
-                    .py(px(6.))
+                    .relative()
+                    .pl(px(12.))
+                    .pr(px(10.))
+                    .py(px(7.))
                     .rounded(px(6.))
                     .text_size(px(13.))
+                    .font_weight(if is_active {
+                        gpui::FontWeight::MEDIUM
+                    } else {
+                        gpui::FontWeight::NORMAL
+                    })
                     .cursor(CursorStyle::PointingHand)
-                    .when(is_active, |d| d.bg(ui.overlay).text_color(ui.text))
+                    .when(is_active, |d| {
+                        d.bg(ui.overlay).text_color(ui.text).child(
+                            div()
+                                .absolute()
+                                .left(px(3.))
+                                .top(px(7.))
+                                .bottom(px(7.))
+                                .w(px(2.))
+                                .rounded(px(1.))
+                                .bg(ui.text),
+                        )
+                    })
                     .when(!is_active, |d| {
-                        d.text_color(ui.muted).hover(|s| s.bg(ui.subtle))
+                        d.text_color(ui.muted)
+                            .hover(|s| s.bg(ui.subtle).text_color(ui.text))
                     })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                         this.section = section;
