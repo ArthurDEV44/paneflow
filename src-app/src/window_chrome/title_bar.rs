@@ -41,8 +41,12 @@ pub enum SelfUpdatePillState {
 pub enum SystemPackageKind {
     Apt,
     Dnf,
-    /// `SystemPackage` was detected but neither apt nor dnf markers were
-    /// present (e.g., `eopkg` on Solus, `xbps` on Void).
+    /// Immutable Fedora variants (Silverblue / Kinoite / Bazzite) —
+    /// detected via `/run/ostree-booted`. The pill surfaces a
+    /// `rpm-ostree upgrade` hint rather than the usual `dnf`/`apt` copy.
+    RpmOstree,
+    /// `SystemPackage` was detected but neither apt nor dnf nor ostree
+    /// markers were present (e.g., `eopkg` on Solus, `xbps` on Void).
     Other,
 }
 
@@ -231,6 +235,7 @@ impl Render for TitleBar {
                     let label = match kind {
                         SystemPackageKind::Apt => "Update via apt".to_string(),
                         SystemPackageKind::Dnf => "Update via dnf".to_string(),
+                        SystemPackageKind::RpmOstree => "Update via rpm-ostree".to_string(),
                         SystemPackageKind::Other => "Update via package manager".to_string(),
                     };
                     (label, PillStyle::SystemHint)

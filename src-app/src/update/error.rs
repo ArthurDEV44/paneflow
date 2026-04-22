@@ -36,27 +36,39 @@ pub enum UpdateError {
     /// disappeared — PaneFlow itself needs a new release with an updated
     /// pin. `url` is the missing asset so the user can report it verbatim.
     ReleaseAssetMissing { url: String },
-    /// Install step was declined by the OS or user (US-009 / US-010).
-    /// Distinct from `DiskFull` / `Other`: the update was downloaded and
-    /// verified cleanly, but the actual installation couldn't proceed —
-    /// typical causes are `/Applications/` being non-writable, SIP
-    /// blocking the replace, Windows UAC cancel (msiexec 1602), or the
-    /// running process holding a lock on the install path. The wrapped
-    /// `message` is user-visible verbatim so the toast can be specific
-    /// about the reason ("reinstall manually", "administrator required").
+    /// Install step was declined by the OS or user (US-009 / US-010 /
+    /// US-002-pkexec). Distinct from `DiskFull` / `Other`: the update
+    /// was downloaded and verified cleanly, but the actual installation
+    /// couldn't proceed — typical causes are `/Applications/` being
+    /// non-writable, SIP blocking the replace, Windows UAC cancel
+    /// (msiexec 1602), polkit auth cancel on Linux (pkexec exit 126),
+    /// or the running process holding a lock on the install path. The
+    /// wrapped `message` is user-visible verbatim so the toast can be
+    /// specific about the reason ("reinstall manually",
+    /// "administrator required", "Authentication cancelled").
     InstallDeclined { message: String },
-    /// msiexec (US-010) returned a fatal install error (typically 1603).
-    /// Distinct from `InstallDeclined`: the user consented and the OS
-    /// tried to install, but something in the transaction failed — disk
-    /// corruption, a conflicting component, an orphaned prior install.
-    /// `log_path` points at the `/l*v` verbose log that msiexec writes;
-    /// surfacing it in the toast lets the user attach it to a bug report.
+    /// A privileged installer returned a fatal error after the user
+    /// consented and the OS attempted the install. Covers msiexec
+    /// (US-010, typically 1603) and pkexec-wrapped `dnf`/`apt-get`
+    /// (US-002-pkexec, any non-zero exit that isn't 126/127). Distinct
+    /// from `InstallDeclined`: the transaction was started, not
+    /// cancelled. Causes include disk corruption, a conflicting
+    /// component, an orphaned prior install, a 404 mirror, or a
+    /// conflicting package lock. `log_path` points at the `/l*v`
+    /// verbose log for msiexec; for pkexec/dnf/apt there is no log
+    /// file (stderr is dumped at `log::debug!` inside the runner), so
+    /// the path is `PathBuf::new()` and `user_message` falls back to
+    /// the "check the PaneFlow log" variant.
     InstallFailed { log_path: PathBuf },
-    /// A critical OS tool the updater depends on was not found on PATH
-    /// (US-010). On Windows this means `msiexec.exe` is missing from
-    /// `%SystemRoot%\System32\`, which indicates a broken or tampered
-    /// install. The wrapped `message` is user-visible verbatim so the
-    /// toast can name the missing tool and suggest a reinstall path.
+    /// A critical OS tool the updater depends on was not found on
+    /// PATH, or a required subsystem is missing. On Windows this
+    /// means `msiexec.exe` is missing from `%SystemRoot%\System32\`
+    /// (US-010); on Linux this means `pkexec` is not installed, or
+    /// pkexec returned 127 because no polkit agent is running in the
+    /// current session (US-002-pkexec). Either way the user's install
+    /// is broken in a way PaneFlow can't self-fix. The wrapped
+    /// `message` is user-visible verbatim so the toast can name the
+    /// missing tool and suggest a reinstall / polkit-agent path.
     EnvironmentBroken { message: String },
     /// Classifier couldn't bucket the error. The wrapped message is shown
     /// verbatim so the user sees *something* actionable instead of a
@@ -95,10 +107,23 @@ impl UpdateError {
                 "Update blocked: a required asset is no longer published ({url}). Please file a bug — PaneFlow needs a refreshed release pin."
             ),
             UpdateError::InstallDeclined { message } => message.clone(),
-            UpdateError::InstallFailed { log_path } => format!(
-                "Update install failed. Verbose log saved to `{}` — attach it to a bug report.",
-                log_path.display()
-            ),
+            UpdateError::InstallFailed { log_path } => {
+                // Empty path = pkexec/dnf/apt branch (US-002-pkexec) —
+                // the CLI package managers don't write a self-contained
+                // log file; their stderr is captured at `log::debug!`
+                // by the runner instead. "PaneFlow log" would be
+                // misleading here because ordinary users don't run
+                // with `RUST_LOG=debug`. msiexec (US-010) always sets
+                // a concrete `/l*v` path and hits the other branch.
+                if log_path.as_os_str().is_empty() {
+                    "Update install failed. Retry later, or update via your package manager directly.".to_string()
+                } else {
+                    format!(
+                        "Update install failed. Verbose log saved to `{}` — attach it to a bug report.",
+                        log_path.display()
+                    )
+                }
+            }
             UpdateError::EnvironmentBroken { message } => message.clone(),
             UpdateError::Other(msg) => msg.clone(),
         }
@@ -569,5 +594,83 @@ mod tests {
             message: "msiexec.exe not found on PATH".into(),
         };
         assert_eq!(err.user_message(), "msiexec.exe not found on PATH");
+    }
+
+    // ─── US-003 (pkexec): verify classify() walks the anyhow chain that
+    // `linux/system_package::run_update` actually produces. The runner
+    // returns `Err(anyhow::Error::new(UpdateError::X).context("pkexec
+    // exited with code N"))` — the outer layer is the plain context
+    // string, NOT an `UpdateError`. Without chain-walking, the
+    // classifier would collapse every pkexec failure into `Other` and
+    // the toast would render the raw context string instead of the
+    // variant-specific copy.
+
+    #[test]
+    fn classify_recovers_install_declined_through_pkexec_context() {
+        let tagged = UpdateError::InstallDeclined {
+            message: "Authentication cancelled".into(),
+        };
+        let err = anyhow::Error::new(tagged.clone()).context("pkexec exited with code 126");
+        assert_eq!(UpdateError::classify(&err), tagged);
+    }
+
+    #[test]
+    fn classify_recovers_environment_broken_through_pkexec_context() {
+        let tagged = UpdateError::EnvironmentBroken {
+            message: "pkexec returned 127 (no polkit agent or command missing)".into(),
+        };
+        let err = anyhow::Error::new(tagged.clone()).context("pkexec exited with code 127");
+        assert_eq!(UpdateError::classify(&err), tagged);
+    }
+
+    #[test]
+    fn classify_recovers_install_failed_through_pkexec_context() {
+        // The pkexec/dnf/apt branch passes `PathBuf::new()` because
+        // CLI package managers don't emit a standalone log file.
+        let tagged = UpdateError::InstallFailed {
+            log_path: PathBuf::new(),
+        };
+        let err = anyhow::Error::new(tagged.clone()).context("pkexec exited with code 1");
+        assert_eq!(UpdateError::classify(&err), tagged);
+    }
+
+    #[test]
+    fn user_message_install_failed_handles_empty_path() {
+        // US-002-pkexec: dnf/apt return no standalone log file; the
+        // runner passes `PathBuf::new()`. The renderer must not emit
+        // the raw "`{}`" (empty-backticks) form it uses for msiexec.
+        let err = UpdateError::InstallFailed {
+            log_path: PathBuf::new(),
+        };
+        let msg = err.user_message();
+        assert!(msg.contains("Update install failed"), "got: {msg}");
+        assert!(
+            !msg.contains("``"),
+            "empty-backticks leaked into user-visible copy: {msg}"
+        );
+        assert!(
+            !msg.contains("`` —"),
+            "empty-path placeholder leaked into user-visible copy: {msg}"
+        );
+        assert!(
+            msg.to_ascii_lowercase().contains("package manager"),
+            "empty-path branch should point the user at their package manager: {msg}"
+        );
+        assert!(
+            !msg.contains("Verbose log saved"),
+            "empty-path branch must not advertise a log file that does not exist: {msg}"
+        );
+    }
+
+    #[test]
+    fn classify_recovers_other_through_pkexec_signal_context() {
+        // US-001 signal-kill path: `classify_exit` produces
+        // `UpdateError::Other(format!("package manager killed by signal {sig}"))`
+        // and `run_update` wraps it with `.context("pkexec killed by signal {sig}")`.
+        // The chain walk must recover the inner `Other` variant so the
+        // toast shows the signal message rather than the context wrapper.
+        let tagged = UpdateError::Other("package manager killed by signal 9".into());
+        let err = anyhow::Error::new(tagged.clone()).context("pkexec killed by signal 9");
+        assert_eq!(UpdateError::classify(&err), tagged);
     }
 }

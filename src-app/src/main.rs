@@ -532,6 +532,9 @@ impl Render for PaneFlowApp {
                             update::install_method::PackageManager::Dnf => {
                                 title_bar::SystemPackageKind::Dnf
                             }
+                            update::install_method::PackageManager::RpmOstree => {
+                                title_bar::SystemPackageKind::RpmOstree
+                            }
                             update::install_method::PackageManager::Other => {
                                 title_bar::SystemPackageKind::Other
                             }
@@ -1160,6 +1163,10 @@ fn system_package_update_command(
         Some(update::install_method::PackageManager::Dnf) => {
             format!("sudo dnf upgrade paneflow-{version}")
         }
+        // US-004: `rpm-ostree upgrade` takes no package argument — it
+        // rebases the whole deployment. Version string is intentionally
+        // NOT included, unlike the apt/dnf arms.
+        Some(update::install_method::PackageManager::RpmOstree) => "rpm-ostree upgrade".to_string(),
         Some(update::install_method::PackageManager::Other) | None => {
             "Update PaneFlow via your system's package manager".to_string()
         }
