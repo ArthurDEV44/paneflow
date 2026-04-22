@@ -36,6 +36,12 @@ pub mod linux;
 pub mod macos;
 pub mod windows;
 
+// US-008 — install-method hygiene migrations. Linux-only by construction
+// (the only crossover this cleans up is tar.gz → rpm/deb, which has no
+// equivalent on macOS or Windows).
+#[cfg(target_os = "linux")]
+pub mod migrations;
+
 // Ergonomic re-export: callers use `crate::update::UpdateError` without
 // reaching into `update::error::UpdateError`. `IntegrityMismatch` stays
 // accessible via `update::error::IntegrityMismatch` (only constructed inside

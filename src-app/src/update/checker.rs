@@ -93,8 +93,15 @@ impl AssetFormat {
             // end for the in-app updater (the click handler short-circuits to
             // the hint toast), so any format works. TarGz is the neutral
             // fallback mirroring `InstallMethod::Unknown`.
+            //
+            // US-004: RpmOstree (Silverblue / Kinoite) is similarly routed
+            // to an informational toast — the updater never downloads an
+            // asset for these users, so the format is never reached.
             InstallMethod::SystemPackage {
                 manager: PackageManager::Other,
+            }
+            | InstallMethod::SystemPackage {
+                manager: PackageManager::RpmOstree,
             } => AssetFormat::TarGz,
             InstallMethod::AppImage { .. } => AssetFormat::AppImage,
             InstallMethod::TarGz { .. } => AssetFormat::TarGz,

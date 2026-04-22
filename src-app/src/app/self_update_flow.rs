@@ -10,6 +10,38 @@ use crate::{
     PaneFlowApp, StartSelfUpdate, TOAST_HOLD_MS, ToastAction, system_package_update_command, update,
 };
 
+/// Strict-semver guard for the release tag before it reaches any
+/// user-facing surface (clipboard, toast, argv). Matches the regex
+/// `^v?\d+\.\d+\.\d+$` — identical to the validator inside
+/// `update::linux::system_package::validate_version`, inlined here so
+/// the check runs even on code paths that bypass `run_update`
+/// (`PackageManager::Other` clipboard fallback, non-Linux targets,
+/// and the `EnvironmentBroken` clipboard fallback). Keeping the rule
+/// in two places is a deliberate trade for keeping `validate_version`
+/// private to its Linux-only module.
+fn is_strict_semver(raw: &str) -> bool {
+    let rest = raw.strip_prefix('v').unwrap_or(raw);
+    let mut completed_parts: usize = 0;
+    let mut segment_len: usize = 0;
+    for ch in rest.chars() {
+        match ch {
+            '0'..='9' => segment_len = segment_len.saturating_add(1),
+            '.' => {
+                if segment_len == 0 {
+                    return false;
+                }
+                completed_parts = completed_parts.saturating_add(1);
+                segment_len = 0;
+            }
+            _ => return false,
+        }
+    }
+    if segment_len == 0 {
+        return false;
+    }
+    completed_parts.saturating_add(1) == 3
+}
+
 impl PaneFlowApp {
     /// Kick off the in-app self-update flow. See the module-level doc for the
     /// branch matrix; on any failure a toast surfaces and the update pill
@@ -24,11 +56,20 @@ impl PaneFlowApp {
             return;
         }
 
-        // System-package installs (.deb/.rpm) are upgraded by apt/dnf, never
-        // by the in-app updater — writing to `/usr/bin/paneflow` would fail
-        // unprivileged and break immutable distros. Show the copy-pasteable
-        // upgrade command instead. Crucially: return BEFORE reading
-        // `asset_url`, so no network activity happens on click.
+        // System-package installs (.deb/.rpm). Fedora / Ubuntu / openSUSE
+        // / Debian users on the signed pkg.paneflow.dev repo get an
+        // in-app pkexec-elevated `dnf|apt-get install` (US-002). Solus /
+        // Void / NixOS et al. fall back to the clipboard-copy flow so
+        // they at least see a runnable upgrade command. `return`s
+        // BEFORE reading `asset_url` below — the pkexec flow pulls its
+        // payload from the system repo; no direct GitHub download.
+        //
+        // Note: `InstallMethod::SystemPackage` is declared unconditionally
+        // (not `#[cfg]`-gated) so this `if let` must compile on every
+        // target. The pkexec call below is Linux-only; non-Linux targets
+        // route through the clipboard-copy fallback. In practice
+        // `install_method::detect()` only produces `SystemPackage` on
+        // Linux, so the non-Linux path is compile-only ballast.
         if let update::install_method::InstallMethod::SystemPackage { manager } =
             &self.install_method
         {
@@ -36,10 +77,198 @@ impl PaneFlowApp {
                 Some(update::checker::UpdateStatus::Available { version, .. }) => version.clone(),
                 _ => return,
             };
-            let command = system_package_update_command(Some(manager), &version);
-            cx.write_to_clipboard(ClipboardItem::new_string(command.clone()));
-            self.show_toast(format!("Copied: {command}"), cx);
-            return;
+
+            // Defence in depth: reject any version that is not strict
+            // semver BEFORE formatting it into a clipboard string, a
+            // toast, or argv. US-001 already regex-validates inside
+            // `run_update`, but the `PackageManager::Other` branch and
+            // the `EnvironmentBroken` fallback both construct a
+            // user-visible "Copied: sudo apt install paneflow=<ver>"
+            // toast WITHOUT going through `run_update` first. A
+            // compromised GitHub tag (e.g. `0.2.3; rm -rf $HOME`)
+            // would otherwise end up in the user's clipboard verbatim.
+            // The three-dot-decimal grammar matches
+            // `system_package::validate_version`.
+            if !is_strict_semver(&version) {
+                log::warn!(
+                    "self-update/system-package: refusing malformed version string: {version:?}"
+                );
+                self.show_toast("Update unavailable — invalid release tag".to_string(), cx);
+                return;
+            }
+
+            // US-004: rpm-ostree (Silverblue / Kinoite / Bazzite).
+            // Immutable distros stage updates offline for the next
+            // reboot — pkexec+dnf would fail against the read-only
+            // `/usr`. Surface a dedicated informational toast and
+            // copy `rpm-ostree upgrade` to the clipboard. No
+            // subprocess spawn, no `cx.restart()` — the update does
+            // not take effect until the user reboots.
+            if matches!(manager, update::install_method::PackageManager::RpmOstree) {
+                cx.write_to_clipboard(ClipboardItem::new_string("rpm-ostree upgrade".to_string()));
+                // Long-form informational copy; use `push_toast`
+                // with 4× hold so the user has time to read it
+                // (default TOAST_HOLD_MS is tuned for short
+                // "Copied: …" confirmations).
+                self.push_toast(
+                    "PaneFlow detects an immutable distribution. Update must be run via `rpm-ostree upgrade` at the system level — the update has been copied to your clipboard.".to_string(),
+                    Vec::new(),
+                    TOAST_HOLD_MS * 4,
+                    cx,
+                );
+                return;
+            }
+
+            // PackageManager::Other (Solus, Void, NixOS, …): no reliable
+            // repo from our side → keep the clipboard-copy behaviour.
+            // Same code path as pre-US-002. Also used as the
+            // compile-only fallback on macOS / Windows for the
+            // (unreachable-at-runtime) Dnf / Apt variants.
+            //
+            // `RpmOstree` is intentionally absent from the whitelist
+            // below — Silverblue / Kinoite users are already served
+            // by the dedicated informational arm above, which always
+            // `return`s. If a future refactor removes that early
+            // return, `RpmOstree` would fall through to the generic
+            // clipboard-copy path (safe but wrong copy — never to
+            // pkexec, because the whitelist excludes it).
+            #[cfg(not(target_os = "linux"))]
+            let run_pkexec = false;
+            #[cfg(target_os = "linux")]
+            let run_pkexec = matches!(
+                manager,
+                update::install_method::PackageManager::Dnf
+                    | update::install_method::PackageManager::Apt
+            );
+
+            if !run_pkexec {
+                let command = system_package_update_command(Some(manager), &version);
+                cx.write_to_clipboard(ClipboardItem::new_string(command.clone()));
+                self.show_toast(format!("Copied: {command}"), cx);
+                return;
+            }
+
+            // Dnf / Apt on Linux: full pkexec flow, matching the
+            // AppImage / TarGz one-click UX. Status transitions:
+            // Idle → Downloading → (on Ok) Installing → save_session →
+            // set_restart_path → restart.
+            #[cfg(target_os = "linux")]
+            {
+                let manager_owned = manager.clone();
+                let manager_label: &'static str = match manager_owned {
+                    update::install_method::PackageManager::Dnf => "dnf",
+                    update::install_method::PackageManager::Apt => "apt",
+                    // Other / RpmOstree are short-circuited above via
+                    // the rpm-ostree informational arm and the
+                    // `run_pkexec` gate; these arms exist purely for
+                    // compile-time exhaustiveness.
+                    update::install_method::PackageManager::Other => "system-package",
+                    update::install_method::PackageManager::RpmOstree => "rpm-ostree",
+                };
+                self.self_update_status = update::SelfUpdateStatus::Downloading;
+                cx.notify();
+
+                cx.spawn(async move |this, cx| {
+                    let result = smol::unblock({
+                        // Clone into the worker task; `manager_owned`
+                        // (outer) stays in scope for the
+                        // `EnvironmentBroken` clipboard fallback below.
+                        let manager_for_worker = manager_owned.clone();
+                        let version_for_worker = version.clone();
+                        move || {
+                            update::linux::system_package::run_update(
+                                &manager_for_worker,
+                                &version_for_worker,
+                            )
+                        }
+                    })
+                    .await;
+
+                    match result {
+                        Ok(()) => {
+                            let _ = this.update(cx, |app, cx| {
+                                app.self_update_status = update::SelfUpdateStatus::Installing;
+                                app.save_session(cx);
+                                cx.notify();
+                            });
+                            cx.update(|cx| {
+                                log::info!(
+                                    "self-update/{manager_label}: restarting into /usr/bin/paneflow"
+                                );
+                                cx.set_restart_path(std::path::PathBuf::from("/usr/bin/paneflow"));
+                                cx.restart();
+                            });
+                        }
+                        Err(err) => {
+                            // Classify once on the async side; the
+                            // closure below only decides which state
+                            // transition + toast copy to run on the
+                            // main thread.
+                            let classified = update::UpdateError::classify(&err);
+                            let _ = this.update(cx, |app, cx| match classified {
+                                // Polkit "Cancel" — benign. Revert to
+                                // Idle, neutral toast, DO NOT bump the
+                                // retry counter (user intent, not a
+                                // failure).
+                                update::UpdateError::InstallDeclined { .. } => {
+                                    app.self_update_status = update::SelfUpdateStatus::Idle;
+                                    app.show_toast("Update cancelled".to_string(), cx);
+                                    cx.notify();
+                                }
+                                // pkexec missing / no polkit agent /
+                                // exit 127 — fall back to the
+                                // clipboard-copy behaviour so the user
+                                // has a runnable command. No retry
+                                // bump (transient env issue, not a
+                                // package-mgr failure).
+                                update::UpdateError::EnvironmentBroken { .. } => {
+                                    let command = system_package_update_command(
+                                        Some(&manager_owned),
+                                        &version,
+                                    );
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        command.clone(),
+                                    ));
+                                    app.self_update_status = update::SelfUpdateStatus::Idle;
+                                    app.show_toast(format!("Copied: {command}"), cx);
+                                    cx.notify();
+                                }
+                                // US-005: backpressure — `dnf-automatic`
+                                // or an interactive `sudo apt install`
+                                // held the package-manager lock at
+                                // pre-flight time. Transient condition
+                                // (user can retry in a moment), NOT a
+                                // real failure, so skip the 3-strikes
+                                // counter and show a neutral toast.
+                                // Match on the exact sentinel emitted
+                                // by `run_update` so brittle substring
+                                // matching is avoided.
+                                update::UpdateError::Other(ref msg)
+                                    if msg == update::linux::system_package::BUSY_MESSAGE =>
+                                {
+                                    app.self_update_status = update::SelfUpdateStatus::Idle;
+                                    app.push_toast(
+                                        update::linux::system_package::BUSY_MESSAGE.to_string(),
+                                        Vec::new(),
+                                        TOAST_HOLD_MS * 2,
+                                        cx,
+                                    );
+                                    cx.notify();
+                                }
+                                // Anything else (mirror 5xx, disk full,
+                                // signal, transaction conflict) — real
+                                // failure; feed the 3-strikes counter
+                                // via record_update_failure.
+                                _ => {
+                                    app.record_update_failure(manager_label, &err, cx);
+                                }
+                            });
+                        }
+                    }
+                })
+                .detach();
+                return;
+            }
         }
 
         // After 3 consecutive failures, the 4th click stops re-trying and

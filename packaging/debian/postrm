@@ -24,13 +24,28 @@ purge)
     ;;
 
 remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
-    # No-op. `remove` preserves config; the other phases are dpkg
-    # bookkeeping where we must not touch files.
+    # No-op on file state. `remove` preserves config; the other phases
+    # are dpkg bookkeeping where we must not touch files.
     ;;
 
 *)
     # Unknown action — exit 0 for forward compatibility.
     ;;
 esac
+
+# --- Icon + desktop cache refresh (all removal phases) ----------------
+# Runs on every postrm phase (remove, purge, upgrade, abort-*) so
+# stale paneflow.desktop + /usr/share/icons/hicolor/*/apps/paneflow.png
+# entries stop being surfaced by GNOME Shell / KDE Plasma immediately.
+# Idempotent; the `|| true` guard keeps the transaction green on
+# minimal Debian installs without these tools. Place AFTER the case
+# block so `purge` has already removed our files when the cache is
+# rebuilt (the new cache won't reference the now-missing icon).
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true
+fi
 
 exit 0

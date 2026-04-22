@@ -22,11 +22,20 @@ use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
 /// Package manager used for system-wide installs. Advisory only — the updater
-/// uses this to render the correct "update via apt/dnf" hint in the UI.
+/// uses this to pick the correct in-app update strategy (pkexec dnf/apt) or
+/// UI hint (generic clipboard-copy / rpm-ostree informational toast).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PackageManager {
     Apt,
     Dnf,
+    /// Immutable Fedora variants (Silverblue, Kinoite, Bazzite). Detected
+    /// via `/run/ostree-booted` — these systems have `/etc/fedora-release`
+    /// too, so the ostree probe MUST run before the Dnf probe. `dnf`
+    /// cannot mutate the read-only `/usr`; updates must go through
+    /// `rpm-ostree upgrade` which stages a new deployment for next boot.
+    /// US-004 only surfaces an informational toast + clipboard copy; a
+    /// full in-place `pkexec rpm-ostree install …` flow is deferred.
+    RpmOstree,
     /// `/usr/bin/paneflow` exists but neither `/etc/debian_version` nor
     /// `/etc/fedora-release` are present (e.g., `eopkg` on Solus, `xbps` on
     /// Void). The UI falls back to a generic "via your package manager" hint.
@@ -200,17 +209,42 @@ fn windows_msi_install_path(
 /// Infer the system package manager from distro-identifier files.
 ///
 /// Only reached when the binary is at `/usr/bin` or `/usr/local/bin` — i.e.
-/// we already know a system package put it there. Returns `Other` when
-/// neither Debian nor Fedora markers are found so the UI can degrade to a
-/// generic hint instead of pretending `apt` is available.
+/// we already know a system package put it there. Returns `Other` when no
+/// recognised marker is found so the UI can degrade to a generic hint
+/// instead of pretending `apt` is available.
+///
+/// Precedence matters: Silverblue / Kinoite carry BOTH `/etc/fedora-release`
+/// AND `/run/ostree-booted`. The ostree probe must run first, otherwise we
+/// would route those users to a broken `dnf install` (US-004).
 fn detect_package_manager() -> PackageManager {
-    if Path::new("/etc/debian_version").exists() {
-        PackageManager::Apt
-    } else if Path::new("/etc/fedora-release").exists() {
-        PackageManager::Dnf
-    } else {
-        PackageManager::Other
+    detect_package_manager_with_probes(
+        Path::new("/etc/debian_version").exists(),
+        Path::new("/etc/fedora-release").exists(),
+        Path::new("/run/ostree-booted").exists(),
+    )
+}
+
+/// Pure, parameter-driven version of [`detect_package_manager`] so the
+/// precedence logic is unit-testable without touching the real filesystem.
+/// Each `bool` is the result of a `Path::exists()` probe the caller runs.
+fn detect_package_manager_with_probes(
+    debian_marker: bool,
+    fedora_marker: bool,
+    ostree_booted: bool,
+) -> PackageManager {
+    // Debian derivatives never carry `/run/ostree-booted`, so check Debian
+    // first as the clearest signal.
+    if debian_marker {
+        return PackageManager::Apt;
     }
+    // Ostree marker beats the Fedora marker — Silverblue has both.
+    if ostree_booted {
+        return PackageManager::RpmOstree;
+    }
+    if fedora_marker {
+        return PackageManager::Dnf;
+    }
+    PackageManager::Other
 }
 
 /// Return the enclosing `.app` bundle path if `path` points at a binary
@@ -600,5 +634,72 @@ mod tests {
             None,
         );
         assert_eq!(r, InstallMethod::Unknown);
+    }
+
+    // ─── US-004: rpm-ostree (Silverblue / Kinoite) detection precedence ───
+
+    #[test]
+    fn detect_package_manager_debian_marker_wins() {
+        // Debian-family systems never carry `/run/ostree-booted`, but if
+        // they did, Apt still wins because apt is the one ground truth
+        // for package routing on those hosts.
+        assert_eq!(
+            detect_package_manager_with_probes(true, false, false),
+            PackageManager::Apt
+        );
+    }
+
+    #[test]
+    fn detect_package_manager_fedora_marker_returns_dnf() {
+        assert_eq!(
+            detect_package_manager_with_probes(false, true, false),
+            PackageManager::Dnf
+        );
+    }
+
+    #[test]
+    fn classify_system_package_detects_rpm_ostree_via_ostree_booted_marker() {
+        // US-004 AC: Silverblue / Kinoite carry BOTH /etc/fedora-release AND
+        // /run/ostree-booted. The ostree probe must fire first so these
+        // users get routed to the informational `rpm-ostree upgrade` toast
+        // instead of a broken `dnf install` that would fail on the
+        // read-only /usr.
+        assert_eq!(
+            detect_package_manager_with_probes(false, true, true),
+            PackageManager::RpmOstree
+        );
+    }
+
+    #[test]
+    fn detect_package_manager_ostree_without_fedora_marker_still_rpm_ostree() {
+        // Bazzite / custom ostree spins that don't ship /etc/fedora-release
+        // should still be detected correctly.
+        assert_eq!(
+            detect_package_manager_with_probes(false, false, true),
+            PackageManager::RpmOstree
+        );
+    }
+
+    #[test]
+    fn detect_package_manager_no_markers_returns_other() {
+        assert_eq!(
+            detect_package_manager_with_probes(false, false, false),
+            PackageManager::Other
+        );
+    }
+
+    #[test]
+    fn detect_package_manager_debian_plus_ostree_returns_apt() {
+        // Endless OS (Debian-based with an ostree layer) carries BOTH
+        // `/etc/debian_version` and `/run/ostree-booted`. Current
+        // precedence is Debian-first → returns `Apt`. This is known
+        // imperfect for Endless (the updater will fail against the
+        // read-only base) but is at least deterministic; a dedicated
+        // Endless path is out of scope for US-004. This test pins the
+        // current behavior so a later refactor can't silently change it.
+        assert_eq!(
+            detect_package_manager_with_probes(true, false, true),
+            PackageManager::Apt
+        );
     }
 }

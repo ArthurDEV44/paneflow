@@ -98,6 +98,27 @@ EOF
             fi
         fi
     fi
+
+    # --- Icon + desktop cache refresh ----------------------------------
+    # Without this, the freedesktop hicolor icon cache under
+    # /usr/share/icons/hicolor/icon-theme.cache and the application DB
+    # under /usr/share/applications/mimeinfo.cache keep pointing at the
+    # previous version's artwork, so GNOME Shell / KDE Plasma / docks /
+    # launchers keep showing stale icons after `apt upgrade paneflow`
+    # even though the new PNGs are already on disk.
+    #
+    # Both commands are safe to re-run on every install and every
+    # upgrade: they rebuild deterministically from the current
+    # filesystem state. The `|| true` guard keeps the transaction
+    # green on minimal Debian installs (server, some containers)
+    # that don't ship these tools — the icons still work on any
+    # desktop environment because the caches get rebuilt lazily.
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -q -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true
+    fi
     ;;
 
 abort-upgrade|abort-deconfigure|abort-remove)
