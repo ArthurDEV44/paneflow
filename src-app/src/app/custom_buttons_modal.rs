@@ -665,12 +665,7 @@ impl PaneFlowApp {
         let command_field = Self::render_input_field("Command", command_input.clone(), ui);
 
         // Icon picker — responsive flex-wrap grid.
-        let mut icon_grid = div()
-            .flex()
-            .flex_row()
-            .flex_wrap()
-            .gap(px(6.))
-            .mt(px(4.));
+        let mut icon_grid = div().flex().flex_row().flex_wrap().gap(px(6.)).mt(px(4.));
         for &path in AVAILABLE_ICONS {
             let is_selected = path == icon;
             let path_owned = path.to_string();
@@ -860,4 +855,3 @@ impl PaneFlowApp {
             )
     }
 }
-

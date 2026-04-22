@@ -6,8 +6,8 @@
 //! button + primary OK action inside the card.
 
 use gpui::{
-    deferred, div, hsla, img, prelude::*, px, svg, AnyElement, ClickEvent, Context,
-    InteractiveElement, IntoElement, MouseButton, ObjectFit, ParentElement, SharedString, Styled,
+    AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ObjectFit,
+    ParentElement, SharedString, Styled, deferred, div, hsla, img, prelude::*, px, svg,
 };
 
 use crate::PaneFlowApp;
