@@ -526,6 +526,7 @@ impl PaneFlowApp {
     pub(crate) fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_section = None;
         self.title_bar_menu_open = None;
+        self.profile_menu_open = None;
         self.font_dropdown_open = false;
         self.font_search.clear();
         if self.recording_shortcut_idx.is_some() {
@@ -537,9 +538,10 @@ impl PaneFlowApp {
     }
 
     pub(crate) fn open_settings_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.notif_menu_open = false;
+        self.notif_menu_open = None;
         self.workspace_menu_open = None;
         self.title_bar_menu_open = None;
+        self.profile_menu_open = None;
         crate::settings::open_or_focus(window, cx);
         cx.notify();
     }

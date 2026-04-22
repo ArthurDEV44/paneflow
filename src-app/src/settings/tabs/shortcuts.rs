@@ -7,8 +7,8 @@
 //! Extracted from `settings_window.rs` per US-021 of the src-app refactor PRD.
 
 use gpui::{
-    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, Styled, div,
-    prelude::*, px,
+    div, prelude::*, px, ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement,
+    ParentElement, Styled,
 };
 
 use crate::{config_writer, keybindings};
@@ -23,27 +23,41 @@ impl SettingsWindow {
         let section_header = div()
             .flex()
             .flex_row()
-            .items_center()
+            .items_end()
             .justify_between()
-            .pb(px(16.))
+            .pb(px(20.))
             .child(
                 div()
-                    .text_size(px(13.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(ui.text)
-                    .child("KEYBOARD SHORTCUTS"),
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(ui.muted)
+                            .child("KEYBOARD"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(ui.text)
+                            .child("Shortcuts"),
+                    ),
             )
             .child(
                 div()
                     .id("reset-shortcuts")
-                    .px(px(10.))
-                    .py(px(4.))
-                    .rounded(px(4.))
+                    .px(px(12.))
+                    .py(px(5.))
+                    .rounded(px(6.))
                     .cursor(CursorStyle::PointingHand)
-                    .bg(ui.subtle)
-                    .hover(|s| s.bg(ui.overlay))
+                    .border_1()
+                    .border_color(ui.border)
+                    .hover(|s| s.bg(ui.subtle).text_color(ui.text))
                     .text_size(px(12.))
-                    .text_color(ui.text)
+                    .text_color(ui.muted)
                     .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                         config_writer::reset_shortcuts();
                         let config = paneflow_config::loader::load_config();
@@ -56,59 +70,91 @@ impl SettingsWindow {
                     .child("Reset to defaults"),
             );
 
-        let mut list = div().flex().flex_col();
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(ui.border)
+            .bg(ui.surface)
+            .overflow_hidden();
 
+        let total = self.effective_shortcuts.len();
         for (i, entry) in self.effective_shortcuts.iter().enumerate() {
             let is_recording = recording_idx == Some(i);
+            let is_last = i + 1 == total;
 
             let key_badge = if is_recording {
                 div()
-                    .px(px(8.))
-                    .py(px(3.))
-                    .rounded(px(4.))
-                    .bg(ui.overlay)
-                    .text_size(px(12.))
-                    .text_color(ui.accent)
-                    .child("Press a key...")
+                    .px(px(10.))
+                    .py(px(4.))
+                    .rounded(px(5.))
+                    .bg(ui.text)
+                    .text_size(px(11.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(ui.base)
+                    .child("Press a key…")
             } else {
                 div()
-                    .px(px(8.))
-                    .py(px(3.))
-                    .rounded(px(4.))
-                    .bg(ui.subtle)
-                    .text_size(px(12.))
+                    .px(px(10.))
+                    .py(px(4.))
+                    .rounded(px(5.))
+                    .border_1()
+                    .border_color(ui.border)
+                    .bg(ui.base)
+                    .text_size(px(11.))
+                    .font_family("monospace")
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(ui.text)
                     .child(entry.key.clone())
             };
 
-            list = list.child(
-                div()
-                    .id(("shortcut", i))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .px(px(12.))
-                    .py(px(8.))
-                    .rounded(px(4.))
-                    .cursor(CursorStyle::PointingHand)
-                    .hover(|s| s.bg(ui.overlay))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.recording_shortcut_idx = Some(i);
-                        cx.clear_key_bindings();
-                        this.settings_focus.focus(window, cx);
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .text_color(ui.text)
-                            .child(entry.description.clone()),
-                    )
-                    .child(key_badge),
-            );
+            let mut row = div()
+                .id(("shortcut", i))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.))
+                .px(px(14.))
+                .py(px(10.))
+                .cursor(CursorStyle::PointingHand)
+                .hover(|s| s.bg(ui.subtle))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.recording_shortcut_idx = Some(i);
+                    cx.clear_key_bindings();
+                    this.settings_focus.focus(window, cx);
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(13.))
+                        .text_color(ui.text)
+                        .truncate()
+                        .child(entry.description.clone()),
+                )
+                .child(key_badge);
+
+            if !is_last {
+                row = row.border_b_1().border_color(ui.border);
+            }
+
+            list = list.child(row);
         }
 
-        div().flex().flex_col().child(section_header).child(list)
+        let hint = div()
+            .pt(px(10.))
+            .text_size(px(11.))
+            .text_color(ui.muted)
+            .child("Click a row to record a new shortcut. Escape to cancel.");
+
+        div()
+            .flex()
+            .flex_col()
+            .child(section_header)
+            .child(list)
+            .child(hint)
     }
 }

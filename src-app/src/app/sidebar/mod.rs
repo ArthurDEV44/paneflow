@@ -10,9 +10,8 @@
 mod context_menu;
 
 use gpui::{
-    App, AppContext, ClickEvent, Context, FontWeight, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, SharedString, Styled, Window, deferred, div, prelude::*, px, rgb,
-    svg,
+    App, AppContext, ClickEvent, Context, FontWeight, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, SharedString, Styled, Window, div, prelude::*, px, rgb, svg,
 };
 
 use crate::{
@@ -76,11 +75,11 @@ impl PaneFlowApp {
                 .px(px(10.))
                 .py(px(6.))
                 .child(
-                    // Left side — section label
+                    // Left side — section eyebrow
                     div()
-                        .text_xs()
+                        .text_size(px(10.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(ui.text)
+                        .text_color(ui.muted)
                         .child("WORKSPACES"),
                 )
                 .child(
@@ -97,13 +96,19 @@ impl PaneFlowApp {
                                 .child(self.sidebar_action_btn(
                                     "sidebar-bell",
                                     "icons/bell.svg",
-                                    cx.listener(|this, _: &ClickEvent, _w, cx| {
+                                    cx.listener(|this, e: &ClickEvent, _w, cx| {
                                         this.title_bar_menu_open = None;
-                                        this.notif_menu_open = !this.notif_menu_open;
+                                        this.profile_menu_open = None;
+                                        this.notif_menu_open = if this.notif_menu_open.is_some() {
+                                            None
+                                        } else {
+                                            Some(e.position())
+                                        };
                                         cx.notify();
                                     }),
                                 ))
                                 .when(has_unread, |d| {
+                                    let ui = crate::theme::ui_colors();
                                     d.child(
                                         div()
                                             .absolute()
@@ -112,7 +117,9 @@ impl PaneFlowApp {
                                             .w(px(6.))
                                             .h(px(6.))
                                             .rounded_full()
-                                            .bg(rgb(0xf38ba8)),
+                                            .bg(ui.text)
+                                            .border_1()
+                                            .border_color(theme.title_bar_background),
                                     )
                                 })
                         })
@@ -142,98 +149,9 @@ impl PaneFlowApp {
                 ),
         );
 
-        // ── Notification dropdown menu ──
-        if self.notif_menu_open {
-            let mut menu = div()
-                .id("notif-menu")
-                .occlude()
-                .absolute()
-                .top(px(64.))
-                .left(px(6.))
-                .w(px(SIDEBAR_WIDTH - 12.))
-                .max_h(px(300.))
-                .overflow_y_scroll()
-                .bg(ui.overlay)
-                .border_1()
-                .border_color(ui.border)
-                .rounded(px(6.))
-                .shadow_lg()
-                .flex()
-                .flex_col()
-                .p(px(4.));
-
-            if self.notifications.is_empty() {
-                menu = menu.child(
-                    div()
-                        .px(px(10.))
-                        .py(px(12.))
-                        .text_xs()
-                        .text_color(ui.muted)
-                        .child("No notifications"),
-                );
-            } else {
-                // Newest first
-                for (ni, notif) in self.notifications.iter().enumerate().rev() {
-                    let ws_id = notif.workspace_id;
-                    let is_unread = !notif.read;
-                    let notif_idx = ni;
-                    menu = menu.child(
-                        div()
-                            .id(SharedString::from(format!("notif-{ni}")))
-                            .px(px(10.))
-                            .py(px(6.))
-                            .rounded(px(4.))
-                            .cursor_pointer()
-                            .when(is_unread, |d| {
-                                let ui = crate::theme::ui_colors();
-                                d.bg(ui.subtle)
-                            })
-                            .hover(|s| {
-                                let ui = crate::theme::ui_colors();
-                                s.bg(ui.surface)
-                            })
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                // Find workspace by stable ID
-                                if let Some(idx) =
-                                    this.workspaces.iter().position(|ws| ws.id == ws_id)
-                                {
-                                    this.select_workspace(idx, window, cx);
-                                }
-                                if notif_idx < this.notifications.len() {
-                                    this.notifications[notif_idx].read = true;
-                                }
-                                this.notif_menu_open = false;
-                                cx.notify();
-                            }))
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(if is_unread { ui.text } else { ui.muted })
-                                    .child(notif.workspace_title.clone()),
-                            )
-                            .child({
-                                let msg_color = match notif.kind {
-                                    ai_types::AiToolState::WaitingForInput(_) => {
-                                        Hsla::from(rgb(0xf9e2af))
-                                    }
-                                    ai_types::AiToolState::Finished(_) => Hsla::from(rgb(0xa6e3a1)),
-                                    _ => ui.muted,
-                                };
-                                div()
-                                    .text_xs()
-                                    .text_color(msg_color)
-                                    .child(notif.message.clone())
-                            }),
-                    );
-                }
-            }
-
-            sidebar = sidebar.child(deferred(menu));
-        }
+        // Notification dropdown is rendered at the app level from `main.rs`
+        // (same pattern as profile / title-bar menus) so it can overlay the
+        // full window and use the click-anchored deferred layer.
 
         // Workspace list — scrollable area
         let mut list = div()
@@ -253,20 +171,72 @@ impl PaneFlowApp {
                     .flex_col()
                     .items_center()
                     .justify_center()
-                    .gap(px(10.))
+                    .gap(px(12.))
                     .px(px(16.))
                     .child(
-                        svg()
-                            .size(px(32.))
-                            .flex_none()
-                            .path("icons/folder_open.svg")
-                            .text_color(ui.muted),
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(44.))
+                            .h(px(44.))
+                            .rounded(px(10.))
+                            .bg(ui.subtle)
+                            .child(
+                                svg()
+                                    .size(px(20.))
+                                    .flex_none()
+                                    .path("icons/folder_open.svg")
+                                    .text_color(ui.muted),
+                            ),
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(ui.muted)
-                            .child("No workspaces yet"),
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(ui.text)
+                                    .child("No workspaces yet"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(ui.muted)
+                                    .child("Create one to get started"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("empty-new-ws")
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.))
+                            .px(px(12.))
+                            .py(px(6.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .bg(ui.text)
+                            .text_color(ui.base)
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .hover(|s| s.opacity(0.85))
+                            .on_click(cx.listener(|this, _: &ClickEvent, w, cx| {
+                                this.create_workspace_with_picker(w, cx);
+                            }))
+                            .child(
+                                svg()
+                                    .size(px(12.))
+                                    .flex_none()
+                                    .path("icons/plus.svg")
+                                    .text_color(ui.base),
+                            )
+                            .child("New Workspace"),
                     ),
             );
             sidebar = sidebar.child(list);
@@ -285,11 +255,7 @@ impl PaneFlowApp {
                     ws.cwd.clone()
                 }
             };
-            let pane_count = ws.pane_count();
-            let pane_label = format!(
-                "{pane_count} pane{}",
-                if pane_count != 1 { "s" } else { "" }
-            );
+            let terminal_count = ws.terminal_count(cx);
 
             let idx = i;
             let ws_id = ws.id;
@@ -299,8 +265,11 @@ impl PaneFlowApp {
                 .id(SharedString::from(format!("ws-{i}")))
                 .mx(px(6.))
                 .px(px(10.))
-                .py(px(8.))
-                .when(is_active, |d| d.bg(ui.surface))
+                .py(px(9.))
+                .when(is_active, |d| {
+                    let ui = crate::theme::ui_colors();
+                    d.bg(ui.surface)
+                })
                 .rounded(px(6.))
                 .cursor_pointer()
                 .when(!is_active, |d| {
@@ -326,6 +295,7 @@ impl PaneFlowApp {
                 .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                     this.workspace_menu_open = None;
                     this.title_bar_menu_open = None;
+                    this.profile_menu_open = None;
                     let is_double = matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2);
                     if is_double {
                         this.commit_rename(cx); // commit any previous rename
@@ -343,6 +313,7 @@ impl PaneFlowApp {
                     {
                         this.commit_rename(cx);
                         this.title_bar_menu_open = None;
+                        this.profile_menu_open = None;
                         this.workspace_menu_open = Some(WorkspaceContextMenu { idx, position });
                         cx.stop_propagation();
                         cx.notify();
@@ -383,12 +354,14 @@ impl PaneFlowApp {
                 .flex_col()
                 .gap_1();
 
-            // ── Row 1: Title + action menu ──
+            // ── Row 1: Title + pane-count chip ──
             let title_el = if self.renaming_idx == Some(i) {
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .text_color(ui.text)
                     .text_sm()
-                    .font_weight(FontWeight::BOLD)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .bg(ui.overlay)
                     .px_1()
                     .rounded_sm()
@@ -403,72 +376,102 @@ impl PaneFlowApp {
                     .truncate()
                     .child(title)
             };
+            let terminal_chip = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.))
+                .flex_none()
+                .px(px(6.))
+                .py(px(1.))
+                .rounded(px(4.))
+                .bg(ui.subtle)
+                .text_size(px(10.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(ui.muted)
+                .child(
+                    svg()
+                        .size(px(10.))
+                        .flex_none()
+                        .path("icons/terminal.svg")
+                        .text_color(ui.muted),
+                )
+                .child(format!("{terminal_count}"))
+                .when(terminal_count == 0, |d| d.invisible());
             let title_row = div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .justify_between()
+                .gap(px(8.))
                 .min_w_0()
-                .child(title_el);
+                .child(title_el)
+                .child(terminal_chip);
 
             card = card.child(title_row);
 
-            // ── Row 2: Git branch ──
-            if !ws.git_branch.is_empty() {
-                card = card.child(
-                    div()
-                        .text_color(rgb(0x89b4fa)) // Catppuccin Blue
-                        .text_xs()
-                        .truncate()
-                        .child(format!(" {}", ws.git_branch)),
-                );
-            }
+            // ── Row 2: Git branch + diff stats (compact, monochrome) ──
+            if !ws.git_branch.is_empty() || !ws.git_stats.is_empty() {
+                let mut git_row = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .min_w_0();
 
-            // ── Row 3: Subtitle — pane count as status ──
-            card = card.child(div().text_color(ui.muted).text_xs().child(pane_label));
+                if !ws.git_branch.is_empty() {
+                    git_row = git_row.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.))
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                svg()
+                                    .size(px(11.))
+                                    .flex_none()
+                                    .path("icons/git-branch.svg")
+                                    .text_color(ui.muted),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_color(ui.muted)
+                                    .text_xs()
+                                    .truncate()
+                                    .child(ws.git_branch.clone()),
+                            ),
+                    );
+                }
 
-            // ── Row 3: Git diff stats ──
-            if !ws.git_stats.is_empty() {
-                let ins = ws.git_stats.insertions;
-                let del = ws.git_stats.deletions;
-                card = card.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(
-                            svg()
-                                .size(px(14.))
-                                .flex_none()
-                                .path("icons/git_commit.svg")
-                                .text_color(ui.muted),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .gap(px(8.))
-                                .text_xs()
-                                .child(
-                                    div()
-                                        .text_color(rgb(0xa6e3a1)) // Catppuccin Green
-                                        .child(format!("+{ins}")),
-                                )
-                                .child(
-                                    div()
-                                        .text_color(rgb(0xf38ba8)) // Catppuccin Red
-                                        .child(format!("-{del}")),
-                                ),
-                        ),
-                );
-            } else if ws.is_git_repo {
-                card = card.child(
-                    div()
-                        .text_color(ui.muted)
-                        .text_xs()
-                        .child("No changes detected"),
-                );
+                if !ws.git_stats.is_empty() {
+                    let ins = ws.git_stats.insertions;
+                    let del = ws.git_stats.deletions;
+                    git_row = git_row.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_none()
+                            .gap(px(6.))
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(
+                                div()
+                                    .text_color(rgb(0xa6e3a1)) // Catppuccin Green
+                                    .child(format!("+{ins}")),
+                            )
+                            .child(
+                                div()
+                                    .text_color(rgb(0xf38ba8)) // Catppuccin Red
+                                    .child(format!("-{del}")),
+                            ),
+                    );
+                }
+
+                card = card.child(git_row);
             }
 
             // ── Row 4: Active ports — clickable URL badges ──
@@ -498,9 +501,13 @@ impl PaneFlowApp {
                                 .rounded(px(4.))
                                 .bg(ui.subtle)
                                 .text_size(px(11.))
-                                .text_color(ui.accent)
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(ui.text)
                                 .cursor_pointer()
-                                .hover(|s| s.text_color(rgb(0xa0e8ff)))
+                                .hover(|s| {
+                                    let ui = crate::theme::ui_colors();
+                                    s.bg(ui.surface)
+                                })
                                 // US-011 AC4/5/6 + AC7: delegate to the
                                 // `open` crate which already dispatches
                                 // per-OS — `xdg-open` subprocess on
@@ -542,8 +549,10 @@ impl PaneFlowApp {
                 if ws.active_ports.len() > 4 {
                     ports_row = ports_row.child(
                         div()
-                            .text_xs()
-                            .text_color(rgb(0xffffff))
+                            .px(px(6.))
+                            .py(px(2.))
+                            .text_size(px(11.))
+                            .text_color(ui.muted)
                             .child(format!("+{} more", ws.active_ports.len() - 4)),
                     );
                 }
@@ -551,12 +560,16 @@ impl PaneFlowApp {
                 card = card.child(ports_row);
             }
 
-            // ── Row: AI tool status (Claude Code / Codex) ──
+            // ── Row: AI tool status (Claude Code / Codex) — monochrome ──
+            // Hierarchy is conveyed via weight + container, not hue:
+            //   Thinking        → spinner + text in `ui.text` (live)
+            //   WaitingForInput → badge-style with ui.text bg (claims attention)
+            //   Finished        → muted check + text (subdued, done)
             match ws.ai_state {
                 ai_types::AiToolState::Thinking(tool) => {
-                    let (frames, color): (&[char], u32) = match tool {
-                        ai_types::AiTool::Claude => (&CLAUDE_SPINNER_FRAMES, 0xd97757),
-                        ai_types::AiTool::Codex => (&CODEX_SPINNER_FRAMES, 0x10a37f),
+                    let frames: &[char] = match tool {
+                        ai_types::AiTool::Claude => &CLAUDE_SPINNER_FRAMES,
+                        ai_types::AiTool::Codex => &CODEX_SPINNER_FRAMES,
                     };
                     let angle = ws.loader_angle.get();
                     let idx = ((angle / std::f32::consts::TAU) * frames.len() as f32) as usize
@@ -576,14 +589,14 @@ impl PaneFlowApp {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_color(rgb(color))
+                                    .text_color(ui.text)
                                     .text_xs()
                                     .child(format!("{spinner}")),
                             )
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(rgb(color))
+                                    .text_color(ui.text)
                                     .child(format!("{} thinking…", tool.label())),
                             ),
                     );
@@ -595,36 +608,60 @@ impl PaneFlowApp {
                             .flex_row()
                             .items_center()
                             .gap(px(6.))
+                            .px(px(6.))
+                            .py(px(2.))
+                            .rounded(px(4.))
+                            .bg(ui.text)
                             .child(
                                 svg()
-                                    .size(px(14.))
+                                    .size(px(12.))
                                     .flex_none()
                                     .path("icons/bell.svg")
-                                    .text_color(rgb(0xf9e2af)),
+                                    .text_color(ui.base),
                             )
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(rgb(0xf9e2af))
+                                    .text_size(px(11.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ui.base)
                                     .child(format!("{} needs input", tool.label())),
                             ),
                     );
                 }
                 ai_types::AiToolState::Finished(tool) => {
                     card = card.child(
-                        div().flex().flex_row().items_center().gap(px(6.)).child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(rgb(0xa6e3a1))
-                                .child(format!("✓ {} done", tool.label())),
-                        ),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                svg()
+                                    .size(px(12.))
+                                    .flex_none()
+                                    .path("icons/checks.svg")
+                                    .text_color(ui.muted),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(ui.muted)
+                                    .child(format!("{} done", tool.label())),
+                            ),
                     );
                 }
                 ai_types::AiToolState::Inactive => {}
             }
 
-            // ── Row 5: Working directory (monospace-style) ──
-            card = card.child(div().text_color(ui.muted).text_xs().child(cwd_display));
+            // ── Row 5: Working directory (monospace for path affordance) ──
+            card = card.child(
+                div()
+                    .text_color(ui.muted)
+                    .text_size(px(10.))
+                    .font_family("monospace")
+                    .truncate()
+                    .child(cwd_display),
+            );
 
             list = list.child(card);
         }

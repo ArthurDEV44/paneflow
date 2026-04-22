@@ -1,15 +1,14 @@
-//! "Appearance" settings tab — theme picker, font family dropdown with
-//! typeahead search, live preview pane, and reset-to-defaults button.
+//! "Appearance" settings tab — font family dropdown with typeahead search,
+//! live preview pane, and reset-to-defaults button.
 //!
 //! Font list enumeration comes from `crate::fonts::load_mono_fonts()`.
-//! Theme changes invalidate the shared theme cache so the main window
-//! repaints immediately.
+//! Theme selection lives in the title bar menu (`main.rs`).
 //!
 //! Extracted from `settings_window.rs` per US-021 of the src-app refactor PRD.
 
 use gpui::{
-    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled, div, prelude::*, px,
+    div, prelude::*, px, svg, ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement,
+    ParentElement, Styled,
 };
 
 use crate::config_writer;
@@ -22,74 +21,36 @@ impl SettingsWindow {
         let ui = crate::theme::ui_colors();
         let current_font =
             crate::terminal::element::resolve_font_family(config.font_family.as_deref());
-        let current_theme = config
-            .theme
-            .clone()
-            .unwrap_or_else(|| "Catppuccin Mocha".to_string());
 
         let section_header = div()
-            .text_size(px(13.))
-            .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_color(ui.text)
-            .child("APPEARANCE");
-
-        let theme_label = div()
-            .text_size(px(13.))
-            .text_color(ui.muted)
-            .pb(px(6.))
-            .child("Theme");
-
-        let themes = [
-            ("Catppuccin Mocha", "Default (Dark)"),
-            ("PaneFlow Light", "Light"),
-        ];
-        let mut theme_row_inner = div().flex().flex_row().gap(px(8.));
-
-        for (theme_id, label) in themes {
-            let is_active = current_theme == theme_id;
-            let theme_id_owned = theme_id.to_string();
-            theme_row_inner = theme_row_inner.child(
-                div()
-                    .id(SharedString::from(format!("theme-{theme_id}")))
-                    .px(px(8.))
-                    .py(px(3.))
-                    .rounded(px(4.))
-                    .cursor(CursorStyle::PointingHand)
-                    .text_size(px(13.))
-                    .when(is_active, |d| d.bg(ui.accent).text_color(ui.base))
-                    .when(!is_active, |d| {
-                        d.bg(ui.subtle)
-                            .text_color(ui.muted)
-                            .hover(|s| s.bg(ui.overlay))
-                    })
-                    .on_click(cx.listener(move |_this, _: &ClickEvent, _w, cx| {
-                        config_writer::save_config_value(
-                            "theme",
-                            serde_json::Value::String(theme_id_owned.clone()),
-                        );
-                        crate::theme::invalidate_theme_cache();
-                        cx.notify();
-                    }))
-                    .child(label),
-            );
-        }
-
-        let theme_row = div()
             .flex()
             .flex_col()
-            .pb(px(12.))
-            .child(theme_label)
-            .child(theme_row_inner);
+            .gap(px(4.))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(ui.muted)
+                    .child("INTERFACE"),
+            )
+            .child(
+                div()
+                    .text_size(px(18.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(ui.text)
+                    .child("Appearance"),
+            );
 
         let font_label = div()
-            .text_size(px(13.))
+            .text_size(px(12.))
+            .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(ui.muted)
-            .pb(px(6.))
+            .pb(px(8.))
             .child("Font Family");
 
         let font_value_text = if self.font_dropdown_open {
             if self.font_search.is_empty() {
-                "Search fonts...".to_string()
+                "Search fonts…".to_string()
             } else {
                 format!("{}|", self.font_search)
             }
@@ -97,22 +58,27 @@ impl SettingsWindow {
             current_font.clone()
         };
 
-        let font_value_color = if self.font_dropdown_open {
-            ui.accent
+        let font_value_color = if self.font_dropdown_open && self.font_search.is_empty() {
+            ui.muted
         } else {
             ui.text
         };
 
         let font_badge = div()
             .id("font-family-badge")
-            .px(px(8.))
-            .py(px(3.))
-            .rounded(px(4.))
-            .bg(ui.overlay)
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(px(10.))
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(ui.border)
+            .bg(ui.surface)
             .cursor(CursorStyle::PointingHand)
-            .hover(|s| s.bg(ui.subtle))
-            .text_size(px(13.))
-            .text_color(font_value_color)
+            .hover(|s| s.border_color(ui.muted))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.font_dropdown_open = !this.font_dropdown_open;
                 this.font_search.clear();
@@ -122,12 +88,32 @@ impl SettingsWindow {
                 this.settings_focus.focus(window, cx);
                 cx.notify();
             }))
-            .child(font_value_text);
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(13.))
+                    .text_color(font_value_color)
+                    .font_family(if self.font_dropdown_open {
+                        "monospace".to_string()
+                    } else {
+                        current_font.clone()
+                    })
+                    .truncate()
+                    .child(font_value_text),
+            )
+            .child(
+                svg()
+                    .size(px(14.))
+                    .flex_none()
+                    .path("icons/chevron-down.svg")
+                    .text_color(ui.muted),
+            );
 
         let mut font_row = div()
             .flex()
             .flex_col()
-            .pb(px(12.))
+            .pb(px(20.))
             .child(font_label)
             .child(font_badge);
 
@@ -143,12 +129,12 @@ impl SettingsWindow {
                 .id("font-dropdown")
                 .flex()
                 .flex_col()
-                .mt(px(4.))
+                .mt(px(6.))
                 .rounded(px(6.))
                 .bg(ui.overlay)
                 .border_1()
                 .border_color(ui.border)
-                .max_h(px(250.))
+                .max_h(px(260.))
                 .overflow_y_scroll();
 
             for (i, name) in filtered.iter().enumerate() {
@@ -157,11 +143,20 @@ impl SettingsWindow {
                 dropdown = dropdown.child(
                     div()
                         .id(("font", i))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(10.))
                         .px(px(12.))
-                        .py(px(6.))
+                        .py(px(7.))
                         .cursor(CursorStyle::PointingHand)
                         .text_size(px(13.))
-                        .when(is_current, |d| d.text_color(ui.accent).bg(ui.subtle))
+                        .when(is_current, |d| {
+                            d.bg(ui.subtle)
+                                .text_color(ui.text)
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                        })
                         .when(!is_current, |d| {
                             d.text_color(ui.text).hover(|s| s.bg(ui.subtle))
                         })
@@ -174,7 +169,16 @@ impl SettingsWindow {
                             this.font_search.clear();
                             cx.notify();
                         }))
-                        .child((*name).clone()),
+                        .child(div().flex_1().min_w_0().truncate().child((*name).clone()))
+                        .when(is_current, |d| {
+                            d.child(
+                                svg()
+                                    .size(px(13.))
+                                    .flex_none()
+                                    .path("icons/checks.svg")
+                                    .text_color(ui.text),
+                            )
+                        }),
                 );
             }
 
@@ -182,7 +186,7 @@ impl SettingsWindow {
                 dropdown = dropdown.child(
                     div()
                         .px(px(12.))
-                        .py(px(8.))
+                        .py(px(10.))
                         .text_size(px(12.))
                         .text_color(ui.muted)
                         .child("No matching fonts"),
@@ -196,16 +200,17 @@ impl SettingsWindow {
             .pb(px(12.))
             .child(
                 div()
-                    .text_size(px(13.))
+                    .text_size(px(12.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(ui.muted)
-                    .pb(px(6.))
+                    .pb(px(8.))
                     .child("Preview"),
             )
             .child(
                 div()
-                    .px(px(16.))
-                    .py(px(12.))
-                    .rounded(px(6.))
+                    .px(px(18.))
+                    .py(px(14.))
+                    .rounded(px(8.))
                     .bg(ui.preview_bg)
                     .border_1()
                     .border_color(ui.border)
@@ -217,14 +222,15 @@ impl SettingsWindow {
 
         let reset_btn = div()
             .id("reset-appearance")
-            .px(px(10.))
-            .py(px(4.))
-            .rounded(px(4.))
+            .px(px(12.))
+            .py(px(5.))
+            .rounded(px(6.))
             .cursor(CursorStyle::PointingHand)
-            .bg(ui.subtle)
-            .hover(|s| s.bg(ui.overlay))
+            .border_1()
+            .border_color(ui.border)
+            .hover(|s| s.bg(ui.subtle).text_color(ui.text))
             .text_size(px(12.))
-            .text_color(ui.text)
+            .text_color(ui.muted)
             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                 config_writer::save_config_value("font_family", serde_json::Value::Null);
                 config_writer::save_config_value("theme", serde_json::Value::Null);
@@ -242,13 +248,12 @@ impl SettingsWindow {
                 div()
                     .flex()
                     .flex_row()
-                    .items_center()
+                    .items_end()
                     .justify_between()
-                    .pb(px(10.))
+                    .pb(px(20.))
                     .child(section_header)
                     .child(reset_btn),
             )
-            .child(theme_row)
             .child(font_row)
             .child(preview)
     }

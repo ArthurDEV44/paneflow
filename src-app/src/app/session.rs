@@ -9,11 +9,11 @@ use std::collections::VecDeque;
 use gpui::{App, AppContext, Context, Entity};
 use paneflow_config::schema::LayoutNode;
 
-use crate::PaneFlowApp;
 use crate::layout::LayoutTree;
 use crate::pane::Pane;
 use crate::terminal::TerminalView;
-use crate::workspace::{Workspace, next_workspace_id};
+use crate::workspace::{next_workspace_id, Workspace};
+use crate::PaneFlowApp;
 
 impl PaneFlowApp {
     pub(crate) fn save_session(&self, cx: &App) {
@@ -27,6 +27,7 @@ impl PaneFlowApp {
                     title: ws.title.clone(),
                     cwd: ws.cwd.clone(),
                     layout: ws.serialize_layout(cx),
+                    custom_buttons: ws.custom_buttons.clone(),
                 })
                 .collect(),
         };
@@ -80,7 +81,7 @@ impl PaneFlowApp {
             let cwd = PathBuf::from(&ws_session.cwd);
             let ws_id = next_workspace_id();
 
-            if let Some(mut layout) = ws_session.layout.clone() {
+            let mut workspace = if let Some(mut layout) = ws_session.layout.clone() {
                 paneflow_config::loader::validate_layout(&mut layout);
                 let mut pane_deque: VecDeque<Entity<Pane>> = VecDeque::new();
                 let ws_cwd = cwd.clone();
@@ -91,12 +92,7 @@ impl PaneFlowApp {
                     };
                     Self::spawn_pane_from_surfaces(ws_id, surfaces, &ws_cwd, cx)
                 });
-                workspaces.push(Workspace::with_layout_and_id(
-                    ws_id,
-                    ws_session.title.clone(),
-                    cwd,
-                    tree,
-                ));
+                Workspace::with_layout_and_id(ws_id, ws_session.title.clone(), cwd, tree)
             } else {
                 // No saved layout — single terminal in the workspace CWD
                 let terminal =
@@ -105,13 +101,14 @@ impl PaneFlowApp {
                     .detach();
                 let pane = cx.new(|cx| Pane::new(terminal, ws_id, cx));
                 cx.subscribe(&pane, Self::handle_pane_event).detach();
-                workspaces.push(Workspace::with_cwd_and_id(
-                    ws_id,
-                    ws_session.title.clone(),
-                    cwd,
-                    pane,
-                ));
-            }
+                Workspace::with_cwd_and_id(ws_id, ws_session.title.clone(), cwd, pane)
+            };
+
+            // Restore persisted custom buttons and push them to every pane
+            // in the workspace so the tab bar reflects them on startup.
+            workspace.custom_buttons = ws_session.custom_buttons.clone();
+            workspace.propagate_custom_buttons(cx);
+            workspaces.push(workspace);
         }
 
         let active_idx = session

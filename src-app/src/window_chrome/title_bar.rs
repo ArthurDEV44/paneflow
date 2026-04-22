@@ -1,6 +1,6 @@
 use gpui::{
-    AnyElement, ClickEvent, Context, Decorations, EventEmitter, IntoElement, MouseButton, Pixels,
-    Point, Render, Styled, Window, WindowControlArea, div, prelude::*, px, svg,
+    div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Decorations, EventEmitter,
+    IntoElement, MouseButton, Pixels, Point, Render, Styled, Window, WindowControlArea,
 };
 
 use super::csd::default_button_layout;
@@ -72,6 +72,7 @@ impl TitleBar {
 
 pub enum TitleBarEvent {
     ToggleMenu(Point<Pixels>),
+    ToggleProfile(Point<Pixels>),
     CloseRequested,
 }
 
@@ -169,8 +170,43 @@ impl Render for TitleBar {
                     .child("PaneFlow"),
             );
 
-        // --- Right section: spacer (fills remaining space for drag area) ---
-        let content = div().flex_1().flex().flex_row().items_center();
+        // --- Center section: workspace name breadcrumb (muted) ---
+        // Takes the remaining flex space and centers the current workspace
+        // name. Acts as drag area when the workspace is unnamed / unset.
+        let mut content = div()
+            .flex_1()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .px(px(12.))
+            .min_w_0();
+        if let Some(name) = self.workspace_name.as_ref() {
+            content = content.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.))
+                    .min_w_0()
+                    .child(
+                        div()
+                            .w(px(3.))
+                            .h(px(3.))
+                            .rounded_full()
+                            .bg(ui.muted)
+                            .flex_none(),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(ui.muted)
+                            .truncate()
+                            .child(name.clone()),
+                    ),
+            );
+        }
 
         // --- Update available pill ---
         let update_pill = self.update_available.clone().map(|info| {
@@ -201,36 +237,62 @@ impl Render for TitleBar {
                 }
             };
 
+            // Icon reflects the pill's intent:
+            //   Clickable   → download (offer the update)
+            //   Busy        → refresh  (download/install in flight)
+            //   SystemHint  → tool     (external package manager does the work)
+            let icon_path = match style {
+                PillStyle::Clickable => "icons/download.svg",
+                PillStyle::Busy => "icons/refresh.svg",
+                PillStyle::SystemHint => "icons/tool.svg",
+            };
+
             let mut pill = div()
                 .id("update-pill")
                 .ml_auto()
                 .mr_2()
-                .px_2()
-                .py(px(2.))
-                .rounded(px(4.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(5.))
+                .px(px(8.))
+                .py(px(3.))
+                .rounded(px(5.))
                 .border_1()
-                .border_color(ui.accent)
-                .text_color(ui.accent)
+                .border_color(ui.border)
+                .bg(ui.subtle)
+                .text_color(ui.text)
                 .text_size(px(11.))
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    svg()
+                        .size(px(11.))
+                        .flex_none()
+                        .path(icon_path)
+                        .text_color(ui.muted),
+                )
                 .child(label);
             match style {
                 PillStyle::Clickable => {
-                    pill = pill.cursor_pointer().hover(|s| s.opacity(0.7)).on_click(
-                        move |_, window, cx| {
+                    pill = pill
+                        .cursor_pointer()
+                        .hover(|s| {
+                            let ui = crate::theme::ui_colors();
+                            s.bg(ui.surface).border_color(ui.muted)
+                        })
+                        .on_click(move |_, window, cx| {
                             window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
-                        },
-                    );
+                        });
                 }
                 PillStyle::Busy => {
-                    pill = pill.opacity(0.75);
+                    pill = pill.opacity(0.7);
                 }
                 // De-emphasized but still clickable so the hint toast shows.
                 // Cursor stays default (per US-012 AC) to signal that clicking
                 // doesn't perform the update itself.
                 PillStyle::SystemHint => {
-                    pill = pill.opacity(0.7).on_click(move |_, window, cx| {
+                    pill = pill.opacity(0.8).on_click(move |_, window, cx| {
                         window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
                     });
                 }
@@ -307,6 +369,7 @@ impl Render for TitleBar {
             .child(brand)
             .child(content)
             .children(update_pill)
+            .child(render_profile_button(cx))
             .children(right_controls)
             .children(right_menu_button)
             .child(
@@ -357,5 +420,44 @@ fn render_window_menu_button(side: &'static str, cx: &mut Context<TitleBar>) -> 
                 .path("icons/menu_2.svg")
                 .text_color(ui.text)
         })
+        .into_any_element()
+}
+
+/// Profile button on the far right of the title bar. Opens a user menu via
+/// `TitleBarEvent::ToggleProfile`; the menu body is rendered by
+/// `PaneFlowApp` (see `app/profile_menu.rs`). Content is a placeholder until
+/// the auth system lands.
+fn render_profile_button(cx: &mut Context<TitleBar>) -> AnyElement {
+    let ui = crate::theme::ui_colors();
+    div()
+        .id("title-bar-profile")
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(24.))
+        .h(px(24.))
+        .ml(px(8.))
+        .rounded_full()
+        .border_1()
+        .border_color(ui.border)
+        .bg(ui.subtle)
+        .cursor_pointer()
+        .hover(|s| {
+            let ui = crate::theme::ui_colors();
+            s.bg(ui.surface).border_color(ui.muted)
+        })
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(|_, event: &ClickEvent, _window, cx| {
+            cx.stop_propagation();
+            cx.emit(TitleBarEvent::ToggleProfile(event.position()));
+        }))
+        .child(
+            svg()
+                .size(px(13.))
+                .flex_none()
+                .path("icons/user.svg")
+                .text_color(ui.muted),
+        )
         .into_any_element()
 }
