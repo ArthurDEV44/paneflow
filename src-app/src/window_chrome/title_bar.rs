@@ -1,6 +1,6 @@
 use gpui::{
-    div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Decorations, EventEmitter,
-    IntoElement, MouseButton, Pixels, Point, Render, Styled, Window, WindowControlArea,
+    AnyElement, ClickEvent, Context, Decorations, EventEmitter, IntoElement, MouseButton, Pixels,
+    Point, Render, Styled, Window, WindowControlArea, div, prelude::*, px, svg,
 };
 
 use super::csd::default_button_layout;

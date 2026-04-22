@@ -8,9 +8,9 @@
 //! Extracted from `settings_window.rs` per US-021 of the src-app refactor PRD.
 
 use gpui::{
-    canvas, div, point, prelude::*, px, rgb, transparent_black, App, Bounds, Context, CursorStyle,
-    Decorations, FocusHandle, Focusable, HitboxBehavior, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Pixels, Render, ResizeEdge, Styled, Window, WindowControlArea,
+    App, Bounds, Context, CursorStyle, Decorations, FocusHandle, Focusable, HitboxBehavior,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, ResizeEdge,
+    Styled, Window, WindowControlArea, canvas, div, point, prelude::*, px, rgb, transparent_black,
 };
 
 use crate::keybindings;

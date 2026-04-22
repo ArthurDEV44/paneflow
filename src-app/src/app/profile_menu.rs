@@ -4,8 +4,8 @@
 //! is wired.
 
 use gpui::{
-    deferred, div, px, AnyElement, ClickEvent, Context, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Pixels, Point, SharedString, Styled, Window,
+    AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Pixels, Point, SharedString, Styled, Window, deferred, div, px,
 };
 
 use crate::PaneFlowApp;

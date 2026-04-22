@@ -7,8 +7,8 @@
 //! Extracted from `settings_window.rs` per US-021 of the src-app refactor PRD.
 
 use gpui::{
-    div, prelude::*, px, ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement,
-    ParentElement, Styled,
+    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, Styled, div,
+    prelude::*, px,
 };
 
 use crate::{config_writer, keybindings};

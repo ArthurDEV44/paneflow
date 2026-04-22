@@ -5,12 +5,11 @@
 //! is clamped with flip-if-overflow so the menu never spills off-screen.
 
 use gpui::{
-    deferred, div, prelude::*, px, svg, AnyElement, ClickEvent, Context, FontWeight,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Point, SharedString,
-    Styled, Window,
+    AnyElement, ClickEvent, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Pixels, Point, SharedString, Styled, Window, deferred, div, prelude::*, px, svg,
 };
 
-use crate::{ai_types, PaneFlowApp};
+use crate::{PaneFlowApp, ai_types};
 
 const NOTIF_MENU_WIDTH: Pixels = px(280.);
 const NOTIF_MENU_MAX_HEIGHT: Pixels = px(360.);

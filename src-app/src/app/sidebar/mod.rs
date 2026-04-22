@@ -412,12 +412,7 @@ impl PaneFlowApp {
 
             // ── Row 2: Git branch + diff stats (compact, monochrome) ──
             if !ws.git_branch.is_empty() || !ws.git_stats.is_empty() {
-                let mut git_row = div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.))
-                    .min_w_0();
+                let mut git_row = div().flex().flex_row().items_center().gap(px(8.)).min_w_0();
 
                 if !ws.git_branch.is_empty() {
                     git_row = git_row.child(
