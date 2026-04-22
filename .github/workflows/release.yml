@@ -1020,8 +1020,22 @@ jobs:
           # not depend on that. Accept any digit-led version string.
           # Also use `dpkg-query` as a belt-and-braces check that catches
           # the case where apt-cache silently reports `(none)`.
-          apt-cache policy paneflow | grep -Eq '^  Installed: [0-9]'
-          dpkg-query -W -f='${Status}' paneflow | grep -q 'install ok installed'
+          #
+          # Capture-then-grep via here-strings instead of a pipe. Under
+          # `set -o pipefail`, `apt-cache policy | grep -q` can flake
+          # with exit 141 (SIGPIPE): grep closes its stdin as soon as
+          # the first match is found, and apt-cache's multi-line output
+          # gets SIGPIPE on its next write, which pipefail propagates as
+          # a pipeline failure. Observed in the v0.2.3 release smoke
+          # test. Here-strings have no writer process, so there is no
+          # SIGPIPE surface — the input is a fully-materialised string
+          # handed to grep's stdin before grep runs. dpkg-query output
+          # is one line and has never been observed to flake, but we
+          # switch it to the same pattern for consistency.
+          policy=$(apt-cache policy paneflow)
+          grep -Eq '^  Installed: [0-9]' <<< "$policy"
+          status=$(dpkg-query -W -f='${Status}' paneflow)
+          grep -q 'install ok installed' <<< "$status"
 
       - name: Idempotency — pre-existing paneflow.list is not overwritten
         env:
