@@ -363,22 +363,53 @@ fn invalid_version(raw: &str) -> anyhow::Error {
 /// `pkexec` call.
 fn build_argv(manager: &PackageManager, version_stripped: &str) -> Vec<String> {
     match manager {
+        // `--refresh` is a global flag — it MUST prefix the `install`
+        // subcommand (dnf's global args are positional). Without it,
+        // dnf loads its local metadata cache (default TTL 48h) and
+        // fails with "No match for argument: paneflow-<ver>" when the
+        // cache predates the release we're installing. Observed in
+        // the v0.2.3 release manual acceptance. See PRD v1.2.
         PackageManager::Dnf => vec![
             "pkexec".into(),
             "dnf".into(),
+            "--refresh".into(),
             "install".into(),
             "-y".into(),
             "--best".into(),
             "--setopt=install_weak_deps=False".into(),
             format!("paneflow-{version_stripped}"),
         ],
+        // apt has no single-command equivalent of `dnf --refresh
+        // install` — `apt-get update` is a mandatory separate step
+        // to refresh the package lists before `install pkg=version`
+        // can resolve a freshly-published version. We wrap both
+        // commands inside ONE `pkexec sh -c` so the user sees a
+        // single polkit prompt (matching the Dnf UX) instead of two.
+        //
+        // The shell body is a STATIC constant string: the version
+        // flows in as the POSITIONAL parameter `$1`, double-quoted.
+        // bash / dash POSIX shells do NOT re-interpret metacharacters
+        // inside a double-quoted positional expansion — so even a
+        // regex-bypassing version string would be treated as literal
+        // data in the `paneflow=$1` arg to apt-get. Defense-in-depth
+        // on top of `validate_version`'s allow-list regex.
+        //
+        // `_` is the conventional `$0` placeholder (shell convention
+        // for script name in `sh -c '...' _ <args>`).
+        //
+        // Refactor guard: this argv is locked at its exact shape by
+        // `build_apt_argv_wraps_in_sh_c_with_positional_version` and
+        // `build_apt_argv_passes_version_as_positional_not_interpolated`
+        // in the test suite. A refactor that inlines the version into
+        // the script body (or reorders) will break those tests.
         PackageManager::Apt => vec![
             "pkexec".into(),
-            "apt-get".into(),
-            "install".into(),
-            "-y".into(),
-            "--no-install-recommends".into(),
-            format!("paneflow={version_stripped}"),
+            "sh".into(),
+            "-c".into(),
+            "apt-get update -q && apt-get install -y --no-install-recommends \"paneflow=$1\""
+                .into(),
+            "_".into(),
+            version_stripped.to_string(),
         ],
         // Defensive sentinels — `run_update` guards Other / RpmOstree
         // up-front, so an empty argv is never actually spawned; if a
@@ -776,30 +807,154 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_dnf_argv_puts_refresh_before_install_subcommand() {
+        // PRD v1.2: the `--refresh` global flag MUST appear before
+        // the `install` subcommand (dnf's global args are positional
+        // — a trailing `--refresh` after `install` is rejected as an
+        // unknown install-subcommand flag). This test locks the
+        // order in so a reformat or autofix never transposes them.
+        let argv = build_argv(&PackageManager::Dnf, "0.2.3");
+        let refresh_idx = argv
+            .iter()
+            .position(|t| t == "--refresh")
+            .unwrap_or_else(|| panic!("argv missing --refresh: {argv:?}"));
+        let install_idx = argv
+            .iter()
+            .position(|t| t == "install")
+            .unwrap_or_else(|| panic!("argv missing install: {argv:?}"));
+        assert!(
+            refresh_idx < install_idx,
+            "--refresh ({refresh_idx}) must come before install ({install_idx}): {argv:?}"
+        );
+        // Also pin the exact positions we expect — any drift means
+        // the canonical argv layout changed and callers of the
+        // classifier need re-verification.
+        assert_eq!(argv[0], "pkexec");
+        assert_eq!(argv[1], "dnf");
+        assert_eq!(argv[2], "--refresh");
+        assert_eq!(argv[3], "install");
+    }
+
     // ─── build_argv: apt ──────────────────────────────────────
 
     #[test]
     fn build_apt_argv_uses_equals_version_form() {
         // apt pinning uses `name=version`, NOT the rpm-flavoured
         // `name-version` form. Easy regression to introduce by
-        // copy-paste from the Dnf arm.
+        // copy-paste from the Dnf arm. Since PRD v1.2 the apt path
+        // is wrapped in `sh -c`, so the pin string lives INSIDE the
+        // script body (arg 3) as the literal `"paneflow=$1"` — the
+        // version itself is the positional argv[5].
         let argv = build_argv(&PackageManager::Apt, "0.2.3");
+        let script_body = argv
+            .get(3)
+            .cloned()
+            .unwrap_or_else(|| panic!("argv too short: {argv:?}"));
         assert!(
-            argv.iter().any(|t| t == "paneflow=0.2.3"),
-            "argv missing apt pin form: {argv:?}"
+            script_body.contains("\"paneflow=$1\""),
+            "script body missing quoted positional pin: {script_body:?}"
         );
         assert!(
-            !argv.iter().any(|t| t == "paneflow-0.2.3"),
-            "argv used rpm pin form for apt: {argv:?}"
+            !script_body.contains("paneflow-"),
+            "script body used rpm `-` pin form for apt: {script_body:?}"
         );
+        // And the runtime version must be the positional at argv[5].
+        assert_eq!(argv.get(5).map(String::as_str), Some("0.2.3"));
     }
 
     #[test]
     fn build_apt_argv_includes_no_install_recommends() {
+        // In the sh -c shape, `--no-install-recommends` lives inside
+        // the script body (arg 3), not as a standalone argv token.
+        // Check via substring of arg 3 rather than `iter().any()`.
         let argv = build_argv(&PackageManager::Apt, "0.2.3");
+        let script_body = argv
+            .get(3)
+            .cloned()
+            .unwrap_or_else(|| panic!("argv too short: {argv:?}"));
         assert!(
-            argv.iter().any(|t| t == "--no-install-recommends"),
-            "argv: {argv:?}"
+            script_body.contains("--no-install-recommends"),
+            "script body missing --no-install-recommends: {script_body:?}"
+        );
+    }
+
+    #[test]
+    fn build_apt_argv_wraps_in_sh_c_with_positional_version() {
+        // PRD v1.2 exact-match lock: the apt argv is a FIXED shape.
+        // - argv[0] = "pkexec"          (elevation wrapper)
+        // - argv[1] = "sh"               (POSIX shell for && chaining)
+        // - argv[2] = "-c"               (read script from next arg)
+        // - argv[3] = script body        (constant — NO interpolation)
+        // - argv[4] = "_"                (conventional $0 placeholder)
+        // - argv[5] = version            (the variable — positional $1)
+        //
+        // If a refactor moves the version into the script body (via
+        // `format!`) or reorders any of these, this test fails.
+        let argv = build_argv(&PackageManager::Apt, "0.2.3");
+        let expected = vec![
+            "pkexec".to_string(),
+            "sh".to_string(),
+            "-c".to_string(),
+            "apt-get update -q && apt-get install -y --no-install-recommends \"paneflow=$1\""
+                .to_string(),
+            "_".to_string(),
+            "0.2.3".to_string(),
+        ];
+        assert_eq!(argv, expected, "apt argv shape drifted from PRD v1.2 spec");
+    }
+
+    #[test]
+    fn build_apt_argv_passes_version_as_positional_not_interpolated() {
+        // PRD v1.2 defense-in-depth invariant: even if a future
+        // caller bypasses `validate_version` and feeds `build_argv`
+        // a string containing shell metacharacters, the builder
+        // MUST treat the version purely as argv data and NEVER
+        // interpolate it into the script body.
+        //
+        // We simulate the bypass by calling `build_argv` directly
+        // with a string that would never clear the regex. The sh -c
+        // execution path with `"$1"` double-quoted expansion means
+        // the shell treats the value as literal data, not as a
+        // command stream — this test pins that invariant at the
+        // unit-test level, independent of the regex validator.
+        let malicious = "0.2.3\"; echo pwned; #";
+        let argv = build_argv(&PackageManager::Apt, malicious);
+
+        // 1. Version lands AT argv[5] as a whole element — never
+        //    split, never merged into another argv slot.
+        assert_eq!(
+            argv.get(5).map(String::as_str),
+            Some(malicious),
+            "version must be argv[5] verbatim: {argv:?}"
+        );
+
+        // 2. The script body (argv[3]) MUST NOT contain any part of
+        //    the malicious version string. If it did, it would mean
+        //    the builder is interpolating the version into the shell
+        //    body — which defeats the `"$1"` positional safety.
+        let script_body = argv
+            .get(3)
+            .cloned()
+            .unwrap_or_else(|| panic!("argv too short: {argv:?}"));
+        assert!(
+            !script_body.contains("echo"),
+            "script body was poisoned with version content: {script_body:?}"
+        );
+        assert!(
+            !script_body.contains("pwned"),
+            "script body was poisoned with version content: {script_body:?}"
+        );
+        assert!(
+            !script_body.contains("0.2.3"),
+            "script body must not embed ANY version substring: {script_body:?}"
+        );
+
+        // 3. The script body remains the expected constant literal.
+        assert_eq!(
+            script_body,
+            "apt-get update -q && apt-get install -y --no-install-recommends \"paneflow=$1\"",
+            "script body must be the canonical constant string"
         );
     }
 
