@@ -37,6 +37,10 @@ Thumbs.db
 /RELEASE_V0.2.0_PLAN.md
 /RELEASE_WINDOWS_PLAN.md
 /ZED_TERMINAL_DEEP_DIVE.md
+/CMUX_ANALYSIS.md
 
 # Local-only PRDs, spikes, and task-tracking notes (kept out of the public repo)
 /tasks/
+
+# Local-only logo explorations (kept out of the public repo)
+/logo-concepts/
