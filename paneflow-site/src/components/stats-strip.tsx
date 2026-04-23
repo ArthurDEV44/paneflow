@@ -10,7 +10,7 @@ const stats = [
 
 export function StatsStrip() {
   return (
-    <section className="py-20">
+    <section data-track-section="stats" className="py-20">
       <FadeIn>
         <div className="max-w-4xl mx-auto px-6">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 sm:gap-4 text-center">

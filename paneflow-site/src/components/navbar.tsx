@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { GitHubIcon } from "./icons";
+import { track } from "../lib/analytics";
 
 export function Navbar() {
   const [scrolled, setScrolled] = useState(false);
@@ -42,24 +43,28 @@ export function Navbar() {
           <div className="flex items-center gap-6">
             <Link
               href="/#features"
+              onClick={() => track("nav_link_clicked", { label: "features" })}
               className="text-sm text-text-muted hover:text-text transition-colors duration-200 hidden sm:block"
             >
               Features
             </Link>
             <Link
               href="/download"
+              onClick={() => track("nav_link_clicked", { label: "download" })}
               className="text-sm text-text-muted hover:text-text transition-colors duration-200 hidden sm:block"
             >
               Download
             </Link>
             <a
               href="https://github.com/ArthurDEV44/paneflow#readme"
+              onClick={() => track("nav_link_clicked", { label: "docs" })}
               className="text-sm text-text-muted hover:text-text transition-colors duration-200 hidden sm:block"
             >
               Docs
             </a>
             <a
               href="https://github.com/ArthurDEV44/paneflow"
+              onClick={() => track("github_link_clicked", { source: "navbar" })}
               className="flex items-center gap-2 text-sm text-text-muted hover:text-text transition-colors duration-200"
             >
               <GitHubIcon className="w-4 h-4" />
