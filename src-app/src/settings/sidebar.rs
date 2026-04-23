@@ -23,6 +23,7 @@ impl SettingsWindow {
         let sections = [
             ("Shortcuts", SettingsSection::Shortcuts),
             ("Appearance", SettingsSection::Appearance),
+            ("Privacy", SettingsSection::Privacy),
         ];
 
         let mut nav = div()

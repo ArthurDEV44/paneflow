@@ -17,6 +17,7 @@ mod pty;
 mod runtime_paths;
 mod search;
 mod settings;
+mod telemetry;
 mod terminal;
 pub mod theme;
 mod update;
@@ -323,6 +324,18 @@ struct PaneFlowApp {
     custom_buttons_modal: Option<app::custom_buttons_modal::CustomButtonsModal>,
     /// Focus handle routing key events to the custom-buttons modal while open.
     custom_buttons_modal_focus: FocusHandle,
+    /// Live telemetry handle (US-012/US-013). `Null` when consent is missing
+    /// or `PANEFLOW_NO_TELEMETRY` is set — every `capture`/`flush` call is a
+    /// no-op in that state, so callers never branch on consent.
+    telemetry: std::sync::Arc<crate::telemetry::client::TelemetryClient>,
+    /// Monotonic clock at process start, used to compute
+    /// `session_duration_seconds` for the `app_exited` event. Wall-clock-change
+    /// proof — a system clock jump mid-session never produces a negative value.
+    launch_instant: std::time::Instant,
+    /// Last observed `config.telemetry.enabled` value, cached so the config
+    /// watcher's reconcile path can detect a transition (US-014) without
+    /// re-reading the file.
+    telemetry_enabled_last: Option<bool>,
 }
 
 /// Global flag for swap mode, checked by TerminalView to intercept Escape.
@@ -406,6 +419,12 @@ impl PaneFlowApp {
     ) {
         log::error!("self-update/{context}: {err:#}");
         let tag = update::UpdateError::classify(err);
+        // US-013 AC #4 — single choke-point for the failure telemetry: the
+        // classified `UpdateError` collapses into a canonical
+        // `error_category` label so no message string ever leaves the
+        // machine. Called before `show_update_error_toast` so the event is
+        // queued even if toast rendering panics.
+        self.emit_update_failure(&tag);
         self.self_update_status = update::SelfUpdateStatus::Errored(tag.clone());
         self.update_attempt_count = self.update_attempt_count.saturating_add(1);
         self.show_update_error_toast(&tag, cx);
@@ -629,6 +648,7 @@ impl Render for PaneFlowApp {
             .on_action(
                 cx.listener(|this: &mut Self, _: &CloseWindow, _window, cx| {
                     this.save_session(cx);
+                    this.emit_app_exited_and_flush();
                     cx.quit();
                 }),
             )
@@ -641,6 +661,7 @@ impl Render for PaneFlowApp {
             // a select-all action.
             .on_action(cx.listener(|this: &mut Self, _: &Quit, _window, cx| {
                 this.save_session(cx);
+                this.emit_app_exited_and_flush();
                 cx.quit();
             }))
             .on_action(cx.listener(|_this: &mut Self, _: &About, _window, _cx| {
@@ -1382,7 +1403,12 @@ fn main() {
                     window.on_window_should_close(cx, {
                         let view = view.clone();
                         move |_window, cx| {
-                            view.read(cx).save_session(cx);
+                            let app = view.read(cx);
+                            app.save_session(cx);
+                            // US-013 AC #2 — final chance to flush
+                            // `app_exited` when the OS close button or a
+                            // keyboard shortcut closes the last window.
+                            app.emit_app_exited_and_flush();
                             cx.quit();
                             false
                         }

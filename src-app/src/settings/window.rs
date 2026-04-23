@@ -41,6 +41,11 @@ pub(crate) fn settings_content_bg() -> gpui::Rgba {
 pub(crate) enum SettingsSection {
     Shortcuts,
     Appearance,
+    /// Tri-state telemetry consent toggle (US-014) plus a link to the
+    /// public privacy page. Separate from Appearance so future privacy
+    /// settings (telemetry_id reset, DSR contact shortcut, crash
+    /// reporter toggle) land here without shoehorning.
+    Privacy,
 }
 
 pub struct SettingsWindow {
@@ -103,6 +108,7 @@ impl Render for SettingsWindow {
         let content = match self.section {
             SettingsSection::Shortcuts => self.render_shortcuts_content(cx).into_any_element(),
             SettingsSection::Appearance => self.render_appearance_content(cx).into_any_element(),
+            SettingsSection::Privacy => self.render_privacy_content(cx).into_any_element(),
         };
 
         match decorations {

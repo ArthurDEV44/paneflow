@@ -626,6 +626,7 @@ mod tests {
             font_family: None,
             font_size: None,
             option_as_meta: None,
+            telemetry: None,
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
@@ -958,5 +959,68 @@ mod tests {
             !json.contains("scrollback"),
             "None scrollback should be omitted from JSON"
         );
+    }
+
+    // ─── Telemetry config (US-009) ────────────────────────────────────────
+    //
+    // Tri-state encoding:
+    //   - outer None          → user never prompted (block missing from JSON)
+    //   - Some { enabled: None } → block present, question unanswered
+    //   - Some { enabled: Some(true|false) } → explicit consent answer
+    //
+    // No event is ever emitted unless `enabled == Some(true)` at the
+    // capture layer (US-012).
+
+    #[test]
+    fn test_telemetry_missing_block() {
+        // No `telemetry` key at all → outer None (never asked).
+        let config = parse_and_validate(r#"{"default_shell": "/bin/sh"}"#);
+        assert!(config.telemetry.is_none());
+    }
+
+    #[test]
+    fn test_telemetry_enabled_null_and_empty() {
+        // Both `{"enabled": null}` and `{}` must parse to the same state:
+        // block present, enabled unresolved. Both forms are expected in
+        // the wild (users editing by hand vs. the modal writing `{}` before
+        // the user clicks).
+        let via_null = parse_and_validate(r#"{"telemetry": {"enabled": null}}"#);
+        let via_empty = parse_and_validate(r#"{"telemetry": {}}"#);
+
+        assert_eq!(via_null.telemetry, Some(TelemetryConfig { enabled: None }));
+        assert_eq!(via_empty.telemetry, Some(TelemetryConfig { enabled: None }));
+        assert_eq!(via_null.telemetry, via_empty.telemetry);
+    }
+
+    #[test]
+    fn test_telemetry_enabled_true() {
+        let config = parse_and_validate(r#"{"telemetry": {"enabled": true}}"#);
+        assert_eq!(
+            config.telemetry,
+            Some(TelemetryConfig {
+                enabled: Some(true)
+            })
+        );
+
+        // Round-trip: re-serialize then re-parse — the consent answer
+        // must survive without loss so the modal never re-prompts.
+        let json = serde_json::to_string(&config).unwrap();
+        let reparsed = parse_and_validate(&json);
+        assert_eq!(reparsed.telemetry, config.telemetry);
+    }
+
+    #[test]
+    fn test_telemetry_enabled_false() {
+        let config = parse_and_validate(r#"{"telemetry": {"enabled": false}}"#);
+        assert_eq!(
+            config.telemetry,
+            Some(TelemetryConfig {
+                enabled: Some(false)
+            })
+        );
+
+        let json = serde_json::to_string(&config).unwrap();
+        let reparsed = parse_and_validate(&json);
+        assert_eq!(reparsed.telemetry, config.telemetry);
     }
 }

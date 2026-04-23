@@ -189,6 +189,11 @@ impl PaneFlowApp {
                             let _ = this.update(cx, |app, cx| {
                                 app.self_update_status = update::SelfUpdateStatus::Installing;
                                 app.save_session(cx);
+                                // US-013 AC #3 — emit + blocking flush BEFORE
+                                // the restart. The worker detaches on 2 s
+                                // timeout so process exit is never gated on a
+                                // stalled PostHog POST.
+                                app.emit_update_success_and_flush();
                                 cx.notify();
                             });
                             cx.update(|cx| {
@@ -324,8 +329,9 @@ impl PaneFlowApp {
 
                 match result {
                     Ok(updated_path) => {
-                        let _ = this.update(cx, |app, cx| {
-                            app.save_session(cx);
+                        let _ = this.update(cx, |app, _cx| {
+                            app.save_session(_cx);
+                            app.emit_update_success_and_flush();
                         });
                         cx.update(|cx| {
                             log::info!("self-update: restarting into {}", updated_path.display());
@@ -383,6 +389,7 @@ impl PaneFlowApp {
                         let _ = this.update(cx, |app, cx| {
                             app.self_update_status = update::SelfUpdateStatus::Installing;
                             app.save_session(cx);
+                            app.emit_update_success_and_flush();
                             cx.notify();
                         });
                         cx.update(|cx| {
@@ -423,6 +430,7 @@ impl PaneFlowApp {
                         let _ = this.update(cx, |app, cx| {
                             app.self_update_status = update::SelfUpdateStatus::Installing;
                             app.save_session(cx);
+                            app.emit_update_success_and_flush();
                             cx.notify();
                         });
                         cx.update(|cx| {
@@ -464,6 +472,7 @@ impl PaneFlowApp {
                         let _ = this.update(cx, |app, cx| {
                             app.self_update_status = update::SelfUpdateStatus::Installing;
                             app.save_session(cx);
+                            app.emit_update_success_and_flush();
                             cx.notify();
                         });
                         cx.update(|cx| {
@@ -546,6 +555,7 @@ impl PaneFlowApp {
                 // before exec'ing the new binary.
                 let _ = this.update(cx, |app, cx| {
                     app.save_session(cx);
+                    app.emit_update_success_and_flush();
                 });
                 cx.update(|cx| match update::installed_binary_path() {
                     Ok(path) => {

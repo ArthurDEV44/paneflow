@@ -43,7 +43,63 @@ impl PaneFlowApp {
             keybindings::apply_keybindings(cx, &config.shortcuts);
             self.effective_shortcuts = keybindings::effective_shortcuts(&config.shortcuts);
             crate::theme::invalidate_theme_cache();
+            // US-014: reconcile the telemetry consent state. On any change,
+            // rebuild the `TelemetryClient` handle (Null ↔ Active) so future
+            // emissions reflect the new choice; show a confirmation toast;
+            // fire a one-time `telemetry_reenabled` breadcrumb on an explicit
+            // opted-out → opted-in transition (ROPA audit trail).
+            self.reconcile_telemetry_consent(&config, cx);
             cx.notify();
+        }
+    }
+
+    /// Handle a `config.telemetry.enabled` change detected during config
+    /// reconciliation. Compares against `self.telemetry_enabled_last` and
+    /// performs the three mandated side effects:
+    /// 1. Rebuild the client handle via `TelemetryClient::from_config`.
+    /// 2. Emit `telemetry_reenabled` iff `Some(false) → Some(true)`.
+    /// 3. Surface a toast mirroring the new state.
+    ///
+    /// Pure logic (which side effects to run) is factored into
+    /// [`reconcile_telemetry`] so it can be unit-tested without GPUI or
+    /// filesystem state.
+    fn reconcile_telemetry_consent(
+        &mut self,
+        config: &paneflow_config::schema::PaneFlowConfig,
+        cx: &mut Context<Self>,
+    ) {
+        let new_enabled = config.telemetry.as_ref().and_then(|t| t.enabled);
+        let decision = reconcile_telemetry(self.telemetry_enabled_last, new_enabled);
+        if !decision.rebuild {
+            return;
+        }
+
+        // Swap the client handle. Distinct_id is re-read from disk — if
+        // the telemetry_id file is gone since last launch, we get a
+        // fresh ephemeral; otherwise the stable UUID persists.
+        let distinct_id = crate::telemetry::id::telemetry_id();
+        let api_key = option_env!("POSTHOG_API_KEY").unwrap_or("");
+        let host = option_env!("POSTHOG_HOST").unwrap_or("https://eu.i.posthog.com");
+        self.telemetry =
+            std::sync::Arc::new(crate::telemetry::client::TelemetryClient::from_config(
+                config,
+                api_key,
+                host,
+                &distinct_id,
+            ));
+
+        if decision.reenabled {
+            // Explicit false → true transition. `telemetry_reenabled`
+            // carries no properties — its presence alone documents that
+            // consent was re-granted from an opted-out state.
+            self.telemetry
+                .capture("telemetry_reenabled", serde_json::json!({}));
+        }
+
+        self.telemetry_enabled_last = new_enabled;
+
+        if let Some(msg) = decision.toast_msg {
+            self.show_toast(msg, cx);
         }
     }
 
@@ -505,5 +561,126 @@ impl PaneFlowApp {
                 serde_json::json!({"error": format!("Unknown method: {method}")})
             }
         }
+    }
+}
+
+/// Decision outcome for the telemetry-consent reconciler (US-014).
+/// Separated from the GPUI-bound `reconcile_telemetry_consent` so the
+/// transition matrix is unit-testable in isolation.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TelemetryReconciliation {
+    /// Whether the `TelemetryClient` handle must be rebuilt. Only the
+    /// `None ↔ Some(_)` and `Some(true) ↔ Some(false)` transitions
+    /// require a rebuild; identical states are a no-op.
+    pub rebuild: bool,
+    /// Whether to emit the one-time `telemetry_reenabled` breadcrumb.
+    /// Fires exclusively on the `Some(false) → Some(true)` transition
+    /// — a user explicitly re-granting consent after having declined.
+    /// None → Some(true) (first answer) does NOT count as a re-enable.
+    pub reenabled: bool,
+    /// Toast copy reflecting the resolved state. `None` if no toast is
+    /// warranted (identical state transitions).
+    pub toast_msg: Option<&'static str>,
+}
+
+/// Pure state-transition matrix for the telemetry consent toggle.
+/// Called from `PaneFlowApp::reconcile_telemetry_consent` after the
+/// background `ConfigWatcher` has deposited a fresh config.
+pub(crate) fn reconcile_telemetry(old: Option<bool>, new: Option<bool>) -> TelemetryReconciliation {
+    if old == new {
+        return TelemetryReconciliation {
+            rebuild: false,
+            reenabled: false,
+            toast_msg: None,
+        };
+    }
+    let toast_msg = Some(match new {
+        Some(true) => "Télémétrie activée",
+        Some(false) => "Télémétrie désactivée",
+        None => "Télémétrie : la demande réapparaîtra au prochain lancement",
+    });
+    TelemetryReconciliation {
+        rebuild: true,
+        reenabled: old == Some(false) && new == Some(true),
+        toast_msg,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Exhaustive 3x3 transition matrix over `Option<bool>`. Each case is
+    // asserted explicitly; a future variant added to the tri-state would
+    // force this test to be updated.
+
+    #[test]
+    fn identical_state_is_a_noop() {
+        for state in [None, Some(false), Some(true)] {
+            let r = reconcile_telemetry(state, state);
+            assert!(!r.rebuild, "no rebuild for identical {state:?}");
+            assert!(!r.reenabled);
+            assert!(r.toast_msg.is_none());
+        }
+    }
+
+    #[test]
+    fn none_to_some_true_rebuilds_but_does_not_flag_reenabled() {
+        let r = reconcile_telemetry(None, Some(true));
+        assert!(r.rebuild);
+        assert!(
+            !r.reenabled,
+            "first-ever consent (None → true) is not a re-enable"
+        );
+        assert_eq!(r.toast_msg, Some("Télémétrie activée"));
+    }
+
+    #[test]
+    fn none_to_some_false_rebuilds() {
+        let r = reconcile_telemetry(None, Some(false));
+        assert!(r.rebuild);
+        assert!(!r.reenabled);
+        assert_eq!(r.toast_msg, Some("Télémétrie désactivée"));
+    }
+
+    #[test]
+    fn some_false_to_some_true_flags_reenabled() {
+        let r = reconcile_telemetry(Some(false), Some(true));
+        assert!(r.rebuild);
+        assert!(
+            r.reenabled,
+            "opted-out → opted-in is the only transition that emits telemetry_reenabled"
+        );
+        assert_eq!(r.toast_msg, Some("Télémétrie activée"));
+    }
+
+    #[test]
+    fn some_true_to_some_false_rebuilds_no_reenabled() {
+        let r = reconcile_telemetry(Some(true), Some(false));
+        assert!(r.rebuild);
+        assert!(!r.reenabled);
+        assert_eq!(r.toast_msg, Some("Télémétrie désactivée"));
+    }
+
+    #[test]
+    fn some_true_to_none_rebuilds() {
+        let r = reconcile_telemetry(Some(true), None);
+        assert!(r.rebuild);
+        assert!(!r.reenabled);
+        assert_eq!(
+            r.toast_msg,
+            Some("Télémétrie : la demande réapparaîtra au prochain lancement")
+        );
+    }
+
+    #[test]
+    fn some_false_to_none_rebuilds_no_reenabled() {
+        let r = reconcile_telemetry(Some(false), None);
+        assert!(r.rebuild);
+        assert!(!r.reenabled);
+        assert_eq!(
+            r.toast_msg,
+            Some("Télémétrie : la demande réapparaîtra au prochain lancement")
+        );
     }
 }

@@ -82,6 +82,35 @@ pub(crate) fn socket_path() -> Option<PathBuf> {
     Some(PathBuf::from(r"\\.\pipe\paneflow"))
 }
 
+// Wired by US-012 (telemetry capture client) + consumed transitively by
+// `telemetry::id::telemetry_id`. Tagged as allow(dead_code) until US-012
+// lands so the US-010 plumbing can ship independently.
+#[allow(dead_code)]
+/// Resolve the PaneFlow per-user data directory (cross-platform).
+///
+/// - Linux: `$XDG_DATA_HOME/paneflow` (typically `~/.local/share/paneflow`)
+/// - macOS: `~/Library/Application Support/paneflow`
+/// - Windows: `%LOCALAPPDATA%\paneflow` — **non-roaming** on purpose, so a
+///   roamed profile does not carry the per-install telemetry_id to another
+///   machine.
+///
+/// The directory is created if it does not already exist. Returns `None` if
+/// either the platform helper returns `None` (broken environment) or the
+/// `create_dir_all` call fails (read-only FS, permission denied, etc.).
+/// Callers should fall back to an ephemeral in-memory UUID in that case
+/// (see `telemetry::id::telemetry_id`).
+pub fn data_dir() -> Option<PathBuf> {
+    let dir = dirs::data_local_dir()?.join("paneflow");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        log::debug!(
+            "paneflow: data_dir {} is unwritable ({e}); callers will use ephemeral state",
+            dir.display()
+        );
+        return None;
+    }
+    Some(dir)
+}
+
 #[cfg(unix)]
 fn check_sun_path_fits(path: &std::path::Path) -> bool {
     let bytes = path.as_os_str().len();

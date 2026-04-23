@@ -5,4 +5,5 @@
 //! shell live in `settings::window`.
 
 pub mod appearance;
+pub mod privacy;
 pub mod shortcuts;
