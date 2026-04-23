@@ -3,6 +3,7 @@
 import { FadeIn } from "./fade-in";
 import { Copy, Check } from "lucide-react";
 import { useState } from "react";
+import { track } from "../lib/analytics";
 
 export function Install() {
   return (
@@ -59,6 +60,7 @@ function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
+    track("install_command_copied", { command: "git_clone_cargo_build" });
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);

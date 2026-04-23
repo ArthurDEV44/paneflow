@@ -3,9 +3,11 @@
 import Image from "next/image";
 import { motion } from "framer-motion";
 import { Download } from "lucide-react";
+import posthog from "posthog-js";
 import { GitHubIcon } from "./icons";
 import { linuxAppImageUrl } from "../lib/release";
 import { useDetectedLinuxArch } from "../lib/use-detected-arch";
+import { track } from "../lib/analytics";
 
 export function Hero() {
   // Client-side arch sniff. Defaults to x86_64 on SSR + first client
@@ -15,7 +17,10 @@ export function Hero() {
   const arch = useDetectedLinuxArch();
 
   return (
-    <section className="relative overflow-hidden pt-36 sm:pt-44 pb-24 sm:pb-32">
+    <section
+      data-track-section="hero"
+      className="relative overflow-hidden pt-36 sm:pt-44 pb-24 sm:pb-32"
+    >
 
       <div className="hero-glow" />
 
@@ -73,6 +78,14 @@ export function Hero() {
           */}
           <a
             href={linuxAppImageUrl(arch)}
+            onClick={() => {
+              posthog.capture("download_cta_clicked", {
+                source: "hero",
+                format: "AppImage",
+                platform: "linux",
+                arch,
+              });
+            }}
             className="inline-flex items-center gap-2.5 px-6 py-3 bg-accent text-bg font-semibold rounded-lg hover:brightness-110 transition-all duration-200"
           >
             <Download className="w-4 h-4" />
@@ -80,6 +93,7 @@ export function Hero() {
           </a>
           <a
             href="https://github.com/ArthurDEV44/paneflow"
+            onClick={() => track("github_link_clicked", { source: "hero" })}
             className="inline-flex items-center gap-2.5 px-6 py-3 border border-surface-border text-text-muted rounded-lg hover:border-surface-border-hover hover:text-text transition-all duration-200"
           >
             <GitHubIcon className="w-4 h-4" />

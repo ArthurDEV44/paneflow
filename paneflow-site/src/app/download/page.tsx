@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Navbar } from "@/components/navbar";
 import { Footer } from "@/components/footer";
 import { DownloadView } from "@/components/download/download-view";
+import { SectionTracker } from "@/components/section-tracker";
 
 export const metadata: Metadata = {
   title: "Télécharger PaneFlow: Linux, macOS, Windows",
@@ -23,6 +24,7 @@ export default function DownloadPage() {
         <DownloadView />
         <Footer />
       </main>
+      <SectionTracker />
     </>
   );
 }
