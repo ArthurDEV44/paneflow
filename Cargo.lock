@@ -4129,7 +4129,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-app"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -4167,7 +4167,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-config"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "dirs 6.0.0",
  "notify",
