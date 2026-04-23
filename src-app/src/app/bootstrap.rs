@@ -12,6 +12,7 @@ use gpui::{AppContext, Context};
 use notify::Watcher;
 
 use crate::pane::Pane;
+use crate::telemetry;
 use crate::terminal::TerminalView;
 use crate::window_chrome::title_bar;
 use crate::workspace::{Workspace, next_workspace_id};
@@ -341,6 +342,43 @@ impl PaneFlowApp {
         #[cfg(target_os = "linux")]
         update::migrations::run_startup_migrations(&install_method);
 
+        // US-010/US-012 — resolve the anonymous telemetry_id (creates it
+        // on first launch) and build the consent-gated capture client. The
+        // `is_first_run` flag is reused below as a property on the
+        // `app_started` event; a second filesystem probe would race with the
+        // persistence we just did.
+        let (telemetry_distinct_id, is_first_run_for_telemetry) =
+            telemetry::id::telemetry_id_with_first_run();
+        // Compile-time env vars: the PostHog project key is injected by the
+        // release pipeline; the host defaults to EU Cloud so a build that
+        // omits the override still honours the PRD's EU-residency constraint.
+        let posthog_api_key = option_env!("POSTHOG_API_KEY").unwrap_or("");
+        let posthog_host = option_env!("POSTHOG_HOST").unwrap_or("https://eu.i.posthog.com");
+        let telemetry_config_snapshot = paneflow_config::loader::load_config();
+        let telemetry_enabled_last = telemetry_config_snapshot
+            .telemetry
+            .as_ref()
+            .and_then(|t| t.enabled);
+        let telemetry = std::sync::Arc::new(telemetry::client::TelemetryClient::from_config(
+            &telemetry_config_snapshot,
+            posthog_api_key,
+            posthog_host,
+            &telemetry_distinct_id,
+        ));
+        // Background flusher: every 5 s the client inspects its queue and
+        // posts when the size or age threshold is met. Runs off the GPUI
+        // main thread — ureq blocks inside `post_batch` but never on the
+        // renderer — via `cx.background_spawn` + `smol::unblock`.
+        let telemetry_flusher = std::sync::Arc::clone(&telemetry);
+        cx.background_spawn(async move {
+            loop {
+                smol::Timer::after(std::time::Duration::from_secs(5)).await;
+                let client = std::sync::Arc::clone(&telemetry_flusher);
+                smol::unblock(move || client.poll_flush()).await;
+            }
+        })
+        .detach();
+
         // US-009 — coexistence detection + one-time advisory toast. Runs
         // strictly after the US-008 icon migration so a same-session
         // upgrade→cleanup→toast chain stays in order. Detection is always
@@ -401,7 +439,7 @@ impl PaneFlowApp {
             }
         }
 
-        Self {
+        let app = Self {
             workspaces,
             active_idx,
             renaming_idx: None,
@@ -444,6 +482,17 @@ impl PaneFlowApp {
             update_attempt_count: 0,
             custom_buttons_modal: None,
             custom_buttons_modal_focus: cx.focus_handle(),
-        }
+            telemetry,
+            launch_instant: std::time::Instant::now(),
+            telemetry_enabled_last,
+        };
+
+        // US-013 AC #1 — fire `app_started` once per launch. `Null` clients
+        // (opt-out / unanswered consent / env kill-switch) no-op; only a
+        // consenting user produces an HTTP call, batched on the flusher
+        // above. Must happen after the struct literal so `self.telemetry`
+        // and `self.install_method` are both populated.
+        app.emit_app_started(is_first_run_for_telemetry);
+        app
     }
 }

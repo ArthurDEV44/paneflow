@@ -20,24 +20,48 @@ fn load_raw_config(path: &PathBuf) -> serde_json::Value {
 
 /// Write a JSON value back to the config file, creating parent dirs if needed.
 fn write_config(path: &PathBuf, value: &serde_json::Value) {
+    let _ = write_config_checked(path, value);
+}
+
+/// Result-returning variant of [`write_config`]. Returns `true` on
+/// successful write, `false` otherwise (serialization or I/O error —
+/// logged at WARN in both cases).
+fn write_config_checked(path: &PathBuf, value: &serde_json::Value) -> bool {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     match serde_json::to_string_pretty(value) {
-        Ok(json_str) => {
-            if let Err(e) = std::fs::write(path, json_str) {
+        Ok(json_str) => match std::fs::write(path, json_str) {
+            Ok(()) => true,
+            Err(e) => {
                 log::warn!("config: failed to write: {e}");
+                false
             }
+        },
+        Err(e) => {
+            log::warn!("config: failed to serialize: {e}");
+            false
         }
-        Err(e) => log::warn!("config: failed to serialize: {e}"),
     }
 }
 
 /// Save a top-level config field (e.g. `"font_size"`, `"line_height"`).
 pub fn save_config_value(key: &str, value: serde_json::Value) {
+    let _ = save_config_value_checked(key, value);
+}
+
+/// Same as `save_config_value`, but returns `true` on success and `false`
+/// when the config path could not be resolved or the file write failed.
+///
+/// Callers that need to surface persistence failures to the user (e.g. the
+/// telemetry consent modal in US-011, which must honor the choice
+/// in-memory and show a toast when the disk write fails) should use this
+/// variant. The void `save_config_value` wrapper above is kept for
+/// fire-and-forget call sites that already accept best-effort writes.
+pub fn save_config_value_checked(key: &str, value: serde_json::Value) -> bool {
     let Some(path) = paneflow_config::loader::config_path() else {
         log::warn!("config: cannot determine config path, not saving");
-        return;
+        return false;
     };
     let mut json = load_raw_config(&path);
     if let Some(root) = json.as_object_mut() {
@@ -47,7 +71,7 @@ pub fn save_config_value(key: &str, value: serde_json::Value) {
             root.insert(key.to_string(), value);
         }
     }
-    write_config(&path, &json);
+    write_config_checked(&path, &json)
 }
 
 /// Save a single shortcut override to `paneflow.json`.

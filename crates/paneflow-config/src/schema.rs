@@ -26,6 +26,35 @@ pub struct PaneFlowConfig {
     /// Treat Alt key as Meta (send ESC prefix). Default: true on Linux.
     /// Set to false for future macOS where Option produces Unicode characters.
     pub option_as_meta: Option<bool>,
+    /// Opt-in desktop telemetry block.
+    ///
+    /// Tri-state semantics:
+    /// - `None` (block missing from config): user has never been prompted.
+    /// - `Some(TelemetryConfig { enabled: None })`: block exists but the
+    ///   consent question is still unanswered (e.g. user dismissed the
+    ///   first-run modal without choosing).
+    /// - `Some(TelemetryConfig { enabled: Some(true|false) })`: explicit
+    ///   user answer — consent granted or refused.
+    ///
+    /// The consent modal (US-011) only appears when `telemetry.enabled`
+    /// resolves to `None` under both the outer and inner Option layers.
+    /// No event is ever sent unless `enabled == Some(true)`.
+    pub telemetry: Option<TelemetryConfig>,
+}
+
+/// Desktop telemetry consent state.
+///
+/// Kept in its own struct (rather than a bare `Option<bool>` on
+/// `PaneFlowConfig`) so future telemetry-scoped settings (e.g. a per-user
+/// `distinct_id` override, or per-event category toggles) can be added
+/// without schema churn.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct TelemetryConfig {
+    /// Consent tri-state. `None` = unanswered, `Some(true)` = opted in,
+    /// `Some(false)` = opted out. `PANEFLOW_NO_TELEMETRY=1` env var
+    /// overrides this unconditionally at the client layer (US-012).
+    pub enabled: Option<bool>,
 }
 
 /// A single command definition, compatible with the cmux workspace format.

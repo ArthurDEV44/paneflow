@@ -175,7 +175,16 @@ jobs:
         run: cargo test --workspace --target ${{ matrix.target }}
 
       # --- Release build ---
+      # `POSTHOG_API_KEY` is resolved by `option_env!` at compile time
+      # (see `src-app/src/app/bootstrap.rs`); embedding it here at the
+      # single `cargo build --release` step is sufficient for every
+      # downstream artifact (tar.gz, .deb, .rpm, AppImage, .dmg, and the
+      # cargo-wix MSI which consumes this build via `--no-build`). If the
+      # secret is absent the startup log::warn! surfaces and events are
+      # silently dropped — never a user-facing failure.
       - name: Build release binary
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
         run: cargo build --release -p paneflow-app --target ${{ matrix.target }}
 
       # --- Phase 1 artifacts ---
