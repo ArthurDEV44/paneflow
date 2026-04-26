@@ -160,6 +160,22 @@ pub(crate) fn extract_into(entries: &[Entry<'_>], target_dir: &Path) -> Result<(
 
         write_atomic(&final_path, entry.bytes)
             .with_context(|| format!("US-008: atomic write of {} failed", final_path.display()))?;
+
+        // Re-verify the just-written file. Catches the narrow race window
+        // where an AV scanner (Windows Defender real-time protection) or a
+        // FUSE filesystem rewrites the file between persist() and the
+        // shim's next exec — without this check, the corrupted bytes would
+        // sit on disk forever because the idempotency fast-path above
+        // would re-detect them as "matching whatever's on disk now".
+        // Cost: one re-read + sha256 per *new* extraction (~600 KB), zero
+        // on the fast-path.
+        if !file_matches_digest(&final_path, entry.bytes)? {
+            return Err(anyhow!(
+                "US-008: post-write digest mismatch for {} — \
+                 filesystem or AV interference suspected",
+                final_path.display()
+            ));
+        }
     }
 
     Ok(())
