@@ -819,6 +819,12 @@ fn write_atomic(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
 /// `paneflow-ai-hook` binary (US-003) accepts `Notification` as a valid event
 /// name, but it's only fired from Windows JSONL `error` events (see
 /// `parse_codex_event`), never from this hooks.json registration.
+///
+/// Unix-only: the only callers (`merge_codex_hooks`, `remove_codex_hooks`,
+/// `CodexHookConfigGuard`) are all `#[cfg(unix)]`. On Windows the JSONL tee
+/// path takes over, so this list would otherwise be dead code under
+/// `-D warnings`.
+#[cfg(unix)]
 const CODEX_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
@@ -923,6 +929,7 @@ impl Drop for CodexHookConfigGuard {
     }
 }
 
+#[cfg(unix)]
 fn merge_codex_hooks(root: &mut serde_json::Value) {
     if !root.is_object() {
         *root = serde_json::json!({});
@@ -961,6 +968,7 @@ fn merge_codex_hooks(root: &mut serde_json::Value) {
     }
 }
 
+#[cfg(unix)]
 fn remove_codex_hooks(root: &mut serde_json::Value) {
     let Some(root_obj) = root.as_object_mut() else {
         return;
@@ -1213,7 +1221,11 @@ fn rewrite_codex_args(args: &[OsString]) -> (Vec<OsString>, bool) {
 /// this list so the schema-pin test can detect drift. When Codex adds a new
 /// event type, add it to BOTH this const AND to a `match` arm in
 /// `parse_codex_event` (even if the arm is just `None`).
-#[cfg(not(unix))]
+///
+/// Test-only: the runtime `parse_codex_event` enumerates the strings inline
+/// rather than referencing this const, so without `cfg(test)` the const is
+/// dead code under `-D warnings` on Windows non-test builds.
+#[cfg(all(test, not(unix)))]
 const KNOWN_CODEX_EVENT_TYPES: &[&str] = &[
     "thread.started",
     "turn.started",
