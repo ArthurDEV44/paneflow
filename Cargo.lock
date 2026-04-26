@@ -4128,6 +4128,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "paneflow-ai-hook"
+version = "0.2.6"
+dependencies = [
+ "interprocess",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "paneflow-app"
 version = "0.2.6"
 dependencies = [
@@ -4176,6 +4186,15 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "paneflow-shim"
+version = "0.2.6"
+dependencies = [
+ "libc",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

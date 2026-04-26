@@ -1,0 +1,23 @@
+[package]
+name = "paneflow-shim"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "paneflow-shim"
+path = "src/main.rs"
+
+[dependencies]
+# US-005: idempotent merge of `.claude/settings.local.json` + atomic rename.
+serde_json = { workspace = true }
+tempfile = "3"
+
+# Signal disposition control — required to make Ctrl+C / SIGHUP / SIGTERM
+# only reach the child claude/codex process (so the AI sees the
+# interrupt) while the shim survives long enough to send `ai.session_end`
+# to PaneFlow's IPC server. Same pattern time(1) / tee(1) / sudo(8) use.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

@@ -1,7 +1,23 @@
+// Test-only allow for the CLAUDE.md-mandated clippy restrictions. These
+// lints are also demoted to `allow` at crate level in `src-app/Cargo.toml`
+// for pre-existing GPUI UI-code unwraps (US-007 "or equivalent" escape),
+// so today this belt is effectively redundant — but it stays in place so
+// that when the eventual cleanup story re-promotes the Cargo.toml lints
+// to `warn`, tests continue to pass without another edit here.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        clippy::panic
+    )
+)]
 //! PaneFlow v2 — GPUI Native Terminal Multiplexer
 //!
 //! App shell with sidebar workspace list + main content area.
 
+mod ai_hooks;
 mod ai_types;
 mod app;
 mod assets;
