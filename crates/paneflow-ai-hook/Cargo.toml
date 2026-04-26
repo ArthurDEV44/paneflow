@@ -1,15 +1,16 @@
 [package]
-name = "paneflow-config"
+name = "paneflow-ai-hook"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "paneflow-ai-hook"
+path = "src/main.rs"
+
 [dependencies]
+interprocess = "2.4"
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
-tracing = "0.1"
-notify = "7"
-dirs = "6"
 
 [dev-dependencies]
 tempfile = "3"

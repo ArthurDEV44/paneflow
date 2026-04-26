@@ -30,6 +30,12 @@ impl ConfigWatcher {
     /// Uses `config_path()` to determine which file to watch. Panics if no
     /// config directory can be determined (this should not happen on supported
     /// platforms).
+    // Invariant: `config_path()` returns `Some` on every supported platform
+    // (Linux/macOS: `dirs::config_dir()`; Windows: `%APPDATA%`). A `None`
+    // here means the user's environment is so broken (e.g., unset `HOME`
+    // AND `USERPROFILE`) that starting the app is meaningless. `expect` is
+    // the right behavior — documented invariant per CLAUDE.md.
+    #[allow(clippy::expect_used)]
     pub fn new(callback: Arc<dyn Fn(PaneFlowConfig) + Send + Sync>) -> Self {
         let config_path =
             config_path().expect("could not determine config path for the current platform");
@@ -59,6 +65,11 @@ impl ConfigWatcher {
     /// Returns `Ok(())` once the watcher is installed, or an error if the
     /// underlying OS watcher could not be created.
     pub fn start(&self) -> Result<(), notify::Error> {
+        // Invariant: `self.config_path` is always a file path built from
+        // `config_path()` (e.g., `/home/u/.config/paneflow/paneflow.json`),
+        // so `.parent()` is guaranteed to be `Some`. `expect` is correct
+        // here — documented invariant per CLAUDE.md.
+        #[allow(clippy::expect_used)]
         let watch_dir = self
             .config_path
             .parent()
