@@ -157,7 +157,16 @@ fn build_frame(
                 .unwrap_or("");
             match notif_type {
                 "permission_prompt" | "elicitation_dialog" => METHOD_NOTIFICATION,
-                _ => return None,
+                // Surface unknown types to `$PANEFLOW_HOOK_LOG` so the whitelist
+                // can be widened from real telemetry when Anthropic ships a new
+                // permission-style type. Stays out of stderr per the hook
+                // contract — only the opt-in log path receives it.
+                other => {
+                    diagnose(&format!(
+                        "Notification: dropping notification_type={other:?}"
+                    ));
+                    return None;
+                }
             }
         }
         "Stop" | "SubagentStop" => METHOD_STOP,
