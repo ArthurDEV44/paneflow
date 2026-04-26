@@ -580,19 +580,16 @@ jobs:
   macos-x86_64-check:
     name: macOS x86_64 (x86_64-apple-darwin)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
-    # Intel Mac — `release.yml` documents this leg as CLOSED until v0.3.0
-    # (queue-time volatility + Apple Dev secrets not provisioned). The
-    # CI gate runs it best-effort (`continue-on-error: true`) so a
-    # Rust-level cross-compile regression against the Intel-mac target
-    # still surfaces on PR, without blocking the merge queue when
-    # macos-13 spends 30-60 min in queue.
-    #
-    # NOTE: this job is intentionally NOT listed as a required status
-    # check in branch protection. `continue-on-error: true` surfaces an
-    # orange-warning icon on failure but the merge proceeds. Promote to
-    # a hard gate at v0.3.0 when the Intel-mac signing + queue posture
-    # is re-evaluated.
+    # DISABLED until v0.3.0 — `release.yml` already marks this leg CLOSED
+    # (queue-time volatility + Apple Dev secrets not provisioned). Even
+    # with `continue-on-error: true` the queued job kept the overall run
+    # in `in_progress` for 30-60 min waiting for a `macos-13` runner,
+    # masking the actual completion of every other green leg in the
+    # matrix. macOS aarch64 (Apple Silicon) covers the day-to-day macOS
+    # cross-compile signal; Intel-mac correctness will be re-validated
+    # on the release pipeline once Apple Dev secrets and signing are
+    # provisioned. Re-enable by flipping the `if:` condition below.
+    if: false
     runs-on: macos-13
     continue-on-error: true
     steps:
