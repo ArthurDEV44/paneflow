@@ -33,7 +33,9 @@ maximum-db-staleness = "P30D"
 # per the sources warn-posture below. Covers the full Rust ecosystem
 # mainstream + the specific ones present in our current Cargo.lock
 # (Unicode-3.0 for the Unicode crates, Zlib for miniz_oxide, BSD
-# variants for misc parsers).
+# variants for misc parsers, plus extras pulled in by GPUI's image /
+# font-kit dep tree: 0BSD, MPL-2.0, CC0-1.0, CDLA-Permissive-2.0,
+# bzip2-1.0.6, NCSA — all OSI-approved or public-domain-equivalent).
 allow = [
     "MIT",
     "Apache-2.0",
@@ -43,7 +45,30 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    "0BSD",
+    "MPL-2.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "bzip2-1.0.6",
+    "NCSA",
 ]
+
+# Per-crate GPL exceptions for Zed's `zlog` / `ztracing` family — those
+# are dev-dependencies of GPUI and never end up in our shipped binary,
+# so the GPL infection risk that would normally rule them out for an
+# MIT project does not apply. Promote to a hard rejection if any of
+# them ever migrates into a non-(dev) edge in the dep tree.
+[[licenses.exceptions]]
+name = "zlog"
+allow = ["GPL-3.0-or-later"]
+
+[[licenses.exceptions]]
+name = "ztracing"
+allow = ["GPL-3.0-or-later"]
+
+[[licenses.exceptions]]
+name = "ztracing_macro"
+allow = ["GPL-3.0-or-later"]
 
 [sources]
 # Warn (don't block) on unknown crate registries or git sources so a
