@@ -1,3 +1,15 @@
+// Integration test — compiled as its own crate and does not inherit
+// `src-app/src/main.rs`'s `#![cfg_attr(test, allow(...))]`. Per CLAUDE.md
+// (clippy issue #13981 workaround), declare the same test-allow set
+// locally so `cargo clippy --all-targets -- -D warnings` passes under
+// US-007's strict workspace lints.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::unwrap_in_result,
+    clippy::panic
+)]
+
 //! Layout engine flexbox validation tests.
 //!
 //! US-001: Proves GPUI's Taffy-backed flexbox distributes space correctly

@@ -317,9 +317,25 @@ impl PaneFlowApp {
                                     ws.loader_angle.set(angle % std::f32::consts::TAU);
                                 }
                             }
-                            if app.settings_section.is_none() {
-                                cx.notify();
-                            }
+                            // US-010 — notify unconditionally. The prior
+                            // `settings_section.is_none()` guard was a
+                            // premature optimization introduced alongside
+                            // the AI-detection plumbing (commit b99d58b,
+                            // no accompanying rationale) and carried
+                            // across the src-app refactor verbatim. With
+                            // the guard in place, the sidebar-loader
+                            // angle advanced silently while Settings was
+                            // open; closing Settings would redraw the
+                            // spinner at a stale position until the next
+                            // real event. `cx.notify()` only sets a
+                            // dirty flag (no re-entrancy — the render
+                            // pass is deferred past this closure's
+                            // update scope); GPUI's diffing then skips
+                            // GPU work when no tracked reads changed,
+                            // so the effective cost while Settings is
+                            // open is one flag set plus one short
+                            // layout pass per 16 ms frame.
+                            cx.notify();
                             true
                         })
                     });

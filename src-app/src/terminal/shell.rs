@@ -13,10 +13,14 @@ use std::collections::HashMap;
 /// zsh: ZDOTDIR-based injection. Our `.zshenv` restores the original ZDOTDIR
 /// so all other dotfiles (`.zshrc`, `.zprofile`) load from `$HOME` as usual.
 ///
-/// US-013 scrubbed the former AI-hook PATH-prepend block — the wrapper
-/// scripts it targeted were never actually shipped. A future cross-
-/// platform AI-hook system will plumb through its own env var and can
-/// reintroduce a matching shell integration block then.
+/// AI-hook PATH-prepend (re-applied via `precmd`): the PTY-level
+/// `$PATH` prepend in `pty_session::inject_ai_hook_env` is invariably
+/// undone by user `.zshrc`/`.bashrc` lines like
+/// `export PATH="$HOME/.local/bin:$PATH"`, which demote PaneFlow's bin
+/// dir behind the user's `~/.local/bin/claude` and bypass the shim
+/// entirely. We re-prepend before every prompt — first invocation runs
+/// after `.zshrc` finishes, so the first `claude` typed at the prompt
+/// resolves to the shim. Idempotent + O(1) string work, invisible cost.
 const ZSH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
 if [[ -n "${PANEFLOW_ORIG_ZDOTDIR+x}" ]]; then
     ZDOTDIR="${PANEFLOW_ORIG_ZDOTDIR}"
@@ -26,26 +30,52 @@ else
 fi
 [[ -f "${ZDOTDIR:-$HOME}/.zshenv" ]] && source "${ZDOTDIR:-$HOME}/.zshenv"
 __paneflow_osc7() { printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}"; }
+__paneflow_path_prepend() {
+    [[ -z "${PANEFLOW_BIN_DIR-}" ]] && return
+    # Strip every existing occurrence then prepend, keeping our dir first
+    # regardless of what `.zshrc`/`.zprofile` did. Uses zsh's `path` tied
+    # array so the change propagates to `$PATH` automatically.
+    path=("${PANEFLOW_BIN_DIR}" "${(@)path:#${PANEFLOW_BIN_DIR}}")
+}
 autoload -Uz add-zsh-hook
 add-zsh-hook chpwd __paneflow_osc7
+add-zsh-hook precmd __paneflow_path_prepend
 __paneflow_osc7
+__paneflow_path_prepend
 "#;
 
 /// bash: `--rcfile` replacement. Sources the real `.bashrc`, then appends
 /// our OSC 7 function to PROMPT_COMMAND (preserving starship/oh-my-bash/etc.).
+/// Same AI-hook PATH-prepend rationale as ZSH_OSC7 — PROMPT_COMMAND fires
+/// before each prompt, after `.bashrc` has run.
 const BASH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
 [[ -f ~/.bashrc ]] && source ~/.bashrc
 __paneflow_osc7() { printf '\e]7;file://%s%s\a' "${HOSTNAME}" "${PWD}"; }
-PROMPT_COMMAND="__paneflow_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+__paneflow_path_prepend() {
+    [[ -z "${PANEFLOW_BIN_DIR-}" ]] && return
+    local p=":${PATH}:"
+    p="${p//:${PANEFLOW_BIN_DIR}:/:}"
+    p="${p#:}"; p="${p%:}"
+    PATH="${PANEFLOW_BIN_DIR}:${p}"
+    export PATH
+}
+PROMPT_COMMAND="__paneflow_osc7;__paneflow_path_prepend${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+__paneflow_path_prepend
 "#;
 
 /// fish: `--init-command` sourced script. Uses `--on-variable PWD` so it
 /// fires on every directory change independently of the prompt function.
+/// fish `--init-command` runs AFTER `config.fish`, so a one-shot prepend
+/// is sufficient — but `fish_add_path -gp` is idempotent so a re-source
+/// of this file is also safe.
 const FISH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
 function __paneflow_osc7 --on-variable PWD
     printf '\e]7;file://%s%s\a' (hostname) "$PWD"
 end
 __paneflow_osc7
+if set -q PANEFLOW_BIN_DIR; and test -n "$PANEFLOW_BIN_DIR"
+    fish_add_path -gp $PANEFLOW_BIN_DIR
+end
 "#;
 
 /// PowerShell 5.1 / 7 (pwsh): dot-sourced via `-NoExit -Command ". <path>"`,
@@ -60,14 +90,26 @@ __paneflow_osc7
 const PWSH_OSC7: &str = r#"# PaneFlow shell integration - OSC 7 CWD reporting (US-012)
 # Non-destructive: wraps the existing `prompt` function so the user's
 # prompt still renders. Loaded via `pwsh -NoExit -Command ". <this>"`.
+# Dot-sourcing happens AFTER $PROFILE, so any user PATH mutations there
+# have already run -- a one-shot prepend is sufficient. The `prompt`
+# wrapper additionally re-asserts the prepend on every prompt for users
+# who modify $env:PATH at runtime.
 
 $__paneflow_prev_prompt = Get-Item function:prompt
+function global:__paneflow_path_prepend {
+    if ([string]::IsNullOrEmpty($env:PANEFLOW_BIN_DIR)) { return }
+    $sep = [System.IO.Path]::PathSeparator
+    $entries = $env:PATH -split [regex]::Escape($sep) | Where-Object { $_ -ne $env:PANEFLOW_BIN_DIR }
+    $env:PATH = (@($env:PANEFLOW_BIN_DIR) + $entries) -join $sep
+}
 function global:prompt {
     $cwd = (Get-Location).ProviderPath
     # OSC 7 with BEL terminator (matches zsh/bash/fish emitters).
     [Console]::Write("`e]7;file://$env:COMPUTERNAME$cwd`a")
+    __paneflow_path_prepend
     & $__paneflow_prev_prompt.ScriptBlock
 }
+__paneflow_path_prepend
 "#;
 
 /// Resolve the default shell path following a platform-specific fallback chain
