@@ -67,6 +67,12 @@ sha2 = "0.10"
 tar = "0.4"
 flate2 = "1"
 
+# US-008 — atomic rename for extracted AI-hook binaries
+# (`src-app/src/ai_hooks/extract.rs`). `NamedTempFile::persist` wraps
+# `rename(2)` on Unix and `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` on
+# Windows so the cache-dir publish step is atomic on all three OSes.
+tempfile = "3"
+
 # Cross-platform local IPC (US-009 — prd-windows-port.md). Dispatches to Unix
 # domain sockets on Linux/macOS and Windows named pipes (`\\.\pipe\...`)
 # transparently, so the JSON-RPC newline-delimited protocol is byte-identical
@@ -106,7 +112,27 @@ windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_F
 
 [dev-dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868", features = ["test-support"] }
-tempfile = "3"
+
+# Clippy lint policy (US-007). Mirrors `[workspace.lints.clippy]` in the
+# root Cargo.toml EXCEPT the unwrap/expect family is demoted from "warn"
+# to "allow" in this crate — src-app has pre-existing calls in GPUI UI code
+# where the failure mode is "app crashes" (acceptable for desktop UI) and
+# fixing each is out of scope for US-007. New crates (paneflow-ai-hook,
+# paneflow-shim, paneflow-config) keep the strict defaults via
+# `[lints] workspace = true`.
+#
+# Follow-up: incremental re-enablement of these three lints in src-app is
+# tracked as post-PRD cleanup work. When that lands, remove the `allow`
+# overrides below, audit each unwrap site, and re-run `cargo clippy
+# --workspace -- -D warnings` to regain the strict gate.
+[lints.clippy]
+panic = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+todo = "warn"
+unwrap_used = "allow"
+expect_used = "allow"
+unwrap_in_result = "allow"
 
 # Windows MSI packaging (US-013 — prd-windows-port.md). Source WXS +
 # License.rtf + paneflow.ico live under `packaging/wix/` (kept alongside

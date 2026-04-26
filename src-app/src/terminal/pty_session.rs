@@ -225,11 +225,15 @@ impl TerminalState {
         );
         env.insert("COLORTERM".into(), "truecolor".into());
 
-        // US-013: the AI-hook wrapper-scripts system was removed. The
-        // embed targets never shipped, so extraction was a no-op and the
-        // PATH-prepend step pointed at an empty directory. A future
-        // cross-platform AI-hook system will live in its own PRD and
-        // plumb through a fresh env-var + extraction point.
+        // US-009 — cross-platform AI-hook PATH-prepend. Extracts the
+        // embedded `paneflow-shim` (as `claude` + `codex`) and
+        // `paneflow-ai-hook` binaries into the user's cache dir and
+        // prepends that dir to the child shell's `$PATH` so that a user
+        // running `claude` or `codex` inside a PaneFlow terminal goes
+        // through our shim. Silent-fail on any error — terminal still
+        // opens, AI-hook loader is simply disabled for this session
+        // (PRD constraint C4).
+        inject_ai_hook_env(&mut env);
 
         let cwd = working_directory
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
@@ -715,6 +719,100 @@ fn paneflow_socket_path() -> Option<String> {
     crate::runtime_paths::socket_path().map(|p| p.display().to_string())
 }
 
+/// US-009 — extract the embedded AI-hook binaries into the user's cache
+/// dir, then expose that dir via `PANEFLOW_BIN_DIR` and prepend it to
+/// the child shell's `PATH`.
+///
+/// Silent-fail: any error (extraction IO failure, unresolvable
+/// `cache_dir`) is logged at `warn` and then swallowed so the terminal
+/// opens normally without the AI-hook loader for this session. PRD
+/// constraint C4 mandates the terminal must never fail to open because
+/// of AI-hook wiring.
+///
+/// Factored out of `TerminalState::new` so the helper is independently
+/// testable — the extraction side-effect lives in `ai_hooks::extract`
+/// (already unit-tested in US-008); this glue only layers the env
+/// mutations on top of a returned `PathBuf`.
+fn inject_ai_hook_env(env: &mut std::collections::HashMap<String, String>) {
+    let bin_dir = match crate::ai_hooks::extract::ensure_binaries_extracted() {
+        Ok(p) => p,
+        Err(e) => {
+            // `{e:#}` emits the full anyhow context chain (each
+            // `.with_context()` frame) rather than just the outermost
+            // message — crucial for diagnosing cache-dir permission
+            // errors that arrive with a useful inner IO error.
+            log::warn!(
+                "paneflow: AI-hook binary extraction failed ({e:#}); sidebar loader will not activate for this terminal session"
+            );
+            return;
+        }
+    };
+
+    // `PANEFLOW_BIN_DIR` is the source-of-truth the shim uses for its
+    // self-exclusion PATH walk (US-004). Set it even in the unlikely
+    // event the PATH-prepend below fails, so the shim can still
+    // identify its own dir if a later code path routes into it.
+    env.insert("PANEFLOW_BIN_DIR".into(), bin_dir.display().to_string());
+
+    prepend_bin_dir_to_path(env, &bin_dir);
+}
+
+/// Prepend `bin_dir` to `env["PATH"]` (or to the process `PATH` if the
+/// env map does not yet carry one). Cross-platform: uses
+/// `std::env::join_paths`, which emits `:` on Unix and `;` on Windows.
+///
+/// If join-paths fails (e.g. a `PATH` entry contains a platform
+/// separator byte — invalid but physically possible), logs a warning
+/// and leaves the env map unchanged. Better "no prepend" than "broken
+/// PATH".
+fn prepend_bin_dir_to_path(
+    env: &mut std::collections::HashMap<String, String>,
+    bin_dir: &std::path::Path,
+) {
+    // Order of precedence: explicit map entry first, then process env.
+    // `setup_shell_integration` (shell.rs) does not set PATH, so in
+    // practice this always falls through to the process PATH — but the
+    // explicit-map branch makes the helper reusable and keeps tests
+    // decoupled from the process environment.
+    let existing: Option<std::ffi::OsString> = env
+        .get("PATH")
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"));
+
+    let mut components: Vec<std::path::PathBuf> = vec![bin_dir.to_path_buf()];
+    // Guard against an empty `PATH` string: on Unix, `split_paths("")`
+    // yields a single `PathBuf::from("")` which `execvp` resolves as the
+    // current working directory — that would silently put `.` on the
+    // child's PATH (a classic shell-injection surface). Treat empty and
+    // absent identically.
+    if let Some(existing) = existing.as_deref()
+        && !existing.is_empty()
+    {
+        components.extend(std::env::split_paths(existing));
+    }
+
+    match std::env::join_paths(components) {
+        Ok(joined) => {
+            // `join_paths` always produces valid UTF-8 when all inputs
+            // were UTF-8 PathBufs + an OsString PATH — on all three
+            // supported OSes, PATH is conventionally UTF-8 so the
+            // `to_string_lossy` round-trip is safe. If a real-world PATH
+            // entry contains non-UTF-8 bytes, we lose those in the
+            // lossy conversion — but the env map is keyed on
+            // `HashMap<String, String>` to begin with, so this is a
+            // pre-existing constraint inherited from
+            // `PtyBackend::spawn`, not introduced here.
+            env.insert("PATH".into(), joined.to_string_lossy().into_owned());
+        }
+        Err(e) => {
+            log::warn!(
+                "paneflow: could not prepend AI-hook bin dir {} to PATH: {e}",
+                bin_dir.display()
+            );
+        }
+    }
+}
+
 impl Drop for TerminalState {
     fn drop(&mut self) {
         let _ = self.notifier.0.send(Msg::Shutdown);
@@ -778,5 +876,252 @@ impl Drop for TerminalState {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pty::{PtyBackend, PtyProcess};
+    use std::collections::HashMap;
+    use std::io::Cursor;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+
+    fn platform_sep() -> char {
+        if cfg!(windows) { ';' } else { ':' }
+    }
+
+    #[test]
+    fn prepend_puts_bin_dir_first_and_preserves_existing_entries() {
+        let mut env: HashMap<String, String> = HashMap::new();
+        let sep = platform_sep();
+        env.insert("PATH".into(), format!("/usr/bin{sep}/usr/local/bin"));
+
+        let bin_dir = PathBuf::from("/home/u/.cache/paneflow/bin/0.2.6");
+        prepend_bin_dir_to_path(&mut env, &bin_dir);
+
+        let joined = env.get("PATH").expect("PATH set by helper");
+        let components: Vec<PathBuf> = std::env::split_paths(joined).collect();
+        assert_eq!(
+            components.first(),
+            Some(&bin_dir),
+            "US-009 AC: bin_dir must be first on PATH; got {components:?}"
+        );
+        assert!(
+            components.iter().any(|p| p == Path::new("/usr/bin")),
+            "US-009: original PATH entries must be preserved; got {components:?}"
+        );
+        assert!(
+            components.iter().any(|p| p == Path::new("/usr/local/bin")),
+            "US-009: original PATH entries must be preserved; got {components:?}"
+        );
+    }
+
+    #[test]
+    fn prepend_inserts_bin_dir_even_when_env_path_absent() {
+        // AC: "If env map has no PATH, helper still sets PATH so the
+        // child inherits the shim dir rather than silently no-op."
+        let mut env: HashMap<String, String> = HashMap::new();
+        let bin_dir = PathBuf::from("/tmp/paneflow-bins");
+        prepend_bin_dir_to_path(&mut env, &bin_dir);
+
+        let joined = env.get("PATH").expect("PATH set by helper");
+        let components: Vec<PathBuf> = std::env::split_paths(joined).collect();
+        assert_eq!(
+            components.first(),
+            Some(&bin_dir),
+            "US-009: bin_dir must be first on PATH in the no-prior-PATH case"
+        );
+    }
+
+    #[test]
+    fn prepend_uses_platform_separator() {
+        // Round-trip invariant: split_paths(join_paths(X)) == X. This
+        // implicitly tests that `;` on Windows / `:` on Unix is handled
+        // correctly — we do not assert the raw bytes because that
+        // would hardcode per-OS expectations.
+        let mut env: HashMap<String, String> = HashMap::new();
+        let sep = platform_sep();
+        env.insert("PATH".into(), format!("/a{sep}/b{sep}/c"));
+        let bin_dir = PathBuf::from("/z");
+        prepend_bin_dir_to_path(&mut env, &bin_dir);
+
+        let joined = env.get("PATH").unwrap();
+        let components: Vec<PathBuf> = std::env::split_paths(joined).collect();
+        assert_eq!(
+            components,
+            vec![
+                PathBuf::from("/z"),
+                PathBuf::from("/a"),
+                PathBuf::from("/b"),
+                PathBuf::from("/c"),
+            ],
+            "US-009: split_paths(join_paths(...)) must round-trip on all platforms"
+        );
+    }
+
+    #[test]
+    fn prepend_treats_empty_path_as_absent() {
+        // An empty `PATH` is not absent — `split_paths("")` on Unix
+        // yields one `PathBuf::from("")` component that `execvp`
+        // resolves as the CWD. We must NOT inherit that phantom entry
+        // onto the child's PATH (shell-injection surface).
+        let mut env: HashMap<String, String> = HashMap::new();
+        env.insert("PATH".into(), String::new());
+        let bin_dir = PathBuf::from("/z");
+        prepend_bin_dir_to_path(&mut env, &bin_dir);
+
+        let joined = env.get("PATH").expect("PATH set by helper");
+        let components: Vec<PathBuf> = std::env::split_paths(joined).collect();
+        assert!(
+            !components.iter().any(|p| p.as_os_str().is_empty()),
+            "US-009 hardening: empty PATH must not yield a phantom CWD entry; got {components:?}"
+        );
+        assert_eq!(
+            components.first(),
+            Some(&bin_dir),
+            "US-009: bin_dir must still be first when empty PATH is treated as absent"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Integration test — RecordingPtyBackend captures the env handed to
+    // the PTY spawn and asserts the full AI-hook wiring end-to-end.
+    // -----------------------------------------------------------------
+
+    /// Captures the env that `TerminalState::new` passes to `spawn`.
+    #[derive(Clone, Default)]
+    struct RecordingPtyBackend {
+        captured_env: Arc<Mutex<Option<HashMap<String, String>>>>,
+    }
+
+    #[derive(Debug)]
+    struct NoopChild;
+    impl portable_pty::ChildKiller for NoopChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(NoopChild)
+        }
+    }
+    impl portable_pty::Child for NoopChild {
+        // Return `None` so the `TerminalState::child_pid` is 0 — the
+        // `Drop` handler then short-circuits (`if pid > 0 { … }` at the
+        // top of the Unix / Windows branches) and does NOT spawn a
+        // force-kill thread that would otherwise `libc::kill` or
+        // `TerminateProcess` whatever real process happens to hold the
+        // PID on the test runner.
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            Ok(portable_pty::ExitStatus::with_exit_code(0))
+        }
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(Some(portable_pty::ExitStatus::with_exit_code(0)))
+        }
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            None
+        }
+    }
+
+    struct NoopMaster;
+    impl portable_pty::MasterPty for NoopMaster {
+        fn resize(&self, _: portable_pty::PtySize) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+        fn get_size(&self) -> Result<portable_pty::PtySize, anyhow::Error> {
+            Ok(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+        }
+        fn try_clone_reader(&self) -> Result<Box<dyn std::io::Read + Send>, anyhow::Error> {
+            Ok(Box::new(Cursor::new(Vec::new())))
+        }
+        fn take_writer(&self) -> Result<Box<dyn std::io::Write + Send>, anyhow::Error> {
+            Ok(Box::new(Vec::new()))
+        }
+        #[cfg(unix)]
+        fn process_group_leader(&self) -> Option<i32> {
+            None
+        }
+        #[cfg(unix)]
+        fn as_raw_fd(&self) -> Option<i32> {
+            None
+        }
+    }
+
+    impl PtyBackend for RecordingPtyBackend {
+        fn spawn(
+            &self,
+            _cmd: &str,
+            _args: &[String],
+            _cwd: &Path,
+            env: &HashMap<String, String>,
+            _rows: u16,
+            _cols: u16,
+        ) -> anyhow::Result<PtyProcess> {
+            *self.captured_env.lock().unwrap() = Some(env.clone());
+            Ok(PtyProcess {
+                reader: Box::new(Cursor::new(Vec::new())),
+                writer: Box::new(Vec::new()),
+                child: Box::new(NoopChild),
+                master: Arc::new(Mutex::new(Box::new(NoopMaster))),
+                // `child_pid: 0` is the sentinel the `Drop` guard
+                // (`if pid > 0`) uses to skip the force-kill thread.
+                // Avoids the test SIGKILL'ing a real process that
+                // happens to hold a hardcoded mock PID.
+                child_pid: 0,
+            })
+        }
+    }
+
+    #[test]
+    fn pty_spawn_injects_paneflow_bin_dir_and_prepends_path() {
+        // Skip on environments where the cache dir is unresolvable —
+        // the helper silent-fails, which is the correct behavior, but
+        // it also means there's nothing to assert on.
+        if dirs::cache_dir().is_none() {
+            eprintln!("skip: dirs::cache_dir() unresolvable in this environment");
+            return;
+        }
+
+        let backend = RecordingPtyBackend::default();
+        let _state = TerminalState::new(&backend, None, 7, 3, Some((80, 24)))
+            .expect("TerminalState::new must succeed with the recording backend");
+
+        let env = backend
+            .captured_env
+            .lock()
+            .unwrap()
+            .take()
+            .expect("recording backend must have captured env");
+
+        let bin_dir = env
+            .get("PANEFLOW_BIN_DIR")
+            .expect("US-009 AC: PANEFLOW_BIN_DIR must be set in the child env")
+            .clone();
+        assert!(
+            !bin_dir.is_empty(),
+            "US-009: PANEFLOW_BIN_DIR must not be empty"
+        );
+
+        let path = env
+            .get("PATH")
+            .expect("US-009 AC: PATH must be set after injection");
+        let first = std::env::split_paths(path)
+            .next()
+            .expect("PATH must have at least one component");
+        assert_eq!(
+            first,
+            PathBuf::from(&bin_dir),
+            "US-009 AC: PANEFLOW_BIN_DIR must be first on PATH"
+        );
     }
 }

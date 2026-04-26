@@ -129,7 +129,16 @@ impl TerminalView {
                      \x20 - Permission denied on /dev/ptmx\n\n\
                      Underlying error: {e:#}"
                     );
-                    panic!("PTY creation failed: {e:#}");
+                    // PTY creation is load-bearing for this TerminalView's
+                    // constructor — there's no meaningful "degraded" state
+                    // for a terminal with no PTY. Aborting with a clear
+                    // message beats silently returning an unusable view.
+                    // US-007 demoted the workspace `panic = "deny"` to an
+                    // allow here rather than blanket-allow in src-app.
+                    #[allow(clippy::panic)]
+                    {
+                        panic!("PTY creation failed: {e:#}");
+                    }
                 }
             };
         let focus_handle = cx.focus_handle();

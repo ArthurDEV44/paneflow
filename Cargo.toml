@@ -1,9 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/paneflow-ai-hook",
     "crates/paneflow-config",
+    "crates/paneflow-shim",
     "src-app",
 ]
+# Scope bare `cargo run` / `cargo build` / `cargo test` to the desktop app.
+# The AI-hook callback and shim binaries are helpers built on demand (via
+# `-p` or the release-min profile); including them here would make `cargo
+# run` ambiguous across three binaries.
+default-members = ["src-app"]
 
 [workspace.package]
 version = "0.2.6"
@@ -28,6 +35,21 @@ anyhow = "1"
 # Internal crates
 paneflow-config = { path = "crates/paneflow-config" }
 
+# Workspace-wide clippy lint policy (US-007). Mirrors the mandatory
+# CLAUDE.md cherry-picked restriction set. `warn` is preferred over `deny`
+# for the unwrap/expect family per documented community practice and the
+# `allow-unwrap-in-tests` / `allow-expect-in-tests` escape hatches in
+# `clippy.toml`. Each member crate declares `[lints] workspace = true`
+# (or overrides specific lints locally where justified).
+[workspace.lints.clippy]
+panic = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+todo = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+unwrap_in_result = "warn"
+
 # Required by GPUI — these forks must stay in sync with the pinned Zed rev
 # in src-app/Cargo.toml. When bumping GPUI rev, verify these still resolve.
 [patch.crates-io]
@@ -38,3 +60,18 @@ calloop = { git = "https://github.com/zed-industries/calloop", rev = "eb6b4fd17b
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Size-optimized profile for the embedded AI-hook callback and shim binaries
+# (US-001 / US-004 / US-008). The hook callback runs ~6 times per AI turn, so
+# it's a hot path; smaller binaries also reduce the rust-embed footprint per
+# PaneFlow build. `panic = "abort"` and `lto = "fat"` are not available via
+# per-package profile overrides, hence the dedicated profile.
+#
+# Build: `cargo build -p paneflow-ai-hook --profile release-min`
+[profile.release-min]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
