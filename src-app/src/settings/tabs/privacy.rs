@@ -2,9 +2,9 @@
 //! (US-014) plus a link to the public privacy page.
 //!
 //! State mapping:
-//! - `None`        → "Non défini" (consent modal will ask at next launch).
-//! - `Some(true)`  → "Activée" (events flow to PostHog EU).
-//! - `Some(false)` → "Désactivée" (Null client, no HTTP).
+//! - `None`        → "Not set" (consent modal will ask at next launch).
+//! - `Some(true)`  → "Enabled" (events flow to PostHog EU).
+//! - `Some(false)` → "Disabled" (Null client, no HTTP).
 //!
 //! The actual client hot-swap on flip lives in
 //! `PaneFlowApp::process_config_changes` — the watcher picks up the
@@ -39,14 +39,14 @@ impl SettingsWindow {
                     .text_size(px(11.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(ui.muted)
-                    .child("CONFIDENTIALITÉ"),
+                    .child("PRIVACY"),
             )
             .child(
                 div()
                     .text_size(px(18.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(ui.text)
-                    .child("Télémétrie anonyme"),
+                    .child("Anonymous telemetry"),
             );
 
         let description = div()
@@ -54,15 +54,15 @@ impl SettingsWindow {
             .text_size(px(13.))
             .text_color(ui.muted)
             .child(
-                "PaneFlow peut envoyer des évènements anonymes (démarrage, sortie, mise à jour) \
-                 pour nous aider à comprendre son usage. Aucun chemin, aucun contenu de terminal, \
-                 aucune information personnelle n'est transmis.",
+                "PaneFlow can send anonymous events (startup, shutdown, updates) to help us \
+                 understand how it is used. No paths, no terminal content, and no personal \
+                 information are transmitted.",
             );
 
         let status_label = match current {
-            None => "État actuel : Non défini (la question sera posée au prochain lancement)",
-            Some(true) => "État actuel : Activée",
-            Some(false) => "État actuel : Désactivée",
+            None => "Current state: Not set (you will be asked at next launch)",
+            Some(true) => "Current state: Enabled",
+            Some(false) => "Current state: Disabled",
         };
         let status_color = match current {
             Some(true) => ui.accent,
@@ -77,7 +77,7 @@ impl SettingsWindow {
 
         // Segmented two-button toggle. Neither button is "active" when
         // current == None (tri-state rendering); the user picks either
-        // Activer or Désactiver to resolve the state.
+        // Enable or Disable to resolve the state.
         let segmented = div()
             .mt(px(12.))
             .flex()
@@ -85,7 +85,7 @@ impl SettingsWindow {
             .gap(px(8.))
             .child(render_toggle_button(
                 "telemetry-enable",
-                "Activer",
+                "Enable",
                 current == Some(true),
                 ui,
                 cx,
@@ -93,7 +93,7 @@ impl SettingsWindow {
             ))
             .child(render_toggle_button(
                 "telemetry-disable",
-                "Désactiver",
+                "Disable",
                 current == Some(false),
                 ui,
                 cx,
@@ -107,7 +107,7 @@ impl SettingsWindow {
             .text_color(ui.muted)
             .cursor(CursorStyle::PointingHand)
             .hover(|s| s.text_color(ui.accent))
-            .child("En savoir plus sur la politique de confidentialité →")
+            .child("Learn more about our privacy policy →")
             .on_click(|_: &ClickEvent, _window, _cx| {
                 // `open::that` dispatches through xdg-open / open / start
                 // depending on platform; failure to open a browser is
