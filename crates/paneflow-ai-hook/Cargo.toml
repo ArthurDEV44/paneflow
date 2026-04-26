@@ -2,6 +2,7 @@
 name = "paneflow-ai-hook"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "paneflow-ai-hook"
