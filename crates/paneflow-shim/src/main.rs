@@ -1186,6 +1186,14 @@ fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> ExitCode {
         }
     };
 
+    // Resolve the sibling hook binary ONCE before the tee loop. Bare-name
+    // `Command::new("paneflow-ai-hook")` works on Windows only when the
+    // shim cache dir is already on `%PATH%`, which is a per-PTY contract
+    // not guaranteed at the moment this function spawns its first hook.
+    // Resolving by absolute path matches every other call site in this
+    // crate (`send_interrupt_stop`, `notify_session_end`).
+    let hook_path = locate_sibling_hook_binary();
+
     // Take stdout so we can tee it. If the child was spawned without piped
     // stdout somehow, skip the tee entirely and fall through to wait().
     if let Some(stdout) = child.stdout.take() {
@@ -1215,12 +1223,14 @@ fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> ExitCode {
                     // per second, the shim would spawn thousands of
                     // subprocesses per second. Typical Codex output is a
                     // few events/sec, so this is tolerated without state.
-                    let _ = std::process::Command::new("paneflow-ai-hook")
-                        .arg(event)
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .spawn();
+                    if let Some(ref hp) = hook_path {
+                        let _ = std::process::Command::new(hp)
+                            .arg(event)
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .spawn();
+                    }
                 }
             }
         });
