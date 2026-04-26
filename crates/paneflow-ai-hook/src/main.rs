@@ -52,6 +52,28 @@ const METHOD_TOOL_USE: &str = "ai.tool_use";
 const TOOL_CLAUDE: &str = "claude";
 const TOOL_CODEX: &str = "codex";
 
+/// Typed AI tool identity. Replaces ad-hoc `&'static str` matching across
+/// dispatch + `build_frame` so an unknown value can't sneak past the
+/// `_ => Claude` fallback as a stringly-typed surprise. Kept duplicated in
+/// the shim (it has its own version) — the two binaries don't share a crate
+/// and a 5-line enum is cheaper than a new shared `paneflow-ai-types` crate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AiTool {
+    Claude,
+    Codex,
+}
+
+impl AiTool {
+    /// Wire-format string written into the `tool` field of every IPC frame.
+    /// Must match the server's `AiTool` enum mapping at `ai_types.rs:27-31`.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => TOOL_CLAUDE,
+            Self::Codex => TOOL_CODEX,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // JSON-RPC client
 // ---------------------------------------------------------------------------
@@ -223,19 +245,19 @@ fn next_id() -> u64 {
 
 /// Resolve the AI tool identity from `$PANEFLOW_AI_TOOL`, which the US-004
 /// shim sets to either `"claude"` or `"codex"` based on its own argv[0].
-/// Unknown or missing values default to `"claude"` — matching the server
+/// Unknown or missing values default to `Claude` — matching the server
 /// default at `ipc_handler.rs:391-395` and preserving US-002 behavior when
 /// the shim is not yet deployed.
-fn detect_tool() -> &'static str {
+fn detect_tool() -> AiTool {
     detect_tool_from(env::var("PANEFLOW_AI_TOOL").ok().as_deref())
 }
 
 /// Testable inner. Keeps the tests out of `env::set_var`, which is Send-unsafe
 /// under Cargo's parallel test runner.
-fn detect_tool_from(raw: Option<&str>) -> &'static str {
+fn detect_tool_from(raw: Option<&str>) -> AiTool {
     match raw {
-        Some("codex") => TOOL_CODEX,
-        _ => TOOL_CLAUDE,
+        Some("codex") => AiTool::Codex,
+        _ => AiTool::Claude,
     }
 }
 
@@ -327,7 +349,7 @@ fn dispatch() {
         payload
     };
 
-    let tool = detect_tool();
+    let tool = detect_tool().as_str();
     let pid = read_ai_pid();
 
     let Some(frame) = build_frame(&event, workspace_id, tool, hook_payload, pid) else {
@@ -787,14 +809,20 @@ mod tests {
 
     #[test]
     fn detect_tool_from_returns_codex_only_on_exact_match() {
-        assert_eq!(detect_tool_from(Some("codex")), TOOL_CODEX);
+        assert_eq!(detect_tool_from(Some("codex")), AiTool::Codex);
         // Anything else (including wrong case, empty, arbitrary) defaults to
         // claude — matching the server's behaviour.
-        assert_eq!(detect_tool_from(Some("claude")), TOOL_CLAUDE);
-        assert_eq!(detect_tool_from(Some("CODEX")), TOOL_CLAUDE);
-        assert_eq!(detect_tool_from(Some("")), TOOL_CLAUDE);
-        assert_eq!(detect_tool_from(Some("gemini")), TOOL_CLAUDE);
-        assert_eq!(detect_tool_from(None), TOOL_CLAUDE);
+        assert_eq!(detect_tool_from(Some("claude")), AiTool::Claude);
+        assert_eq!(detect_tool_from(Some("CODEX")), AiTool::Claude);
+        assert_eq!(detect_tool_from(Some("")), AiTool::Claude);
+        assert_eq!(detect_tool_from(Some("gemini")), AiTool::Claude);
+        assert_eq!(detect_tool_from(None), AiTool::Claude);
+    }
+
+    #[test]
+    fn ai_tool_as_str_matches_wire_constants() {
+        assert_eq!(AiTool::Claude.as_str(), TOOL_CLAUDE);
+        assert_eq!(AiTool::Codex.as_str(), TOOL_CODEX);
     }
 
     #[test]
