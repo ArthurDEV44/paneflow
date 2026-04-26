@@ -310,22 +310,32 @@ fn install_sigint_watcher(tool: &str) {
 /// Spawn `paneflow-ai-hook Stop` with `{}` piped to stdin. Best-effort;
 /// any failure is silent (worst case: this Ctrl+C doesn't clear the
 /// loader, but the shim and the child remain unaffected).
+///
+/// Reaping policy: the wait happens on a detached helper thread, NOT on
+/// the calling sigwait thread. If the hook hangs (socket back-pressure,
+/// filesystem stall) the reaper thread hangs with it — but the sigwait
+/// thread stays responsive, so the next Ctrl+C lands as a fresh `ai.stop`
+/// rather than queuing behind the previous one. Without the helper, a
+/// dropped `Child` would leak a zombie until shim exit.
 #[cfg(unix)]
 fn send_interrupt_stop(hook_path: &Path, tool: &str) {
     use std::io::Write;
-    if let Ok(mut child) = std::process::Command::new(hook_path)
+    let Ok(mut child) = std::process::Command::new(hook_path)
         .arg("Stop")
         .env("PANEFLOW_AI_TOOL", tool)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-    {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(b"{}");
-        }
-        let _ = child.wait();
+    else {
+        return;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(b"{}");
     }
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 }
 
 // ---------------------------------------------------------------------------
