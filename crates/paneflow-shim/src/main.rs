@@ -353,17 +353,22 @@ const CLAUDE_HOOK_EVENTS: &[&str] = &[
     "PostToolUse",
 ];
 
-/// The hook-handler command prefix. Cleanup matches on this prefix as a
-/// belt-and-suspenders complement to the `_paneflow_managed` marker:
-/// Claude Code does not guarantee unknown fields survive re-serialization
-/// (anthropics/claude-code#5886), so the command string is the only
-/// round-trip-stable identifier we can rely on.
+/// Bare-name fallback used when `locate_sibling_hook_binary()` cannot resolve
+/// the absolute path to the sibling hook binary (test harness, exotic FS,
+/// `current_exe` failure). Detection (`is_paneflow_hook_command`) is
+/// basename-based so this fallback is also recognized for cleanup, alongside
+/// the absolute-path form normally written by `resolve_hook_command`.
 ///
-/// Known namespace-collision limitation: any user-authored hook command
-/// that also starts with `"paneflow-ai-hook "` will be treated as
-/// PaneFlow-managed and removed on cleanup. Highly unlikely in practice
-/// (the prefix is an internal binary name), but worth documenting so a
-/// future maintainer sees the contract.
+/// Cleanup matches by basename as a belt-and-suspenders complement to the
+/// `_paneflow_managed` marker: Claude Code does not guarantee unknown fields
+/// survive re-serialization (anthropics/claude-code#5886), so the command
+/// string is the only round-trip-stable identifier we can rely on.
+///
+/// Known namespace-collision limitation: any user-authored hook command whose
+/// program basename is literally `paneflow-ai-hook` (or `.exe` on Windows)
+/// will be treated as PaneFlow-managed and removed on cleanup. The basename
+/// rule narrows this further than the previous bare-prefix rule did, but the
+/// theoretical collision remains.
 const HOOK_COMMAND_PREFIX: &str = "paneflow-ai-hook ";
 
 /// Render `path` for inclusion in an `eprintln!` going to the user's
@@ -381,6 +386,189 @@ fn safe_path_display(path: &Path) -> String {
         .collect()
 }
 
+/// Returns true iff `$PANEFLOW_SOCKET_PATH` is set and points at an existing
+/// filesystem entry. We treat unset/unreachable as "PaneFlow not running":
+/// in that state, installing hook config is pointless (the hooks would
+/// invoke `paneflow-ai-hook`, which would fail silently per PRD constraint
+/// C4) and we instead sweep any orphan entries left by a previous SIGKILL'd
+/// session. Existence-only check keeps this cross-platform — Unix sockets
+/// and Windows named pipes both surface as `Path::exists() == true` when
+/// the listener is bound.
+fn paneflow_ipc_reachable() -> bool {
+    let Some(raw) = env::var_os("PANEFLOW_SOCKET_PATH") else {
+        return false;
+    };
+    if raw.is_empty() {
+        return false;
+    }
+    Path::new(&raw).exists()
+}
+
+/// Best-effort removal of PaneFlow-managed entries from an existing hook
+/// config file when no active IPC channel is reachable. Reads, runs
+/// `remove_fn`, writes back (or deletes if the file is now empty). All
+/// failures swallow silently — a sweep that fails just retries on the
+/// next shim invocation. Used by `install()` to clean up after a previous
+/// SIGKILL'd session that never got to fire its `Drop` impl.
+fn sweep_orphan_hook_config(settings_path: &Path, remove_fn: fn(&mut serde_json::Value)) {
+    let Ok(content) = std::fs::read_to_string(settings_path) else {
+        return;
+    };
+    let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    let before = root.clone();
+    remove_fn(&mut root);
+    if root == before {
+        // Nothing to sweep — file has no PaneFlow entries.
+        return;
+    }
+    let is_empty = root
+        .as_object()
+        .map(serde_json::Map::is_empty)
+        .unwrap_or(false);
+    let _ = if is_empty {
+        std::fs::remove_file(settings_path)
+    } else {
+        write_atomic(settings_path, &root)
+    };
+}
+
+/// Shared scaffold for both Claude and Codex hook config installation:
+/// validate the config dir (creating it if absent), read+parse any existing
+/// JSON tree (treating corrupt JSON as empty), apply `merge_fn`, and write
+/// atomically. Returns `Some((settings_path, created_dir))` on success;
+/// `None` when the filesystem refuses our writes or the config dir is
+/// occupied by a non-directory.
+///
+/// Both `HookConfigGuard::install_at` (Claude) and
+/// `CodexHookConfigGuard::install_at` (Codex) layer their type-construction
+/// on top of this — the heavy filesystem + JSON work was previously
+/// duplicated across ~80 lines apart.
+fn install_hook_config_file(
+    config_dir: &Path,
+    config_filename: &str,
+    tool_label: &str,
+    git_ignore_attribution: &str,
+    merge_fn: fn(&mut serde_json::Value),
+) -> Option<(PathBuf, bool)> {
+    let settings_path = config_dir.join(config_filename);
+    // `exists()` returns true for both files and directories; we need to
+    // distinguish so a stale `.claude`/`.codex` regular file (e.g. left
+    // behind by an earlier tool) doesn't masquerade as a usable directory
+    // and silently break hook injection further down. Surface the case
+    // with an actionable message instead of letting `write_atomic` fail
+    // with a cryptic ENOTDIR from inside `tempfile::NamedTempFile::new_in`.
+    let existed_as_dir = config_dir.is_dir();
+    let exists_as_other = config_dir.exists() && !existed_as_dir;
+    let first_write = !settings_path.exists();
+
+    if exists_as_other {
+        eprintln!(
+            "paneflow-shim: {} exists but is not a directory; remove or \
+             rename it to enable {tool_label} hooks this session",
+            safe_path_display(config_dir)
+        );
+        return None;
+    }
+
+    if !existed_as_dir {
+        if let Err(e) = std::fs::create_dir_all(config_dir) {
+            eprintln!(
+                "paneflow-shim: cannot create {} ({e}); {tool_label} hooks \
+                 disabled this session",
+                safe_path_display(config_dir)
+            );
+            return None;
+        }
+    }
+
+    let existing = std::fs::read_to_string(&settings_path).unwrap_or_default();
+    let mut root: serde_json::Value = if existing.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        match serde_json::from_str(&existing) {
+            Ok(v) => v,
+            Err(e) => {
+                // Corrupt JSON treated as empty; overwriting is preferable
+                // to aborting the shim and leaving the user with a broken
+                // settings file they can't fix from inside the AI tool.
+                eprintln!(
+                    "paneflow-shim: {} contained invalid JSON ({e}); \
+                     overwriting with a fresh config",
+                    safe_path_display(&settings_path)
+                );
+                serde_json::json!({})
+            }
+        }
+    };
+
+    merge_fn(&mut root);
+
+    if let Err(e) = write_atomic(&settings_path, &root) {
+        eprintln!(
+            "paneflow-shim: cannot write {} ({e}); {tool_label} hooks \
+             disabled this session",
+            safe_path_display(&settings_path)
+        );
+        if !existed_as_dir {
+            let _ = std::fs::remove_dir(config_dir);
+        }
+        return None;
+    }
+
+    if first_write {
+        let dirname = config_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+        eprintln!(
+            "paneflow-shim: writing hook config to ./{dirname}/{config_filename} \
+             (git-ignored by {git_ignore_attribution} convention)"
+        );
+    }
+
+    Some((settings_path, !existed_as_dir))
+}
+
+/// Shared cleanup used by both guards' `Drop` impls: read the settings
+/// file, run `remove_fn` to strip PaneFlow's entries, then either delete
+/// the file (if now empty) and rmdir the config dir (if we created it),
+/// or write the cleaned tree back atomically. All failures swallow
+/// silently — Drop must never panic, and any error here means the next
+/// shim invocation's merge-idempotency will converge the state.
+fn cleanup_hook_config_file(
+    settings_path: &Path,
+    config_dir: &Path,
+    created_dir: bool,
+    remove_fn: fn(&mut serde_json::Value),
+) {
+    let Ok(content) = std::fs::read_to_string(settings_path) else {
+        return;
+    };
+    let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+
+    remove_fn(&mut root);
+
+    let is_empty = root
+        .as_object()
+        .map(serde_json::Map::is_empty)
+        .unwrap_or(false);
+
+    if is_empty {
+        let _ = std::fs::remove_file(settings_path);
+        if created_dir {
+            // `remove_dir` only succeeds if the directory is empty — safe
+            // even if the user dropped other files into the config dir.
+            let _ = std::fs::remove_dir(config_dir);
+        }
+    } else {
+        let _ = write_atomic(settings_path, &root);
+    }
+}
+
 /// RAII guard: writes PaneFlow's hook config on construction, removes it on
 /// drop. The guard must live for the duration of the child Claude Code
 /// process, then drop normally when `main()` returns — this is why US-005
@@ -396,133 +584,95 @@ struct HookConfigGuard {
 impl HookConfigGuard {
     /// Install in the project CWD. Returns `None` if the filesystem refuses
     /// our writes (read-only, permission denied, etc.) — the shim proceeds
-    /// without hooks in that case, per PRD constraint C4.
+    /// without hooks in that case, per PRD constraint C4. Also returns
+    /// `None` (after sweeping any orphan entries left by a previous
+    /// SIGKILL'd session) when no PaneFlow IPC socket is reachable: writing
+    /// hook config that would invoke a dead handler would just create
+    /// config noise per C4.
     fn install() -> Option<Self> {
         let cwd = env::current_dir().ok()?;
-        Self::install_at(&cwd.join(".claude"))
+        let claude_dir = cwd.join(".claude");
+        if !paneflow_ipc_reachable() {
+            sweep_orphan_hook_config(
+                &claude_dir.join("settings.local.json"),
+                remove_paneflow_hooks,
+            );
+            return None;
+        }
+        Self::install_at(&claude_dir)
     }
 
     /// Testable inner. Takes the absolute path to the `.claude/` directory.
+    /// Does NOT check `PANEFLOW_SOCKET_PATH` — the orphan-sweep gate lives
+    /// in `install()` so unit tests can drive `install_at` without
+    /// fabricating a live IPC socket.
     fn install_at(claude_dir: &Path) -> Option<Self> {
-        let settings_path = claude_dir.join("settings.local.json");
-        // `exists()` returns true for both files and directories; we need to
-        // distinguish so a stale `.claude` regular file (e.g. left behind by
-        // an earlier tool) doesn't masquerade as a usable directory and
-        // silently break hook injection further down the pipeline. If the
-        // path exists but isn't a directory, surface a clear, actionable
-        // error rather than letting `write_atomic` fail with a cryptic
-        // ENOTDIR from inside `tempfile::NamedTempFile::new_in`.
-        let existed_as_dir = claude_dir.is_dir();
-        let exists_as_other = claude_dir.exists() && !existed_as_dir;
-        let first_write = !settings_path.exists();
-
-        if exists_as_other {
-            eprintln!(
-                "paneflow-shim: {} exists but is not a directory; remove or \
-                 rename it to enable Claude Code hooks this session",
-                safe_path_display(claude_dir)
-            );
-            return None;
-        }
-
-        if !existed_as_dir {
-            if let Err(e) = std::fs::create_dir_all(claude_dir) {
-                eprintln!(
-                    "paneflow-shim: cannot create {} ({e}); Claude Code hooks \
-                     disabled this session",
-                    safe_path_display(claude_dir)
-                );
-                return None;
-            }
-        }
-
-        let existing_content = std::fs::read_to_string(&settings_path).unwrap_or_default();
-        let mut root: serde_json::Value = if existing_content.trim().is_empty() {
-            serde_json::json!({})
-        } else {
-            match serde_json::from_str(&existing_content) {
-                Ok(v) => v,
-                Err(e) => {
-                    // Corrupt JSON gets treated as empty; overwriting it is
-                    // preferable to aborting the shim and leaving the user
-                    // with a broken settings file they can't fix from
-                    // inside Claude Code. Warn the user so a typo in a
-                    // hand-edited file doesn't disappear silently.
-                    eprintln!(
-                        "paneflow-shim: {} contained invalid JSON ({e}); \
-                         overwriting with a fresh config",
-                        safe_path_display(&settings_path)
-                    );
-                    serde_json::json!({})
-                }
-            }
-        };
-
-        merge_paneflow_hooks(&mut root);
-
-        if let Err(e) = write_atomic(&settings_path, &root) {
-            eprintln!(
-                "paneflow-shim: cannot write {} ({e}); Claude Code hooks \
-                 disabled this session",
-                safe_path_display(&settings_path)
-            );
-            if !existed_as_dir {
-                let _ = std::fs::remove_dir(claude_dir);
-            }
-            return None;
-        }
-
-        if first_write {
-            eprintln!(
-                "paneflow-shim: writing hook config to \
-                 ./.claude/settings.local.json (git-ignored by Claude Code \
-                 convention)"
-            );
-        }
-
+        let (settings_path, created_dir) = install_hook_config_file(
+            claude_dir,
+            "settings.local.json",
+            "Claude Code",
+            "Claude Code",
+            merge_paneflow_hooks,
+        )?;
         Some(Self {
             settings_path,
             claude_dir: claude_dir.to_path_buf(),
-            created_dir: !existed_as_dir,
+            created_dir,
         })
     }
 }
 
 impl Drop for HookConfigGuard {
     fn drop(&mut self) {
-        // All failures swallow silently — Drop must not panic, and any error
-        // here (file gone, corrupt JSON, FS race) means the next shim
-        // invocation's merge-idempotency will eventually converge the state.
-        let Ok(content) = std::fs::read_to_string(&self.settings_path) else {
-            return;
-        };
-        let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&content) else {
-            return;
-        };
-
-        remove_paneflow_hooks(&mut root);
-
-        let is_empty = root
-            .as_object()
-            .map(serde_json::Map::is_empty)
-            .unwrap_or(false);
-
-        if is_empty {
-            let _ = std::fs::remove_file(&self.settings_path);
-            if self.created_dir {
-                // `remove_dir` only succeeds if the directory is empty —
-                // safe even if the user dropped other files into `.claude/`.
-                let _ = std::fs::remove_dir(&self.claude_dir);
-            }
-        } else {
-            let _ = write_atomic(&self.settings_path, &root);
-        }
+        cleanup_hook_config_file(
+            &self.settings_path,
+            &self.claude_dir,
+            self.created_dir,
+            remove_paneflow_hooks,
+        );
     }
+}
+
+/// Build the `"command"` string written into `settings.local.json` /
+/// `hooks.json` for the given hook `event`. Prefers the absolute path to the
+/// sibling `paneflow-ai-hook` binary (resolved via `current_exe().parent()`)
+/// so hooks resolve even when Claude Code or Codex is launched outside the
+/// PATH-injected shell paneflow normally provides — e.g., when a user runs
+/// `claude` directly in a project where a previous shim invocation left a
+/// managed `settings.local.json` in place. Falls back to the bare binary name
+/// when `current_exe()` fails or the sibling isn't present (test harnesses
+/// where the test binary lives in `target/debug/deps/`, exotic filesystems);
+/// the bare form is still recognized by `is_paneflow_hook_command` for
+/// detection and cleanup.
+fn resolve_hook_command(event: &str) -> String {
+    match locate_sibling_hook_binary() {
+        Some(path) => format!("{} {}", path.display(), event),
+        None => format!("{HOOK_COMMAND_PREFIX}{event}"),
+    }
+}
+
+/// Returns `true` if `command` is a paneflow-managed hook command, regardless
+/// of whether it uses the legacy bare-name format (`paneflow-ai-hook <Event>`)
+/// or the absolute-path format produced by `resolve_hook_command`. Detection
+/// is basename-based so it works across both shapes and across platforms
+/// (`paneflow-ai-hook` on Unix, `paneflow-ai-hook.exe` on Windows).
+///
+/// Intentionally does NOT verify that the binary exists on disk: a stale
+/// config pointing at a removed cache dir (e.g., user uninstalled paneflow,
+/// `cargo clean` between sessions) must still be recognized so cleanup can
+/// remove it on the next shim run.
+fn is_paneflow_hook_command(command: &str) -> bool {
+    let first_token = command.split_whitespace().next().unwrap_or("");
+    let basename = Path::new(first_token)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(first_token);
+    basename == "paneflow-ai-hook" || basename == "paneflow-ai-hook.exe"
 }
 
 /// Merge PaneFlow's hook handlers into the parsed settings tree. Idempotent:
 /// if a PaneFlow handler for an event is already present (identified by the
-/// command prefix OR the `_paneflow_managed` marker), we don't duplicate.
+/// command basename OR the `_paneflow_managed` marker), we don't duplicate.
 fn merge_paneflow_hooks(root: &mut serde_json::Value) {
     let root_obj = match root.as_object_mut() {
         Some(o) => o,
@@ -567,13 +717,13 @@ fn merge_paneflow_hooks(root: &mut serde_json::Value) {
         // The inner handler object carries only the Claude-Code-native
         // fields so we don't send unexpected custom fields to Claude Code's
         // command runner. Identification falls back to the `command`
-        // prefix if the outer marker is stripped.
+        // basename if the outer marker is stripped.
         array.push(serde_json::json!({
             "_paneflow_managed": true,
             "hooks": [
                 {
                     "type": "command",
-                    "command": format!("{HOOK_COMMAND_PREFIX}{event}"),
+                    "command": resolve_hook_command(event),
                     "timeout": 5,
                 }
             ]
@@ -612,8 +762,11 @@ fn remove_paneflow_hooks(root: &mut serde_json::Value) {
 /// Returns `true` if `value` is a matcher-group object that PaneFlow owns.
 /// Belt-and-suspenders: first checks the `_paneflow_managed` marker on the
 /// outer wrapper, then falls back to scanning the inner `hooks` array for a
-/// command starting with `HOOK_COMMAND_PREFIX`. The second pass catches the
-/// case where Claude Code's own settings writer strips unknown fields.
+/// command whose basename matches `paneflow-ai-hook[.exe]` (legacy bare-name
+/// or absolute-path form). The second pass catches the case where Claude
+/// Code's own settings writer strips unknown fields, AND the case where a
+/// previous shim version wrote a bare-name command (forward compatibility
+/// with the migration to absolute paths).
 fn is_paneflow_matcher_group(value: &serde_json::Value) -> bool {
     if value
         .get("_paneflow_managed")
@@ -630,7 +783,7 @@ fn is_paneflow_matcher_group(value: &serde_json::Value) -> bool {
                 handler
                     .get("command")
                     .and_then(serde_json::Value::as_str)
-                    .is_some_and(|s| s.starts_with(HOOK_COMMAND_PREFIX))
+                    .is_some_and(is_paneflow_hook_command)
             })
         })
 }
@@ -711,9 +864,17 @@ struct CodexHookConfigGuard {
 
 #[cfg(unix)]
 impl CodexHookConfigGuard {
+    /// Install in the project CWD. Mirrors `HookConfigGuard::install`: same
+    /// orphan-sweep gate when `PANEFLOW_SOCKET_PATH` is unreachable, then
+    /// delegate to `install_at`.
     fn install() -> Option<Self> {
         let cwd = env::current_dir().ok()?;
-        Self::install_at(&cwd.join(".codex"), codex_global_config_toml().as_deref())
+        let codex_dir = cwd.join(".codex");
+        if !paneflow_ipc_reachable() {
+            sweep_orphan_hook_config(&codex_dir.join("hooks.json"), remove_codex_hooks);
+            return None;
+        }
+        Self::install_at(&codex_dir, codex_global_config_toml().as_deref())
     }
 
     /// Testable inner. `config_toml_path` is the absolute path to the global
@@ -721,71 +882,14 @@ impl CodexHookConfigGuard {
     /// the feature-flag step entirely (used by tests that don't want to
     /// pollute the test runner's home dir).
     fn install_at(codex_dir: &Path, config_toml_path: Option<&Path>) -> Option<Self> {
-        let hooks_json_path = codex_dir.join("hooks.json");
-        // Same `is_dir()` discriminator as `HookConfigGuard::install_at` —
-        // a stray `.codex` regular file (legacy artifact, accidental
-        // `touch`) breaks `write_atomic` further down with a cryptic
-        // ENOTDIR. Surface it up front with an actionable message instead.
-        let existed_as_dir = codex_dir.is_dir();
-        let exists_as_other = codex_dir.exists() && !existed_as_dir;
-        let first_write = !hooks_json_path.exists();
+        let (hooks_json_path, created_dir) =
+            install_hook_config_file(codex_dir, "hooks.json", "Codex", "Codex", merge_codex_hooks)?;
 
-        if exists_as_other {
-            eprintln!(
-                "paneflow-shim: {} exists but is not a directory; remove or \
-                 rename it to enable Codex hooks this session",
-                safe_path_display(codex_dir)
-            );
-            return None;
-        }
-
-        if !existed_as_dir {
-            if let Err(e) = std::fs::create_dir_all(codex_dir) {
-                eprintln!(
-                    "paneflow-shim: cannot create {} ({e}); Codex hooks disabled this session",
-                    safe_path_display(codex_dir)
-                );
-                return None;
-            }
-        }
-
-        let existing = std::fs::read_to_string(&hooks_json_path).unwrap_or_default();
-        let mut root: serde_json::Value = if existing.trim().is_empty() {
-            serde_json::json!({})
-        } else {
-            match serde_json::from_str(&existing) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!(
-                        "paneflow-shim: {} contained invalid JSON ({e}); overwriting",
-                        safe_path_display(&hooks_json_path)
-                    );
-                    serde_json::json!({})
-                }
-            }
-        };
-        merge_codex_hooks(&mut root);
-
-        if let Err(e) = write_atomic(&hooks_json_path, &root) {
-            eprintln!(
-                "paneflow-shim: cannot write {} ({e}); Codex hooks disabled this session",
-                safe_path_display(&hooks_json_path)
-            );
-            if !existed_as_dir {
-                let _ = std::fs::remove_dir(codex_dir);
-            }
-            return None;
-        }
-
-        if first_write {
-            eprintln!(
-                "paneflow-shim: writing hook config to ./.codex/hooks.json (git-ignored by Codex convention)"
-            );
-        }
-
-        // Separately, try to enable the `codex_hooks = true` feature flag.
-        // A failure here is non-fatal: the user can manually enable it and
-        // the rest of the hook config is already in place.
+        // Codex-specific extra: enable the `codex_hooks = true` feature flag
+        // in `~/.codex/config.toml`. Failure here is non-fatal — the user
+        // can enable it manually and the rest of the hook config is in
+        // place. Runs AFTER the shared install so the per-project hooks.json
+        // is on disk before we touch the global config.
         let added_feature_flag = config_toml_path
             .and_then(enable_codex_feature_flag)
             .unwrap_or(false);
@@ -793,7 +897,7 @@ impl CodexHookConfigGuard {
         Some(Self {
             hooks_json_path,
             codex_dir: codex_dir.to_path_buf(),
-            created_dir: !existed_as_dir,
+            created_dir,
             config_toml_path: config_toml_path.map(Path::to_path_buf),
             added_feature_flag,
         })
@@ -810,27 +914,12 @@ impl Drop for CodexHookConfigGuard {
                 disable_codex_feature_flag(p);
             }
         }
-
-        let Ok(content) = std::fs::read_to_string(&self.hooks_json_path) else {
-            return;
-        };
-        let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&content) else {
-            return;
-        };
-        remove_codex_hooks(&mut root);
-
-        let is_empty = root
-            .as_object()
-            .map(serde_json::Map::is_empty)
-            .unwrap_or(false);
-        if is_empty {
-            let _ = std::fs::remove_file(&self.hooks_json_path);
-            if self.created_dir {
-                let _ = std::fs::remove_dir(&self.codex_dir);
-            }
-        } else {
-            let _ = write_atomic(&self.hooks_json_path, &root);
-        }
+        cleanup_hook_config_file(
+            &self.hooks_json_path,
+            &self.codex_dir,
+            self.created_dir,
+            remove_codex_hooks,
+        );
     }
 }
 
@@ -864,7 +953,7 @@ fn merge_codex_hooks(root: &mut serde_json::Value) {
             "hooks": [
                 {
                     "type": "command",
-                    "command": format!("{HOOK_COMMAND_PREFIX}{event}"),
+                    "command": resolve_hook_command(event),
                     "timeout": 5,
                 }
             ]
@@ -1573,8 +1662,25 @@ mod tests {
                 "expected exactly one matcher-group for {event}"
             );
 
-            let cmd = handlers[0].pointer("/hooks/0/command").unwrap();
-            assert_eq!(cmd, &json!(format!("paneflow-ai-hook {event}")));
+            // The exact command shape (bare name vs. absolute path) depends on
+            // whether `current_exe()` finds a sibling `paneflow-ai-hook` —
+            // which it does NOT in `cargo test` (test binary lives under
+            // `target/debug/deps/`, hook binary lives under `target/debug/`).
+            // Assert the contract instead of the format: it must be detectable
+            // by `is_paneflow_hook_command`, and it must end with the event
+            // name so Claude Code dispatches to the correct handler.
+            let cmd = handlers[0]
+                .pointer("/hooks/0/command")
+                .and_then(|v| v.as_str())
+                .expect("command must be a string");
+            assert!(
+                is_paneflow_hook_command(cmd),
+                "{event}: command {cmd:?} must be recognized as paneflow-managed"
+            );
+            assert!(
+                cmd.ends_with(&format!(" {event}")),
+                "{event}: command {cmd:?} must end with the event name"
+            );
 
             let timeout = handlers[0].pointer("/hooks/0/timeout").unwrap();
             assert_eq!(
@@ -1823,8 +1929,18 @@ mod tests {
                 Some(&json!(true)),
                 "outer wrapper must carry the managed marker"
             );
-            let cmd = handlers[0].pointer("/hooks/0/command").unwrap();
-            assert_eq!(cmd, &json!(format!("paneflow-ai-hook {event}")));
+            let cmd = handlers[0]
+                .pointer("/hooks/0/command")
+                .and_then(|v| v.as_str())
+                .expect("command must be a string");
+            assert!(
+                is_paneflow_hook_command(cmd),
+                "{event}: command {cmd:?} must be recognized as paneflow-managed"
+            );
+            assert!(
+                cmd.ends_with(&format!(" {event}")),
+                "{event}: command {cmd:?} must end with the event name"
+            );
         }
 
         // `Notification` is NOT a Codex hook — confirm the registration
@@ -2150,5 +2266,101 @@ mod tests {
         let (rewritten, should_tee) = rewrite_codex_args(&resume);
         assert!(!should_tee);
         assert_eq!(rewritten, resume);
+    }
+
+    // ---------- Hook-command detection (basename rule) ----------
+
+    /// The legacy bare-name format MUST stay recognized so a shim upgrade
+    /// can clean up `settings.local.json` files written by the previous
+    /// version (which used `format!("paneflow-ai-hook {event}")` directly).
+    #[test]
+    fn is_paneflow_hook_command_accepts_legacy_bare_name() {
+        for event in CLAUDE_HOOK_EVENTS {
+            let cmd = format!("paneflow-ai-hook {event}");
+            assert!(
+                is_paneflow_hook_command(&cmd),
+                "legacy bare-name format must be recognized: {cmd:?}"
+            );
+        }
+    }
+
+    /// New absolute-path format produced by `resolve_hook_command` when a
+    /// sibling binary is present. This is the production case for end users.
+    #[test]
+    fn is_paneflow_hook_command_accepts_unix_absolute_path() {
+        let cmd = "/home/user/.cache/paneflow/bin/0.1.0/paneflow-ai-hook Stop";
+        assert!(is_paneflow_hook_command(cmd));
+
+        let cmd = "/usr/local/bin/paneflow-ai-hook PreToolUse";
+        assert!(is_paneflow_hook_command(cmd));
+    }
+
+    /// Windows variant: the binary basename is `paneflow-ai-hook.exe` and
+    /// `Path::file_name` on Unix still extracts the trailing component
+    /// correctly when the input uses forward slashes (Path semantics differ
+    /// on Windows for `\`, but the basename rule covers both names).
+    #[test]
+    fn is_paneflow_hook_command_accepts_exe_basename() {
+        let cmd = "/some/path/paneflow-ai-hook.exe Stop";
+        assert!(is_paneflow_hook_command(cmd));
+    }
+
+    /// Fix B (orphan cleanup): even if the binary at the absolute path no
+    /// longer exists on disk, the command must still be recognized so
+    /// `remove_paneflow_hooks` can purge stale entries written by an
+    /// earlier paneflow install that has since been removed.
+    #[test]
+    fn is_paneflow_hook_command_recognizes_orphans_without_filesystem_check() {
+        // Path that almost certainly does not exist — the function must NOT
+        // touch the filesystem.
+        let cmd = "/nonexistent/old/cache/paneflow-ai-hook UserPromptSubmit";
+        assert!(
+            is_paneflow_hook_command(cmd),
+            "orphaned absolute paths must be detectable for cleanup"
+        );
+    }
+
+    /// User hooks must NOT be misclassified as paneflow-managed. The
+    /// basename rule narrows the namespace collision risk vs. the previous
+    /// bare-prefix rule, but rejection of common user patterns is the
+    /// primary safety property.
+    #[test]
+    fn is_paneflow_hook_command_rejects_user_hooks() {
+        let user_hooks = [
+            "echo hello",
+            "/usr/bin/git status",
+            "node my-hook.js",
+            "paneflow-shim Stop",               // sibling binary, different name
+            "my-paneflow-ai-hook Stop",         // similar but distinct basename
+            "/path/to/paneflow-ai-hook-2 Stop", // suffixed name
+            "",                                 // empty
+            "   ",                              // whitespace only
+            "notarealcommand",                  // no event
+        ];
+        for cmd in user_hooks {
+            assert!(
+                !is_paneflow_hook_command(cmd),
+                "user hook {cmd:?} must NOT be classified as paneflow-managed"
+            );
+        }
+    }
+
+    /// Round-trip property: `resolve_hook_command` must produce a string
+    /// that `is_paneflow_hook_command` recognizes, regardless of which
+    /// branch (sibling-found or bare-name fallback) was taken. Without
+    /// this, a user could end up with hooks they cannot clean up.
+    #[test]
+    fn resolve_hook_command_output_is_recognized_by_detector() {
+        for event in CLAUDE_HOOK_EVENTS {
+            let cmd = resolve_hook_command(event);
+            assert!(
+                is_paneflow_hook_command(&cmd),
+                "resolve_hook_command output must be detectable: {cmd:?}"
+            );
+            assert!(
+                cmd.ends_with(&format!(" {event}")),
+                "resolve_hook_command output must end with the event name: {cmd:?}"
+            );
+        }
     }
 }
