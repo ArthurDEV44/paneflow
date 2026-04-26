@@ -165,7 +165,7 @@ jobs:
   # cargo-deny. Fail-forward posture:
   #   * licenses / sources / unmaintained / yanked → WARN only (surfaces
   #     findings without blocking merges).
-  #   * advisories.vulnerabilities → has no warn-mode in cargo-deny 0.14+
+  #   * advisories.vulnerabilities → has no warn-mode in cargo-deny 0.16+
   #     (upstream removed the downgrade path), so an active RustSec CVE
   #     will fail this step.
   # `continue-on-error: true` on the JOB means the red-X is visible in
@@ -195,13 +195,14 @@ jobs:
           prefix-key: "v1-rust"
           key: security-audit
 
-      - name: Install cargo-deny (pinned 0.14.x)
+      - name: Install cargo-deny (pinned 0.19.x)
         # `--locked` pins cargo-deny's own dep graph for reproducibility.
-        # `--version '^0.14'` accepts any 0.14.x patch but not 0.15+
-        # (matches PRD US-006 research pin; upstream 0.15 may change
-        # severity semantics — bump explicitly when validating the
-        # new behavior).
-        run: cargo install cargo-deny --locked --version '^0.14'
+        # `--version '^0.19'` accepts any 0.19.x patch but not 0.20+
+        # (verified against deny.toml semantics: 0.16+ introduces the
+        # `unmaintained = "workspace"` scope and `[[licenses.exceptions]]`
+        # syntax we rely on; 0.19 is the current stable upstream and
+        # the version validated locally before bumping).
+        run: cargo install cargo-deny --locked --version '^0.19'
 
       - name: cargo deny check advisories licenses sources
         # Retry once with 30s backoff on a DB-fetch failure (GitHub's
