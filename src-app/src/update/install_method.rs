@@ -82,6 +82,19 @@ pub enum InstallMethod {
     /// the correct `.msi` release asset for x86_64 Windows.
     WindowsMsi { install_path: PathBuf },
 
+    /// In-app updates are disabled by the host environment. Set when the
+    /// process is sandboxed (Flatpak / Snap) or when the build / runtime
+    /// environment carries `PANEFLOW_UPDATE_EXPLANATION`. The pill renders
+    /// a system-managed hint and clicking copies the explanation copy
+    /// rather than attempting any download.
+    ///
+    /// This mirrors Zed's `ZED_UPDATE_EXPLANATION` convention: distro and
+    /// store packagers (Flatpak, Snap, Solus, NixOS, Fedora COPR, …) bake
+    /// the env var into their wrapper / manifest at build time, and the
+    /// in-app updater stays out of their way at runtime — the package
+    /// manager is the only path to a new version.
+    ExternallyManaged { explanation: String },
+
     /// Binary location doesn't match any known layout (legacy `.run` install,
     /// manual copy, dev build). Updater disables in-app updates.
     Unknown,
@@ -89,6 +102,26 @@ pub enum InstallMethod {
 
 /// Probe the filesystem and environment to classify the running binary.
 pub fn detect() -> InstallMethod {
+    // Sandboxed / packager-managed environments take priority over any
+    // path-based heuristic. A Flatpak install of PaneFlow has its real
+    // binary at `/app/bin/paneflow` (which would otherwise look like an
+    // ad-hoc system install), and a Snap install lives in
+    // `/snap/paneflow/current/bin/paneflow` — both are immutable and the
+    // in-app updater would silently fail. We disable it up front so the
+    // pill copies the right `flatpak update` / `snap refresh` command
+    // instead of attempting a download. Mirrors Zed's
+    // `ZED_UPDATE_EXPLANATION` convention (see `crates/auto_update`
+    // and `crates/cli/src/main.rs::try_restart_to_host` in
+    // /home/arthur/dev/zed).
+    if let Some(externally_managed) = detect_externally_managed(
+        std::env::var_os("PANEFLOW_UPDATE_EXPLANATION"),
+        option_env!("PANEFLOW_UPDATE_EXPLANATION"),
+        std::env::var_os("FLATPAK_ID"),
+        std::env::var_os("SNAP"),
+    ) {
+        return externally_managed;
+    }
+
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(_) => return InstallMethod::Unknown,
@@ -120,6 +153,63 @@ pub fn detect() -> InstallMethod {
     }
 
     result
+}
+
+/// Pure detector for sandboxed / packager-managed environments. Returns
+/// `Some(InstallMethod::ExternallyManaged)` when any of the inputs signals
+/// that a third party owns this install:
+///
+/// - `runtime_explanation` — `PANEFLOW_UPDATE_EXPLANATION` env var read at
+///   startup. Highest priority because it's the explicit opt-out a packager
+///   set in the host wrapper / launcher.
+/// - `build_explanation` — same env var captured at build time via
+///   `option_env!("PANEFLOW_UPDATE_EXPLANATION")`. Distro packagers (Fedora
+///   COPR, AUR, Solus, NixOS) bake this into their RPM/PKGBUILD/derivation.
+/// - `flatpak_id` — `FLATPAK_ID` is set by `flatpak-spawn` when the binary
+///   runs inside a Flatpak sandbox. Fixed copy: `flatpak update <id>`.
+/// - `snap` — `SNAP` env var is set by snapd for Snap packages. Fixed
+///   copy: `sudo snap refresh paneflow`.
+///
+/// Pure (no I/O, no FS reads) so the unit tests can mock all four signals.
+fn detect_externally_managed(
+    runtime_explanation: Option<OsString>,
+    build_explanation: Option<&str>,
+    flatpak_id: Option<OsString>,
+    snap: Option<OsString>,
+) -> Option<InstallMethod> {
+    if let Some(value) = runtime_explanation
+        && let Some(text) = value.to_str()
+        && !text.trim().is_empty()
+    {
+        return Some(InstallMethod::ExternallyManaged {
+            explanation: text.trim().to_string(),
+        });
+    }
+    if let Some(text) = build_explanation
+        && !text.trim().is_empty()
+    {
+        return Some(InstallMethod::ExternallyManaged {
+            explanation: text.trim().to_string(),
+        });
+    }
+    if let Some(value) = flatpak_id
+        && let Some(id) = value.to_str()
+        && !id.trim().is_empty()
+    {
+        return Some(InstallMethod::ExternallyManaged {
+            explanation: format!(
+                "PaneFlow is installed as a Flatpak. Run `flatpak update {}` to upgrade.",
+                id.trim()
+            ),
+        });
+    }
+    if snap.is_some() {
+        return Some(InstallMethod::ExternallyManaged {
+            explanation: "PaneFlow is installed as a Snap. Run `sudo snap refresh paneflow` to upgrade."
+                .to_string(),
+        });
+    }
+    None
 }
 
 /// Pure classifier — no I/O beyond the `/etc/*-release` probe for package
@@ -468,19 +558,15 @@ mod tests {
     #[test]
     fn app_bundle_parser_rejects_wrong_layout() {
         // Wrong MacOS directory name
-        assert!(
-            app_bundle_path(Path::new(
-                "/Applications/PaneFlow.app/Contents/bin/paneflow"
-            ))
-            .is_none()
-        );
+        assert!(app_bundle_path(Path::new(
+            "/Applications/PaneFlow.app/Contents/bin/paneflow"
+        ))
+        .is_none());
         // Wrong Contents directory name
-        assert!(
-            app_bundle_path(Path::new(
-                "/Applications/PaneFlow.app/Payload/MacOS/paneflow"
-            ))
-            .is_none()
-        );
+        assert!(app_bundle_path(Path::new(
+            "/Applications/PaneFlow.app/Payload/MacOS/paneflow"
+        ))
+        .is_none());
         // Bundle dir not ending in .app
         assert!(
             app_bundle_path(Path::new("/Applications/PaneFlow/Contents/MacOS/paneflow")).is_none()

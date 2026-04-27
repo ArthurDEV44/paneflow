@@ -576,6 +576,13 @@ impl Render for PaneFlowApp {
                         };
                         title_bar::UpdatePillKind::SystemManaged(system_kind)
                     }
+                    // Flatpak / Snap / `PANEFLOW_UPDATE_EXPLANATION` —
+                    // packager owns updates, render the same generic
+                    // SystemHint pill. The explanation copy is surfaced
+                    // by the click handler in `self_update_flow.rs`.
+                    update::install_method::InstallMethod::ExternallyManaged { .. } => {
+                        title_bar::UpdatePillKind::SystemManaged(title_bar::SystemPackageKind::Other)
+                    }
                     _ => {
                         let state = match &self.self_update_status {
                             update::SelfUpdateStatus::Idle => title_bar::SelfUpdatePillState::Idle,
@@ -584,6 +591,9 @@ impl Render for PaneFlowApp {
                             }
                             update::SelfUpdateStatus::Installing => {
                                 title_bar::SelfUpdatePillState::Installing
+                            }
+                            update::SelfUpdateStatus::ReadyToRestart { .. } => {
+                                title_bar::SelfUpdatePillState::ReadyToRestart
                             }
                             update::SelfUpdateStatus::Errored(_) => {
                                 title_bar::SelfUpdatePillState::Errored
