@@ -6,6 +6,15 @@ export const metadata: Metadata = {
   title: "Politique de confidentialité — PaneFlow",
   description:
     "Politique de confidentialité de PaneFlow : données collectées sur paneflow.dev, télémétrie desktop opt-in, sous-traitants (PostHog EU, Vercel, GitHub), droits RGPD.",
+  alternates: {
+    canonical: "/legal/privacy",
+    // hreflang signal — emits <link rel="alternate" hreflang="fr-FR" ...>.
+    // Self-referencing because we do not yet host an English translation
+    // of this page; the entry declares French as the page's language.
+    languages: {
+      "fr-FR": "/legal/privacy",
+    },
+  },
   openGraph: {
     title: "Politique de confidentialité — PaneFlow",
     description:
@@ -19,6 +28,30 @@ export const metadata: Metadata = {
   },
 };
 
+// BreadcrumbList JSON-LD (US-011). Intermediate "/legal" omitted per
+// the AC4 logged decision: there is no /legal page yet, and Google
+// warns on non-resolving breadcrumb items. The position-2 label is in
+// French to match the page's content language (matches the <main lang="fr">
+// + hreflang fr-FR signals shipped in US-008).
+const breadcrumbSchema = {
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  itemListElement: [
+    {
+      "@type": "ListItem",
+      position: 1,
+      name: "Home",
+      item: "https://paneflow.dev",
+    },
+    {
+      "@type": "ListItem",
+      position: 2,
+      name: "Politique de confidentialité",
+      item: "https://paneflow.dev/legal/privacy",
+    },
+  ],
+};
+
 // Last substantive update to the sub-processor list, retention, or
 // data-subject rights procedure. Update this date whenever the content
 // changes — it is the one piece of mutable copy on this page.
@@ -27,6 +60,12 @@ const LAST_UPDATED = "2026-04-23";
 export default function PrivacyPage() {
   return (
     <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(breadcrumbSchema),
+        }}
+      />
       <Navbar />
       <main lang="fr">
         <section className="pt-36 sm:pt-40 pb-24">
