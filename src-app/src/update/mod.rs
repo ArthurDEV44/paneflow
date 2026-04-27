@@ -76,6 +76,21 @@ pub enum SelfUpdateStatus {
     Idle,
     Downloading,
     Installing,
+    /// The new binary has been downloaded, verified and swapped into place;
+    /// `cx.set_restart_path(restart_path)` has already been called. The pill
+    /// switches to a "Restart for vX" affordance whose click handler only
+    /// invokes `cx.restart()` — no I/O, no waiting, no analytics flush. This
+    /// mirrors Zed's auto-update split (download/install in background →
+    /// "Restart to Update" CTA) so the click-to-restart latency is ~0
+    /// regardless of network speed or disk throughput.
+    ///
+    /// `restart_path` is stored for diagnostics / log lines only; the
+    /// authoritative value lives inside GPUI's `App::set_restart_path`
+    /// from the moment the transition fires.
+    ReadyToRestart {
+        #[allow(dead_code)]
+        restart_path: PathBuf,
+    },
     /// Structured classification of the last failure (US-013). The toast
     /// renderer picks its copy per variant; the pill shows "Update failed"
     /// and remains clickable so the user can retry.

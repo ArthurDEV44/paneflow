@@ -32,6 +32,11 @@ pub fn install_method_tag(method: &InstallMethod) -> &'static str {
         InstallMethod::TarGz { .. } => "tar.gz",
         InstallMethod::AppBundle { .. } => "dmg",
         InstallMethod::WindowsMsi { .. } => "msi",
+        // Sandboxed runtimes (Flatpak / Snap) and packager-baked
+        // `PANEFLOW_UPDATE_EXPLANATION` builds report a coarse tag
+        // — the in-app updater is disabled for these so finer-grained
+        // attribution would only confuse downstream dashboards.
+        InstallMethod::ExternallyManaged { .. } => "externally-managed",
         InstallMethod::Unknown => "unknown",
     }
 }

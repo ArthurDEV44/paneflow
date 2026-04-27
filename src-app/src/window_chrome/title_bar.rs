@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt, AnyElement, ClickEvent, Context, Decorations, EventEmitter,
-    IntoElement, MouseButton, Pixels, Point, Render, Styled, Transformation, Window,
-    WindowControlArea, div, percentage, prelude::*, px, svg,
+    div, percentage, prelude::*, px, svg, Animation, AnimationExt, AnyElement, ClickEvent, Context,
+    Decorations, EventEmitter, IntoElement, MouseButton, Pixels, Point, Render, Styled,
+    Transformation, Window, WindowControlArea,
 };
 
 use super::csd::default_button_layout;
@@ -37,6 +37,11 @@ pub enum SelfUpdatePillState {
     Idle,
     Downloading,
     Installing,
+    /// Background install completed; the next click only invokes
+    /// `cx.restart()`. Mirrors Zed's "Restart to Update" CTA — the heavy
+    /// work happened while the user was busy doing something else, so the
+    /// click→restart latency is bounded by GPUI's relauncher only (~100 ms).
+    ReadyToRestart,
     Errored,
 }
 
@@ -219,7 +224,8 @@ impl Render for TitleBar {
         let update_pill = self.update_available.clone().map(|info| {
             // Decide label + visual style per install method. The click handler
             // always dispatches `StartSelfUpdate`; the action handler in
-            // `PaneFlowApp` decides whether to download (in-app) or show the
+            // `PaneFlowApp` decides whether to download (in-app), trigger
+            // an instant restart (ReadyToRestart), or show the
             // package-manager hint toast (system-managed).
             let (label, style): (String, PillStyle) = match info.kind {
                 UpdatePillKind::InApp(state) => match state {
@@ -230,6 +236,10 @@ impl Render for TitleBar {
                         ("Downloading…".to_string(), PillStyle::Busy)
                     }
                     SelfUpdatePillState::Installing => ("Installing…".to_string(), PillStyle::Busy),
+                    SelfUpdatePillState::ReadyToRestart => (
+                        format!("Restart for v{}", info.version),
+                        PillStyle::Clickable,
+                    ),
                     SelfUpdatePillState::Errored => {
                         ("Update failed".to_string(), PillStyle::Clickable)
                     }
@@ -245,12 +255,18 @@ impl Render for TitleBar {
                 }
             };
 
-            // Leading icon. Clickable/SystemHint render a static SVG;
-            // Busy renders a `loader-circle.svg` arc continuously
-            // rotating via GPUI's declarative Animation+Transformation
-            // API (one full revolution per second, repeat forever).
-            // Pattern mirrors `crates/gpui/examples/animation.rs` in
-            // the upstream Zed repo.
+            // Leading icon. Clickable renders `download.svg` for the
+            // pre-install CTA and `refresh.svg` for the post-install
+            // "Restart for vX" CTA so the user has a visual cue that the
+            // heavy work is already done; Busy renders a `loader-circle.svg`
+            // arc continuously rotating via GPUI's declarative
+            // Animation+Transformation API (one full revolution per second,
+            // repeat forever). Pattern mirrors
+            // `crates/gpui/examples/animation.rs` in the upstream Zed repo.
+            let is_ready_to_restart = matches!(
+                info.kind,
+                UpdatePillKind::InApp(SelfUpdatePillState::ReadyToRestart)
+            );
             let leading_icon: AnyElement = match style {
                 PillStyle::Busy => svg()
                     .size(px(11.))
@@ -268,7 +284,11 @@ impl Render for TitleBar {
                 PillStyle::Clickable => svg()
                     .size(px(11.))
                     .flex_none()
-                    .path("icons/download.svg")
+                    .path(if is_ready_to_restart {
+                        "icons/refresh.svg"
+                    } else {
+                        "icons/download.svg"
+                    })
                     .text_color(ui.muted)
                     .into_any_element(),
                 PillStyle::SystemHint => svg()
@@ -279,6 +299,13 @@ impl Render for TitleBar {
                     .into_any_element(),
             };
 
+            // The pill sits inside the title bar's `WindowControlArea::Drag`
+            // region declared on the parent. GPUI's hit-testing picks the
+            // most-specific element on hover, so `cursor_pointer()` on the
+            // pill itself overrides the parent's cursor without needing
+            // to detach from the drag area; the `cx.stop_propagation()`
+            // mouse-down further down ensures the click doesn't trigger
+            // a window drag. Same idiom Zed's `ButtonLike` relies on.
             let mut pill = div()
                 .id("update-pill")
                 .ml_auto()
@@ -314,13 +341,21 @@ impl Render for TitleBar {
                 PillStyle::Busy => {
                     pill = pill.opacity(0.7);
                 }
-                // De-emphasized but still clickable so the hint toast shows.
-                // Cursor stays default (per US-012 AC) to signal that clicking
-                // doesn't perform the update itself.
+                // SystemHint is a button that copies the upgrade command
+                // to the clipboard via a toast. It's still a button, so
+                // the cursor must hint that — `cursor_pointer()` matches
+                // every other clickable surface in the chrome.
                 PillStyle::SystemHint => {
-                    pill = pill.opacity(0.8).on_click(move |_, window, cx| {
-                        window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
-                    });
+                    pill = pill
+                        .opacity(0.8)
+                        .cursor_pointer()
+                        .hover(|s| {
+                            let ui = crate::theme::ui_colors();
+                            s.bg(ui.surface).border_color(ui.muted).opacity(1.0)
+                        })
+                        .on_click(move |_, window, cx| {
+                            window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
+                        });
                 }
             }
             pill

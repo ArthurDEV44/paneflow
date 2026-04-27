@@ -10,6 +10,21 @@ use crate::{
     PaneFlowApp, StartSelfUpdate, TOAST_HOLD_MS, ToastAction, system_package_update_command, update,
 };
 
+/// One-line summary of the install method for log messages — used by the
+/// auto-kickoff gate to keep diagnostic noise low when the running binary
+/// is not auto-updatable.
+fn install_method_label(method: &update::install_method::InstallMethod) -> &'static str {
+    match method {
+        update::install_method::InstallMethod::AppImage { .. } => "appimage",
+        update::install_method::InstallMethod::TarGz { .. } => "targz",
+        update::install_method::InstallMethod::AppBundle { .. } => "app-bundle",
+        update::install_method::InstallMethod::WindowsMsi { .. } => "windows-msi",
+        update::install_method::InstallMethod::SystemPackage { .. } => "system-package",
+        update::install_method::InstallMethod::ExternallyManaged { .. } => "externally-managed",
+        update::install_method::InstallMethod::Unknown => "unknown",
+    }
+}
+
 /// Strict-semver guard for the release tag before it reaches any
 /// user-facing surface (clipboard, toast, argv). Matches the regex
 /// `^v?\d+\.\d+\.\d+$` — identical to the validator inside
@@ -43,15 +58,58 @@ fn is_strict_semver(raw: &str) -> bool {
 }
 
 impl PaneFlowApp {
-    /// Kick off the in-app self-update flow. See the module-level doc for the
-    /// branch matrix; on any failure a toast surfaces and the update pill
-    /// returns to "Update failed".
+    /// Action entry point. Stays a thin wrapper around
+    /// [`PaneFlowApp::kickoff_self_update_install`] so that auto-kickoff
+    /// from the polling loop can share the exact same logic without
+    /// having to forge a `Window`.
     pub(crate) fn handle_start_self_update(
         &mut self,
         _: &StartSelfUpdate,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.kickoff_self_update_install(cx);
+    }
+
+    /// Kick off the in-app self-update flow. See the module-level doc for the
+    /// branch matrix; on any failure a toast surfaces and the update pill
+    /// returns to "Update failed".
+    pub(crate) fn kickoff_self_update_install(&mut self, cx: &mut Context<Self>) {
+        // Fast path: the new binary is already on disk and
+        // `set_restart_path` has been wired ahead of time by the
+        // background pre-installer (see `try_auto_kickoff_install`
+        // below). The click handler does ZERO I/O — just hand control
+        // to GPUI's relauncher script. This is what makes the
+        // user-perceived restart latency drop from "vachement long"
+        // (download + install + analytics flush) to GPUI's
+        // ~100 ms `kill -0` polling interval.
+        if matches!(
+            self.self_update_status,
+            update::SelfUpdateStatus::ReadyToRestart { .. }
+        ) {
+            log::info!("self-update: ReadyToRestart click — invoking cx.restart()");
+            cx.restart();
+            return;
+        }
+
+        // Externally managed runtime (Flatpak / Snap / packager-baked
+        // `PANEFLOW_UPDATE_EXPLANATION`). The in-app updater is disabled
+        // by design — surface the packager's explanation copy and copy
+        // the upgrade command to the clipboard so the user has a one-click
+        // path forward. Mirrors how Zed handles `ZED_UPDATE_EXPLANATION`.
+        if let update::install_method::InstallMethod::ExternallyManaged { explanation } =
+            &self.install_method
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(explanation.clone()));
+            self.push_toast(
+                explanation.clone(),
+                Vec::new(),
+                TOAST_HOLD_MS * 4,
+                cx,
+            );
+            return;
+        }
+
         if self.self_update_status.is_busy() {
             return;
         }
@@ -186,22 +244,27 @@ impl PaneFlowApp {
 
                     match result {
                         Ok(()) => {
+                            let restart_path = std::path::PathBuf::from("/usr/bin/paneflow");
+                            let restart_path_for_state = restart_path.clone();
                             let _ = this.update(cx, |app, cx| {
-                                app.self_update_status = update::SelfUpdateStatus::Installing;
+                                // Pre-installed: flip to ReadyToRestart so the
+                                // pill becomes a one-call restart button. The
+                                // analytics flush + session save still run
+                                // here (now, while the user is busy), not at
+                                // click time.
+                                app.self_update_status =
+                                    update::SelfUpdateStatus::ReadyToRestart {
+                                        restart_path: restart_path_for_state,
+                                    };
                                 app.save_session(cx);
-                                // US-013 AC #3 — emit + blocking flush BEFORE
-                                // the restart. The worker detaches on 2 s
-                                // timeout so process exit is never gated on a
-                                // stalled PostHog POST.
                                 app.emit_update_success_and_flush();
                                 cx.notify();
                             });
                             cx.update(|cx| {
                                 log::info!(
-                                    "self-update/{manager_label}: restarting into /usr/bin/paneflow"
+                                    "self-update/{manager_label}: pre-installed — restart pending at /usr/bin/paneflow"
                                 );
-                                cx.set_restart_path(std::path::PathBuf::from("/usr/bin/paneflow"));
-                                cx.restart();
+                                cx.set_restart_path(restart_path);
                             });
                         }
                         Err(err) => {
@@ -329,14 +392,22 @@ impl PaneFlowApp {
 
                 match result {
                     Ok(updated_path) => {
-                        let _ = this.update(cx, |app, _cx| {
-                            app.save_session(_cx);
+                        let restart_path_for_state = updated_path.clone();
+                        let _ = this.update(cx, |app, cx| {
+                            app.self_update_status =
+                                update::SelfUpdateStatus::ReadyToRestart {
+                                    restart_path: restart_path_for_state,
+                                };
+                            app.save_session(cx);
                             app.emit_update_success_and_flush();
+                            cx.notify();
                         });
                         cx.update(|cx| {
-                            log::info!("self-update: restarting into {}", updated_path.display());
+                            log::info!(
+                                "self-update/appimage: pre-installed — restart pending at {}",
+                                updated_path.display()
+                            );
                             cx.set_restart_path(updated_path);
-                            cx.restart();
                         });
                     }
                     Err(err) => {
@@ -386,19 +457,22 @@ impl PaneFlowApp {
 
                 match result {
                     Ok(restart_path) => {
+                        let restart_path_for_state = restart_path.clone();
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::Installing;
+                            app.self_update_status =
+                                update::SelfUpdateStatus::ReadyToRestart {
+                                    restart_path: restart_path_for_state,
+                                };
                             app.save_session(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
                         });
                         cx.update(|cx| {
                             log::info!(
-                                "self-update/targz: restarting into {}",
+                                "self-update/targz: pre-installed — restart pending at {}",
                                 restart_path.display()
                             );
                             cx.set_restart_path(restart_path);
-                            cx.restart();
                         });
                     }
                     Err(err) => {
@@ -427,19 +501,22 @@ impl PaneFlowApp {
                 let result = smol::unblock(move || update::windows::msi::install(&url)).await;
                 match result {
                     Ok(restart_path) => {
+                        let restart_path_for_state = restart_path.clone();
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::Installing;
+                            app.self_update_status =
+                                update::SelfUpdateStatus::ReadyToRestart {
+                                    restart_path: restart_path_for_state,
+                                };
                             app.save_session(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
                         });
                         cx.update(|cx| {
                             log::info!(
-                                "self-update/msi: restarting into {}",
+                                "self-update/msi: pre-installed — restart pending at {}",
                                 restart_path.display()
                             );
                             cx.set_restart_path(restart_path);
-                            cx.restart();
                         });
                     }
                     Err(err) => {
@@ -469,19 +546,22 @@ impl PaneFlowApp {
                 let result = smol::unblock(move || update::macos::dmg::install(&url)).await;
                 match result {
                     Ok(restart_path) => {
+                        let restart_path_for_state = restart_path.clone();
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::Installing;
+                            app.self_update_status =
+                                update::SelfUpdateStatus::ReadyToRestart {
+                                    restart_path: restart_path_for_state,
+                                };
                             app.save_session(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
                         });
                         cx.update(|cx| {
                             log::info!(
-                                "self-update/dmg: restarting into {}",
+                                "self-update/dmg: pre-installed — restart pending at {}",
                                 restart_path.display()
                             );
                             cx.set_restart_path(restart_path);
-                            cx.restart();
                         });
                     }
                     Err(err) => {
@@ -549,22 +629,38 @@ impl PaneFlowApp {
                     return;
                 }
 
-                // Persist session, register the new binary path with GPUI, and
-                // trigger the launcher-based restart. GPUI's Linux platform
-                // spawns a detached bash script that waits for our PID to exit
-                // before exec'ing the new binary.
-                let _ = this.update(cx, |app, cx| {
-                    app.save_session(cx);
-                    app.emit_update_success_and_flush();
-                });
-                cx.update(|cx| match update::installed_binary_path() {
+                // Persist session and pre-wire the relauncher with the new
+                // binary path. The actual `cx.restart()` happens on the
+                // user's next click (now reduced to a one-call no-I/O
+                // operation) — see the ReadyToRestart short-circuit at
+                // the top of `handle_start_self_update`.
+                match update::installed_binary_path() {
                     Ok(path) => {
-                        log::info!("self-update: restarting into {}", path.display());
-                        cx.set_restart_path(path);
-                        cx.restart();
+                        let path_for_state = path.clone();
+                        let _ = this.update(cx, |app, cx| {
+                            app.self_update_status =
+                                update::SelfUpdateStatus::ReadyToRestart {
+                                    restart_path: path_for_state,
+                                };
+                            app.save_session(cx);
+                            app.emit_update_success_and_flush();
+                            cx.notify();
+                        });
+                        cx.update(|cx| {
+                            log::info!(
+                                "self-update/legacy: pre-installed — restart pending at {}",
+                                path.display()
+                            );
+                            cx.set_restart_path(path);
+                        });
                     }
-                    Err(e) => log::error!("self-update: cannot resolve install path: {e}"),
-                });
+                    Err(e) => {
+                        log::error!("self-update: cannot resolve install path: {e}");
+                        let _ = this.update(cx, |app, cx| {
+                            app.record_update_failure("legacy-dispatch", &e, cx);
+                        });
+                    }
+                }
             })
             .detach();
         }
@@ -585,5 +681,61 @@ impl PaneFlowApp {
             );
             self.record_update_failure("legacy-dispatch", &msg, cx);
         }
+    }
+
+    /// Best-effort background pre-install. Called once per polling cycle
+    /// after `update_status` transitions to `Available`. By the time
+    /// the user actually clicks the pill, the new binary is already on
+    /// disk and `set_restart_path` is wired — `cx.restart()` is the
+    /// only thing left to do, dropping click→restart latency from
+    /// download-time + 2 s analytics flush to GPUI's `kill -0` watcher
+    /// interval (~100 ms). Mirrors Zed's silent auto-update worker
+    /// (`crates/auto_update/src/auto_update.rs::poll`).
+    ///
+    /// Gating, in order:
+    /// - `update_status` is `Available`.
+    /// - `self_update_status` is `Idle` — never re-kick a flow that's
+    ///   already downloading, installed, or errored.
+    /// - `update_attempt_count < 3` — reuse the 3-strikes circuit
+    ///   breaker so a flaky mirror doesn't burn user bandwidth every
+    ///   poll cycle.
+    /// - `install_method` is auto-installable (AppImage / TarGz /
+    ///   AppBundle / WindowsMsi / Unknown). SystemPackage needs
+    ///   pkexec (interactive auth — never auto), ExternallyManaged
+    ///   defers to the host package manager.
+    pub(crate) fn try_auto_kickoff_install(&mut self, cx: &mut Context<Self>) {
+        if !matches!(
+            self.update_status,
+            Some(update::checker::UpdateStatus::Available { .. })
+        ) {
+            return;
+        }
+        if !matches!(self.self_update_status, update::SelfUpdateStatus::Idle) {
+            return;
+        }
+        if self.update_attempt_count >= 3 {
+            return;
+        }
+        let auto_eligible = matches!(
+            self.install_method,
+            update::install_method::InstallMethod::AppImage { .. }
+                | update::install_method::InstallMethod::TarGz { .. }
+                | update::install_method::InstallMethod::AppBundle { .. }
+                | update::install_method::InstallMethod::WindowsMsi { .. }
+                | update::install_method::InstallMethod::Unknown
+        );
+        if !auto_eligible {
+            log::debug!(
+                "self-update/auto-kickoff: skipped (install_method={})",
+                install_method_label(&self.install_method)
+            );
+            return;
+        }
+
+        log::info!(
+            "self-update/auto-kickoff: starting background pre-install (install_method={})",
+            install_method_label(&self.install_method)
+        );
+        self.kickoff_self_update_install(cx);
     }
 }

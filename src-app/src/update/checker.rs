@@ -111,6 +111,11 @@ impl AssetFormat {
             // detected in US-010; the MSI is produced + signed by the
             // release pipeline in US-013/US-015/US-016.
             InstallMethod::WindowsMsi { .. } => AssetFormat::Msi,
+            // ExternallyManaged short-circuits the click handler before
+            // reaching the asset picker — the in-app updater is disabled
+            // for Flatpak / Snap / packager-baked installs. The neutral
+            // TarGz fallback never lands on the wire.
+            InstallMethod::ExternallyManaged { .. } => AssetFormat::TarGz,
             InstallMethod::Unknown => AssetFormat::TarGz,
         }
     }

@@ -118,6 +118,13 @@ impl PaneFlowApp {
         {
             self.update_status = Some(status);
             cx.notify();
+            // Zed-style silent pre-install: as soon as we know there's
+            // a new release and the install method supports an in-app
+            // download, kick off the install in the background. By the
+            // time the user notices the pill and clicks it, the new
+            // binary is already on disk and the click handler only has
+            // to invoke `cx.restart()`.
+            self.try_auto_kickoff_install(cx);
         }
     }
 
