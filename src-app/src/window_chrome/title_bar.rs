@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use gpui::{
-    div, percentage, prelude::*, px, svg, Animation, AnimationExt, AnyElement, ClickEvent, Context,
-    Decorations, EventEmitter, IntoElement, MouseButton, Pixels, Point, Render, Styled,
-    Transformation, Window, WindowControlArea,
+    Animation, AnimationExt, AnyElement, ClickEvent, Context, Decorations, EventEmitter,
+    IntoElement, MouseButton, Pixels, Point, Render, Styled, Transformation, Window,
+    WindowControlArea, div, percentage, prelude::*, px, svg,
 };
 
 use super::csd::default_button_layout;

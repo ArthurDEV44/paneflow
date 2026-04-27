@@ -581,7 +581,9 @@ impl Render for PaneFlowApp {
                     // SystemHint pill. The explanation copy is surfaced
                     // by the click handler in `self_update_flow.rs`.
                     update::install_method::InstallMethod::ExternallyManaged { .. } => {
-                        title_bar::UpdatePillKind::SystemManaged(title_bar::SystemPackageKind::Other)
+                        title_bar::UpdatePillKind::SystemManaged(
+                            title_bar::SystemPackageKind::Other,
+                        )
                     }
                     _ => {
                         let state = match &self.self_update_status {

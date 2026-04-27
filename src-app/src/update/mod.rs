@@ -75,6 +75,12 @@ pub enum SelfUpdateStatus {
     #[default]
     Idle,
     Downloading,
+    /// Intermediate "installer is running" state. Only constructed on Unix
+    /// by the legacy `.run` flow's `#[cfg(unix)]` branch; on Windows this
+    /// is compiled out and the variant is dead. The `cfg_attr` keeps
+    /// clippy `-D warnings` happy on the Windows targets without losing
+    /// the variant on Unix where it still surfaces in the title bar.
+    #[cfg_attr(not(unix), allow(dead_code))]
     Installing,
     /// The new binary has been downloaded, verified and swapped into place;
     /// `cx.set_restart_path(restart_path)` has already been called. The pill

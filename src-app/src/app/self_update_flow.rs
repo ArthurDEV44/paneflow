@@ -101,12 +101,7 @@ impl PaneFlowApp {
             &self.install_method
         {
             cx.write_to_clipboard(ClipboardItem::new_string(explanation.clone()));
-            self.push_toast(
-                explanation.clone(),
-                Vec::new(),
-                TOAST_HOLD_MS * 4,
-                cx,
-            );
+            self.push_toast(explanation.clone(), Vec::new(), TOAST_HOLD_MS * 4, cx);
             return;
         }
 
@@ -394,10 +389,9 @@ impl PaneFlowApp {
                     Ok(updated_path) => {
                         let restart_path_for_state = updated_path.clone();
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status =
-                                update::SelfUpdateStatus::ReadyToRestart {
-                                    restart_path: restart_path_for_state,
-                                };
+                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart {
+                                restart_path: restart_path_for_state,
+                            };
                             app.save_session(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
@@ -459,10 +453,9 @@ impl PaneFlowApp {
                     Ok(restart_path) => {
                         let restart_path_for_state = restart_path.clone();
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status =
-                                update::SelfUpdateStatus::ReadyToRestart {
-                                    restart_path: restart_path_for_state,
-                                };
+                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart {
+                                restart_path: restart_path_for_state,
+                            };
                             app.save_session(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
@@ -503,10 +496,9 @@ impl PaneFlowApp {
                     Ok(restart_path) => {
                         let restart_path_for_state = restart_path.clone();
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status =
-                                update::SelfUpdateStatus::ReadyToRestart {
-                                    restart_path: restart_path_for_state,
-                                };
+                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart {
+                                restart_path: restart_path_for_state,
+                            };
                             app.save_session(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
@@ -548,10 +540,9 @@ impl PaneFlowApp {
                     Ok(restart_path) => {
                         let restart_path_for_state = restart_path.clone();
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status =
-                                update::SelfUpdateStatus::ReadyToRestart {
-                                    restart_path: restart_path_for_state,
-                                };
+                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart {
+                                restart_path: restart_path_for_state,
+                            };
                             app.save_session(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
@@ -638,10 +629,9 @@ impl PaneFlowApp {
                     Ok(path) => {
                         let path_for_state = path.clone();
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status =
-                                update::SelfUpdateStatus::ReadyToRestart {
-                                    restart_path: path_for_state,
-                                };
+                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart {
+                                restart_path: path_for_state,
+                            };
                             app.save_session(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
