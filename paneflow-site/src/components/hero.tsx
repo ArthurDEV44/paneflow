@@ -110,10 +110,11 @@ export function Hero() {
         >
           <div className="relative rounded-xl border border-surface-border overflow-hidden shadow-2xl shadow-black/50">
             <Image
-              src="/images/hero.png"
+              src="/images/hero.webp"
               alt="PaneFlow terminal multiplexer: split panes, workspaces, and GPU-accelerated rendering"
               width={1920}
               height={1080}
+              sizes="(max-width: 768px) 100vw, 1200px"
               priority
               className="w-full h-auto"
             />

@@ -130,10 +130,11 @@ function FeatureVisual({ index }: { index: number }) {
     return (
       <div className="rounded-xl border border-surface-border overflow-hidden">
         <Image
-          src="/images/layouts.png"
+          src="/images/layouts.webp"
           alt="PaneFlow split layout with multiple panes and workspaces"
           width={1920}
           height={1080}
+          sizes="(max-width: 768px) 100vw, (max-width: 1024px) 50vw, 600px"
           className="w-full h-auto"
         />
       </div>
@@ -145,10 +146,11 @@ function FeatureVisual({ index }: { index: number }) {
     return (
       <div className="rounded-xl border border-surface-border overflow-hidden">
         <Image
-          src="/images/context-aware.png"
+          src="/images/context-aware.webp"
           alt="PaneFlow sidebar showing detected dev servers and git branch per workspace"
           width={1920}
           height={1080}
+          sizes="(max-width: 768px) 100vw, (max-width: 1024px) 50vw, 600px"
           className="w-full h-auto"
         />
       </div>
@@ -160,10 +162,11 @@ function FeatureVisual({ index }: { index: number }) {
     return (
       <div className="rounded-xl border border-surface-border overflow-hidden">
         <Image
-          src="/images/ai-ready.png"
+          src="/images/ai-ready.webp"
           alt="PaneFlow with Claude Code session detected and AI agent running"
           width={1920}
           height={1080}
+          sizes="(max-width: 768px) 100vw, (max-width: 1024px) 50vw, 600px"
           className="w-full h-auto"
         />
       </div>
@@ -174,10 +177,11 @@ function FeatureVisual({ index }: { index: number }) {
   return (
     <div className="rounded-xl border border-surface-border overflow-hidden">
       <Image
-        src="/images/appearance.png"
+        src="/images/appearance.webp"
         alt="PaneFlow settings window with theme and font customization"
         width={1920}
         height={1080}
+        sizes="(max-width: 768px) 100vw, (max-width: 1024px) 50vw, 600px"
         className="w-full h-auto"
       />
     </div>

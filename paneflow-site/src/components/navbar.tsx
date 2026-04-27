@@ -34,6 +34,7 @@ export function Navbar() {
               alt="PaneFlow"
               width={28}
               height={28}
+              sizes="28px"
               priority
               className="h-7 w-7"
             />

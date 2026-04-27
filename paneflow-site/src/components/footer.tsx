@@ -53,6 +53,12 @@ export function Footer() {
           <div className="font-mono">PaneFlow</div>
           <div className="flex items-center gap-6">
             <Link
+              href="/about"
+              className="hover:text-text-muted transition-colors"
+            >
+              About
+            </Link>
+            <Link
               href="/legal/privacy"
               className="hover:text-text-muted transition-colors"
             >

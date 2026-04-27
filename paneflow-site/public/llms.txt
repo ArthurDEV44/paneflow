@@ -1,0 +1,21 @@
+# PaneFlow
+
+> A GPU-accelerated terminal multiplexer built in pure Rust with Zed's GPUI framework. Split, organize, and control your terminal — Linux first, macOS and Windows porting in progress.
+
+PaneFlow is open-source software released under the MIT license. The marketing site (https://paneflow.dev) is a small static surface — three pages today, expanding with comparison content and an `/about` page over the next quarter. The application source lives at https://github.com/ArthurDEV44/paneflow.
+
+This file is published strictly as crawl hygiene — it is NOT a ranking signal, retrieval boost, or AEO/GEO lever. It exists so cooperative LLM crawlers that respect llmstxt.org can identify the canonical content surface efficiently.
+
+## Pages
+
+- [Home](https://paneflow.dev/): Product overview, feature highlights, GPU rendering positioning.
+- [Download](https://paneflow.dev/download): Installation instructions and release artifacts.
+
+## Optional
+
+- [About](https://paneflow.dev/about): Author bio and project origins (forthcoming — US-013).
+- [Compare: PaneFlow vs tmux](https://paneflow.dev/compare/paneflow-vs-tmux): Detailed comparison (forthcoming — US-017).
+- [Compare: PaneFlow vs Zellij](https://paneflow.dev/compare/paneflow-vs-zellij): Detailed comparison (forthcoming — US-018).
+- [Compare: PaneFlow vs WezTerm](https://paneflow.dev/compare/paneflow-vs-wezterm): Detailed comparison (forthcoming — US-018).
+- [Compare: PaneFlow vs Warp](https://paneflow.dev/compare/paneflow-vs-warp): Detailed comparison (forthcoming — US-019).
+- [Compare: PaneFlow vs Ghostty](https://paneflow.dev/compare/paneflow-vs-ghostty): Detailed comparison (forthcoming — US-019).
