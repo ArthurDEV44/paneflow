@@ -1,3 +1,9 @@
+paneflow (0.2.8-1) stable; urgency=medium
+
+  * Release v0.2.8. See GitHub release notes for the full diff.
+
+ -- Arthur Jean <arthur.jean@strivex.fr>  Mon, 27 Apr 2026 12:34:21 +0200
+
 paneflow (0.2.1-1) stable; urgency=medium
 
   * fix(rpm): per-package RPM signing re-enabled. v0.2.0 shipped
