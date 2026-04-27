@@ -449,7 +449,6 @@ fn install_hook_config_file(
     config_dir: &Path,
     config_filename: &str,
     tool_label: &str,
-    git_ignore_attribution: &str,
     merge_fn: fn(&mut serde_json::Value),
 ) -> Option<(PathBuf, bool)> {
     let settings_path = config_dir.join(config_filename);
@@ -461,7 +460,6 @@ fn install_hook_config_file(
     // with a cryptic ENOTDIR from inside `tempfile::NamedTempFile::new_in`.
     let existed_as_dir = config_dir.is_dir();
     let exists_as_other = config_dir.exists() && !existed_as_dir;
-    let first_write = !settings_path.exists();
 
     if exists_as_other {
         eprintln!(
@@ -515,17 +513,6 @@ fn install_hook_config_file(
             let _ = std::fs::remove_dir(config_dir);
         }
         return None;
-    }
-
-    if first_write {
-        let dirname = config_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
-        eprintln!(
-            "paneflow-shim: writing hook config to ./{dirname}/{config_filename} \
-             (git-ignored by {git_ignore_attribution} convention)"
-        );
     }
 
     Some((settings_path, !existed_as_dir))
@@ -610,7 +597,6 @@ impl HookConfigGuard {
         let (settings_path, created_dir) = install_hook_config_file(
             claude_dir,
             "settings.local.json",
-            "Claude Code",
             "Claude Code",
             merge_paneflow_hooks,
         )?;
@@ -889,7 +875,7 @@ impl CodexHookConfigGuard {
     /// pollute the test runner's home dir).
     fn install_at(codex_dir: &Path, config_toml_path: Option<&Path>) -> Option<Self> {
         let (hooks_json_path, created_dir) =
-            install_hook_config_file(codex_dir, "hooks.json", "Codex", "Codex", merge_codex_hooks)?;
+            install_hook_config_file(codex_dir, "hooks.json", "Codex", merge_codex_hooks)?;
 
         // Codex-specific extra: enable the `codex_hooks = true` feature flag
         // in `~/.codex/config.toml`. Failure here is non-fatal — the user
@@ -1048,14 +1034,6 @@ fn enable_codex_feature_flag(path: &Path) -> Option<bool> {
         );
         return None;
     }
-    // Tell the user, ONCE, that we touched their global config. Phase 7
-    // security audit LOW #2: editing `~/.codex/config.toml` expands the
-    // shim's write surface outside the project, so the user deserves a
-    // visible notice.
-    eprintln!(
-        "paneflow-shim: enabled codex_hooks feature flag in {} (reverted on exit)",
-        safe_path_display(path)
-    );
     Some(true)
 }
 
