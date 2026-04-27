@@ -27,7 +27,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use paneflow_config::schema::PaneFlowConfig;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// Flush threshold: a full batch of events triggers an immediate post.
 pub(crate) const BATCH_MAX: usize = 10;

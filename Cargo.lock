@@ -4158,6 +4158,7 @@ dependencies = [
  "notify",
  "open",
  "paneflow-config",
+ "paneflow-telemetry",
  "portable-pty",
  "regex",
  "rust-embed",
@@ -4170,7 +4171,6 @@ dependencies = [
  "tempfile",
  "unicode-segmentation",
  "ureq",
- "uuid",
  "which 8.0.2",
  "windows-sys 0.59.0",
 ]
@@ -4195,6 +4195,19 @@ dependencies = [
  "libc",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "paneflow-telemetry"
+version = "0.2.8"
+dependencies = [
+ "log",
+ "paneflow-config",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "ureq",
+ "uuid",
 ]
 
 [[package]]

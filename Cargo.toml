@@ -4,6 +4,7 @@ members = [
     "crates/paneflow-ai-hook",
     "crates/paneflow-config",
     "crates/paneflow-shim",
+    "crates/paneflow-telemetry",
     "src-app",
 ]
 # Scope bare `cargo run` / `cargo build` / `cargo test` to the desktop app.
@@ -34,6 +35,7 @@ anyhow = "1"
 
 # Internal crates
 paneflow-config = { path = "crates/paneflow-config" }
+paneflow-telemetry = { path = "crates/paneflow-telemetry" }
 
 # Workspace-wide clippy lint policy (US-007). Mirrors the mandatory
 # CLAUDE.md cherry-picked restriction set. `warn` is preferred over `deny`
