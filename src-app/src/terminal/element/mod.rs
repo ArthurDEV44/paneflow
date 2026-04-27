@@ -31,17 +31,29 @@ mod font;
 mod geometry;
 mod hyperlink;
 mod paint;
+#[cfg(debug_assertions)]
+pub(super) mod pixel_probe;
 
-use color::{convert_color, ensure_minimum_contrast, rgb_to_hsla};
+use color::{convert_color, rgb_to_hsla};
 use font::{base_font, font_size};
 pub use font::{measure_cell, resolve_font_family};
 use geometry::CellGeometry;
 pub use hyperlink::{detect_urls_on_line_mapped, is_url_scheme_openable};
 
+// US-007: re-export APCA primitives so theme code (and theme tests) can
+// derive and verify a contrast-validated `selection_foreground` color
+// without duplicating the algorithm. `ensure_minimum_contrast` is also
+// used locally by `build_layout` (cell-vs-bg pass); `apca_contrast` is
+// referenced only by theme tests but must be re-exported through this
+// module to honour `pub(crate)` visibility.
+#[allow(unused_imports)] // re-exported for theme tests; not used inside this module
+pub(crate) use color::apca_contrast;
+pub(crate) use color::ensure_minimum_contrast;
+
 /// APCA minimum Lc (lightness contrast) threshold.
 /// Lc 45 is "minimum for large fluent text" per ARC Bronze Simple Mode — matches Zed's default.
 /// APCA is more accurate than WCAG 2.0 on dark backgrounds (polarity-aware, perceptually uniform).
-const MIN_APCA_CONTRAST: f32 = 45.0;
+pub(crate) const MIN_APCA_CONTRAST: f32 = 45.0;
 
 /// Returns `true` for characters whose colors should be preserved exactly
 /// (no contrast adjustment). Covers box-drawing, block elements, geometric
@@ -60,20 +72,57 @@ fn is_decorative_character(ch: char) -> bool {
     )
 }
 
-/// Returns `true` for Powerline separator glyphs and box-drawing characters
-/// whose intentional color transitions at cell edges should not be extended
-/// into the terminal padding (neverExtendBg heuristic, US-003).
-fn is_powerline_or_boxdraw(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x2500..=0x257F   // Box Drawing (─ │ ┌ ┐ └ ┘ etc.)
-        | 0x2580..=0x259F // Block Elements (▀ ▄ █ ░ ▒ ▓ — half-block color transitions)
-        | 0xE0B0..=0xE0B7 // Powerline: right/left arrows
-        | 0xE0B8..=0xE0BF // Powerline: bottom/top triangles
-        | 0xE0C0..=0xE0CA // Powerline: flame, pixel separators
-        | 0xE0CC..=0xE0D1 // Powerline: waveform, hex (excludes 0xE0CB)
-        | 0xE0D2..=0xE0D7 // Powerline: trapezoids, inverted triangles
-    )
+/// US-007: returns `true` if a cell at `point` (viewport coordinates) lies
+/// inside the active `SelectionRange` (whose `start`/`end` are in scrollback
+/// coordinates and require `display_offset` correction). Mirrors the
+/// `selection_rects` generation block below — first/last/middle line ranges
+/// for linear selections, axis-aligned rectangle for block selections.
+///
+/// Used inside the cell loop to override the cell's `fg` with the theme's
+/// `selection_foreground`, guaranteeing readable text under the selection
+/// quad on themes whose `selection` background is close in luminance to
+/// common ANSI colors.
+fn is_cell_in_selection(point: AlacPoint, sel: &SelectionRange, display_offset: usize) -> bool {
+    let start_line = sel.start.line.0 + display_offset as i32;
+    let end_line = sel.end.line.0 + display_offset as i32;
+    let start_col = sel.start.column.0;
+    let end_col = sel.end.column.0;
+
+    let cell_line = point.line.0;
+    let cell_col = point.column.0;
+
+    if sel.is_block {
+        let (l_min, l_max) = if start_line <= end_line {
+            (start_line, end_line)
+        } else {
+            (end_line, start_line)
+        };
+        let (c_min, c_max) = if start_col <= end_col {
+            (start_col, end_col)
+        } else {
+            (end_col, start_col)
+        };
+        return cell_line >= l_min && cell_line <= l_max && cell_col >= c_min && cell_col <= c_max;
+    }
+
+    // Linear selection: normalize so (s_line, s_col) is reading-order start.
+    let ((s_line, s_col), (e_line, e_col)) =
+        if start_line < end_line || (start_line == end_line && start_col <= end_col) {
+            ((start_line, start_col), (end_line, end_col))
+        } else {
+            ((end_line, end_col), (start_line, start_col))
+        };
+    if cell_line < s_line || cell_line > e_line {
+        false
+    } else if s_line == e_line {
+        cell_col >= s_col && cell_col <= e_col
+    } else if cell_line == s_line {
+        cell_col >= s_col
+    } else if cell_line == e_line {
+        cell_col <= e_col
+    } else {
+        true
+    }
 }
 
 /// Merge vertically adjacent background rects that share the same column span
@@ -154,27 +203,85 @@ struct BlockQuad {
     coverage: (f32, f32, f32, f32),
 }
 
-/// If `c` is a Unicode block element, return its fractional cell coverage (x, y, w, h).
-/// Returns None for characters that should be rendered as normal glyphs.
-fn block_char_coverage(c: char) -> Option<(f32, f32, f32, f32)> {
+/// If `c` is a Unicode block element, return its fractional cell coverage as
+/// a slice of `(x, y, w, h)` rects (origin at the cell's top-left, in 0..1).
+/// Returns `None` for characters that should be rendered as normal glyphs.
+///
+/// Most block-element codepoints are a single rectangle, but the multi-quadrant
+/// chars (`▙ ▚ ▛ ▜ ▞ ▟`) need 2 rects each — that's why this returns a slice.
+/// Each emitted rect becomes one [`BlockQuad`] at the call site, all sharing
+/// the same outer cell boundaries through [`paint::background::cell_x_boundaries`].
+///
+/// US-005 fallback: extension beyond the original `U+2580..U+2590` range, after
+/// the pixel probe revealed Claude Code's banner robot uses single + multi
+/// quadrant blocks (`U+2596..U+259F`) and the upper one-eighth block (`U+2594`).
+/// Without this extension these codepoints fall back to font glyphs that don't
+/// fully fill the cell, producing the visible vertical gaps documented in the
+/// `debug_block_char_rendering.md` memory.
+fn block_char_coverages(c: char) -> Option<&'static [(f32, f32, f32, f32)]> {
     match c {
-        '▀' => Some((0.0, 0.0, 1.0, 0.5)),             // U+2580 Upper half
-        '▁' => Some((0.0, 7.0 / 8.0, 1.0, 1.0 / 8.0)), // U+2581 Lower 1/8
-        '▂' => Some((0.0, 6.0 / 8.0, 1.0, 2.0 / 8.0)), // U+2582 Lower 1/4
-        '▃' => Some((0.0, 5.0 / 8.0, 1.0, 3.0 / 8.0)), // U+2583 Lower 3/8
-        '▄' => Some((0.0, 0.5, 1.0, 0.5)),             // U+2584 Lower half
-        '▅' => Some((0.0, 3.0 / 8.0, 1.0, 5.0 / 8.0)), // U+2585 Lower 5/8
-        '▆' => Some((0.0, 2.0 / 8.0, 1.0, 6.0 / 8.0)), // U+2586 Lower 3/4
-        '▇' => Some((0.0, 1.0 / 8.0, 1.0, 7.0 / 8.0)), // U+2587 Lower 7/8
-        '█' => Some((0.0, 0.0, 1.0, 1.0)),             // U+2588 Full block
-        '▉' => Some((0.0, 0.0, 7.0 / 8.0, 1.0)),       // U+2589 Left 7/8
-        '▊' => Some((0.0, 0.0, 6.0 / 8.0, 1.0)),       // U+258A Left 3/4
-        '▋' => Some((0.0, 0.0, 5.0 / 8.0, 1.0)),       // U+258B Left 5/8
-        '▌' => Some((0.0, 0.0, 0.5, 1.0)),             // U+258C Left half
-        '▍' => Some((0.0, 0.0, 3.0 / 8.0, 1.0)),       // U+258D Left 3/8
-        '▎' => Some((0.0, 0.0, 2.0 / 8.0, 1.0)),       // U+258E Left 1/4
-        '▏' => Some((0.0, 0.0, 1.0 / 8.0, 1.0)),       // U+258F Left 1/8
-        '▐' => Some((0.5, 0.0, 0.5, 1.0)),             // U+2590 Right half
+        // U+2580..U+2590 — half / eighth blocks (one rect each)
+        '▀' => Some(&[(0.0, 0.0, 1.0, 0.5)]), // U+2580 Upper half
+        '▁' => Some(&[(0.0, 7.0 / 8.0, 1.0, 1.0 / 8.0)]), // U+2581 Lower 1/8
+        '▂' => Some(&[(0.0, 6.0 / 8.0, 1.0, 2.0 / 8.0)]), // U+2582 Lower 1/4
+        '▃' => Some(&[(0.0, 5.0 / 8.0, 1.0, 3.0 / 8.0)]), // U+2583 Lower 3/8
+        '▄' => Some(&[(0.0, 0.5, 1.0, 0.5)]), // U+2584 Lower half
+        '▅' => Some(&[(0.0, 3.0 / 8.0, 1.0, 5.0 / 8.0)]), // U+2585 Lower 5/8
+        '▆' => Some(&[(0.0, 2.0 / 8.0, 1.0, 6.0 / 8.0)]), // U+2586 Lower 3/4
+        '▇' => Some(&[(0.0, 1.0 / 8.0, 1.0, 7.0 / 8.0)]), // U+2587 Lower 7/8
+        '█' => Some(&[(0.0, 0.0, 1.0, 1.0)]), // U+2588 Full block
+        '▉' => Some(&[(0.0, 0.0, 7.0 / 8.0, 1.0)]), // U+2589 Left 7/8
+        '▊' => Some(&[(0.0, 0.0, 6.0 / 8.0, 1.0)]), // U+258A Left 3/4
+        '▋' => Some(&[(0.0, 0.0, 5.0 / 8.0, 1.0)]), // U+258B Left 5/8
+        '▌' => Some(&[(0.0, 0.0, 0.5, 1.0)]), // U+258C Left half
+        '▍' => Some(&[(0.0, 0.0, 3.0 / 8.0, 1.0)]), // U+258D Left 3/8
+        '▎' => Some(&[(0.0, 0.0, 2.0 / 8.0, 1.0)]), // U+258E Left 1/4
+        '▏' => Some(&[(0.0, 0.0, 1.0 / 8.0, 1.0)]), // U+258F Left 1/8
+        '▐' => Some(&[(0.5, 0.0, 0.5, 1.0)]), // U+2590 Right half
+
+        // ─── US-005 fallback extension ────────────────────────────────────
+        // U+2594 — Upper 1/8 (the lone "upper edge" block, complement of ▁)
+        '▔' => Some(&[(0.0, 0.0, 1.0, 1.0 / 8.0)]),
+
+        // U+2596..U+259D — single quadrants
+        '▖' => Some(&[(0.0, 0.5, 0.5, 0.5)]), // U+2596 Quadrant lower left
+        '▗' => Some(&[(0.5, 0.5, 0.5, 0.5)]), // U+2597 Quadrant lower right
+        '▘' => Some(&[(0.0, 0.0, 0.5, 0.5)]), // U+2598 Quadrant upper left
+        '▝' => Some(&[(0.5, 0.0, 0.5, 0.5)]), // U+259D Quadrant upper right
+
+        // U+2599..U+259F — multi-quadrants (2 rects each, each rect already
+        // shares its outer edges with the surrounding cell's boundary array
+        // via `paint_block_quads` → no inter-rect gaps possible).
+        '▙' => Some(&[
+            // U+2599 Quadrant upper-left + entire lower half
+            (0.0, 0.0, 0.5, 0.5),
+            (0.0, 0.5, 1.0, 0.5),
+        ]),
+        '▚' => Some(&[
+            // U+259A Diagonal upper-left + lower-right
+            (0.0, 0.0, 0.5, 0.5),
+            (0.5, 0.5, 0.5, 0.5),
+        ]),
+        '▛' => Some(&[
+            // U+259B Entire upper half + lower-left
+            (0.0, 0.0, 1.0, 0.5),
+            (0.0, 0.5, 0.5, 0.5),
+        ]),
+        '▜' => Some(&[
+            // U+259C Entire upper half + lower-right
+            (0.0, 0.0, 1.0, 0.5),
+            (0.5, 0.5, 0.5, 0.5),
+        ]),
+        '▞' => Some(&[
+            // U+259E Diagonal upper-right + lower-left
+            (0.5, 0.0, 0.5, 0.5),
+            (0.0, 0.5, 0.5, 0.5),
+        ]),
+        '▟' => Some(&[
+            // U+259F Quadrant upper-right + entire lower half
+            (0.5, 0.0, 0.5, 0.5),
+            (0.0, 0.5, 1.0, 0.5),
+        ]),
         _ => None,
     }
 }
@@ -209,13 +316,10 @@ pub struct LayoutState {
     display_offset: usize,
     /// Total scrollback history size
     history_size: usize,
-    /// Number of columns in the terminal grid (for padding extension)
+    /// Number of columns in the terminal grid
     desired_cols: usize,
-    /// Number of rows in the terminal grid (for padding extension)
+    /// Number of rows in the terminal grid
     desired_rows: usize,
-    /// Per-line (extend_left, extend_right) flags for neverExtendBg heuristic.
-    /// Indexed by visible line number (0..desired_rows).
-    extend_line_flags: Vec<(bool, bool)>,
     /// OSC 8 hyperlink zones detected during cell iteration.
     #[allow(dead_code)]
     hyperlinks: Vec<HyperlinkZone>,
@@ -557,11 +661,6 @@ impl TerminalElement {
         let mut last_line: i32 = i32::MIN;
         let mut previous_cell_had_extras = false;
 
-        // neverExtendBg heuristic (US-003): per-line flags for padding extension.
-        // Tracks whether Powerline/box-drawing glyphs at edges suppress extension.
-        let mut extend_line_flags: Vec<(bool, bool)> = vec![(true, true); desired_rows];
-        let mut last_nondefault_is_powerline = false;
-
         // Viewport culling: compute visible row range from content mask.
         // Rows outside the visible clip rect are skipped during cell processing.
         let content_mask = window.content_mask();
@@ -615,21 +714,13 @@ impl TerminalElement {
                 continue;
             }
 
-            // Line change → flush batch and rect, finalize previous line's right flag
+            // Line change → flush batch and rect
             if point.line.0 != last_line {
                 batch.flush();
                 if let Some(rect) = current_rect.take() {
                     rects.push(rect);
                 }
-                // Finalize right-extension flag for the previous line
-                if last_line >= 0
-                    && (last_line as usize) < desired_rows
-                    && last_nondefault_is_powerline
-                {
-                    extend_line_flags[last_line as usize].1 = false;
-                }
                 last_line = point.line.0;
-                last_nondefault_is_powerline = false;
             }
 
             // Compute colors — INVERSE swap on raw ANSI tags, then tag-based
@@ -644,19 +735,6 @@ impl TerminalElement {
             let mut fg = convert_color(raw_fg, &theme);
             let bg = convert_color(raw_bg, &theme);
 
-            // neverExtendBg: track Powerline/box-drawing at edges (US-003)
-            let line_idx = point.line.0;
-            if line_idx >= 0 && (line_idx as usize) < desired_rows {
-                // Left suppression: column 0 has a non-default bg AND a Powerline/box-drawing char
-                if point.column.0 == 0 && !is_default_bg && is_powerline_or_boxdraw(*c) {
-                    extend_line_flags[line_idx as usize].0 = false;
-                }
-                // Right suppression: track if current non-default-bg cell is Powerline
-                if !is_default_bg {
-                    last_nondefault_is_powerline = is_powerline_or_boxdraw(*c);
-                }
-            }
-
             // DIM/faint (SGR 2): reduce foreground opacity (applied after INVERSE)
             if flags.contains(CellFlags::DIM) {
                 fg.a *= 0.7;
@@ -665,6 +743,30 @@ impl TerminalElement {
             // Enforce minimum foreground/background contrast (skip decorative chars)
             if !is_decorative_character(*c) {
                 fg = ensure_minimum_contrast(fg, bg, MIN_APCA_CONTRAST);
+            }
+
+            // US-007: cells inside the selection rect get the precomputed
+            // contrast-validated `selection_foreground` (computed at theme-
+            // load time against `selection`). This replaces the cell-vs-
+            // background contrast we just enforced — selected text needs
+            // contrast against the selection quad painted ON TOP of the
+            // cell background, not against the cell background itself.
+            // Because `fg` is part of `CellStyle` and `BatchAccumulator::
+            // can_append` compares CellStyle by equality, this override
+            // also breaks batched runs at selection boundaries with no
+            // explicit accumulator change.
+            //
+            // Decorative characters (box-drawing, Powerline separators,
+            // block elements) are skipped: their color encodes visual
+            // shape (e.g. Powerline arrows transitioning between segment
+            // colors), and overriding `fg` to `selection_foreground`
+            // would destroy that meaning. Same exclusion as the
+            // cell-vs-bg `ensure_minimum_contrast` pass above.
+            if let Some(sel) = &selection_range
+                && !is_decorative_character(*c)
+                && is_cell_in_selection(point, sel, display_offset)
+            {
+                fg = theme.selection_foreground;
             }
 
             // Background rect — paint for ALL cells. Default-bg cells use
@@ -716,16 +818,24 @@ impl TerminalElement {
             }
 
             // Render block elements as filled quads instead of font glyphs
-            // to eliminate subpixel gaps between adjacent cells (pixel art, logos).
-            if let Some(coverage) = block_char_coverage(c) {
+            // to eliminate subpixel gaps between adjacent cells (pixel art,
+            // Claude Code's banner robot, neofetch ASCII).
+            //
+            // Multi-quadrant chars (`▙ ▚ ▛ ▜ ▞ ▟`) emit two BlockQuad records
+            // per cell — both share the cell's outer boundary array so adjacent
+            // cells stay seamless regardless of how many sub-rects they each
+            // produce.
+            if let Some(coverages) = block_char_coverages(c) {
                 batch.flush();
-                block_quads.push(BlockQuad {
-                    line: point.line.0,
-                    col: point.column.0,
-                    num_cols: cell_cols,
-                    color: fg,
-                    coverage,
-                });
+                for &coverage in coverages {
+                    block_quads.push(BlockQuad {
+                        line: point.line.0,
+                        col: point.column.0,
+                        num_cols: cell_cols,
+                        color: fg,
+                        coverage,
+                    });
+                }
                 previous_cell_had_extras = false;
                 continue;
             }
@@ -789,10 +899,6 @@ impl TerminalElement {
         }
         // Vertical merge: coalesce same-column-span, same-color, adjacent-line rects
         let rects = merge_background_regions(rects);
-        // Finalize right-extension flag for the last line
-        if last_line >= 0 && (last_line as usize) < desired_rows && last_nondefault_is_powerline {
-            extend_line_flags[last_line as usize].1 = false;
-        }
 
         // Build selection highlight rects from the SelectionRange.
         // SelectionRange carries alacritty grid-line coords (scrollback = negative);
@@ -805,8 +911,36 @@ impl TerminalElement {
             let end_col = sel.end.column.0;
             let num_cols = desired_cols.max(1);
 
-            if start_line == end_line {
-                // Single-line selection
+            if sel.is_block {
+                // US-007: block (rectangular) selection — emit one rect per
+                // visible line covering only the columns inside the block,
+                // matching the rectangular semantics of `is_cell_in_selection`
+                // so the bg quad and the fg override agree on which cells
+                // are "in" the selection.
+                let (l_min, l_max) = if start_line <= end_line {
+                    (start_line, end_line)
+                } else {
+                    (end_line, start_line)
+                };
+                let (c_min, c_max) = if start_col <= end_col {
+                    (start_col, end_col)
+                } else {
+                    (end_col, start_col)
+                };
+                let block_cols = c_max.saturating_sub(c_min) + 1;
+                let mut line = l_min;
+                while line <= l_max {
+                    selection_rects.push(LayoutRect {
+                        line,
+                        num_lines: 1,
+                        col: c_min,
+                        num_cols: block_cols,
+                        color: selection_color,
+                    });
+                    line += 1;
+                }
+            } else if start_line == end_line {
+                // Single-line linear selection
                 selection_rects.push(LayoutRect {
                     line: start_line,
                     num_lines: 1,
@@ -815,7 +949,7 @@ impl TerminalElement {
                     color: selection_color,
                 });
             } else {
-                // Multi-line: first line from start.col to end of line
+                // Multi-line linear: first line from start.col to end of line
                 selection_rects.push(LayoutRect {
                     line: start_line,
                     num_lines: 1,
@@ -918,7 +1052,6 @@ impl TerminalElement {
             history_size,
             desired_cols,
             desired_rows,
-            extend_line_flags,
             hyperlinks,
             link_text_color: theme.link_text,
             ime_cursor_bounds,
@@ -1116,6 +1249,13 @@ impl Element for TerminalElement {
             cell_width,
             line_height,
         };
+
+        // PANEFLOW_PIXEL_PROBE: log the per-frame origin once, before any
+        // glyph/background record carries it implicitly. Pairs with the
+        // `cell_dims` record emitted from `measure_cell()`.
+        #[cfg(debug_assertions)]
+        pixel_probe::record_origin(origin);
+
         let base_font = base_font();
 
         // Clip to element bounds
@@ -1137,6 +1277,14 @@ impl Element for TerminalElement {
 
             // 3. Batched text runs
             paint::text::paint_text_runs(&layout, &geom, font_size, window, cx);
+
+            // 3a. PANEFLOW_PIXEL_PROBE_OVERLAY: draw thin red cell borders
+            // above the text. Independent of `PANEFLOW_PIXEL_PROBE`; opt-in
+            // only. Compiled out in release builds.
+            #[cfg(debug_assertions)]
+            if pixel_probe::overlay_enabled() {
+                paint::overlay::paint_pixel_probe_overlay(&layout, &geom, window);
+            }
 
             // 3b. Hyperlink underline + tooltip (Ctrl+hover)
             paint::overlay::paint_hyperlink_tooltip(self, &layout, &geom, window, cx);
@@ -1311,5 +1459,163 @@ impl gpui::InputHandler for TerminalInputHandler {
         _cx: &mut App,
     ) -> Option<usize> {
         None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// US-005 fallback — block_char_coverages tests
+//
+// Discovered via pixel-probe analysis of Claude Code 2.1.119's banner robot:
+// the `▐███▌` core uses U+2580..U+2590 (already covered) but the antennas /
+// rounded corners use quadrant blocks (`U+2596..U+259F`) which originally
+// fell back to font glyphs and rendered with visible vertical gaps. These
+// tests lock in coverage for every codepoint added in the US-005 fallback
+// extension so a future regression surfaces here instead of as a visual
+// artifact reported weeks later.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod block_char_coverage_tests {
+    use super::*;
+
+    /// Every original-PRD codepoint must still resolve to a single rect with
+    /// the same geometry as before the slice refactor — guards against an
+    /// accidental table edit during the US-005 extension.
+    #[test]
+    fn original_block_chars_are_single_rect() {
+        for c in [
+            '▀', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█', '▉', '▊', '▋', '▌', '▍', '▎', '▏', '▐',
+        ] {
+            let rects = block_char_coverages(c)
+                .unwrap_or_else(|| panic!("U+{:04X} '{c}' must be covered", c as u32));
+            assert_eq!(
+                rects.len(),
+                1,
+                "U+{:04X} '{c}' must emit exactly one rect (got {})",
+                c as u32,
+                rects.len(),
+            );
+        }
+    }
+
+    /// The full block must cover the entire cell — the canonical sanity check
+    /// used by adjacent-block tests in `paint/background.rs`.
+    #[test]
+    fn full_block_covers_entire_cell() {
+        let rects = block_char_coverages('█').expect("█ covered");
+        assert_eq!(rects, &[(0.0, 0.0, 1.0, 1.0)]);
+    }
+
+    #[test]
+    fn upper_one_eighth_block_u2594() {
+        // ▔ is the upper-edge complement of ▁ (U+2581 lower 1/8). Same height,
+        // anchored at y=0 instead of y=7/8.
+        let rects = block_char_coverages('▔').expect("▔ covered");
+        assert_eq!(rects.len(), 1);
+        let (x, y, w, h) = rects[0];
+        assert_eq!((x, y), (0.0, 0.0));
+        assert_eq!(w, 1.0);
+        assert!((h - 1.0 / 8.0).abs() < 1e-6, "expected h=1/8, got {h}");
+    }
+
+    #[test]
+    fn single_quadrants_are_one_rect_each() {
+        // U+2596..U+2598 + U+259D — the four single-quadrant blocks.
+        // Each occupies exactly one corner of the cell, anchored on the grid
+        // halfway point, with a 0.5×0.5 extent.
+        let cases = [
+            ('▖', (0.0, 0.5, 0.5, 0.5)), // lower-left
+            ('▗', (0.5, 0.5, 0.5, 0.5)), // lower-right
+            ('▘', (0.0, 0.0, 0.5, 0.5)), // upper-left
+            ('▝', (0.5, 0.0, 0.5, 0.5)), // upper-right
+        ];
+        for (c, expected) in cases {
+            let rects = block_char_coverages(c).unwrap();
+            assert_eq!(rects, &[expected], "U+{:04X} '{c}'", c as u32);
+        }
+    }
+
+    #[test]
+    fn multi_quadrants_emit_two_rects() {
+        // The six 3-quadrant + 2-quadrant chars all decompose into two rects.
+        for c in ['▙', '▚', '▛', '▜', '▞', '▟'] {
+            let rects = block_char_coverages(c).unwrap();
+            assert_eq!(
+                rects.len(),
+                2,
+                "U+{:04X} '{c}' must emit 2 rects (got {})",
+                c as u32,
+                rects.len(),
+            );
+        }
+    }
+
+    #[test]
+    fn multi_quadrant_diagonals_have_no_overlap_or_gap() {
+        // ▚ (U+259A) and ▞ (U+259E) are the two pure diagonals — opposing
+        // quadrants only. Their rects must touch at the cell center but not
+        // overlap, otherwise we'd double-paint or leave a sub-pixel hole.
+        for c in ['▚', '▞'] {
+            let rects = block_char_coverages(c).unwrap();
+            // Total coverage area = exactly half the cell (two 0.5×0.5 quads).
+            let total_area: f32 = rects.iter().map(|(_, _, w, h)| w * h).sum();
+            assert!(
+                (total_area - 0.5).abs() < 1e-6,
+                "U+{:04X} '{c}' total coverage area = {total_area}, expected 0.5",
+                c as u32,
+            );
+        }
+    }
+
+    #[test]
+    fn three_quadrant_chars_cover_three_quarters_of_cell() {
+        // ▙ ▛ ▜ ▟ each cover exactly 3 of 4 quadrants (= 0.75 of cell area).
+        // Even though they emit only 2 rects, the second rect is half-cell-wide
+        // (covering 2 quadrants in one go).
+        for c in ['▙', '▛', '▜', '▟'] {
+            let rects = block_char_coverages(c).unwrap();
+            let total_area: f32 = rects.iter().map(|(_, _, w, h)| w * h).sum();
+            assert!(
+                (total_area - 0.75).abs() < 1e-6,
+                "U+{:04X} '{c}' total coverage = {total_area}, expected 0.75",
+                c as u32,
+            );
+        }
+    }
+
+    /// The US-005 extension targets exactly the codepoints found in the
+    /// `claude` 2.1.119 binary that were *not* in the original table.
+    /// If Claude Code (or another TUI) ships a new robot that uses a codepoint
+    /// outside this list, the gap will reappear and this test won't catch it —
+    /// but the pixel probe will, and the table is one match-arm away from
+    /// covering the new char.
+    #[test]
+    fn us005_claude_code_codepoints_all_covered() {
+        for c in [
+            '▔', // U+2594 upper 1/8
+            '▖', '▗', '▘', '▝', // single quadrants
+            '▙', '▚', '▛', '▜', '▞', '▟', // multi quadrants
+        ] {
+            assert!(
+                block_char_coverages(c).is_some(),
+                "U+{:04X} '{c}' must be covered to render Claude Code's banner gap-free",
+                c as u32,
+            );
+        }
+    }
+
+    /// Codepoints we deliberately *don't* cover — shaded blocks need alpha
+    /// (out of scope for this fix), geometric shapes are a different path.
+    /// Locks the boundary so a future "extend everything" edit can't sneak
+    /// half-broken coverage past review.
+    #[test]
+    fn shaded_and_geometric_blocks_remain_uncovered() {
+        for c in ['░', '▒', '▓', '■', '□', '●', '○'] {
+            assert!(
+                block_char_coverages(c).is_none(),
+                "U+{:04X} '{c}' must NOT be covered (alpha or geometric path)",
+                c as u32,
+            );
+        }
     }
 }

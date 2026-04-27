@@ -22,6 +22,9 @@ pub fn catppuccin_mocha() -> TerminalTheme {
         ansi_background: h(0x212121),
         cursor: h(0xf5e0dc),
         selection: ha(0x89b4fa, 0.3),
+        // Placeholder — replaced with the APCA-validated value by
+        // `apply_surface_overrides()` / `recompute_selection_foreground()`.
+        selection_foreground: gpui::Hsla::default(),
         scrollbar_thumb: ha(0xcdd6f4, 0.4),
         link_text: h(0x89b4fa),
         title_bar_background: h(0x181818),
@@ -62,6 +65,9 @@ pub fn paneflow_light() -> TerminalTheme {
         ansi_background: h(0xf5f5f5),
         cursor: h(0x526fff),
         selection: ha(0x4078f2, 0.25),
+        // Placeholder — replaced with the APCA-validated value by
+        // `apply_surface_overrides()` / `recompute_selection_foreground()`.
+        selection_foreground: gpui::Hsla::default(),
         scrollbar_thumb: ha(0x383a42, 0.35),
         link_text: h(0x4078f2),
         title_bar_background: h(0xe8e8e8),
@@ -102,6 +108,9 @@ pub fn one_dark() -> TerminalTheme {
         ansi_background: h(0x282c34),
         cursor: h(0x528bff),
         selection: ha(0x528bff, 0.3),
+        // Placeholder — replaced with the APCA-validated value by
+        // `apply_surface_overrides()` / `recompute_selection_foreground()`.
+        selection_foreground: gpui::Hsla::default(),
         scrollbar_thumb: ha(0xabb2bf, 0.4),
         link_text: h(0x61afef),
         title_bar_background: h(0x21252b),
@@ -142,6 +151,9 @@ pub fn dracula() -> TerminalTheme {
         ansi_background: h(0x282a36),
         cursor: h(0xf8f8f2),
         selection: ha(0xbd93f9, 0.3),
+        // Placeholder — replaced with the APCA-validated value by
+        // `apply_surface_overrides()` / `recompute_selection_foreground()`.
+        selection_foreground: gpui::Hsla::default(),
         scrollbar_thumb: ha(0xf8f8f2, 0.4),
         link_text: h(0x8be9fd),
         title_bar_background: h(0x21222c),
@@ -182,6 +194,9 @@ pub fn gruvbox_dark() -> TerminalTheme {
         ansi_background: h(0x282828),
         cursor: h(0xebdbb2),
         selection: ha(0x458588, 0.35),
+        // Placeholder — replaced with the APCA-validated value by
+        // `apply_surface_overrides()` / `recompute_selection_foreground()`.
+        selection_foreground: gpui::Hsla::default(),
         scrollbar_thumb: ha(0xebdbb2, 0.4),
         link_text: h(0x83a598),
         title_bar_background: h(0x1d2021),
@@ -222,6 +237,9 @@ pub fn solarized_dark() -> TerminalTheme {
         ansi_background: h(0x002b36),
         cursor: h(0x839496),
         selection: ha(0x268bd2, 0.3),
+        // Placeholder — replaced with the APCA-validated value by
+        // `apply_surface_overrides()` / `recompute_selection_foreground()`.
+        selection_foreground: gpui::Hsla::default(),
         scrollbar_thumb: ha(0x839496, 0.4),
         link_text: h(0x268bd2),
         title_bar_background: h(0x00252e),
@@ -254,10 +272,20 @@ pub fn solarized_dark() -> TerminalTheme {
 }
 
 /// Look up a bundled theme by name (case-insensitive).
+///
+/// Returns a finalized theme: `selection_foreground` is computed via APCA
+/// before return. Callers may further modify the theme (e.g. via
+/// `apply_surface_overrides`) — that path also re-runs the recomputation,
+/// so the invariant `apca_contrast(selection_foreground, selection) ≥ 45.0`
+/// holds at every observation point.
 pub fn theme_by_name(name: &str) -> Option<TerminalTheme> {
     let name_lower = name.to_lowercase();
     THEMES
         .iter()
         .find(|(n, _)| n.to_lowercase() == name_lower)
-        .map(|(_, f)| f())
+        .map(|(_, f)| {
+            let mut theme = f();
+            theme.recompute_selection_foreground();
+            theme
+        })
 }

@@ -14,6 +14,7 @@ use notify::Watcher;
 use crate::pane::Pane;
 use crate::telemetry;
 use crate::terminal::TerminalView;
+use crate::terminal::blink::{BlinkPhase, BlinkPhaseGlobal, CURSOR_BLINK_INTERVAL};
 use crate::window_chrome::title_bar;
 use crate::workspace::{Workspace, next_workspace_id};
 use crate::{PaneFlowApp, ipc, keybindings, update};
@@ -24,6 +25,44 @@ impl PaneFlowApp {
         cx.subscribe(&title_bar, Self::handle_title_bar_event)
             .detach();
         let ipc_rx = ipc::start_server();
+
+        // US-006 — install the shared cursor-blink phase as a GPUI global
+        // before any `TerminalView` is constructed. Each `TerminalView`
+        // reads the global in `with_cwd` and observes the entity, so all
+        // visible cursors blink in phase. One bootstrap-spawned loop
+        // toggles `phase.visible` every 530 ms — replaces N per-terminal
+        // `smol::Timer` loops with a single ticker for the whole app.
+        let blink_phase = cx.new(|_| BlinkPhase::default());
+        cx.set_global(BlinkPhaseGlobal(blink_phase.clone()));
+        cx.spawn(
+            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                loop {
+                    smol::Timer::after(CURSOR_BLINK_INTERVAL).await;
+                    // Read the entity fresh from the global on every tick
+                    // to keep this loop consistent with the existing
+                    // git-watcher / IPC-poll patterns in this file: all of
+                    // them go through `this.update(cx, |app, cx| ...)` and
+                    // pull whatever they need from `cx`/`app` inside the
+                    // closure rather than capturing it. Capturing the
+                    // entity once would also be safe (the App owns the
+                    // strong ref via the global; clones at app teardown
+                    // are dropped together) — consistency wins.
+                    let result = cx.update(|cx| {
+                        this.update(cx, |_app: &mut Self, cx: &mut Context<Self>| {
+                            let phase = cx.global::<BlinkPhaseGlobal>().0.clone();
+                            phase.update(cx, |p, cx| {
+                                p.visible = !p.visible;
+                                cx.notify();
+                            });
+                        })
+                    });
+                    if result.is_err() {
+                        break;
+                    }
+                }
+            },
+        )
+        .detach();
 
         // ConfigWatcher: background thread detects file changes (300ms debounce),
         // stores parsed config in a shared slot for the 50ms poll loop to pick up.

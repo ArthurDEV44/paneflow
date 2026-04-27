@@ -627,6 +627,7 @@ mod tests {
             font_size: None,
             option_as_meta: None,
             telemetry: None,
+            terminal: None,
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
@@ -1022,5 +1023,70 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let reparsed = parse_and_validate(&json);
         assert_eq!(reparsed.telemetry, config.telemetry);
+    }
+
+    // ─── Terminal config — ligatures (US-008) ─────────────────────────────
+    //
+    // Behavior contract:
+    //   - block missing                   → terminal = None    (default off)
+    //   - {"terminal": {}}                → terminal = Some(TerminalConfig { ligatures: None })
+    //   - {"terminal": {"ligatures": null}} → terminal = Some(TerminalConfig { ligatures: None })
+    //   - {"terminal": {"ligatures": true}}  → ligatures opt-in
+    //   - {"terminal": {"ligatures": false}} → explicit opt-out (same as default)
+
+    #[test]
+    fn test_terminal_block_missing_defaults_off() {
+        let config = parse_and_validate(r#"{"default_shell": "/bin/sh"}"#);
+        assert!(config.terminal.is_none());
+    }
+
+    #[test]
+    fn test_terminal_ligatures_default_when_block_empty() {
+        let from_empty = parse_and_validate(r#"{"terminal": {}}"#);
+        let from_null = parse_and_validate(r#"{"terminal": {"ligatures": null}}"#);
+        assert_eq!(
+            from_empty.terminal,
+            Some(TerminalConfig { ligatures: None })
+        );
+        assert_eq!(from_null.terminal, Some(TerminalConfig { ligatures: None }));
+    }
+
+    #[test]
+    fn test_terminal_ligatures_true() {
+        let config = parse_and_validate(r#"{"terminal": {"ligatures": true}}"#);
+        assert_eq!(
+            config.terminal,
+            Some(TerminalConfig {
+                ligatures: Some(true)
+            })
+        );
+
+        // Survive a serialize → parse round-trip so the user's opt-in
+        // isn't dropped if Paneflow rewrites the config file.
+        let json = serde_json::to_string(&config).unwrap();
+        let reparsed = parse_and_validate(&json);
+        assert_eq!(reparsed.terminal, config.terminal);
+    }
+
+    #[test]
+    fn test_terminal_ligatures_false() {
+        let config = parse_and_validate(r#"{"terminal": {"ligatures": false}}"#);
+        assert_eq!(
+            config.terminal,
+            Some(TerminalConfig {
+                ligatures: Some(false)
+            })
+        );
+    }
+
+    #[test]
+    fn test_terminal_ligatures_wrong_type_falls_back_to_defaults() {
+        // Per Acceptance Criterion: a non-bool value (string here) must
+        // surface through the existing parse-error path, not panic. The
+        // loader's contract on JSON errors is to log a warning and return
+        // PaneFlowConfig::default(), which is what `parse_and_validate`
+        // tests below.
+        let config = parse_and_validate(r#"{"terminal": {"ligatures": "yes"}}"#);
+        assert_eq!(config, PaneFlowConfig::default());
     }
 }
