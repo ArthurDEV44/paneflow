@@ -535,3 +535,157 @@ impl PaneFlowApp {
         app
     }
 }
+
+// ---------------------------------------------------------------------------
+// Free helper functions called from `fn main()` (US-002 extraction).
+// ---------------------------------------------------------------------------
+
+/// Build the copy-pasteable upgrade command for a system-package install.
+///
+/// `version` is safe to interpolate into a shell string without escaping: it
+/// comes from `UpdateStatus::Available { version }`, which is set from a
+/// `semver::Version::to_string()` — the semver parser rejects any input that
+/// would survive into `;`/`$()`/whitespace/bidi, so malformed GitHub tags
+/// short-circuit to `UpdateStatus::Failed` long before this function runs.
+///
+/// Version format notes:
+/// - apt pinning uses `name=upstream-debrev`. `cargo-deb` emits `-1` as the
+///   debian revision by default, so `paneflow=<v>-1` targets the exact tag.
+/// - dnf accepts `name-upstream` as a NEVR prefix match. The `<v>` we pass is
+///   already the raw upstream version from GitHub Releases.
+/// - `PackageManager::Other` gets a plain-English hint rather than a command,
+///   because we don't know the syntax (eopkg/xbps/apk all differ).
+pub(crate) fn system_package_update_command(
+    manager: Option<&update::install_method::PackageManager>,
+    version: &str,
+) -> String {
+    match manager {
+        Some(update::install_method::PackageManager::Apt) => {
+            format!("sudo apt update && sudo apt install paneflow={version}-1")
+        }
+        Some(update::install_method::PackageManager::Dnf) => {
+            format!("sudo dnf upgrade paneflow-{version}")
+        }
+        // US-004: `rpm-ostree upgrade` takes no package argument — it
+        // rebases the whole deployment. Version string is intentionally
+        // NOT included, unlike the apt/dnf arms.
+        Some(update::install_method::PackageManager::RpmOstree) => "rpm-ostree upgrade".to_string(),
+        Some(update::install_method::PackageManager::Other) | None => {
+            "Update PaneFlow via your system's package manager".to_string()
+        }
+    }
+}
+
+/// Install the macOS menu bar.
+///
+/// US-012: three top-level menus — PaneFlow / Edit / Window — populated with
+/// the actions listed in the PRD. The `PaneFlow` menu name matches the
+/// `CFBundleName` from the future US-013 Info.plist (AC6). Keyboard shortcuts
+/// are derived from the global keybindings table (e.g. Quit shows `⌘Q`
+/// because US-010's `MACOS_ONLY_DEFAULTS` binds `cmd-q → quit`; Window items
+/// show `⌘⇧N` / `⌘⇧Q` / `⌘Tab` from US-009's `secondary-*` bindings).
+/// Copy / Paste / Select All carry an `OsAction` hint so macOS routes them
+/// through the native responder chain and renders `⌘C` / `⌘V` / `⌘A`.
+#[cfg(target_os = "macos")]
+pub(crate) fn install_macos_menu_bar(cx: &mut gpui::App) {
+    use gpui::{Menu, MenuItem, OsAction};
+
+    use crate::{
+        About, CloseWorkspace, Copy, NewWorkspace, NextWorkspace, OpenHelp, Paste, Quit, SelectAll,
+    };
+
+    cx.set_menus(vec![
+        Menu::new("PaneFlow").items(vec![
+            MenuItem::action("About PaneFlow", About),
+            MenuItem::separator(),
+            MenuItem::action("Quit PaneFlow", Quit),
+        ]),
+        Menu::new("Edit").items(vec![
+            MenuItem::os_action("Copy", Copy, OsAction::Copy),
+            MenuItem::os_action("Paste", Paste, OsAction::Paste),
+            MenuItem::separator(),
+            MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+        ]),
+        Menu::new("Window").items(vec![
+            MenuItem::action("New Workspace", NewWorkspace),
+            MenuItem::action("Close Workspace", CloseWorkspace),
+            MenuItem::separator(),
+            MenuItem::action("Next Workspace", NextWorkspace),
+        ]),
+        // macOS convention: every app ships a Help menu (even if it only
+        // points to an online doc/repo). Without one, Apple's HIG-conforming
+        // users perceive the app as unfinished. "PaneFlow Help" dispatches
+        // `OpenHelp` which opens the GitHub README in the default browser.
+        Menu::new("Help").items(vec![MenuItem::action("PaneFlow Help", OpenHelp)]),
+    ]);
+}
+
+/// Detect whether the Apple Silicon binary is running under Rosetta 2
+/// translation on an Intel Mac (or, more commonly, an Intel binary on
+/// Apple Silicon — which Apple translates transparently). Either way it
+/// warns once at startup so a user who grabbed the wrong `.dmg` knows
+/// why GPU performance is degraded instead of silently eating the hit.
+///
+/// Edge case 4 of the macOS port PRD. Uses `sysctl.proc_translated`: returns
+/// `1` for a translated process, `0` native, ENOENT → native Intel kernel
+/// (no Rosetta available at all). Failure to read the sysctl is silent —
+/// this warning is diagnostic, not load-bearing.
+#[cfg(target_os = "macos")]
+pub(crate) fn warn_if_rosetta_translated() {
+    use std::ffi::CString;
+    use std::mem::size_of;
+
+    let name = match CString::new("sysctl.proc_translated") {
+        Ok(n) => n,
+        Err(_) => return,
+    };
+    let mut translated: i32 = 0;
+    let mut size = size_of::<i32>();
+    // SAFETY: `sysctlbyname` reads a small integer into a stack buffer whose
+    // size is passed by pointer. `name.as_ptr()` is a valid NUL-terminated
+    // C string from a CString we just constructed. `translated` and `size`
+    // are live stack variables for the duration of the call. Zero-initialized
+    // buffer means a kernel short-write can't expose uninitialized memory.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            &mut translated as *mut _ as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc == 0 && translated == 1 {
+        log::warn!(
+            "running under Rosetta 2 translation — GPU rendering will be \
+             degraded. For best performance, download the matching \
+             architecture from https://github.com/ArthurDEV44/paneflow/releases"
+        );
+    }
+}
+
+/// The old `.run` installer (removed in US-007) dropped a standalone binary
+/// at `~/.local/bin/paneflow`. The new tar.gz installer instead drops a
+/// `~/.local/paneflow.app/` directory and symlinks `~/.local/bin/paneflow`
+/// into it. We warn when the old layout is detected so users know why the
+/// in-app updater can no longer fetch a `.run` asset (there are none).
+pub(crate) fn warn_if_legacy_run_install() {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let app_dir = home.join(".local/paneflow.app");
+    let legacy_bin = home.join(".local/bin/paneflow");
+
+    let legacy_bin_is_regular_file = legacy_bin
+        .symlink_metadata()
+        .map(|m| m.file_type().is_file())
+        .unwrap_or(false);
+
+    if !app_dir.exists() && legacy_bin_is_regular_file {
+        log::warn!(
+            "legacy .run install detected at {} — see README for migration \
+             to the .tar.gz / .deb / .AppImage formats",
+            legacy_bin.display()
+        );
+    }
+}

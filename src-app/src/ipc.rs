@@ -8,6 +8,32 @@
 //! `local_socket` module, which dispatches to Unix domain sockets on
 //! POSIX and named pipes on Windows transparently. The wire protocol
 //! (newline-delimited JSON-RPC 2.0) is byte-identical across platforms.
+//!
+//! ## Methods
+//!
+//! - `system.ping` / `system.capabilities` / `system.identify` — stateless
+//!   health checks handled directly on the socket thread.
+//! - `workspace.list` / `workspace.current` / `workspace.select` /
+//!   `workspace.close` — workspace navigation.
+//! - `workspace.create` — accepts `name` (string, default "Terminal"),
+//!   `cwd` (string path, optional) and `layout` (optional `LayoutNode`
+//!   JSON, US-001). When `layout` is present, the new workspace's pane
+//!   tree is built from the layout in a single round-trip; when absent,
+//!   behavior is unchanged (a single default pane). A malformed `layout`
+//!   payload returns the JSON-RPC `-32602 Invalid params` error envelope
+//!   and leaves no orphan workspace behind.
+//! - `workspace.restore_layout` — apply a `LayoutNode` to the active
+//!   workspace (used by session restore).
+//! - `surface.list` / `surface.send_text` / `surface.send_keystroke` /
+//!   `surface.split` — pane operations.
+//! - `ai.session_start` / `ai.prompt_submit` / `ai.tool_use` /
+//!   `ai.notification` / `ai.stop` / `ai.session_end` — AI hook lifecycle.
+//!
+//! Handlers may return a structured JSON-RPC error by emitting the
+//! `_jsonrpc_error` sentinel (see `app::ipc_handler::JsonRpcError`); the
+//! dispatcher promotes it to a proper `error` envelope. Legacy
+//! application errors returned as `{"error": "string"}` continue to flow
+//! through the `result` field for backward compatibility.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -294,7 +320,11 @@ fn dispatch_to_gpui(
 
     // Wait for GPUI thread to process (timeout 5s)
     match resp_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(result) => json!({"jsonrpc": "2.0", "result": result, "id": id}),
+        // US-001: handlers may return a structured JSON-RPC error via the
+        // `_jsonrpc_error` sentinel. `promote_response` rewrites those into
+        // the proper `error` envelope and leaves all other shapes wrapped
+        // under `result`.
+        Ok(result) => crate::app::ipc_handler::promote_response(result, id),
         Err(_) => {
             json!({"jsonrpc": "2.0", "error": {"code": -32001, "message": "Request timeout"}, "id": id})
         }

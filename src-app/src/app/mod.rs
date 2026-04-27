@@ -5,10 +5,13 @@
 pub mod about_dialog;
 pub mod actions;
 pub mod bootstrap;
+pub mod constants;
 pub mod custom_buttons_modal;
+pub mod drag;
 pub mod event_handlers;
 pub mod ipc_handler;
 pub mod notif_menu;
+pub mod notifications;
 pub mod profile_menu;
 pub mod self_update_flow;
 pub mod session;

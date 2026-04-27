@@ -44,18 +44,14 @@ mod workspace;
 use crate::window_chrome::title_bar;
 
 use gpui::{
-    Animation, AnimationExt, App, Bounds, ClickEvent, Context, CursorStyle, Decorations, Entity,
-    FocusHandle, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, Pixels, Point,
-    Render, ResizeEdge, SharedString, Styled, Window, WindowBounds, WindowDecorations,
-    WindowOptions, canvas, deferred, div, ease_in_out, point, prelude::*, px, rgb, size,
-    transparent_black,
+    App, Bounds, ClickEvent, Context, CursorStyle, Decorations, Entity, FocusHandle,
+    HitboxBehavior, InteractiveElement, IntoElement, MouseButton, Pixels, Point, Render,
+    ResizeEdge, Styled, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, deferred,
+    div, point, prelude::*, px, rgb, size, transparent_black,
 };
-#[cfg(target_os = "macos")]
-use gpui::{Menu, MenuItem, OsAction};
 use gpui_platform::application;
 use notify::Watcher;
 
-use crate::layout::LayoutTree;
 use crate::pane::Pane;
 use crate::terminal::TerminalView;
 use crate::workspace::Workspace;
@@ -63,185 +59,48 @@ use crate::workspace::Workspace;
 // Re-export action types at the crate root so existing `crate::SplitHorizontally`
 // references in sibling modules keep compiling without a crate-wide import churn.
 pub use app::actions::*;
+// US-002: items extracted out of `main.rs` are re-exported at crate root
+// so callers like `crate::Notification` / `crate::TOAST_HOLD_MS` keep
+// resolving without an import-rewrite churn across the workspace.
+pub(crate) use app::constants::{
+    CLAUDE_SPINNER_FRAMES, CODEX_SPINNER_FRAMES, MAX_CLOSED_PANES, RESIZE_BORDER, SIDEBAR_WIDTH,
+    TOAST_HOLD_MS,
+};
+// `TOAST_ENTER_MS` and `TOAST_EXIT_MS` are used only by the toast
+// renderer inside `app::notifications`; not re-exported at crate root.
+pub(crate) use app::drag::{WorkspaceDrag, WorkspaceDragPreview};
+pub(crate) use app::notifications::{Notification, Toast, ToastAction};
+// Free helpers extracted to bootstrap.rs but still callable as
+// `crate::system_package_update_command` etc. from sibling modules.
+#[cfg(target_os = "macos")]
+pub(crate) use app::bootstrap::{install_macos_menu_bar, warn_if_rosetta_translated};
+pub(crate) use app::bootstrap::{system_package_update_command, warn_if_legacy_run_install};
 
-/// Write text to the first leaf pane's active terminal PTY in a layout tree.
-fn send_text_to_first_leaf(node: &LayoutTree, text: &str, cx: &App) {
-    match node {
-        LayoutTree::Leaf(pane) => {
-            pane.read(cx)
-                .active_terminal()
-                .read(cx)
-                .terminal
-                .write_to_pty(text.as_bytes().to_vec());
-        }
-        LayoutTree::Container { children, .. } => {
-            if let Some(first) = children.first() {
-                send_text_to_first_leaf(&first.node, text, cx);
-            }
-        }
-    }
-}
-
-/// Find the first terminal in a layout tree (for default routing).
-fn find_first_terminal(
-    node: &LayoutTree,
-    cx: &App,
-) -> Option<gpui::Entity<crate::terminal::TerminalView>> {
-    match node {
-        LayoutTree::Leaf(pane) => {
-            let pane = pane.read(cx);
-            Some(pane.active_terminal().clone())
-        }
-        LayoutTree::Container { children, .. } => children
-            .first()
-            .and_then(|child| find_first_terminal(&child.node, cx)),
-    }
-}
-
-/// Find a terminal view entity by its surface_id (GPUI entity ID) across all workspaces.
-fn find_terminal_by_surface_id(
-    workspaces: &[crate::workspace::Workspace],
-    surface_id: u64,
-    cx: &App,
-) -> Option<gpui::Entity<crate::terminal::TerminalView>> {
-    for ws in workspaces {
-        if let Some(root) = &ws.root
-            && let Some(t) = find_terminal_in_tree(root, surface_id, cx)
-        {
-            return Some(t);
-        }
-    }
-    None
-}
-
-fn find_terminal_in_tree(
-    node: &LayoutTree,
-    surface_id: u64,
-    cx: &App,
-) -> Option<gpui::Entity<crate::terminal::TerminalView>> {
-    match node {
-        LayoutTree::Leaf(pane) => {
-            let pane = pane.read(cx);
-            for terminal in &pane.tabs {
-                if terminal.entity_id().as_u64() == surface_id {
-                    return Some(terminal.clone());
-                }
-            }
-            None
-        }
-        LayoutTree::Container { children, .. } => {
-            for child in children {
-                if let Some(t) = find_terminal_in_tree(&child.node, surface_id, cx) {
-                    return Some(t);
-                }
-            }
-            None
-        }
-    }
-}
+// Terminal-routing helpers (`find_first_terminal`, `find_terminal_by_surface_id`,
+// `send_text_to_first_leaf`) live in `app::ipc_handler` — its only consumer.
 
 // ---------------------------------------------------------------------------
 // Root application view
 // ---------------------------------------------------------------------------
 
-/// Sidebar width in pixels — shared between sidebar and title bar for alignment.
-const SIDEBAR_WIDTH: f32 = 240.;
-
 #[derive(Clone, Copy, PartialEq)]
-enum SettingsSection {
+pub(crate) enum SettingsSection {
     Shortcuts,
     Appearance,
 }
 
-/// A notification from Claude Code state changes, displayed in the bell menu.
-#[derive(Clone)]
-#[allow(dead_code)]
-struct Notification {
-    workspace_id: u64,
-    workspace_title: String,
-    message: String,
-    kind: ai_types::AiToolState,
-    timestamp: std::time::Instant,
-    read: bool,
-}
-
-struct Toast {
-    message: String,
-    /// Optional action buttons shown inside the toast. Empty for the
-    /// ordinary confirmation toasts ("Path copied", etc); populated for
-    /// update-failure toasts (US-013) with Retry / "Open releases" buttons.
-    actions: Vec<ToastAction>,
-    /// How long the "hold" phase of the toast animation lasts, in ms.
-    /// Must match the auto-dismiss timer in [`push_toast`] — otherwise the
-    /// exit animation plays early and the element persists as a ghost at
-    /// opacity 0 until the dismiss task fires.
-    hold_ms: u64,
-}
-
-#[derive(Clone)]
-enum ToastAction {
-    /// "Retry" — re-dispatches the `StartSelfUpdate` action. The action
-    /// handler's existing guards (busy check, attempt counter) apply.
-    RetryUpdate,
-    /// "Open releases" — opens the given URL in the user's browser.
-    /// Used for the 4th-attempt fallback (AC: "Download manually from the
-    /// releases page").
-    OpenReleasesPage(String),
-}
-
 #[derive(Clone, Copy)]
-struct WorkspaceContextMenu {
-    idx: usize,
-    position: Point<Pixels>,
+pub(crate) struct WorkspaceContextMenu {
+    pub(crate) idx: usize,
+    pub(crate) position: Point<Pixels>,
 }
-
-/// Drag payload used when reordering workspace cards in the sidebar.
-#[derive(Clone)]
-struct WorkspaceDrag {
-    id: u64,
-    title: SharedString,
-}
-
-/// Floating preview entity rendered under the cursor during a workspace drag.
-struct WorkspaceDragPreview {
-    title: SharedString,
-}
-
-impl Render for WorkspaceDragPreview {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let ui = crate::theme::ui_colors();
-        div()
-            .px(px(10.))
-            .py(px(6.))
-            .rounded(px(6.))
-            .bg(ui.overlay)
-            .border_1()
-            .border_color(ui.border)
-            .shadow_lg()
-            .text_sm()
-            .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_color(ui.text)
-            .child(self.title.clone())
-    }
-}
-
-/// Claude Code spinner glyphs — same characters Claude renders in the terminal.
-const CLAUDE_SPINNER_FRAMES: [char; 6] = ['·', '✻', '✽', '✶', '✳', '✢'];
-/// Codex spinner glyphs — pulsing dot from the dots animation variant.
-const CODEX_SPINNER_FRAMES: [char; 4] = ['●', '○', '◉', '○'];
-const TOAST_ENTER_MS: u64 = 180;
-const TOAST_HOLD_MS: u64 = 1440;
-const TOAST_EXIT_MS: u64 = 180;
 
 /// Captured state of a closed pane for undo-close-pane (US-014).
-struct ClosedPaneRecord {
-    cwd: Option<std::path::PathBuf>,
-    scrollback: Option<String>,
-    workspace_idx: usize,
+pub(crate) struct ClosedPaneRecord {
+    pub(crate) cwd: Option<std::path::PathBuf>,
+    pub(crate) scrollback: Option<String>,
+    pub(crate) workspace_idx: usize,
 }
-
-/// Maximum number of closed pane records to keep.
-const MAX_CLOSED_PANES: usize = 5;
 
 struct PaneFlowApp {
     workspaces: Vec<Workspace>,
@@ -407,27 +266,11 @@ impl PaneFlowApp {
         pane
     }
 
-    fn show_toast(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
-        self.push_toast(message.into(), Vec::new(), TOAST_HOLD_MS, cx);
-    }
-
-    /// Surface an update failure as a toast with a "Retry" action button
-    /// (US-013). Hold is extended so the user has time to click the button
-    /// before auto-dismiss.
-    fn show_update_error_toast(&mut self, err: &update::UpdateError, cx: &mut Context<Self>) {
-        self.push_toast(
-            err.user_message(),
-            vec![ToastAction::RetryUpdate],
-            TOAST_HOLD_MS * 4,
-            cx,
-        );
-    }
-
     /// Centralised bookkeeping for a failed update attempt (US-013):
     /// classify the error, log it, update state, show the retry toast,
     /// and bump the attempt counter (which gates the 4th-click escape
     /// hatch).
-    fn record_update_failure(
+    pub(crate) fn record_update_failure(
         &mut self,
         context: &str,
         err: &anyhow::Error,
@@ -447,47 +290,13 @@ impl PaneFlowApp {
         cx.notify();
     }
 
-    fn push_toast(
-        &mut self,
-        message: String,
-        actions: Vec<ToastAction>,
-        hold_ms: u64,
-        cx: &mut Context<Self>,
-    ) {
-        self.toast = Some(Toast {
-            message,
-            actions,
-            hold_ms,
-        });
-        cx.notify();
-
-        // Dropping the previous task cancels its timer automatically.
-        let total = TOAST_ENTER_MS + hold_ms + TOAST_EXIT_MS;
-        self._toast_task = Some(cx.spawn(
-            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                smol::Timer::after(std::time::Duration::from_millis(total)).await;
-                let _ = cx.update(|cx| {
-                    this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
-                        app.toast = None;
-                        app._toast_task = None;
-                        cx.notify();
-                    })
-                });
-            },
-        ));
-    }
-
     // --- Sidebar rendering ---
 }
 
 // ---------------------------------------------------------------------------
-// CSD window resize helpers
+// CSD window resize helpers — `RESIZE_BORDER` lives in `app::constants`.
 // ---------------------------------------------------------------------------
 
-/// Width of the invisible border zone used for edge/corner resize handles.
-const RESIZE_BORDER: Pixels = px(10.0);
-
-/// Re-export from csd module for use in the render function below.
 use crate::window_chrome::csd::resize_edge;
 
 impl Render for PaneFlowApp {
@@ -734,125 +543,7 @@ impl Render for PaneFlowApp {
             );
 
         if let Some(toast) = &self.toast {
-            let has_actions = !toast.actions.is_empty();
-            // Error toasts (those with action buttons) get a warning glyph
-            // + wider panel so the message + button have room. Ordinary
-            // confirmation toasts keep the tight 320-px "✓ …" layout.
-            let (icon, max_w) = if has_actions {
-                ("!", px(420.))
-            } else {
-                ("✓", px(320.))
-            };
-
-            let header = div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(10.))
-                .child(
-                    div()
-                        .w(px(18.))
-                        .h(px(18.))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(px(11.))
-                        .text_color(ui.accent)
-                        .child(icon),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(ui.text)
-                        .child(toast.message.clone()),
-                );
-
-            let action_row = if has_actions {
-                let mut row = div().flex().flex_row().gap(px(8.)).mt(px(8.)).pl(px(28.));
-                for (idx, action) in toast.actions.iter().enumerate() {
-                    let (label, button_id): (&str, String) = match action {
-                        ToastAction::RetryUpdate => ("Retry", format!("toast-retry-{idx}")),
-                        ToastAction::OpenReleasesPage(_) => {
-                            ("Open releases", format!("toast-releases-{idx}"))
-                        }
-                    };
-                    let action_clone = action.clone();
-                    let btn = div()
-                        .id(SharedString::from(button_id))
-                        .px(px(10.))
-                        .py(px(4.))
-                        .rounded(px(4.))
-                        .border_1()
-                        .border_color(ui.accent)
-                        .text_color(ui.accent)
-                        .text_size(px(11.))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .cursor_pointer()
-                        .hover(|s| s.opacity(0.7))
-                        .child(label)
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(move |_, window, cx| match &action_clone {
-                            ToastAction::RetryUpdate => {
-                                window.dispatch_action(Box::new(StartSelfUpdate), cx);
-                            }
-                            ToastAction::OpenReleasesPage(url) => {
-                                let _ = open::that(url);
-                            }
-                        });
-                    row = row.child(btn);
-                }
-                Some(row)
-            } else {
-                None
-            };
-
-            app_content = app_content.child(
-                deferred(
-                    div()
-                        .id("copy-toast")
-                        .absolute()
-                        .right(px(20.))
-                        .bottom(px(20.))
-                        .max_w(max_w)
-                        .px(px(14.))
-                        .py(px(10.))
-                        .rounded(px(8.))
-                        .bg(ui.overlay)
-                        .border_1()
-                        .border_color(ui.border)
-                        .shadow_lg()
-                        .text_sm()
-                        .text_color(ui.text)
-                        .flex()
-                        .flex_col()
-                        .child(header)
-                        .children(action_row)
-                        .with_animations(
-                            SharedString::from("copy-toast-anim"),
-                            vec![
-                                Animation::new(std::time::Duration::from_millis(TOAST_ENTER_MS))
-                                    .with_easing(ease_in_out),
-                                Animation::new(std::time::Duration::from_millis(toast.hold_ms)),
-                                Animation::new(std::time::Duration::from_millis(TOAST_EXIT_MS))
-                                    .with_easing(ease_in_out),
-                            ],
-                            |toast_el, stage, delta| match stage {
-                                0 => {
-                                    let lift = 8.0 * (1.0 - delta);
-                                    toast_el.opacity(delta).bottom(px(20.0 + lift))
-                                }
-                                1 => toast_el.opacity(1.0).bottom(px(20.0)),
-                                _ => {
-                                    let drop = 8.0 * delta;
-                                    toast_el.opacity(1.0 - delta).bottom(px(20.0 + drop))
-                                }
-                            },
-                        ),
-                )
-                .priority(2),
-            );
+            app_content = app_content.child(self.render_toast(toast, ui));
         }
 
         if let Some(position) = self.title_bar_menu_open {
@@ -940,174 +631,8 @@ impl Render for PaneFlowApp {
         if let Some(menu) = self.workspace_menu_open
             && menu.idx < self.workspaces.len()
         {
-            let idx = menu.idx;
-            let can_delete = !self.workspaces.is_empty();
-
-            // Data-driven editor entries: (id, label, command, shortcut_description)
-            let editors: &[(&str, &str, &str, &str)] = &[
-                ("zed", "Open in Zed", "zed", "Open in Zed"),
-                ("cursor", "Open in Cursor", "cursor", "Open in Cursor"),
-                ("vscode", "Open in VS Code", "code", "Open in VS Code"),
-                (
-                    "windsurf",
-                    "Open in Windsurf",
-                    "windsurf",
-                    "Open in Windsurf",
-                ),
-            ];
-
-            // Estimated menu height: 8 items × 25px + 2 separators × 7px + 8px padding
-            let menu_height = px(228.);
-            let win_h = window.window_bounds().get_bounds().size.height;
-            // Flip: if not enough space below the click, show the menu above it
-            let menu_y = if menu.position.y + menu_height > win_h {
-                (menu.position.y - menu_height).max(px(0.))
-            } else {
-                menu.position.y
-            };
-
-            let mut context_menu = div()
-                .id("workspace-context-menu")
-                .occlude()
-                .absolute()
-                .left(menu.position.x)
-                .top(menu_y)
-                .w(px(248.))
-                .bg(ui.overlay)
-                .border_1()
-                .border_color(ui.border)
-                .rounded(px(8.))
-                .shadow_lg()
-                .flex()
-                .flex_col()
-                .p(px(4.))
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.workspace_menu_open = None;
-                    cx.notify();
-                }))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
-
-            for &(id, label, command, shortcut_desc) in editors {
-                let shortcut = self
-                    .shortcut_for_description(shortcut_desc)
-                    .map(|s| SharedString::from(s.to_string()));
-                let command = command.to_string();
-                let label_owned = label.to_string();
-                context_menu = context_menu.child(self.render_context_menu_item(
-                    SharedString::from(format!("workspace-context-{id}")),
-                    label,
-                    shortcut,
-                    ui,
-                    cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                        this.open_workspace_in_editor(idx, &command, &label_owned, cx);
-                        cx.stop_propagation();
-                    }),
-                ));
-            }
-
-            // ── Separator ──
-            context_menu = context_menu.child(div().mx(px(-4.)).my(px(3.)).h(px(1.)).bg(ui.border));
-
-            // Reveal in file manager
-            let reveal_shortcut = self
-                .shortcut_for_description("Reveal in file manager")
-                .map(|s| SharedString::from(s.to_string()));
-            context_menu = context_menu.child(self.render_context_menu_item(
-                "workspace-context-reveal".into(),
-                "Reveal in File Manager",
-                reveal_shortcut,
-                ui,
-                cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                    this.reveal_workspace_in_file_manager(idx, cx);
-                    cx.stop_propagation();
-                }),
-            ));
-
-            // Copy path
-            let copy_shortcut = self
-                .shortcut_for_description("Copy path")
-                .map(|s| SharedString::from(s.to_string()));
-            context_menu = context_menu.child(self.render_context_menu_item(
-                "workspace-context-copy".into(),
-                "Copy Path",
-                copy_shortcut,
-                ui,
-                cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                    this.copy_workspace_path(idx, cx);
-                    cx.stop_propagation();
-                }),
-            ));
-
-            // Manage Custom Buttons — opens the per-workspace button editor modal.
-            context_menu = context_menu.child(self.render_context_menu_item(
-                "workspace-context-custom-buttons".into(),
-                "Manage Custom Buttons…",
-                None,
-                ui,
-                cx.listener(move |this, _: &ClickEvent, window, cx| {
-                    this.open_custom_buttons_modal(idx, window, cx);
-                    cx.stop_propagation();
-                }),
-            ));
-
-            // ── Separator ──
-            context_menu = context_menu.child(div().mx(px(-4.)).my(px(3.)).h(px(1.)).bg(ui.border));
-
-            // Delete workspace (conditionally disabled)
-            let close_shortcut = self
-                .shortcut_for_description("Close workspace")
-                .map(|s| SharedString::from(s.to_string()));
-            context_menu = context_menu.child(
-                div()
-                    .id("workspace-context-delete")
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(10.))
-                    .px(px(8.))
-                    .py(px(5.))
-                    .rounded(px(4.))
-                    .when(can_delete, |d| d.cursor_pointer())
-                    .text_size(px(11.))
-                    .text_color(ui.muted)
-                    .when(can_delete, |d| d.text_color(ui.text))
-                    .when(can_delete, |d| {
-                        d.hover(|s| {
-                            let ui = crate::theme::ui_colors();
-                            s.bg(ui.subtle)
-                        })
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        cx.stop_propagation();
-                        if can_delete {
-                            this.close_workspace_at(idx, window, cx);
-                        } else {
-                            this.workspace_menu_open = None;
-                            cx.notify();
-                        }
-                    }))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_x_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child("Delete"),
-                    )
-                    .when_some(close_shortcut, |d, shortcut| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .text_size(px(10.))
-                                .text_color(ui.muted)
-                                .child(shortcut),
-                        )
-                    }),
-            );
-
-            app_content = app_content.child(deferred(context_menu).priority(3));
+            app_content =
+                app_content.child(self.render_workspace_context_menu(menu, ui, window, cx));
         }
 
         // Outer backdrop div — provides the invisible resize border zone for CSD
@@ -1183,152 +708,6 @@ impl Render for PaneFlowApp {
 // ---------------------------------------------------------------------------
 // App entry point
 // ---------------------------------------------------------------------------
-
-/// Detect the legacy `.run`-installer layout and log a migration hint.
-///
-/// Build the copy-pasteable upgrade command for a system-package install.
-///
-/// `version` is safe to interpolate into a shell string without escaping: it
-/// comes from `UpdateStatus::Available { version }`, which is set from a
-/// `semver::Version::to_string()` — the semver parser rejects any input that
-/// would survive into `;`/`$()`/whitespace/bidi, so malformed GitHub tags
-/// short-circuit to `UpdateStatus::Failed` long before this function runs.
-///
-/// Version format notes:
-/// - apt pinning uses `name=upstream-debrev`. `cargo-deb` emits `-1` as the
-///   debian revision by default, so `paneflow=<v>-1` targets the exact tag.
-/// - dnf accepts `name-upstream` as a NEVR prefix match. The `<v>` we pass is
-///   already the raw upstream version from GitHub Releases.
-/// - `PackageManager::Other` gets a plain-English hint rather than a command,
-///   because we don't know the syntax (eopkg/xbps/apk all differ).
-fn system_package_update_command(
-    manager: Option<&update::install_method::PackageManager>,
-    version: &str,
-) -> String {
-    match manager {
-        Some(update::install_method::PackageManager::Apt) => {
-            format!("sudo apt update && sudo apt install paneflow={version}-1")
-        }
-        Some(update::install_method::PackageManager::Dnf) => {
-            format!("sudo dnf upgrade paneflow-{version}")
-        }
-        // US-004: `rpm-ostree upgrade` takes no package argument — it
-        // rebases the whole deployment. Version string is intentionally
-        // NOT included, unlike the apt/dnf arms.
-        Some(update::install_method::PackageManager::RpmOstree) => "rpm-ostree upgrade".to_string(),
-        Some(update::install_method::PackageManager::Other) | None => {
-            "Update PaneFlow via your system's package manager".to_string()
-        }
-    }
-}
-
-/// The old `.run` installer (removed in US-007) dropped a standalone binary
-/// at `~/.local/bin/paneflow`. The new tar.gz installer instead drops a
-/// `~/.local/paneflow.app/` directory and symlinks `~/.local/bin/paneflow`
-/// into it. We warn when the old layout is detected so users know why the
-/// in-app updater can no longer fetch a `.run` asset (there are none).
-/// Install the macOS menu bar.
-///
-/// US-012: three top-level menus — PaneFlow / Edit / Window — populated with
-/// the actions listed in the PRD. The `PaneFlow` menu name matches the
-/// `CFBundleName` from the future US-013 Info.plist (AC6). Keyboard shortcuts
-/// are derived from the global keybindings table (e.g. Quit shows `⌘Q`
-/// because US-010's `MACOS_ONLY_DEFAULTS` binds `cmd-q → quit`; Window items
-/// show `⌘⇧N` / `⌘⇧Q` / `⌘Tab` from US-009's `secondary-*` bindings).
-/// Copy / Paste / Select All carry an `OsAction` hint so macOS routes them
-/// through the native responder chain and renders `⌘C` / `⌘V` / `⌘A`.
-#[cfg(target_os = "macos")]
-fn install_macos_menu_bar(cx: &mut App) {
-    cx.set_menus(vec![
-        Menu::new("PaneFlow").items(vec![
-            MenuItem::action("About PaneFlow", About),
-            MenuItem::separator(),
-            MenuItem::action("Quit PaneFlow", Quit),
-        ]),
-        Menu::new("Edit").items(vec![
-            MenuItem::os_action("Copy", Copy, OsAction::Copy),
-            MenuItem::os_action("Paste", Paste, OsAction::Paste),
-            MenuItem::separator(),
-            MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
-        ]),
-        Menu::new("Window").items(vec![
-            MenuItem::action("New Workspace", NewWorkspace),
-            MenuItem::action("Close Workspace", CloseWorkspace),
-            MenuItem::separator(),
-            MenuItem::action("Next Workspace", NextWorkspace),
-        ]),
-        // macOS convention: every app ships a Help menu (even if it only
-        // points to an online doc/repo). Without one, Apple's HIG-conforming
-        // users perceive the app as unfinished. "PaneFlow Help" dispatches
-        // `OpenHelp` which opens the GitHub README in the default browser.
-        Menu::new("Help").items(vec![MenuItem::action("PaneFlow Help", OpenHelp)]),
-    ]);
-}
-
-/// Detect whether the Apple Silicon binary is running under Rosetta 2
-/// translation on an Intel Mac (or, more commonly, an Intel binary on
-/// Apple Silicon — which Apple translates transparently). Either way it
-/// warns once at startup so a user who grabbed the wrong `.dmg` knows
-/// why GPU performance is degraded instead of silently eating the hit.
-///
-/// Edge case 4 of the macOS port PRD. Uses `sysctl.proc_translated`: returns
-/// `1` for a translated process, `0` native, ENOENT → native Intel kernel
-/// (no Rosetta available at all). Failure to read the sysctl is silent —
-/// this warning is diagnostic, not load-bearing.
-#[cfg(target_os = "macos")]
-fn warn_if_rosetta_translated() {
-    use std::ffi::CString;
-    use std::mem::size_of;
-
-    let name = match CString::new("sysctl.proc_translated") {
-        Ok(n) => n,
-        Err(_) => return,
-    };
-    let mut translated: i32 = 0;
-    let mut size = size_of::<i32>();
-    // SAFETY: `sysctlbyname` reads a small integer into a stack buffer whose
-    // size is passed by pointer. `name.as_ptr()` is a valid NUL-terminated
-    // C string from a CString we just constructed. `translated` and `size`
-    // are live stack variables for the duration of the call. Zero-initialized
-    // buffer means a kernel short-write can't expose uninitialized memory.
-    let rc = unsafe {
-        libc::sysctlbyname(
-            name.as_ptr(),
-            &mut translated as *mut _ as *mut libc::c_void,
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if rc == 0 && translated == 1 {
-        log::warn!(
-            "running under Rosetta 2 translation — GPU rendering will be \
-             degraded. For best performance, download the matching \
-             architecture from https://github.com/ArthurDEV44/paneflow/releases"
-        );
-    }
-}
-
-fn warn_if_legacy_run_install() {
-    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
-        return;
-    };
-    let app_dir = home.join(".local/paneflow.app");
-    let legacy_bin = home.join(".local/bin/paneflow");
-
-    let legacy_bin_is_regular_file = legacy_bin
-        .symlink_metadata()
-        .map(|m| m.file_type().is_file())
-        .unwrap_or(false);
-
-    if !app_dir.exists() && legacy_bin_is_regular_file {
-        log::warn!(
-            "legacy .run install detected at {} — see README for migration \
-             to the .tar.gz / .deb / .AppImage formats",
-            legacy_bin.display()
-        );
-    }
-}
 
 fn main() {
     // Handle --help and --version before initializing GPUI

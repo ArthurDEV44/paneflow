@@ -13,16 +13,96 @@
 //! remains a single function here; if future additions push it over the
 //! module's LOC budget, split by namespace per the PRD's fallback spec.
 
-use gpui::{AppContext, Context};
+use gpui::{App, AppContext, Context};
 use paneflow_config::schema::LayoutNode;
 
+use crate::layout::LayoutTree;
 use crate::layout::SplitDirection;
 use crate::terminal::TerminalView;
 use crate::workspace::{Workspace, next_workspace_id};
-use crate::{
-    Notification, PaneFlowApp, ai_types, find_first_terminal, find_terminal_by_surface_id,
-    keybindings, send_text_to_first_leaf, update,
-};
+use crate::{Notification, PaneFlowApp, ai_types, keybindings, update};
+
+// ---------------------------------------------------------------------------
+// Terminal-routing helpers used by the IPC `surface.*` handlers (US-002:
+// extracted from `main.rs`). Re-exported at the crate root via `main.rs` so
+// older `crate::find_first_terminal` lookups keep resolving.
+// ---------------------------------------------------------------------------
+
+/// Write text to the first leaf pane's active terminal PTY in a layout tree.
+pub(crate) fn send_text_to_first_leaf(node: &LayoutTree, text: &str, cx: &App) {
+    match node {
+        LayoutTree::Leaf(pane) => {
+            pane.read(cx)
+                .active_terminal()
+                .read(cx)
+                .terminal
+                .write_to_pty(text.as_bytes().to_vec());
+        }
+        LayoutTree::Container { children, .. } => {
+            if let Some(first) = children.first() {
+                send_text_to_first_leaf(&first.node, text, cx);
+            }
+        }
+    }
+}
+
+/// Find the first terminal in a layout tree (for default routing).
+pub(crate) fn find_first_terminal(
+    node: &LayoutTree,
+    cx: &App,
+) -> Option<gpui::Entity<TerminalView>> {
+    match node {
+        LayoutTree::Leaf(pane) => {
+            let pane = pane.read(cx);
+            Some(pane.active_terminal().clone())
+        }
+        LayoutTree::Container { children, .. } => children
+            .first()
+            .and_then(|child| find_first_terminal(&child.node, cx)),
+    }
+}
+
+/// Find a terminal view entity by its surface_id (GPUI entity ID) across all workspaces.
+pub(crate) fn find_terminal_by_surface_id(
+    workspaces: &[Workspace],
+    surface_id: u64,
+    cx: &App,
+) -> Option<gpui::Entity<TerminalView>> {
+    for ws in workspaces {
+        if let Some(root) = &ws.root
+            && let Some(t) = find_terminal_in_tree(root, surface_id, cx)
+        {
+            return Some(t);
+        }
+    }
+    None
+}
+
+fn find_terminal_in_tree(
+    node: &LayoutTree,
+    surface_id: u64,
+    cx: &App,
+) -> Option<gpui::Entity<TerminalView>> {
+    match node {
+        LayoutTree::Leaf(pane) => {
+            let pane = pane.read(cx);
+            for terminal in &pane.tabs {
+                if terminal.entity_id().as_u64() == surface_id {
+                    return Some(terminal.clone());
+                }
+            }
+            None
+        }
+        LayoutTree::Container { children, .. } => {
+            for child in children {
+                if let Some(t) = find_terminal_in_tree(&child.node, surface_id, cx) {
+                    return Some(t);
+                }
+            }
+            None
+        }
+    }
+}
 
 impl PaneFlowApp {
     pub(crate) fn process_ipc_requests(&mut self, cx: &mut Context<Self>) {
@@ -174,6 +254,13 @@ impl PaneFlowApp {
                 if self.workspaces.len() >= MAX_WORKSPACES {
                     return serde_json::json!({"error": "Workspace limit reached"});
                 }
+                // US-001: parse the optional `layout` param up-front so we can
+                // refuse a malformed payload with -32602 before mutating any
+                // workspace state.
+                let mut layout = match parse_layout_param(params) {
+                    Ok(l) => l,
+                    Err(e) => return e.into_value(),
+                };
                 let name = params
                     .get("name")
                     .and_then(|n| n.as_str())
@@ -196,9 +283,37 @@ impl PaneFlowApp {
                 self.watch_git_dir(&ws);
                 self.workspaces.push(ws);
                 let idx = self.workspaces.len() - 1;
+
+                // US-001: when a layout is provided, apply it to the freshly
+                // created workspace. `apply_layout_from_json` operates on the
+                // active workspace, so we have to switch focus first; we
+                // restore `previous_idx` if application fails so a malformed
+                // layout doesn't strand the caller on a half-initialised
+                // workspace they didn't ask to land on.
+                let panes = if let Some(ref mut layout) = layout {
+                    let previous_idx = self.active_idx;
+                    self.active_idx = idx;
+                    if let Err(e) = self.apply_layout_from_json(layout, cx) {
+                        // Roll back: drop the just-created workspace so the
+                        // caller sees a clean -32602 and no orphan workspace.
+                        if let Some(dir) = self.workspaces[idx].git_dir.clone() {
+                            self.unwatch_git_dir(&dir);
+                        }
+                        self.workspaces.remove(idx);
+                        self.active_idx = previous_idx.min(self.workspaces.len().saturating_sub(1));
+                        return JsonRpcError::invalid_params(format!(
+                            "layout could not be applied: {e}"
+                        ))
+                        .into_value();
+                    }
+                    self.active_workspace().map_or(1, |ws| ws.pane_count())
+                } else {
+                    1
+                };
+
                 self.save_session(cx);
                 cx.notify();
-                serde_json::json!({"index": idx, "title": name})
+                serde_json::json!({"index": idx, "title": name, "panes": panes})
             }
             "workspace.select" => {
                 let idx = params.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
@@ -571,6 +686,98 @@ impl PaneFlowApp {
     }
 }
 
+// ---------------------------------------------------------------------------
+// JSON-RPC error envelope (US-001)
+// ---------------------------------------------------------------------------
+
+/// A structured JSON-RPC 2.0 error to be promoted into the response envelope
+/// by `dispatch_to_gpui` in `ipc.rs`. Handlers signal a true protocol-level
+/// error (vs. an application error returned inside `result`) by returning
+/// the value produced by [`JsonRpcError::into_value`]; the dispatcher detects
+/// the `_jsonrpc_error` sentinel key and rewrites the response shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct JsonRpcError {
+    pub code: i32,
+    pub message: String,
+}
+
+/// Sentinel key under which `dispatch_to_gpui` looks for a structured error.
+/// Underscore-prefixed to make it unambiguously not a user-data field.
+pub(crate) const JSONRPC_ERROR_KEY: &str = "_jsonrpc_error";
+
+impl JsonRpcError {
+    /// JSON-RPC 2.0 reserved error code for invalid method parameters.
+    pub(crate) const INVALID_PARAMS: i32 = -32602;
+
+    pub(crate) fn invalid_params(message: impl Into<String>) -> Self {
+        Self {
+            code: Self::INVALID_PARAMS,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn into_value(self) -> serde_json::Value {
+        serde_json::json!({
+            JSONRPC_ERROR_KEY: {
+                "code": self.code,
+                "message": self.message,
+            }
+        })
+    }
+}
+
+/// Promote a handler return value into a full JSON-RPC 2.0 response.
+///
+/// If the value carries the `_jsonrpc_error` sentinel, it's emitted as a
+/// `{ "jsonrpc", "error", "id" }` envelope; otherwise it's wrapped under
+/// `result`. Pure / no I/O so it can be unit-tested without GPUI.
+pub(crate) fn promote_response(
+    handler_result: serde_json::Value,
+    id: serde_json::Value,
+) -> serde_json::Value {
+    if let Some(err) = handler_result.get(JSONRPC_ERROR_KEY) {
+        let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(-32603);
+        let message = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown error")
+            .to_string();
+        return serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "code": code, "message": message },
+            "id": id,
+        });
+    }
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "result": handler_result,
+        "id": id,
+    })
+}
+
+/// Parse the optional `layout` field from a `workspace.create` params object.
+///
+/// Returns `Ok(None)` if the field is absent or `null` (preserves the
+/// existing single-pane default). Returns `Err(JsonRpcError)` with code
+/// `-32602` if the field is present but not a valid `LayoutNode`.
+pub(crate) fn parse_layout_param(
+    params: &serde_json::Value,
+) -> Result<Option<LayoutNode>, JsonRpcError> {
+    let Some(raw) = params.get("layout") else {
+        return Ok(None);
+    };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    serde_json::from_value::<LayoutNode>(raw.clone())
+        .map(Some)
+        .map_err(|e| JsonRpcError::invalid_params(format!("invalid layout: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry reconciliation (US-014)
+// ---------------------------------------------------------------------------
+
 /// Decision outcome for the telemetry-consent reconciler (US-014).
 /// Separated from the GPUI-bound `reconcile_telemetry_consent` so the
 /// transition matrix is unit-testable in isolation.
@@ -689,5 +896,101 @@ mod tests {
             r.toast_msg,
             Some("Télémétrie : la demande réapparaîtra au prochain lancement")
         );
+    }
+
+    // -----------------------------------------------------------------
+    // US-001 — workspace.create `layout` param parsing + JSON-RPC error
+    // envelope promotion
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn parse_layout_param_absent_returns_none() {
+        let params = serde_json::json!({"name": "ws"});
+        assert!(parse_layout_param(&params).expect("ok").is_none());
+    }
+
+    #[test]
+    fn parse_layout_param_null_returns_none() {
+        // null is treated like absent — caller still gets the
+        // single-pane default behavior.
+        let params = serde_json::json!({"layout": null});
+        assert!(parse_layout_param(&params).expect("ok").is_none());
+    }
+
+    #[test]
+    fn parse_layout_param_valid_pane_returns_some() {
+        let params = serde_json::json!({
+            "layout": { "type": "pane", "surfaces": [] }
+        });
+        let layout = parse_layout_param(&params).expect("ok").expect("some");
+        assert_eq!(layout.leaf_count(), 1);
+    }
+
+    #[test]
+    fn parse_layout_param_valid_split_returns_some() {
+        let params = serde_json::json!({
+            "layout": {
+                "type": "split",
+                "direction": "vertical",
+                "ratios": [0.5, 0.5],
+                "children": [
+                    { "type": "pane", "surfaces": [] },
+                    { "type": "pane", "surfaces": [] }
+                ]
+            }
+        });
+        let layout = parse_layout_param(&params).expect("ok").expect("some");
+        assert_eq!(layout.leaf_count(), 2);
+    }
+
+    #[test]
+    fn parse_layout_param_string_payload_returns_invalid_params() {
+        let params = serde_json::json!({"layout": "not an object"});
+        let err = parse_layout_param(&params).expect_err("err");
+        assert_eq!(err.code, JsonRpcError::INVALID_PARAMS);
+        assert!(
+            err.message.starts_with("invalid layout:"),
+            "got {:?}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn parse_layout_param_unknown_tag_returns_invalid_params() {
+        let params = serde_json::json!({"layout": { "type": "unknown_kind" }});
+        let err = parse_layout_param(&params).expect_err("err");
+        assert_eq!(err.code, JsonRpcError::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn promote_response_wraps_value_under_result_by_default() {
+        let id = serde_json::json!(7);
+        let resp = promote_response(serde_json::json!({"index": 0, "title": "ws"}), id);
+        assert_eq!(resp["jsonrpc"], "2.0");
+        assert_eq!(resp["id"], 7);
+        assert_eq!(resp["result"]["index"], 0);
+        assert!(resp.get("error").is_none());
+    }
+
+    #[test]
+    fn promote_response_extracts_jsonrpc_error_sentinel() {
+        let err_val = JsonRpcError::invalid_params("bad layout").into_value();
+        let resp = promote_response(err_val, serde_json::json!("req-1"));
+        assert_eq!(resp["jsonrpc"], "2.0");
+        assert_eq!(resp["id"], "req-1");
+        assert!(resp.get("result").is_none());
+        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["error"]["message"], "bad layout");
+    }
+
+    #[test]
+    fn promote_response_preserves_legacy_application_error_strings() {
+        // Existing handlers return `{"error": "string"}` — those must keep
+        // flowing through the `result` field, not be promoted.
+        let id = serde_json::json!(null);
+        let legacy = serde_json::json!({"error": "Workspace limit reached"});
+        let resp = promote_response(legacy, id);
+        assert_eq!(resp["result"]["error"], "Workspace limit reached");
+        assert!(resp.get("error").is_none());
     }
 }
