@@ -7,6 +7,12 @@
 //! flatten into the canonical values documented in
 //! `tasks/compliance-analytics.md §5`.
 //!
+//! US-003: the format-invariant helper
+//! [`paneflow_telemetry::tags::is_canonical_tag_format`] lives in the
+//! workspace crate so any future emitter (workstream, trust, …) can
+//! reuse the same lowercase-ASCII-only contract. The domain mapping
+//! stays here because it depends on `crate::update::*` types.
+//!
 //! Every mapping target is a `&'static str` — telemetry properties are
 //! low-cardinality labels, not messages. Keep the mapping total: any new
 //! variant added to `InstallMethod` or `UpdateError` MUST be reflected
@@ -63,6 +69,7 @@ pub fn error_category_tag(err: &UpdateError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use paneflow_telemetry::tags::is_canonical_tag_format;
     use std::path::PathBuf;
 
     #[test]
@@ -175,10 +182,12 @@ mod tests {
     }
 
     #[test]
-    fn canonical_tags_are_lowercase_and_stable() {
-        // Values enforced to lowercase + contain only [a-z0-9-.]; breaking
-        // these would invalidate any PostHog breakdown filter Arthur has
-        // already configured on install_method.
+    fn every_published_tag_satisfies_the_canonical_format_contract() {
+        // Single source of truth for the format invariant: delegate to
+        // `paneflow_telemetry::tags::is_canonical_tag_format`. Breaking
+        // the lowercase-ASCII rule on any of these would invalidate any
+        // PostHog breakdown filter Arthur has already configured on
+        // `install_method` or `error_category`.
         let all = [
             "deb",
             "rpm",
@@ -188,18 +197,17 @@ mod tests {
             "tar.gz",
             "dmg",
             "msi",
+            "externally-managed",
             "unknown",
             "network",
             "signature",
             "disk",
         ];
         for tag in all {
-            for ch in tag.chars() {
-                assert!(
-                    ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '.',
-                    "tag {tag} contains {ch:?} — telemetry labels must be lowercase ascii"
-                );
-            }
+            assert!(
+                is_canonical_tag_format(tag),
+                "tag {tag:?} violates the canonical format contract — telemetry labels must be lowercase ascii letters/digits/[-.]"
+            );
         }
     }
 }

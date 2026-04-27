@@ -30,6 +30,10 @@ portable-pty = "0.8"
 
 # Internal crates
 paneflow-config = { path = "../crates/paneflow-config" }
+# US-003: telemetry plumbing extracted to its own workspace crate so future
+# `paneflow-workstream` / `paneflow-trust` members can emit events without
+# pulling the desktop binary into their dep graph.
+paneflow-telemetry = { workspace = true }
 
 # File system watcher (OS-native: inotify/FSEvents/ReadDirectoryChanges)
 notify = "7"
@@ -49,9 +53,9 @@ regex = "1"
 open = "5"
 ureq = { version = "3", features = ["json"] }
 semver = "1"
-# Anonymous per-install telemetry identifier (US-010). UUID v4 only —
-# no machine fingerprinting, no time-based collision (v4 is 122-bit random).
-uuid = { version = "1", features = ["v4"] }
+# `uuid` removed as a direct src-app dep in US-003 — only the telemetry id
+# subsystem consumed it, and that lives in `paneflow-telemetry` now. If a
+# future non-telemetry caller needs UUID generation, re-add it here.
 # Resolve `appimageupdatetool` on $PATH before falling back to download (US-010).
 which = "8"
 # tar.gz self-update: SHA-256 verification + in-process extraction (US-011).
