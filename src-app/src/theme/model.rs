@@ -2,8 +2,11 @@
 
 use gpui::{Hsla, Rgba};
 
-/// Terminal color theme with 35 slots:
-/// 5 base + cursor + selection + scrollbar_thumb + link_text + 2 title bar + 24 ANSI (8 hues x 3 intensities).
+use crate::terminal::element::{MIN_APCA_CONTRAST, ensure_minimum_contrast};
+
+/// Terminal color theme with 36 slots:
+/// 5 base + cursor + selection + selection_foreground + scrollbar_thumb +
+/// link_text + 2 title bar + 24 ANSI (8 hues x 3 intensities).
 #[derive(Clone, Copy)]
 pub struct TerminalTheme {
     pub background: Hsla,
@@ -13,6 +16,13 @@ pub struct TerminalTheme {
     pub ansi_background: Hsla,
     pub cursor: Hsla,
     pub selection: Hsla,
+    /// US-007: foreground color for text inside the selection rect,
+    /// guaranteed to satisfy APCA Lc ≥ `MIN_APCA_CONTRAST` against
+    /// `selection`. Computed once at theme-load time by
+    /// [`TerminalTheme::recompute_selection_foreground`] from the theme's
+    /// regular `foreground`. Used by `build_layout` to override the
+    /// per-cell `fg` for cells inside the selection.
+    pub selection_foreground: Hsla,
     pub scrollbar_thumb: Hsla,
     /// Color for hyperlink underline and text on Ctrl+hover.
     pub link_text: Hsla,
@@ -65,8 +75,36 @@ fn is_light_theme(theme: &TerminalTheme) -> bool {
     theme.background.l > 0.5
 }
 
+impl TerminalTheme {
+    /// US-007: recompute [`Self::selection_foreground`] from the current
+    /// `foreground` and `selection` colors so APCA Lc(selection_fg, selection)
+    /// ≥ [`MIN_APCA_CONTRAST`]. Called at theme-load time (and on every
+    /// hot-reload). Reusing the same `ensure_minimum_contrast` algorithm as
+    /// per-cell text guarantees consistent visual semantics — selected text
+    /// is no harder to read than non-selected text on near-luminance themes.
+    pub(crate) fn recompute_selection_foreground(&mut self) {
+        // The `selection` slot's alpha represents how the selection blends
+        // with the cell background underneath. For contrast purposes we
+        // approximate the perceived selection background as the opaque
+        // version of `selection` (alpha = 1.0). A future refinement could
+        // alpha-composite against the actual cell `background` for a
+        // tighter contrast estimate, but the simple opaque-bg model is
+        // what `MIN_APCA_CONTRAST` was tuned for in the per-cell path.
+        let selection_bg_opaque = Hsla {
+            a: 1.0,
+            ..self.selection
+        };
+        self.selection_foreground =
+            ensure_minimum_contrast(self.foreground, selection_bg_opaque, MIN_APCA_CONTRAST);
+    }
+}
+
 pub(super) fn apply_surface_overrides(mut theme: TerminalTheme) -> TerminalTheme {
     if is_light_theme(&theme) {
+        // US-007: light themes skip surface overrides but still need their
+        // selection_foreground populated; do it here so every theme exiting
+        // this function has a valid value regardless of branch taken.
+        theme.recompute_selection_foreground();
         return theme;
     }
 
@@ -76,6 +114,7 @@ pub(super) fn apply_surface_overrides(mut theme: TerminalTheme) -> TerminalTheme
     theme.title_bar_inactive_background = chrome_bg;
     theme.background = terminal_bg;
     theme.ansi_background = terminal_bg;
+    theme.recompute_selection_foreground();
     theme
 }
 
@@ -133,7 +172,11 @@ pub fn ui_colors() -> UiColors {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::builtin::{catppuccin_mocha, paneflow_light};
+    use crate::terminal::element::apca_contrast;
+    use crate::theme::builtin::{
+        catppuccin_mocha, dracula, gruvbox_dark, one_dark, paneflow_light, solarized_dark,
+        theme_by_name,
+    };
 
     #[test]
     fn light_theme_keeps_light_surfaces_after_overrides() {
@@ -151,5 +194,95 @@ mod tests {
         assert_eq!(theme.background.l, h(TERMINAL_BACKGROUND_HEX).l);
         assert_eq!(theme.ansi_background.l, h(TERMINAL_BACKGROUND_HEX).l);
         assert_eq!(theme.title_bar_background.l, h(CHROME_BACKGROUND_HEX).l);
+    }
+
+    /// US-007 invariant: for any theme exiting `apply_surface_overrides` or
+    /// `theme_by_name`, the selection foreground must satisfy the same
+    /// APCA Lc threshold the per-cell contrast pass uses. A near-luminance
+    /// theme without this invariant would render selected text illegibly.
+    fn assert_selection_invariant(theme: &TerminalTheme, label: &str) {
+        let bg_opaque = Hsla {
+            a: 1.0,
+            ..theme.selection
+        };
+        let lc = apca_contrast(theme.selection_foreground, bg_opaque).abs();
+        assert!(
+            lc >= MIN_APCA_CONTRAST,
+            "{label}: APCA Lc({lc}) < {MIN_APCA_CONTRAST} for selection_foreground vs selection"
+        );
+    }
+
+    #[test]
+    fn bundled_themes_satisfy_selection_contrast_invariant() {
+        // All 6 bundled themes must produce a readable selection foreground.
+        for (label, theme) in [
+            (
+                "Catppuccin Mocha",
+                apply_surface_overrides(catppuccin_mocha()),
+            ),
+            ("PaneFlow Light", apply_surface_overrides(paneflow_light())),
+            ("One Dark", apply_surface_overrides(one_dark())),
+            ("Dracula", apply_surface_overrides(dracula())),
+            ("Gruvbox Dark", apply_surface_overrides(gruvbox_dark())),
+            ("Solarized Dark", apply_surface_overrides(solarized_dark())),
+        ] {
+            assert_selection_invariant(&theme, label);
+        }
+    }
+
+    #[test]
+    fn theme_by_name_returns_invariant_satisfying_themes() {
+        // theme_by_name is the public entry point; users may call it without
+        // going through apply_surface_overrides, so it must finalize on the
+        // way out.
+        for name in [
+            "Catppuccin Mocha",
+            "PaneFlow Light",
+            "One Dark",
+            "Dracula",
+            "Gruvbox Dark",
+            "Solarized Dark",
+        ] {
+            let theme = theme_by_name(name).expect("bundled theme not found");
+            assert_selection_invariant(&theme, name);
+        }
+    }
+
+    #[test]
+    fn adversarial_selection_close_to_red_text_still_legible() {
+        // Construct a synthetic theme whose `selection` background is a
+        // strong red, the same hue as theme.foreground, then assert the
+        // recomputed selection_foreground still satisfies the invariant.
+        // This is the canonical "user picked a clashing selection color"
+        // failure mode US-007 must guard against.
+        let mut theme = catppuccin_mocha();
+        theme.foreground = h(0xff0000); // bright red text
+        theme.selection = ha(0xff0000, 0.4); // selection of the same hue
+        theme.recompute_selection_foreground();
+        assert_selection_invariant(&theme, "adversarial-red-on-red");
+    }
+
+    #[test]
+    fn adversarial_selection_close_to_white_on_light_theme() {
+        // Light theme + near-white selection background. The algorithm must
+        // pick a dark foreground for legibility.
+        let mut theme = paneflow_light();
+        theme.foreground = h(0xeeeeee); // near-white text
+        theme.selection = ha(0xf0f0f0, 0.5); // very pale selection
+        theme.recompute_selection_foreground();
+        assert_selection_invariant(&theme, "adversarial-white-on-light");
+    }
+
+    #[test]
+    fn recompute_is_idempotent() {
+        // Running the recompute twice must yield the same value — guards
+        // against accidental mutation of `foreground` or `selection` during
+        // the algorithm.
+        let mut theme = catppuccin_mocha();
+        theme.recompute_selection_foreground();
+        let first = theme.selection_foreground;
+        theme.recompute_selection_foreground();
+        let second = theme.selection_foreground;
+        assert_eq!(first, second);
     }
 }

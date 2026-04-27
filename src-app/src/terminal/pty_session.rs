@@ -94,12 +94,6 @@ pub(super) enum ClipboardOp {
     Load(std::sync::Arc<dyn Fn(&str) -> String + Sync + Send + 'static>),
 }
 
-/// Deferred color query response (OSC 10/11/12) from sync().
-pub(super) struct ColorOp {
-    pub index: usize,
-    pub format_fn: std::sync::Arc<dyn Fn(AlacRgb) -> String + Sync + Send + 'static>,
-}
-
 /// Convert GPUI Hsla to alacritty Rgb for color query responses.
 pub(super) fn hsla_to_alac_rgb(hsla: gpui::Hsla) -> AlacRgb {
     let rgba = gpui::Rgba::from(hsla);
@@ -136,8 +130,6 @@ pub struct TerminalState {
     /// Deferred clipboard operations from sync() — drained in the poll loop
     /// where cx is available for clipboard read/write.
     pub(super) pending_clipboard_ops: Vec<ClipboardOp>,
-    /// Deferred color query responses (OSC 10/11/12) from sync().
-    pub(super) pending_color_ops: Vec<ColorOp>,
     /// Deferred text area size request responses from sync().
     pub(super) pending_size_ops:
         Vec<std::sync::Arc<dyn Fn(AlacWindowSize) -> String + Sync + Send + 'static>>,
@@ -276,7 +268,6 @@ impl TerminalState {
             current_cwd: None,
             osc52_mode: Osc52Mode::CopyOnly,
             pending_clipboard_ops: Vec::new(),
-            pending_color_ops: Vec::new(),
             pending_size_ops: Vec::new(),
             bell_active: false,
             cursor_blinking: true,
@@ -324,7 +315,6 @@ impl TerminalState {
             current_cwd: None,
             osc52_mode: Osc52Mode::Disabled,
             pending_clipboard_ops: Vec::new(),
-            pending_color_ops: Vec::new(),
             pending_size_ops: Vec::new(),
             bell_active: false,
             cursor_blinking: false,
@@ -448,7 +438,39 @@ impl TerminalState {
             AlacEvent::ClipboardLoad(..) => {}
 
             AlacEvent::ColorRequest(index, format_fn) => {
-                self.pending_color_ops.push(ColorOp { index, format_fn });
+                // Respond synchronously to preserve PTY-write order — match
+                // Zed (`crates/terminal/src/terminal.rs:997-1009`). Crossterm's
+                // `query_foreground_color` / `query_background_color` (used by
+                // the OpenAI Codex CLI to detect terminal colors and decide
+                // whether to paint its input-bar tint) has a short timeout;
+                // a deferred reply both misses it and scrambles ordering with
+                // a following `\e[c` (DA1) query, after which Codex falls back
+                // to "unknown bg" and silently drops the tint.
+                //
+                // The `index` here is alacritty's internal `NamedColor`
+                // discriminant, NOT the OSC code itself: the VTE parser at
+                // `vte-0.15/src/ansi.rs:1431` translates OSC 10/11/12 to
+                // `NamedColor::Foreground (256) + (osc_code - 10)`. So the
+                // match arms below MUST use 256/257/258, not 10/11/12. The
+                // earlier 10/11/12 arms silently fell into the catch-all and
+                // never replied — which is precisely why `default_bg()` in
+                // Codex stayed `None` and the input-bar bg never appeared.
+                let theme = crate::theme::active_theme();
+                use alacritty_terminal::vte::ansi::NamedColor;
+                let color = if index == NamedColor::Foreground as usize {
+                    Some(theme.foreground)
+                } else if index == NamedColor::Background as usize {
+                    Some(theme.ansi_background)
+                } else if index == NamedColor::Cursor as usize {
+                    Some(theme.cursor)
+                } else {
+                    None // OSC 4 (palette indices 0..256) — not currently handled
+                };
+                if let Some(hsla) = color {
+                    let rgb = hsla_to_alac_rgb(hsla);
+                    let response = format_fn(rgb);
+                    self.notifier.notify(response.into_bytes());
+                }
             }
             AlacEvent::Bell => {
                 self.bell_active = true;

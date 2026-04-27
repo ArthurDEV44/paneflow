@@ -70,7 +70,13 @@ fn srgb_to_y(color: Hsla) -> f32 {
     APCA.s_rco * r_linear + APCA.s_gco * g_linear + APCA.s_bco * b_linear
 }
 
-fn apca_contrast(text: Hsla, bg: Hsla) -> f32 {
+/// APCA Lightness Contrast (`Lc`) between `text` foreground and `bg`. Sign
+/// indicates polarity (positive = light text on dark bg, negative = dark
+/// text on light bg). Tests and theme-load code assert on `.abs() >= 45.0`.
+///
+/// Visibility: `pub(crate)` (was private pre-US-007) so theme tests can
+/// verify the `selection_foreground` invariant directly.
+pub(crate) fn apca_contrast(text: Hsla, bg: Hsla) -> f32 {
     let text_y = srgb_to_y(text);
     let bg_y = srgb_to_y(bg);
 
@@ -111,7 +117,10 @@ fn apca_contrast(text: Hsla, bg: Hsla) -> f32 {
 /// 1. Adjust lightness only (preserves hue + saturation)
 /// 2. Reduce saturation + adjust lightness
 /// 3. Fall back to black or white
-pub(super) fn ensure_minimum_contrast(fg: Hsla, bg: Hsla, min_lc: f32) -> Hsla {
+///
+/// Visibility: `pub(crate)` (was `pub(super)` pre-US-007) so theme code can
+/// derive a contrast-validated `selection_foreground` at theme-load time.
+pub(crate) fn ensure_minimum_contrast(fg: Hsla, bg: Hsla, min_lc: f32) -> Hsla {
     if min_lc <= 0.0 {
         return fg;
     }

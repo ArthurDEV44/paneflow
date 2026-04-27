@@ -437,7 +437,10 @@ Config file location: `~/.config/paneflow/paneflow.json`
   "line_height": 1.3,
   "window_decorations": "client",
   "option_as_meta": false,
-  "shortcuts": {}
+  "shortcuts": {},
+  "terminal": {
+    "ligatures": false
+  }
 }
 ```
 
@@ -446,6 +449,10 @@ Config file location: `~/.config/paneflow/paneflow.json`
 `Catppuccin Mocha` (default), `One Dark`, `Dracula`, `Gruvbox Dark`, `Solarized Dark`
 
 Theme changes are hot-reloaded. Window decorations require a restart (`"client"` = CSD, `"server"` = SSD).
+
+### Terminal options
+
+- `terminal.ligatures` (default `false`) — when `true`, programming-font ligatures (FiraCode `=>` `!=`, JetBrains Mono, Cascadia Code) are rendered through to GPUI's text system. Hot-reloaded; takes effect on the next render. Note that some ligated glyphs span multiple cells, which can shift cell-width measurements compared to the default monospaced behavior.
 
 ## IPC
 

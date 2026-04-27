@@ -3,6 +3,7 @@
 //! Manages the alacritty_terminal Term, portable-pty PTY, and periodic sync.
 //! The TerminalView creates a TerminalElement for cell-by-cell rendering.
 
+pub mod blink;
 pub mod element;
 mod input;
 mod listener;

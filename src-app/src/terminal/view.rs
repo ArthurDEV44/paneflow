@@ -22,7 +22,7 @@ use gpui::{
 use crate::pty::PortablePtyBackend;
 
 use super::element::TerminalElement;
-use super::pty_session::{ClipboardOp, hsla_to_alac_rgb};
+use super::pty_session::ClipboardOp;
 use super::service_detector::ServiceInfo;
 use super::types::{CopyModeCursorState, HyperlinkZone, SearchHighlight};
 use super::{PtyNotifier, TerminalState};
@@ -48,7 +48,10 @@ pub(crate) fn probe_enabled() -> bool {
 // Terminal View — GPUI Render impl
 // ---------------------------------------------------------------------------
 
-const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
+// US-006: cursor blink interval moved to `terminal::blink::CURSOR_BLINK_INTERVAL`.
+// The blink itself is now driven by a single app-scoped `BlinkPhase` entity
+// observed by every `TerminalView`, replacing the per-terminal `smol::Timer`
+// loop that lived here.
 
 pub struct TerminalView {
     pub terminal: TerminalState,
@@ -222,28 +225,13 @@ impl TerminalView {
                                 }
                             }
 
-                            // Execute deferred color query responses (OSC 10/11/12)
-                            // Cap at 16 to prevent flooding from malicious programs
-                            view.terminal.pending_color_ops.truncate(16);
-                            if !view.terminal.pending_color_ops.is_empty() {
-                                let theme = crate::theme::active_theme();
-                                for op in view.terminal.pending_color_ops.drain(..) {
-                                    let color = match op.index {
-                                        // OSC 10: foreground
-                                        10 => Some(theme.foreground),
-                                        // OSC 11: background
-                                        11 => Some(theme.ansi_background),
-                                        // OSC 12: cursor
-                                        12 => Some(theme.cursor),
-                                        _ => None,
-                                    };
-                                    if let Some(hsla) = color {
-                                        let rgb = hsla_to_alac_rgb(hsla);
-                                        let response = (op.format_fn)(rgb);
-                                        view.terminal.notifier.notify(response.into_bytes());
-                                    }
-                                }
-                            }
+                            // OSC 10/11/12 color queries are now handled
+                            // synchronously inside `process_event` (matches
+                            // Zed's pattern at crates/terminal/src/terminal.rs:997).
+                            // Deferring them here used to lose the response
+                            // window for crossterm-based clients like the
+                            // OpenAI Codex CLI, which then dropped its
+                            // input-bar background tint silently.
 
                             // Execute deferred text area size responses
                             view.terminal.pending_size_ops.truncate(8);
@@ -343,34 +331,46 @@ impl TerminalView {
         )
         .detach();
 
-        // Cursor blink timer: toggle visibility every 530ms
-        cx.spawn(
-            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                loop {
-                    smol::Timer::after(std::time::Duration::from_millis(CURSOR_BLINK_INTERVAL_MS))
-                        .await;
-                    let result = cx.update(|cx| {
-                        this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
-                            if view.terminal.exited.is_some()
-                                || SUPPRESS_REPAINTS.load(std::sync::atomic::Ordering::Relaxed)
-                            {
-                                return;
-                            }
-                            if view.terminal.cursor_blinking {
-                                view.cursor_visible = !view.cursor_visible;
-                            } else {
-                                view.cursor_visible = true;
-                            }
-                            cx.notify();
-                        })
-                    });
-                    if result.is_err() {
-                        break;
+        // US-006: subscribe to the app-scoped `BlinkPhase` so this terminal's
+        // cursor visibility tracks the shared toggle. Replaces the
+        // per-terminal `smol::Timer` loop that previously lived here.
+        // Short-circuits preserved: skip when the PTY has exited or repaints
+        // are suppressed; force visible when alacritty disabled blinking
+        // (DECSCUSR / VT100 cursor style).
+        //
+        // `try_global` rather than `global` so a future code path that
+        // constructs a TerminalView outside `PaneFlowApp::new` (test
+        // harness, headless tooling) degrades to "always-visible cursor"
+        // instead of panicking on the missing global. The current invariant
+        // is that bootstrap installs the global before any TerminalView is
+        // built; this is a defensive fallback only.
+        if let Some(global) = cx.try_global::<crate::terminal::blink::BlinkPhaseGlobal>() {
+            let blink_phase = global.0.clone();
+            cx.observe(
+                &blink_phase,
+                |view: &mut Self, phase, cx: &mut Context<Self>| {
+                    if view.terminal.exited.is_some()
+                        || SUPPRESS_REPAINTS.load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        return;
                     }
-                }
-            },
-        )
-        .detach();
+                    let new_visible = if view.terminal.cursor_blinking {
+                        phase.read(cx).visible
+                    } else {
+                        true
+                    };
+                    if new_visible != view.cursor_visible {
+                        view.cursor_visible = new_visible;
+                        cx.notify();
+                    }
+                },
+            )
+            .detach();
+        } else {
+            log::warn!(
+                "BlinkPhaseGlobal not installed — cursor will not blink for this TerminalView"
+            );
+        }
 
         Self {
             terminal,

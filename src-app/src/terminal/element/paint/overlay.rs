@@ -7,6 +7,8 @@
 //! in cell-level layout.
 
 use gpui::{App, Bounds, Font, Pixels, Point, SharedString, TextAlign, TextRun, Window, fill, px};
+#[cfg(debug_assertions)]
+use gpui::{BorderStyle, hsla, outline};
 
 use super::super::LayoutState;
 use super::super::TerminalElement;
@@ -271,4 +273,60 @@ pub fn paint_exit_overlay(
         window,
         cx,
     );
+}
+
+/// Pixel-probe visual overlay: thin red borders on every cell, painted
+/// after the text pass so they sit above glyphs. Activated only by
+/// `PANEFLOW_PIXEL_PROBE_OVERLAY=1` (independent of the log-only probe).
+///
+/// Uses the same `floor(x)`-shared-boundary math (US-004) so the borders
+/// align with the underlying rects — any visible misalignment is a real
+/// rendering signal, not an overlay artifact.
+///
+/// Iterates the entire visible grid (`rows × cols`) unconditionally — the
+/// log probe samples the first 16 columns of each row to bound stdout, but
+/// the visual overlay needs full coverage to expose alignment artifacts at
+/// any location. On a 220×60 terminal this issues ~13 200 `paint_quad`
+/// calls per frame; acceptable because the overlay is opt-in via env var
+/// and only present in debug builds.
+///
+/// `border_widths` is divided by `scale_factor` so the rendered border is
+/// exactly one *physical* pixel — at 2× HiDPI a 1.0 logical width would
+/// produce a 2-physical-px border that visually obscures the very 1-px
+/// gaps the probe is meant to expose.
+#[cfg(debug_assertions)]
+pub fn paint_pixel_probe_overlay(layout: &LayoutState, geom: &CellGeometry, window: &mut Window) {
+    let CellGeometry {
+        origin,
+        cell_width,
+        line_height,
+    } = *geom;
+
+    let rows = layout.desired_rows;
+    let cols = layout.desired_cols;
+    if rows == 0 || cols == 0 {
+        return;
+    }
+
+    let border_color = hsla(0.0, 1.0, 0.5, 0.3);
+    let physical_one_px = 1.0 / window.scale_factor().max(1.0);
+    let border_width = px(physical_one_px);
+
+    for row in 0..rows {
+        for col in 0..cols {
+            let x = (origin.x + cell_width * col as f32).floor();
+            let y = origin.y + line_height * row as f32;
+            let next_x = (origin.x + cell_width * (col + 1) as f32).floor();
+            let bounds = Bounds::new(
+                Point { x, y },
+                gpui::Size {
+                    width: (next_x - x).max(px(0.0)),
+                    height: line_height,
+                },
+            );
+            window.paint_quad(
+                outline(bounds, border_color, BorderStyle::Solid).border_widths(border_width),
+            );
+        }
+    }
 }

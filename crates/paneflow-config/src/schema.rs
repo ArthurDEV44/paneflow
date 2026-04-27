@@ -40,6 +40,24 @@ pub struct PaneFlowConfig {
     /// resolves to `None` under both the outer and inner Option layers.
     /// No event is ever sent unless `enabled == Some(true)`.
     pub telemetry: Option<TelemetryConfig>,
+    /// Terminal-scoped settings block. Currently exposes `ligatures`
+    /// (US-008); future renderer toggles will land here without schema
+    /// churn at the top level.
+    pub terminal: Option<TerminalConfig>,
+}
+
+/// Terminal-scoped configuration block (US-008).
+///
+/// Lives in its own struct so future renderer settings (cursor shape,
+/// blink interval, alternate scroll, …) can be added without expanding
+/// the top-level `PaneFlowConfig` further.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct TerminalConfig {
+    /// Render programming-font ligatures (FiraCode `=>`, `!=`, …) when
+    /// `Some(true)`. `None` and `Some(false)` both keep the historical
+    /// behavior of disabling ligatures via GPUI's `FontFeatures`.
+    pub ligatures: Option<bool>,
 }
 
 /// Desktop telemetry consent state.
