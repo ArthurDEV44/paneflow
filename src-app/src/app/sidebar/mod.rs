@@ -555,16 +555,20 @@ impl PaneFlowApp {
                 card = card.child(ports_row);
             }
 
-            // ── Row: AI tool status (Claude Code / Codex) — monochrome ──
-            // Hierarchy is conveyed via weight + container, not hue:
-            //   Thinking        → spinner + text in `ui.text` (live)
-            //   WaitingForInput → badge-style with ui.text bg (claims attention)
-            //   Finished        → muted check + text (subdued, done)
+            // ── Row: AI tool status (Claude Code / Codex) — branded palette ──
+            // Per-state palette, with per-tool branding on Thinking only:
+            //   Thinking        → tool-branded hue (Claude salmon / Codex indigo)
+            //   WaitingForInput → amber warning badge (tool-agnostic)
+            //   Finished        → neon-mint check + label (tool-agnostic)
             match ws.ai_state {
                 ai_types::AiToolState::Thinking(tool) => {
                     let frames: &[char] = match tool {
                         ai_types::AiTool::Claude => &CLAUDE_SPINNER_FRAMES,
                         ai_types::AiTool::Codex => &CODEX_SPINNER_FRAMES,
+                    };
+                    let thinking_color = match tool {
+                        ai_types::AiTool::Claude => rgb(0xE89271), // Anthropic salmon
+                        ai_types::AiTool::Codex => rgb(0x5B6CFF),  // Codex indigo
                     };
                     let angle = ws.loader_angle.get();
                     let idx = ((angle / std::f32::consts::TAU) * frames.len() as f32) as usize
@@ -584,14 +588,14 @@ impl PaneFlowApp {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_color(ui.text)
+                                    .text_color(thinking_color)
                                     .text_xs()
                                     .child(format!("{spinner}")),
                             )
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(ui.text)
+                                    .text_color(thinking_color)
                                     .child(format!("{} thinking…", tool.label())),
                             ),
                     );
@@ -606,7 +610,7 @@ impl PaneFlowApp {
                             .px(px(6.))
                             .py(px(2.))
                             .rounded(px(4.))
-                            .bg(ui.text)
+                            .bg(rgb(0xFBBF24)) // amber warning
                             .child(
                                 svg()
                                     .size(px(12.))
@@ -624,6 +628,7 @@ impl PaneFlowApp {
                     );
                 }
                 ai_types::AiToolState::Finished(tool) => {
+                    let done_color = rgb(0x00E08A); // neon mint
                     card = card.child(
                         div()
                             .flex()
@@ -635,12 +640,12 @@ impl PaneFlowApp {
                                     .size(px(12.))
                                     .flex_none()
                                     .path("icons/checks.svg")
-                                    .text_color(ui.muted),
+                                    .text_color(done_color),
                             )
                             .child(
                                 div()
                                     .text_size(px(11.))
-                                    .text_color(ui.muted)
+                                    .text_color(done_color)
                                     .child(format!("{} done", tool.label())),
                             ),
                     );
