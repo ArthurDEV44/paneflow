@@ -32,8 +32,17 @@ pub(crate) const MAX_SOCKET_PATH_BYTES: usize = 104;
 
 #[cfg(unix)]
 const PANEFLOW_SUBDIR: &str = "paneflow";
+/// Socket filename, namespaced per build profile so a `cargo run` debug
+/// instance and an installed release instance can coexist on the same host
+/// without one silently stealing the other's socket. Each instance binds
+/// its own listener and the AI-hook wrapper scripts (which read
+/// `PANEFLOW_SOCKET_PATH` from the PTY env) route to the right one.
 #[cfg(unix)]
-const SOCKET_FILE: &str = "paneflow.sock";
+const SOCKET_FILE: &str = if cfg!(debug_assertions) {
+    "paneflow-dev.sock"
+} else {
+    "paneflow.sock"
+};
 
 /// Resolve the PaneFlow runtime directory. Fallback chain:
 /// 1. `$XDG_RUNTIME_DIR` — explicit Linux XDG (usually `/run/user/<uid>`).
@@ -79,7 +88,11 @@ pub(crate) fn socket_path() -> Option<PathBuf> {
 
 #[cfg(windows)]
 pub(crate) fn socket_path() -> Option<PathBuf> {
-    Some(PathBuf::from(r"\\.\pipe\paneflow"))
+    Some(PathBuf::from(if cfg!(debug_assertions) {
+        r"\\.\pipe\paneflow-dev"
+    } else {
+        r"\\.\pipe\paneflow"
+    }))
 }
 
 // Wired by US-012 (telemetry capture client) + consumed transitively by
@@ -189,8 +202,9 @@ mod tests {
         let p = socket_path().expect("runtime dir must resolve");
         assert_eq!(
             p,
-            PathBuf::from("/run/user/1000/paneflow/paneflow.sock"),
-            "AC5: Linux with XDG_RUNTIME_DIR must resolve to the XDG path"
+            PathBuf::from(format!("/run/user/1000/paneflow/{SOCKET_FILE}")),
+            "AC5: Linux with XDG_RUNTIME_DIR must resolve to the XDG path \
+             (filename varies by build profile via SOCKET_FILE const)"
         );
     }
 
@@ -205,7 +219,7 @@ mod tests {
             // On Linux, dirs::runtime_dir() may still return Some before we
             // reach the TMPDIR branch — accept either but prove the path is
             // well-formed.
-            assert!(p.ends_with("paneflow/paneflow.sock"));
+            assert!(p.ends_with(format!("paneflow/{SOCKET_FILE}")));
         }
     }
 
