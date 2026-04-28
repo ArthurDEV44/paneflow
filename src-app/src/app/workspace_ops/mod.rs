@@ -984,6 +984,9 @@ mod tests {
             paths.contains(&home.join(".cargo").join("bin")),
             "missing %USERPROFILE%\\.cargo\\bin"
         );
-        assert!(paths.contains(&home.join("bin")), "missing %USERPROFILE%\\bin");
+        assert!(
+            paths.contains(&home.join("bin")),
+            "missing %USERPROFILE%\\bin"
+        );
     }
 }
