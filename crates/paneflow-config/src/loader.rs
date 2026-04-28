@@ -27,8 +27,17 @@ pub fn config_path() -> Option<PathBuf> {
 ///
 /// - Linux: `$XDG_CACHE_HOME/paneflow/session.json`
 /// - macOS: `~/Library/Caches/paneflow/session.json`
+///
+/// The filename is namespaced per build profile (`session-dev.json` in
+/// debug builds) so a `cargo run` instance and an installed release
+/// instance never overwrite each other's persisted layout on quit.
 pub fn session_path() -> Option<PathBuf> {
-    dirs::cache_dir().map(|dir| dir.join("paneflow").join("session.json"))
+    let filename = if cfg!(debug_assertions) {
+        "session-dev.json"
+    } else {
+        "session.json"
+    };
+    dirs::cache_dir().map(|dir| dir.join("paneflow").join(filename))
 }
 
 /// Load the PaneFlow configuration from the default platform path.
