@@ -521,13 +521,21 @@ impl PaneFlowApp {
         let Some(ws) = self.workspaces.get(idx) else {
             return;
         };
+        let cwd = ws.cwd.clone();
 
-        if let Err(err) = std::process::Command::new(command)
-            .current_dir(&ws.cwd)
+        // GUI launchers (.desktop on Linux, Finder on macOS, Start menu on
+        // Windows) frequently strip user bin directories from PATH, so editors
+        // installed under ~/.local/bin or ~/.cargo/bin can't be found by
+        // Command::new alone — even though they resolve fine from a terminal.
+        let bin = resolve_editor_binary(command);
+
+        if let Err(err) = std::process::Command::new(&bin)
+            .current_dir(&cwd)
             .arg(".")
             .spawn()
         {
             log::warn!("failed to open workspace in {label}: {err}");
+            self.show_toast(format!("Couldn't open in {label}: {err}"), cx);
         }
 
         self.workspace_menu_open = None;
@@ -713,6 +721,65 @@ fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     }
 }
 
+/// Resolve an editor command (e.g. `"zed"`, `"code"`) to a concrete path.
+///
+/// `Command::new(command).spawn()` only consults the spawning process's PATH,
+/// which on Linux desktop launches (`.desktop`), macOS Finder, and Windows
+/// shell launches frequently lacks the user-bin directories where editors
+/// like Zed, Cursor, or Code Insiders install their CLI shim. We extend the
+/// search with a small set of well-known per-OS fallbacks, then fall back to
+/// the bare command so `spawn()` still produces a clean `NotFound` error
+/// (now surfaced via toast in `open_workspace_in_editor`).
+fn resolve_editor_binary(command: &str) -> std::path::PathBuf {
+    resolve_editor_binary_in(command, &editor_search_paths())
+}
+
+/// Pure resolver: try the inherited PATH first, then `fallback_paths`, then
+/// return the bare `command`. Split out from [`resolve_editor_binary`] so the
+/// fallback list can be injected from tests without touching process env.
+fn resolve_editor_binary_in(
+    command: &str,
+    fallback_paths: &[std::path::PathBuf],
+) -> std::path::PathBuf {
+    if let Ok(path) = which::which(command) {
+        return path;
+    }
+    if !fallback_paths.is_empty()
+        && let Ok(joined) = std::env::join_paths(fallback_paths)
+        && let Ok(path) = which::which_in(command, Some(&joined), ".")
+    {
+        return path;
+    }
+    std::path::PathBuf::from(command)
+}
+
+/// Per-OS list of directories to consult when an editor isn't on PATH.
+///
+/// Linux distributions and BSDs share the same user-bin layout (`~/.local/bin`,
+/// `~/.cargo/bin`, `/usr/local/bin`), so a single Linux branch covers Fedora,
+/// Ubuntu/Debian, Arch, openSUSE, etc. Snap (`/snap/bin`) and Flatpak are
+/// handled by the system PATH on every distro that ships them, so they don't
+/// need explicit entries here.
+fn editor_search_paths() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    let mut paths: Vec<PathBuf> = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".local").join("bin"));
+        paths.push(home.join(".cargo").join("bin"));
+        paths.push(home.join("bin"));
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        paths.push(PathBuf::from("/usr/local/bin"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        paths.push(PathBuf::from("/opt/homebrew/bin"));
+    }
+    paths
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -756,5 +823,167 @@ mod tests {
         // type-shape compiles and the helper is reachable from tests.
         let _callable: fn(&std::path::Path) -> Result<(), String> = reveal_in_file_manager;
         let _ = tmp.path();
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Editor-binary resolver — regression coverage for the "Open in
+    // <Editor>" silent-failure bug.
+    //
+    // Bug: GUI launchers (Linux .desktop, macOS Finder, Windows Start menu)
+    // inherit a narrowed PATH that omits user-bin dirs (~/.local/bin etc.),
+    // so editors installed there can't be spawned by `Command::new` alone.
+    // Cursor at /usr/bin worked; Zed at ~/.local/bin failed silently.
+    //
+    // The fixture-based tests below run on every platform — they don't
+    // require a real editor to be installed. Each per-OS shape test runs
+    // only on its target so CI on each platform self-validates its own
+    // fallback list. Linux distros (Fedora, Ubuntu/Debian, Arch, openSUSE,
+    // Alpine, …) share the same user-bin layout, so a single Linux test
+    // covers the distro fleet.
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Filename suffix `which_in` will recognize on the current target.
+    /// Windows resolves names against PATHEXT — `.exe` is the canonical
+    /// entry; Unix matches the bare name plus the executable bit.
+    const EXE_SUFFIX: &str = if cfg!(windows) { ".exe" } else { "" };
+
+    /// Create a stub binary named `<command><EXE_SUFFIX>` inside `dir` and,
+    /// on Unix, flip the executable bit so `which` will accept it. Returns
+    /// the absolute path to the stub for canonical comparison.
+    fn make_stub_binary(dir: &std::path::Path, command: &str) -> std::path::PathBuf {
+        let path = dir.join(format!("{command}{EXE_SUFFIX}"));
+        std::fs::write(&path, b"").expect("write stub binary");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = std::fs::metadata(&path).unwrap().permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&path, perm).unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn resolver_picks_up_binary_from_fallback_dir() {
+        // High-entropy stub name so `which::which` against the host's real
+        // PATH cannot resolve it — forcing the resolver into the fallback
+        // branch we want to exercise. Without this, the test could pass on
+        // the wrong code path if the host happens to have a similarly-
+        // named binary installed.
+        let stub = "paneflow_resolver_stub_pflw_42";
+        let dir = tempfile::TempDir::new().unwrap();
+        let expected = make_stub_binary(dir.path(), stub);
+
+        let resolved = resolve_editor_binary_in(stub, &[dir.path().to_path_buf()]);
+
+        // `which_in` may canonicalize symlinks and `.` components — compare
+        // canonical forms so the test is resilient on macOS (/var → /private/var)
+        // and on distros where /home is a symlink. Falling back to raw
+        // PathBuf comparison would flake on those hosts.
+        let canon_resolved = std::fs::canonicalize(&resolved).ok();
+        let canon_expected = std::fs::canonicalize(&expected).ok();
+        assert_eq!(
+            canon_resolved,
+            canon_expected,
+            "resolver returned {} instead of fallback {}",
+            resolved.display(),
+            expected.display()
+        );
+    }
+
+    #[test]
+    fn resolver_returns_bare_command_when_nothing_resolves() {
+        // Empty fallback list AND a command name designed to be absent
+        // from any host PATH. The resolver must hand back the bare command
+        // so the caller's spawn() produces a clean NotFound error that our
+        // toast surfaces to the user.
+        let bare = "paneflow_no_such_editor_zzz_99";
+        let resolved = resolve_editor_binary_in(bare, &[]);
+        assert_eq!(resolved, std::path::PathBuf::from(bare));
+    }
+
+    #[test]
+    fn resolver_returns_bare_command_when_fallback_dir_is_empty() {
+        // Same contract, exercised through the directory-search branch
+        // rather than the fast-skip empty-vec branch.
+        let dir = tempfile::TempDir::new().unwrap();
+        let bare = "paneflow_no_such_editor_zzz_77";
+        let resolved = resolve_editor_binary_in(bare, &[dir.path().to_path_buf()]);
+        assert_eq!(resolved, std::path::PathBuf::from(bare));
+    }
+
+    // ─── Per-OS path-list shape ────────────────────────────────────────
+    // `editor_search_paths()` returns the OS-specific fallback list. Each
+    // test runs only on its target. Assertions are positive (must contain),
+    // so adding entries doesn't break old tests; removing an entry trips
+    // a clear failure with the missing path named.
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn search_paths_linux_covers_user_and_system_bin() {
+        let paths = editor_search_paths();
+        let home = dirs::home_dir().expect("test host has $HOME");
+        // Same layout across Fedora, Ubuntu/Debian, Arch, openSUSE, Alpine,
+        // RHEL/CentOS, NixOS (single-user), Void, etc.
+        assert!(
+            paths.contains(&home.join(".local").join("bin")),
+            "missing ~/.local/bin"
+        );
+        assert!(
+            paths.contains(&home.join(".cargo").join("bin")),
+            "missing ~/.cargo/bin"
+        );
+        assert!(paths.contains(&home.join("bin")), "missing ~/bin");
+        assert!(
+            paths.contains(&std::path::PathBuf::from("/usr/local/bin")),
+            "missing /usr/local/bin"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn search_paths_macos_covers_homebrew_and_user_bin() {
+        let paths = editor_search_paths();
+        let home = dirs::home_dir().expect("test host has $HOME");
+        assert!(
+            paths.contains(&home.join(".local").join("bin")),
+            "missing ~/.local/bin"
+        );
+        assert!(
+            paths.contains(&home.join(".cargo").join("bin")),
+            "missing ~/.cargo/bin"
+        );
+        assert!(paths.contains(&home.join("bin")), "missing ~/bin");
+        assert!(
+            paths.contains(&std::path::PathBuf::from("/usr/local/bin")),
+            "missing /usr/local/bin (Intel Homebrew prefix)"
+        );
+        assert!(
+            paths.contains(&std::path::PathBuf::from("/opt/homebrew/bin")),
+            "missing /opt/homebrew/bin (Apple Silicon Homebrew prefix)"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn search_paths_windows_covers_user_bin() {
+        let paths = editor_search_paths();
+        let home = dirs::home_dir().expect("test host has %USERPROFILE%");
+        // dirs::home_dir on Windows == %USERPROFILE% (e.g. C:\Users\Arthur).
+        // ~/.cargo/bin is the canonical install spot for Cargo-installed CLI
+        // shims; ~/.local/bin and ~/bin are picked up by cross-platform
+        // installers (mise-en-place, asdf-vm) for editor entry points.
+        // Program Files / LOCALAPPDATA Programs paths are intentionally
+        // omitted until a real-world Windows install layout demands them
+        // (most editor installers add their bin dir to user PATH directly).
+        assert!(
+            paths.contains(&home.join(".local").join("bin")),
+            "missing %USERPROFILE%\\.local\\bin"
+        );
+        assert!(
+            paths.contains(&home.join(".cargo").join("bin")),
+            "missing %USERPROFILE%\\.cargo\\bin"
+        );
+        assert!(paths.contains(&home.join("bin")), "missing %USERPROFILE%\\bin");
     }
 }
