@@ -14,7 +14,7 @@ members = [
 default-members = ["src-app"]
 
 [workspace.package]
-version = "0.2.8"
+version = "0.2.9"
 edition = "2021"
 license = "MIT"
 authors = ["Arthur"]
