@@ -13,6 +13,24 @@
 # "-apple-darwin"`, so any other filename shape would silently prevent
 # in-app update prompts from finding the asset.
 #
+# Implementation: follows the Zed bundle-mac pattern
+# (zed-industries/zed `script/bundle-mac:260` upstream) — a single
+# `hdiutil create -srcfolder ... -format UDZO` invocation that auto-sizes
+# the image from the source folder and produces the final zlib-compressed
+# image in one pass. Earlier revisions of this script ran a UDRW staging
+# image + osascript Finder layout + UDZO convert pipeline. On macos-14
+# hosted runners that pipeline failed with `hdiutil: create failed - No
+# space left on device` despite tens of GB free on the host volume:
+# `hdiutil create -size <fixed>m` pre-allocates a virtual device whose
+# ENOSPC is internal to the image, not the runner. Letting hdiutil
+# auto-size from -srcfolder bypasses the failure mode entirely.
+#
+# Trade-off: no custom Finder window layout (icon positions, background
+# image). The DMG still presents the standard /Applications symlink for
+# drag-to-install. Cosmetic layout can be re-introduced later by bringing
+# back a UDRW staging stage WITHOUT a fixed -size flag — but the unstyled
+# DMG ships and notarizes today, which is the priority.
+#
 # Usage:
 #   scripts/create-dmg.sh --version 0.2.0 --arch aarch64
 #   scripts/create-dmg.sh --version 0.2.0 --arch x86_64 --app path/to/X.app
@@ -52,26 +70,21 @@ case "$ARCH" in
 esac
 [ -d "$APP" ] || die "bundle not found: $APP"
 
-# hdiutil + osascript are macOS-native and have no portable equivalent.
-# Fail loudly on other OSes rather than producing a broken DMG.
-command -v hdiutil   >/dev/null 2>&1 || die "hdiutil not found (this script only runs on macOS)"
-command -v osascript >/dev/null 2>&1 || die "osascript not found (this script only runs on macOS)"
+# hdiutil is macOS-native and has no portable equivalent. Fail loudly on
+# other OSes rather than producing a broken DMG.
+command -v hdiutil >/dev/null 2>&1 || die "hdiutil not found (this script only runs on macOS)"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 
 VOLNAME="PaneFlow"
 FINAL_DMG="$REPO_ROOT/dist/paneflow-${VERSION}-${ARCH}-apple-darwin.dmg"
-BG_SRC="$REPO_ROOT/assets/dmg-background.png"
-
-[ -f "$BG_SRC" ] || die "DMG background PNG not found at $BG_SRC"
 
 # --- Prepare staging dir -------------------------------------------------
 # Every DMG run starts from a clean staging directory so stale symlinks or
 # leftover `.Trash-*` files can't leak into the image.
 STAGING="$(mktemp -d)"
-trap 'rm -rf "$STAGING" "$TEMP_DMG"' EXIT
-TEMP_DMG="$STAGING/temp.dmg"
+trap 'rm -rf "$STAGING"' EXIT
 
 # The enclosed app bundle — `cp -R` preserves the embedded code signature
 # and extended attributes (notarization ticket). `ditto` would also work
@@ -79,109 +92,35 @@ TEMP_DMG="$STAGING/temp.dmg"
 cp -R "$APP" "$STAGING/"
 BUNDLE_NAME="$(basename "$APP")"
 
-# Drag target — a symlink to /Applications makes the familiar macOS
-# "drag here to install" UX. `ln -s /Applications` creates a dangling
-# symlink on the staging fs (Linux-style absolute path); when the DMG is
-# mounted on macOS, /Applications resolves correctly.
+# Drag target — a symlink to /Applications gives the familiar macOS
+# "drag here to install" UX. `ln -s /Applications` creates an absolute
+# symlink that resolves against /Applications when the DMG is mounted
+# on a user's Mac (the symlink target is a string, not a resolved inode).
 ln -s /Applications "$STAGING/Applications"
 
-# The background image lives in a hidden `.background/` subdir so Finder
-# renders it but doesn't display it as a normal icon.
-mkdir -p "$STAGING/.background"
-cp "$BG_SRC" "$STAGING/.background/background.png"
-
-# --- Create a writable staging DMG ---------------------------------------
-# Size = 4 × the app bundle's footprint + 256 MB, rounded up. hdiutil will
-# tighten the image at convert time (UDZO drops unused sectors), so
-# over-provisioning here is free at the final asset level — but
-# under-provisioning makes hdiutil fail with `No space left on device`
-# even when the host has tens of GB free (observed on macos-14 hosted
-# runners with the previous `2× + 50 MB` formula at v0.2.9-rc.2).
+# --- Build the final compressed DMG --------------------------------------
+# Single-pass: -srcfolder + -format UDZO produces the final zlib-compressed
+# read-only image directly. -ov overwrites any leftover .dmg from a
+# previous run (idempotent re-runs).
 #
-# `-fsargs` was previously set to `-c c=64,a=16,e=16` to pre-grow the
-# HFS+ catalog/attribute/extents B-trees; on a small image this
-# over-allocates fs metadata that competes with the payload for the
-# `-size` budget. Dropped — the newfs_hfs defaults are sized appropriately
-# for any image we're likely to ship, and removing the flag eliminates
-# one variable in the ENOSPC failure surface.
-APP_BYTES=$(du -sk "$APP" | awk '{print $1}')
-APP_MB=$(( APP_BYTES / 1024 ))
-SIZE_MB=$(( (APP_MB * 4) + 256 ))
-# Cap at something sensible so a misread `du` can't request a 10 GB image.
-if [ "$SIZE_MB" -gt 1024 ]; then
-    SIZE_MB=1024
-fi
-
-echo "Creating staging DMG (${SIZE_MB} MB) — app footprint: ${APP_MB} MB ($(du -sh "$APP" | awk '{print $1}'))"
-df -h "$(dirname "$TEMP_DMG")" || true
-hdiutil create \
-    -srcfolder "$STAGING" \
-    -volname "$VOLNAME" \
-    -fs HFS+ \
-    -format UDRW \
-    -size "${SIZE_MB}m" \
-    "$TEMP_DMG" >/dev/null
-
-# --- Mount, lay out, detach ----------------------------------------------
-MOUNT_INFO="$(hdiutil attach -nobrowse -readwrite -noautoopen "$TEMP_DMG")"
-MOUNT_DEV="$(echo "$MOUNT_INFO" | awk 'NR==1 {print $1}')"
-MOUNT_POINT="/Volumes/$VOLNAME"
-
-# Tight-scoped detach helper for the osascript trap — if the AppleScript
-# blows up mid-layout, we still need to detach cleanly or the next CI run
-# will see a stale /Volumes/PaneFlow mount.
-detach_volume() {
-    hdiutil detach "$MOUNT_DEV" -quiet 2>/dev/null \
-        || hdiutil detach "$MOUNT_DEV" -force 2>/dev/null \
-        || true
-}
-trap 'rm -rf "$STAGING" "$TEMP_DMG"; detach_volume' EXIT
-
-# AppleScript configures icon view, window bounds, background image, and
-# icon positions. `update without registering applications` commits the
-# layout to the volume's .DS_Store before we detach.
-#
-# Coordinate choices:
-#   window 440×340 content area (bounds 400,100 → 1060,500 includes
-#   titlebar). Icon grid at y=200 places them vertically centred. PaneFlow
-#   on the left at x=165, Applications symlink on the right at x=495 —
-#   standard macOS drag-to-install spacing.
-osascript <<APPLESCRIPT
-tell application "Finder"
-    tell disk "$VOLNAME"
-        open
-        set current view of container window to icon view
-        set toolbar visible of container window to false
-        set statusbar visible of container window to false
-        set the bounds of container window to {400, 100, 1060, 500}
-        set viewOptions to the icon view options of container window
-        set arrangement of viewOptions to not arranged
-        set icon size of viewOptions to 128
-        set background picture of viewOptions to file ".background:background.png"
-        set position of item "$BUNDLE_NAME" of container window to {165, 200}
-        set position of item "Applications" of container window to {495, 200}
-        close
-        open
-        update without registering applications
-        delay 1
-    end tell
-end tell
-APPLESCRIPT
-
-# Sync + detach so the volume's .DS_Store is flushed before we convert.
-sync
-detach_volume
-
-# --- Convert to compressed read-only final image -------------------------
-# UDZO = zlib-compressed, universally readable. UDBZ (bzip2) shaves a few
-# percent off the final size but needs macOS ≥10.11 and the readback is
-# slower — UDZO is the project-appropriate default.
+# Flags deliberately omitted vs. earlier revisions:
+#   -size <N>m       — caused ENOSPC inside hdiutil's virtual device
+#                      when the fixed allocation could not fit content +
+#                      filesystem overhead. Auto-sizing avoids this.
+#   -fs HFS+         — UDZO defaults to HFS+ for backwards compatibility;
+#                      passing it explicitly was redundant.
+#   -fsargs '-c …'   — pre-grew the HFS+ catalog/attributes/extents
+#                      B-trees, competing with payload for fixed-size
+#                      budget. Default newfs_hfs sizing is correct.
 mkdir -p "$(dirname "$FINAL_DMG")"
-rm -f "$FINAL_DMG"
-hdiutil convert "$TEMP_DMG" \
+
+echo "Creating $FINAL_DMG (source: $(du -sh "$STAGING" | awk '{print $1}'))..."
+hdiutil create \
+    -volname "$VOLNAME" \
+    -srcfolder "$STAGING" \
+    -ov \
     -format UDZO \
-    -imagekey zlib-level=9 \
-    -o "$FINAL_DMG" >/dev/null
+    "$FINAL_DMG" >/dev/null
 
 # --- Verify -------------------------------------------------------------
 # `hdiutil verify` checksums the compressed image — catches truncation.
