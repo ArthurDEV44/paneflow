@@ -179,11 +179,21 @@ pub(crate) struct GitHubAsset {
 /// to opening the release page in a browser.
 ///
 /// # Filename convention
-/// Expects assets named `paneflow-<version>-<arch>[<qualifier>].<format-suffix>`:
-/// Linux: `paneflow-v0.2.0-x86_64.deb` (no qualifier).
-/// macOS: `paneflow-0.2.0-aarch64-apple-darwin.dmg` (target-triple qualifier).
-/// Sibling files like `paneflow-v0.2.0-x86_64.AppImage.zsync` are naturally
-/// rejected because their suffix is `.zsync`, not `.AppImage`.
+/// Expects assets whose name ENDS WITH `-<arch>[<qualifier>].<format-suffix>`:
+///
+///   * Linux v0.3.0+: `paneflow-0.3.0-x86_64.deb` (no `v` prefix, no qualifier).
+///   * Linux v0.2.x:  `paneflow-v0.2.0-x86_64.deb` (legacy `v` prefix, no qualifier).
+///   * macOS:         `paneflow-0.3.0-aarch64-apple-darwin.dmg` (target-triple qualifier).
+///   * Windows:       `paneflow-0.3.0-x86_64-pc-windows-msvc.msi`.
+///
+/// The match is suffix-only (`ends_with`), so the `v` prefix on the
+/// version segment is invisible to the matcher: a v0.2.x client polling
+/// the v0.3.0+ release feed still finds the right asset, and vice
+/// versa. This was deliberate during the v0.3.0 naming alignment so old
+/// installs auto-update across the boundary without a transition tag.
+///
+/// Sibling files like `paneflow-0.3.0-x86_64.AppImage.zsync` are
+/// naturally rejected because their suffix is `.zsync`, not `.AppImage`.
 pub fn pick_asset<'a>(
     assets: &'a [GitHubAsset],
     arch: &str,
@@ -459,6 +469,43 @@ mod tests {
         let assets = vec![make_asset("PaneFlow-v0.2.0-X86_64.DEB")];
         let r = pick_asset(&assets, "x86_64", apt());
         assert!(r.is_some(), "case-insensitive match failed");
+    }
+
+    #[test]
+    fn match_is_v_prefix_agnostic() {
+        // Regression test for the v0.3.0 Linux naming alignment: assets
+        // dropped the `v` prefix on the version segment to match the
+        // existing macOS / Windows convention. The matcher is suffix-only
+        // (`ends_with("-<arch>.<ext>")`), so both legacy `paneflow-v...`
+        // and current `paneflow-0...` filenames must resolve to the same
+        // asset for the same caller. Without this property, a v0.2.x
+        // client would fail to find v0.3.0 assets and silently get stuck
+        // on the old version.
+        let legacy = vec![make_asset("paneflow-v0.2.10-x86_64.deb")];
+        let current = vec![make_asset("paneflow-0.3.0-x86_64.deb")];
+        assert_eq!(
+            pick_asset(&legacy, "x86_64", apt()).map(|a| a.name.as_str()),
+            Some("paneflow-v0.2.10-x86_64.deb"),
+            "legacy v-prefixed asset must match",
+        );
+        assert_eq!(
+            pick_asset(&current, "x86_64", apt()).map(|a| a.name.as_str()),
+            Some("paneflow-0.3.0-x86_64.deb"),
+            "current non-v-prefixed asset must match",
+        );
+
+        // Mixed release (transient state during a renamed cut): both
+        // formats present in the same release. The matcher returns the
+        // first match, which is the order GitHub returns assets in. This
+        // test only asserts that SOME asset is found, not which one.
+        let mixed = vec![
+            make_asset("paneflow-v0.2.10-x86_64.deb"),
+            make_asset("paneflow-0.3.0-x86_64.deb"),
+        ];
+        assert!(
+            pick_asset(&mixed, "x86_64", apt()).is_some(),
+            "mixed-format release must yield at least one match",
+        );
     }
 
     #[test]

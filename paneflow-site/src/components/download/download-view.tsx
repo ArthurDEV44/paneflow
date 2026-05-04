@@ -218,7 +218,7 @@ function primaryDownload(
   if (platform.os === "linux") {
     return {
       available: true,
-      href: `${base}/paneflow-v${version}-${platform.arch}.AppImage`,
+      href: `${base}/paneflow-${version}-${platform.arch}.AppImage`,
       format: `AppImage (${platform.arch})`,
       icon: LinuxIcon,
     };
@@ -566,48 +566,55 @@ function macOSItems(version: string): DownloadItem[] {
   ];
 }
 
+// Linux asset filenames switched from `paneflow-v<version>-<arch>.<ext>`
+// (used through v0.2.x) to `paneflow-<version>-<arch>.<ext>` (no `v`
+// prefix, used from v0.3.0) to align with the macOS DMG / Windows MSI
+// convention. The in-app updater matcher (`update_checker.rs::pick_asset`)
+// is suffix-only, so existing v0.2.x clients still discover v0.3.0+
+// assets correctly. If you need to point at a v0.2.x release, add the
+// `v` back into the asset name.
 function linuxItems(version: string): DownloadItem[] {
   const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
   const asset = (name: string) => `${base}/${name}`;
   return [
     {
       label: "AppImage (x64)",
-      href: asset(`paneflow-v${version}-x86_64.AppImage`),
+      href: asset(`paneflow-${version}-x86_64.AppImage`),
       arch: "x86_64",
     },
     {
       label: "AppImage (ARM64)",
-      href: asset(`paneflow-v${version}-aarch64.AppImage`),
+      href: asset(`paneflow-${version}-aarch64.AppImage`),
       arch: "aarch64",
     },
     {
       label: ".deb (x64)",
-      href: asset(`paneflow-v${version}-x86_64.deb`),
+      href: asset(`paneflow-${version}-x86_64.deb`),
       arch: "x86_64",
     },
     {
       label: ".deb (ARM64)",
-      href: asset(`paneflow-v${version}-aarch64.deb`),
+      href: asset(`paneflow-${version}-aarch64.deb`),
       arch: "aarch64",
     },
     {
       label: ".rpm (x64)",
-      href: asset(`paneflow-v${version}-x86_64.rpm`),
+      href: asset(`paneflow-${version}-x86_64.rpm`),
       arch: "x86_64",
     },
     {
       label: ".rpm (ARM64)",
-      href: asset(`paneflow-v${version}-aarch64.rpm`),
+      href: asset(`paneflow-${version}-aarch64.rpm`),
       arch: "aarch64",
     },
     {
       label: "tar.gz (x64)",
-      href: asset(`paneflow-v${version}-x86_64.tar.gz`),
+      href: asset(`paneflow-${version}-x86_64.tar.gz`),
       arch: "x86_64",
     },
     {
       label: "tar.gz (ARM64)",
-      href: asset(`paneflow-v${version}-aarch64.tar.gz`),
+      href: asset(`paneflow-${version}-aarch64.tar.gz`),
       arch: "aarch64",
     },
   ];

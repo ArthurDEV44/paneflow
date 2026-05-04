@@ -18,12 +18,18 @@ const RELEASE_BASE = `https://github.com/ArthurDEV44/paneflow/releases/download/
  * universal (no root, no dep resolution, runs on every modern distro)
  * so it is the default "big green button" target across the site.
  *
- * Callers should only need arch — the URL is on the GitHub Releases
+ * Callers should only need arch. The URL is on the GitHub Releases
  * CDN (not a redirect page), so `<a href>` triggers an immediate
  * browser download.
+ *
+ * Filename convention as of v0.3.0: `paneflow-<semver>-<arch>.AppImage`
+ * (no `v` prefix on the version segment), matching macOS DMG and
+ * Windows MSI naming. Versions <= v0.2.x carry `paneflow-v<semver>-...`;
+ * the in-app updater (`update_checker.rs::pick_asset`) is suffix-only,
+ * so the rename is transparent across the v0.2 -> v0.3 boundary.
  */
 export function linuxAppImageUrl(arch: LinuxArch): string {
-  return `${RELEASE_BASE}/paneflow-v${LATEST_VERSION}-${arch}.AppImage`;
+  return `${RELEASE_BASE}/paneflow-${LATEST_VERSION}-${arch}.AppImage`;
 }
 
 /**
