@@ -9,8 +9,8 @@
 //!
 //! US-003: the format-invariant helper
 //! [`paneflow_telemetry::tags::is_canonical_tag_format`] lives in the
-//! workspace crate so any future emitter (workstream, trust, …) can
-//! reuse the same lowercase-ASCII-only contract. The domain mapping
+//! workspace crate so any future emitter (trust, …) can reuse the
+//! same lowercase-ASCII-only contract. The domain mapping
 //! stays here because it depends on `crate::update::*` types.
 //!
 //! Every mapping target is a `&'static str` — telemetry properties are

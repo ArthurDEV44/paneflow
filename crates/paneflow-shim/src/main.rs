@@ -1478,6 +1478,7 @@ mod tests {
         assert_eq!(detect_tool_from_stem("paneflow-shim"), None);
         assert_eq!(detect_tool_from_stem("Claude"), None, "case-sensitive");
         assert_eq!(detect_tool_from_stem("claude-code"), None);
+        assert_eq!(detect_tool_from_stem("OpenCode"), None);
         assert_eq!(detect_tool_from_stem(""), None);
         assert_eq!(detect_tool_from_stem(" "), None);
     }

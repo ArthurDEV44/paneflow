@@ -68,6 +68,17 @@ actions!(
         Copy,
         Paste,
         SelectAll,
-        OpenHelp
+        OpenHelp,
+        // US-022 (cmux port 2026-Q2) — markdown pane navigation. Scoped to
+        // the `Markdown` key context (root) and `MarkdownSearch` (when the
+        // find overlay is open). Defined as separate actions from terminal
+        // scroll/copy so the keybinding registry can scope them cleanly.
+        MarkdownScrollPageUp,
+        MarkdownScrollPageDown,
+        MarkdownFindOpen,
+        MarkdownFindNext,
+        MarkdownFindPrev,
+        MarkdownFindDismiss,
+        MarkdownCopy
     ]
 );

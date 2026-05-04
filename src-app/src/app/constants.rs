@@ -5,7 +5,7 @@
 //! existing `crate::SIDEBAR_WIDTH` / `crate::TOAST_HOLD_MS` references in
 //! sibling modules keep compiling without import churn.
 
-use gpui::{Pixels, px};
+use gpui::{px, Pixels};
 
 /// Sidebar width in pixels — shared between sidebar and title bar for alignment.
 pub(crate) const SIDEBAR_WIDTH: f32 = 240.;

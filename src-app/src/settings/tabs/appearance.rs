@@ -7,8 +7,8 @@
 //! Extracted from `settings_window.rs` per US-021 of the src-app refactor PRD.
 
 use gpui::{
-    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, Styled, div,
-    prelude::*, px, svg,
+    div, prelude::*, px, svg, ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement,
+    ParentElement, Styled,
 };
 
 use crate::config_writer;
@@ -41,12 +41,23 @@ impl SettingsWindow {
                     .child("Appearance"),
             );
 
+        // US-005: per-field origin badge — shows whether `font_family` came
+        // from `paneflow.json:<line>`, the built-in default, or a runtime
+        // override. Sits inline with the label so its presence is obvious
+        // without expanding the layout.
         let font_label = div()
-            .text_size(px(12.))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(ui.muted)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
             .pb(px(8.))
-            .child("Font Family");
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(ui.muted)
+                    .child("Font Family"),
+            );
 
         let font_value_text = if self.font_dropdown_open {
             if self.font_search.is_empty() {

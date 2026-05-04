@@ -80,10 +80,10 @@ export function DownloadView() {
       <div className="max-w-5xl mx-auto px-6">
         <div className="mb-10">
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-            PaneFlow est disponible pour Linux.
+            Paneflow est disponible pour Linux et macOS.
           </h1>
           <p className="mt-2 text-text-muted">
-            macOS et Windows arrivent très prochainement.
+            Windows arrive très prochainement.
           </p>
         </div>
 
@@ -224,9 +224,16 @@ function primaryDownload(
     };
   }
   if (platform.os === "macos") {
+    // Signed Developer ID + Apple-notarized .dmg. Apple Silicon only —
+    // the `x86_64-apple-darwin` target is a closed CI matrix entry
+    // until v0.3.0 (see release.yml comments). Intel Mac users on a
+    // 2020-or-earlier laptop still see this card with the aarch64
+    // .dmg href, which will fail to launch on their hardware; the
+    // matrix below remains the recovery path until the cut.
     return {
-      available: false,
-      reason: "macOS signé + notarisé arrive très prochainement.",
+      available: true,
+      href: `${base}/paneflow-${version}-aarch64-apple-darwin.dmg`,
+      format: "DMG (Apple Silicon)",
       icon: AppleIcon,
     };
   }
@@ -349,8 +356,7 @@ function VersionRow({
             <PlatformColumn
               Icon={AppleIcon}
               label="macOS"
-              items={[]}
-              placeholder="Arrive très prochainement"
+              items={macOSItems(entry.version)}
               platform="macos"
               version={entry.version}
             />
@@ -541,6 +547,23 @@ function DownloadRow({
       <Download className="w-4 h-4 text-text-subtle" />
     </a>
   );
+}
+
+// macOS items. Apple Silicon (.dmg) only as of v0.2.10 — Intel Mac
+// (`x86_64-apple-darwin`) is a closed CI target until v0.3.0, so the
+// matrix has just one row here. Filename omits the `v` prefix on the
+// version segment (`paneflow-<semver>-aarch64-apple-darwin.dmg`),
+// matching `update_checker.rs::pick_asset` (US-008). When the Intel
+// Mac leg ships, add a second row with `paneflow-<semver>-x86_64-
+// apple-darwin.dmg` — same hyphen pattern.
+function macOSItems(version: string): DownloadItem[] {
+  const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
+  return [
+    {
+      label: "DMG (Apple Silicon)",
+      href: `${base}/paneflow-${version}-aarch64-apple-darwin.dmg`,
+    },
+  ];
 }
 
 function linuxItems(version: string): DownloadItem[] {

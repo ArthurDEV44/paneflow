@@ -83,29 +83,59 @@ impl PaneFlowApp {
             log::warn!("config watcher failed to start: {e}; config hot-reload disabled");
         }
 
+        // US-006: dedicated theme watcher. Mirrors `ConfigWatcher` shape but
+        // signals via an `Arc<AtomicBool>` rather than carrying a payload —
+        // theme invalidation is a tristate "did the file change" question,
+        // and the actual `TerminalTheme` is recomputed lazily by
+        // `active_theme()` on the next render. The 50 ms poll loop drains
+        // this flag and calls `cx.notify()` to schedule the repaint. On
+        // init failure the historical 500 ms polling fallback inside
+        // `active_theme()` keeps the UI responsive (AC #3).
+        let theme_changed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let theme_changed_writer = std::sync::Arc::clone(&theme_changed);
+        match crate::theme::ThemeWatcher::new(std::sync::Arc::new(move || {
+            theme_changed_writer.store(true, std::sync::atomic::Ordering::Release);
+        })) {
+            Some(watcher) => {
+                if let Err(e) = watcher.start() {
+                    log::warn!(
+                        "theme watcher failed to start: {e}; falling back to 500 ms polling"
+                    );
+                }
+            }
+            None => {
+                log::warn!("theme watcher: no config dir resolved; falling back to 500 ms polling");
+            }
+        }
+
         // Background update check (startup-only, non-blocking)
         let pending_update = update::checker::spawn_check();
 
-        // Restore session or create a single default workspace
-        let (workspaces, active_idx) = if let Some(session) = Self::load_session() {
-            log::info!(
-                "restoring session: {} workspace(s)",
-                session.workspaces.len()
-            );
-            Self::restore_workspaces(&session, cx)
-        } else {
-            let ws_id = next_workspace_id();
-            let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
-            cx.subscribe(&terminal, Self::handle_terminal_event)
-                .detach();
-            let pane = cx.new(|cx| Pane::new(terminal, ws_id, cx));
-            cx.subscribe(&pane, Self::handle_pane_event).detach();
-            let dir_name = std::env::current_dir()
-                .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .unwrap_or_else(|| "Terminal 1".into());
-            let ws = Workspace::with_id(ws_id, dir_name, pane);
-            (vec![ws], 0)
+        // Restore session or create a single default workspace.
+        let saved_session = Self::load_session();
+
+        let (workspaces, active_idx) = match saved_session {
+            Some(session) => {
+                log::info!(
+                    "restoring session: {} workspace(s)",
+                    session.workspaces.len()
+                );
+                Self::restore_workspaces(&session, cx)
+            }
+            None => {
+                let ws_id = next_workspace_id();
+                let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
+                cx.subscribe(&terminal, Self::handle_terminal_event)
+                    .detach();
+                let pane = cx.new(|cx| Pane::new(terminal, ws_id, cx));
+                cx.subscribe(&pane, Self::handle_pane_event).detach();
+                let dir_name = std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| "Terminal 1".into());
+                let ws = Workspace::with_id(ws_id, dir_name, pane);
+                (vec![ws], 0)
+            }
         };
 
         // Setup notify file watcher for .git directories
@@ -524,6 +554,9 @@ impl PaneFlowApp {
             telemetry,
             launch_instant: std::time::Instant::now(),
             telemetry_enabled_last,
+            // US-006: shared signal flipped by the theme watcher's debounce
+            // thread; drained by the 50 ms IPC loop to schedule a repaint.
+            theme_changed,
         };
 
         // US-013 AC #1 — fire `app_started` once per launch. `Null` clients
@@ -532,6 +565,23 @@ impl PaneFlowApp {
         // above. Must happen after the struct literal so `self.telemetry`
         // and `self.install_method` are both populated.
         app.emit_app_started(is_first_run_for_telemetry);
+
+        // Custom-button propagation runs once on the active workspace so
+        // user-defined tab-bar buttons surface immediately after restore.
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                smol::Timer::after(std::time::Duration::from_millis(1)).await;
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                        let active = app.active_idx;
+                        if let Some(ws) = app.workspaces.get_mut(active) {
+                            ws.propagate_custom_buttons(cx);
+                        }
+                    })
+                });
+            },
+        )
+        .detach();
         app
     }
 }

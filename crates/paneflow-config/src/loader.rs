@@ -1,9 +1,16 @@
 // US-017: JSON config loader with validation
 
 use crate::schema::{CommandDefinition, LayoutNode, PaneFlowConfig};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::warn;
+
+/// Hard cap on the size of any config file we will read into memory.
+/// Real configs are kilobytes; this guards against a runaway or hostile
+/// file on disk causing the GPUI main thread to stall while
+/// `read_to_string` allocates. 1 MiB is roughly two orders of magnitude
+/// above any plausible config.
+const MAX_CONFIG_SIZE_BYTES: u64 = 1 << 20;
 
 /// Errors that can occur when loading configuration.
 #[derive(Debug, Error)]
@@ -62,6 +69,31 @@ pub fn load_config_from_path(path: &std::path::Path) -> PaneFlowConfig {
         return PaneFlowConfig::default();
     }
 
+    // US-005 hardening: reject oversized files BEFORE allocating a String.
+    // `metadata` is a cheap stat; `read_to_string` would allocate the full
+    // buffer up-front. Without this guard a hostile or accidental large
+    // file would freeze the GPUI main thread and double-allocate during
+    // the source-map line-scan (see Phase 7 security audit, MEDIUM #1).
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() > MAX_CONFIG_SIZE_BYTES => {
+            warn!(
+                "config file {} is {} bytes (over {}-byte cap); using defaults",
+                path.display(),
+                meta.len(),
+                MAX_CONFIG_SIZE_BYTES
+            );
+            return PaneFlowConfig::default();
+        }
+        Ok(_) => {}
+        Err(e) => {
+            warn!(
+                "failed to stat config file {}: {e}; using defaults",
+                path.display()
+            );
+            return PaneFlowConfig::default();
+        }
+    }
+
     let contents = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -73,7 +105,7 @@ pub fn load_config_from_path(path: &std::path::Path) -> PaneFlowConfig {
         }
     };
 
-    parse_and_validate(&contents)
+    parse_and_validate_with_path(&contents, path)
 }
 
 /// Parse a JSON string into a validated `PaneFlowConfig`.
@@ -81,6 +113,11 @@ pub fn load_config_from_path(path: &std::path::Path) -> PaneFlowConfig {
 /// Invalid JSON produces a warning and returns defaults.
 /// Individual commands with validation errors are filtered out with warnings.
 pub fn parse_and_validate(json: &str) -> PaneFlowConfig {
+    parse_and_validate_with_path(json, Path::new("<config>"))
+}
+
+/// Parse + validate. `path` is currently used only for warning messages.
+pub fn parse_and_validate_with_path(json: &str, _path: &Path) -> PaneFlowConfig {
     let mut config: PaneFlowConfig = match serde_json::from_str(json) {
         Ok(c) => c,
         Err(e) => {

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    PaneFlow release entitlements (US-023).
+
+    Consumed by scripts/sign-macos.sh (codesign entitlements flag) when
+    signing Developer-ID-distributed .app bundles for tagged releases (`v*`).
+
+    Why each key is here:
+
+    com.apple.security.app-sandbox = false
+        PaneFlow spawns user shells and arbitrary child processes (the whole
+        point of a terminal). The sandbox would either block these execs or
+        confine them to a private container, breaking parity with every other
+        terminal emulator. Distribution-signed (Developer ID) apps run
+        unsandboxed by default, so this key is technically a no-op — kept
+        explicit per US-023 AC1 so reviewers can see the decision was deliberate.
+
+    com.apple.security.automation.apple-events = true
+        Lets the terminal (and shells started inside it) drive other apps via
+        osascript / NSAppleEventDescriptor — common in dev workflows
+        (`osascript -e 'tell app "Finder" to ...'`, `open -a`, etc.).
+
+    com.apple.security.cs.allow-jit = true
+        GPUI compiles Metal pipeline state objects on first use; wgpu's
+        Metal backend likewise creates MTLComputePipelineStates from
+        runtime-generated MSL. Both fall under the hardened-runtime JIT
+        rule even though there is no LLVM-style codegen.
+
+    com.apple.security.cs.allow-unsigned-executable-memory = true
+        Required alongside allow-jit for some libdispatch / ARC paths under
+        hardened runtime. Apple recommends enabling both together for any
+        app that calls into Metal or WebKit-derived shader compilers.
+
+    com.apple.security.cs.disable-library-validation = true
+        Reserved for the planned MCP host (paneflow-workstream EP-004),
+        which will dlopen() user-installed transport plugins from
+        third-party Team IDs at PaneFlow's own process level. Without
+        this entitlement, hardened runtime rejects any dlopen of a
+        library whose Team ID does not match the host bundle's.
+        NOTE: this entitlement does NOT propagate to exec-spawned
+        children (shells, claude, codex, etc.) — those processes have
+        their own codesigning context and load their own dylibs without
+        reference to PaneFlow's entitlements.
+
+    com.apple.security.cs.allow-dyld-environment-variables = true
+        Allows PaneFlow's own process to honour DYLD_LIBRARY_PATH /
+        DYLD_FRAMEWORK_PATH for plugins it loads via dlopen (see the
+        disable-library-validation note above). Hardened runtime
+        strips DYLD_* by default; enabling this entitlement is the
+        canonical way to opt back in. Like disable-library-validation,
+        this affects only the PaneFlow process — child shells set
+        DYLD_* on their own subprocess environments independently.
+
+    NOTE: com.apple.security.get-task-allow is INTENTIONALLY ABSENT here.
+    A distribution build with get-task-allow=true is rejected by
+    notarytool (`The executable requests the com.apple.security.
+    get-task-allow entitlement`). Use packaging/macos/paneflow.dev.entitlements
+    for local debug signing where lldb attach is needed.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>

@@ -54,9 +54,7 @@ const TOOL_CODEX: &str = "codex";
 
 /// Typed AI tool identity. Replaces ad-hoc `&'static str` matching across
 /// dispatch + `build_frame` so an unknown value can't sneak past the
-/// `_ => Claude` fallback as a stringly-typed surprise. Kept duplicated in
-/// the shim (it has its own version) — the two binaries don't share a crate
-/// and a 5-line enum is cheaper than a new shared `paneflow-ai-types` crate.
+/// `_ => Claude` fallback as a stringly-typed surprise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AiTool {
     Claude,
@@ -65,7 +63,8 @@ enum AiTool {
 
 impl AiTool {
     /// Wire-format string written into the `tool` field of every IPC frame.
-    /// Must match the server's `AiTool` enum mapping at `ai_types.rs:27-31`.
+    /// Must match the server's `AiTool::wire_id()` mapping at
+    /// `ai_types.rs::AiTool::wire_id`.
     fn as_str(self) -> &'static str {
         match self {
             Self::Claude => TOOL_CLAUDE,
@@ -135,10 +134,14 @@ fn build_frame(
     tool: &str,
     hook_payload: serde_json::Value,
     pid: Option<u32>,
+    surface_id: Option<u64>,
 ) -> Option<serde_json::Value> {
     let mut params = serde_json::Map::new();
     params.insert("workspace_id".into(), serde_json::Value::from(workspace_id));
     params.insert("tool".into(), serde_json::Value::String(tool.to_owned()));
+    if let Some(sid) = surface_id {
+        params.insert("surface_id".into(), serde_json::Value::from(sid));
+    }
 
     let method = match event {
         "SessionStart" => {
@@ -154,6 +157,12 @@ fn build_frame(
                     .filter(|&p| p > 0)
             })?;
             params.insert("pid".into(), serde_json::Value::from(session_pid));
+            if let Some(sid) = hook_payload.get("session_id").and_then(|v| v.as_str()) {
+                params.insert(
+                    "session_id".into(),
+                    serde_json::Value::String(sid.to_owned()),
+                );
+            }
             METHOD_SESSION_START
         }
         "UserPromptSubmit" => METHOD_PROMPT_SUBMIT,
@@ -351,8 +360,11 @@ fn dispatch() {
 
     let tool = detect_tool().as_str();
     let pid = read_ai_pid();
+    // US-016 — best-effort: a missing or malformed surface_id leaves the
+    // server falling back to workspace-only routing.
+    let surface_id = read_surface_id();
 
-    let Some(frame) = build_frame(&event, workspace_id, tool, hook_payload, pid) else {
+    let Some(frame) = build_frame(&event, workspace_id, tool, hook_payload, pid, surface_id) else {
         // `build_frame` returns `None` in exactly two cases: an unknown event
         // name, or `SessionStart` with no PID resolvable. Distinguish them
         // so a developer reading `$PANEFLOW_HOOK_LOG` knows whether to fix
@@ -394,6 +406,13 @@ fn read_workspace_id() -> Option<u64> {
             None
         }
     }
+}
+
+/// Surface (TerminalView) id propagated by `pty_session.rs` as
+/// `$PANEFLOW_SURFACE_ID`. Optional: a missing or unparseable value
+/// degrades cleanly.
+fn read_surface_id() -> Option<u64> {
+    env::var("PANEFLOW_SURFACE_ID").ok()?.parse::<u64>().ok()
 }
 
 /// Hard cap on the stdin read. Claude Code / Codex hook payloads are tiny
@@ -554,8 +573,15 @@ mod tests {
     #[test]
     fn user_prompt_submit_maps_to_ai_prompt_submit() {
         let payload = json!({ "session_id": "s1", "prompt": "hi" });
-        let frame =
-            build_frame("UserPromptSubmit", 42, TOOL_CLAUDE, payload.clone(), None).unwrap();
+        let frame = build_frame(
+            "UserPromptSubmit",
+            42,
+            TOOL_CLAUDE,
+            payload.clone(),
+            None,
+            None,
+        )
+        .unwrap();
 
         let params = assert_envelope(&frame, "ai.prompt_submit");
         assert_eq!(params["workspace_id"], 42);
@@ -570,7 +596,8 @@ mod tests {
             "message": "Allow Bash?",
             "notification_type": "permission_prompt",
         });
-        let frame = build_frame("Notification", 7, TOOL_CLAUDE, payload.clone(), None).unwrap();
+        let frame =
+            build_frame("Notification", 7, TOOL_CLAUDE, payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.notification");
         assert_eq!(params["workspace_id"], 7);
@@ -586,7 +613,7 @@ mod tests {
     #[test]
     fn stop_maps_to_ai_stop() {
         let payload = json!({ "session_id": "s1" });
-        let frame = build_frame("Stop", 1, TOOL_CLAUDE, payload.clone(), None).unwrap();
+        let frame = build_frame("Stop", 1, TOOL_CLAUDE, payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.stop");
         assert_eq!(params["workspace_id"], 1);
@@ -597,7 +624,8 @@ mod tests {
     #[test]
     fn subagent_stop_maps_to_ai_stop() {
         let payload = json!({ "session_id": "sub" });
-        let frame = build_frame("SubagentStop", 1, TOOL_CLAUDE, payload.clone(), None).unwrap();
+        let frame =
+            build_frame("SubagentStop", 1, TOOL_CLAUDE, payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.stop");
         assert_eq!(params["tool"], "claude");
@@ -610,7 +638,7 @@ mod tests {
             "tool_name": "Bash",
             "tool_input": { "command": "ls" },
         });
-        let frame = build_frame("PreToolUse", 3, TOOL_CLAUDE, payload.clone(), None).unwrap();
+        let frame = build_frame("PreToolUse", 3, TOOL_CLAUDE, payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.tool_use");
         assert_eq!(params["workspace_id"], 3);
@@ -625,7 +653,7 @@ mod tests {
     #[test]
     fn post_tool_use_maps_to_ai_tool_use_with_tool_name() {
         let payload = json!({ "tool_name": "Edit" });
-        let frame = build_frame("PostToolUse", 3, TOOL_CLAUDE, payload, None).unwrap();
+        let frame = build_frame("PostToolUse", 3, TOOL_CLAUDE, payload, None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.tool_use");
         assert_eq!(params["tool_name"], "Edit");
@@ -637,7 +665,7 @@ mod tests {
         // still dispatches so the server can mark the workspace as tool-busy,
         // but with `tool_name` absent from top-level params.
         let payload = json!({ "tool_input": { "command": "ls" } });
-        let frame = build_frame("PreToolUse", 3, TOOL_CLAUDE, payload.clone(), None).unwrap();
+        let frame = build_frame("PreToolUse", 3, TOOL_CLAUDE, payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.tool_use");
         assert!(
@@ -650,8 +678,8 @@ mod tests {
     #[test]
     fn unknown_event_returns_none() {
         let payload = json!({});
-        assert!(build_frame("Bogus", 1, TOOL_CLAUDE, payload.clone(), None).is_none());
-        assert!(build_frame("", 1, TOOL_CLAUDE, payload, None).is_none());
+        assert!(build_frame("Bogus", 1, TOOL_CLAUDE, payload.clone(), None, None).is_none());
+        assert!(build_frame("", 1, TOOL_CLAUDE, payload, None, None).is_none());
     }
 
     #[test]
@@ -660,7 +688,7 @@ mod tests {
         // exits. Unlike SessionStart, no `pid` is required (server only
         // needs workspace_id + tool to clear the loader state).
         let payload = json!({});
-        let frame = build_frame("SessionEnd", 7, TOOL_CODEX, payload.clone(), None).unwrap();
+        let frame = build_frame("SessionEnd", 7, TOOL_CODEX, payload.clone(), None, None).unwrap();
         let params = assert_envelope(&frame, "ai.session_end");
         assert_eq!(params["workspace_id"], 7);
         assert_eq!(params["tool"], "codex");
@@ -672,8 +700,15 @@ mod tests {
     #[test]
     fn codex_session_start_with_env_pid_maps_to_ai_session_start() {
         let payload = json!({ "session_id": "codex-1", "cwd": "/work" });
-        let frame =
-            build_frame("SessionStart", 5, TOOL_CODEX, payload.clone(), Some(4242)).unwrap();
+        let frame = build_frame(
+            "SessionStart",
+            5,
+            TOOL_CODEX,
+            payload.clone(),
+            Some(4242),
+            None,
+        )
+        .unwrap();
 
         let params = assert_envelope(&frame, "ai.session_start");
         assert_eq!(params["workspace_id"], 5);
@@ -691,7 +726,8 @@ mod tests {
         // hook binary must honor it so the frame still dispatches even when
         // invoked outside the US-004 shim.
         let payload = json!({ "session_id": "codex-2", "pid": 7777u64 });
-        let frame = build_frame("SessionStart", 9, TOOL_CODEX, payload.clone(), None).unwrap();
+        let frame =
+            build_frame("SessionStart", 9, TOOL_CODEX, payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.session_start");
         assert_eq!(params["workspace_id"], 9);
@@ -706,7 +742,7 @@ mod tests {
         // rejects pid == 0 / missing with `ipc_handler.rs:353`).
         let payload = json!({ "session_id": "codex-3" });
         assert!(
-            build_frame("SessionStart", 9, TOOL_CODEX, payload, None).is_none(),
+            build_frame("SessionStart", 9, TOOL_CODEX, payload, None, None).is_none(),
             "SessionStart must return None when no pid is resolvable"
         );
     }
@@ -717,7 +753,7 @@ mod tests {
         // absent so the frame isn't built with an invalid pid.
         let payload = json!({ "pid": 0u64 });
         assert!(
-            build_frame("SessionStart", 1, TOOL_CODEX, payload, None).is_none(),
+            build_frame("SessionStart", 1, TOOL_CODEX, payload, None, None).is_none(),
             "pid == 0 must not satisfy SessionStart's pid requirement"
         );
     }
@@ -725,7 +761,15 @@ mod tests {
     #[test]
     fn codex_user_prompt_submit_carries_tool_codex() {
         let payload = json!({ "prompt": "run tests" });
-        let frame = build_frame("UserPromptSubmit", 2, TOOL_CODEX, payload.clone(), None).unwrap();
+        let frame = build_frame(
+            "UserPromptSubmit",
+            2,
+            TOOL_CODEX,
+            payload.clone(),
+            None,
+            None,
+        )
+        .unwrap();
 
         let params = assert_envelope(&frame, "ai.prompt_submit");
         assert_eq!(params["tool"], "codex");
@@ -742,7 +786,7 @@ mod tests {
         // `WaitingForInput` overwrites the preceding `Stop → Finished`.
         let payload = json!({ "message": "Indexing workspace…" });
         assert!(
-            build_frame("Notification", 2, TOOL_CODEX, payload.clone(), None).is_none(),
+            build_frame("Notification", 2, TOOL_CODEX, payload.clone(), None, None).is_none(),
             "Notification without permission_prompt/elicitation_dialog must be dropped"
         );
 
@@ -751,7 +795,15 @@ mod tests {
             "notification_type": "auth_success",
         });
         assert!(
-            build_frame("Notification", 2, TOOL_CLAUDE, payload_with_unknown, None).is_none(),
+            build_frame(
+                "Notification",
+                2,
+                TOOL_CLAUDE,
+                payload_with_unknown,
+                None,
+                None
+            )
+            .is_none(),
             "auth_success and other informational types must be dropped"
         );
     }
@@ -762,7 +814,8 @@ mod tests {
             "message": "What language?",
             "notification_type": "elicitation_dialog",
         });
-        let frame = build_frame("Notification", 4, TOOL_CLAUDE, payload.clone(), None).unwrap();
+        let frame =
+            build_frame("Notification", 4, TOOL_CLAUDE, payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.notification");
         assert_eq!(params["tool"], "claude");
@@ -772,7 +825,7 @@ mod tests {
     #[test]
     fn codex_stop_carries_tool_codex() {
         let payload = json!({ "session_id": "codex-stop" });
-        let frame = build_frame("Stop", 2, TOOL_CODEX, payload.clone(), None).unwrap();
+        let frame = build_frame("Stop", 2, TOOL_CODEX, payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.stop");
         assert_eq!(params["workspace_id"], 2);
@@ -783,7 +836,7 @@ mod tests {
     #[test]
     fn codex_pre_tool_use_carries_tool_codex_and_tool_name() {
         let payload = json!({ "tool_name": "shell", "command": "ls" });
-        let frame = build_frame("PreToolUse", 2, TOOL_CODEX, payload.clone(), None).unwrap();
+        let frame = build_frame("PreToolUse", 2, TOOL_CODEX, payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.tool_use");
         assert_eq!(params["tool"], "codex");
@@ -793,7 +846,15 @@ mod tests {
     #[test]
     fn codex_permission_request_maps_to_ai_notification_with_type() {
         let payload = json!({ "message": "Approve shell command?" });
-        let frame = build_frame("PermissionRequest", 2, TOOL_CODEX, payload.clone(), None).unwrap();
+        let frame = build_frame(
+            "PermissionRequest",
+            2,
+            TOOL_CODEX,
+            payload.clone(),
+            None,
+            None,
+        )
+        .unwrap();
 
         let params = assert_envelope(&frame, "ai.notification");
         assert_eq!(params["tool"], "codex");

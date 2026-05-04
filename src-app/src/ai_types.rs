@@ -21,6 +21,15 @@ impl AiTool {
         }
     }
 
+    /// Wire-format string used by the `ai.*` IPC `tool` parameter.
+    #[allow(dead_code)]
+    pub fn wire_id(&self) -> &'static str {
+        match self {
+            AiTool::Claude => "claude",
+            AiTool::Codex => "codex",
+        }
+    }
+
     /// Parse a tool name string into an `AiTool`. Case-insensitive.
     /// Defaults to `Claude` for unknown names.
     pub fn from_name(name: &str) -> Self {

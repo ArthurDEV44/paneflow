@@ -14,8 +14,8 @@
 //! the effect.
 
 use gpui::{
-    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, Styled, div,
-    prelude::*, px,
+    div, prelude::*, px, ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement,
+    ParentElement, Styled,
 };
 
 use crate::config_writer;
@@ -69,11 +69,22 @@ impl SettingsWindow {
             _ => ui.muted,
         };
 
+        // US-005: badge surfacing where the telemetry block came from —
+        // useful when a user wonders why the toggle is still "Not set"
+        // even though they edited the file (e.g. typo in `enable` vs
+        // `enabled`).
         let status = div()
             .mt(px(14.))
-            .text_size(px(12.))
-            .text_color(status_color)
-            .child(status_label);
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(status_color)
+                    .child(status_label),
+            );
 
         // Segmented two-button toggle. Neither button is "active" when
         // current == None (tri-state rendering); the user picks either

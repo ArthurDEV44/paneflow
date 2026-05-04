@@ -9,14 +9,15 @@ use gpui::Action;
 use crate::{
     ClearScrollHistory, ClosePane, CloseTab, CloseWindow, CloseWorkspace, CopyWorkspacePath,
     DismissSearch, FocusDown, FocusLeft, FocusRight, FocusUp, JumpToPromptNext, JumpToPromptPrev,
-    LayoutEvenHorizontal, LayoutEvenVertical, LayoutMainVertical, LayoutTiled, NewTab,
-    NewWorkspace, NextWorkspace, OpenWorkspaceInCursor, OpenWorkspaceInVsCode,
-    OpenWorkspaceInWindsurf, OpenWorkspaceInZed, Quit, ResetTerminal, RevealWorkspaceInFileManager,
-    ScrollPageDown, ScrollPageUp, SearchNext, SearchPrev, SelectWorkspace1, SelectWorkspace2,
-    SelectWorkspace3, SelectWorkspace4, SelectWorkspace5, SelectWorkspace6, SelectWorkspace7,
-    SelectWorkspace8, SelectWorkspace9, SplitEqualize, SplitHorizontally, SplitVertically,
-    SwapPane, TerminalCopy, TerminalPaste, ToggleCopyMode, ToggleSearch, ToggleSearchRegex,
-    ToggleZoom, UndoClosePane,
+    LayoutEvenHorizontal, LayoutEvenVertical, LayoutMainVertical, LayoutTiled, MarkdownCopy,
+    MarkdownFindDismiss, MarkdownFindNext, MarkdownFindOpen, MarkdownFindPrev,
+    MarkdownScrollPageDown, MarkdownScrollPageUp, NewTab, NewWorkspace, NextWorkspace,
+    OpenWorkspaceInCursor, OpenWorkspaceInVsCode, OpenWorkspaceInWindsurf, OpenWorkspaceInZed,
+    Quit, ResetTerminal, RevealWorkspaceInFileManager, ScrollPageDown, ScrollPageUp, SearchNext,
+    SearchPrev, SelectWorkspace1, SelectWorkspace2, SelectWorkspace3, SelectWorkspace4,
+    SelectWorkspace5, SelectWorkspace6, SelectWorkspace7, SelectWorkspace8, SelectWorkspace9,
+    SplitEqualize, SplitHorizontally, SplitVertically, SwapPane, TerminalCopy, TerminalPaste,
+    ToggleCopyMode, ToggleSearch, ToggleSearchRegex, ToggleZoom, UndoClosePane,
 };
 
 /// Metadata for a single dispatchable action.
@@ -344,6 +345,51 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         factory: || Box::new(Quit),
         context: "",
         description: "Quit",
+    },
+    // US-022: Markdown pane navigation. Scroll + copy bind on the root
+    // `Markdown` context; find-overlay actions bind on `MarkdownSearch`
+    // (active only while the search bar is open).
+    ActionMeta {
+        name: "markdown_scroll_page_up",
+        factory: || Box::new(MarkdownScrollPageUp),
+        context: "Markdown",
+        description: "Markdown: scroll up one page",
+    },
+    ActionMeta {
+        name: "markdown_scroll_page_down",
+        factory: || Box::new(MarkdownScrollPageDown),
+        context: "Markdown",
+        description: "Markdown: scroll down one page",
+    },
+    ActionMeta {
+        name: "markdown_find_open",
+        factory: || Box::new(MarkdownFindOpen),
+        context: "Markdown",
+        description: "Markdown: open find bar",
+    },
+    ActionMeta {
+        name: "markdown_copy",
+        factory: || Box::new(MarkdownCopy),
+        context: "Markdown",
+        description: "Markdown: copy selection / current match",
+    },
+    ActionMeta {
+        name: "markdown_find_next",
+        factory: || Box::new(MarkdownFindNext),
+        context: "MarkdownSearch",
+        description: "Markdown: jump to next match",
+    },
+    ActionMeta {
+        name: "markdown_find_prev",
+        factory: || Box::new(MarkdownFindPrev),
+        context: "MarkdownSearch",
+        description: "Markdown: jump to previous match",
+    },
+    ActionMeta {
+        name: "markdown_find_dismiss",
+        factory: || Box::new(MarkdownFindDismiss),
+        context: "MarkdownSearch",
+        description: "Markdown: close find bar",
     },
 ];
 

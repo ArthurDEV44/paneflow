@@ -24,6 +24,20 @@ use crate::terminal::types::{HyperlinkSource, HyperlinkZone};
 use super::probe_enabled;
 use super::{TerminalEvent, TerminalView};
 
+/// Returns true when the platform-appropriate "open link" modifier is held:
+/// Cmd on macOS, Ctrl on Linux/Windows (US-019 AC).
+#[inline]
+fn open_link_modifier_held(modifiers: &gpui::Modifiers) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        modifiers.platform
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        modifiers.control
+    }
+}
+
 impl TerminalView {
     pub(super) fn handle_key_down(
         &mut self,
@@ -31,6 +45,15 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // [diag-keyrepeat] Temporary instrumentation to debug Wayland/GNOME
+        // auto-repeat. Remove once root cause is identified.
+        log::info!(
+            "[keyrepeat] handle_key_down key={:?} is_held={} key_char={:?}",
+            event.keystroke.key,
+            event.is_held,
+            event.keystroke.key_char,
+        );
+
         // Cancel swap mode on Escape — checked before any other mode handling
         if crate::SWAP_MODE.load(std::sync::atomic::Ordering::Relaxed)
             && event.keystroke.key == "escape"
@@ -250,12 +273,29 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Ctrl+Left-click: open hyperlink (US-016)
-        if event.button == MouseButton::Left && event.modifiers.control && event.click_count == 1 {
+        // Cmd/Ctrl+Left-click: open hyperlink (US-016 + US-019 + US-020).
+        // Modifier is platform-aware: Cmd on macOS, Ctrl elsewhere.
+        if event.button == MouseButton::Left
+            && open_link_modifier_held(&event.modifiers)
+            && event.click_count == 1
+        {
             if let Some(ref link) = self.ctrl_hovered_link
                 && link.is_openable
             {
-                let _ = open::that(&link.uri);
+                match link.source {
+                    HyperlinkSource::FilePath => {
+                        // US-020: route to the markdown viewer pipeline.
+                        // PaneFlowApp subscribes and splits the pane; we
+                        // never call `open::that` for `.md` files because
+                        // that would launch the OS default app instead of
+                        // the in-pane viewer.
+                        let path = std::path::PathBuf::from(&link.uri);
+                        cx.emit(TerminalEvent::OpenMarkdownPath(path));
+                    }
+                    HyperlinkSource::Osc8 | HyperlinkSource::Regex => {
+                        let _ = open::that(&link.uri);
+                    }
+                }
             }
             return;
         }
@@ -323,9 +363,10 @@ impl TerminalView {
         let (hover_point, _) = self.pixel_to_grid(event.position);
         self.hovered_cell = Some(hover_point);
 
-        // Ctrl+hover: detect URL under cursor for hyperlink rendering (US-016)
-        // OSC 8 takes priority over regex detection.
-        if event.modifiers.control {
+        // Cmd/Ctrl+hover: detect link under cursor for hyperlink rendering
+        // (US-016 + US-019). OSC 8 takes priority over regex URL detection,
+        // which takes priority over file-path detection.
+        if open_link_modifier_held(&event.modifiers) {
             // Check OSC 8 hyperlink on the hovered cell first
             let osc8_link = {
                 let term = self.terminal.term.lock();
@@ -342,14 +383,24 @@ impl TerminalView {
                     }
                 })
             };
-            self.ctrl_hovered_link = osc8_link.or_else(|| {
-                let zones = self.detect_url_at_hover();
-                zones.into_iter().find(|z| {
-                    hover_point.line == z.start.line
-                        && hover_point.column >= z.start.column
-                        && hover_point.column <= z.end.column
+            self.ctrl_hovered_link = osc8_link
+                .or_else(|| {
+                    let zones = self.detect_url_at_hover();
+                    zones.into_iter().find(|z| {
+                        hover_point.line == z.start.line
+                            && hover_point.column >= z.start.column
+                            && hover_point.column <= z.end.column
+                    })
                 })
-            });
+                .or_else(|| {
+                    // US-019: fall back to .md/.markdown file-path detection.
+                    let zones = self.detect_file_path_at_hover();
+                    zones.into_iter().find(|z| {
+                        hover_point.line == z.start.line
+                            && hover_point.column >= z.start.column
+                            && hover_point.column <= z.end.column
+                    })
+                });
             cx.notify();
         } else if self.ctrl_hovered_link.is_some() {
             self.ctrl_hovered_link = None;

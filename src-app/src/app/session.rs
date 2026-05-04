@@ -9,16 +9,16 @@ use std::collections::VecDeque;
 use gpui::{App, AppContext, Context, Entity};
 use paneflow_config::schema::LayoutNode;
 
-use crate::PaneFlowApp;
 use crate::layout::LayoutTree;
 use crate::pane::Pane;
 use crate::terminal::TerminalView;
-use crate::workspace::{Workspace, next_workspace_id};
+use crate::workspace::{next_workspace_id, Workspace};
+use crate::PaneFlowApp;
 
 impl PaneFlowApp {
     pub(crate) fn save_session(&self, cx: &App) {
         let state = paneflow_config::schema::SessionState {
-            version: 1,
+            version: paneflow_config::schema::SESSION_SCHEMA_VERSION,
             active_workspace: self.active_idx,
             workspaces: self
                 .workspaces
@@ -94,7 +94,6 @@ impl PaneFlowApp {
                 });
                 Workspace::with_layout_and_id(ws_id, ws_session.title.clone(), cwd, tree)
             } else {
-                // No saved layout — single terminal in the workspace CWD
                 let terminal =
                     cx.new(|cx| TerminalView::with_cwd(ws_id, Some(cwd.clone()), None, cx));
                 cx.subscribe(&terminal, Self::handle_terminal_event)
@@ -104,8 +103,6 @@ impl PaneFlowApp {
                 Workspace::with_cwd_and_id(ws_id, ws_session.title.clone(), cwd, pane)
             };
 
-            // Restore persisted custom buttons and push them to every pane
-            // in the workspace so the tab bar reflects them on startup.
             workspace.custom_buttons = ws_session.custom_buttons.clone();
             workspace.propagate_custom_buttons(cx);
             workspaces.push(workspace);
@@ -145,8 +142,9 @@ impl PaneFlowApp {
                         .as_ref()
                         .map(PathBuf::from)
                         .unwrap_or_else(|| fallback_cwd.to_path_buf());
+
                     let t = cx.new(|cx| TerminalView::with_cwd(workspace_id, Some(cwd), None, cx));
-                    // Restore saved scrollback into the terminal grid
+
                     if let Some(ref scrollback) = surface.scrollback {
                         t.read(cx).terminal.restore_scrollback(scrollback);
                     }

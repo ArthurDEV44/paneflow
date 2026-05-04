@@ -17,8 +17,8 @@
 //! per-installation id, and canonical-tag format invariants.
 //!
 //! Extracted from `paneflow-app` per US-003 of the cmux-port PRD so that
-//! future workspace members (`paneflow-workstream`, `paneflow-trust`, …)
-//! can emit events without taking a dependency on the desktop binary.
+//! future workspace members can emit events without taking a dependency
+//! on the desktop binary.
 //!
 //! Submodules:
 //! - [`client`] — `TelemetryClient` factory, capture API, batched flush.

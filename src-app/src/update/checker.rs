@@ -202,6 +202,24 @@ pub fn pick_asset<'a>(
 }
 
 fn check_github_release() -> UpdateStatus {
+    // Dev-only override: lets `cargo run` short-circuit the GitHub check
+    // and synthesize an `Available { version }` so the update pill can be
+    // exercised end-to-end without a real release. Pair with
+    // `PANEFLOW_DEV_INSTALL_METHOD=dnf` to reach the pkexec branch.
+    #[cfg(debug_assertions)]
+    if let Ok(forced_version) = std::env::var("PANEFLOW_DEV_FORCE_UPDATE") {
+        let version = forced_version.trim().trim_start_matches('v').to_string();
+        if !version.is_empty() && Version::parse(&version).is_ok() {
+            log::warn!("update check: PANEFLOW_DEV_FORCE_UPDATE active, faking v{version}");
+            return UpdateStatus::Available {
+                version,
+                url: "https://github.com/ArthurDEV44/paneflow/releases".to_string(),
+                asset_url: None,
+                asset_format: None,
+            };
+        }
+    }
+
     let response = ureq::get(GITHUB_API)
         .config()
         .timeout_global(Some(UPDATE_HTTP_TIMEOUT))
