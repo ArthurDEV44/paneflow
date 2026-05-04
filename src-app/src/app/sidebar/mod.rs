@@ -15,8 +15,8 @@ use gpui::{
 };
 
 use crate::{
-    CLAUDE_SPINNER_FRAMES, CODEX_SPINNER_FRAMES, PaneFlowApp, SIDEBAR_WIDTH, WorkspaceContextMenu,
-    WorkspaceDrag, WorkspaceDragPreview, ai_types,
+    CLAUDE_SPINNER_FRAMES, CODEX_SPINNER_FRAMES, PaneFlowApp, SIDEBAR_WIDTH,
+    WorkspaceContextMenu, WorkspaceDrag, WorkspaceDragPreview, ai_types,
 };
 
 impl PaneFlowApp {

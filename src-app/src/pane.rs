@@ -15,6 +15,7 @@ use gpui::{
 };
 use paneflow_config::schema::ButtonCommand;
 
+use crate::markdown::MarkdownView;
 use crate::terminal::{TerminalEvent, TerminalView};
 
 // ---------------------------------------------------------------------------
@@ -64,6 +65,12 @@ pub struct Pane {
     /// Workspace-specific command buttons rendered in the tab bar after the
     /// built-in defaults. Populated/updated by `Workspace::propagate_custom_buttons`.
     pub custom_buttons: Vec<ButtonCommand>,
+    /// US-020 — when `Some`, this pane shows a markdown viewer instead of a
+    /// terminal. `tabs` is empty in that case. The PRD asks for a `Pane` enum
+    /// with `Terminal | Markdown` variants; the additive `Option` field is
+    /// the equivalent pattern that keeps the existing terminal hot paths
+    /// untouched while allowing the renderer to branch on a single field.
+    pub markdown_content: Option<Entity<MarkdownView>>,
 }
 
 impl EventEmitter<PaneEvent> for Pane {}
@@ -78,7 +85,31 @@ impl Pane {
             zoomed: false,
             workspace_id,
             custom_buttons: Vec::new(),
+            markdown_content: None,
         }
+    }
+
+    /// US-020 — create a pane that hosts a markdown viewer. The pane has no
+    /// terminal tabs; `markdown_content` carries the rendering view.
+    pub fn new_markdown(
+        markdown: Entity<MarkdownView>,
+        workspace_id: u64,
+        _cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            tabs: Vec::new(),
+            selected_idx: 0,
+            zoomed: false,
+            workspace_id,
+            custom_buttons: Vec::new(),
+            markdown_content: Some(markdown),
+        }
+    }
+
+    /// US-020 — true when this pane renders a markdown viewer rather than a
+    /// terminal tab strip. Used by close / focus / render paths to branch.
+    pub fn is_markdown(&self) -> bool {
+        self.markdown_content.is_some()
     }
 
     /// Add a new terminal tab and select it.
@@ -111,7 +142,8 @@ impl Pane {
                 | TerminalEvent::ServiceDetected(_)
                 | TerminalEvent::CancelSwapMode
                 | TerminalEvent::SelectionCopied
-                | TerminalEvent::Bell => {}
+                | TerminalEvent::Bell
+                | TerminalEvent::OpenMarkdownPath(_) => {}
             }
         })
         .detach();
@@ -228,14 +260,37 @@ impl Pane {
     }
 
     /// Close the currently selected tab. Returns `true` if the pane is now empty.
+    /// For markdown panes (US-020) there is no tab strip — closing always
+    /// removes the entire pane.
     pub fn close_selected_tab(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.is_markdown() {
+            cx.emit(PaneEvent::Remove);
+            return true;
+        }
         self.close_tab_at(self.selected_idx, cx);
         self.tabs.is_empty()
     }
 
     /// Get the currently selected terminal entity.
+    ///
+    /// **Panics** when called on a markdown pane (US-020) where `tabs` is
+    /// empty. Internal pane code is gated by `markdown_content` checks before
+    /// reaching this; external callers must use [`Self::active_terminal_opt`]
+    /// or guard with [`Self::is_markdown`] first.
     pub fn active_terminal(&self) -> &Entity<TerminalView> {
+        debug_assert!(
+            !self.tabs.is_empty(),
+            "active_terminal() called on a markdown pane — use active_terminal_opt() or is_markdown()"
+        );
         &self.tabs[self.selected_idx]
+    }
+
+    /// US-020 — fallible version of [`Self::active_terminal`] that returns
+    /// `None` for markdown panes instead of panicking. External call sites
+    /// (event handlers, workspace ops, IPC) must use this entry point so a
+    /// markdown pane in the layout tree never triggers an index-out-of-bounds.
+    pub fn active_terminal_opt(&self) -> Option<&Entity<TerminalView>> {
+        self.tabs.get(self.selected_idx)
     }
 
     // -----------------------------------------------------------------------
@@ -493,12 +548,44 @@ impl Pane {
 
 impl gpui::Focusable for Pane {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
+        if let Some(md) = &self.markdown_content {
+            return md.read(cx).focus_handle(cx);
+        }
         self.active_terminal().read(cx).focus_handle(cx)
     }
 }
 
 impl Render for Pane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // US-020: markdown panes skip the tab strip and render the viewer
+        // full-bleed. A 1px header rail with the file's basename gives the
+        // pane visual parity with the terminal tab strip while signaling that
+        // tab interactions are intentionally disabled.
+        if let Some(md) = &self.markdown_content {
+            let title = md.read(cx).title();
+            let ui = tab_colors();
+            let theme = crate::theme::active_theme();
+            let header = div()
+                .flex()
+                .flex_none()
+                .flex_row()
+                .items_center()
+                .h(px(TAB_BAR_HEIGHT))
+                .px(px(TAB_PX))
+                .bg(theme.title_bar_background)
+                .border_b_1()
+                .border_color(ui.border)
+                .text_color(ui.muted)
+                .child(title);
+            return div().flex().flex_col().size_full().child(header).child(
+                div()
+                    .flex_1()
+                    .size_full()
+                    .overflow_hidden()
+                    .child(md.clone()),
+            );
+        }
+
         div()
             .flex()
             .flex_col()

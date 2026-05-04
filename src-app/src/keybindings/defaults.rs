@@ -248,6 +248,43 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "jump_to_prompt_next",
         context: Some("Terminal"),
     },
+    // US-022 — markdown pane navigation. Same chord vocabulary as the
+    // terminal pane so muscle memory transfers cleanly between pane types.
+    DefaultBinding {
+        key: "shift-pageup",
+        action_name: "markdown_scroll_page_up",
+        context: Some("Markdown"),
+    },
+    DefaultBinding {
+        key: "shift-pagedown",
+        action_name: "markdown_scroll_page_down",
+        context: Some("Markdown"),
+    },
+    DefaultBinding {
+        key: "ctrl-f",
+        action_name: "markdown_find_open",
+        context: Some("Markdown"),
+    },
+    DefaultBinding {
+        key: "ctrl-shift-c",
+        action_name: "markdown_copy",
+        context: Some("Markdown"),
+    },
+    DefaultBinding {
+        key: "enter",
+        action_name: "markdown_find_next",
+        context: Some("MarkdownSearch"),
+    },
+    DefaultBinding {
+        key: "shift-enter",
+        action_name: "markdown_find_prev",
+        context: Some("MarkdownSearch"),
+    },
+    DefaultBinding {
+        key: "escape",
+        action_name: "markdown_find_dismiss",
+        context: Some("MarkdownSearch"),
+    },
 ];
 
 /// Platform-specific default bindings layered on top of [`DEFAULTS`].
@@ -389,16 +426,12 @@ mod tests {
 
         // Base DEFAULTS still hold the ctrl-shift-c/v entries — the macOS
         // bindings are ADDITIVE, not replacements.
-        assert!(
-            DEFAULTS
-                .iter()
-                .any(|d| d.key == "ctrl-shift-c" && d.action_name == "terminal_copy")
-        );
-        assert!(
-            DEFAULTS
-                .iter()
-                .any(|d| d.key == "ctrl-shift-v" && d.action_name == "terminal_paste")
-        );
+        assert!(DEFAULTS
+            .iter()
+            .any(|d| d.key == "ctrl-shift-c" && d.action_name == "terminal_copy"));
+        assert!(DEFAULTS
+            .iter()
+            .any(|d| d.key == "ctrl-shift-v" && d.action_name == "terminal_paste"));
     }
 
     #[cfg(not(target_os = "macos"))]

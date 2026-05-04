@@ -182,65 +182,39 @@ looks like `dlopen(): error loading libfuse.so.2`. Two fixes:
   `libfuse2` on 24.04 can remove `ubuntu-session` as a transitive
   conflict — `--appimage-extract-and-run` avoids that risk.
 
-### Verify GPG signatures
+### Verifying releases
 
-Every `.deb` and `.rpm` is signed with `paneflow-release@paneflow.dev`.
-The public key is published in two places:
+Every Paneflow release is signed and the procedure to verify a
+downloaded artifact is documented per platform. Pick the runbook that
+matches what you downloaded:
 
-1. `https://pkg.paneflow.dev/gpg` (served from Cloudflare R2 alongside
-   the packages).
-2. [`packaging/paneflow-release.asc`](packaging/paneflow-release.asc)
-   inside this repository.
+- **Linux** (`.deb` / `.rpm` / `.tar.gz` / `.AppImage`) —
+  [`docs/release/linux-signing.md`](docs/release/linux-signing.md).
+  GPG-signed `.deb` + `.rpm` (key:
+  [`keys/paneflow-release.asc`](keys/paneflow-release.asc)); SHA-256
+  sidecars on `.tar.gz` and `.AppImage`.
+- **macOS** (`.dmg` / `.app`) —
+  [`docs/release/macos-signing.md`](docs/release/macos-signing.md).
+  Apple Developer ID signed + notarized + stapled — Gatekeeper accepts
+  offline.
+- **Windows** (`.msi`) —
+  [`docs/release/windows-signing.md`](docs/release/windows-signing.md).
+  Azure Trusted Signing — verify via
+  `signtool verify /pa /v paneflow-X.Y.Z-x86_64-pc-windows-msvc.msi`.
 
-**Trust model:** the repo-committed copy is signed by Arthur's Git
-commit history and is not reachable from an R2-bucket compromise —
-prefer it over the `pkg.paneflow.dev/gpg` endpoint for first-import,
-then cross-check the fingerprint. Both keys must report the same
-fingerprint:
-
-```bash
-# Fetch the repo-committed copy and print its fingerprint
-curl -fsSL https://raw.githubusercontent.com/ArthurDEV44/paneflow/main/packaging/paneflow-release.asc \
-  | gpg --with-fingerprint --with-colons \
-  | awk -F: '/^fpr:/ {print $10; exit}'
-# Then fetch the repo-served copy and repeat; the two fingerprints
-# MUST match. If they differ, stop — the package repo is compromised.
-curl -fsSL https://pkg.paneflow.dev/gpg \
-  | gpg --with-fingerprint --with-colons \
-  | awk -F: '/^fpr:/ {print $10; exit}'
-```
-
-**.deb:**
+**Quick `.deb` verification** (full procedure — including the
+mandatory fingerprint cross-check before key import — in the Linux
+runbook §1; do NOT paste the snippet below until you have verified
+the key fingerprint matches
+`9809948F4433CF93DD1329449A252F0C183F2711`):
 
 ```bash
-# One-time: install the repo-committed key as the APT trust anchor.
-# Using the GitHub-hosted raw file insulates the import from an
-# R2-bucket compromise (see Trust model above).
-curl -fsSL https://raw.githubusercontent.com/ArthurDEV44/paneflow/main/packaging/paneflow-release.asc \
+curl -fsSL https://raw.githubusercontent.com/ArthurDEV44/paneflow/main/keys/paneflow-release.asc \
   | gpg --dearmor \
   | sudo tee /usr/share/keyrings/paneflow-archive.gpg >/dev/null
-# Verify a downloaded .deb
-sudo apt install dpkg-sig
+sudo apt-get install -y dpkg-sig
 dpkg-sig --verify paneflow-vX.Y.Z-x86_64.deb   # expect: GOODSIG
 ```
-
-**.rpm:**
-
-```bash
-# Prefer the repo-committed copy for the same TOFU reason as above.
-sudo rpm --import https://raw.githubusercontent.com/ArthurDEV44/paneflow/main/packaging/paneflow-release.asc
-rpm --checksig paneflow-vX.Y.Z-x86_64.rpm      # expect: digests signatures OK
-```
-
-**.tar.gz:** integrity-only check against the sibling `.sha256` file
-attached to the release:
-
-```bash
-sha256sum --check paneflow-vX.Y.Z-x86_64.tar.gz.sha256
-```
-
-**AppImage:** self-validating — `appimageupdatetool` verifies the
-zsync metadata before delta updates.
 
 ### Uninstall
 
@@ -453,6 +427,21 @@ Theme changes are hot-reloaded. Window decorations require a restart (`"client"`
 ### Terminal options
 
 - `terminal.ligatures` (default `false`) — when `true`, programming-font ligatures (FiraCode `=>` `!=`, JetBrains Mono, Cascadia Code) are rendered through to GPUI's text system. Hot-reloaded; takes effect on the next render. Note that some ligated glyphs span multiple cells, which can shift cell-width measurements compared to the default monospaced behavior.
+
+### Configuration schema
+
+A versioned JSON Schema for `paneflow.json` lives at [`schemas/paneflow.schema.json`](schemas/paneflow.schema.json) (draft-07). Editors that understand `$schema` (VS Code, Zed, JetBrains, neovim with `coc-json` / `nvim-lspconfig`) will give you autocomplete and inline validation when you point at it from your config:
+
+```json
+{
+  "$schema": "https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json",
+  "$schemaVersion": "1.0.0",
+  "default_shell": "/bin/zsh",
+  "theme": "Catppuccin Mocha"
+}
+```
+
+Both `$schema` (the editor pointer) and `$schemaVersion` (the version pin) are optional. PaneFlow logs a warning when `$schemaVersion` is unknown but never refuses to load the file — schema validation is editor-side; runtime parsing stays tolerant.
 
 ## IPC
 

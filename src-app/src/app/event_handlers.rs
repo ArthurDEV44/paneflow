@@ -170,16 +170,27 @@ impl PaneFlowApp {
                 }
                 // Inherit CWD and estimate initial grid size from the source terminal.
                 // Grid is halved in the split direction; refined to exact size on first prepaint.
-                let (source_cwd, initial_size) = {
-                    let view = pane.read(cx).active_terminal().read(cx);
-                    let cwd = view.terminal.cwd_now();
-                    let term = view.terminal.term.lock();
-                    let (cols, rows) = (term.columns(), term.screen_lines());
-                    let size = match direction {
-                        crate::layout::SplitDirection::Horizontal => (cols, (rows / 2).max(1)),
-                        crate::layout::SplitDirection::Vertical => ((cols / 2).max(1), rows),
-                    };
-                    (cwd, size)
+                // US-020: markdown panes have no terminal — fall back to the
+                // workspace's root cwd and a default 80×24 grid so a split
+                // request from a markdown pane still yields a usable terminal.
+                let (source_cwd, initial_size) = match pane.read(cx).active_terminal_opt() {
+                    Some(active) => {
+                        let view = active.read(cx);
+                        let cwd = view.terminal.cwd_now();
+                        let term = view.terminal.term.lock();
+                        let (cols, rows) = (term.columns(), term.screen_lines());
+                        let size = match direction {
+                            crate::layout::SplitDirection::Horizontal => (cols, (rows / 2).max(1)),
+                            crate::layout::SplitDirection::Vertical => ((cols / 2).max(1), rows),
+                        };
+                        (cwd, size)
+                    }
+                    None => {
+                        let cwd = self
+                            .active_workspace()
+                            .map(|ws| std::path::PathBuf::from(&ws.cwd));
+                        (cwd, (80, 24))
+                    }
                 };
                 let ws_id = self.active_workspace().map(|ws| ws.id).unwrap_or(0);
                 let new_terminal =
@@ -245,9 +256,66 @@ impl PaneFlowApp {
             terminal::TerminalEvent::SelectionCopied => {
                 self.show_toast("Copied", cx);
             }
+            terminal::TerminalEvent::OpenMarkdownPath(path) => {
+                self.open_markdown_in_split(&terminal, path.clone(), cx);
+            }
             // ChildExited + TitleChanged are handled by Pane's subscription
             _ => {}
         }
+    }
+
+    /// US-020 — split the pane that owns `source_terminal` vertically and
+    /// install a fresh `MarkdownView` of `path` in the new half.
+    ///
+    /// Mirrors the `PaneEvent::Split` flow but creates a markdown pane
+    /// instead of a terminal one, and forces the split direction to
+    /// `Vertical` (side-by-side) per the AC: the user wants the markdown
+    /// readable next to the terminal that referenced it, not stacked
+    /// above/below it.
+    fn open_markdown_in_split(
+        &mut self,
+        source_terminal: &Entity<TerminalView>,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        const MAX_PANES: usize = 32;
+        let Some(ws_idx) = self.workspace_idx_for_terminal(source_terminal, cx) else {
+            return;
+        };
+        if let Some(root) = &self.workspaces[ws_idx].root
+            && root.leaf_count() >= MAX_PANES
+        {
+            return;
+        }
+        // Find the source pane (the one whose tab strip contains this terminal).
+        let source_pane = self.workspaces[ws_idx].root.as_ref().and_then(|root| {
+            root.collect_leaves()
+                .into_iter()
+                .find(|pane| pane.read(cx).tabs.contains(source_terminal))
+        });
+        let Some(source_pane) = source_pane else {
+            return;
+        };
+
+        let ws_id = self.workspaces[ws_idx].id;
+        let path_for_pane = path.clone();
+        let markdown = cx.new(|cx: &mut Context<crate::markdown::MarkdownView>| {
+            crate::markdown::MarkdownView::open(path_for_pane, cx)
+        });
+        let new_pane = cx.new(|cx| crate::pane::Pane::new_markdown(markdown, ws_id, cx));
+        cx.subscribe(&new_pane, Self::handle_pane_event).detach();
+
+        if let Some(ws) = self.workspaces.get_mut(ws_idx)
+            && let Some(root) = &mut ws.root
+        {
+            root.split_at_pane(
+                &source_pane,
+                crate::layout::SplitDirection::Vertical,
+                new_pane,
+            );
+        }
+        self.save_session(cx);
+        cx.notify();
     }
 
     /// Find which workspace contains the given terminal entity.
@@ -441,12 +509,16 @@ impl PaneFlowApp {
         new_cwd: &str,
         cx: &mut Context<Self>,
     ) {
-        // Find workspace where this terminal is the active tab in any pane
+        // Find workspace where this terminal is the active tab in any pane.
+        // US-020: skip markdown panes — they have no active terminal, so the
+        // identity check via `active_terminal_opt` returns None for them.
         let ws_idx = self.workspaces.iter().position(|ws| {
             ws.root.as_ref().is_some_and(|root| {
-                root.collect_leaves()
-                    .iter()
-                    .any(|pane| *pane.read(cx).active_terminal() == *terminal)
+                root.collect_leaves().iter().any(|pane| {
+                    pane.read(cx)
+                        .active_terminal_opt()
+                        .is_some_and(|t| *t == *terminal)
+                })
             })
         });
         let Some(ws_idx) = ws_idx else { return };

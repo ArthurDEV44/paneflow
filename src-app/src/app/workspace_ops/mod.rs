@@ -153,12 +153,19 @@ impl PaneFlowApp {
         {
             return;
         }
-        // Inherit CWD from the focused pane's active terminal (fresh /proc read)
+        // Inherit CWD from the focused pane's active terminal (fresh /proc read).
+        // US-020: focused pane may be a markdown viewer with no terminal —
+        // fall through to `None` and let `TerminalView::with_cwd(..., None)`
+        // resolve to the workspace's root cwd.
         let source_cwd = self
             .active_workspace()
             .and_then(|ws| ws.root.as_ref())
             .and_then(|root| root.focused_pane(window, cx))
-            .and_then(|pane| pane.read(cx).active_terminal().read(cx).terminal.cwd_now());
+            .and_then(|pane| {
+                pane.read(cx)
+                    .active_terminal_opt()
+                    .and_then(|tv| tv.read(cx).terminal.cwd_now())
+            });
         let ws_id = self.active_workspace().map(|ws| ws.id).unwrap_or(0);
         let new_terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, source_cwd, None, cx));
         let new_pane = self.create_pane(new_terminal, ws_id, cx);
@@ -206,8 +213,12 @@ impl PaneFlowApp {
             } else {
                 root.focused_pane(window, cx)
             };
-            if let Some(pane) = closing_pane {
-                let tv = pane.read(cx).active_terminal();
+            // US-020: only record undo state for terminal panes — markdown
+            // panes have no scrollback / cwd to restore. Closing one simply
+            // removes it from the layout without populating the undo stack.
+            if let Some(pane) = closing_pane
+                && let Some(tv) = pane.read(cx).active_terminal_opt()
+            {
                 let tv_ref = tv.read(cx);
                 let record = ClosedPaneRecord {
                     cwd: tv_ref

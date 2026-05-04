@@ -29,14 +29,16 @@ use crate::{Notification, PaneFlowApp, ai_types, keybindings, update};
 // ---------------------------------------------------------------------------
 
 /// Write text to the first leaf pane's active terminal PTY in a layout tree.
+/// US-020: silently skips markdown leaves (no PTY to write to).
 pub(crate) fn send_text_to_first_leaf(node: &LayoutTree, text: &str, cx: &App) {
     match node {
         LayoutTree::Leaf(pane) => {
-            pane.read(cx)
-                .active_terminal()
-                .read(cx)
-                .terminal
-                .write_to_pty(text.as_bytes().to_vec());
+            if let Some(active) = pane.read(cx).active_terminal_opt() {
+                active
+                    .read(cx)
+                    .terminal
+                    .write_to_pty(text.as_bytes().to_vec());
+            }
         }
         LayoutTree::Container { children, .. } => {
             if let Some(first) = children.first() {
@@ -47,18 +49,16 @@ pub(crate) fn send_text_to_first_leaf(node: &LayoutTree, text: &str, cx: &App) {
 }
 
 /// Find the first terminal in a layout tree (for default routing).
+/// US-020: skips markdown leaves — recurses past them when searching containers.
 pub(crate) fn find_first_terminal(
     node: &LayoutTree,
     cx: &App,
 ) -> Option<gpui::Entity<TerminalView>> {
     match node {
-        LayoutTree::Leaf(pane) => {
-            let pane = pane.read(cx);
-            Some(pane.active_terminal().clone())
-        }
+        LayoutTree::Leaf(pane) => pane.read(cx).active_terminal_opt().cloned(),
         LayoutTree::Container { children, .. } => children
-            .first()
-            .and_then(|child| find_first_terminal(&child.node, cx)),
+            .iter()
+            .find_map(|child| find_first_terminal(&child.node, cx)),
     }
 }
 
@@ -129,6 +129,18 @@ impl PaneFlowApp {
             // fire a one-time `telemetry_reenabled` breadcrumb on an explicit
             // opted-out → opted-in transition (ROPA audit trail).
             self.reconcile_telemetry_consent(&config, cx);
+            cx.notify();
+        }
+
+        // US-006: drain the theme watcher's "file changed" signal. The
+        // watcher invalidates the cache directly on its background thread;
+        // this only schedules the GPUI repaint so the next render picks up
+        // the freshly-resolved theme. `swap` is the cheapest way to read +
+        // reset atomically — we don't care about preserving other writers.
+        if self
+            .theme_changed
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
             cx.notify();
         }
     }
@@ -587,12 +599,13 @@ impl PaneFlowApp {
                     self.notifications.push(Notification {
                         workspace_id,
                         workspace_title: title,
-                        message,
+                        message: message.clone(),
                         kind: ai_types::AiToolState::WaitingForInput(tool),
                         timestamp: std::time::Instant::now(),
                         read: false,
                     });
                     cx.notify();
+                    let _ = message;
                     serde_json::json!({"status": "waiting"})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
@@ -674,6 +687,7 @@ impl PaneFlowApp {
                     self.notifications
                         .retain(|n| n.workspace_id != workspace_id);
                     cx.notify();
+                    let _ = tool_str;
                     serde_json::json!({"cleared": true})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})

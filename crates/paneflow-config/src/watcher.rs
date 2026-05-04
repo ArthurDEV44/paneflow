@@ -1,6 +1,6 @@
 // US-018: Hot-reload via file watcher
 
-use crate::loader::{config_path, load_config_from_path};
+use crate::loader::{config_path, load_config_from_path, parse_and_validate_with_path};
 use crate::schema::PaneFlowConfig;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
@@ -221,19 +221,19 @@ fn attempt_reload(
         }
     };
 
-    match serde_json::from_str::<PaneFlowConfig>(&contents) {
-        Ok(new_config) => {
-            info!("config reloaded successfully");
-            *current_config = new_config.clone();
-            callback(new_config);
-        }
-        Err(e) => {
-            warn!(
-                error = %e,
-                "config file has validation errors; keeping previous config"
-            );
-        }
+    // First, surface any JSON syntax error visibly so the watcher does not
+    // broadcast a defaulted config on every save of a malformed file.
+    if let Err(e) = serde_json::from_str::<PaneFlowConfig>(&contents) {
+        warn!(
+            error = %e,
+            "config file has validation errors; keeping previous config"
+        );
+        return;
     }
+    let new_config = parse_and_validate_with_path(&contents, config_path);
+    info!("config reloaded successfully");
+    *current_config = new_config.clone();
+    callback(new_config);
 }
 
 #[cfg(test)]

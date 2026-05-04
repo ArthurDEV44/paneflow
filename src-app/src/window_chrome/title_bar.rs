@@ -233,13 +233,14 @@ impl Render for TitleBar {
                         (format!("v{} available", info.version), PillStyle::Clickable)
                     }
                     SelfUpdatePillState::Downloading => {
-                        ("Downloading…".to_string(), PillStyle::Busy)
+                        ("Downloading update…".to_string(), PillStyle::Busy)
                     }
-                    SelfUpdatePillState::Installing => ("Installing…".to_string(), PillStyle::Busy),
-                    SelfUpdatePillState::ReadyToRestart => (
-                        format!("Restart for v{}", info.version),
-                        PillStyle::Clickable,
-                    ),
+                    SelfUpdatePillState::Installing => {
+                        ("Installing update…".to_string(), PillStyle::Busy)
+                    }
+                    SelfUpdatePillState::ReadyToRestart => {
+                        ("Restart Paneflow".to_string(), PillStyle::Clickable)
+                    }
                     SelfUpdatePillState::Errored => {
                         ("Update failed".to_string(), PillStyle::Clickable)
                     }

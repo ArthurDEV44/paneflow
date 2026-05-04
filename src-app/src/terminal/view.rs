@@ -119,31 +119,41 @@ impl TerminalView {
     ) -> Self {
         let surface_id = cx.entity_id().as_u64();
         let backend = PortablePtyBackend;
-        let mut terminal =
-            match TerminalState::new(&backend, cwd, workspace_id, surface_id, initial_size) {
-                Ok(t) => t,
-                Err(e) => {
-                    log::error!("PTY creation failed: {e:#}");
-                    eprintln!(
-                        "Error: Failed to create terminal PTY.\n\
+        let result = TerminalState::new(&backend, cwd, workspace_id, surface_id, initial_size);
+        let terminal = Self::expect_terminal(result);
+        Self::from_terminal_state(workspace_id, terminal, cx)
+    }
+
+    fn expect_terminal(result: anyhow::Result<TerminalState>) -> TerminalState {
+        match result {
+            Ok(t) => t,
+            Err(e) => {
+                log::error!("PTY creation failed: {e:#}");
+                eprintln!(
+                    "Error: Failed to create terminal PTY.\n\
                      Possible causes:\n\
                      \x20 - /dev/pts exhausted (too many PTY sessions)\n\
                      \x20 - Shell not found (check default_shell in config or $SHELL)\n\
                      \x20 - Permission denied on /dev/ptmx\n\n\
                      Underlying error: {e:#}"
-                    );
-                    // PTY creation is load-bearing for this TerminalView's
-                    // constructor — there's no meaningful "degraded" state
-                    // for a terminal with no PTY. Aborting with a clear
-                    // message beats silently returning an unusable view.
-                    // US-007 demoted the workspace `panic = "deny"` to an
-                    // allow here rather than blanket-allow in src-app.
-                    #[allow(clippy::panic)]
-                    {
-                        panic!("PTY creation failed: {e:#}");
-                    }
+                );
+                // PTY creation is load-bearing for this TerminalView's
+                // constructor — there's no meaningful "degraded" state
+                // for a terminal with no PTY. Aborting with a clear
+                // message beats silently returning an unusable view.
+                #[allow(clippy::panic)]
+                {
+                    panic!("PTY creation failed: {e:#}");
                 }
-            };
+            }
+        }
+    }
+
+    fn from_terminal_state(
+        _workspace_id: u64,
+        mut terminal: TerminalState,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
 
         // Event batch coalescing (Zed pattern):
@@ -504,6 +514,53 @@ impl TerminalView {
         let trimmed = line_text.trim_end();
         crate::terminal::element::detect_urls_on_line_mapped(trimmed, line, &char_to_col)
     }
+
+    /// Detect `.md` / `.markdown` file paths on the line at the hovered grid
+    /// point (US-019). Mirrors `detect_url_at_hover`: extracts line text with
+    /// wide-char-aware char→column mapping, then runs the file-path scanner
+    /// against the pane's tracked CWD.
+    #[allow(dead_code)]
+    pub(super) fn detect_file_path_at_hover(&self) -> Vec<HyperlinkZone> {
+        let point = match self.hovered_cell {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let term = self.terminal.term.lock();
+        let grid = term.grid();
+        let line = point.line;
+
+        let cols = term.columns();
+        let mut line_text = String::with_capacity(cols);
+        let mut char_to_col: Vec<usize> = Vec::with_capacity(cols);
+        for col in 0..cols {
+            let cell = &grid[line][alacritty_terminal::index::Column(col)];
+            if cell
+                .flags
+                .contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            char_to_col.push(col);
+            line_text.push(cell.c);
+        }
+        drop(term);
+
+        // `trim_end` shortens the text without changing leading chars, so
+        // `char_to_col` stays valid for the trimmed prefix; we just truncate
+        // the column map to match. Without this, a path that ends right
+        // before trailing whitespace at end-of-line would silently lose its
+        // hover zone (the scanner's `char_to_col.get(char_end)` would still
+        // succeed but downstream consumers may misalign).
+        let trimmed = line_text.trim_end();
+        let trimmed_chars = trimmed.chars().count();
+        let map = &char_to_col[..trimmed_chars];
+        let cwd = self
+            .terminal
+            .current_cwd
+            .as_deref()
+            .map(std::path::Path::new);
+        crate::terminal::element::detect_file_paths_on_line_mapped(trimmed, line, map, cwd)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -533,6 +590,12 @@ pub enum TerminalEvent {
     /// A mouse selection was auto-copied to the clipboard on mouse release.
     /// Consumed by `PaneFlowApp` to surface a "Copied" toast.
     SelectionCopied,
+    /// US-020 — Cmd/Ctrl-click on a `.md`/`.markdown` path detected by the
+    /// US-019 file-path scanner. The receiver (PaneFlowApp) splits the
+    /// containing pane vertically and inserts a markdown viewer in the
+    /// new half. The path is the canonical absolute path produced by
+    /// `terminal::element::detect_file_paths_on_line_mapped`.
+    OpenMarkdownPath(std::path::PathBuf),
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}

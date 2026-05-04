@@ -556,14 +556,12 @@ jobs:
           version="${TAG#v}"
           bash scripts/bundle-macos.sh --version "$version" --arch "$ARCH"
 
-      # ─── US-015 macOS codesign + notarize ────────────────────────────
-      # These steps are dormant today (no macos matrix leg) and come alive
-      # in US-019 when `runs-on: macos-14` joins the matrix. AC7: the
-      # `if: runner.os == 'macOS'` guard skips the step silently on every
-      # Linux leg, so the existing release pipeline is unaffected.
+      # ─── US-015 / US-023 macOS codesign + notarize ───────────────────
+      # The `if: runner.os == 'macOS'` guard skips these steps silently on
+      # every Linux / Windows leg.
       #
-      # Secrets used (AC1 — must be populated in repo settings before the
-      # first macOS release can ship):
+      # Secrets used (must be populated in repo settings before the first
+      # signed macOS release can ship; see docs/release/macos-signing.md):
       #   APPLE_DEVELOPER_CERT_P12        — base64-encoded .p12
       #   APPLE_DEVELOPER_CERT_PASSWORD   — password to decrypt the .p12
       #   APPLE_ID                        — Apple Developer account email
@@ -571,26 +569,85 @@ jobs:
       #                                     Apple ID password itself)
       #   APPLE_TEAM_ID                   — 10-char team ID
       #
-      # The `.app` input comes from `scripts/bundle-macos.sh`, added to
-      # the macos matrix leg in US-019. Sign → notarize → staple is the
-      # mandatory order: codesign attaches a signature, notarytool
-      # validates + registers it with Apple, stapler glues the ticket to
-      # the bundle so Gatekeeper accepts it offline.
-      - name: Sign macOS .app bundle
+      # US-023 AC7: when ANY Apple secret is missing the leg degrades to
+      # an unsigned build instead of hard-failing. The "Detect macOS
+      # signing secrets" step exposes a single boolean output
+      # (`signing_available`) consumed by the sign + notarize step
+      # guards below; the unsigned-warning step writes a visible banner
+      # to $GITHUB_STEP_SUMMARY so reviewers immediately see that a
+      # given release was shipped without a notarization ticket.
+      #
+      # The `.app` input comes from `scripts/bundle-macos.sh`, run earlier
+      # in this leg. Sign → notarize → staple is the mandatory order:
+      # codesign attaches a signature with the release entitlements,
+      # notarytool validates + registers it with Apple, stapler glues the
+      # ticket to the bundle so Gatekeeper accepts it offline.
+      - name: Detect macOS signing secrets
+        id: macos_signing
         if: runner.os == 'macOS'
+        env:
+          # Secrets are routed through env: so an empty secret resolves
+          # to an empty env var (rather than the literal string
+          # `${{ secrets.NAME }}` which would always look "present").
+          APPLE_DEVELOPER_CERT_P12: ${{ secrets.APPLE_DEVELOPER_CERT_P12 }}
+          APPLE_DEVELOPER_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${APPLE_DEVELOPER_CERT_P12:-}" ] \
+             && [ -n "${APPLE_DEVELOPER_CERT_PASSWORD:-}" ] \
+             && [ -n "${APPLE_ID:-}" ] \
+             && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] \
+             && [ -n "${APPLE_TEAM_ID:-}" ]; then
+              echo "All 5 Apple signing secrets are present — will sign + notarize."
+              echo "signing_available=true" >> "$GITHUB_OUTPUT"
+          else
+              echo "::warning title=macOS signing skipped::One or more APPLE_* secrets are missing — emitting an UNSIGNED .app. See docs/release/macos-signing.md."
+              echo "signing_available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sign macOS .app bundle
+        if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available == 'true'
         env:
           APPLE_DEVELOPER_CERT_P12: ${{ secrets.APPLE_DEVELOPER_CERT_P12 }}
           APPLE_DEVELOPER_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERT_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        # No --entitlements override: sign-macos.sh defaults to
+        # packaging/macos/paneflow.entitlements via REPO_ROOT-relative
+        # absolute path, which is more robust than this step's working
+        # directory assumption.
         run: bash scripts/sign-macos.sh dist/PaneFlow.app
 
       - name: Notarize + staple macOS .app bundle
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash scripts/notarize-macos.sh dist/PaneFlow.app
+
+      - name: Record unsigned macOS build in job summary
+        if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available != 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          {
+              echo "## ⚠️ Unsigned macOS build (${ARCH}, ${TAG})"
+              echo
+              echo "One or more APPLE_* secrets were missing, so this leg shipped an"
+              echo "**unsigned, un-notarized** \`PaneFlow.app\`. macOS Gatekeeper will"
+              echo "block first-launch with the \"can't be opened\" prompt."
+              echo
+              echo "Required secrets: \`APPLE_DEVELOPER_CERT_P12\`, "
+              echo "\`APPLE_DEVELOPER_CERT_PASSWORD\`, \`APPLE_ID\`,"
+              echo "\`APPLE_APP_SPECIFIC_PASSWORD\`, \`APPLE_TEAM_ID\`."
+              echo
+              echo "Onboarding runbook: \`docs/release/macos-signing.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # ─── Free disk space before .dmg ─────────────────────────────────
       # macos-14 hosted runners ship with ~14 GB free. A workspace-wide
@@ -627,12 +684,23 @@ jobs:
       # *after* notarization so the enclosed bundle already carries its
       # Apple-issued stapled ticket.
       #
+      # US-023 AC7 (publish-safety guard): `.dmg` production and staging
+      # are gated on `steps.macos_signing.outputs.signing_available`. An
+      # unsigned `.app` MUST NOT reach the published GitHub Release —
+      # users would hit Gatekeeper "can't be opened" with no in-band
+      # signal that the asset was published unsigned. When secrets are
+      # absent the leg leaves the unsigned `.app` in `dist/` for local
+      # inspection, prints the warning banner from the previous step, and
+      # produces no release asset. The leg's `continue-on-error: true`
+      # absorbs the resulting empty-asset condition without blocking the
+      # Linux release legs.
+      #
       # The output filename `paneflow-<tag>-<arch>-apple-darwin.dmg` is
       # chosen to match US-008's `update_checker.rs::pick_asset`; any
       # other shape would silently break the in-app update prompt for
       # macOS users.
       - name: Produce .dmg
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available == 'true'
         env:
           TAG: ${{ github.ref_name }}
           ARCH: ${{ matrix.arch }}
@@ -645,9 +713,10 @@ jobs:
       # downstream `release` job picks it up alongside the Linux-leg
       # artifacts. Mirrors the sha256 pattern used by the tar.gz step.
       # Linux legs skip this entirely; US-019 adds the macos-14 matrix
-      # leg that activates it.
+      # leg that activates it. US-023: gated on signing_available so
+      # unsigned legs produce no release asset.
       - name: Stage macOS .dmg
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available == 'true'
         env:
           TAG: ${{ github.ref_name }}
           ARCH: ${{ matrix.arch }}
@@ -747,22 +816,77 @@ jobs:
             --install-version "$version"
           ls -la target/wix/
 
-      # ─── US-016 AC-2: Sign MSI via Azure Artifact Signing ────────────────
+      # ─── US-024: Detect Windows signing secrets ─────────────────────────
+      # Mirrors the macOS pattern (line ~585): emit a single boolean
+      # output `signing_available` so the Sign + Verify steps below can
+      # short-circuit when ANY of the 6 Azure Trusted Signing secrets is
+      # missing. AC5: a missing-secret leg degrades to an unsigned MSI
+      # with a visible $GITHUB_STEP_SUMMARY banner, instead of the leg
+      # hard-failing inside sign-windows.ps1's env-var precondition check.
+      #
+      # Secrets are routed through env: so an empty/unset secret resolves
+      # to an empty env var (rather than the literal `${{ secrets.NAME }}`
+      # placeholder which would always look "present"). The 6 names match
+      # what `scripts/sign-windows.ps1` reads at runtime — see
+      # `memory/project_windows_signing.md` for the canonical list.
+      - name: Detect Windows signing secrets
+        id: windows_signing
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
+        run: |
+          set -euo pipefail
+          if [ -n "${AZURE_TENANT_ID:-}" ] \
+             && [ -n "${AZURE_CLIENT_ID:-}" ] \
+             && [ -n "${AZURE_CLIENT_SECRET:-}" ] \
+             && [ -n "${AZURE_TRUSTED_SIGNING_ENDPOINT:-}" ] \
+             && [ -n "${AZURE_TRUSTED_SIGNING_ACCOUNT:-}" ] \
+             && [ -n "${AZURE_TRUSTED_SIGNING_CERT_PROFILE:-}" ]; then
+              echo "All 6 Azure Trusted Signing secrets are present — will sign + verify."
+              echo "signing_available=true" >> "$GITHUB_OUTPUT"
+          else
+              echo "::warning title=Windows signing skipped::One or more AZURE_* secrets are missing — emitting an UNSIGNED .msi. See docs/release/windows-signing.md."
+              echo "signing_available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ─── US-016 AC-2 / US-024 AC-1+AC-3: Sign MSI via Azure Trusted Signing ───
       # Invokes the US-015 script, which fetches the
       # `Microsoft.ArtifactSigning.Client` NuGet (pinned 1.0.128) into a
       # temp dir, writes a metadata.json with ExcludeCredentials, and
       # calls `signtool.exe sign` with the 3-host timestamp retry chain
-      # (acs.microsoft.com → digicert → sectigo). Verification
-      # (`signtool verify /pa` + `Get-AuthenticodeSignature`) is
-      # embedded in the script.
+      # (acs.microsoft.com → digicert → sectigo) — satisfying US-024 AC-3.
+      # Verification (`signtool verify /pa` + `Get-AuthenticodeSignature`)
+      # is embedded in the script; an additional standalone verify step
+      # below makes it visible at the workflow level (AC-6).
+      #
+      # Why script-not-action (US-024 AC-1 reconciliation): the official
+      # `azure/trusted-signing-action` is a thin wrapper around the same
+      # `Microsoft.ArtifactSigning.Client` NuGet, but accepts only ONE
+      # `timestamp-rfc3161` URL — it cannot satisfy AC-3's 3-server
+      # fallback chain. The script invokes the same official Microsoft
+      # client at a lower level (signtool /dlib), and is therefore the
+      # canonical Azure Trusted Signing integration here. See
+      # `docs/release/windows-signing.md §"Why a script and not the
+      # official action"` for the full rationale.
       #
       # Secrets (all 6 required — populated per US-014 onboarding):
       #   AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
       #       — service principal for EnvironmentCredential auth
       #   AZURE_TRUSTED_SIGNING_ENDPOINT / _ACCOUNT / _CERT_PROFILE
       #       — addressing for the code-signing account / cert profile
+      #
+      # AC-5: when `signing_available` is false the step is skipped; the
+      # MSI still ships, unsigned, picked up by Stage Windows assets and
+      # reported in $GITHUB_STEP_SUMMARY by the banner step below.
       - name: Sign MSI
-        if: runner.os == 'Windows'
+        id: sign_msi
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
         shell: pwsh
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -792,6 +916,103 @@ jobs:
           # Quoted "$msi" so a path with spaces (unlikely with cargo-wix
           # defaults but defensive) is passed as one argv element.
           pwsh -NoProfile -File ./scripts/sign-windows.ps1 -InputFile "$msi"
+
+      # ─── US-024 AC-6: Verify MSI signature at workflow level ─────────────
+      # `sign-windows.ps1` already runs `signtool verify /pa /v` + an
+      # `Get-AuthenticodeSignature` Authenticode check internally — this
+      # step re-runs the bare `signtool verify /pa /v` so the verification
+      # output is unambiguously visible at the workflow level (the
+      # script's verify is buried inside its log section). AC-6 demands
+      # the literal "Successfully verified" string; we grep for it and
+      # fail the step if absent.
+      # Explicit `steps.sign_msi.outcome == 'success'` guard alongside the
+      # implicit `success()` default: belt-and-braces against a future
+      # editor adding `continue-on-error: true` to the Sign MSI step,
+      # which would let `success()` evaluate true after a sign failure
+      # and run Verify against an unsigned artifact.
+      - name: Verify MSI signature
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true' && steps.sign_msi.outcome == 'success'
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = $env:TAG -replace '^v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') {
+              throw "TAG '$env:TAG' does not strip to a valid semver (got '$version')."
+          }
+          $msi = Get-ChildItem -Path 'target/wix' -Filter "paneflow-$version-*.msi" |
+              Select-Object -First 1 -ExpandProperty FullName
+          if (-not $msi) {
+              throw "No MSI found under target/wix/ matching paneflow-$version-*.msi."
+          }
+
+          # Resolve signtool the same way sign-windows.ps1 does — keep
+          # the two paths in sync so a runner-image SDK change cannot
+          # silently desynchronize them.
+          $sdkRoot = 'C:\Program Files (x86)\Windows Kits\10\bin'
+          $signtool = $null
+          if (Test-Path -LiteralPath $sdkRoot) {
+              $signtool = Get-ChildItem -Path $sdkRoot -Recurse -Filter 'signtool.exe' -ErrorAction SilentlyContinue |
+                  Where-Object { $_.FullName -match '\\x64\\' } |
+                  Sort-Object { try { [version]$_.Directory.Parent.Name } catch { [version]'0.0.0.0' } } -Descending |
+                  Select-Object -First 1 -ExpandProperty FullName
+          }
+          if ([string]::IsNullOrEmpty($signtool)) {
+              $onPath = Get-Command -Name signtool.exe -ErrorAction SilentlyContinue
+              if ($null -ne $onPath) { $signtool = $onPath.Source }
+          }
+          if ([string]::IsNullOrEmpty($signtool)) {
+              throw "signtool.exe not found."
+          }
+
+          Write-Output "Verifying: $msi"
+          # Capture stdout+stderr so we can grep for the AC-6 sentinel.
+          # 2>&1 routes signtool's diagnostic output (which goes to
+          # stderr) into the same stream as the success line.
+          $verifyOutput = & $signtool verify /pa /v "$msi" 2>&1
+          $verifyExit = $LASTEXITCODE
+          $verifyOutput | ForEach-Object { Write-Output $_ }
+          if ($verifyExit -ne 0) {
+              throw "signtool verify exit code $verifyExit"
+          }
+          # Anchor the regex with `^\s*` so the AC-6 sentinel must appear
+          # as its own line (signtool emits "    Successfully verified:
+          # <path>" with leading whitespace). A bare substring match could
+          # in theory be tricked by a future signtool diagnostic that
+          # echoes the phrase mid-sentence in an error path.
+          if (-not ($verifyOutput -match '^\s*Successfully verified')) {
+              throw "signtool verify did not emit 'Successfully verified' — AC-6 sentinel missing."
+          }
+          Write-Output "AC-6 sentinel 'Successfully verified' present."
+
+      # ─── US-024 AC-5: Record unsigned Windows build in job summary ──────
+      # Mirror of the macOS unsigned-build banner step (line ~631). When
+      # `signing_available=false`, the leg ships an unsigned .msi (the
+      # Stage Windows assets step below picks up the unsigned cargo-wix
+      # output unchanged). The banner makes this immediately visible in
+      # the workflow run summary so a release reviewer can decide
+      # whether to retag after populating the missing secrets.
+      - name: Record unsigned Windows build in job summary
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available != 'true'
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          {
+              echo "## ⚠️ Unsigned Windows build (${ARCH}, ${TAG})"
+              echo
+              echo "One or more AZURE_* secrets were missing, so this leg shipped an"
+              echo "**unsigned** \`.msi\`. Windows SmartScreen will flag it as"
+              echo "\"Unknown Publisher\" on first launch."
+              echo
+              echo "Required secrets: \`AZURE_TENANT_ID\`, \`AZURE_CLIENT_ID\`,"
+              echo "\`AZURE_CLIENT_SECRET\`, \`AZURE_TRUSTED_SIGNING_ENDPOINT\`,"
+              echo "\`AZURE_TRUSTED_SIGNING_ACCOUNT\`, \`AZURE_TRUSTED_SIGNING_CERT_PROFILE\`."
+              echo
+              echo "Onboarding runbook: \`docs/release/windows-signing.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # ─── US-016 AC-3: Stage the signed MSI + SHA-256 sidecar ─────────────
       # Rename from cargo-wix's default (paneflow-<ver>-x86_64.msi) to the

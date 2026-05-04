@@ -27,6 +27,7 @@ mod ipc;
 mod keybindings;
 mod keys;
 mod layout;
+mod markdown;
 mod mouse;
 mod pane;
 mod pty;
@@ -211,6 +212,12 @@ struct PaneFlowApp {
     /// watcher's reconcile path can detect a transition (US-014) without
     /// re-reading the file.
     telemetry_enabled_last: Option<bool>,
+    /// US-006: shared "theme file changed" signal flipped by the theme
+    /// watcher's debounce thread (event-driven invalidation). The 50 ms
+    /// IPC poll loop in `process_config_changes` drains this flag and
+    /// calls `cx.notify()` so the next render picks up the new theme.
+    /// `Arc<AtomicBool>` — Send + Sync, lock-free.
+    theme_changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Global flag for swap mode, checked by TerminalView to intercept Escape.

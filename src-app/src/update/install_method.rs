@@ -102,6 +102,31 @@ pub enum InstallMethod {
 
 /// Probe the filesystem and environment to classify the running binary.
 pub fn detect() -> InstallMethod {
+    // Dev-only override: lets `cargo run` simulate any install-method
+    // branch without having to reinstall over /usr/bin/paneflow. Only
+    // compiled in debug builds — release binaries ignore it.
+    #[cfg(debug_assertions)]
+    if let Ok(force) = std::env::var("PANEFLOW_DEV_INSTALL_METHOD") {
+        match force.trim().to_ascii_lowercase().as_str() {
+            "dnf" => {
+                return InstallMethod::SystemPackage {
+                    manager: PackageManager::Dnf,
+                };
+            }
+            "apt" => {
+                return InstallMethod::SystemPackage {
+                    manager: PackageManager::Apt,
+                };
+            }
+            "rpm-ostree" | "ostree" => {
+                return InstallMethod::SystemPackage {
+                    manager: PackageManager::RpmOstree,
+                };
+            }
+            _ => {}
+        }
+    }
+
     // Sandboxed / packager-managed environments take priority over any
     // path-based heuristic. A Flatpak install of PaneFlow has its real
     // binary at `/app/bin/paneflow` (which would otherwise look like an

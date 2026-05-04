@@ -160,22 +160,6 @@ impl TerminalState {
         surface_id: u64,
         initial_size: Option<(usize, usize)>,
     ) -> anyhow::Result<Self> {
-        let (events_tx, events_rx) = unbounded();
-        let (cwd_tx, cwd_rx) = unbounded();
-        let (prompt_tx, prompt_rx) = unbounded();
-        let listener = ZedListener(events_tx.clone());
-
-        let (cols, rows) = initial_size.unwrap_or((120, 40));
-
-        let config = TermConfig::default();
-        let dimensions = SpikeTermSize {
-            columns: cols,
-            screen_lines: rows,
-        };
-
-        let term = Term::new(config, &dimensions, listener.clone());
-        let term = Arc::new(FairMutex::new(term));
-
         // Build shell command and environment.
         // Fallback chain handled by `resolve_default_shell` (US-006):
         // Unix:    config → $SHELL → /bin/sh
@@ -192,6 +176,48 @@ impl TerminalState {
         };
         let mut env = std::collections::HashMap::new();
         let extra_args = setup_shell_integration(&shell, &mut env);
+
+        Self::spawn_inner(
+            backend,
+            shell,
+            extra_args,
+            env,
+            working_directory,
+            workspace_id,
+            surface_id,
+            initial_size,
+        )
+    }
+
+    /// Shared body of `new`. Owns the `Term`/PTY setup and thread
+    /// spawn — callers pass the resolved command line and the env they
+    /// want layered into the standard PaneFlow env block.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_inner(
+        backend: &dyn PtyBackend,
+        shell: String,
+        extra_args: Vec<String>,
+        mut env: std::collections::HashMap<String, String>,
+        working_directory: Option<std::path::PathBuf>,
+        workspace_id: u64,
+        surface_id: u64,
+        initial_size: Option<(usize, usize)>,
+    ) -> anyhow::Result<Self> {
+        let (events_tx, events_rx) = unbounded();
+        let (cwd_tx, cwd_rx) = unbounded();
+        let (prompt_tx, prompt_rx) = unbounded();
+        let listener = ZedListener(events_tx.clone());
+
+        let (cols, rows) = initial_size.unwrap_or((120, 40));
+
+        let config = TermConfig::default();
+        let dimensions = SpikeTermSize {
+            columns: cols,
+            screen_lines: rows,
+        };
+
+        let term = Term::new(config, &dimensions, listener.clone());
+        let term = Arc::new(FairMutex::new(term));
 
         // Inject PaneFlow identity env vars for AI tool hook integration.
         env.insert("PANEFLOW_WORKSPACE_ID".into(), workspace_id.to_string());

@@ -9,4 +9,4 @@ pub use builtin::{
     solarized_dark, theme_by_name,
 };
 pub use model::{TerminalTheme, UiColors, ui_colors};
-pub use watcher::{active_theme, config_mtime, invalidate_theme_cache};
+pub use watcher::{ThemeWatcher, active_theme, config_mtime, invalidate_theme_cache};

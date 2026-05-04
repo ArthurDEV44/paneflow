@@ -14,13 +14,16 @@ pub struct SearchHighlight {
 }
 
 /// Where a hyperlink was detected.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum HyperlinkSource {
     /// Explicit OSC 8 escape sequence from the program.
     Osc8,
     /// Regex pattern match on terminal output.
     Regex,
+    /// File path detected by the file-path scanner (US-019).
+    /// `uri` holds the resolved absolute path on disk.
+    FilePath,
 }
 
 /// A detected OSC 8 hyperlink zone spanning one or more cells.

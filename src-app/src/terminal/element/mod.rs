@@ -38,7 +38,9 @@ use color::{convert_color, rgb_to_hsla};
 use font::{base_font, font_size};
 pub use font::{measure_cell, resolve_font_family};
 use geometry::CellGeometry;
-pub use hyperlink::{detect_urls_on_line_mapped, is_url_scheme_openable};
+pub use hyperlink::{
+    detect_file_paths_on_line_mapped, detect_urls_on_line_mapped, is_url_scheme_openable,
+};
 
 // US-007: re-export APCA primitives so theme code (and theme tests) can
 // derive and verify a contrast-validated `selection_foreground` color

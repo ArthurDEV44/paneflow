@@ -3,8 +3,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Current on-disk schema version for [`SessionState`].
+pub const SESSION_SCHEMA_VERSION: u32 = 1;
+
 /// Top-level PaneFlow configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PaneFlowConfig {
     /// Key-action shortcut mappings (e.g. "ctrl+t" -> "new_tab").

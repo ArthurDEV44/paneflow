@@ -4,8 +4,9 @@ import Image from "next/image";
 import { motion } from "framer-motion";
 import { Download } from "lucide-react";
 import posthog from "posthog-js";
+import { AppleIcon } from "./os-icons";
 import { GitHubIcon } from "./icons";
-import { linuxAppImageUrl } from "../lib/release";
+import { linuxAppImageUrl, macOSDmgUrl } from "../lib/release";
 import { useDetectedLinuxArch } from "../lib/use-detected-arch";
 import { track } from "../lib/analytics";
 
@@ -90,6 +91,29 @@ export function Hero() {
           >
             <Download className="w-4 h-4" />
             Download for Linux
+          </a>
+          {/*
+            macOS .dmg — signed with a Developer ID Application
+            certificate and Apple-notarized (ticket stapled). Apple
+            Silicon only for v0.2.10; Intel Mac (x86_64-apple-darwin)
+            is a closed CI target until v0.3.0. The same secondary-
+            CTA styling as "View on GitHub" keeps Linux as the visual
+            primary while still giving macOS users a one-click path.
+          */}
+          <a
+            href={macOSDmgUrl()}
+            onClick={() => {
+              posthog.capture("download_cta_clicked", {
+                source: "hero",
+                format: "dmg",
+                platform: "macos",
+                arch: "aarch64",
+              });
+            }}
+            className="inline-flex items-center gap-2.5 px-6 py-3 border border-surface-border text-text-muted rounded-lg hover:border-surface-border-hover hover:text-text transition-all duration-200"
+          >
+            <AppleIcon className="w-4 h-4" />
+            Download for macOS
           </a>
           <a
             href="https://github.com/ArthurDEV44/paneflow"
