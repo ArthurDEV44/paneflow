@@ -9,11 +9,11 @@ use std::collections::VecDeque;
 use gpui::{App, AppContext, Context, Entity};
 use paneflow_config::schema::LayoutNode;
 
+use crate::PaneFlowApp;
 use crate::layout::LayoutTree;
 use crate::pane::Pane;
 use crate::terminal::TerminalView;
-use crate::workspace::{next_workspace_id, Workspace};
-use crate::PaneFlowApp;
+use crate::workspace::{Workspace, next_workspace_id};
 
 impl PaneFlowApp {
     pub(crate) fn save_session(&self, cx: &App) {
