@@ -91,23 +91,33 @@ mkdir -p "$STAGING/.background"
 cp "$BG_SRC" "$STAGING/.background/background.png"
 
 # --- Create a writable staging DMG ---------------------------------------
-# Size = 2 × the app bundle's footprint, rounded up to the next 50 MB.
-# hdiutil will tighten the image at convert time (UDZO drops unused
-# sectors), so over-provisioning here just gives us headroom during
-# osascript's Finder writes without ENOSPC.
+# Size = 4 × the app bundle's footprint + 256 MB, rounded up. hdiutil will
+# tighten the image at convert time (UDZO drops unused sectors), so
+# over-provisioning here is free at the final asset level — but
+# under-provisioning makes hdiutil fail with `No space left on device`
+# even when the host has tens of GB free (observed on macos-14 hosted
+# runners with the previous `2× + 50 MB` formula at v0.2.9-rc.2).
+#
+# `-fsargs` was previously set to `-c c=64,a=16,e=16` to pre-grow the
+# HFS+ catalog/attribute/extents B-trees; on a small image this
+# over-allocates fs metadata that competes with the payload for the
+# `-size` budget. Dropped — the newfs_hfs defaults are sized appropriately
+# for any image we're likely to ship, and removing the flag eliminates
+# one variable in the ENOSPC failure surface.
 APP_BYTES=$(du -sk "$APP" | awk '{print $1}')
-SIZE_MB=$(( (APP_BYTES * 2 / 1024) + 50 ))
+APP_MB=$(( APP_BYTES / 1024 ))
+SIZE_MB=$(( (APP_MB * 4) + 256 ))
 # Cap at something sensible so a misread `du` can't request a 10 GB image.
 if [ "$SIZE_MB" -gt 1024 ]; then
     SIZE_MB=1024
 fi
 
-echo "Creating staging DMG (${SIZE_MB} MB)..."
+echo "Creating staging DMG (${SIZE_MB} MB) — app footprint: ${APP_MB} MB ($(du -sh "$APP" | awk '{print $1}'))"
+df -h "$(dirname "$TEMP_DMG")" || true
 hdiutil create \
     -srcfolder "$STAGING" \
     -volname "$VOLNAME" \
     -fs HFS+ \
-    -fsargs "-c c=64,a=16,e=16" \
     -format UDRW \
     -size "${SIZE_MB}m" \
     "$TEMP_DMG" >/dev/null
