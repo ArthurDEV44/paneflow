@@ -592,6 +592,35 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash scripts/notarize-macos.sh dist/PaneFlow.app
 
+      # ─── Free disk space before .dmg ─────────────────────────────────
+      # macos-14 hosted runners ship with ~14 GB free. A workspace-wide
+      # `cargo build --release` for the GPUI graph routinely consumes
+      # 11-13 GB of `target/` (Zed monorepo deps, alacritty_terminal,
+      # gpui_macos with Metal shaders, all release-mode codegen). By the
+      # time we reach `Produce .dmg`, the runner has <100 MB free, and
+      # `hdiutil create` aborts with `No space left on device` while
+      # asking for a 75 MB staging image (observed in v0.2.9-rc.1).
+      #
+      # `target/` is disposable here: the release binary was already
+      # copied into `dist/PaneFlow.app/Contents/MacOS/paneflow` by
+      # `bundle-macos.sh`, signed by `sign-macos.sh`, and stapled by
+      # `notarize-macos.sh`. Nothing downstream in this leg reads
+      # `target/`. `df -h` brackets give us the disk delta in the CI log
+      # for future capacity-planning. Linux/Windows legs skip via the
+      # `runner.os == 'macOS'` guard.
+      - name: Free disk space before .dmg packaging
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          echo "::group::Disk space before cleanup"
+          df -h /
+          du -sh target/ 2>/dev/null || true
+          echo "::endgroup::"
+          rm -rf target/
+          echo "::group::Disk space after cleanup"
+          df -h /
+          echo "::endgroup::"
+
       # ─── US-016 .dmg assembly ────────────────────────────────────────
       # Wraps the stapled .app in a drag-to-Applications .dmg. Zero new
       # dependencies — hdiutil + osascript are built into macOS. Runs
