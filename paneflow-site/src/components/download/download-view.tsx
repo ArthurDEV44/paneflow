@@ -31,6 +31,14 @@ const VERSIONS: VersionEntry[] = [
     releaseNotes: `https://github.com/ArthurDEV44/paneflow/releases/tag/v${LATEST_VERSION}`,
   },
   {
+    version: "0.2.10",
+    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.10",
+  },
+  {
+    version: "0.2.9",
+    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.9",
+  },
+  {
     version: "0.2.8",
     releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.8",
   },
