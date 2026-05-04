@@ -426,12 +426,16 @@ mod tests {
 
         // Base DEFAULTS still hold the ctrl-shift-c/v entries — the macOS
         // bindings are ADDITIVE, not replacements.
-        assert!(DEFAULTS
-            .iter()
-            .any(|d| d.key == "ctrl-shift-c" && d.action_name == "terminal_copy"));
-        assert!(DEFAULTS
-            .iter()
-            .any(|d| d.key == "ctrl-shift-v" && d.action_name == "terminal_paste"));
+        assert!(
+            DEFAULTS
+                .iter()
+                .any(|d| d.key == "ctrl-shift-c" && d.action_name == "terminal_copy")
+        );
+        assert!(
+            DEFAULTS
+                .iter()
+                .any(|d| d.key == "ctrl-shift-v" && d.action_name == "terminal_paste")
+        );
     }
 
     #[cfg(not(target_os = "macos"))]

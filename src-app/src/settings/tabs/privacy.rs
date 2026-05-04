@@ -14,8 +14,8 @@
 //! the effect.
 
 use gpui::{
-    div, prelude::*, px, ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement,
-    ParentElement, Styled,
+    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, Styled, div,
+    prelude::*, px,
 };
 
 use crate::config_writer;
