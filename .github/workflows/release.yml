@@ -1260,7 +1260,15 @@ jobs:
     # `workflow_run` of this workflow but already filters on
     # `workflow_run.event == 'push'` (line ~94 of repo-publish.yml),
     # so a workflow_dispatch run never touches pkg.paneflow.dev.
-    if: env.RELEASE_MODE == 'release'
+    # NOTE: GitHub Actions does NOT expose the `env` context in job-level
+    # `if:` expressions (only in step-level `if:`, in `with:`/`env:` of
+    # steps, and in `continue-on-error:`). Use `github.event_name` directly
+    # — it's the source of truth that drives `env.RELEASE_MODE` above
+    # (`workflow_dispatch` => 'dry-run', everything else under the `on:`
+    # block is `push: tags` => 'release'). Keeps the gate intent identical
+    # without the unsupported context lookup that GitHub silently swallows
+    # on tag pushes ("workflow file issue") and rejects on dispatch.
+    if: github.event_name == 'push'
     # US-002: Publish is gated on every smoke test, not just `build`.
     # US-005: also gated on `auto-update-e2e` so a tag cut never ships
     # a binary that can't actually self-update v(N-1) → v(N).
