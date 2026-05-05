@@ -3,12 +3,55 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # US-003: dry-run dispatch. Manually-triggered runs build the full
+  # matrix (including sign + notarize + dmg + msi + smoke tests) but
+  # skip every downstream public side-effect:
+  #   - no GitHub Release (`release:` job is gated on RELEASE_MODE)
+  #   - no Homebrew Cask / Winget update (their triggers are
+  #     `release: published`, which never fires when the release job
+  #     is skipped)
+  #   - no APT/RPM repo publish (repo-publish.yml gates on
+  #     `workflow_run.event == 'push'`; a workflow_dispatch run
+  #     surfaces as `workflow_dispatch` and is filtered out)
+  # Use case: validate the signing + packaging chain on a branch
+  # before cutting a tag. Artifacts land as workflow artifacts with
+  # 7-day retention (see the build job's Upload step), and the
+  # `dry-run-summary` job at the bottom of this file fans them out
+  # with SHA-256 hashes into the Actions UI Summary.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Dry-run semver (no v prefix, e.g. 0.2.12-rc.1)"
+        required: true
+        type: string
+      target_ref:
+        description: "Git ref to build from"
+        required: false
+        type: string
+        default: main
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  # US-003: synthesize the canonical TAG every downstream packaging
+  # step already uses as its version source (every `cp`, sha256, .deb,
+  # .rpm, .dmg, .msi name resolves through `${TAG#v}`). In tag-push
+  # mode RELEASE_TAG echoes `github.ref_name`; in workflow_dispatch
+  # (dry-run) we synthesize `v<inputs.version>` so the `${TAG#v}`
+  # strip stays correct and asset names stay consistent across modes.
+  # The `&&` short-circuits before `format()` runs on push events
+  # (where `inputs.version` is null), so this is safe in both
+  # contexts.
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+  # Branch / ref to check out. Tag-push mode picks the tag (matches
+  # the historical `actions/checkout@v5` default behaviour); dry-run
+  # uses the user-supplied target_ref (default: main).
+  RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && (inputs.target_ref || 'main') || github.ref_name }}
+  # Mode flag consumed by per-step `if:` / `continue-on-error:` gates
+  # so a dry-run can never accidentally publish a Release.
+  RELEASE_MODE: ${{ github.event_name == 'workflow_dispatch' && 'dry-run' || 'release' }}
 
 jobs:
   build:
@@ -100,6 +143,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          # US-003: dry-run runs check out `inputs.target_ref` (default
+          # `main`); tag-push runs check out the tag (RELEASE_REF
+          # echoes github.ref_name there).
+          ref: ${{ env.RELEASE_REF }}
 
       - name: Install system dependencies
         if: runner.os == 'Linux'
@@ -138,8 +186,17 @@ jobs:
             --pedantic \
             assets/io.github.arthurdev44.paneflow.metainfo.xml
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned via repo-level `rust-toolchain.toml` (US-001). Use the
+      # `@master` ref + explicit `toolchain` input so the action reads the
+      # same channel everywhere instead of resolving `@stable` at runtime,
+      # which drifts each Rust point release and broke fmt mid-v0.2.11.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          # Must match `rust-toolchain.toml` channel verbatim. The
+          # workspace dep graph (oo7, cosmic-text, smol_str, wgpu)
+          # requires rustc >= 1.92, so this can't drift below 1.92.
+          toolchain: "1.95"
+          components: rustfmt, clippy
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
@@ -197,7 +254,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           ARCH: ${{ matrix.arch }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         # `${TAG#v}` strips the leading `v` so the bundled artifact is
         # `paneflow-<semver>-<arch>.tar.gz` (no `v` prefix), matching the
         # naming convention macOS and Windows already follow. Until v0.3.0
@@ -509,7 +566,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           ARCH: ${{ matrix.arch }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         # `${TAG#v}` strips the leading `v`. See the bundle-tarball
         # invocation above for the rationale (consistency with macOS/
         # Windows naming + safe under suffix-only update matcher).
@@ -560,7 +617,7 @@ jobs:
         if: runner.os == 'macOS'
         env:
           ARCH: ${{ matrix.arch }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
           version="${TAG#v}"
@@ -632,6 +689,14 @@ jobs:
 
       - name: Notarize + staple macOS .app bundle
         if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available == 'true'
+        # US-003 AC6: in dry-run mode a transient Apple Notary outage
+        # must not fail the entire leg — the release engineer still
+        # wants the un-notarized .app + the Linux/Windows artifacts to
+        # land in the workflow artifact bundle for inspection. In
+        # tag-push mode this stays hard-required: shipping an
+        # un-notarized .dmg under v0.X.Y would block first-launch on
+        # every macOS user's box.
+        continue-on-error: ${{ env.RELEASE_MODE == 'dry-run' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -642,7 +707,7 @@ jobs:
         if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available != 'true'
         env:
           ARCH: ${{ matrix.arch }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
           {
@@ -712,7 +777,7 @@ jobs:
       - name: Produce .dmg
         if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available == 'true'
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
@@ -728,7 +793,7 @@ jobs:
       - name: Stage macOS .dmg
         if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available == 'true'
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
@@ -809,7 +874,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
           version="${TAG#v}"
@@ -905,7 +970,7 @@ jobs:
           AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
           AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
           AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           $version = $env:TAG -replace '^v', ''
           # Hard-validate $version as strict semver before it flows into
@@ -944,7 +1009,7 @@ jobs:
         if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true' && steps.sign_msi.outcome == 'success'
         shell: pwsh
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           $version = $env:TAG -replace '^v', ''
           if ($version -notmatch '^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') {
@@ -1007,7 +1072,7 @@ jobs:
         shell: bash
         env:
           ARCH: ${{ matrix.arch }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
           {
@@ -1039,7 +1104,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
           mkdir -p release-assets
@@ -1071,7 +1136,7 @@ jobs:
       - name: Stage release assets
         if: runner.os == 'Linux'
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
           ARCH: ${{ matrix.arch }}
           TARGET: ${{ matrix.target }}
         # `VERSION="${TAG#v}"` strips the leading `v` so all Linux assets
@@ -1188,7 +1253,32 @@ jobs:
   # depends on while letting experimental/best-effort legs ride along.
   release:
     name: Publish GitHub Release
-    needs: build
+    # US-003: skip the entire publish chain in dry-run mode. The
+    # downstream `update-cask.yml` and `update-winget.yml` workflows
+    # are triggered by `release: published`, so skipping this job
+    # transitively skips them. `repo-publish.yml` is triggered by
+    # `workflow_run` of this workflow but already filters on
+    # `workflow_run.event == 'push'` (line ~94 of repo-publish.yml),
+    # so a workflow_dispatch run never touches pkg.paneflow.dev.
+    if: env.RELEASE_MODE == 'release'
+    # US-002: Publish is gated on every smoke test, not just `build`.
+    # US-005: also gated on `auto-update-e2e` so a tag cut never ships
+    # a binary that can't actually self-update v(N-1) → v(N).
+    # Pre-US-002 the smoke jobs ran in parallel with publish (rationale:
+    # the .deb/.rpm hadn't been signed yet, so a hot-fix re-publish was
+    # cheaper than blocking the tag). Post-v0.2.11 the macOS DMG is
+    # notarized and the Windows MSI is in the Azure-signing pipeline,
+    # so a botched-postinst hot-fix means re-running the entire signing
+    # chain. Blocking publish on the 5-distro smoke matrix is the
+    # cheaper failure mode now.
+    needs:
+      - build
+      - smoke-test-ubuntu
+      - smoke-test-fedora
+      - smoke-test-debian
+      - smoke-test-arch
+      - smoke-test-opensuse
+      - auto-update-e2e
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -1210,18 +1300,45 @@ jobs:
           files: release-assets/*
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          prerelease: ${{ contains(env.RELEASE_TAG, 'alpha') || contains(env.RELEASE_TAG, 'beta') || contains(env.RELEASE_TAG, 'rc') }}
 
-  # ─── US-016 smoke tests ──────────────────────────────────────────────
-  # Exercise the postinst scripts in clean distro containers to catch
-  # the Cursor-style "broken apt update" regression that US-016
-  # guards against. These jobs depend on `build` (the matrix) and run
-  # in parallel with the `release` publish job — deliberate: smoke
-  # tests consume the uploaded workflow artifacts, not the GitHub
-  # Release, so there's no reason to chain them. A smoke-test failure
-  # surfaces as a red workflow check but does not un-publish the
-  # release (by design: if the .deb/.rpm actually installed on a
-  # clean host, we'd rather ship and hotfix than delete the tag).
+  # ─── Smoke tests (US-016 + US-002 multi-distro expansion) ───────────
+  # Exercise the postinst scripts and packaged binary in clean distro
+  # containers to catch (a) the Cursor-style "broken apt update"
+  # regression US-016 guarded against, and (b) cross-distro library/
+  # naming drift that US-002 now widens to cover.
+  #
+  # 5-distro matrix (kept as 5 sibling top-level jobs rather than a
+  # `matrix:` strategy because each distro has a different package
+  # manager + assertion set; flattening them into one matrix would
+  # require a per-distro switch ladder that erases the per-distro
+  # signal a reviewer needs at a glance):
+  #   - Ubuntu 22.04         .deb postinst (deep checks: paneflow.list, idempotency)
+  #   - Fedora 40            .rpm %post     (deep checks: paneflow.repo, idempotency)
+  #   - Debian 12 bookworm   .deb install + paneflow --version  (US-002 AC1)
+  #   - openSUSE Tumbleweed  .rpm install via zypper             (US-002 AC2)
+  #   - Arch Linux           tar.gz install + paneflow --version (US-002 AC3)
+  #
+  # The Arch leg installs from the platform-agnostic `.tar.gz` rather
+  # than a native PKGBUILD because Paneflow has no AUR maintainer
+  # today (PRD US-002 AC3 explicitly allows the tar.gz fallback). It
+  # still exercises the same regression surface that matters for
+  # rolling distros: a binary built on ubuntu-22.04 (glibc 2.35) must
+  # still load on Arch's current libxcb / libxkbcommon / libvulkan.
+  #
+  # AC5 (`fail-fast: false`) is satisfied by these jobs being separate
+  # top-level jobs — GHA never cancels sibling top-level jobs on a
+  # peer's failure, so a Debian fail still surfaces the openSUSE
+  # result. Inside each step, transient package-manager fetches are
+  # wrapped in a small 3-attempt retry loop (US-002 AC6) to absorb
+  # the dominant failure mode (mirror flakes, not container pulls;
+  # GHA pulls the container before the first step and has no native
+  # retry knob).
+  #
+  # Publish gating (US-002 AC4): all 5 smoke jobs sit in the
+  # `release.needs:` list above, so a smoke failure on any distro
+  # blocks the GitHub Release publish and the Homebrew / winget
+  # update jobs that fan out from it.
   #
   # Smoke tests are intentionally x86_64-only even after US-019 adds
   # the aarch64 build matrix leg. The tests exercise postinst scripts
@@ -1401,3 +1518,339 @@ jobs:
           dnf reinstall -y --allowerasing ./release-assets/paneflow-*.rpm
           grep -Fq 'PaneFlow (custom mirror)' /etc/yum.repos.d/paneflow.repo \
             || { echo "::error::%post overwrote a pre-existing paneflow.repo"; exit 1; }
+
+  # ─── US-002 AC1: Debian 12 (.deb postinst) ──────────────────────────
+  # Same .deb the Ubuntu smoke test installs, but on Debian's older
+  # apt + glibc baseline. Catches Ubuntu-only assumptions in our
+  # postinst (e.g. `apt-get` flag drift, snap-aware codepaths).
+  smoke-test-debian:
+    name: Smoke test — Debian 12 (.deb postinst)
+    needs: build
+    runs-on: ubuntu-22.04
+    container: debian:bookworm-slim
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install baseline tools (retry on transient mirror flake)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        # `bookworm-slim` ships dash as /bin/sh and a stripped APT
+        # cache, so a fresh `apt-get update` is mandatory before the
+        # .deb install can resolve `ca-certificates` / `curl` /
+        # `gnupg` (required by our postinst's GPG-fetch path). Wrap
+        # in a 3-attempt loop because deb.debian.org occasionally
+        # returns 503 on the first hit from a fresh container IP.
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if apt-get update -qq && apt-get install -y --no-install-recommends \
+                 ca-certificates curl gnupg; then
+              break
+            fi
+            echo "::warning::apt-get baseline install failed, retry ${attempt}/3"
+            [ "${attempt}" -lt 3 ] && sleep 5
+          done
+
+      - name: Download built .deb
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-x86_64-Linux
+          path: ./release-assets
+
+      - name: Install paneflow.deb (exercises postinst on Debian 12)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if apt-get install -y --no-install-recommends \
+                 ./release-assets/paneflow-*.deb; then
+              break
+            fi
+            echo "::warning::paneflow.deb install failed, retry ${attempt}/3"
+            [ "${attempt}" -lt 3 ] && sleep 5
+          done
+
+      - name: Assert paneflow --version matches the released tag
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          actual="$(paneflow --version)"
+          expected="paneflow ${version}"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "::error::paneflow --version returned '${actual}', expected '${expected}'"
+            exit 1
+          fi
+
+      - name: Assert postinst wrote paneflow.list (Debian path)
+        run: |
+          set -euo pipefail
+          test -f /etc/apt/sources.list.d/paneflow.list
+
+  # ─── US-002 AC2: openSUSE Tumbleweed (.rpm via zypper) ──────────────
+  # Validates that our cargo-generate-rpm `Requires:` (vulkan-loader,
+  # libxkbcommon, libxkbcommon-x11, fontconfig, freetype) resolves on
+  # zypper's package graph too — not only dnf's. A naming-drift
+  # failure here means the .rpm needs a `Provides:`-aware fix before
+  # we can claim openSUSE coverage on paneflow.dev.
+  smoke-test-opensuse:
+    name: Smoke test — openSUSE Tumbleweed (.rpm postinst)
+    needs: build
+    runs-on: ubuntu-22.04
+    container: opensuse/tumbleweed
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Refresh zypper repos (retry on transient mirror flake)
+        # Tumbleweed's container image ships with stale repo metadata
+        # roughly half the time; refresh once, retry on flake.
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if zypper --non-interactive --gpg-auto-import-keys refresh; then
+              break
+            fi
+            echo "::warning::zypper refresh failed, retry ${attempt}/3"
+            [ "${attempt}" -lt 3 ] && sleep 5
+          done
+
+      - name: Download built .rpm
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-x86_64-Linux
+          path: ./release-assets
+
+      - name: Install paneflow.rpm via zypper
+        # `--allow-unsigned-rpm` is required because our release
+        # signing chain (US-013) lives on the macOS / Windows side;
+        # the Linux .rpm itself is unsigned and rebuilt fresh per
+        # tag, so out-of-band SHA-256 sidecars are the integrity
+        # surface (see the Phase-1 sha256 step on the build job).
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if zypper --non-interactive install \
+                 --allow-unsigned-rpm \
+                 ./release-assets/paneflow-*.rpm; then
+              break
+            fi
+            echo "::warning::zypper install failed, retry ${attempt}/3"
+            [ "${attempt}" -lt 3 ] && sleep 5
+          done
+
+      - name: Assert paneflow --version matches the released tag
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          actual="$(paneflow --version)"
+          expected="paneflow ${version}"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "::error::paneflow --version returned '${actual}', expected '${expected}'"
+            exit 1
+          fi
+
+      - name: Assert %post wrote paneflow.repo
+        run: |
+          set -euo pipefail
+          test -f /etc/yum.repos.d/paneflow.repo
+          grep -Fq '[paneflow]' /etc/yum.repos.d/paneflow.repo
+
+  # ─── US-002 AC3: Arch Linux (tar.gz, no native PKGBUILD) ────────────
+  # Paneflow has no AUR maintainer yet, so this leg installs the
+  # platform-agnostic tarball produced by `scripts/bundle-tarball.sh`
+  # (Zed-style `paneflow.app/bin/paneflow` layout) into a clean
+  # `archlinux:base` container. The runtime libs are installed
+  # ahead of time via pacman because the tar.gz carries no dep
+  # metadata; missing names here would surface as the same
+  # `error while loading shared libraries: libvulkan.so.1` the in-app
+  # updater would emit on a real user's box. The .deb / .rpm legs
+  # don't catch this because their package managers resolve those
+  # libs implicitly from `Requires:` / `depends:`.
+  smoke-test-arch:
+    name: Smoke test — Arch Linux (tar.gz binary, no native PKGBUILD)
+    needs: build
+    runs-on: ubuntu-22.04
+    container: archlinux:base
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install runtime libs (tar.gz has no dep metadata)
+        # Mirror the .deb / .rpm `Requires:` set, mapped to Arch
+        # package names. Pinning to a specific Arch snapshot is not
+        # worth it: the smoke test's job is precisely to fail when
+        # rolling-Arch ships a SO-name bump that breaks our
+        # ubuntu-22.04 build target.
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if pacman -Sy --noconfirm --needed \
+                 glibc libxcb libxkbcommon libxkbcommon-x11 libx11 \
+                 vulkan-icd-loader fontconfig freetype2; then
+              break
+            fi
+            echo "::warning::pacman install failed, retry ${attempt}/3"
+            [ "${attempt}" -lt 3 ] && sleep 5
+          done
+
+      - name: Download tar.gz tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-x86_64-Linux
+          path: ./release-assets
+
+      - name: Extract paneflow.app/ and assert --version matches the tag
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        # Tarball layout (scripts/bundle-tarball.sh): `paneflow.app/`
+        # at the root, binary at `paneflow.app/bin/paneflow`. We
+        # `find` the binary instead of hardcoding the path so a
+        # future bundle-layout shift doesn't silently mask a smoke
+        # regression.
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          mkdir -p /opt/paneflow-smoke
+          tar -xzf release-assets/paneflow-*.tar.gz -C /opt/paneflow-smoke
+          paneflow_bin="$(find /opt/paneflow-smoke -type f -name paneflow -executable | head -n1)"
+          if [ -z "${paneflow_bin}" ]; then
+            echo "::error::paneflow binary not found in tar.gz layout"
+            ls -laR /opt/paneflow-smoke
+            exit 1
+          fi
+          actual="$("${paneflow_bin}" --version)"
+          expected="paneflow ${version}"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "::error::paneflow --version returned '${actual}', expected '${expected}'"
+            exit 1
+          fi
+
+  # ─── US-003 AC5: dry-run artifact summary ───────────────────────────
+  # In dry-run mode the `release:` job is skipped, so there's no
+  # GitHub Release page to inspect. This job downloads every
+  # `release-assets-*` workflow artifact produced by the build matrix
+  # and writes a SHA-256 manifest into the Actions UI Summary so the
+  # release engineer can verify naming, size, and integrity at a
+  # glance before deciding whether to cut the real tag.
+  #
+  # Only runs in dry-run mode — the real release job already
+  # publishes the artifacts to GitHub Releases (which renders the
+  # same SHA-256 sidecars next to each asset).
+  dry-run-summary:
+    name: Dry-run artifact summary
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download all release-assets-* workflow artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: release-assets-*
+          merge-multiple: true
+
+      - name: Render artifact + SHA-256 table to job summary
+        env:
+          DRYRUN_TAG: ${{ env.RELEASE_TAG }}
+          DRYRUN_REF: ${{ env.RELEASE_REF }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Dry-run artifacts (${DRYRUN_TAG})"
+            echo
+            echo "Built from \`${DRYRUN_REF}\`. Workflow artifacts have"
+            echo "7-day retention — download them from the Actions UI"
+            echo "sidebar to inspect before cutting the real tag."
+            echo
+            echo "| Asset | Size | SHA-256 |"
+            echo "|---|---:|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # `find -print0` keeps filenames with spaces / unicode safe.
+          # `sha256sum` is part of coreutils on ubuntu-22.04 (always
+          # present). Sort by name so the table is deterministic across
+          # runs and diffable between two back-to-back dry-runs. Skip
+          # the `*.sha256` sidecars we already emitted at build time —
+          # they would clutter the table and their content is the next
+          # column anyway.
+          while IFS= read -r -d '' f; do
+            [ -d "$f" ] && continue
+            case "$f" in
+              *.sha256) continue ;;
+            esac
+            name="$(basename "$f")"
+            size="$(stat -c '%s' "$f")"
+            hash="$(sha256sum "$f" | awk '{print $1}')"
+            printf '| `%s` | %s | `%s` |\n' "$name" "$size" "$hash"
+          done < <(find release-assets -type f -print0 | sort -z) \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  # ─── US-005: auto-update e2e (publish-gating) ───────────────────────
+  # Builds OLD paneflow at the previous tag in a git worktree, builds
+  # NEW from this checkout, serves a fixture `latest.json` + tarball
+  # via python3's http.server on localhost, then runs OLD with
+  # `--update-and-exit` (US-005 Rust flag) pointing at the fixture.
+  # Three scenarios — happy tar.gz swap, hash-mismatch rejection,
+  # feed-unreachable surfaced as exit 3 — all asserted by the script.
+  #
+  # Sits in `release.needs` so a tag cut never ships a binary that
+  # can't actually self-update from the previous release. A separate
+  # nightly `auto-update-e2e.yml` runs the same script on a cron so
+  # weekday-only regressions surface before the next tag.
+  auto-update-e2e:
+    name: Auto-update e2e (Linux x86_64)
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          # The harness `git worktree add v<old>`s the previous tag, so
+          # the runner needs every tag locally. `fetch-depth: 0` is the
+          # cheapest way to guarantee that.
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust-e2e"
+
+      - name: Run auto-update e2e harness
+        run: bash scripts/test-update-e2e.sh
+
+      - name: Upload e2e logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-update-e2e-logs-${{ github.run_id }}
+          path: |
+            /tmp/paneflow-e2e/*.stdout
+            /tmp/paneflow-e2e/*.stderr
+            /tmp/paneflow-e2e/http-server.log
+          retention-days: 7
+          if-no-files-found: warn
