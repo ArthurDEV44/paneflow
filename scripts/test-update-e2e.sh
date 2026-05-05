@@ -110,15 +110,28 @@ git -C "${REPO_ROOT}" worktree add --detach "${WORKTREE_PATH}" "${OLD_TAG}"
 # the dtolnay/rust-toolchain action installs 1.95 but does NOT set a
 # rustup default — running plain `cargo` in a directory without a
 # toolchain file fails with "rustup could not choose a version of cargo
-# to run, because one wasn't specified explicitly". Copy the current
-# main toolchain pin into the worktree so the OLD build resolves the
-# same toolchain as NEW. Future-proof: when main's pin moves (1.95 ->
-# 2.0), the e2e auto-follows without a script edit.
+# to run, because one wasn't specified explicitly".
+#
+# Read the channel from main's toolchain file and pass it as
+# RUSTUP_TOOLCHAIN to the OLD build. This is more idiomatic than
+# copying the file (rust-lang.github.io/rustup/overrides.html lists
+# RUSTUP_TOOLCHAIN env above directory-file overrides), avoids
+# polluting the OLD worktree's git state, and surfaces the chosen
+# toolchain in CI logs. Future-proof: when main bumps the pin, the
+# e2e auto-follows without a script edit.
+OLD_BUILD_TOOLCHAIN=""
 if [ -f "${REPO_ROOT}/rust-toolchain.toml" ]; then
-    cp "${REPO_ROOT}/rust-toolchain.toml" "${WORKTREE_PATH}/rust-toolchain.toml"
+    OLD_BUILD_TOOLCHAIN="$(awk -F'"' '/^channel/ { print $2; exit }' "${REPO_ROOT}/rust-toolchain.toml")"
 fi
-log "phase 2: building OLD paneflow at v${OLD_VERSION} (this is the slow step)"
-( cd "${WORKTREE_PATH}" && cargo build --release -p paneflow-app --quiet )
+log "phase 2: building OLD paneflow at v${OLD_VERSION} (toolchain=${OLD_BUILD_TOOLCHAIN:-system default}, slow step)"
+(
+    cd "${WORKTREE_PATH}"
+    if [ -n "${OLD_BUILD_TOOLCHAIN}" ]; then
+        RUSTUP_TOOLCHAIN="${OLD_BUILD_TOOLCHAIN}" cargo build --release -p paneflow-app --quiet
+    else
+        cargo build --release -p paneflow-app --quiet
+    fi
+)
 OLD_BIN_SRC="${WORKTREE_PATH}/target/release/paneflow"
 [ -x "${OLD_BIN_SRC}" ] || fail "OLD binary not built at ${OLD_BIN_SRC}"
 

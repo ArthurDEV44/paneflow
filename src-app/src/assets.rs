@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use anyhow::Result;
-use gpui::{AssetSource, SharedString};
+use gpui::{App, AssetSource, SharedString};
 use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
@@ -25,6 +25,46 @@ impl AssetSource for Assets {
                 }
             })
             .collect())
+    }
+}
+
+impl Assets {
+    /// Register every `.ttf` under `assets/fonts/` with GPUI's text system
+    /// in one batch. Mirrors Zed's `Assets::load_fonts` pattern at
+    /// `zed/crates/assets/src/assets.rs:42-55`: iterating the embed registry
+    /// means dropping a new `.ttf` into `assets/fonts/` is enough to ship
+    /// it — no Rust edit, no name list to maintain, no cargo recompile of
+    /// a `LazyLock` of hardcoded paths.
+    ///
+    /// Skips non-`.ttf` files so the `OFL.txt` / `LICENSE` companions sit
+    /// alongside the font binaries without needing a separate include set.
+    pub fn load_fonts(&self, cx: &App) -> Result<()> {
+        let font_paths = self.list("fonts/")?;
+        let mut embedded_fonts = Vec::with_capacity(font_paths.len());
+        for path in &font_paths {
+            // GPUI's text system accepts TTF and OTF; we only ship TTFs
+            // today, but allow OTF too so a future swap doesn't need a
+            // matching code change.
+            let lower = path.to_lowercase();
+            if !lower.ends_with(".ttf") && !lower.ends_with(".otf") {
+                continue;
+            }
+            let data = self
+                .load(path)?
+                .ok_or_else(|| anyhow::anyhow!("embedded font {path} listed but not loadable"))?;
+            embedded_fonts.push(data);
+        }
+        if embedded_fonts.is_empty() {
+            log::warn!(
+                "Assets::load_fonts: no .ttf/.otf found under fonts/ — \
+                 the rust-embed include set may have drifted"
+            );
+            return Ok(());
+        }
+        let count = embedded_fonts.len();
+        cx.text_system().add_fonts(embedded_fonts)?;
+        log::info!("Assets::load_fonts: registered {count} embedded font file(s) with GPUI");
+        Ok(())
     }
 }
 
