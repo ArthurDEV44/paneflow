@@ -296,6 +296,23 @@ mod tests {
         p
     }
 
+    /// Resolve `p` to a string the file-path regex can match end-to-end.
+    ///
+    /// The regex character class `[A-Za-z0-9_:./\\\-]+` deliberately
+    /// excludes `~` and `?`. On Windows runners `tempfile::tempdir()`
+    /// often returns paths with 8.3 short-name segments (`RUNNER~1`);
+    /// `canonicalize` resolves them to long form but prepends the
+    /// `\\?\` UNC prefix that contains `?`. We strip that prefix so the
+    /// downstream regex pass sees a path made entirely of accepted
+    /// characters. On Unix `canonicalize` returns a regex-friendly path
+    /// already and the strip is a no-op.
+    fn canonical_display(p: &Path) -> String {
+        let canonical = p.canonicalize().expect("canonicalize");
+        let s = canonical.to_string_lossy().into_owned();
+        s.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(s)
+    }
+
+    #[cfg(unix)]
     #[test]
     fn linux_absolute_path_existing_matches() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -310,6 +327,7 @@ mod tests {
         assert!(zones[0].is_openable);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn macos_absolute_uses_same_unix_path() {
         // macOS uses POSIX paths; same code path as Linux.
@@ -423,8 +441,12 @@ mod tests {
         // from regex over the line text. Pure plain text behaves identically
         // whether or not the cell carries an OSC 8 hyperlink.
         let tmp = tempfile::tempdir().expect("tempdir");
-        write_md(tmp.path(), "doc.md");
-        let line_text = format!("file {}", tmp.path().join("doc.md").to_string_lossy());
+        let md_path = write_md(tmp.path(), "doc.md");
+        // `canonical_display` resolves Windows 8.3 short names + strips the
+        // `\\?\` UNC prefix so the file-path regex character class accepts
+        // every byte. On Unix it's a thin wrapper around canonicalize.
+        let display = canonical_display(&md_path);
+        let line_text = format!("file {display}");
         let map = ascii_map(&line_text);
         let zones = detect_file_paths_on_line_mapped(&line_text, line0(), &map, None);
         assert_eq!(zones.len(), 1);
@@ -436,8 +458,10 @@ mod tests {
         // the candidate is preceded by `prefix-` (no whitespace), boundary
         // check rejects. Confirm that whitespace boundary works.
         let tmp = tempfile::tempdir().expect("tempdir");
-        write_md(tmp.path(), "foo.md");
-        let line_text = format!("ok {}/foo.md", tmp.path().to_string_lossy());
+        let md_path = write_md(tmp.path(), "foo.md");
+        // Same Windows-friendly long-form path the OSC-8 test uses.
+        let display = canonical_display(&md_path);
+        let line_text = format!("ok {display}");
         let map = ascii_map(&line_text);
         let zones = detect_file_paths_on_line_mapped(&line_text, line0(), &map, None);
         assert_eq!(zones.len(), 1);
@@ -445,7 +469,9 @@ mod tests {
         // Embedded mid-word: `prefixfoo.md` (no slash, no boundary delim
         // around but at start of string => start-of-line counts as boundary,
         // so this match is allowed at column 0). However we still want the
-        // existence check to reject when the file does not exist.
+        // existence check to reject when the file does not exist. This is a
+        // pure regex-string check — no real file involved — so it stays
+        // cross-platform without any UNC-strip dance.
         let line_text2 = "blob/junk.md";
         let map2 = ascii_map(line_text2);
         let zones2 = detect_file_paths_on_line_mapped(line_text2, line0(), &map2, Some(tmp.path()));
@@ -508,10 +534,14 @@ mod tests {
     fn perf_scan_200_lines_under_budget() {
         // AC budget: 200×80 grid scan < 5 ms (release).
         // Debug builds are ~5–10× slower; we assert release < 5 ms strictly
-        // and apply a 25 ms ceiling in debug as a regression guard.
+        // on Linux/macOS and apply a 25 ms ceiling in debug as a regression
+        // guard. On Windows the hosted runners are 2-3× slower at the same
+        // workload (US-004 AC5), so we relax to 15 ms in release without
+        // weakening the regression intent — anything significantly above
+        // 15 ms still surfaces as a perf regression.
         let tmp = tempfile::tempdir().expect("tempdir");
-        write_md(tmp.path(), "perf.md");
-        let target = tmp.path().join("perf.md").to_string_lossy().into_owned();
+        let md_path = write_md(tmp.path(), "perf.md");
+        let target = canonical_display(&md_path);
         let mut lines: Vec<String> = (0..200)
             .map(|i| {
                 if i % 20 == 0 {
@@ -535,7 +565,13 @@ mod tests {
         }
         let elapsed = started.elapsed();
         assert!(total >= 10, "expected at least 10 hits, got {}", total);
-        let budget_ms: u128 = if cfg!(debug_assertions) { 25 } else { 5 };
+        let budget_ms: u128 = if cfg!(debug_assertions) {
+            25
+        } else if cfg!(target_os = "windows") {
+            15
+        } else {
+            5
+        };
         assert!(
             elapsed.as_millis() < budget_ms,
             "200×80 scan took {:?}, exceeds {} ms budget",

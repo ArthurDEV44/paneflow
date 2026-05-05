@@ -21,8 +21,38 @@ use super::install_method::{self, InstallMethod, PackageManager};
 /// a toast well before they give up.
 const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
-const GITHUB_API: &str = "https://api.github.com/repos/ArthurDEV44/paneflow/releases/latest";
+/// Default GitHub API endpoint queried for the latest release. The
+/// effective URL is resolved by [`update_feed_url`] which lets the e2e
+/// harness (US-005) point the checker at a localhost fixture without
+/// patching the binary.
+const DEFAULT_FEED_URL: &str = "https://api.github.com/repos/ArthurDEV44/paneflow/releases/latest";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Resolve the URL the update checker fetches `<release>` JSON from.
+///
+/// Honours the `PANEFLOW_UPDATE_FEED_URL` env var (US-005 e2e harness)
+/// when it parses as a valid http(s) URL, else returns [`DEFAULT_FEED_URL`].
+/// The env override is intentionally *not* gated on `cfg(debug_assertions)`
+/// because the release-time CI job that runs the e2e against a freshly
+/// produced binary needs to use it; release builds simply ignore an unset
+/// var. Bad input falls through to the default with a warn so a typo
+/// can't silently break update checks for a user who set the var by
+/// accident.
+pub(crate) fn update_feed_url() -> String {
+    match std::env::var("PANEFLOW_UPDATE_FEED_URL") {
+        Ok(v) if v.starts_with("http://") || v.starts_with("https://") => {
+            log::warn!("update check: PANEFLOW_UPDATE_FEED_URL active → {v}");
+            v
+        }
+        Ok(v) => {
+            log::warn!(
+                "update check: ignoring PANEFLOW_UPDATE_FEED_URL='{v}' (must start with http(s)://)"
+            );
+            DEFAULT_FEED_URL.to_string()
+        }
+        Err(_) => DEFAULT_FEED_URL.to_string(),
+    }
+}
 
 /// Release-asset format the update checker advertises to the UI.
 ///
@@ -47,6 +77,20 @@ pub enum AssetFormat {
 }
 
 impl AssetFormat {
+    /// Canonical lowercase tag used in telemetry payloads (US-007).
+    /// Stable across format-suffix changes so a future `.AppImage`
+    /// rename to `.appimage` (or similar) does not break dashboards.
+    pub(crate) fn telemetry_tag(&self) -> &'static str {
+        match self {
+            AssetFormat::Deb => "deb",
+            AssetFormat::Rpm => "rpm",
+            AssetFormat::AppImage => "appimage",
+            AssetFormat::TarGz => "targz",
+            AssetFormat::Dmg => "dmg",
+            AssetFormat::Msi => "msi",
+        }
+    }
+
     /// Canonical filename suffix the CI emits for this format. Matching is
     /// performed case-insensitively so a release with `.DEB` still works.
     fn filename_suffix(&self) -> &'static str {
@@ -143,14 +187,54 @@ pub enum UpdateStatus {
 
 pub type SharedUpdateSlot = std::sync::Arc<std::sync::Mutex<Option<UpdateStatus>>>;
 
+/// Trigger source for an `update_check_started` telemetry event
+/// (US-007). Today only [`UpdateCheckTrigger::Auto`] fires from the
+/// startup path; [`UpdateCheckTrigger::Manual`] is plumbed for a
+/// future "Check for updates…" menu entry — the variant is part of
+/// the v1 telemetry schema by design (AC1 spec) so the dashboards
+/// don't need a back-fill migration once the manual path lands.
+#[derive(Clone, Copy, Debug)]
+pub enum UpdateCheckTrigger {
+    Auto,
+    #[allow(dead_code)]
+    Manual,
+}
+
+impl UpdateCheckTrigger {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            UpdateCheckTrigger::Auto => "auto",
+            UpdateCheckTrigger::Manual => "manual",
+        }
+    }
+}
+
 /// Spawn a detached thread that checks GitHub for a newer release.
 /// The result is deposited into the returned shared slot.
-pub fn spawn_check() -> SharedUpdateSlot {
+///
+/// `telemetry` is moved into the worker thread; PostHog events
+/// (`update_check_started` at the top of the poll, `update_available`
+/// inside [`check_github_release`] when both the version and asset
+/// match) ride through that handle. A `Null` client produces no
+/// network call (consent-gated by the factory), so callers that
+/// don't want telemetry — the `--update-and-exit` harness in
+/// particular — pass a Null client.
+pub fn spawn_check(
+    telemetry: std::sync::Arc<crate::telemetry::client::TelemetryClient>,
+    trigger: UpdateCheckTrigger,
+) -> SharedUpdateSlot {
     let slot: SharedUpdateSlot =
         std::sync::Arc::new(std::sync::Mutex::new(Some(UpdateStatus::Checking)));
     let writer = std::sync::Arc::clone(&slot);
     std::thread::spawn(move || {
-        let status = check_github_release();
+        // AC1: emit at the very start of the poll so the funnel still
+        // has a numerator for users who go offline mid-check.
+        crate::app::telemetry_events::emit_update_check_started(
+            &telemetry,
+            trigger,
+            CURRENT_VERSION,
+        );
+        let status = check_github_release(&telemetry);
         *writer.lock().unwrap_or_else(|e| e.into_inner()) = Some(status);
     });
     slot
@@ -211,7 +295,13 @@ pub fn pick_asset<'a>(
         .find(|a| a.name.to_ascii_lowercase().ends_with(&expected))
 }
 
-fn check_github_release() -> UpdateStatus {
+/// Blocking entry point used by both the background `spawn_check` thread
+/// and the synchronous `--update-and-exit` CLI flag (US-005). The
+/// `telemetry` handle drives the `update_available` event (US-007 AC2)
+/// — pass a `Null` client to opt out.
+pub(crate) fn check_github_release(
+    telemetry: &crate::telemetry::client::TelemetryClient,
+) -> UpdateStatus {
     // Dev-only override: lets `cargo run` short-circuit the GitHub check
     // and synthesize an `Available { version }` so the update pill can be
     // exercised end-to-end without a real release. Pair with
@@ -230,7 +320,8 @@ fn check_github_release() -> UpdateStatus {
         }
     }
 
-    let response = ureq::get(GITHUB_API)
+    let feed_url = update_feed_url();
+    let response = ureq::get(&feed_url)
         .config()
         .timeout_global(Some(UPDATE_HTTP_TIMEOUT))
         .build()
@@ -287,6 +378,20 @@ fn check_github_release() -> UpdateStatus {
         log::info!(
             "update available: v{remote} (current: v{local}) — asset_format: {asset_format:?}"
         );
+        // AC2: only emit when both version-greater AND asset-matched.
+        // Releases that ship without the host-specific format already
+        // surface as `asset_url: None` so the title bar falls back to
+        // the release-page browser link — counting those as "available"
+        // would inflate the funnel with users who can't actually
+        // accept the update in-app.
+        if let Some(format) = asset_format.as_ref() {
+            crate::app::telemetry_events::emit_update_available(
+                telemetry,
+                CURRENT_VERSION,
+                &remote.to_string(),
+                format.telemetry_tag(),
+            );
+        }
         UpdateStatus::Available {
             version: remote.to_string(),
             url: release.html_url,
@@ -690,5 +795,108 @@ mod tests {
         let assets = vec![make_asset("PaneFlow-0.2.0-X86_64-PC-Windows-Msvc.MSI")];
         let r = pick_asset(&assets, "x86_64", windows_msi());
         assert!(r.is_some(), "case-insensitive .msi match failed");
+    }
+
+    // ─── US-007: telemetry events ──────────────────────────────────────
+    //
+    // These tests exercise the *property bag* shape directly via the
+    // `*_props` helpers in `app::telemetry_events`. Inspecting the
+    // actual TelemetryClient queue would require crossing the
+    // `paneflow-telemetry` crate's private test-only API, but the
+    // emit helpers are thin (`client.capture(name, props)`) so a
+    // schema check on the props plus a Null-client smoke test
+    // covers the same regression surface as a queue-level mock —
+    // the only thing left untested is whether `capture()` itself
+    // enqueues correctly, and that's covered by the existing
+    // `paneflow_telemetry::client::tests::capture_enqueues_event`.
+
+    use crate::app::telemetry_events::{
+        UpdateDismissReason, emit_update_available, emit_update_check_started,
+        emit_update_dismissed_via, update_available_props, update_check_started_props,
+        update_dismissed_props,
+    };
+    use crate::telemetry::client::TelemetryClient;
+
+    /// AC1 + AC5: `update_check_started` carries `trigger` and
+    /// `current_version` exactly as documented in the PRD; Null-client
+    /// emit is a no-op (consent gating verified at the adapter level).
+    #[test]
+    fn update_check_started_props_match_ac1_schema() {
+        let props = update_check_started_props(UpdateCheckTrigger::Auto, "0.2.11");
+        assert_eq!(props["trigger"], "auto");
+        assert_eq!(props["current_version"], "0.2.11");
+
+        let manual = update_check_started_props(UpdateCheckTrigger::Manual, "0.2.11");
+        assert_eq!(manual["trigger"], "manual");
+
+        // Null-client emit must not panic and must not enqueue.
+        emit_update_check_started(&TelemetryClient::Null, UpdateCheckTrigger::Auto, "0.2.11");
+    }
+
+    /// AC2 + AC5: `update_available` payload pins from/to/asset_format.
+    /// Null-client emit is a no-op.
+    #[test]
+    fn update_available_props_match_ac2_schema() {
+        let props = update_available_props("0.2.11", "0.2.12", "deb");
+        assert_eq!(props["from_version"], "0.2.11");
+        assert_eq!(props["to_version"], "0.2.12");
+        assert_eq!(props["asset_format"], "deb");
+
+        emit_update_available(&TelemetryClient::Null, "0.2.11", "0.2.12", "deb");
+    }
+
+    /// AC3 + AC5: `update_dismissed` payload pins the reason enum
+    /// values verbatim — dashboards key off these strings.
+    #[test]
+    fn update_dismissed_props_match_ac3_schema() {
+        let props = update_dismissed_props("0.2.11", "0.2.12", UpdateDismissReason::UserDismissed);
+        assert_eq!(props["from_version"], "0.2.11");
+        assert_eq!(props["to_version"], "0.2.12");
+        assert_eq!(props["reason"], "user_dismissed");
+
+        let dialog = update_dismissed_props("0.2.11", "0.2.12", UpdateDismissReason::DialogClosed);
+        assert_eq!(dialog["reason"], "dialog_closed");
+
+        emit_update_dismissed_via(
+            &TelemetryClient::Null,
+            "0.2.11",
+            "0.2.12",
+            UpdateDismissReason::UserDismissed,
+        );
+    }
+
+    /// AC2 fires only when an asset matched. The `check_github_release`
+    /// branch above explicitly gates the emit on `asset_format.is_some()`
+    /// — verify that with a property-style assertion: pick_asset
+    /// returning None means the funnel correctly drops the user
+    /// (they'll see the browser-fallback pill instead).
+    #[test]
+    fn update_available_skipped_when_no_asset_matches() {
+        // Fedora release with only a .deb asset — wrong format for dnf.
+        let assets = vec![make_asset("paneflow-0.2.12-x86_64.deb")];
+        let picked = pick_asset(&assets, "x86_64", dnf());
+        assert!(
+            picked.is_none(),
+            "dnf user should see no .deb asset → no update_available emit"
+        );
+    }
+
+    /// AC4: a Null-client `capture` call is the consent-off path. Trip
+    /// the three free-function emitters with a Null client back to
+    /// back; if any path ever evolves to side-effect even on Null, the
+    /// `is_active() == false` guard inside `client.capture` would
+    /// catch it but this asserts it at the call site too.
+    #[test]
+    fn null_client_emits_are_no_ops() {
+        let null = TelemetryClient::Null;
+        assert!(!null.is_active());
+        emit_update_check_started(&null, UpdateCheckTrigger::Auto, "0.2.11");
+        emit_update_available(&null, "0.2.11", "0.2.12", "targz");
+        emit_update_dismissed_via(
+            &null,
+            "0.2.11",
+            "0.2.12",
+            UpdateDismissReason::UserDismissed,
+        );
     }
 }

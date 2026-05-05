@@ -60,6 +60,10 @@ actions!(
         ClearScrollHistory,
         ResetTerminal,
         StartSelfUpdate,
+        /// US-007 AC3: dismiss the update pill for the current launch
+        /// (no persistence — re-prompts on next start). Dispatched by
+        /// the `×` button on the Idle / Errored pill states.
+        DismissUpdate,
         // US-012: macOS native menu-bar actions. Dispatched by `cx.set_menus`
         // via GPUI's `on_app_menu_action` → `cx.dispatch_action`, then caught
         // by the `.on_action(...)` handlers on the PaneFlowApp render root.
