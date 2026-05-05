@@ -86,21 +86,21 @@ export default function AboutPage() {
       />
       <Navbar />
       <main>
-        <section className="pt-36 sm:pt-40 pb-24">
-          <div className="max-w-3xl mx-auto px-6">
-            <header className="mb-12">
-              <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight">
-                About PaneFlow & the team behind it
+        <section className="pt-32 sm:pt-40 pb-20 sm:pb-24">
+          <div className="max-w-2xl mx-auto px-6">
+            <header className="mb-10 sm:mb-12">
+              <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
+                About Paneflow &amp; the team behind it
               </h1>
             </header>
 
-            <div className="space-y-12 text-text-muted leading-relaxed">
-              <Section title="What PaneFlow is">
+            <div className="space-y-10 text-sm sm:text-base text-text-muted leading-relaxed">
+              <Section title="What Paneflow is">
                 <p>
-                  PaneFlow is a GPU-accelerated terminal multiplexer written in
-                  pure Rust on top of Zed&rsquo;s GPUI rendering engine. It
+                  Paneflow is a GPU-accelerated terminal multiplexer written
+                  in pure Rust on top of Zed&rsquo;s GPUI rendering engine. It
                   splits, organizes, and tracks multiple terminal sessions in
-                  one window — with workspaces, per-pane git and dev-server
+                  one window, with workspaces, per-pane git and dev-server
                   detection, and a JSON-RPC IPC server that lets Claude Code,
                   Codex, and any other tool drive the editor programmatically.
                 </p>
@@ -114,63 +114,57 @@ export default function AboutPage() {
 
               <Section title="Who builds it">
                 <p>
-                  PaneFlow is built by{" "}
-                  <strong className="text-text">Arthur Jean</strong>, founder
-                  of <a
+                  Paneflow is built by{" "}
+                  <strong className="text-text font-semibold">
+                    Arthur Jean
+                  </strong>
+                  , founder of{" "}
+                  <a
                     href="https://strivex.fr"
-                    className="text-text hover:text-accent-warm underline underline-offset-4"
+                    className="text-text hover:text-text-muted underline underline-offset-4 decoration-surface-border-hover"
                   >
                     Strivex
                   </a>
                   . The project started as a cross-platform Rust port of cmux
-                  (a Swift-only terminal multiplexer) — the goal was to keep
+                  (a Swift-only terminal multiplexer). The goal was to keep
                   the workflow ergonomics while shipping native binaries to
                   every major desktop OS.
                 </p>
                 <p className="mt-3">
                   Strivex is a small studio focused on developer tooling.
-                  PaneFlow is its first open-source release; everything is MIT
+                  Paneflow is its first open-source release. Everything is MIT
                   licensed and built in the open.
                 </p>
               </Section>
 
               <Section title="Links">
-                <ul className="list-disc pl-6 space-y-2">
-                  <li>
-                    Source code:{" "}
-                    <a
-                      href="https://github.com/ArthurDEV44/paneflow"
-                      className="text-text hover:text-accent-warm underline underline-offset-4"
-                    >
-                      github.com/ArthurDEV44/paneflow
-                    </a>
-                  </li>
-                  <li>
-                    GitHub profile:{" "}
-                    <a
-                      href="https://github.com/ArthurDEV44"
-                      className="text-text hover:text-accent-warm underline underline-offset-4"
-                    >
-                      github.com/ArthurDEV44
-                    </a>
-                  </li>
-                  <li>
-                    Studio:{" "}
-                    <a
-                      href="https://strivex.fr"
-                      className="text-text hover:text-accent-warm underline underline-offset-4"
-                    >
-                      strivex.fr
-                    </a>
-                  </li>
-                  <li>
-                    Privacy:{" "}
-                    <Link
-                      href="/legal/privacy"
-                      className="text-text hover:text-accent-warm underline underline-offset-4"
-                    >
-                      /legal/privacy
-                    </Link>
+                <ul className="space-y-2.5">
+                  <LinkItem
+                    label="Source code"
+                    href="https://github.com/ArthurDEV44/paneflow"
+                    text="github.com/ArthurDEV44/paneflow"
+                  />
+                  <LinkItem
+                    label="GitHub profile"
+                    href="https://github.com/ArthurDEV44"
+                    text="github.com/ArthurDEV44"
+                  />
+                  <LinkItem
+                    label="Studio"
+                    href="https://strivex.fr"
+                    text="strivex.fr"
+                  />
+                  <li className="flex gap-3">
+                    <span className="text-text-muted/60 select-none">-</span>
+                    <span>
+                      Privacy:{" "}
+                      <Link
+                        href="/legal/privacy"
+                        className="text-text hover:text-text-muted underline underline-offset-4 decoration-surface-border-hover"
+                      >
+                        /legal/privacy
+                      </Link>
+                    </span>
                   </li>
                 </ul>
               </Section>
@@ -181,7 +175,7 @@ export default function AboutPage() {
                   collaboration:{" "}
                   <a
                     href="mailto:arthur.jean@strivex.fr"
-                    className="text-text hover:text-accent-warm underline underline-offset-4"
+                    className="text-text hover:text-text-muted underline underline-offset-4 decoration-surface-border-hover"
                   >
                     arthur.jean@strivex.fr
                   </a>
@@ -192,7 +186,7 @@ export default function AboutPage() {
                   faster:{" "}
                   <a
                     href="https://github.com/ArthurDEV44/paneflow/issues"
-                    className="text-text hover:text-accent-warm underline underline-offset-4"
+                    className="text-text hover:text-text-muted underline underline-offset-4 decoration-surface-border-hover"
                   >
                     paneflow/issues
                   </a>
@@ -218,10 +212,35 @@ function Section({
 }) {
   return (
     <section>
-      <h2 className="text-xl sm:text-2xl font-semibold tracking-tight text-text mb-4">
+      <h2 className="text-base sm:text-lg font-semibold tracking-tight text-text mb-3">
         {title}
       </h2>
       <div className="space-y-3">{children}</div>
     </section>
+  );
+}
+
+function LinkItem({
+  label,
+  href,
+  text,
+}: {
+  label: string;
+  href: string;
+  text: string;
+}) {
+  return (
+    <li className="flex gap-3">
+      <span className="text-text-muted/60 select-none">-</span>
+      <span>
+        {label}:{" "}
+        <a
+          href={href}
+          className="text-text hover:text-text-muted underline underline-offset-4 decoration-surface-border-hover"
+        >
+          {text}
+        </a>
+      </span>
+    </li>
   );
 }

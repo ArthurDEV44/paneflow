@@ -4,6 +4,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import { PHProvider } from "@/components/posthog-provider";
 import { PostHogPageView } from "@/components/posthog-pageview";
+import { Providers } from "@/components/providers";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -109,6 +110,7 @@ export default function RootLayout({
       lang="en"
       data-scroll-behavior="smooth"
       className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+      suppressHydrationWarning
     >
       <body className="grain">
         <script
@@ -119,13 +121,15 @@ export default function RootLayout({
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteSchema) }}
         />
-        <PHProvider>
-          {children}
-          <Suspense fallback={null}>
-            <PostHogPageView />
-          </Suspense>
-          <Analytics />
-        </PHProvider>
+        <Providers>
+          <PHProvider>
+            {children}
+            <Suspense fallback={null}>
+              <PostHogPageView />
+            </Suspense>
+            <Analytics />
+          </PHProvider>
+        </Providers>
       </body>
     </html>
   );

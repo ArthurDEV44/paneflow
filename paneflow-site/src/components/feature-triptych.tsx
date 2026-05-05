@@ -1,31 +1,25 @@
 "use client";
 
 import { FadeIn } from "./fade-in";
-import { Columns3, Layers, Cpu } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 
 interface Feature {
-  icon: LucideIcon;
   title: string;
   description: string;
 }
 
 const features: Feature[] = [
   {
-    icon: Columns3,
     title: "Split anything",
     description:
       "Binary tree split system. Up to 32 panes per workspace with drag-to-resize dividers, preset layouts, and directional focus navigation.",
   },
   {
-    icon: Layers,
     title: "20 workspaces",
     description:
-      "Named, tabbed workspaces with session persistence. Your layouts and working directories survive restarts. Switch with Ctrl+1\u20139.",
+      "Named, tabbed workspaces with session persistence. Your layouts and working directories survive restarts. Switch with Ctrl+1–9.",
   },
   {
-    icon: Cpu,
-    title: "Zed\u2019s terminal core",
+    title: "Zed’s terminal core",
     description:
       "Same Alacritty fork and GPUI rendering engine as the Zed editor. GPU-accelerated, cell-by-cell paint with APCA contrast enforcement.",
   },
@@ -33,30 +27,32 @@ const features: Feature[] = [
 
 export function FeatureTriptych() {
   return (
-    <section className="py-24 sm:py-32">
-      <div className="max-w-5xl mx-auto px-6">
-        <FadeIn>
-          <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-center mb-4">
+    <section className="py-16 sm:py-20">
+      <FadeIn>
+        <div className="max-w-2xl mx-auto px-6">
+          <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight">
             Terminal, evolved
           </h2>
-          <p className="text-text-muted text-center max-w-2xl mx-auto mb-16">
-            Everything you need to manage complex workflows in a single window.
+          <p className="mt-3 text-sm sm:text-base text-text-muted leading-relaxed">
+            Everything you need to manage complex workflows in a single
+            window.
           </p>
-        </FadeIn>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          {features.map((feature, i) => (
-            <FadeIn key={i} delay={i * 0.1}>
-              <div className="group relative p-6 rounded-xl border border-surface-border bg-surface/30 h-full">
-                <feature.icon className="w-8 h-8 text-accent mb-4 stroke-[1.5]" />
-                <h3 className="text-lg font-semibold mb-2">{feature.title}</h3>
-                <p className="text-sm text-text-muted leading-relaxed">
-                  {feature.description}
-                </p>
-              </div>
-            </FadeIn>
-          ))}
         </div>
+      </FadeIn>
+
+      <div className="max-w-5xl mx-auto px-6 mt-10 grid grid-cols-1 sm:grid-cols-3 gap-x-8 gap-y-8">
+        {features.map((feature, i) => (
+          <FadeIn key={i} delay={i * 0.08}>
+            <div className="border-t border-surface-border pt-4">
+              <h3 className="text-sm font-semibold text-text">
+                {feature.title}
+              </h3>
+              <p className="mt-2 text-sm text-text-muted leading-relaxed">
+                {feature.description}
+              </p>
+            </div>
+          </FadeIn>
+        ))}
       </div>
     </section>
   );

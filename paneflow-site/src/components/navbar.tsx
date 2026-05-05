@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { GitHubIcon } from "./icons";
+import { ThemeToggle } from "./theme-toggle";
 import { track } from "../lib/analytics";
 
 export function Navbar() {
@@ -31,14 +32,14 @@ export function Navbar() {
           >
             <Image
               src="/logos/paneflow-web-300.png"
-              alt="PaneFlow"
-              width={28}
-              height={28}
-              sizes="28px"
+              alt="Paneflow"
+              width={24}
+              height={24}
+              sizes="24px"
               priority
-              className="h-7 w-7"
+              className="h-6 w-6"
             />
-            PaneFlow
+            Paneflow
           </Link>
 
           <div className="flex items-center gap-6">
@@ -71,6 +72,7 @@ export function Navbar() {
               <GitHubIcon className="w-4 h-4" />
               <span className="hidden sm:inline">GitHub</span>
             </a>
+            <ThemeToggle />
           </div>
         </nav>
       </div>

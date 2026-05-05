@@ -1,6 +1,105 @@
 @import "tailwindcss";
 
+/* Tailwind v4 class-based dark variant.
+   `next-themes` (attribute="class") flips `class="dark"` on <html>.
+   The `:where(...)` keeps specificity 0 so utility classes still win. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Houdini @property registration. Declaring each color token with a
+   typed syntax of <color> tells the browser these are animatable color
+   values (CSS custom properties are otherwise treated as discrete
+   strings and snap on change). With this in place, transitioning the
+   variables on :root produces a single interpolation cascade — every
+   var() consumer reads the same animated value per frame, so glyph
+   anti-aliasing isn't recomputed per element and text doesn't shimmer
+   during the theme switch. */
+@property --bg {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #f5f5f3;
+}
+@property --bg-elevated {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #ffffff;
+}
+@property --surface {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #ebebea;
+}
+@property --surface-border {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: rgba(0, 0, 0, 0.08);
+}
+@property --surface-border-hover {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: rgba(0, 0, 0, 0.16);
+}
+@property --text {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #111111;
+}
+@property --text-muted {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #444444;
+}
+@property --text-subtle {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #777777;
+}
+@property --accent {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #000000;
+}
+@property --accent-dim {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: rgba(0, 0, 0, 0.08);
+}
+@property --accent-warm {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #1a1a1a;
+}
+@property --accent-green {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #4a4a4a;
+}
+@property --accent-blue {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #5a5a5a;
+}
+
+/* Light theme (default) — off-white monochrome inspired by Vercel /
+   Linear. Lives in :root so it applies before next-themes resolves
+   the user's stored preference, matching SSR output. */
 :root {
+  --bg: #f5f5f3;
+  --bg-elevated: #ffffff;
+  --surface: #ebebea;
+  --surface-border: rgba(0, 0, 0, 0.08);
+  --surface-border-hover: rgba(0, 0, 0, 0.16);
+  --text: #111111;
+  --text-muted: #444444;
+  --text-subtle: #777777;
+  --accent: #000000;
+  --accent-dim: rgba(0, 0, 0, 0.08);
+  --accent-warm: #1a1a1a;
+  --accent-green: #4a4a4a;
+  --accent-blue: #5a5a5a;
+}
+
+/* Dark theme — the original monochrome palette, moved here from :root. */
+.dark {
   --bg: #0a0a0a;
   --bg-elevated: #141414;
   --surface: #1a1a1a;
@@ -44,7 +143,25 @@ body {
   font-family: var(--font-sans), system-ui, sans-serif;
 }
 
-/* Grain texture overlay */
+/* Smooth fade between light and dark themes via Houdini @property
+   variable interpolation. Transition lives on :root so the custom
+   properties animate at the cascade root; var() consumers throughout
+   the tree read the per-frame animated value without re-running glyph
+   anti-aliasing. Gated by prefers-reduced-motion. */
+@media (prefers-reduced-motion: no-preference) {
+  :root {
+    transition-property:
+      --bg, --bg-elevated, --surface, --surface-border,
+      --surface-border-hover, --text, --text-muted, --text-subtle,
+      --accent, --accent-dim, --accent-warm, --accent-green, --accent-blue;
+    transition-duration: 250ms;
+    transition-timing-function: ease;
+  }
+}
+
+/* Grain texture overlay. Same SVG works for both themes — the noise
+   is roughly mid-gray, so it darkens slightly on light bg and
+   lightens slightly on dark bg, both at low opacity. */
 .grain::before {
   content: "";
   position: fixed;
