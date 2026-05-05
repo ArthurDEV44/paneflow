@@ -875,6 +875,14 @@ jobs:
         shell: bash
         env:
           TAG: ${{ env.RELEASE_TAG }}
+          # cargo-wix 0.3.x has a known bug where `--no-build` + `--target X`
+          # silently drops the triple from the binary path resolver, making
+          # it look in `target/release/` (which doesn't exist in cross
+          # builds) and fail with `Error[3] (Io): The 'build' path does
+          # not exist`. Setting the target via `CARGO_BUILD_TARGET` instead
+          # routes through Cargo's own config resolution which cargo-wix
+          # picks up correctly. The `--target` flag is removed below.
+          CARGO_BUILD_TARGET: x86_64-pc-windows-msvc
         run: |
           set -euo pipefail
           version="${TAG#v}"
@@ -887,7 +895,6 @@ jobs:
           cargo wix build \
             --no-build \
             --package paneflow-app \
-            --target x86_64-pc-windows-msvc \
             --install-version "$version"
           ls -la target/wix/
 
@@ -1262,13 +1269,15 @@ jobs:
     # so a workflow_dispatch run never touches pkg.paneflow.dev.
     # NOTE: GitHub Actions does NOT expose the `env` context in job-level
     # `if:` expressions (only in step-level `if:`, in `with:`/`env:` of
-    # steps, and in `continue-on-error:`). Use `github.event_name` directly
-    # — it's the source of truth that drives `env.RELEASE_MODE` above
-    # (`workflow_dispatch` => 'dry-run', everything else under the `on:`
-    # block is `push: tags` => 'release'). Keeps the gate intent identical
-    # without the unsupported context lookup that GitHub silently swallows
-    # on tag pushes ("workflow file issue") and rejects on dispatch.
-    if: github.event_name == 'push'
+    # steps, and in `continue-on-error:`). Use `github.event_name` +
+    # `github.ref` directly. The `startsWith(...)` belt is required even
+    # though the workflow's only `push` trigger is `tags: ["v*"]` —
+    # without it, any future addition of a `push: branches:` trigger
+    # (e.g. for nightly artifacts) would silently start publishing real
+    # GitHub Releases off branch pushes. Defence in depth, mirrors the
+    # canonical pattern used by rust-lang/rust, tokio-rs/tokio, and Zed
+    # (zed-industries/zed .github/workflows/release.yml).
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # US-002: Publish is gated on every smoke test, not just `build`.
     # US-005: also gated on `auto-update-e2e` so a tag cut never ships
     # a binary that can't actually self-update v(N-1) → v(N).
