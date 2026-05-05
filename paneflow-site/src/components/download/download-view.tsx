@@ -84,13 +84,13 @@ interface VersionEntry {
 
 export function DownloadView() {
   return (
-    <section className="pt-36 sm:pt-40 pb-24">
+    <section className="pt-32 sm:pt-40 pb-20 sm:pb-24">
       <div className="max-w-5xl mx-auto px-6">
-        <div className="mb-10">
+        <div className="max-w-2xl mb-10 sm:mb-12">
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
             Paneflow est disponible pour Linux et macOS.
           </h1>
-          <p className="mt-2 text-text-muted">
+          <p className="mt-3 text-sm sm:text-base text-text-muted leading-relaxed">
             Windows arrive très prochainement.
           </p>
         </div>
@@ -98,7 +98,7 @@ export function DownloadView() {
         {/* Primary "download for your system" card — client-side OS sniff
             picks the best format per platform and renders one big button.
             Users who want a different format scroll to the matrix below. */}
-        <div className="mb-10">
+        <div className="mb-12">
           <PrimaryDownloadCard version={LATEST_VERSION} />
         </div>
 
@@ -267,11 +267,11 @@ function PrimaryDownloadCard({ version }: { version: string }) {
   // ready state.
   if (!platform) {
     return (
-      <div className="rounded-2xl border border-surface-border bg-surface/40 p-6 sm:p-8 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6">
-        <div className="w-12 h-12 rounded-xl bg-bg-elevated" />
+      <div className="rounded-lg border border-surface-border p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-5">
+        <div className="w-9 h-9 rounded-md bg-bg-elevated" />
         <div className="flex-1">
-          <div className="h-5 w-48 rounded bg-bg-elevated mb-2" />
-          <div className="h-4 w-32 rounded bg-bg-elevated" />
+          <div className="h-4 w-40 rounded bg-bg-elevated mb-2" />
+          <div className="h-3 w-28 rounded bg-bg-elevated" />
         </div>
       </div>
     );
@@ -281,17 +281,17 @@ function PrimaryDownloadCard({ version }: { version: string }) {
   const Icon = pick.icon;
 
   return (
-    <div className="rounded-2xl border border-surface-border bg-surface/40 p-6 sm:p-8 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6">
-      <div className="w-12 h-12 rounded-xl bg-bg-elevated flex items-center justify-center shrink-0">
-        <Icon className="w-6 h-6 text-text" />
+    <div className="rounded-lg border border-surface-border p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-5">
+      <div className="w-9 h-9 rounded-md bg-bg-elevated flex items-center justify-center shrink-0">
+        <Icon className="w-4 h-4 text-text" />
       </div>
 
       <div className="flex-1 min-w-0">
-        <div className="text-sm text-text-subtle font-mono uppercase tracking-wider">
+        <div className="text-xs text-text-subtle font-mono uppercase tracking-wider">
           Téléchargement recommandé
         </div>
-        <div className="text-lg sm:text-xl font-medium mt-0.5">
-          {pick.available ? `PaneFlow ${version}, ${pick.format}` : pick.reason}
+        <div className="text-sm sm:text-base font-semibold mt-1">
+          {pick.available ? `Paneflow ${version}, ${pick.format}` : pick.reason}
         </div>
         {!pick.available && platform.os !== "unknown" && (
           <div className="text-sm text-text-muted mt-1">
@@ -312,7 +312,7 @@ function PrimaryDownloadCard({ version }: { version: string }) {
               version,
             });
           }}
-          className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg bg-accent text-bg font-medium hover:bg-accent-warm transition-colors shrink-0"
+          className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-accent text-bg font-semibold hover:brightness-110 transition-all duration-200 shrink-0"
         >
           <Download className="w-4 h-4" />
           Télécharger
@@ -341,26 +341,26 @@ function VersionRow({
           });
           setOpen(next);
         }}
-        className="w-full flex items-center justify-between py-5 text-left"
+        className="w-full flex items-center justify-between py-4 text-left"
       >
         <div className="flex items-center gap-3">
-          <span className="text-lg font-medium">{entry.version}</span>
+          <span className="text-base font-semibold">{entry.version}</span>
           {entry.latest && (
-            <span className="px-2 py-0.5 rounded-full border border-surface-border text-xs text-text-muted font-mono">
+            <span className="px-2 py-0.5 rounded-full border border-surface-border text-[11px] text-text-muted font-mono">
               Latest
             </span>
           )}
         </div>
         <ChevronDown
-          className={`w-5 h-5 text-text-muted transition-transform duration-200 ${
+          className={`w-4 h-4 text-text-muted transition-transform duration-200 ${
             open ? "rotate-180" : ""
           }`}
         />
       </button>
 
       {open && (
-        <div className="pb-8">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="pb-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-x-8 gap-y-6">
             <PlatformColumn
               Icon={AppleIcon}
               label="macOS"
@@ -387,9 +387,9 @@ function VersionRow({
 
           <a
             href={entry.releaseNotes}
-            className="inline-flex mt-6 text-sm text-accent-warm hover:text-accent transition-colors"
+            className="inline-flex mt-6 text-sm text-text-muted hover:text-text transition-colors"
           >
-            Voir les notes de version →
+            Voir les notes de version &rarr;
           </a>
         </div>
       )}
@@ -431,13 +431,15 @@ function PlatformColumn({
   version: string;
 }) {
   return (
-    <div className="rounded-xl border border-surface-border bg-surface/30 p-4">
-      <div className="flex items-center gap-2 mb-3 px-2">
-        <Icon className="w-4 h-4 text-text-muted" />
-        <span className="text-sm font-medium">{label}</span>
+    <div className="rounded-lg border border-surface-border bg-bg-elevated p-4">
+      <div className="flex items-center gap-2 mb-3 px-1">
+        <Icon className="w-3.5 h-3.5 text-text-muted" />
+        <span className="text-xs font-mono text-text-muted uppercase tracking-wider">
+          {label}
+        </span>
       </div>
       {items.length === 0 ? (
-        <p className="px-2 py-3 text-sm text-text-subtle">
+        <p className="px-1 py-2 text-sm text-text-subtle">
           {placeholder ?? "-"}
         </p>
       ) : (

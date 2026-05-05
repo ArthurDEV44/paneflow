@@ -3,24 +3,26 @@
 import { FadeIn } from "./fade-in";
 
 const stats = [
-  { label: "Pure Rust", sublabel: "Zero runtime overhead" },
-  { label: "GPU-accelerated", sublabel: "Zed's GPUI engine" },
-  { label: "< 5ms", sublabel: "Keystroke to pixel" },
+  "Pure Rust, zero runtime overhead",
+  "GPU-accelerated, Zed's GPUI engine",
+  "< 5ms keystroke to pixel",
 ];
 
 export function StatsStrip() {
   return (
-    <section data-track-section="stats" className="py-20">
+    <section data-track-section="stats" className="py-10 sm:py-12">
       <FadeIn>
-        <div className="max-w-4xl mx-auto px-6">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 sm:gap-4 text-center">
+        <div className="max-w-3xl mx-auto px-6">
+          <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[13px] font-mono text-text-muted">
             {stats.map((stat, i) => (
-              <div key={i} className="space-y-1">
-                <div className="text-2xl font-bold tracking-tight">
-                  {stat.label}
-                </div>
-                <div className="text-sm text-text-muted">{stat.sublabel}</div>
-              </div>
+              <span key={i} className="flex items-center gap-x-5">
+                {i > 0 && (
+                  <span aria-hidden className="text-text-subtle">
+                    &middot;
+                  </span>
+                )}
+                {stat}
+              </span>
             ))}
           </div>
         </div>

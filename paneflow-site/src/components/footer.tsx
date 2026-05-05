@@ -10,24 +10,25 @@ export function Footer() {
   return (
     <footer data-track-section="footer" className="relative overflow-hidden">
       {/* CTA section */}
-      <div className="py-24 sm:py-32">
+      <div className="py-20 sm:py-24">
         <FadeIn>
-          <div className="max-w-3xl mx-auto px-6 text-center">
-            <h2 className="text-3xl sm:text-5xl font-bold tracking-tight mb-6">
-              Built for developers who live
-              <br />
-              <span className="text-accent">in the terminal.</span>
+          <div className="max-w-2xl mx-auto px-6">
+            <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight leading-[1.15]">
+              Built for developers who live in the terminal.
             </h2>
-            <p className="text-text-muted text-lg mb-10 max-w-xl mx-auto">
+            <p className="mt-4 text-sm sm:text-base text-text-muted leading-relaxed max-w-xl">
               Open source. Written in Rust. Designed to stay out of your way.
             </p>
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+            <div className="mt-8 flex flex-wrap items-center gap-3">
               <a
                 href="https://github.com/ArthurDEV44/paneflow"
                 onClick={() =>
-                  track("github_link_clicked", { source: "footer", label: "star" })
+                  track("github_link_clicked", {
+                    source: "footer",
+                    label: "star",
+                  })
                 }
-                className="inline-flex items-center gap-2.5 px-6 py-3 bg-accent text-bg font-semibold rounded-lg hover:brightness-110 transition-all duration-200"
+                className="inline-flex items-center gap-2.5 px-5 py-2.5 bg-accent text-bg font-semibold rounded-full hover:brightness-110 transition-all duration-200"
               >
                 <GitHubIcon className="w-4 h-4" />
                 Star on GitHub
@@ -35,9 +36,12 @@ export function Footer() {
               <a
                 href="https://github.com/ArthurDEV44/paneflow#readme"
                 onClick={() =>
-                  track("github_link_clicked", { source: "footer", label: "docs" })
+                  track("github_link_clicked", {
+                    source: "footer",
+                    label: "docs",
+                  })
                 }
-                className="inline-flex items-center gap-2.5 px-6 py-3 border border-surface-border text-text-muted rounded-lg hover:border-surface-border-hover hover:text-text transition-all duration-200"
+                className="inline-flex items-center gap-2.5 px-5 py-2.5 border border-surface-border text-text rounded-full hover:bg-surface/60 transition-all duration-200"
               >
                 <ExternalLink className="w-4 h-4" />
                 Documentation
@@ -48,9 +52,9 @@ export function Footer() {
       </div>
 
       {/* Bottom bar */}
-      <div className="py-6">
+      <div className="py-6 border-t border-surface-border/50">
         <div className="max-w-5xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-text-subtle">
-          <div className="font-mono">PaneFlow</div>
+          <div className="font-mono">Paneflow</div>
           <div className="flex items-center gap-6">
             <Link
               href="/about"

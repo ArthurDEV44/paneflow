@@ -11,72 +11,63 @@ import { useDetectedLinuxArch } from "../lib/use-detected-arch";
 import { track } from "../lib/analytics";
 
 export function Hero() {
-  // Client-side arch sniff. Defaults to x86_64 on SSR + first client
-  // paint; swaps to aarch64 post-mount if Client Hints reports ARM.
-  // Gives the "Download for Linux" CTA a direct file URL that matches
-  // the user's CPU without an interstitial OS-picker page.
   const arch = useDetectedLinuxArch();
 
   return (
     <section
       data-track-section="hero"
-      className="relative overflow-hidden pt-36 sm:pt-44 pb-24 sm:pb-32"
+      className="relative pt-32 sm:pt-40 pb-16 sm:pb-20"
     >
-
-      <div className="hero-glow" />
-
-      <div className="relative z-10 max-w-4xl mx-auto px-6 text-center">
-        {/* Eyebrow */}
+      <div className="relative z-10 max-w-2xl mx-auto px-6">
+        {/* Brand row */}
         <motion.div
-          initial={{ opacity: 0, y: 10 }}
+          className="flex items-center gap-3"
+          initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.1 }}
+          transition={{ duration: 0.4, delay: 0.05 }}
         >
-          <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-surface-border bg-surface/50 text-sm text-text-muted font-mono">
-            <span className="w-1.5 h-1.5 rounded-full bg-accent-green" />
-            Built with Rust &amp; GPUI
+          <Image
+            src="/logos/paneflow-web-300.png"
+            alt=""
+            width={40}
+            height={40}
+            priority
+            className="rounded-lg"
+          />
+          <span className="text-xl font-semibold tracking-tight">
+            Paneflow
           </span>
         </motion.div>
 
         {/* Headline */}
         <motion.h1
-          className="mt-8 text-5xl sm:text-6xl md:text-7xl lg:text-8xl font-bold tracking-tight leading-[1.05]"
-          initial={{ opacity: 0, y: 20 }}
+          className="mt-10 text-2xl sm:text-3xl font-semibold tracking-tight leading-[1.15]"
+          initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.2 }}
+          transition={{ duration: 0.5, delay: 0.15 }}
         >
-          Your terminal,
-          <br />
-          <span className="text-accent">multiplied.</span>
+          Your terminal, multiplied.
         </motion.h1>
 
         {/* Subtitle */}
         <motion.p
-          className="mt-6 text-lg sm:text-xl text-text-muted max-w-2xl mx-auto leading-relaxed"
-          initial={{ opacity: 0, y: 20 }}
+          className="mt-4 text-sm sm:text-base text-text-muted leading-relaxed max-w-xl"
+          initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.35 }}
+          transition={{ duration: 0.5, delay: 0.25 }}
         >
-          GPU-accelerated terminal multiplexer. Split, organize, and
-          control. Powered by Zed&apos;s rendering engine.
+          GPU-accelerated terminal multiplexer built in Rust on Zed&apos;s
+          GPUI engine. Split panes, vertical workspaces, AI-aware
+          notifications, and a socket API for automation.
         </motion.p>
 
         {/* CTAs */}
         <motion.div
-          className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4"
-          initial={{ opacity: 0, y: 20 }}
+          className="mt-8 flex flex-wrap items-center gap-3"
+          initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.5 }}
+          transition={{ duration: 0.5, delay: 0.35 }}
         >
-          {/*
-            Direct AppImage download — NOT a navigation to /download.
-            The href resolves to a raw file on the GitHub Releases CDN;
-            browser dispatches it as a file save, no github.com
-            interstitial. AppImage is the right default for Linux
-            because it runs on every modern distro with zero setup.
-            Users who want .deb / .rpm / .tar.gz / ARM64 go through
-            /download via the smaller "All downloads" link below.
-          */}
           <a
             href={linuxAppImageUrl(arch)}
             onClick={() => {
@@ -87,19 +78,11 @@ export function Hero() {
                 arch,
               });
             }}
-            className="inline-flex items-center gap-2.5 px-6 py-3 bg-accent text-bg font-semibold rounded-lg hover:brightness-110 transition-all duration-200"
+            className="inline-flex items-center gap-2.5 px-5 py-2.5 bg-accent text-bg font-semibold rounded-full hover:brightness-110 transition-all duration-200"
           >
             <Download className="w-4 h-4" />
             Download for Linux
           </a>
-          {/*
-            macOS .dmg, signed with a Developer ID Application
-            certificate and Apple-notarized (ticket stapled). Apple
-            Silicon only for v0.2.x; Intel Mac (x86_64-apple-darwin)
-            is a closed CI target until later. Same primary CTA
-            styling as Linux so both supported platforms get equal
-            visual weight on the page.
-          */}
           <a
             href={macOSDmgUrl()}
             onClick={() => {
@@ -110,7 +93,7 @@ export function Hero() {
                 arch: "aarch64",
               });
             }}
-            className="inline-flex items-center gap-2.5 px-6 py-3 bg-accent text-bg font-semibold rounded-lg hover:brightness-110 transition-all duration-200"
+            className="inline-flex items-center gap-2.5 px-5 py-2.5 bg-accent text-bg font-semibold rounded-full hover:brightness-110 transition-all duration-200"
           >
             <AppleIcon className="w-4 h-4" />
             Download for macOS
@@ -118,33 +101,86 @@ export function Hero() {
           <a
             href="https://github.com/ArthurDEV44/paneflow"
             onClick={() => track("github_link_clicked", { source: "hero" })}
-            className="inline-flex items-center gap-2.5 px-6 py-3 border border-surface-border text-text-muted rounded-lg hover:border-surface-border-hover hover:text-text transition-all duration-200"
+            className="inline-flex items-center gap-2.5 px-5 py-2.5 border border-surface-border text-text rounded-full hover:bg-surface/60 transition-all duration-200"
           >
             <GitHubIcon className="w-4 h-4" />
             View on GitHub
           </a>
         </motion.div>
 
-        {/* Screenshot */}
-        <motion.div
-          className="mt-16 sm:mt-20 relative max-w-5xl mx-auto"
-          initial={{ opacity: 0, y: 40 }}
+        {/* Feature list */}
+        <motion.ul
+          className="mt-12 space-y-3 text-sm sm:text-[15px] text-text-muted"
+          initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.65 }}
+          transition={{ duration: 0.5, delay: 0.55 }}
         >
-          <div className="relative rounded-xl border border-surface-border overflow-hidden shadow-2xl shadow-black/50">
-            <Image
-              src="/images/hero.webp"
-              alt="PaneFlow terminal multiplexer: split panes, workspaces, and GPU-accelerated rendering"
-              width={1920}
-              height={1080}
-              sizes="(max-width: 768px) 100vw, 1200px"
-              priority
-              className="w-full h-auto"
-            />
-          </div>
-        </motion.div>
+          <li className="flex gap-3">
+            <span className="text-text-muted/60 select-none">-</span>
+            <span>
+              <strong className="text-text font-semibold">
+                GPU-accelerated
+              </strong>
+              : rendered on Zed&apos;s GPUI engine, no Electron, no JIT
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span className="text-text-muted/60 select-none">-</span>
+            <span>
+              <strong className="text-text font-semibold">Split panes</strong>
+              : horizontal and vertical splits in any workspace
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span className="text-text-muted/60 select-none">-</span>
+            <span>
+              <strong className="text-text font-semibold">Workspaces</strong>
+              : keyboard switching, persisted across sessions
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span className="text-text-muted/60 select-none">-</span>
+            <span>
+              <strong className="text-text font-semibold">AI-aware</strong>
+              : panes surface agent activity and notifications
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span className="text-text-muted/60 select-none">-</span>
+            <span>
+              <strong className="text-text font-semibold">Scriptable</strong>
+              : JSON-RPC socket API for automation
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span className="text-text-muted/60 select-none">-</span>
+            <span>
+              <strong className="text-text font-semibold">Native</strong>:
+              pure Rust, Linux and macOS, Windows in progress
+            </span>
+          </li>
+        </motion.ul>
       </div>
+
+      {/* Screenshot */}
+      <motion.div
+        className="mt-10 sm:mt-14 w-full px-4 sm:px-8"
+        initial={{ opacity: 0, y: 24 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.7, delay: 0.7 }}
+      >
+        <div className="max-w-[1440px] mx-auto">
+          <Image
+            src="/images/paneflow-hero.png"
+            alt="Paneflow terminal multiplexer: split panes, workspaces, and GPU-accelerated rendering"
+            width={2491}
+            height={1361}
+            sizes="(max-width: 768px) 100vw, 1440px"
+            priority
+            className="w-full h-auto rounded-lg"
+          />
+        </div>
+      </motion.div>
     </section>
   );
 }

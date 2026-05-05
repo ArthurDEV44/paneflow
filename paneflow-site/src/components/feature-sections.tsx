@@ -2,28 +2,12 @@
 
 import Image from "next/image";
 import { FadeIn } from "./fade-in";
-import {
-  PanelTopDashed,
-  Terminal,
-  Bot,
-  Palette,
-  ArrowUpDown,
-  Search,
-  MousePointer2,
-  Link2,
-} from "lucide-react";
-import type { LucideIcon } from "lucide-react";
-
-interface FeatureDetail {
-  icon: LucideIcon;
-  label: string;
-}
 
 interface FeatureSection {
   badge: string;
   title: string;
   description: string;
-  details: FeatureDetail[];
+  details: string[];
 }
 
 const sections: FeatureSection[] = [
@@ -33,22 +17,22 @@ const sections: FeatureSection[] = [
     description:
       "A binary tree layout engine gives you arbitrary nesting. Split horizontal, vertical, zoom to fullscreen, or pick a preset. The layout adapts to your workflow, not the other way around.",
     details: [
-      { icon: PanelTopDashed, label: "4 preset layouts" },
-      { icon: ArrowUpDown, label: "Drag-to-resize dividers" },
-      { icon: Search, label: "In-buffer regex search" },
-      { icon: Terminal, label: "Undo close with Ctrl+Shift+T" },
+      "4 preset layouts",
+      "Drag-to-resize dividers",
+      "In-buffer regex search",
+      "Undo close with Ctrl+Shift+T",
     ],
   },
   {
     badge: "Context-aware",
     title: "Dev server detection",
     description:
-      "PaneFlow detects running HTTP servers in each workspace automatically. Frontend and backend ports are labeled and displayed in the sidebar. No configuration, no guessing which port is which.",
+      "Paneflow detects running HTTP servers in each workspace automatically. Frontend and backend ports are labeled and displayed in the sidebar. No configuration, no guessing which port is which.",
     details: [
-      { icon: Search, label: "Auto-detect HTTP ports" },
-      { icon: Terminal, label: "Frontend / backend labels" },
-      { icon: Link2, label: "Per-workspace service list" },
-      { icon: MousePointer2, label: "Live git branch & diff stats" },
+      "Auto-detect HTTP ports",
+      "Frontend / backend labels",
+      "Per-workspace service list",
+      "Live git branch & diff stats",
     ],
   },
   {
@@ -57,10 +41,10 @@ const sections: FeatureSection[] = [
     description:
       "Built-in IPC server exposes a JSON-RPC 2.0 API over Unix sockets. Claude Code and Codex sessions are detected automatically. Script your terminal from any language.",
     details: [
-      { icon: Bot, label: "Claude Code & Codex detection" },
-      { icon: Terminal, label: "JSON-RPC 2.0 via Unix socket" },
-      { icon: PanelTopDashed, label: "Programmatic splits & text send" },
-      { icon: Search, label: "Workspace management API" },
+      "Claude Code & Codex detection",
+      "JSON-RPC 2.0 via Unix socket",
+      "Programmatic splits & text send",
+      "Workspace management API",
     ],
   },
   {
@@ -69,50 +53,47 @@ const sections: FeatureSection[] = [
     description:
       "24-bit color, IME input, drag-and-drop, regex URL detection, copy mode, and 6 hand-tuned themes with hot-reload. APCA perceptual contrast ensures readability across all themes.",
     details: [
-      { icon: Palette, label: "6 themes, hot-reload" },
-      { icon: Terminal, label: "24-bit ANSI color" },
-      { icon: MousePointer2, label: "Drag-and-drop files" },
-      { icon: Link2, label: "Regex URL auto-detection" },
+      "6 themes, hot-reload",
+      "24-bit ANSI color",
+      "Drag-and-drop files",
+      "Regex URL auto-detection",
     ],
   },
 ];
 
 export function FeatureSections() {
   return (
-    <section className="py-24 sm:py-32">
-      <div className="max-w-5xl mx-auto px-6 space-y-32">
+    <section className="py-16 sm:py-20">
+      <div className="max-w-5xl mx-auto px-6 space-y-20 sm:space-y-24">
         {sections.map((section, i) => (
           <FadeIn key={i}>
             <div
               className={`flex flex-col ${
                 i % 2 === 1 ? "md:flex-row-reverse" : "md:flex-row"
-              } gap-12 md:gap-16 items-center`}
+              } gap-10 md:gap-14 items-center`}
             >
               {/* Text */}
-              <div className="flex-1 space-y-6">
-                <span className="inline-block px-3 py-1 rounded-full text-xs font-mono text-accent border border-accent/20 bg-accent-dim">
-                  {section.badge}
+              <div className="flex-1 space-y-4">
+                <span className="inline-block text-xs font-mono text-text-muted uppercase tracking-wider">
+                  — {section.badge}
                 </span>
-                <h3 className="text-3xl sm:text-4xl font-bold tracking-tight">
+                <h3 className="text-2xl sm:text-3xl font-semibold tracking-tight">
                   {section.title}
                 </h3>
-                <p className="text-text-muted leading-relaxed">
+                <p className="text-sm sm:text-base text-text-muted leading-relaxed">
                   {section.description}
                 </p>
-                <div className="grid grid-cols-2 gap-3 pt-2">
+                <ul className="pt-2 space-y-2 text-sm text-text-muted">
                   {section.details.map((detail, j) => (
-                    <div
-                      key={j}
-                      className="flex items-center gap-2.5 text-sm text-text-muted"
-                    >
-                      <detail.icon className="w-4 h-4 text-text-subtle shrink-0" />
-                      {detail.label}
-                    </div>
+                    <li key={j} className="flex gap-3">
+                      <span className="text-text-muted/60 select-none">-</span>
+                      <span>{detail}</span>
+                    </li>
                   ))}
-                </div>
+                </ul>
               </div>
 
-              {/* Visual — abstract terminal representation */}
+              {/* Visual */}
               <div className="flex-1 w-full">
                 <FeatureVisual index={i} />
               </div>
@@ -125,60 +106,31 @@ export function FeatureSections() {
 }
 
 function FeatureVisual({ index }: { index: number }) {
-  if (index === 0) {
-    // Splits visual — real screenshot
-    return (
-      <div className="rounded-xl border border-surface-border overflow-hidden">
-        <Image
-          src="/images/layouts.webp"
-          alt="PaneFlow split layout with multiple panes and workspaces"
-          width={1920}
-          height={1080}
-          sizes="(max-width: 768px) 100vw, (max-width: 1024px) 50vw, 600px"
-          className="w-full h-auto"
-        />
-      </div>
-    );
-  }
+  const visuals = [
+    {
+      src: "/images/layouts.webp",
+      alt: "Paneflow split layout with multiple panes and workspaces",
+    },
+    {
+      src: "/images/context-aware.webp",
+      alt: "Paneflow sidebar showing detected dev servers and git branch per workspace",
+    },
+    {
+      src: "/images/ai-ready.webp",
+      alt: "Paneflow with Claude Code session detected and AI agent running",
+    },
+    {
+      src: "/images/appearance.webp",
+      alt: "Paneflow settings window with theme and font customization",
+    },
+  ];
+  const visual = visuals[index] ?? visuals[visuals.length - 1];
 
-  if (index === 1) {
-    // Context-aware — real screenshot
-    return (
-      <div className="rounded-xl border border-surface-border overflow-hidden">
-        <Image
-          src="/images/context-aware.webp"
-          alt="PaneFlow sidebar showing detected dev servers and git branch per workspace"
-          width={1920}
-          height={1080}
-          sizes="(max-width: 768px) 100vw, (max-width: 1024px) 50vw, 600px"
-          className="w-full h-auto"
-        />
-      </div>
-    );
-  }
-
-  if (index === 2) {
-    // AI-ready — real screenshot
-    return (
-      <div className="rounded-xl border border-surface-border overflow-hidden">
-        <Image
-          src="/images/ai-ready.webp"
-          alt="PaneFlow with Claude Code session detected and AI agent running"
-          width={1920}
-          height={1080}
-          sizes="(max-width: 768px) 100vw, (max-width: 1024px) 50vw, 600px"
-          className="w-full h-auto"
-        />
-      </div>
-    );
-  }
-
-  // Appearance — real screenshot
   return (
-    <div className="rounded-xl border border-surface-border overflow-hidden">
+    <div className="rounded-lg border border-surface-border overflow-hidden">
       <Image
-        src="/images/appearance.webp"
-        alt="PaneFlow settings window with theme and font customization"
+        src={visual.src}
+        alt={visual.alt}
         width={1920}
         height={1080}
         sizes="(max-width: 768px) 100vw, (max-width: 1024px) 50vw, 600px"
