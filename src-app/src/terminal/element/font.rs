@@ -105,7 +105,10 @@ pub(crate) fn default_font_family() -> &'static str {
     // to catch a missed resolution. Otherwise, pick the first installed
     // candidate, falling through to the embedded family when none match.
     if INSTALLED_MONO_FONTS.is_empty() {
-        return candidates.first().copied().unwrap_or(EMBEDDED_FALLBACK_FAMILY);
+        return candidates
+            .first()
+            .copied()
+            .unwrap_or(EMBEDDED_FALLBACK_FAMILY);
     }
 
     candidates
