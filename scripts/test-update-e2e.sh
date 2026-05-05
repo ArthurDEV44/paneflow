@@ -153,7 +153,14 @@ log "phase 2: OLD binary staged at ${INSTALL_BIN}"
 # -----------------------------------------------------------------------------
 HTTP_LOG="${WORK_DIR}/http-server.log"
 log "phase 3: starting python3 -m http.server in ${WORK_DIR}/fixture (port=${HTTP_PORT})"
-( cd "${WORK_DIR}/fixture" && exec python3 -m http.server "${HTTP_PORT}" --bind 127.0.0.1 ) \
+# `-u` forces unbuffered stdout/stderr. Without it, Python block-buffers
+# stdout when it's redirected to a regular file (NOT a terminal) — the
+# `Serving HTTP on 127.0.0.1 port N (...) ...` announce line stays in
+# the buffer indefinitely because it's far smaller than the buffer
+# size, so the wait loop below never sees the regex match within 5 s
+# and `fail`s with an empty `http-server.log`. `PYTHONUNBUFFERED=1`
+# would have the same effect; `-u` is the inline-visible form.
+( cd "${WORK_DIR}/fixture" && exec python3 -u -m http.server "${HTTP_PORT}" --bind 127.0.0.1 ) \
     >"${HTTP_LOG}" 2>&1 &
 HTTP_PID=$!
 
