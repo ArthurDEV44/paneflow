@@ -105,6 +105,18 @@ cp "${NEW_TARBALL}" "${WORK_DIR}/fixture/"
 WORKTREE_PATH="${WORK_DIR}/old-src"
 log "phase 2: checking out ${OLD_TAG} into ${WORKTREE_PATH}"
 git -C "${REPO_ROOT}" worktree add --detach "${WORKTREE_PATH}" "${OLD_TAG}"
+# `rust-toolchain.toml` was introduced in commit 1884237 (post-v0.2.11),
+# so the OLD worktree at v0.2.10 / v0.2.11 has no toolchain pin. In CI
+# the dtolnay/rust-toolchain action installs 1.95 but does NOT set a
+# rustup default — running plain `cargo` in a directory without a
+# toolchain file fails with "rustup could not choose a version of cargo
+# to run, because one wasn't specified explicitly". Copy the current
+# main toolchain pin into the worktree so the OLD build resolves the
+# same toolchain as NEW. Future-proof: when main's pin moves (1.95 ->
+# 2.0), the e2e auto-follows without a script edit.
+if [ -f "${REPO_ROOT}/rust-toolchain.toml" ]; then
+    cp "${REPO_ROOT}/rust-toolchain.toml" "${WORKTREE_PATH}/rust-toolchain.toml"
+fi
 log "phase 2: building OLD paneflow at v${OLD_VERSION} (this is the slow step)"
 ( cd "${WORKTREE_PATH}" && cargo build --release -p paneflow-app --quiet )
 OLD_BIN_SRC="${WORKTREE_PATH}/target/release/paneflow"
