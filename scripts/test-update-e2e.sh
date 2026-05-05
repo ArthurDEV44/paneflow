@@ -148,6 +148,30 @@ actual_old="$("${INSTALL_BIN}" --version)"
     || fail "staged OLD binary reported '${actual_old}', expected 'paneflow ${OLD_VERSION}'"
 log "phase 2: OLD binary staged at ${INSTALL_BIN}"
 
+# Self-bootstrap guard: the `--update-and-exit` CLI flag was added in
+# the same commit cycle as this harness (commit 0e733e3, post-v0.2.11),
+# so any tag <= v0.2.11 lacks the flag. Without it, invoking the OLD
+# binary would try to open a GPUI window — which fails on a headless
+# CI runner with `neither DISPLAY nor WAYLAND_DISPLAY is set` and
+# bombs the whole e2e job on a problem the test was never designed to
+# catch.
+#
+# Probe via `strings` (binutils) on the binary's .rodata — the literal
+# `"--update-and-exit"` argument string only appears in binaries that
+# include the flag's match arm. Cannot probe via `--help` output: the
+# flag is intentionally undocumented in the help text. Cannot probe via
+# `--update-and-exit` exit code either: it would actually invoke the
+# update flow on a healthy binary (race-y, side-effecty).
+#
+# The harness re-engages automatically once OLD becomes a tag that
+# shipped --update-and-exit (v0.2.12+).
+if ! strings "${INSTALL_BIN}" 2>/dev/null | grep -q -- "--update-and-exit"; then
+    log "phase 2: OLD binary v${OLD_VERSION} predates --update-and-exit (added in commit 0e733e3, first shipped in v0.2.12)"
+    log "phase 2: skipping update scenarios — re-engages automatically once OLD_VERSION advances to 0.2.12+"
+    ok "self-bootstrap: harness no-op until next release cycle"
+    exit 0
+fi
+
 # -----------------------------------------------------------------------------
 # Phase 3 — start localhost HTTP server.
 # -----------------------------------------------------------------------------

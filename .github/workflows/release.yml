@@ -1647,15 +1647,22 @@ jobs:
           path: ./release-assets
 
       - name: Install paneflow.rpm via zypper
-        # `--allow-unsigned-rpm` is required because our release
-        # signing chain (US-013) lives on the macOS / Windows side;
-        # the Linux .rpm itself is unsigned and rebuilt fresh per
-        # tag, so out-of-band SHA-256 sidecars are the integrity
-        # surface (see the Phase-1 sha256 step on the build job).
+        # `--no-gpg-checks` (NOT `--allow-unsigned-rpm`): the build
+        # job signs the .rpm with `rpmsign --addsign` (release.yml
+        # line ~474), so the artifact is SIGNED but with a key that
+        # the Tumbleweed container's keyring does not trust.
+        # `--allow-unsigned-rpm` only skips the check for UNSIGNED
+        # rpms; on a signed-but-unknown-key rpm it still aborts
+        # with `Signature verification failed [4-Signatures public
+        # key is not available]`. `--no-gpg-checks` covers both
+        # cases. The smoke test's purpose is install+postinst
+        # correctness, not signature validation — which is the
+        # job of the Phase-1 sha256 sidecar emitted by the build
+        # job.
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
-            if zypper --non-interactive install \
+            if zypper --non-interactive --no-gpg-checks install \
                  --allow-unsigned-rpm \
                  ./release-assets/paneflow-*.rpm; then
               break
