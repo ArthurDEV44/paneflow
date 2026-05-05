@@ -7,7 +7,6 @@
 //!
 //! Extracted from `terminal_element.rs` per US-008 of the src-app refactor PRD.
 
-#[cfg(target_os = "linux")]
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
@@ -28,15 +27,35 @@ const FONT_FALLBACK_EMOJI: &str = "Noto Color Emoji";
 const FONT_FALLBACK_SYMBOLS: &str = "Symbols Nerd Font Mono";
 const FONT_FALLBACK_SANS: &str = "Noto Sans";
 
+/// Family name of the TTF embedded in `assets/fonts/JetBrainsMono-Regular.ttf`
+/// and registered with GPUI at startup (`main.rs` → `cx.text_system().add_fonts`).
+/// Acts as the universal last-resort fallback when no system monospace family
+/// resolves — guarantees that text renders even on a fresh macOS install where
+/// Core Text init inside a signed .app bundle silently fails to surface
+/// `Menlo`, or on a stripped Windows / minimal Linux container with no mono
+/// fonts at all.
+pub(crate) const EMBEDDED_FALLBACK_FAMILY: &str = "JetBrains Mono";
+
 static FONT_FALLBACKS: LazyLock<FontFallbacks> = LazyLock::new(|| {
     FontFallbacks::from_fonts(vec![
         FONT_FALLBACK_EMOJI.to_string(),
         FONT_FALLBACK_SYMBOLS.to_string(),
         FONT_FALLBACK_SANS.to_string(),
+        // Last-resort glyph fallback: the embedded JetBrains Mono is always
+        // present after `add_fonts` runs at startup. If GPUI fails to shape
+        // a glyph in the primary family, it walks this chain — so even a
+        // broken primary still yields rendered text rather than empty cells.
+        EMBEDDED_FALLBACK_FAMILY.to_string(),
     ])
 });
 
-#[cfg(target_os = "linux")]
+/// Registry of installed monospace families, queried via the per-OS
+/// `load_mono_fonts()` enumerator (fontconfig on Linux, Core Text on macOS,
+/// empty stub on Windows until DirectWrite is wired). Populated lazily on
+/// first access. An empty registry means enumeration is unavailable on this
+/// platform — callers must treat it as "skip validation, trust the caller"
+/// to avoid a regression on Windows where every name would otherwise be
+/// rejected.
 static INSTALLED_MONO_FONTS: LazyLock<HashSet<String>> =
     LazyLock::new(|| crate::fonts::load_mono_fonts().into_iter().collect());
 
@@ -59,37 +78,41 @@ struct CachedFontConfig {
 static FONT_CONFIG_CACHE: std::sync::Mutex<Option<CachedFontConfig>> = std::sync::Mutex::new(None);
 
 pub(crate) fn default_font_family() -> &'static str {
+    // Per-OS preference chain. Each candidate is validated against the
+    // enumerated installed-mono registry (when available); if none match,
+    // we fall back to the embedded JetBrains Mono which is registered with
+    // GPUI at startup and therefore always resolvable.
     #[cfg(target_os = "macos")]
-    {
-        "Menlo"
-    }
+    let candidates: &[&str] = &["Menlo", "Monaco", "Courier New", "Courier"];
 
     #[cfg(target_os = "windows")]
-    {
-        "Cascadia Mono"
-    }
+    let candidates: &[&str] = &["Cascadia Mono", "Cascadia Code", "Consolas", "Courier New"];
 
     #[cfg(target_os = "linux")]
-    {
-        [
-            "Ubuntu Mono",
-            "DejaVu Sans Mono",
-            "Liberation Mono",
-            "Noto Sans Mono",
-        ]
-        .into_iter()
-        .find(|family| INSTALLED_MONO_FONTS.contains(*family))
-        .unwrap_or("Noto Sans Mono")
+    let candidates: &[&str] = &[
+        "Ubuntu Mono",
+        "DejaVu Sans Mono",
+        "Liberation Mono",
+        "Noto Sans Mono",
+    ];
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let candidates: &[&str] = &[];
+
+    // If the registry is empty (Windows stub, fontconfig absent, Core Text
+    // returned nothing) we cannot validate — pick the first OS-canonical
+    // candidate and rely on the embedded fallback chain in `FONT_FALLBACKS`
+    // to catch a missed resolution. Otherwise, pick the first installed
+    // candidate, falling through to the embedded family when none match.
+    if INSTALLED_MONO_FONTS.is_empty() {
+        return candidates.first().copied().unwrap_or(EMBEDDED_FALLBACK_FAMILY);
     }
 
-    #[cfg(all(
-        not(target_os = "macos"),
-        not(target_os = "windows"),
-        not(target_os = "linux")
-    ))]
-    {
-        "Noto Sans Mono"
-    }
+    candidates
+        .iter()
+        .copied()
+        .find(|family| INSTALLED_MONO_FONTS.contains(*family))
+        .unwrap_or(EMBEDDED_FALLBACK_FAMILY)
 }
 
 pub fn resolve_font_family(configured: Option<&str>) -> String {
@@ -97,23 +120,28 @@ pub fn resolve_font_family(configured: Option<&str>) -> String {
         .map(str::trim)
         .filter(|family| !family.is_empty())
     {
-        #[cfg(target_os = "linux")]
-        {
-            if INSTALLED_MONO_FONTS.contains(family) {
-                return family.to_string();
-            }
-
-            let fallback = default_font_family();
-            log::warn!(
-                "font_family '{family}' is not installed as a monospace font; using '{fallback}'"
-            );
-            return fallback.to_string();
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
+        // Allow the embedded fallback by name even when the system registry
+        // doesn't list it — `add_fonts` registers it directly with GPUI's
+        // text system, bypassing the OS font enumeration path.
+        if family == EMBEDDED_FALLBACK_FAMILY {
             return family.to_string();
         }
+
+        // When the registry is non-empty, validate the configured family
+        // against it. When it's empty (platform without enumeration, e.g.
+        // Windows pre-DirectWrite-wiring), we have no way to validate and
+        // must trust the caller — passing an unknown name to GPUI is the
+        // pre-existing behaviour on those platforms, and the embedded
+        // fallback chain still guarantees something renders.
+        if INSTALLED_MONO_FONTS.is_empty() || INSTALLED_MONO_FONTS.contains(family) {
+            return family.to_string();
+        }
+
+        let fallback = default_font_family();
+        log::warn!(
+            "font_family '{family}' is not an installed monospace family; using '{fallback}'"
+        );
+        return fallback.to_string();
     }
 
     default_font_family().to_string()
@@ -173,6 +201,19 @@ pub(super) fn cached_font_config() -> (String, f32, f32, bool) {
         .as_ref()
         .and_then(|t| t.ligatures)
         .unwrap_or(false);
+
+    // Diagnostic: log the effective resolved family the first time we
+    // populate the cache, and on every subsequent change. This makes it
+    // possible to confirm from `RUST_LOG=info` whether the embedded
+    // fallback was selected (e.g. on a macOS install where Core Text
+    // failed to surface `Menlo` from inside a signed .app bundle) without
+    // adding a hot-path log on every render.
+    let family_changed = cache.as_ref().is_none_or(|prev| prev.family != family);
+    if family_changed {
+        log::info!(
+            "font: resolved family='{family}' size={size}px line_height={line_height} ligatures={ligatures}"
+        );
+    }
 
     *cache = Some(CachedFontConfig {
         family: family.clone(),

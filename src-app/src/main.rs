@@ -894,6 +894,35 @@ fn main() {
             keybindings::apply_keybindings(cx, &config.shortcuts);
             widgets::text_input::register_keybindings(cx);
 
+            // Register the embedded JetBrains Mono fallback BEFORE any
+            // window opens, so the GPUI text system can resolve the
+            // `JetBrains Mono` family used as the last entry in the
+            // terminal `FONT_FALLBACKS` chain and as the universal
+            // fallback in `default_font_family()`. Without this call, a
+            // system where no preferred mono is found (e.g. a fresh
+            // macOS install whose Core Text init silently fails inside
+            // a signed .app bundle) would render zero glyphs in the
+            // sidebar, tab strip, and terminal grid — the symptom that
+            // motivated this fix.
+            match assets::Assets::get("fonts/JetBrainsMono-Regular.ttf") {
+                Some(font_file) => {
+                    if let Err(e) = cx.text_system().add_fonts(vec![font_file.data]) {
+                        log::warn!(
+                            "failed to register embedded JetBrains Mono fallback: {e}; \
+                             text rendering may fail on systems without a system monospace font"
+                        );
+                    } else {
+                        log::info!("registered embedded JetBrains Mono fallback font");
+                    }
+                }
+                None => {
+                    log::warn!(
+                        "embedded JetBrains Mono asset is missing — fallback font unavailable. \
+                         The build's rust-embed include set may have drifted."
+                    );
+                }
+            }
+
             // US-012: macOS native menu bar. On Linux/Windows the call is
             // elided — GPUI's non-macOS platforms don't render a menu bar
             // and AC5 forbids any Linux UI change.
