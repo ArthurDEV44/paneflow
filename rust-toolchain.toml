@@ -1,0 +1,9 @@
+[toolchain]
+# Pinned to match the local stable in use across all dev machines and
+# the de-facto version `dtolnay/rust-toolchain@stable` resolved to
+# pre-US-001. The workspace dep graph requires rustc >= 1.92 today
+# (oo7 0.6, cosmic-text 0.17, smol_str 0.3, several wgpu/zbus crates),
+# so anything older fails to build before tests can even start.
+channel = "1.95"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

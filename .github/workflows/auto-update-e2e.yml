@@ -1,0 +1,99 @@
+name: Auto-update e2e (nightly)
+
+# US-005 nightly run. The same script is also wired into `release.yml` as
+# a publish-gating job — this file owns the cron + manual-dispatch
+# triggers so a non-release weekday catches regressions in the update
+# flow before they hit a tag cut.
+#
+# `paths-ignore` is intentionally absent: the e2e exercises the runtime
+# binary, not the source layout, so any change to the workspace is in
+# scope.
+
+on:
+  schedule:
+    # 04:00 UTC = 06:00 CEST. Quiet window for hosted Linux runners and
+    # avoids GitHub's hourly-quota peak.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      old_version:
+        description: "OLD version to upgrade FROM (default 0.2.10)"
+        required: false
+        type: string
+        default: "0.2.10"
+      old_tag:
+        description: "Git tag for OLD (default v<old_version>)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: tar.gz update flow (Linux x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Need the OLD tag locally so `git worktree add` resolves.
+          # `fetch-depth: 0` pulls every tag the script might reference.
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        # Same set the release build uses — paneflow's GPUI stack pulls
+        # in vulkan/wayland/xkbcommon/etc at link time, even when the
+        # binary will only ever run `--update-and-exit` (the binary is
+        # dynamically linked, so its NEEDED entries must resolve at
+        # process start).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      # Pinned via `rust-toolchain.toml` (US-001). The action reads the
+      # explicit `toolchain:` input and ignores the workspace file, so
+      # the version stays consistent with `release.yml`.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Two builds (OLD + NEW) hit the cache on different lockfiles
+          # so we share neither the cache key nor the cache. Default
+          # behaviour is fine; this prefix exists to keep the e2e
+          # cache scope distinct from `release.yml`'s build cache.
+          prefix-key: "v1-rust-e2e"
+
+      - name: Run e2e harness
+        env:
+          OLD_VERSION: ${{ inputs.old_version || '0.2.10' }}
+          OLD_TAG: ${{ inputs.old_tag || '' }}
+        run: bash scripts/test-update-e2e.sh
+
+      # AC5: upload logs on failure so a maintainer can diagnose without
+      # re-running the full ~15 min job.
+      - name: Upload e2e logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-update-e2e-logs-${{ github.run_id }}
+          path: |
+            /tmp/paneflow-e2e/*.stdout
+            /tmp/paneflow-e2e/*.stderr
+            /tmp/paneflow-e2e/http-server.log
+          retention-days: 7
+          if-no-files-found: warn
