@@ -6,8 +6,10 @@
 
 use gpui::{ClipboardItem, Context, Window};
 
+use crate::app::telemetry_events::UpdateDismissReason;
 use crate::{
-    PaneFlowApp, StartSelfUpdate, TOAST_HOLD_MS, ToastAction, system_package_update_command, update,
+    DismissUpdate, PaneFlowApp, StartSelfUpdate, TOAST_HOLD_MS, ToastAction,
+    system_package_update_command, update,
 };
 
 /// One-line summary of the install method for log messages — used by the
@@ -69,6 +71,26 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) {
         self.kickoff_self_update_install(cx);
+    }
+
+    /// US-007 AC3: dismiss the update pill for the current launch.
+    /// Clears `update_status` so the title-bar pill disappears, fires
+    /// a `update_dismissed` PostHog event, and forces a re-render.
+    /// Intentionally NOT persisted — the next paneflow launch will
+    /// re-detect the update and re-show the pill (we don't want a
+    /// user accidentally sticking on an old version because the
+    /// preference outlived their interest).
+    pub(crate) fn handle_dismiss_update(
+        &mut self,
+        _: &DismissUpdate,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Capture the to_version BEFORE we drop update_status so the
+        // emit helper can reference it.
+        self.emit_update_dismissed(UpdateDismissReason::UserDismissed);
+        self.update_status = None;
+        cx.notify();
     }
 
     /// Kick off the in-app self-update flow. See the module-level doc for the

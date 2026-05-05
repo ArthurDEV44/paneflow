@@ -1076,18 +1076,23 @@ fn render_span(span: &Span, palette: MarkdownPalette) -> impl IntoElement {
         el = el.text_color(palette.link).underline();
         let url = url.clone();
         el = el.on_mouse_down(gpui::MouseButton::Left, move |_event, _window, _cx| {
-            // Defence: only invoke the OS handler for schemes we know are
-            // safe. A markdown file printed by a hostile program could embed
-            // `[click](smb://attacker/share)` or `[click](file:///etc/shadow)`
-            // — `is_url_scheme_openable` rejects everything outside
-            // http(s)://, mailto:, and file:// (with localhost/empty host).
-            if crate::terminal::element::is_url_scheme_openable(&url) {
-                let _ = open::that(&url);
-            } else {
-                log::warn!(
-                    "blocked markdown link with unsupported scheme: {}",
-                    url.chars().take(80).collect::<String>()
-                );
+            // US-009 boundary: markdown is potentially-hostile file
+            // content, so the link click handler is stricter than the
+            // terminal hyperlink helper. `validate_link_url` accepts
+            // http(s) only — `mailto:`, `file://`, `smb://`,
+            // `javascript:`, `data:`, custom schemes, oversized URLs,
+            // and bare strings (no scheme) all fall through to the
+            // log-and-drop branch.
+            match crate::markdown::security::validate_link_url(&url) {
+                Ok(validated) => {
+                    let _ = open::that(validated.as_str());
+                }
+                Err(reason) => {
+                    log::warn!(
+                        "blocked markdown link ({reason:?}): {}",
+                        url.chars().take(80).collect::<String>()
+                    );
+                }
             }
         });
     }

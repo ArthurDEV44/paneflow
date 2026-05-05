@@ -307,6 +307,20 @@ impl Render for TitleBar {
             // to detach from the drag area; the `cx.stop_propagation()`
             // mouse-down further down ensures the click doesn't trigger
             // a window drag. Same idiom Zed's `ButtonLike` relies on.
+            // US-007 AC3: a small `×` dismiss affordance on the
+            // non-busy states. We deliberately omit it during
+            // Downloading/Installing/ReadyToRestart — those have a
+            // user-perceivable side effect already in flight (or
+            // sitting one click away from `cx.restart()`); a stray
+            // dismiss there would be jarring. Errored remains
+            // dismissable so a user with a chronic install failure
+            // can hide the pill without having to bounce the app.
+            let pill_dismissable = matches!(
+                info.kind,
+                UpdatePillKind::InApp(SelfUpdatePillState::Idle | SelfUpdatePillState::Errored)
+                    | UpdatePillKind::SystemManaged(_)
+            );
+
             let mut pill = div()
                 .id("update-pill")
                 .ml_auto()
@@ -327,6 +341,34 @@ impl Render for TitleBar {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(leading_icon)
                 .child(label);
+
+            if pill_dismissable {
+                let muted = ui.muted;
+                let text = ui.text;
+                pill = pill.child(
+                    div()
+                        .id("update-pill-dismiss")
+                        .ml(px(2.))
+                        .px(px(4.))
+                        .text_color(muted)
+                        .text_size(px(13.))
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .cursor_pointer()
+                        .hover(move |s| s.text_color(text))
+                        // stop_propagation on BOTH mouse-down and click
+                        // so the click never reaches the parent pill's
+                        // `on_click` handler that dispatches
+                        // `StartSelfUpdate` — otherwise hitting the `×`
+                        // would (a) dismiss the pill (b) immediately
+                        // start the update we just dismissed.
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(|_, window, cx| {
+                            cx.stop_propagation();
+                            window.dispatch_action(Box::new(crate::DismissUpdate), cx);
+                        })
+                        .child("×"),
+                );
+            }
             match style {
                 PillStyle::Clickable => {
                     pill = pill

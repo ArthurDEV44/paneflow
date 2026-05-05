@@ -108,11 +108,19 @@ impl PaneFlowApp {
             }
         }
 
-        // Background update check (startup-only, non-blocking)
-        let pending_update = update::checker::spawn_check();
+        // Background update check is deferred until after the telemetry
+        // client is constructed below — `spawn_check` now takes the
+        // client by Arc so it can emit `update_check_started` /
+        // `update_available` (US-007), and the client doesn't exist
+        // this early in bootstrap.
 
-        // Restore session or create a single default workspace.
-        let saved_session = Self::load_session();
+        // Restore session or create a single default workspace. The
+        // tuple's second component carries forensic context when
+        // `session.json` was unparseable (US-006); we hold onto it and
+        // emit the `session_corrupted` PostHog event after the
+        // telemetry client is constructed below — load_session itself
+        // runs too early in bootstrap to call `self.telemetry`.
+        let (saved_session, session_corruption) = Self::load_session();
 
         let (workspaces, active_idx) = match saved_session {
             Some(session) => {
@@ -434,6 +442,14 @@ impl PaneFlowApp {
             posthog_host,
             &telemetry_distinct_id,
         ));
+        // US-007: now that the telemetry client exists, fire off the
+        // background update check. The detached worker emits
+        // `update_check_started` immediately and `update_available`
+        // only when both the version is greater AND an asset matched.
+        let pending_update = update::checker::spawn_check(
+            std::sync::Arc::clone(&telemetry),
+            update::checker::UpdateCheckTrigger::Auto,
+        );
         // Background flusher: every 5 s the client inspects its queue and
         // posts when the size or age threshold is met. Runs off the GPUI
         // main thread — ureq blocks inside `post_batch` but never on the
@@ -565,6 +581,12 @@ impl PaneFlowApp {
         // above. Must happen after the struct literal so `self.telemetry`
         // and `self.install_method` are both populated.
         app.emit_app_started(is_first_run_for_telemetry);
+        // US-006: emit the corruption event after the client is up.
+        // `Null` clients (consent off / kill-switch active) make this
+        // a no-op without a network call.
+        if let Some(info) = session_corruption {
+            app.emit_session_corrupted(&info);
+        }
 
         // Custom-button propagation runs once on the active workspace so
         // user-defined tab-bar buttons surface immediately after restore.

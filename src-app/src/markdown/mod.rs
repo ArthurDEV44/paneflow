@@ -13,6 +13,7 @@
 //! syntax highlighting (P2 follow-up via `syntect`).
 
 mod parser;
+pub(crate) mod security;
 mod state;
 mod theme;
 mod view;

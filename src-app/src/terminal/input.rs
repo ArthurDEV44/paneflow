@@ -45,15 +45,6 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // [diag-keyrepeat] Temporary instrumentation to debug Wayland/GNOME
-        // auto-repeat. Remove once root cause is identified.
-        log::info!(
-            "[keyrepeat] handle_key_down key={:?} is_held={} key_char={:?}",
-            event.keystroke.key,
-            event.is_held,
-            event.keystroke.key_char,
-        );
-
         // Cancel swap mode on Escape — checked before any other mode handling
         if crate::SWAP_MODE.load(std::sync::atomic::Ordering::Relaxed)
             && event.keystroke.key == "escape"

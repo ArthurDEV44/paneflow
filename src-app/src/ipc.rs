@@ -9,6 +9,31 @@
 //! POSIX and named pipes on Windows transparently. The wire protocol
 //! (newline-delimited JSON-RPC 2.0) is byte-identical across platforms.
 //!
+//! ## Trust model — local-only, owner-UID enforcement (US-010)
+//!
+//! The IPC server is **strictly local**: it has no network surface,
+//! no port binding, no remote identity. Trust derives entirely from
+//! filesystem and kernel-credential boundaries:
+//!
+//! - **Socket file mode 0600** (Unix): set immediately after bind in
+//!   `bind_socket`. Non-owner processes on the same machine cannot
+//!   `connect()` past the kernel filesystem check.
+//! - **Peer-UID enforcement** (Unix): every accepted connection runs
+//!   `getsockopt(SO_PEERCRED)` (Linux) / `LOCAL_PEERCRED` (macOS) and
+//!   compares the peer's UID to the server's. A mismatch returns a
+//!   JSON-RPC `-32001 permission denied` error envelope and closes
+//!   the stream BEFORE any method dispatches. Defence-in-depth — if a
+//!   privileged third party bypasses the file-mode check
+//!   (e.g. CAP_DAC_OVERRIDE, mode-fixing automation), the kernel
+//!   credential check still rejects them.
+//! - **Windows** uses Named Pipes whose default DACL grants only the
+//!   owning user + LocalSystem + Administrators. SDDL hardening is
+//!   deferred (cf. `prd-stabilization-2026-q2.md` §10 out-of-scope).
+//!
+//! No HMAC tokens, no TLS — both would add complexity without
+//! meaningful gain on a local-only socket. If the IPC ever grows a
+//! network surface, that decision must be revisited.
+//!
 //! ## Methods
 //!
 //! - `system.ping` / `system.capabilities` / `system.identify` — stateless
@@ -232,8 +257,55 @@ fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
     let Ok(writer_stream) = stream.try_clone() else {
         return;
     };
-    let reader = BufReader::new(stream);
+
+    // US-010: peer-UID enforcement happens BEFORE we wrap `stream` in
+    // a BufReader, because the cleanest way to query peer credentials
+    // on `interprocess::local_socket::Stream` is the trait method
+    // `Stream::peer_creds()` (brought in by `prelude::*`), and that
+    // method needs the bare stream — once wrapped in BufReader, the
+    // method is no longer reachable through `get_ref()` (BufReader
+    // only re-exports `Read`-shaped methods). The check is
+    // `#[cfg(unix)]`-only; Windows pipe ACLs cover the same surface
+    // (see module doc) and SDDL hardening is deferred per PRD §10.
+    // On a peer-cred query failure we fall back to perms-0600 only
+    // with a warn log (AC6) — the kernel filesystem check still
+    // gates non-owner connects, so the residual exposure is bounded.
     let mut writer = writer_stream;
+
+    #[cfg(unix)]
+    {
+        match auth::check_peer(&stream) {
+            auth::AuthOutcome::Allow => {}
+            auth::AuthOutcome::Deny {
+                server_uid,
+                peer_uid,
+            } => {
+                let envelope = json!({
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32001,
+                        "message": "permission denied: peer UID mismatch"
+                    },
+                    "id": Value::Null,
+                });
+                let _ = writeln!(&mut writer, "{}", envelope);
+                let _ = writer.flush();
+                log::warn!(
+                    "IPC: rejecting connection (peer UID {}, server UID {})",
+                    peer_uid,
+                    server_uid
+                );
+                return;
+            }
+            auth::AuthOutcome::DegradedFallback => {
+                // AC6: peer-cred query unavailable, perms-0600 stays
+                // as the line of defence. Warn-log emitted inside
+                // check_peer so the fallback isn't silent.
+            }
+        }
+    }
+
+    let reader = BufReader::new(stream);
 
     for line in reader.lines() {
         let line = match line {
@@ -333,4 +405,166 @@ fn dispatch_to_gpui(
 
 fn socket_path() -> Option<PathBuf> {
     crate::runtime_paths::socket_path()
+}
+
+// ---------------------------------------------------------------------------
+// US-010: peer-UID enforcement
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod auth {
+    //! Peer-UID enforcement on the IPC server.
+    //!
+    //! Splits cleanly so each layer is testable in isolation:
+    //!
+    //! - [`authorize`]: pure policy decision — given a server UID and a
+    //!   peer UID, allow or deny. No I/O, exhaustively unit-tested
+    //!   (matching pair → allow, mismatched pair → deny).
+    //! - [`server_uid`]: thin wrapper over `getuid(2)`.
+    //! - [`check_peer`]: glue that runs `Stream::peer_creds()` (provided
+    //!   by interprocess 2.4 — `getsockopt(SO_PEERCRED)` on Linux,
+    //!   `LOCAL_PEERCRED` on macOS, `xucred` on the BSDs) and feeds
+    //!   the result into `authorize`.
+    //!
+    //! [`check_peer`] returns an [`AuthOutcome`] the caller turns into
+    //! the JSON-RPC envelope (or just keeps serving on
+    //! `DegradedFallback`). The split keeps the policy fully covered
+    //! by deterministic tests; the live-syscall integration is
+    //! exercised by paneflow itself on every connection.
+
+    use super::Stream;
+    use interprocess::local_socket::prelude::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum AuthOutcome {
+        /// Peer UID matches server UID — proceed to dispatch.
+        Allow,
+        /// Peer UID query succeeded and the value did NOT match the
+        /// server's UID. Caller emits the JSON-RPC EPERM envelope.
+        Deny { server_uid: u32, peer_uid: u32 },
+        /// Peer UID could not be queried (very old kernel / exotic
+        /// Unix without an `euid` field in `peer_creds()`). AC6:
+        /// fall back to the perms-0600 file-mode line of defence and
+        /// continue serving. The warn log fires inside [`check_peer`]
+        /// so the fallback isn't silent.
+        DegradedFallback,
+    }
+
+    /// Pure-function policy. Equality of effective UIDs is the
+    /// allowlist.
+    pub(super) fn authorize(server_uid: u32, peer_uid: u32) -> AuthOutcome {
+        if server_uid == peer_uid {
+            AuthOutcome::Allow
+        } else {
+            AuthOutcome::Deny {
+                server_uid,
+                peer_uid,
+            }
+        }
+    }
+
+    /// Resolve the running process's effective UID via `geteuid(2)`.
+    ///
+    /// `peer_creds().euid()` returns the peer's *effective* UID; we
+    /// must compare against ours symmetrically. Calling `getuid()`
+    /// (real UID) here would diverge from `geteuid()` under any
+    /// privilege-separation wrapper (`sudo`, setuid, polkit-helped
+    /// child) and either falsely accept or falsely reject a peer that
+    /// shares one but not the other.
+    pub(super) fn server_uid() -> u32 {
+        // libc::uid_t is u32 on every supported target; the cast is a
+        // no-op there but stays explicit for cross-target clarity.
+        unsafe { libc::geteuid() as u32 }
+    }
+
+    /// Run the peer-credential query against the connected stream and
+    /// translate the outcome. Defers the kernel-call mechanics to
+    /// `interprocess::local_socket::Stream::peer_creds()` (`SO_PEERCRED`
+    /// on Linux, `LOCAL_PEERCRED` on macOS, `xucred` on the BSDs);
+    /// upstream owns those per-OS quirks so paneflow doesn't
+    /// duplicate `getsockopt` boilerplate per target.
+    pub(super) fn check_peer(stream: &Stream) -> AuthOutcome {
+        let server = server_uid();
+        match stream.peer_creds() {
+            Ok(creds) => match creds.euid() {
+                Some(peer) => authorize(server, peer),
+                None => {
+                    // `peer_creds()` succeeded but the platform doesn't
+                    // expose an effective UID (NetBSD ucred lacks
+                    // euid, for example). Same fallback as the Err
+                    // branch — perms-0600 stays as the line of
+                    // defence.
+                    log::warn!(
+                        "IPC: peer-cred query returned no euid on this OS; \
+                         falling back to perms-0600 only"
+                    );
+                    AuthOutcome::DegradedFallback
+                }
+            },
+            Err(e) => {
+                log::warn!("IPC: peer-cred query failed ({e}); falling back to perms-0600 only");
+                AuthOutcome::DegradedFallback
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn authorize_accepts_matching_uid() {
+            assert_eq!(authorize(1000, 1000), AuthOutcome::Allow);
+            assert_eq!(authorize(0, 0), AuthOutcome::Allow);
+        }
+
+        #[test]
+        fn authorize_rejects_mismatched_uid() {
+            assert_eq!(
+                authorize(1000, 1001),
+                AuthOutcome::Deny {
+                    server_uid: 1000,
+                    peer_uid: 1001,
+                }
+            );
+            assert_eq!(
+                authorize(1000, 0),
+                AuthOutcome::Deny {
+                    server_uid: 1000,
+                    peer_uid: 0,
+                }
+            );
+        }
+
+        /// `geteuid(2)` must return the same value on two successive
+        /// calls — the kernel doesn't change a process's effective UID
+        /// without an explicit `setuid(2)` / `seteuid(2)` call. Stable
+        /// across calls is the property the auth path actually relies
+        /// on (we capture the server euid once and compare every
+        /// incoming peer euid against it).
+        #[test]
+        fn server_uid_is_stable() {
+            let a = server_uid();
+            let b = server_uid();
+            assert_eq!(a, b, "geteuid must be stable across calls");
+        }
+
+        /// Symmetric to `authorize_accepts_matching_uid` — root running
+        /// the server is an explicit policy choice, not an accidental
+        /// bypass: any non-root peer is denied even when the server is
+        /// uid 0. The matching-UID accept at `(0, 0)` is the only
+        /// root-to-root path; that case is intentional (a privileged
+        /// IPC client speaking to a privileged paneflow run by the
+        /// same operator).
+        #[test]
+        fn authorize_root_server_rejects_non_root_peer() {
+            assert!(matches!(
+                authorize(0, 1000),
+                AuthOutcome::Deny {
+                    server_uid: 0,
+                    peer_uid: 1000
+                }
+            ));
+        }
+    }
 }
