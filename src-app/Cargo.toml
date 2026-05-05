@@ -263,18 +263,28 @@ assets = [
     { source = "LICENSE",                                                       dest = "/usr/share/doc/paneflow/LICENSE",                                           mode = "644", doc = true },
 ]
 
+# Cross-distro RPM runtime deps. All entries use SONAME virtual provides
+# instead of package names, because package nomenclature differs between
+# Fedora/RHEL/Rocky and openSUSE:
+#
+#   Fedora/RHEL          openSUSE Tumbleweed
+#   ───────────────────  ─────────────────────
+#   vulkan-loader        libvulkan1
+#   libxkbcommon         libxkbcommon0
+#   libxkbcommon-x11     libxkbcommon-x11-0
+#   fontconfig           fontconfig (same)
+#   freetype             libfreetype6
+#
+# Every package above exports the same SONAME virtual provide regardless
+# of its package name, so listing the SONAMEs gives us one cross-distro
+# requires-set that resolves on Fedora 30+, RHEL 8+, Rocky, Mageia,
+# openSUSE Leap 15+, and openSUSE Tumbleweed without per-distro fan-out.
+# The `(64bit)` ABI tag is correct for both x86_64 and aarch64 RPM
+# builds — it indicates the 64-bit ABI, not CPU arch (i686 would use
+# `(32bit)`). Verified against pkgs.org SONAME lookup for each library.
 [package.metadata.generate-rpm.requires]
-vulkan-loader = "*"
-libxkbcommon = "*"
-libxkbcommon-x11 = "*"
-fontconfig = "*"
-# `freetype` is the canonical package name on Fedora / RHEL / Rocky but
-# does NOT exist on openSUSE Tumbleweed, where the runtime ships as
-# `libfreetype6`. Use the SONAME virtual provide instead: every RPM
-# distro that ships freetype-as-a-runtime (Fedora, RHEL, Rocky, Mageia,
-# openSUSE Leap + Tumbleweed) exports `libfreetype.so.6()(64bit)` from
-# its respective package, so this single dep resolves on all of them
-# without needing per-distro fan-out. The `(64bit)` ABI tag is correct
-# for both x86_64 and aarch64 RPM builds (it indicates 64-bit ABI, not
-# the CPU arch — i686 builds would use `(32bit)`).
+"libvulkan.so.1()(64bit)" = "*"
+"libxkbcommon.so.0()(64bit)" = "*"
+"libxkbcommon-x11.so.0()(64bit)" = "*"
+"libfontconfig.so.1()(64bit)" = "*"
 "libfreetype.so.6()(64bit)" = "*"

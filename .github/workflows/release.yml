@@ -875,14 +875,6 @@ jobs:
         shell: bash
         env:
           TAG: ${{ env.RELEASE_TAG }}
-          # cargo-wix 0.3.x has a known bug where `--no-build` + `--target X`
-          # silently drops the triple from the binary path resolver, making
-          # it look in `target/release/` (which doesn't exist in cross
-          # builds) and fail with `Error[3] (Io): The 'build' path does
-          # not exist`. Setting the target via `CARGO_BUILD_TARGET` instead
-          # routes through Cargo's own config resolution which cargo-wix
-          # picks up correctly. The `--target` flag is removed below.
-          CARGO_BUILD_TARGET: x86_64-pc-windows-msvc
         run: |
           set -euo pipefail
           version="${TAG#v}"
@@ -892,9 +884,22 @@ jobs:
           # `cargo build --release`, duplicating ~3-5 min of compile on
           # a cold runner. Matches the macOS pattern where
           # bundle-macos.sh consumes a pre-built binary.
+          #
+          # `--target` MUST be passed explicitly: cargo-wix 0.3.x reads
+          # the triple from its own `--target` flag for binary-path
+          # resolution and does NOT inherit `CARGO_BUILD_TARGET` env.
+          # Without the flag, cargo-wix looks for the .exe at
+          # `target/release/paneflow.exe` (no triple segment) which
+          # doesn't exist in a cross-build → fails with
+          # `Error[3] (Io): The 'build' path does not exist`. Verified
+          # against cargo-wix 0.3.x source (target_bin_dir() in
+          # create.rs constructs the path from the CLI flag, not the env
+          # var). The previous attempt to route through CARGO_BUILD_TARGET
+          # was based on wrong training-knowledge speculation.
           cargo wix build \
             --no-build \
             --package paneflow-app \
+            --target x86_64-pc-windows-msvc \
             --install-version "$version"
           ls -la target/wix/
 
