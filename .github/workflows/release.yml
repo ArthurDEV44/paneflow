@@ -1685,10 +1685,13 @@ jobs:
           fi
 
       - name: Assert %post wrote paneflow.repo
+        # openSUSE uses /etc/zypp/repos.d/ (not yum.repos.d/) — the
+        # postinst.sh writes to whichever distro-canonical directory
+        # exists, so on Tumbleweed this is the correct expected path.
         run: |
           set -euo pipefail
-          test -f /etc/yum.repos.d/paneflow.repo
-          grep -Fq '[paneflow]' /etc/yum.repos.d/paneflow.repo
+          test -f /etc/zypp/repos.d/paneflow.repo
+          grep -Fq '[paneflow]' /etc/zypp/repos.d/paneflow.repo
 
   # ─── US-002 AC3: Arch Linux (tar.gz, no native PKGBUILD) ────────────
   # Paneflow has no AUR maintainer yet, so this leg installs the

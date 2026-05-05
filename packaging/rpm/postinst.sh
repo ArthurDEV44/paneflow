@@ -15,14 +15,23 @@
 
 set -e
 
-REPO=/etc/yum.repos.d/paneflow.repo
-
-if [ ! -f "$REPO" ]; then
-    # `gpgcheck=1` — every shipped .rpm is signed with the release key
-    # (US-017; see docs/release-signing.md). Clients refuse unsigned or
-    # wrong-key packages. `repo_gpgcheck=1` covers the metadata
-    # signature (`repomd.xml.asc`) produced by US-015's repo-publish.yml.
-    cat > "$REPO" <<'EOF'
+# Repo directory differs per RPM-family distro:
+#   /etc/yum.repos.d/   — Fedora, RHEL, Rocky, Alma, Mageia (dnf/yum)
+#   /etc/zypp/repos.d/  — openSUSE Leap, Tumbleweed (zypper)
+# Iterate over both candidates and write the .repo file to whichever
+# directory actually exists on the host. On a single-package-manager
+# distro only one directory exists, so we get exactly one file.
+# On a hybrid system (e.g. zypper-with-dnf-compat) we'd write to both,
+# which is also correct — both managers then see the same repo config.
+# `gpgcheck=1` — every shipped .rpm is signed with the release key
+# (US-017; see docs/release-signing.md). Clients refuse unsigned or
+# wrong-key packages. `repo_gpgcheck=1` covers the metadata
+# signature (`repomd.xml.asc`) produced by US-015's repo-publish.yml.
+for REPO_DIR in /etc/yum.repos.d /etc/zypp/repos.d; do
+    [ -d "$REPO_DIR" ] || continue
+    REPO="$REPO_DIR/paneflow.repo"
+    if [ ! -f "$REPO" ]; then
+        cat > "$REPO" <<'EOF'
 [paneflow]
 name=PaneFlow
 baseurl=https://pkg.paneflow.dev/rpm
@@ -31,8 +40,9 @@ gpgcheck=1
 repo_gpgcheck=1
 gpgkey=https://pkg.paneflow.dev/gpg
 EOF
-    chmod 644 "$REPO"
-fi
+        chmod 644 "$REPO"
+    fi
+done
 
 # --- Icon + desktop cache refresh ------------------------------------
 # Without this, the freedesktop hicolor icon cache under
