@@ -67,8 +67,9 @@ jobs:
             libfontconfig1-dev \
             libfreetype6-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.95"
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
@@ -185,7 +186,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
 
       # Reuse the same cache prefix as `check` so the advisory job
       # shares target/ with the main Linux build (no extra minutes
@@ -284,8 +287,9 @@ jobs:
           fi
           echo "Metal framework headers: $METAL_HEADERS"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.95"
           targets: aarch64-apple-darwin
           # US-018 AC2 adds cargo fmt + cargo clippy steps below — those
           # need the rustfmt + clippy components, which dtolnay's action
@@ -430,8 +434,9 @@ jobs:
       # US-003 AC-1 + US-018 AC-1: Rust toolchain with rustfmt + clippy
       # components (required by the fmt/clippy steps below) and the MSVC
       # cross-compile target.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.95"
           components: rustfmt, clippy
           targets: x86_64-pc-windows-msvc
 
@@ -553,8 +558,9 @@ jobs:
             libfontconfig1-dev \
             libfreetype6-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.95"
           components: rustfmt, clippy
           targets: aarch64-unknown-linux-gnu
 
@@ -595,8 +601,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.95"
           components: rustfmt, clippy
           targets: x86_64-apple-darwin
 
@@ -657,8 +664,9 @@ jobs:
         with:
           arch: amd64_arm64
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.95"
           components: clippy
           targets: aarch64-pc-windows-msvc
 
