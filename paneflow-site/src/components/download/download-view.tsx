@@ -232,9 +232,9 @@ function primaryDownload(
     };
   }
   if (platform.os === "macos") {
-    // Signed Developer ID + Apple-notarized .dmg. Apple Silicon only —
+    // Signed Developer ID + Apple-notarized .dmg. Apple Silicon only:
     // the `x86_64-apple-darwin` target is a closed CI matrix entry
-    // until v0.3.0 (see release.yml comments). Intel Mac users on a
+    // until Intel-Mac CI is reactivated. Intel Mac users on a
     // 2020-or-earlier laptop still see this card with the aarch64
     // .dmg href, which will fail to launch on their hardware; the
     // matrix below remains the recovery path until the cut.
@@ -557,13 +557,14 @@ function DownloadRow({
   );
 }
 
-// macOS items. Apple Silicon (.dmg) only as of v0.2.10 — Intel Mac
-// (`x86_64-apple-darwin`) is a closed CI target until v0.3.0, so the
-// matrix has just one row here. Filename omits the `v` prefix on the
-// version segment (`paneflow-<semver>-aarch64-apple-darwin.dmg`),
-// matching `update_checker.rs::pick_asset` (US-008). When the Intel
-// Mac leg ships, add a second row with `paneflow-<semver>-x86_64-
-// apple-darwin.dmg` — same hyphen pattern.
+// macOS items. Apple Silicon (.dmg) only for now. Intel Mac
+// (`x86_64-apple-darwin`) is a closed CI target until Intel-Mac CI
+// is reactivated, so the matrix has just one row here. Filename uses
+// the v0.3.0+ convention `paneflow-<semver>-aarch64-apple-darwin.dmg`
+// (no `v` prefix on the version segment), matching
+// `update_checker.rs::pick_asset` (US-008). When the Intel Mac leg
+// ships, add a second row with `paneflow-<semver>-x86_64-apple-darwin.dmg`,
+// same hyphen pattern.
 function macOSItems(version: string): DownloadItem[] {
   const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
   return [

@@ -93,12 +93,12 @@ export function Hero() {
             Download for Linux
           </a>
           {/*
-            macOS .dmg — signed with a Developer ID Application
+            macOS .dmg, signed with a Developer ID Application
             certificate and Apple-notarized (ticket stapled). Apple
-            Silicon only for v0.2.10; Intel Mac (x86_64-apple-darwin)
-            is a closed CI target until v0.3.0. The same secondary-
-            CTA styling as "View on GitHub" keeps Linux as the visual
-            primary while still giving macOS users a one-click path.
+            Silicon only for v0.2.x; Intel Mac (x86_64-apple-darwin)
+            is a closed CI target until later. Same primary CTA
+            styling as Linux so both supported platforms get equal
+            visual weight on the page.
           */}
           <a
             href={macOSDmgUrl()}
@@ -110,7 +110,7 @@ export function Hero() {
                 arch: "aarch64",
               });
             }}
-            className="inline-flex items-center gap-2.5 px-6 py-3 border border-surface-border text-text-muted rounded-lg hover:border-surface-border-hover hover:text-text transition-all duration-200"
+            className="inline-flex items-center gap-2.5 px-6 py-3 bg-accent text-bg font-semibold rounded-lg hover:brightness-110 transition-all duration-200"
           >
             <AppleIcon className="w-4 h-4" />
             Download for macOS
