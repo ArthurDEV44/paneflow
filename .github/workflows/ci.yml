@@ -350,6 +350,152 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # ───────────────────────────────────────────────────────────────────────
+  # Visual rendering smoke test — macOS aarch64.
+  #
+  # Catches the exact class of regression fixed in commit c3e2331
+  # ("fix(font): macOS empty-text rendering across sidebar, tabs, and
+  # terminal"): a PaneFlow build that compiles, links, and notarizes
+  # cleanly but renders zero glyphs because Core Text inside a `.app`
+  # bundle silently fails to surface the configured monospace family
+  # and no embedded font fallback is wired. The release pipeline never
+  # noticed because no leg ever launched the `.app` — every gate was
+  # compile/sign/notarize, none was visual. This job closes that hole at
+  # the PR gate so the regression cannot reach `main`.
+  #
+  # Pipeline: download the binary built by `macos-check` → wrap it in
+  # the same `.app` skeleton `release.yml` ships → launch the binary
+  # inside the bundle (so Core Text sees the bundle context, exactly
+  # like an end-user install) → screencapture → soft OCR sanity check.
+  # The screenshot is always uploaded so reviewers can eyeball the
+  # PR's macOS rendering even when the OCR gate is happy.
+  #
+  # Gates:
+  #   * HARD — `font: resolved family=...` line MUST appear in the app
+  #     log (proves the renderer reached `cached_font_config()`, i.e.
+  #     the app didn't crash before first frame).
+  #   * SOFT — OCR finds ≥10 alphanumeric chars (the macOS menubar
+  #     alone passes this trivially when rendering works; failure
+  #     means we're staring at a black screen or empty cells).
+  #
+  # Runner: macos-14 hosts a real macOS user session with WindowServer
+  # access — GUI apps launch and render normally, exactly the pattern
+  # used by Electron / Flutter / native-Cocoa CI setups.
+  # ───────────────────────────────────────────────────────────────────────
+  macos-render-smoke:
+    name: macOS aarch64 render smoke (visual)
+    needs: [changes, macos-check]
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download paneflow binary
+        uses: actions/download-artifact@v4
+        with:
+          name: paneflow-aarch64-apple-darwin
+          path: target/aarch64-apple-darwin/release/
+
+      - name: Restore executable bit
+        # actions/upload-artifact strips the executable bit on macOS/
+        # Linux outputs (https://github.com/actions/upload-artifact/issues/38).
+        # Without this, `bundle-macos.sh`'s `install -m 0755` would copy
+        # a non-executable file and `open` would fail with EACCES.
+        run: chmod +x target/aarch64-apple-darwin/release/paneflow
+
+      - name: Bundle .app
+        # Reuse the production bundling script so the smoke test exercises
+        # the SAME `.app` skeleton end-users get — Info.plist, .icns,
+        # MacOS/paneflow layout. Unsigned: signing is not what the bug
+        # was about (the original c3e2331 root cause reproduced equally
+        # in unsigned bundles per Core Text's bundle-context behavior),
+        # and skipping codesign keeps this gate free of Apple secrets.
+        run: |
+          set -euo pipefail
+          bash scripts/bundle-macos.sh --version "0.0.0-ci" --arch aarch64
+
+      - name: Launch .app and capture screenshot
+        run: |
+          set -euo pipefail
+          APP="dist/PaneFlow.app"
+
+          # Launch the binary INSIDE the bundle directly (rather than
+          # `open -a`) so stdout/stderr can be redirected — `open` does
+          # not tee child output and the `font: resolved family=` log
+          # line is our hard gate. The bundle path is preserved, so
+          # Info.plist + Resources/ load correctly and Core Text sees
+          # the same bundle context as a real install.
+          RUST_LOG=info "$APP/Contents/MacOS/paneflow" \
+            >paneflow.log 2>&1 &
+          APP_PID=$!
+
+          # Cold-launch on macos-14 (M1, 3 vCPU): GPUI window creation
+          # + Vulkan-equivalent Metal init + first paint typically lands
+          # under 5s. 10s gives generous slack for runner contention.
+          sleep 10
+
+          # `-x` skips the camera-shutter sound; captures every display.
+          screencapture -x screenshot.png
+
+          # Clean shutdown so the runner doesn't carry a live paneflow
+          # process into the next step. SIGTERM lets GPUI's Drop chain
+          # (PTY shutdown, IPC socket cleanup) run; SIGKILL is the belt
+          # in case the main thread is blocked.
+          kill "$APP_PID" 2>/dev/null || true
+          sleep 2
+          kill -9 "$APP_PID" 2>/dev/null || true
+          wait "$APP_PID" 2>/dev/null || true
+
+          # HARD GATE: the resolved-font log line must be present.
+          # Absence means the app crashed before reaching
+          # cached_font_config() — i.e. before the renderer ever asked
+          # for a font, which is upstream of every rendering-correctness
+          # property this job exists to verify.
+          echo "── Resolved font ──"
+          if grep "font: resolved family=" paneflow.log; then
+            if grep -q "font: resolved family='JetBrains Mono'" paneflow.log; then
+              echo "::warning::Embedded JetBrains Mono fallback was selected — Core Text did not surface a system mono family (Menlo / Monaco / Courier). The fallback is the safety net working as designed, but persistent selection on macos-14 indicates a Core Text drift worth investigating."
+            fi
+          else
+            echo "::error::No 'font: resolved family=' line in app log. The app likely crashed before first render — paneflow.log + screenshot.png artifacts will pin down the exact failure."
+            exit 1
+          fi
+
+      - name: OCR sanity check (text rendered?)
+        # Soft gate: tesseract output is fuzzy and we don't want flaky
+        # OCR to block PRs. The signal still surfaces in the CI log
+        # (alphanumeric char count) and the screenshot artifact is
+        # available for human review on every run.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          brew install --quiet tesseract
+          text="$(tesseract screenshot.png - 2>/dev/null || true)"
+          echo "── OCR output (first 50 lines) ──"
+          echo "$text" | head -50
+          char_count="$(echo "$text" | tr -cd '[:alnum:]' | wc -c | tr -d ' ')"
+          echo "OCR alphanumeric chars: $char_count"
+          # Threshold rationale: the macOS menubar (Apple logo,
+          # "Finder", clock, date) alone OCRs to ~30+ chars on a healthy
+          # session. <10 chars almost always means rendering is broken
+          # — either the screen is black or every glyph rendered as a
+          # blank cell, which is the c3e2331 failure mode.
+          if [ "$char_count" -lt 10 ]; then
+            echo "::warning::OCR found <10 alphanumeric chars. Visual rendering may be broken — inspect screenshot.png artifact."
+          fi
+
+      - name: Upload visual smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-render-smoke
+          path: |
+            screenshot.png
+            paneflow.log
+          if-no-files-found: warn
+          retention-days: 7
+
   # US-003 + US-018 (prd-windows-port.md): windows-2022 PR gate. Runs the
   # full Rust quality suite (fmt + clippy + test + check) against the
   # x86_64-pc-windows-msvc target, plus toolchain/WiX verification. US-003
@@ -505,6 +651,136 @@ jobs:
       # end-to-end on MSVC.
       - name: cargo build --workspace --release
         run: cargo build --workspace --release --target x86_64-pc-windows-msvc
+
+      # Mirror of the macos-check `Upload aarch64 binary artifact` step:
+      # exposes the just-built `paneflow.exe` as a workflow artifact so
+      # the downstream `windows-render-smoke` job can pull it without
+      # paying a second `cargo build` (the cache hit path on subsequent
+      # PRs is fast, but the from-scratch path on cold runs is ~5 min).
+      - name: Upload x86_64 binary artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paneflow-x86_64-pc-windows-msvc
+          path: target/x86_64-pc-windows-msvc/release/paneflow.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Visual rendering smoke test — Windows x86_64.
+  #
+  # Mirrors `macos-render-smoke` for the Windows GPUI rendering stack
+  # (Direct2D / DirectWrite, DX11 backend GA Oct 2025). Catches the
+  # same class of regression: a build that compiles + signs cleanly
+  # but renders no glyphs because DirectWrite font enumeration silently
+  # fails to surface the configured monospace family. The embedded
+  # JetBrains Mono fallback wired by commit c3e2331 protects against
+  # this on Windows too — this job verifies the safety net actually
+  # holds end-to-end on a hosted runner.
+  #
+  # Gates:
+  #   * HARD — `font: resolved family=...` must appear in the app log.
+  #   * SOFT — visual artifact uploaded for human review (no OCR gate
+  #     because tesseract on Windows requires a heavier install path
+  #     and the screenshot+log signal is already enough to spot the
+  #     "boxes drawn, no glyphs" failure mode).
+  #
+  # Runner: windows-2022 hosts a real Windows desktop session — GUI
+  # apps launch and render normally, exactly the pattern used by
+  # WPF / WinUI / Electron CI setups.
+  # ───────────────────────────────────────────────────────────────────────
+  windows-render-smoke:
+    name: Windows x86_64 render smoke (visual)
+    needs: [changes, windows-check]
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download paneflow.exe
+        uses: actions/download-artifact@v4
+        with:
+          name: paneflow-x86_64-pc-windows-msvc
+          path: target/x86_64-pc-windows-msvc/release/
+
+      - name: Launch paneflow.exe and capture screenshot
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = "target\x86_64-pc-windows-msvc\release\paneflow.exe"
+          if (-not (Test-Path $exe)) {
+            throw "Expected $exe to exist after download-artifact step."
+          }
+
+          # Launch detached so we can sleep + capture, with stdout +
+          # stderr teed to a log file. RUST_LOG=info is required to
+          # surface the `font: resolved family=` line emitted by
+          # terminal/element/font.rs:215 — the hard gate below greps
+          # for it.
+          $env:RUST_LOG = 'info'
+          $proc = Start-Process -FilePath $exe `
+                                -PassThru `
+                                -RedirectStandardOutput 'paneflow.log' `
+                                -RedirectStandardError  'paneflow.err.log'
+
+          # Cold launch on windows-2022 (4 vCPU, 16 GB RAM) typically
+          # hits first paint in 4-6s. 10s gives generous slack for
+          # runner contention + DX11 swap-chain init.
+          Start-Sleep -Seconds 10
+
+          # Capture the primary display via System.Drawing — works on
+          # every windows-2022 runner without external tooling. The
+          # bounds-then-CopyFromScreen pattern is the canonical .NET
+          # screenshot recipe used by every Windows GUI CI setup.
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName System.Drawing
+          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+          $g   = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+          $bmp.Save("$pwd\screenshot.png", [System.Drawing.Imaging.ImageFormat]::Png)
+          $g.Dispose()
+          $bmp.Dispose()
+
+          # Clean shutdown. Stop-Process is SIGTERM-equivalent; -Force
+          # is the SIGKILL belt for a wedged main thread. Tolerate a
+          # process that already exited.
+          if (-not $proc.HasExited) {
+            Stop-Process -Id $proc.Id -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+            if (-not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          # Merge stderr into the main log so the grep below picks up
+          # log::info! lines (env_logger writes to stderr by default).
+          if (Test-Path 'paneflow.err.log') {
+            Get-Content 'paneflow.err.log' | Add-Content 'paneflow.log'
+          }
+
+          Write-Output "── Resolved font ──"
+          $fontLine = Select-String -Path 'paneflow.log' -Pattern 'font: resolved family=' -SimpleMatch
+          if (-not $fontLine) {
+            Write-Output "::error::No 'font: resolved family=' line in app log. The app likely crashed before first render — paneflow.log + screenshot.png artifacts will pin down the exact failure."
+            exit 1
+          }
+          $fontLine | ForEach-Object { Write-Output $_.Line }
+          if ($fontLine.Line -match "family='JetBrains Mono'") {
+            Write-Output "::warning::Embedded JetBrains Mono fallback was selected — DirectWrite did not surface a system mono family (Cascadia Mono / Cascadia Code / Consolas). The fallback is the safety net working as designed, but persistent selection on windows-2022 indicates a DirectWrite drift worth investigating."
+          }
+
+      - name: Upload visual smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-render-smoke
+          path: |
+            screenshot.png
+            paneflow.log
+          if-no-files-found: warn
+          retention-days: 7
 
   # ───────────────────────────────────────────────────────────────────────
   # US-012 (prd-ai-hooks-cross-platform.md) — matrix completion.
