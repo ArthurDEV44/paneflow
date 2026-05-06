@@ -31,6 +31,10 @@ const VERSIONS: VersionEntry[] = [
     releaseNotes: `https://github.com/ArthurDEV44/paneflow/releases/tag/v${LATEST_VERSION}`,
   },
   {
+    version: "0.2.11",
+    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.11",
+  },
+  {
     version: "0.2.10",
     releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.10",
   },
@@ -562,11 +566,11 @@ function DownloadRow({
 // macOS items. Apple Silicon (.dmg) only for now. Intel Mac
 // (`x86_64-apple-darwin`) is a closed CI target until Intel-Mac CI
 // is reactivated, so the matrix has just one row here. Filename uses
-// the v0.3.0+ convention `paneflow-<semver>-aarch64-apple-darwin.dmg`
-// (no `v` prefix on the version segment), matching
-// `update_checker.rs::pick_asset` (US-008). When the Intel Mac leg
-// ships, add a second row with `paneflow-<semver>-x86_64-apple-darwin.dmg`,
-// same hyphen pattern.
+// the v0.2.10+ convention (commit f2a0c96):
+// `paneflow-<semver>-aarch64-apple-darwin.dmg` (no `v` prefix on the
+// version segment), matching `update_checker.rs::pick_asset` (US-008).
+// When the Intel Mac leg ships, add a second row with
+// `paneflow-<semver>-x86_64-apple-darwin.dmg`, same hyphen pattern.
 function macOSItems(version: string): DownloadItem[] {
   const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
   return [
@@ -578,12 +582,12 @@ function macOSItems(version: string): DownloadItem[] {
 }
 
 // Linux asset filenames switched from `paneflow-v<version>-<arch>.<ext>`
-// (used through v0.2.x) to `paneflow-<version>-<arch>.<ext>` (no `v`
-// prefix, used from v0.3.0) to align with the macOS DMG / Windows MSI
-// convention. The in-app updater matcher (`update_checker.rs::pick_asset`)
-// is suffix-only, so existing v0.2.x clients still discover v0.3.0+
-// assets correctly. If you need to point at a v0.2.x release, add the
-// `v` back into the asset name.
+// (used pre-v0.2.10) to `paneflow-<version>-<arch>.<ext>` (no `v` prefix,
+// used from v0.2.10+ via commit f2a0c96) to align with the macOS DMG /
+// Windows MSI convention. The in-app updater matcher
+// (`update_checker.rs::pick_asset`) is suffix-only, so existing pre-rename
+// clients still discover post-rename assets correctly. If you need to
+// point at a pre-v0.2.10 release, add the `v` back into the asset name.
 function linuxItems(version: string): DownloadItem[] {
   const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
   const asset = (name: string) => `${base}/${name}`;

@@ -55,14 +55,14 @@ const breadcrumbSchema = {
 export const metadata: Metadata = {
   title: "Télécharger PaneFlow: Linux, macOS, Windows",
   description:
-    "Télécharge PaneFlow, le multiplexeur de terminal GPU‑accéléré écrit en Rust. Disponible pour Linux (.deb, .rpm, AppImage, .tar.gz). macOS et Windows bientôt.",
+    "Télécharge PaneFlow, le multiplexeur de terminal GPU‑accéléré écrit en Rust. Disponible pour Linux (.deb, .rpm, AppImage, .tar.gz) et macOS (.dmg signé + notarisé, Apple Silicon). Windows bientôt.",
   alternates: {
     canonical: "/download",
   },
   openGraph: {
     title: "Télécharger PaneFlow",
     description:
-      "Multiplexeur de terminal GPU‑accéléré en Rust. Linux disponible, macOS et Windows bientôt.",
+      "Multiplexeur de terminal GPU‑accéléré en Rust. Linux et macOS disponibles, Windows bientôt.",
     type: "website",
   },
 };

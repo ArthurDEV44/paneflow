@@ -7,7 +7,7 @@
 // `components/download/download-view.tsx` (VERSIONS array) — this
 // module only tracks "latest".
 
-export const LATEST_VERSION = "0.2.11";
+export const LATEST_VERSION = "0.2.12";
 
 export type LinuxArch = "x86_64" | "aarch64";
 
@@ -22,11 +22,12 @@ const RELEASE_BASE = `https://github.com/ArthurDEV44/paneflow/releases/download/
  * CDN (not a redirect page), so `<a href>` triggers an immediate
  * browser download.
  *
- * Filename convention as of v0.3.0: `paneflow-<semver>-<arch>.AppImage`
- * (no `v` prefix on the version segment), matching macOS DMG and
- * Windows MSI naming. Versions <= v0.2.x carry `paneflow-v<semver>-...`;
- * the in-app updater (`update_checker.rs::pick_asset`) is suffix-only,
- * so the rename is transparent across the v0.2 -> v0.3 boundary.
+ * Filename convention from v0.2.10+ (commit f2a0c96): `paneflow-<semver>-
+ * <arch>.AppImage` (no `v` prefix on the version segment), matching
+ * macOS DMG and Windows MSI naming. Pre-v0.2.10 assets carried
+ * `paneflow-v<semver>-...`; the in-app updater
+ * (`update_checker.rs::pick_asset`) is suffix-only, so the rename is
+ * transparent across the boundary.
  */
 export function linuxAppImageUrl(arch: LinuxArch): string {
   return `${RELEASE_BASE}/paneflow-${LATEST_VERSION}-${arch}.AppImage`;
