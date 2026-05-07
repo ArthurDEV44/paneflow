@@ -299,6 +299,48 @@ pub fn measure_cell(window: &mut Window, _cx: &mut App) -> CellDimensions {
     let font_size = font_size();
     let font_id = window.text_system().resolve_font(&font);
 
+    // DIAGNOSTIC A — fires once per process. Surfaces whether GPUI's
+    // `resolve_font` actually loaded the requested family ("Lilex") or
+    // silently fell back to the `fallback_font_stack`
+    // (gpui/src/text_system.rs:148-160). The Paneflow log line
+    // `font: resolved family='Lilex'` reflects only what Paneflow
+    // requested as input — it is NOT proof that GPUI returned a
+    // FontId pointing at Lilex. If `get_font_for_id` returns a
+    // different family, GPUI silently fell through to a system font
+    // that may not rasterize correctly inside a signed .app on
+    // macOS. Tied to the v0.2.12 "boxes drawn, no glyphs" bug.
+    {
+        use std::sync::Once;
+        static LOG_ONCE: Once = Once::new();
+        LOG_ONCE.call_once(|| {
+            let resolved = window.text_system().get_font_for_id(font_id);
+            match resolved {
+                Some(actual) if actual.family == font.family => {
+                    log::info!(
+                        "font diagnostic: PRIMARY MATCH requested='{}' resolved='{}'",
+                        font.family,
+                        actual.family,
+                    );
+                }
+                Some(actual) => {
+                    log::warn!(
+                        "font diagnostic: SILENT FALLBACK requested='{}' resolved='{}' \
+                         (GPUI walked fallback_font_stack — primary `font_id` failed)",
+                        font.family,
+                        actual.family,
+                    );
+                }
+                None => {
+                    log::warn!(
+                        "font diagnostic: get_font_for_id returned None for resolved \
+                         id of requested='{}' (cache mapping anomaly)",
+                        font.family,
+                    );
+                }
+            }
+        });
+    }
+
     // Raw advance width for 'm' in the resolved font. If the text system
     // can't measure (font load failed, glyph missing, etc.) fall back to
     // `font_size` rather than panic — a slightly-too-wide cell (~1.5–1.7×
