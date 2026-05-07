@@ -406,7 +406,7 @@ Config file location: `~/.config/paneflow/paneflow.json`
 {
   "default_shell": "/bin/zsh",
   "theme": "Catppuccin Mocha",
-  "font_family": "JetBrains Mono",
+  "font_family": ".PaneflowMono",
   "font_size": 14,
   "line_height": 1.3,
   "window_decorations": "client",
@@ -417,6 +417,12 @@ Config file location: `~/.config/paneflow/paneflow.json`
   }
 }
 ```
+
+`font_family` accepts:
+- `".PaneflowMono"` (default) — alias for the bundled Lilex monospace family
+- `".PaneflowSans"` — alias for the bundled IBM Plex Sans family
+- `"Lilex"` / `"IBM Plex Sans"` — concrete embedded family names (equivalent to the aliases)
+- Any installed system monospace family (`"Menlo"`, `"Cascadia Mono"`, `"DejaVu Sans Mono"`, etc.) — validated against the platform's font registry; falls back to the embedded Lilex with a warning if missing.
 
 ### Available themes
 
