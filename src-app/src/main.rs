@@ -896,16 +896,23 @@ fn main() {
 
             // Register every embedded `.ttf` under `assets/fonts/` BEFORE
             // any window opens, so GPUI's text system can resolve the
-            // `JetBrains Mono` family (Regular + Bold + Italic + BoldItalic)
-            // used as the last entry in the terminal `FONT_FALLBACKS`
-            // chain and as the universal fallback in `default_font_family()`.
-            // Without this call, a system where no preferred mono is found
-            // (e.g. a fresh macOS install whose Core Text init silently
-            // fails inside a signed .app bundle) would render zero glyphs
-            // in the sidebar, tab strip, and terminal grid — the symptom
-            // that motivated US-FONT-001. Iterates the rust-embed registry
-            // (Zed's pattern) so adding a new font face is "drop a .ttf
-            // into assets/fonts/" with no Rust change needed.
+            // `Lilex` family (mono, 4 weights) and `IBM Plex Sans`
+            // family (sans, 4 weights) Paneflow ships as the default
+            // primaries — same strategy Zed uses with `.ZedMono` /
+            // `.ZedSans` (`zed/assets/settings/default.json:29,57`).
+            // Picking embedded families as the **primary** instead of
+            // system families (Menlo / Cascadia Mono / DejaVu) sidesteps
+            // the c3e2331 failure mode: Core Text inside a signed .app
+            // bundle could return valid glyph_ids for a system family
+            // and rasterize them as empty bitmaps; GPUI's per-Font
+            // fallback chain only walks on missing-glyph not on
+            // empty-raster, so the system primary "rendered" zero glyphs
+            // and nothing fell through. With Lilex as the registered
+            // primary, GPUI owns the font tables end-to-end. Iterates
+            // the rust-embed registry (Zed pattern,
+            // `zed/crates/assets/src/assets.rs:42`) so adding a new font
+            // face is "drop a .ttf into assets/fonts/" with no Rust
+            // change needed.
             if let Err(e) = assets::Assets.load_fonts(cx) {
                 log::warn!(
                     "Assets::load_fonts failed: {e}; text rendering may fail on \
