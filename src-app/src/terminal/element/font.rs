@@ -11,9 +11,7 @@
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-use gpui::{
-    App, Font, FontFeatures, FontStyle, FontWeight, Pixels, SharedString, Window, px,
-};
+use gpui::{App, Font, FontFeatures, FontStyle, FontWeight, Pixels, SharedString, Window, px};
 
 use super::CellDimensions;
 
