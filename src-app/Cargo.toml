@@ -18,8 +18,20 @@ path = "src/main.rs"
 [dependencies]
 # GPUI framework — pinned to Zed monorepo rev (US-006).
 # To bump: update rev to a newer zed-industries/zed commit, run `cargo update`.
+#
+# `gpui_platform` MUST carry the `font-kit` feature on macOS — without it,
+# `gpui_macos` compiles cleanly but the optional `zed-font-kit` dep + Core
+# Text glyph rasterization path are excluded (gated on `dep:font-kit` in
+# `gpui_macos/Cargo.toml`). The visible symptom is the v0.2.12 "boxes
+# drawn, no glyphs" bug: fonts register via `add_fonts()`, `font_id`
+# resolves PRIMARY MATCH, the window opens, SVG icons + cursor quads
+# paint correctly, but every text glyph rasterizes as an empty bitmap.
+# Zed enables this feature explicitly in `zed/crates/zed/Cargo.toml`.
+# The feature is a no-op on Linux/Windows (where `gpui_macos` isn't
+# compiled in), so it's safe in the cross-platform default declaration
+# below — the Linux-only override on line ~97 adds wayland/x11 on top.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868", features = ["font-kit"] }
 collections = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868" }
 
 # Alacritty terminal emulation (upstream crates.io — migrated from Zed fork in US-005)
