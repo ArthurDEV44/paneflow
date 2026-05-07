@@ -32,16 +32,19 @@
         hardened runtime. Apple recommends enabling both together for any
         app that calls into Metal or WebKit-derived shader compilers.
 
-    com.apple.security.cs.disable-library-validation = true
-        Reserved for the planned MCP host (paneflow-workstream EP-004),
-        which will dlopen() user-installed transport plugins from
-        third-party Team IDs at PaneFlow's own process level. Without
-        this entitlement, hardened runtime rejects any dlopen of a
-        library whose Team ID does not match the host bundle's.
-        NOTE: this entitlement does NOT propagate to exec-spawned
-        children (shells, claude, codex, etc.) — those processes have
-        their own codesigning context and load their own dylibs without
-        reference to PaneFlow's entitlements.
+    com.apple.security.cs.disable-library-validation
+        REMOVED 2026-05-07 to match Zed's release entitlements
+        (zed/crates/zed/resources/zed.entitlements, where the key is
+        commented out). It was originally reserved for the planned
+        MCP host (paneflow-workstream EP-004), which would dlopen()
+        user-installed transport plugins from third-party Team IDs at
+        PaneFlow's own process level. EP-004 has not shipped and the
+        entitlement was suspected of contributing to the v0.2.12
+        macOS "boxes drawn, no glyphs" bug — under hardened runtime,
+        disable-library-validation changes the trust chain for dylibs
+        loaded out of /System/Library/PrivateFrameworks/, which is
+        where libFontParser and libCoreText live. Re-add this key
+        when EP-004 ships.
 
     com.apple.security.cs.allow-dyld-environment-variables = true
         Allows PaneFlow's own process to honour DYLD_LIBRARY_PATH /
@@ -67,8 +70,6 @@
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <true/>
-    <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>

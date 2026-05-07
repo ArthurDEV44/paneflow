@@ -1,9 +1,10 @@
 //! Font resolution + cell measurement for the terminal renderer.
 //!
-//! Owns the font fallback stack, the installed-monospace-font registry
-//! (Linux), and the cached font config read from `paneflow.json`. Exposes
-//! `measure_cell` — the sole entry point used by the renderer to turn the
-//! current font + size into per-cell pixel dimensions.
+//! Owns the embedded-font primary contract, the installed-monospace-font
+//! registry (cross-platform), and the cached font config read from
+//! `paneflow.json`. Exposes `measure_cell` — the sole entry point used by
+//! the renderer to turn the current font + size into per-cell pixel
+//! dimensions.
 //!
 //! Extracted from `terminal_element.rs` per US-008 of the src-app refactor PRD.
 
@@ -11,7 +12,7 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use gpui::{
-    App, Font, FontFallbacks, FontFeatures, FontStyle, FontWeight, Pixels, SharedString, Window, px,
+    App, Font, FontFeatures, FontStyle, FontWeight, Pixels, SharedString, Window, px,
 };
 
 use super::CellDimensions;
@@ -22,9 +23,6 @@ use super::CellDimensions;
 
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.3;
-
-const FONT_FALLBACK_EMOJI: &str = "Noto Color Emoji";
-const FONT_FALLBACK_SYMBOLS: &str = "Symbols Nerd Font Mono";
 
 /// Embedded monospace family. Files: `assets/fonts/Lilex-{Regular,Bold,Italic,BoldItalic}.ttf`.
 /// Registered with GPUI at startup (`main.rs` → `cx.text_system().add_fonts`).
@@ -69,7 +67,8 @@ pub(crate) const PANEFLOW_SANS_ALIAS: &str = ".PaneflowSans";
 
 /// Resolve a Paneflow-virtual alias to its concrete embedded family.
 /// Returns the input unchanged when it isn't an alias. Pure function,
-/// no I/O, used by `resolve_font_family` and the FONT_FALLBACKS chain.
+/// no I/O, used by `resolve_font_family` to expand aliases at the
+/// Paneflow boundary before the family name reaches GPUI.
 fn expand_paneflow_alias(name: &str) -> &str {
     match name {
         PANEFLOW_MONO_ALIAS => EMBEDDED_MONO_FAMILY,
@@ -78,22 +77,33 @@ fn expand_paneflow_alias(name: &str) -> &str {
     }
 }
 
-static FONT_FALLBACKS: LazyLock<FontFallbacks> = LazyLock::new(|| {
-    FontFallbacks::from_fonts(vec![
-        FONT_FALLBACK_EMOJI.to_string(),
-        FONT_FALLBACK_SYMBOLS.to_string(),
-        // Embedded sans replaces the previous "Noto Sans" entry, which
-        // was Linux-only (absent on a fresh macOS / Windows install).
-        // IBM Plex Sans is registered with GPUI at startup, so this
-        // entry is always resolvable.
-        EMBEDDED_SANS_FAMILY.to_string(),
-        // Embedded mono is the universal last-resort glyph fallback.
-        // Even when a user explicitly configured a system font that
-        // GPUI fails to shape, this entry guarantees something paints
-        // rather than the c3e2331 "boxes drawn, no glyphs" failure.
-        EMBEDDED_MONO_FAMILY.to_string(),
-    ])
-});
+// Per-`Font` `fallbacks: Some(...)` was REMOVED on purpose. Paneflow
+// previously attached a hardcoded chain (Noto Color Emoji, Symbols
+// Nerd Font Mono, embedded sans, embedded mono) that, on macOS, was
+// the trigger for the v0.2.12 "boxes drawn, no glyphs" bug:
+// `apply_features_and_fallbacks` (gpui_macos/src/open_type.rs:30-73)
+// rebuilds every CTFont with a Core Text cascade list assembled from
+// `CTFontDescriptorCreateWithNameAndSize` for each fallback name.
+// Two entries in the old chain — Noto Color Emoji and Symbols Nerd
+// Font Mono — are NOT installed on a fresh macOS, and the resulting
+// cascade list, while accepted by Core Text without erroring, ended
+// up suppressing rasterization of the primary face. Icons rendered
+// (different code path, walking GPUI's internal `fallback_font_stack`
+// at gpui/src/text_system.rs:71-83) but text glyphs did not.
+//
+// Zed's terminal uses `fallbacks: None` by default
+// (zed/crates/terminal_view/src/terminal_element.rs:908-912). It only
+// wraps `Some(...)` when the user explicitly configures
+// `terminal.font_fallbacks` in their settings. Paneflow now mirrors
+// that pattern.
+//
+// Glyph fallback for codepoints Lilex doesn't cover (emoji, CJK,
+// symbols) still works: GPUI walks its built-in `fallback_font_stack`
+// — which already ships `.ZedMono` (resolves to Lilex, which we
+// embed), `.ZedSans` (resolves to IBM Plex Sans, which we embed),
+// then OS-canonical sans like Helvetica / Segoe UI / Arial. That
+// chain is global, not per-`Font`, so it does NOT pollute the
+// per-Font CTFont cascade list.
 
 /// Registry of installed monospace families, queried via the per-OS
 /// `load_mono_fonts()` enumerator (fontconfig on Linux, Core Text on macOS,
@@ -271,7 +281,11 @@ pub(super) fn base_font() -> Font {
     Font {
         family: SharedString::from(family),
         features,
-        fallbacks: Some(FONT_FALLBACKS.clone()),
+        // `None` matches Zed's terminal Font default
+        // (zed/crates/terminal_view/src/terminal_element.rs:908-912).
+        // See the long-form rationale on the removed `FONT_FALLBACKS`
+        // static above.
+        fallbacks: None,
         weight: FontWeight::NORMAL,
         style: FontStyle::Normal,
     }
