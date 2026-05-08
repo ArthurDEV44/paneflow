@@ -368,6 +368,20 @@ impl Render for TitleBar {
                 );
             }
             match style {
+                // Dispatch on mouse-DOWN, not on click (mouse-up). At cold
+                // start the update check resolves before the user has
+                // touched the window, so the very first press on the pill
+                // happens against a window the compositor still considers
+                // inactive (Wayland focus-stealing prevention often
+                // rejects `cx.activate(true)`) and a focus chain that
+                // isn't yet initialized. In that state, `on_click`
+                // (which needs a matched press+release pair routed
+                // through the focus chain) silently drops the first
+                // interaction; the user has to click elsewhere to wake
+                // the chain, then re-click. Press-based dispatch avoids
+                // both races and matches the title-bar button idiom in
+                // Zed/VS Code/Discord. The pkexec modal confirms the
+                // action, so we don't lose "drag-out to cancel".
                 PillStyle::Clickable => {
                     pill = pill
                         .cursor_pointer()
@@ -375,7 +389,8 @@ impl Render for TitleBar {
                             let ui = crate::theme::ui_colors();
                             s.bg(ui.surface).border_color(ui.muted)
                         })
-                        .on_click(move |_, window, cx| {
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            cx.stop_propagation();
                             window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
                         });
                 }
@@ -394,7 +409,8 @@ impl Render for TitleBar {
                             let ui = crate::theme::ui_colors();
                             s.bg(ui.surface).border_color(ui.muted).opacity(1.0)
                         })
-                        .on_click(move |_, window, cx| {
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            cx.stop_propagation();
                             window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
                         });
                 }
