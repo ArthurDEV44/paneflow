@@ -372,25 +372,47 @@ impl Render for PaneFlowApp {
 
         // Update title bar with current workspace name
         let ws_name = self.active_workspace().map(|ws| ws.title.clone());
+        // Pill state for in-app installer flows (AppImage, TarGz, AppBundle,
+        // MSI, pkexec dnf|apt). Shared between the SystemPackage branch and
+        // the catch-all so both reflect the live install state machine; if
+        // the SystemPackage branch ignored this, the pkexec dnf/apt path
+        // would render "Update via dnf" frozen for the entire install while
+        // is_busy() silently dropped clicks.
+        let in_app_state = match &self.self_update_status {
+            update::SelfUpdateStatus::Idle => title_bar::SelfUpdatePillState::Idle,
+            update::SelfUpdateStatus::Downloading => title_bar::SelfUpdatePillState::Downloading,
+            update::SelfUpdateStatus::Installing => title_bar::SelfUpdatePillState::Installing,
+            update::SelfUpdateStatus::ReadyToRestart { .. } => {
+                title_bar::SelfUpdatePillState::ReadyToRestart
+            }
+            update::SelfUpdateStatus::Errored(_) => title_bar::SelfUpdatePillState::Errored,
+        };
         let update_info = match &self.update_status {
             Some(update::checker::UpdateStatus::Available { version, .. }) => {
                 let kind = match &self.install_method {
                     update::install_method::InstallMethod::SystemPackage { manager } => {
-                        let system_kind = match manager {
-                            update::install_method::PackageManager::Apt => {
-                                title_bar::SystemPackageKind::Apt
+                        match manager {
+                            // Dnf / Apt: in-app pkexec install. Pill follows
+                            // the install state machine like every other
+                            // in-app installer.
+                            update::install_method::PackageManager::Dnf
+                            | update::install_method::PackageManager::Apt => {
+                                title_bar::UpdatePillKind::InApp(in_app_state)
                             }
-                            update::install_method::PackageManager::Dnf => {
-                                title_bar::SystemPackageKind::Dnf
-                            }
+                            // Clipboard-only paths: kickoff_self_update_install
+                            // returns early after copying the upgrade command,
+                            // self_update_status never leaves Idle.
                             update::install_method::PackageManager::RpmOstree => {
-                                title_bar::SystemPackageKind::RpmOstree
+                                title_bar::UpdatePillKind::SystemManaged(
+                                    title_bar::SystemPackageKind::RpmOstree,
+                                )
                             }
                             update::install_method::PackageManager::Other => {
-                                title_bar::SystemPackageKind::Other
+                                title_bar::UpdatePillKind::SystemManaged(
+                                    title_bar::SystemPackageKind::Other,
+                                )
                             }
-                        };
-                        title_bar::UpdatePillKind::SystemManaged(system_kind)
+                        }
                     }
                     // Flatpak / Snap / `PANEFLOW_UPDATE_EXPLANATION` —
                     // packager owns updates, render the same generic
@@ -401,24 +423,7 @@ impl Render for PaneFlowApp {
                             title_bar::SystemPackageKind::Other,
                         )
                     }
-                    _ => {
-                        let state = match &self.self_update_status {
-                            update::SelfUpdateStatus::Idle => title_bar::SelfUpdatePillState::Idle,
-                            update::SelfUpdateStatus::Downloading => {
-                                title_bar::SelfUpdatePillState::Downloading
-                            }
-                            update::SelfUpdateStatus::Installing => {
-                                title_bar::SelfUpdatePillState::Installing
-                            }
-                            update::SelfUpdateStatus::ReadyToRestart { .. } => {
-                                title_bar::SelfUpdatePillState::ReadyToRestart
-                            }
-                            update::SelfUpdateStatus::Errored(_) => {
-                                title_bar::SelfUpdatePillState::Errored
-                            }
-                        };
-                        title_bar::UpdatePillKind::InApp(state)
-                    }
+                    _ => title_bar::UpdatePillKind::InApp(in_app_state),
                 };
                 Some(title_bar::UpdateInfo {
                     version: version.clone(),
