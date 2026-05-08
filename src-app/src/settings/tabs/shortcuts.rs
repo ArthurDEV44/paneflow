@@ -1,16 +1,17 @@
-//! "Shortcuts" settings tab — lists every rebindable action and lets the
-//! user capture a new key combination for any row.
+//! "Shortcuts" settings tab — Zed-style list of every rebindable action
+//! with click-to-record key capture.
 //!
-//! Key capture is driven by `settings::keyboard::handle_shortcut_recording`;
-//! this file owns only the list rendering + per-row click handlers.
-//!
-//! Extracted from `settings_window.rs` per US-021 of the src-app refactor PRD.
+//! Section header is rendered inline with a "Reset to defaults" action
+//! button on the right. Each shortcut row is a Zed-style flex row
+//! (description left, key badge right) separated by 1px hairlines.
+//! Click capture is driven by `settings::keyboard::handle_shortcut_recording`.
 
 use gpui::{
-    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, Styled, div,
-    prelude::*, px,
+    div, prelude::*, px, ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement,
+    ParentElement, Styled,
 };
 
+use crate::settings::components::{hairline, secondary_button};
 use crate::{config_writer, keybindings};
 
 use super::super::window::SettingsWindow;
@@ -20,17 +21,18 @@ impl SettingsWindow {
         let ui = crate::theme::ui_colors();
         let recording_idx = self.recording_shortcut_idx;
 
-        let section_header = div()
+        let header = div()
             .flex()
-            .flex_row()
-            .items_end()
-            .justify_between()
-            .pb(px(20.))
+            .flex_col()
+            .gap(px(6.))
+            .mb(px(4.))
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap(px(4.))
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.))
                     .child(
                         div()
                             .text_size(px(11.))
@@ -38,46 +40,24 @@ impl SettingsWindow {
                             .text_color(ui.muted)
                             .child("KEYBOARD"),
                     )
-                    .child(
-                        div()
-                            .text_size(px(18.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(ui.text)
-                            .child("Shortcuts"),
-                    ),
+                    .child(secondary_button(
+                        "reset-shortcuts",
+                        "Reset to defaults",
+                        ui,
+                        cx.listener(|this, _: &ClickEvent, _w, cx| {
+                            config_writer::reset_shortcuts();
+                            let config = paneflow_config::loader::load_config();
+                            keybindings::apply_keybindings(cx, &config.shortcuts);
+                            this.effective_shortcuts =
+                                keybindings::effective_shortcuts(&config.shortcuts);
+                            this.recording_shortcut_idx = None;
+                            cx.notify();
+                        }),
+                    )),
             )
-            .child(
-                div()
-                    .id("reset-shortcuts")
-                    .px(px(12.))
-                    .py(px(5.))
-                    .rounded(px(6.))
-                    .cursor(CursorStyle::PointingHand)
-                    .border_1()
-                    .border_color(ui.border)
-                    .hover(|s| s.bg(ui.subtle).text_color(ui.text))
-                    .text_size(px(12.))
-                    .text_color(ui.muted)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                        config_writer::reset_shortcuts();
-                        let config = paneflow_config::loader::load_config();
-                        keybindings::apply_keybindings(cx, &config.shortcuts);
-                        this.effective_shortcuts =
-                            keybindings::effective_shortcuts(&config.shortcuts);
-                        this.recording_shortcut_idx = None;
-                        cx.notify();
-                    }))
-                    .child("Reset to defaults"),
-            );
+            .child(div().h(px(1.)).w_full().bg(ui.border));
 
-        let mut list = div()
-            .flex()
-            .flex_col()
-            .rounded(px(8.))
-            .border_1()
-            .border_color(ui.border)
-            .bg(ui.surface)
-            .overflow_hidden();
+        let mut list = div().flex().flex_col();
 
         let total = self.effective_shortcuts.len();
         for (i, entry) in self.effective_shortcuts.iter().enumerate() {
@@ -87,7 +67,7 @@ impl SettingsWindow {
             let key_badge = if is_recording {
                 div()
                     .px(px(10.))
-                    .py(px(4.))
+                    .py(px(3.))
                     .rounded(px(5.))
                     .bg(ui.text)
                     .text_size(px(11.))
@@ -97,7 +77,7 @@ impl SettingsWindow {
             } else {
                 div()
                     .px(px(10.))
-                    .py(px(4.))
+                    .py(px(3.))
                     .rounded(px(5.))
                     .border_1()
                     .border_color(ui.border)
@@ -109,14 +89,13 @@ impl SettingsWindow {
                     .child(entry.key.clone())
             };
 
-            let mut row = div()
+            let row = div()
                 .id(("shortcut", i))
                 .flex()
                 .flex_row()
                 .items_center()
                 .justify_between()
                 .gap(px(12.))
-                .px(px(14.))
                 .py(px(10.))
                 .cursor(CursorStyle::PointingHand)
                 .hover(|s| s.bg(ui.subtle))
@@ -137,15 +116,14 @@ impl SettingsWindow {
                 )
                 .child(key_badge);
 
-            if !is_last {
-                row = row.border_b_1().border_color(ui.border);
-            }
-
             list = list.child(row);
+            if !is_last {
+                list = list.child(hairline(ui));
+            }
         }
 
         let hint = div()
-            .pt(px(10.))
+            .pt(px(14.))
             .text_size(px(11.))
             .text_color(ui.muted)
             .child("Click a row to record a new shortcut. Escape to cancel.");
@@ -153,7 +131,7 @@ impl SettingsWindow {
         div()
             .flex()
             .flex_col()
-            .child(section_header)
+            .child(header)
             .child(list)
             .child(hint)
     }
