@@ -14,8 +14,8 @@
 //! (boolean writes, recording-state captures, popover toggles, etc.).
 
 use gpui::{
-    div, prelude::*, px, ClickEvent, CursorStyle, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Styled,
+    ClickEvent, CursorStyle, Hsla, InteractiveElement, IntoElement, ParentElement, Styled, div,
+    prelude::*, px,
 };
 
 /// Apply an alpha override to an `Hsla` color. GPUI's `Hsla` has no

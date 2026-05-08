@@ -7,8 +7,8 @@
 //! Click capture is driven by `settings::keyboard::handle_shortcut_recording`.
 
 use gpui::{
-    div, prelude::*, px, ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement,
-    ParentElement, Styled,
+    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, Styled, div,
+    prelude::*, px,
 };
 
 use crate::settings::components::{hairline, secondary_button};

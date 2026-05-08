@@ -6,8 +6,8 @@
 //! Theme selection lives in the title bar menu (`main.rs`).
 
 use gpui::{
-    deferred, div, prelude::*, px, svg, ClickEvent, Context, CursorStyle, InteractiveElement,
-    IntoElement, ParentElement, Styled,
+    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, Styled,
+    deferred, div, prelude::*, px, svg,
 };
 
 use crate::config_writer;
