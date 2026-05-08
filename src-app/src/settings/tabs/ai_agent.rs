@@ -13,8 +13,8 @@
 //! restart.
 
 use gpui::{
-    div, prelude::*, px, ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement,
-    ParentElement, SharedString, Styled,
+    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, SharedString,
+    Styled, div, prelude::*, px,
 };
 
 use crate::config_writer;
