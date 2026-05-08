@@ -29,6 +29,23 @@ pub struct PaneFlowConfig {
     /// Treat Alt key as Meta (send ESC prefix). Default: true on Linux.
     /// Set to false for future macOS where Option produces Unicode characters.
     pub option_as_meta: Option<bool>,
+    /// When `Some(true)`, the built-in "Claude Code" tab-bar button launches
+    /// the CLI with `--permission-mode bypassPermissions`, which disables all
+    /// permission prompts. `None` and `Some(false)` keep the safe default.
+    /// Per Anthropic's docs this mode offers no protection against prompt
+    /// injection — opt in only on machines where that risk is acceptable.
+    pub claude_code_bypass_permissions: Option<bool>,
+    /// Show the built-in "Claude Code" command button in the tab bar.
+    /// `None` and `Some(true)` render the button (default behavior);
+    /// `Some(false)` hides it. The config can be flipped from the
+    /// Settings → AI Agent tab or by editing this file.
+    pub claude_code_button_visible: Option<bool>,
+    /// Show the built-in "Codex" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub codex_button_visible: Option<bool>,
+    /// Show the built-in "Opencode" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub opencode_button_visible: Option<bool>,
     /// Opt-in desktop telemetry block.
     ///
     /// Tri-state semantics:
