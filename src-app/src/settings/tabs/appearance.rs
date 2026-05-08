@@ -1,17 +1,17 @@
-//! "Appearance" settings tab — font family dropdown with typeahead search,
-//! live preview pane, and reset-to-defaults button.
+//! "Appearance" settings tab — Zed-style setting row for the font family
+//! selector with an inline-expanding dropdown, plus a live preview pane
+//! and a "Reset to defaults" action button in the section header.
 //!
 //! Font list enumeration comes from `crate::fonts::load_mono_fonts()`.
 //! Theme selection lives in the title bar menu (`main.rs`).
-//!
-//! Extracted from `settings_window.rs` per US-021 of the src-app refactor PRD.
 
 use gpui::{
-    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, Styled, div,
-    prelude::*, px, svg,
+    deferred, div, prelude::*, px, svg, ClickEvent, Context, CursorStyle, InteractiveElement,
+    IntoElement, ParentElement, Styled,
 };
 
 use crate::config_writer;
+use crate::settings::components::{hairline, secondary_button, setting_text};
 
 use super::super::window::SettingsWindow;
 
@@ -22,44 +22,48 @@ impl SettingsWindow {
         let current_font =
             crate::terminal::element::resolve_font_family(config.font_family.as_deref());
 
-        let section_header = div()
+        // Section header with inline "Reset to defaults" action on the right.
+        let header = div()
             .flex()
             .flex_col()
-            .gap(px(4.))
+            .gap(px(6.))
+            .mb(px(4.))
             .child(
                 div()
-                    .text_size(px(11.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(ui.muted)
-                    .child("INTERFACE"),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(ui.muted)
+                            .child("APPEARANCE"),
+                    )
+                    .child(secondary_button(
+                        "reset-appearance",
+                        "Reset to defaults",
+                        ui,
+                        cx.listener(|this, _: &ClickEvent, _w, cx| {
+                            config_writer::save_config_value(
+                                "font_family",
+                                serde_json::Value::Null,
+                            );
+                            config_writer::save_config_value("theme", serde_json::Value::Null);
+                            crate::theme::invalidate_theme_cache();
+                            this.font_dropdown_open = false;
+                            this.font_search.clear();
+                            cx.notify();
+                        }),
+                    )),
             )
-            .child(
-                div()
-                    .text_size(px(18.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(ui.text)
-                    .child("Appearance"),
-            );
+            .child(div().h(px(1.)).w_full().bg(ui.border));
 
-        // US-005: per-field origin badge — shows whether `font_family` came
-        // from `paneflow.json:<line>`, the built-in default, or a runtime
-        // override. Sits inline with the label so its presence is obvious
-        // without expanding the layout.
-        let font_label = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(8.))
-            .pb(px(8.))
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(ui.muted)
-                    .child("Font Family"),
-            );
-
-        let font_value_text = if self.font_dropdown_open {
+        // Setting row: font family label/description on the left,
+        // compact dropdown trigger on the right.
+        let trigger_label = if self.font_dropdown_open {
             if self.font_search.is_empty() {
                 "Search fonts…".to_string()
             } else {
@@ -68,22 +72,24 @@ impl SettingsWindow {
         } else {
             current_font.clone()
         };
-
-        let font_value_color = if self.font_dropdown_open && self.font_search.is_empty() {
+        let trigger_label_color = if self.font_dropdown_open && self.font_search.is_empty() {
             ui.muted
         } else {
             ui.text
         };
 
-        let font_badge = div()
-            .id("font-family-badge")
+        let mut font_trigger = div()
+            .id("font-family-trigger")
+            .relative()
             .flex()
             .flex_row()
             .items_center()
             .justify_between()
-            .gap(px(10.))
-            .px(px(12.))
-            .py(px(8.))
+            .gap(px(8.))
+            .px(px(10.))
+            .py(px(5.))
+            .min_w(px(180.))
+            .max_w(px(260.))
             .rounded(px(6.))
             .border_1()
             .border_color(ui.border)
@@ -103,31 +109,27 @@ impl SettingsWindow {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_size(px(13.))
-                    .text_color(font_value_color)
+                    .text_size(px(12.))
+                    .text_color(trigger_label_color)
                     .font_family(if self.font_dropdown_open {
                         "monospace".to_string()
                     } else {
                         current_font.clone()
                     })
                     .truncate()
-                    .child(font_value_text),
+                    .child(trigger_label),
             )
             .child(
                 svg()
-                    .size(px(14.))
+                    .size(px(12.))
                     .flex_none()
                     .path("icons/chevron-down.svg")
                     .text_color(ui.muted),
             );
 
-        let mut font_row = div()
-            .flex()
-            .flex_col()
-            .pb(px(20.))
-            .child(font_label)
-            .child(font_badge);
-
+        // True popover: dropdown is rendered as a deferred absolutely-positioned
+        // child of the trigger (which is `.relative()` above), so it floats over
+        // the preview pane below instead of pushing it down.
         if self.font_dropdown_open {
             let search = self.font_search.to_lowercase();
             let filtered: Vec<&String> = self
@@ -140,7 +142,8 @@ impl SettingsWindow {
                 .id("font-dropdown")
                 .flex()
                 .flex_col()
-                .mt(px(6.))
+                .min_w(px(220.))
+                .max_w(px(320.))
                 .rounded(px(6.))
                 .bg(ui.overlay)
                 .border_1()
@@ -160,9 +163,9 @@ impl SettingsWindow {
                         .justify_between()
                         .gap(px(10.))
                         .px(px(12.))
-                        .py(px(7.))
+                        .py(px(6.))
                         .cursor(CursorStyle::PointingHand)
-                        .text_size(px(13.))
+                        .text_size(px(12.))
                         .when(is_current, |d| {
                             d.bg(ui.subtle)
                                 .text_color(ui.text)
@@ -184,7 +187,7 @@ impl SettingsWindow {
                         .when(is_current, |d| {
                             d.child(
                                 svg()
-                                    .size(px(13.))
+                                    .size(px(12.))
                                     .flex_none()
                                     .path("icons/checks.svg")
                                     .text_color(ui.text),
@@ -204,68 +207,65 @@ impl SettingsWindow {
                 );
             }
 
-            font_row = font_row.child(dropdown);
+            font_trigger = font_trigger.child(
+                deferred(
+                    div()
+                        .absolute()
+                        .top(px(30.))
+                        .right(px(0.))
+                        .occlude()
+                        .child(dropdown),
+                )
+                .with_priority(1),
+            );
         }
 
+        let font_row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(16.))
+            .py(px(12.))
+            .child(setting_text(
+                ui,
+                "Font family",
+                "Choose the monospace font used by every terminal. \
+                 Search the dropdown to filter the list of installed fonts.",
+            ))
+            .child(div().flex_shrink_0().child(font_trigger));
+
+        let sections = div().flex().flex_col().child(header).child(font_row);
+
         let preview = div()
-            .pb(px(12.))
+            .mt(px(12.))
+            .pt(px(12.))
+            .child(hairline(ui))
             .child(
                 div()
-                    .text_size(px(12.))
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .mt(px(12.))
+                    .text_size(px(11.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(ui.muted)
                     .pb(px(8.))
-                    .child("Preview"),
+                    .child("PREVIEW"),
             )
             .child(
                 div()
-                    .px(px(18.))
-                    .py(px(14.))
+                    .px(px(16.))
+                    .py(px(12.))
                     .rounded(px(8.))
                     .bg(ui.preview_bg)
                     .border_1()
                     .border_color(ui.border)
                     .font_family(current_font.clone())
-                    .text_size(px(14.))
+                    .text_size(px(13.))
                     .text_color(ui.text)
-                    .child("The quick brown fox jumps over the lazy dog\nABCDEFGHIJKLM 0123456789 {}[]()"),
+                    .child(
+                        "The quick brown fox jumps over the lazy dog\n\
+                         ABCDEFGHIJKLM 0123456789 {}[]()",
+                    ),
             );
 
-        let reset_btn = div()
-            .id("reset-appearance")
-            .px(px(12.))
-            .py(px(5.))
-            .rounded(px(6.))
-            .cursor(CursorStyle::PointingHand)
-            .border_1()
-            .border_color(ui.border)
-            .hover(|s| s.bg(ui.subtle).text_color(ui.text))
-            .text_size(px(12.))
-            .text_color(ui.muted)
-            .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                config_writer::save_config_value("font_family", serde_json::Value::Null);
-                config_writer::save_config_value("theme", serde_json::Value::Null);
-                crate::theme::invalidate_theme_cache();
-                this.font_dropdown_open = false;
-                this.font_search.clear();
-                cx.notify();
-            }))
-            .child("Reset to defaults");
-
-        div()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_end()
-                    .justify_between()
-                    .pb(px(20.))
-                    .child(section_header)
-                    .child(reset_btn),
-            )
-            .child(font_row)
-            .child(preview)
+        sections.child(preview)
     }
 }
