@@ -672,6 +672,10 @@ mod tests {
             font_family: None,
             font_size: None,
             option_as_meta: None,
+            claude_code_bypass_permissions: None,
+            claude_code_button_visible: None,
+            codex_button_visible: None,
+            opencode_button_visible: None,
             telemetry: None,
             terminal: None,
         };
