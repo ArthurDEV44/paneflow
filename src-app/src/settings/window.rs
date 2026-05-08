@@ -8,9 +8,9 @@
 //! Extracted from `settings_window.rs` per US-021 of the src-app refactor PRD.
 
 use gpui::{
-    App, Bounds, Context, CursorStyle, Decorations, FocusHandle, Focusable, HitboxBehavior,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, ResizeEdge,
-    Styled, Window, WindowControlArea, canvas, div, point, prelude::*, px, rgb, transparent_black,
+    canvas, div, point, prelude::*, px, rgb, transparent_black, App, Bounds, Context, CursorStyle,
+    Decorations, FocusHandle, Focusable, HitboxBehavior, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Pixels, Render, ResizeEdge, Styled, Window, WindowControlArea,
 };
 
 use crate::keybindings;
@@ -41,6 +41,10 @@ pub(crate) fn settings_content_bg() -> gpui::Rgba {
 pub(crate) enum SettingsSection {
     Shortcuts,
     Appearance,
+    /// AI agent toggles (Claude Code bypass-permissions, future Codex flags).
+    /// Persisted to `paneflow.json` like every other settings tab — users can
+    /// also edit the JSON directly.
+    AiAgent,
     /// Tri-state telemetry consent toggle (US-014) plus a link to the
     /// public privacy page. Separate from Appearance so future privacy
     /// settings (telemetry_id reset, DSR contact shortcut, crash
@@ -108,6 +112,7 @@ impl Render for SettingsWindow {
         let content = match self.section {
             SettingsSection::Shortcuts => self.render_shortcuts_content(cx).into_any_element(),
             SettingsSection::Appearance => self.render_appearance_content(cx).into_any_element(),
+            SettingsSection::AiAgent => self.render_ai_agent_content(cx).into_any_element(),
             SettingsSection::Privacy => self.render_privacy_content(cx).into_any_element(),
         };
 

@@ -9,6 +9,7 @@
 //! The `open_or_focus` entry point is called from `PaneFlowApp` and either
 //! focuses the existing settings window or opens a new one.
 
+pub mod components;
 pub mod keyboard;
 pub mod sidebar;
 pub mod tabs;

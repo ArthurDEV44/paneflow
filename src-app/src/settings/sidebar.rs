@@ -5,13 +5,13 @@
 //! Extracted from `settings_window.rs` per US-021 of the src-app refactor PRD.
 
 use gpui::{
-    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled, div, prelude::*, px,
+    div, prelude::*, px, ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement,
+    ParentElement, SharedString, Styled,
 };
 
 use crate::keybindings;
 
-use super::window::{SETTINGS_SIDEBAR_WIDTH, SettingsSection, SettingsWindow, settings_sidebar_bg};
+use super::window::{settings_sidebar_bg, SettingsSection, SettingsWindow, SETTINGS_SIDEBAR_WIDTH};
 
 impl SettingsWindow {
     pub(crate) fn render_settings_sidebar(
@@ -23,6 +23,7 @@ impl SettingsWindow {
         let sections = [
             ("Shortcuts", SettingsSection::Shortcuts),
             ("Appearance", SettingsSection::Appearance),
+            ("AI Agent", SettingsSection::AiAgent),
             ("Privacy", SettingsSection::Privacy),
         ];
 
