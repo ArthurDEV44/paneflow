@@ -4130,7 +4130,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-ai-hook"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "interprocess",
  "serde",
@@ -4140,7 +4140,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-app"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -4179,7 +4179,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-config"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "dirs 6.0.0",
  "notify",
@@ -4192,7 +4192,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-shim"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "libc",
  "serde_json",
@@ -4201,7 +4201,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-telemetry"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "log",
  "paneflow-config",
