@@ -505,27 +505,69 @@ impl Pane {
                     cx.emit(PaneEvent::Split(crate::layout::SplitDirection::Horizontal));
                 }),
             ))
-            // Built-in default command buttons (always present, not removable).
-            .child(Self::command_button(
-                "pane-btn-claude".into(),
-                "icons/claude-color.svg".into(),
-                rgb(0xd97757).into(),
-                cx.listener(|this, _, _window, cx| {
-                    this.active_terminal()
-                        .read(cx)
-                        .send_command("clear && claude");
-                }),
-            ))
-            .child(Self::command_button(
-                "pane-btn-codex".into(),
-                "icons/codex-color.svg".into(),
-                rgb(0x7a9dff).into(),
-                cx.listener(|this, _, _window, cx| {
-                    this.active_terminal()
-                        .read(cx)
-                        .send_command("clear && codex");
-                }),
-            ));
+            // Built-in default command buttons. Each one is opt-out via
+            // Settings → AI Agent (or by editing paneflow.json directly);
+            // `None` and `Some(true)` render the button, `Some(false)` hides it.
+            .when(
+                paneflow_config::loader::load_config()
+                    .claude_code_button_visible
+                    .unwrap_or(true),
+                |s| {
+                    s.child(Self::command_button(
+                        "pane-btn-claude".into(),
+                        "icons/claude-color.svg".into(),
+                        rgb(0xd97757).into(),
+                        cx.listener(|this, _, _window, cx| {
+                            let bypass = paneflow_config::loader::load_config()
+                                .claude_code_bypass_permissions
+                                .unwrap_or(false);
+                            let cmd = if bypass {
+                                "clear && claude --permission-mode bypassPermissions"
+                            } else {
+                                "clear && claude"
+                            };
+                            this.active_terminal().read(cx).send_command(cmd);
+                        }),
+                    ))
+                },
+            )
+            .when(
+                paneflow_config::loader::load_config()
+                    .codex_button_visible
+                    .unwrap_or(true),
+                |s| {
+                    s.child(Self::command_button(
+                        "pane-btn-codex".into(),
+                        "icons/codex-color.svg".into(),
+                        rgb(0x7a9dff).into(),
+                        cx.listener(|this, _, _window, cx| {
+                            this.active_terminal()
+                                .read(cx)
+                                .send_command("clear && codex");
+                        }),
+                    ))
+                },
+            )
+            .when(
+                paneflow_config::loader::load_config()
+                    .opencode_button_visible
+                    .unwrap_or(true),
+                |s| {
+                    // Opencode's logo is monochrome (currentColor SVG) — tint
+                    // with the theme's primary text color so it stays readable
+                    // on both dark and light backgrounds.
+                    s.child(Self::command_button(
+                        "pane-btn-opencode".into(),
+                        "icons/opencode-color.svg".into(),
+                        tab_colors().text,
+                        cx.listener(|this, _, _window, cx| {
+                            this.active_terminal()
+                                .read(cx)
+                                .send_command("clear && opencode");
+                        }),
+                    ))
+                },
+            );
 
         // User-defined command buttons (persisted per workspace).
         for btn in &self.custom_buttons {
