@@ -4,6 +4,7 @@
 //! action handlers that belong only to that panel. The sidebar and
 //! shell live in `settings::window`.
 
+pub mod ai_agent;
 pub mod appearance;
 pub mod privacy;
 pub mod shortcuts;
