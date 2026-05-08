@@ -806,11 +806,52 @@ jobs:
           ( cd release-assets && shasum -a 256 "${dmg}" > "${dmg}.sha256" )
           ls -la release-assets/
 
+      # ─── Windows MSI/signing gate (early) ────────────────────────────────
+      # Detect whether the 6 Azure Trusted Signing secrets are populated
+      # BEFORE any MSI/packaging step runs. When any are missing, every
+      # subsequent Windows-only packaging step (Preflight WiX, Install
+      # cargo-wix, Produce MSI, Sign, Verify, Stage) is skipped — only
+      # the cargo fmt / clippy / test / Build release binary validation
+      # remains, which preserves cross-platform compile coverage without
+      # noisy red failures from cargo-wix or unsigned-MSI artifacts.
+      #
+      # Routing: secrets go through env: so an unset secret resolves to
+      # an empty string (not the literal `${{ secrets.NAME }}` placeholder
+      # which would always look "present"). The 6 names match what
+      # `scripts/sign-windows.ps1` reads at runtime — see
+      # `memory/project_windows_signing.md` for the canonical list.
+      - name: Detect Windows signing secrets
+        id: windows_signing
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
+        run: |
+          set -euo pipefail
+          if [ -n "${AZURE_TENANT_ID:-}" ] \
+             && [ -n "${AZURE_CLIENT_ID:-}" ] \
+             && [ -n "${AZURE_CLIENT_SECRET:-}" ] \
+             && [ -n "${AZURE_TRUSTED_SIGNING_ENDPOINT:-}" ] \
+             && [ -n "${AZURE_TRUSTED_SIGNING_ACCOUNT:-}" ] \
+             && [ -n "${AZURE_TRUSTED_SIGNING_CERT_PROFILE:-}" ]; then
+              echo "All 6 Azure Trusted Signing secrets are present — will produce + sign + verify MSI."
+              echo "signing_available=true" >> "$GITHUB_OUTPUT"
+          else
+              echo "::warning title=Windows MSI packaging skipped::One or more AZURE_* secrets are missing — skipping Preflight WiX / Install cargo-wix / Produce MSI / Sign / Verify / Stage. Build/test/clippy still run for cross-platform validation. See docs/release/windows-signing.md to enable."
+              echo "signing_available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # ─── US-016 Windows MSI: toolchain preflight ─────────────────────────
-      # Dormant today (no windows-2022 matrix leg) — activates when US-017
-      # adds the leg. The `if: runner.os == 'Windows'` guard keeps Linux
-      # and macOS legs untouched. Mirrors the dormant macOS sign/notarize
-      # steps that pre-dated the macOS matrix leg (US-015/US-016 macOS).
+      # Gated on `windows_signing.signing_available` (set above): when the
+      # Azure secrets aren't populated yet, we don't bother with WiX or
+      # cargo-wix at all — the build/test/clippy validation above is what
+      # we need for cross-platform coverage. Once the secrets land, this
+      # whole chain re-activates without any other workflow change.
       #
       # ┌─ NOTE to US-017 implementer ────────────────────────────────────┐
       # │ AC-4 of US-016 requires the Windows matrix entry to carry       │
@@ -826,7 +867,7 @@ jobs:
       # PATH mismatch between this step and the script). Preflight only
       # handles WiX because cargo-wix errors are cryptic otherwise.
       - name: Preflight WiX v3 toolchain
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
         shell: pwsh
         run: |
           # cargo-wix 0.3.9 needs candle.exe + light.exe. Preinstalled
@@ -855,7 +896,7 @@ jobs:
       # Swatinem/rust-cache step above caches `~/.cargo/bin`, so this is
       # ~2 min cold / ~10 s cached.
       - name: Install cargo-wix (pinned)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
         run: cargo install cargo-wix --version 0.3.9 --locked
 
       # ─── US-016 AC-1: Produce MSI ────────────────────────────────────────
@@ -871,7 +912,7 @@ jobs:
       # installer output directory is always `target/wix/` regardless —
       # do NOT assume the triple folder.
       - name: Produce MSI
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
         shell: bash
         env:
           TAG: ${{ env.RELEASE_TAG }}
@@ -902,45 +943,6 @@ jobs:
             --target x86_64-pc-windows-msvc \
             --install-version "$version"
           ls -la target/wix/
-
-      # ─── US-024: Detect Windows signing secrets ─────────────────────────
-      # Mirrors the macOS pattern (line ~585): emit a single boolean
-      # output `signing_available` so the Sign + Verify steps below can
-      # short-circuit when ANY of the 6 Azure Trusted Signing secrets is
-      # missing. AC5: a missing-secret leg degrades to an unsigned MSI
-      # with a visible $GITHUB_STEP_SUMMARY banner, instead of the leg
-      # hard-failing inside sign-windows.ps1's env-var precondition check.
-      #
-      # Secrets are routed through env: so an empty/unset secret resolves
-      # to an empty env var (rather than the literal `${{ secrets.NAME }}`
-      # placeholder which would always look "present"). The 6 names match
-      # what `scripts/sign-windows.ps1` reads at runtime — see
-      # `memory/project_windows_signing.md` for the canonical list.
-      - name: Detect Windows signing secrets
-        id: windows_signing
-        if: runner.os == 'Windows'
-        shell: bash
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
-          AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
-        run: |
-          set -euo pipefail
-          if [ -n "${AZURE_TENANT_ID:-}" ] \
-             && [ -n "${AZURE_CLIENT_ID:-}" ] \
-             && [ -n "${AZURE_CLIENT_SECRET:-}" ] \
-             && [ -n "${AZURE_TRUSTED_SIGNING_ENDPOINT:-}" ] \
-             && [ -n "${AZURE_TRUSTED_SIGNING_ACCOUNT:-}" ] \
-             && [ -n "${AZURE_TRUSTED_SIGNING_CERT_PROFILE:-}" ]; then
-              echo "All 6 Azure Trusted Signing secrets are present — will sign + verify."
-              echo "signing_available=true" >> "$GITHUB_OUTPUT"
-          else
-              echo "::warning title=Windows signing skipped::One or more AZURE_* secrets are missing — emitting an UNSIGNED .msi. See docs/release/windows-signing.md."
-              echo "signing_available=false" >> "$GITHUB_OUTPUT"
-          fi
 
       # ─── US-016 AC-2 / US-024 AC-1+AC-3: Sign MSI via Azure Trusted Signing ───
       # Invokes the US-015 script, which fetches the
@@ -1072,14 +1074,14 @@ jobs:
           }
           Write-Output "AC-6 sentinel 'Successfully verified' present."
 
-      # ─── US-024 AC-5: Record unsigned Windows build in job summary ──────
-      # Mirror of the macOS unsigned-build banner step (line ~631). When
-      # `signing_available=false`, the leg ships an unsigned .msi (the
-      # Stage Windows assets step below picks up the unsigned cargo-wix
-      # output unchanged). The banner makes this immediately visible in
-      # the workflow run summary so a release reviewer can decide
-      # whether to retag after populating the missing secrets.
-      - name: Record unsigned Windows build in job summary
+      # ─── Record skipped Windows MSI packaging in job summary ────────────
+      # When the Azure secrets aren't populated, the entire MSI chain
+      # (Preflight WiX → Install cargo-wix → Produce MSI → Sign → Verify
+      # → Stage) is gated off. The leg still validates Windows code via
+      # cargo fmt / clippy / test / Build release binary, but produces
+      # no .msi artifact. This banner makes that visible in the run
+      # summary so a release reviewer doesn't wonder where the MSI went.
+      - name: Record skipped Windows MSI packaging in job summary
         if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available != 'true'
         shell: bash
         env:
@@ -1088,17 +1090,20 @@ jobs:
         run: |
           set -euo pipefail
           {
-              echo "## ⚠️ Unsigned Windows build (${ARCH}, ${TAG})"
+              echo "## ℹ️ Windows MSI packaging skipped (${ARCH}, ${TAG})"
               echo
-              echo "One or more AZURE_* secrets were missing, so this leg shipped an"
-              echo "**unsigned** \`.msi\`. Windows SmartScreen will flag it as"
-              echo "\"Unknown Publisher\" on first launch."
+              echo "One or more AZURE_* secrets were missing, so this leg ran"
+              echo "**only the build/test/clippy validation** for Windows and produced"
+              echo "no \`.msi\` artifact. This is intentional: we don't ship"
+              echo "unsigned Windows installers."
               echo
               echo "Required secrets: \`AZURE_TENANT_ID\`, \`AZURE_CLIENT_ID\`,"
               echo "\`AZURE_CLIENT_SECRET\`, \`AZURE_TRUSTED_SIGNING_ENDPOINT\`,"
               echo "\`AZURE_TRUSTED_SIGNING_ACCOUNT\`, \`AZURE_TRUSTED_SIGNING_CERT_PROFILE\`."
               echo
-              echo "Onboarding runbook: \`docs/release/windows-signing.md\`."
+              echo "Once populated, the MSI chain re-activates automatically"
+              echo "with no other workflow change. Onboarding runbook:"
+              echo "\`docs/release/windows-signing.md\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ─── US-016 AC-3: Stage the signed MSI + SHA-256 sidecar ─────────────
@@ -1113,7 +1118,7 @@ jobs:
       # goes via the `env:` block, never inlined as `${{ ... }}` inside
       # the shell body — so an attacker-controlled tag cannot shell-inject.
       - name: Stage Windows assets
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
         shell: bash
         env:
           TAG: ${{ env.RELEASE_TAG }}
