@@ -102,6 +102,10 @@ impl PaneFlowApp {
                                         this.notif_menu_open = if this.notif_menu_open.is_some() {
                                             None
                                         } else {
+                                            // Fresh handle = fresh scroll
+                                            // position on every open.
+                                            this.notif_scroll = gpui::ScrollHandle::new();
+                                            this.notif_drag = None;
                                             Some(e.position())
                                         };
                                         cx.notify();
@@ -157,7 +161,9 @@ impl PaneFlowApp {
         let mut list = div()
             .id("workspace-list")
             .flex_1()
+            .pr(crate::widgets::scrollbar::SCROLLBAR_GUTTER)
             .overflow_y_scroll()
+            .track_scroll(&self.sidebar_scroll)
             .flex()
             .flex_col()
             .gap(px(6.))
@@ -666,8 +672,71 @@ impl PaneFlowApp {
             list = list.child(card);
         }
 
-        sidebar = sidebar.child(list);
+        // Wrap list + scrollbar in a relative flex_1 container so the
+        // overlay can absolutely-position itself over the list. Mouse
+        // handlers stay on the wrapper to track drag even if the cursor
+        // leaves the 6px-wide thumb.
+        sidebar = sidebar.child(self.sidebar_list_wrapper(list, cx));
 
         sidebar
+    }
+
+    fn sidebar_list_wrapper(
+        &self,
+        list: gpui::Stateful<gpui::Div>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        use crate::widgets::scrollbar;
+        use gpui::{MouseButton, MouseDownEvent, MouseMoveEvent, Point};
+
+        let ui = crate::theme::ui_colors();
+        let bar = scrollbar::render(
+            &self.sidebar_scroll,
+            ui,
+            None,
+            "sidebar-scrollbar-track",
+            "sidebar-scrollbar-thumb",
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                if let Some(off) =
+                    scrollbar::track_click_offset(&this.sidebar_scroll, ev.position.y)
+                {
+                    this.sidebar_scroll.set_offset(Point::new(px(0.), px(off)));
+                    cx.notify();
+                }
+            }),
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                this.sidebar_drag =
+                    Some(scrollbar::begin_drag(&this.sidebar_scroll, ev.position.y));
+                cx.stop_propagation();
+            }),
+        );
+
+        div()
+            .id("sidebar-list-wrapper")
+            .relative()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                if let Some(drag) = this.sidebar_drag
+                    && let Some(off) =
+                        scrollbar::drag_offset(&this.sidebar_scroll, &drag, ev.position.y)
+                {
+                    this.sidebar_scroll.set_offset(Point::new(px(0.), px(off)));
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.sidebar_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(list)
+            .when_some(bar, |d, sb| d.child(sb))
     }
 }

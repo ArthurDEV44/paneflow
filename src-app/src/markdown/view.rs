@@ -19,9 +19,11 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 use futures::future::Either;
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyContext, KeyDownEvent, ParentElement, Render, ScrollHandle, SharedString,
-    Styled, Window, div, point, prelude::*, px,
+    AnyElement, App, ClipboardItem, Context, FocusHandle, Focusable, Font, FontFeatures, FontStyle,
+    FontWeight, Hsla, InteractiveElement, IntoElement, KeyContext, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Point, Render, ScrollHandle, SharedString,
+    StrikethroughStyle, Styled, StyledText, TextRun, UnderlineStyle, Window, div, point,
+    prelude::*, px,
 };
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use pulldown_cmark::{Alignment, HeadingLevel};
@@ -97,6 +99,9 @@ pub struct MarkdownView {
     search_matches: Vec<usize>,
     /// Index into `search_matches` for the currently focused match.
     search_current: usize,
+    /// Drag-to-scroll state for the visible scrollbar overlay. `None` when
+    /// the user isn't currently dragging the thumb.
+    scroll_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
 }
 
 impl MarkdownView {
@@ -126,6 +131,7 @@ impl MarkdownView {
             search_corpus: String::new(),
             search_matches: Vec::new(),
             search_current: 0,
+            scroll_drag: None,
         };
         view.reload_from_disk();
         // Always start the watcher, even on initial-load error: the file may
@@ -583,7 +589,11 @@ impl Render for MarkdownView {
                 .child(msg.clone())
                 .into_any_element()
         } else if let Some(ast) = &self.ast {
-            let mut col = div().flex().flex_col().gap(px(12.)).p(px(16.));
+            // `w_full()` is load-bearing: list items and paragraphs use
+            // `w_full()` on their inner `StyledText` wrappers to opt into
+            // soft-wrap. Without a bounded outer width those `w_full()` calls
+            // resolve to the intrinsic content width and stop wrapping.
+            let mut col = div().flex().flex_col().gap(px(12.)).p(px(16.)).w_full();
             for node in ast {
                 col = col.child(render_node(node, palette));
             }
@@ -611,6 +621,34 @@ impl Render for MarkdownView {
             .track_scroll(&self.scroll_handle)
             .child(body);
 
+        // US-022 — visible scrollbar overlay. The markdown viewer fills
+        // its pane so we don't have a meaningful first-frame content
+        // estimate; pass `None` and let the scrollbar appear after the
+        // first paint populates real bounds.
+        let bar = crate::widgets::scrollbar::render(
+            &self.scroll_handle,
+            crate::theme::ui_colors(),
+            None,
+            "markdown-scrollbar-track",
+            "markdown-scrollbar-thumb",
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                if let Some(off) = crate::widgets::scrollbar::track_click_offset(
+                    &this.scroll_handle,
+                    ev.position.y,
+                ) {
+                    this.scroll_handle.set_offset(Point::new(px(0.), px(off)));
+                    cx.notify();
+                }
+            }),
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                this.scroll_drag = Some(crate::widgets::scrollbar::begin_drag(
+                    &this.scroll_handle,
+                    ev.position.y,
+                ));
+                cx.stop_propagation();
+            }),
+        );
+
         let mut root = div()
             .key_context(key_ctx)
             .track_focus(&self.focus_handle)
@@ -622,11 +660,35 @@ impl Render for MarkdownView {
             .on_action(cx.listener(Self::handle_find_next))
             .on_action(cx.listener(Self::handle_find_prev))
             .on_action(cx.listener(Self::handle_find_dismiss))
-            .on_action(cx.listener(Self::handle_copy));
+            .on_action(cx.listener(Self::handle_copy))
+            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                if let Some(drag) = this.scroll_drag
+                    && let Some(off) = crate::widgets::scrollbar::drag_offset(
+                        &this.scroll_handle,
+                        &drag,
+                        ev.position.y,
+                    )
+                {
+                    this.scroll_handle.set_offset(Point::new(px(0.), px(off)));
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.scroll_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            );
         if self.search_active {
             root = root.on_key_down(cx.listener(Self::handle_search_key));
         }
         root = root.child(scroll_root);
+        if let Some(bar) = bar {
+            root = root.child(bar);
+        }
 
         if self.search_active {
             root = root.child(self.render_search_overlay(palette));
@@ -879,38 +941,135 @@ fn render_node(node: &MdNode, palette: MarkdownPalette) -> AnyElement {
     }
 }
 
+/// Build a single `StyledText` element from a sequence of inline spans.
+///
+/// Why one element instead of N child divs (the previous approach): GPUI's
+/// soft-wrap only kicks in *inside* a `StyledText` — a paragraph rendered as
+/// many sibling divs lays out as a row that grows past the parent width and
+/// never breaks. Coalescing every span of a paragraph into a single element
+/// with per-run styling lets the text shaper reflow naturally inside the
+/// pane's bounded width.
+///
+/// `base_color` and `base_weight` apply to plain (non-styled) spans; per-span
+/// flags (strong, emphasis, code, link, strikethrough) override on a per-run
+/// basis. Returns `None` when the spans contain no text — caller can then
+/// skip the element entirely instead of painting an empty StyledText.
+///
+/// Known limitation: link spans are styled (link color + underline) but are
+/// not yet clickable. The previous implementation routed clicks via a per-
+/// span `on_mouse_down`, which loses inline reflow. Restoring clickability
+/// here requires hit-testing the StyledText's laid-out runs (Zed's approach
+/// in `crates/markdown/src/markdown.rs` — `RenderedText` + `LinkAndRange`).
+/// Tracked as follow-up work; until then `Cmd/Ctrl-click` on a `.md` path
+/// from a terminal pane remains the supported way to open another markdown.
+fn build_styled_text(
+    spans: &[Span],
+    palette: MarkdownPalette,
+    base_color: Hsla,
+    base_weight: FontWeight,
+) -> Option<StyledText> {
+    let mut text = String::new();
+    let mut runs: Vec<TextRun> = Vec::with_capacity(spans.len());
+    for span in spans {
+        if span.text.is_empty() {
+            continue;
+        }
+        let len = span.text.len();
+        let is_code = span.style.code;
+        let family: SharedString = if is_code {
+            "monospace".into()
+        } else {
+            ".SystemUIFont".into()
+        };
+        let weight = if span.style.strong {
+            FontWeight::BOLD
+        } else {
+            base_weight
+        };
+        let style = if span.style.emphasis {
+            FontStyle::Italic
+        } else {
+            FontStyle::Normal
+        };
+        let mut color = if is_code { palette.code_fg } else { base_color };
+        let bg = if is_code { Some(palette.code_bg) } else { None };
+        let mut underline: Option<UnderlineStyle> = None;
+        if span.link_url.is_some() {
+            color = palette.link;
+            underline = Some(UnderlineStyle {
+                thickness: px(1.),
+                color: Some(color),
+                wavy: false,
+            });
+        }
+        let strikethrough = if span.style.strikethrough {
+            Some(StrikethroughStyle {
+                thickness: px(1.),
+                color: Some(color),
+            })
+        } else {
+            None
+        };
+        runs.push(TextRun {
+            len,
+            font: Font {
+                family,
+                features: FontFeatures::default(),
+                fallbacks: None,
+                weight,
+                style,
+            },
+            color,
+            background_color: bg,
+            underline,
+            strikethrough,
+        });
+        text.push_str(&span.text);
+    }
+    if text.is_empty() {
+        None
+    } else {
+        Some(StyledText::new(text).with_runs(runs))
+    }
+}
+
 fn render_heading(level: HeadingLevel, spans: &[Span], palette: MarkdownPalette) -> AnyElement {
     let (size, weight, top_gap) = match level {
-        HeadingLevel::H1 => (px(28.), gpui::FontWeight::BOLD, px(8.)),
-        HeadingLevel::H2 => (px(22.), gpui::FontWeight::BOLD, px(6.)),
-        HeadingLevel::H3 => (px(18.), gpui::FontWeight::SEMIBOLD, px(4.)),
-        HeadingLevel::H4 => (px(16.), gpui::FontWeight::SEMIBOLD, px(2.)),
-        HeadingLevel::H5 | HeadingLevel::H6 => (px(14.), gpui::FontWeight::SEMIBOLD, px(2.)),
+        HeadingLevel::H1 => (px(28.), FontWeight::BOLD, px(8.)),
+        HeadingLevel::H2 => (px(22.), FontWeight::BOLD, px(6.)),
+        HeadingLevel::H3 => (px(18.), FontWeight::SEMIBOLD, px(4.)),
+        HeadingLevel::H4 => (px(16.), FontWeight::SEMIBOLD, px(2.)),
+        HeadingLevel::H5 | HeadingLevel::H6 => (px(14.), FontWeight::SEMIBOLD, px(2.)),
     };
-    let mut row = div()
-        .flex()
-        .flex_row()
-        .flex_wrap()
-        .text_size(size)
-        .font_weight(weight)
-        .text_color(palette.heading)
-        .pt(top_gap);
-    for span in spans {
-        row = row.child(render_span(span, palette));
+    let mut row = div().w_full().text_size(size).pt(top_gap);
+    if let Some(styled) = build_styled_text(spans, palette, palette.heading, weight) {
+        row = row.child(styled);
     }
     row.into_any_element()
 }
 
 fn render_paragraph(spans: &[Span], palette: MarkdownPalette) -> impl IntoElement {
-    let mut row = div().flex().flex_row().flex_wrap().text_color(palette.body);
-    for span in spans {
-        row = row.child(render_span(span, palette));
+    let mut row = div().w_full();
+    if let Some(styled) = build_styled_text(spans, palette, palette.body, FontWeight::NORMAL) {
+        row = row.child(styled);
     }
     row
 }
 
 fn render_code_block(text: &str, palette: MarkdownPalette) -> AnyElement {
+    // Code blocks contain pre-formatted content that must NOT soft-wrap
+    // (preserves indentation + intent). Long lines previously clipped at the
+    // pane edge; following Zed's `markdown.rs` pattern (`overflow_x_scroll`
+    // + a stable id), each block becomes its own horizontally scrollable
+    // container. The id is derived from the content hash so the scroll
+    // position survives re-renders triggered by US-021 live reload of
+    // sibling blocks.
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    let id_hash = hasher.finish();
     div()
+        .id(("md-code-block", id_hash))
         .bg(palette.code_bg)
         .text_color(palette.code_fg)
         .font_family("monospace")
@@ -918,6 +1077,8 @@ fn render_code_block(text: &str, palette: MarkdownPalette) -> AnyElement {
         .px(px(12.))
         .py(px(8.))
         .rounded(px(4.))
+        .w_full()
+        .overflow_x_scroll()
         .child(SharedString::from(text.to_string()))
         .into_any_element()
 }
@@ -930,6 +1091,7 @@ fn render_blockquote(children: &[MdNode], palette: MarkdownPalette) -> AnyElemen
         .border_l_2()
         .border_color(palette.blockquote_border)
         .pl(px(12.))
+        .w_full()
         .text_color(palette.blockquote_text);
     for child in children {
         col = col.child(render_node(child, palette));
@@ -942,15 +1104,27 @@ fn render_list(
     items: &[Vec<MdNode>],
     palette: MarkdownPalette,
 ) -> AnyElement {
-    let mut col = div().flex().flex_col().gap(px(4.)).pl(px(20.));
+    let mut col = div().flex().flex_col().gap(px(4.)).pl(px(20.)).w_full();
     for (idx, item) in items.iter().enumerate() {
         let marker: SharedString = match ordered_start {
             Some(start) => format!("{}.", start.saturating_add(idx as u64)).into(),
             None => "•".into(),
         };
-        let mut item_row = div().flex().flex_row().gap(px(8.));
-        item_row = item_row.child(div().w(px(20.)).text_color(palette.body).child(marker));
-        let mut item_body = div().flex().flex_col().gap(px(4.));
+        // `w_full()` bounds the row to its parent. The marker is fixed-width
+        // and `flex_shrink_0` so it never collapses; the body claims the rest
+        // (`flex_1`) and `min_w(px(0.))` lets it shrink below its intrinsic
+        // text width — without this, a flex item's min-width defaults to
+        // `auto` (= content size) and long lines push the row past the
+        // viewport instead of wrapping inside StyledText.
+        let mut item_row = div().flex().flex_row().gap(px(8.)).w_full();
+        item_row = item_row.child(
+            div()
+                .w(px(20.))
+                .flex_shrink_0()
+                .text_color(palette.body)
+                .child(marker),
+        );
+        let mut item_body = div().flex().flex_col().gap(px(4.)).flex_1().min_w(px(0.));
         for child in item {
             item_body = item_body.child(render_node(child, palette));
         }
@@ -966,36 +1140,41 @@ fn render_table(
     rows: &[Vec<Vec<Span>>],
     palette: MarkdownPalette,
 ) -> AnyElement {
+    // Column count: max of header arity and the longest data row. Empty
+    // tables (zero header + zero rows, or rows with zero cells) bail out
+    // before invoking grid_cols(0) which would be a runtime no-op.
+    let cols: u16 = header
+        .len()
+        .max(rows.iter().map(|r| r.len()).max().unwrap_or(0)) as u16;
+    if cols == 0 {
+        return div().into_any_element();
+    }
+
+    // Per Zed's `MarkdownElement` (crates/markdown/src/markdown.rs:1981):
+    // CSS grid + equal-fraction columns + `overflow_hidden` is the only
+    // layout that prevents wide cells from blowing the table past the pane
+    // width. `flex_row` rows would let any single cell push the row wider
+    // than its parent — which is exactly what the original implementation
+    // did. With grid the row width is always `w_full`, columns are 1fr each,
+    // and StyledText cell content reflows inside its column.
     let mut table = div()
-        .flex()
-        .flex_col()
+        .grid()
+        .grid_cols(cols)
+        .w_full()
+        .overflow_hidden()
         .border_1()
         .border_color(palette.rule)
         .rounded(px(4.));
 
     if !header.is_empty() {
-        let mut head_row = div()
-            .flex()
-            .flex_row()
-            .border_b_1()
-            .border_color(palette.rule)
-            .bg(palette.code_bg);
         for cell in header {
-            head_row = head_row.child(render_table_cell(cell, palette, true));
+            table = table.child(render_table_cell(cell, palette, true));
         }
-        table = table.child(head_row);
     }
-
     for row in rows {
-        let mut tr = div()
-            .flex()
-            .flex_row()
-            .border_b_1()
-            .border_color(palette.rule);
         for cell in row {
-            tr = tr.child(render_table_cell(cell, palette, false));
+            table = table.child(render_table_cell(cell, palette, false));
         }
-        table = table.child(tr);
     }
     table.into_any_element()
 }
@@ -1005,18 +1184,23 @@ fn render_table_cell(
     palette: MarkdownPalette,
     is_header: bool,
 ) -> impl IntoElement {
+    let weight = if is_header {
+        FontWeight::SEMIBOLD
+    } else {
+        FontWeight::NORMAL
+    };
     let mut cell = div()
-        .flex_1()
         .px(px(8.))
         .py(px(4.))
+        .border_b_1()
         .border_r_1()
         .border_color(palette.rule)
         .text_color(palette.body);
     if is_header {
-        cell = cell.font_weight(gpui::FontWeight::SEMIBOLD);
+        cell = cell.bg(palette.code_bg);
     }
-    for span in spans {
-        cell = cell.child(render_span(span, palette));
+    if let Some(styled) = build_styled_text(spans, palette, palette.body, weight) {
+        cell = cell.child(styled);
     }
     cell
 }
@@ -1034,6 +1218,7 @@ fn render_footnote(label: &str, children: &[MdNode], palette: MarkdownPalette) -
         .flex()
         .flex_col()
         .gap(px(4.))
+        .w_full()
         .text_color(palette.blockquote_text)
         .text_size(px(12.));
     col = col.child(
@@ -1045,58 +1230,6 @@ fn render_footnote(label: &str, children: &[MdNode], palette: MarkdownPalette) -
         col = col.child(render_node(child, palette));
     }
     col.into_any_element()
-}
-
-fn render_span(span: &Span, palette: MarkdownPalette) -> impl IntoElement {
-    let mut el = div().child(SharedString::from(span.text.clone()));
-    if span.style.code {
-        el = el
-            .bg(palette.code_bg)
-            .text_color(palette.code_fg)
-            .font_family("monospace")
-            .px(px(4.))
-            .rounded(px(3.));
-    }
-    if span.style.strong {
-        el = el.font_weight(gpui::FontWeight::BOLD);
-    }
-    if span.style.emphasis {
-        // GPUI's `Styled` trait does not expose font-style italic on every
-        // platform consistently, so we fall back to a subtle dim color to
-        // visually distinguish emphasized text.
-        el = el.text_color(palette.heading);
-    }
-    if span.style.strikethrough {
-        // Apply via Styled::text_decoration_line / line_through if available;
-        // otherwise prefix with a Unicode combining char fallback. GPUI exposes
-        // line_through() on the same builder chain.
-        el = el.line_through();
-    }
-    if let Some(url) = &span.link_url {
-        el = el.text_color(palette.link).underline();
-        let url = url.clone();
-        el = el.on_mouse_down(gpui::MouseButton::Left, move |_event, _window, _cx| {
-            // US-009 boundary: markdown is potentially-hostile file
-            // content, so the link click handler is stricter than the
-            // terminal hyperlink helper. `validate_link_url` accepts
-            // http(s) only — `mailto:`, `file://`, `smb://`,
-            // `javascript:`, `data:`, custom schemes, oversized URLs,
-            // and bare strings (no scheme) all fall through to the
-            // log-and-drop branch.
-            match crate::markdown::security::validate_link_url(&url) {
-                Ok(validated) => {
-                    let _ = open::that(validated.as_str());
-                }
-                Err(reason) => {
-                    log::warn!(
-                        "blocked markdown link ({reason:?}): {}",
-                        url.chars().take(80).collect::<String>()
-                    );
-                }
-            }
-        });
-    }
-    el
 }
 
 // ---------------------------------------------------------------------------

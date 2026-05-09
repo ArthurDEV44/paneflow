@@ -659,7 +659,7 @@ mod tests {
                 m
             },
             default_shell: Some("/bin/fish".to_string()),
-            theme: Some("Dracula".to_string()),
+            theme: Some("One Dark".to_string()),
             commands: vec![CommandDefinition {
                 name: "test".to_string(),
                 description: Some("A test command".to_string()),

@@ -4,9 +4,11 @@
 
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    ParentElement, SharedString, Styled, Window, deferred, div, prelude::*, px,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Point, SharedString, Styled, Window, deferred,
+    div, prelude::*, px,
 };
 
+use crate::widgets::scrollbar;
 use crate::{PaneFlowApp, config_writer};
 
 impl PaneFlowApp {
@@ -14,7 +16,7 @@ impl PaneFlowApp {
     fn current_theme_name() -> String {
         paneflow_config::loader::load_config()
             .theme
-            .unwrap_or_else(|| "Catppuccin Mocha".to_string())
+            .unwrap_or_else(|| "One Dark".to_string())
     }
 
     fn current_theme_index() -> usize {
@@ -41,6 +43,8 @@ impl PaneFlowApp {
         self.theme_picker_query.clear();
         // Pre-select the currently applied theme so the list opens on it.
         self.theme_picker_selected_idx = Self::current_theme_index();
+        self.theme_picker_scroll = gpui::ScrollHandle::new();
+        self.theme_picker_drag = None;
         self.theme_picker_focus.focus(window, cx);
         cx.notify();
     }
@@ -49,6 +53,7 @@ impl PaneFlowApp {
         self.show_theme_picker = false;
         self.theme_picker_query.clear();
         self.theme_picker_selected_idx = 0;
+        self.theme_picker_drag = None;
         cx.notify();
     }
 
@@ -143,8 +148,10 @@ impl PaneFlowApp {
             .id("theme-picker-list")
             .flex()
             .flex_col()
+            .pr(scrollbar::SCROLLBAR_GUTTER)
             .max_h(px(360.))
-            .overflow_y_scroll();
+            .overflow_y_scroll()
+            .track_scroll(&self.theme_picker_scroll);
 
         if matches.is_empty() {
             list = list.child(
@@ -159,7 +166,7 @@ impl PaneFlowApp {
             for (idx, name) in matches.iter().enumerate() {
                 let is_selected = idx == self.theme_picker_selected_idx;
                 let is_current = *name == current_name.as_str();
-                let label = if *name == "Catppuccin Mocha" {
+                let label = if *name == "One Dark" {
                     format!("{} (Default)", name)
                 } else {
                     (*name).to_string()
@@ -188,6 +195,46 @@ impl PaneFlowApp {
             }
         }
 
+        // Estimated geometry for first-frame fallback. Each row is
+        // py(6) + line-height ≈ 13 + 12 = ~25px. The list caps at
+        // max_h(360).
+        const PER_ROW: f32 = 25.0;
+        let est_content = (matches.len() as f32 * PER_ROW).max(0.0);
+        let max_viewport = 360.0;
+
+        let bar = scrollbar::render(
+            &self.theme_picker_scroll,
+            ui,
+            Some((est_content, max_viewport)),
+            "theme-picker-scrollbar-track",
+            "theme-picker-scrollbar-thumb",
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                if let Some(off) =
+                    scrollbar::track_click_offset(&this.theme_picker_scroll, ev.position.y)
+                {
+                    this.theme_picker_scroll
+                        .set_offset(Point::new(px(0.), px(off)));
+                    cx.notify();
+                }
+            }),
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                this.theme_picker_drag = Some(scrollbar::begin_drag(
+                    &this.theme_picker_scroll,
+                    ev.position.y,
+                ));
+                cx.stop_propagation();
+            }),
+        );
+
+        let list_wrapper = div()
+            .id("theme-picker-list-wrapper")
+            .relative()
+            .flex()
+            .flex_col()
+            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+            .child(list)
+            .when_some(bar, |d, sb| d.child(sb));
+
         deferred(
             div()
                 .id("theme-picker-backdrop")
@@ -211,6 +258,27 @@ impl PaneFlowApp {
                         }))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                            if let Some(drag) = this.theme_picker_drag
+                                && let Some(off) = scrollbar::drag_offset(
+                                    &this.theme_picker_scroll,
+                                    &drag,
+                                    ev.position.y,
+                                )
+                            {
+                                this.theme_picker_scroll
+                                    .set_offset(Point::new(px(0.), px(off)));
+                                cx.notify();
+                            }
+                        }))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                if this.theme_picker_drag.take().is_some() {
+                                    cx.notify();
+                                }
+                            }),
+                        )
                         .w(px(520.))
                         .flex()
                         .flex_col()
@@ -221,7 +289,7 @@ impl PaneFlowApp {
                         .shadow_lg()
                         .overflow_hidden()
                         .child(search_input)
-                        .child(list),
+                        .child(list_wrapper),
                 ),
         )
         .with_priority(6)

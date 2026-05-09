@@ -12,12 +12,13 @@
 
 use gpui::{
     AnyElement, ClickEvent, Context, Entity, FontWeight, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, ParentElement, SharedString, Styled, Window, deferred, div, hsla,
-    prelude::*, px, svg,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Point, SharedString,
+    Styled, Window, deferred, div, hsla, prelude::*, px, svg,
 };
 use paneflow_config::schema::ButtonCommand;
 
 use crate::PaneFlowApp;
+use crate::widgets::scrollbar;
 use crate::widgets::text_input::TextInput;
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,12 @@ pub(crate) struct CustomButtonsModal {
     /// reload; we lookup the index lazily when we need to mutate).
     pub workspace_id: u64,
     pub view: ModalView,
+    /// Scroll state for the button list (`ModalView::List`).
+    pub list_scroll: gpui::ScrollHandle,
+    pub list_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
+    /// Scroll state for the edit form body (`ModalView::Form`).
+    pub form_scroll: gpui::ScrollHandle,
+    pub form_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
 }
 
 pub(crate) enum ModalView {
@@ -112,6 +119,10 @@ impl PaneFlowApp {
         self.custom_buttons_modal = Some(CustomButtonsModal {
             workspace_id,
             view: ModalView::List,
+            list_scroll: gpui::ScrollHandle::new(),
+            list_drag: None,
+            form_scroll: gpui::ScrollHandle::new(),
+            form_drag: None,
         });
         self.custom_buttons_modal_focus.focus(window, cx);
         cx.notify();
@@ -362,17 +373,18 @@ impl PaneFlowApp {
             );
 
         let body: AnyElement = match &modal.view {
-            ModalView::List => Self::render_modal_list(&ws.custom_buttons, ui, cx),
+            ModalView::List => self.render_modal_list(&ws.custom_buttons, modal, ui, cx),
             ModalView::Form {
                 icon,
                 name_input,
                 command_input,
                 editing_id,
-            } => Self::render_modal_form(
+            } => self.render_modal_form(
                 icon,
                 name_input,
                 command_input,
                 editing_id.as_deref(),
+                modal,
                 ui,
                 cx,
             ),
@@ -402,6 +414,38 @@ impl PaneFlowApp {
                     .on_key_down(cx.listener(Self::handle_custom_buttons_modal_key_down))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                        let Some(modal) = this.custom_buttons_modal.as_mut() else {
+                            return;
+                        };
+                        // Only one drag is active at a time (one view at a
+                        // time). Try list first, then form.
+                        if let Some(drag) = modal.list_drag
+                            && let Some(off) =
+                                scrollbar::drag_offset(&modal.list_scroll, &drag, ev.position.y)
+                        {
+                            modal.list_scroll.set_offset(Point::new(px(0.), px(off)));
+                            cx.notify();
+                        } else if let Some(drag) = modal.form_drag
+                            && let Some(off) =
+                                scrollbar::drag_offset(&modal.form_scroll, &drag, ev.position.y)
+                        {
+                            modal.form_scroll.set_offset(Point::new(px(0.), px(off)));
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            if let Some(modal) = this.custom_buttons_modal.as_mut() {
+                                let cleared = modal.list_drag.take().is_some()
+                                    | modal.form_drag.take().is_some();
+                                if cleared {
+                                    cx.notify();
+                                }
+                            }
+                        }),
+                    )
                     .w(px(560.))
                     .max_h(px(560.))
                     .flex()
@@ -420,14 +464,18 @@ impl PaneFlowApp {
     }
 
     fn render_modal_list(
+        &self,
         buttons: &[ButtonCommand],
+        modal: &CustomButtonsModal,
         ui: crate::theme::UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut list = div()
             .id("cbtn-list-scroll")
             .flex_1()
+            .pr(scrollbar::SCROLLBAR_GUTTER)
             .overflow_y_scroll()
+            .track_scroll(&modal.list_scroll)
             .flex()
             .flex_col()
             .p(px(8.));
@@ -643,21 +691,59 @@ impl PaneFlowApp {
                     .child("Done"),
             );
 
+        let bar = scrollbar::render(
+            &modal.list_scroll,
+            ui,
+            None,
+            "cbtn-list-scrollbar-track",
+            "cbtn-list-scrollbar-thumb",
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                if let Some(modal) = this.custom_buttons_modal.as_ref()
+                    && let Some(off) =
+                        scrollbar::track_click_offset(&modal.list_scroll, ev.position.y)
+                {
+                    modal.list_scroll.set_offset(Point::new(px(0.), px(off)));
+                    cx.notify();
+                }
+            }),
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                if let Some(modal) = this.custom_buttons_modal.as_mut() {
+                    modal.list_drag =
+                        Some(scrollbar::begin_drag(&modal.list_scroll, ev.position.y));
+                }
+                cx.stop_propagation();
+            }),
+        );
+
+        let list_wrapper = div()
+            .id("cbtn-list-wrapper")
+            .relative()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+            .child(list)
+            .when_some(bar, |d, sb| d.child(sb));
+
         div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .child(list)
+            .child(list_wrapper)
             .child(footer)
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_modal_form(
+        &self,
         icon: &str,
         name_input: &Entity<TextInput>,
         command_input: &Entity<TextInput>,
         editing_id: Option<&str>,
+        modal: &CustomButtonsModal,
         ui: crate::theme::UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -787,7 +873,9 @@ impl PaneFlowApp {
         let body = div()
             .id("cbtn-form-scroll")
             .flex_1()
+            .pr(scrollbar::SCROLLBAR_GUTTER)
             .overflow_y_scroll()
+            .track_scroll(&modal.form_scroll)
             .flex()
             .flex_col()
             .gap(px(12.))
@@ -810,12 +898,47 @@ impl PaneFlowApp {
                     .child(icon_grid),
             );
 
+        let bar = scrollbar::render(
+            &modal.form_scroll,
+            ui,
+            None,
+            "cbtn-form-scrollbar-track",
+            "cbtn-form-scrollbar-thumb",
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                if let Some(modal) = this.custom_buttons_modal.as_ref()
+                    && let Some(off) =
+                        scrollbar::track_click_offset(&modal.form_scroll, ev.position.y)
+                {
+                    modal.form_scroll.set_offset(Point::new(px(0.), px(off)));
+                    cx.notify();
+                }
+            }),
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                if let Some(modal) = this.custom_buttons_modal.as_mut() {
+                    modal.form_drag =
+                        Some(scrollbar::begin_drag(&modal.form_scroll, ev.position.y));
+                }
+                cx.stop_propagation();
+            }),
+        );
+
+        let body_wrapper = div()
+            .id("cbtn-form-wrapper")
+            .relative()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+            .child(body)
+            .when_some(bar, |d, sb| d.child(sb));
+
         div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .child(body)
+            .child(body_wrapper)
             .child(footer)
             .into_any_element()
     }

@@ -657,8 +657,7 @@ impl Render for TextInput {
         let ui = crate::theme::ui_colors();
         // Selection highlight: accent colour at low alpha. GPUI's `Hsla`
         // literal copy + alpha override keeps the hue aligned with the
-        // active theme (so it stays coherent across Catppuccin / Dracula /
-        // One Dark / etc.).
+        // active theme (so it stays coherent across One Dark / PaneFlow Light).
         let selection = hsla(ui.accent.h, ui.accent.s, ui.accent.l, 0.28);
 
         div()

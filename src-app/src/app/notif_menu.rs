@@ -6,9 +6,11 @@
 
 use gpui::{
     AnyElement, ClickEvent, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Pixels, Point, SharedString, Styled, Window, deferred, div, prelude::*, px, svg,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, SharedString, Styled, Window,
+    deferred, div, prelude::*, px, svg,
 };
 
+use crate::widgets::scrollbar;
 use crate::{PaneFlowApp, ai_types};
 
 const NOTIF_MENU_WIDTH: Pixels = px(280.);
@@ -143,7 +145,9 @@ impl PaneFlowApp {
                 .id("notif-menu-scroll")
                 .flex_1()
                 .min_h_0()
+                .pr(scrollbar::SCROLLBAR_GUTTER)
                 .overflow_y_scroll()
+                .track_scroll(&self.notif_scroll)
                 .flex()
                 .flex_col();
 
@@ -266,7 +270,41 @@ impl PaneFlowApp {
                 list = list.child(row);
             }
 
-            list.into_any_element()
+            // Wrap the scrollable list + overlay in a relative container
+            // so the scrollbar can absolutely-position itself over the
+            // list's right edge.
+            let bar = scrollbar::render(
+                &self.notif_scroll,
+                ui,
+                None,
+                "notif-menu-scrollbar-track",
+                "notif-menu-scrollbar-thumb",
+                cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                    if let Some(off) =
+                        scrollbar::track_click_offset(&this.notif_scroll, ev.position.y)
+                    {
+                        this.notif_scroll.set_offset(Point::new(px(0.), px(off)));
+                        cx.notify();
+                    }
+                }),
+                cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                    this.notif_drag =
+                        Some(scrollbar::begin_drag(&this.notif_scroll, ev.position.y));
+                    cx.stop_propagation();
+                }),
+            );
+
+            div()
+                .id("notif-menu-list-wrapper")
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+                .child(list)
+                .when_some(bar, |d, sb| d.child(sb))
+                .into_any_element()
         };
 
         deferred(
@@ -288,10 +326,28 @@ impl PaneFlowApp {
                 .overflow_hidden()
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.notif_menu_open = None;
+                    this.notif_drag = None;
                     cx.notify();
                 }))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                    if let Some(drag) = this.notif_drag
+                        && let Some(off) =
+                            scrollbar::drag_offset(&this.notif_scroll, &drag, ev.position.y)
+                    {
+                        this.notif_scroll.set_offset(Point::new(px(0.), px(off)));
+                        cx.notify();
+                    }
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        if this.notif_drag.take().is_some() {
+                            cx.notify();
+                        }
+                    }),
+                )
                 .child(header)
                 .child(body),
         )

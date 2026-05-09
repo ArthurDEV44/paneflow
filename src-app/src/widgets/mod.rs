@@ -3,4 +3,5 @@
 //! Each submodule exposes a self-contained GPUI entity + element pair that
 //! the rest of the app can embed without knowing its internals.
 
+pub mod scrollbar;
 pub mod text_input;

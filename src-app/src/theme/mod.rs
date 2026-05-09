@@ -4,9 +4,6 @@ mod builtin;
 mod model;
 mod watcher;
 
-pub use builtin::{
-    THEMES, ThemeEntry, catppuccin_mocha, dracula, gruvbox_dark, one_dark, paneflow_light,
-    solarized_dark, theme_by_name,
-};
+pub use builtin::{THEMES, ThemeEntry, one_dark, paneflow_light, theme_by_name};
 pub use model::{TerminalTheme, UiColors, ui_colors};
 pub use watcher::{ThemeWatcher, active_theme, config_mtime, invalidate_theme_cache};
