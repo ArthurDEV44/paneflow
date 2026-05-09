@@ -234,7 +234,10 @@ impl PaneFlowApp {
         let agent = if enabled.contains(&self.sessions_active_agent) {
             self.sessions_active_agent
         } else {
-            enabled.first().copied().unwrap_or(self.sessions_active_agent)
+            enabled
+                .first()
+                .copied()
+                .unwrap_or(self.sessions_active_agent)
         };
         let sessions: &[SessionMeta] = match agent {
             SessionAgent::Claude => &self.claude_sessions,
