@@ -23,6 +23,12 @@ Use standard Rust formatting with `cargo fmt`; the codebase follows 4-space inde
 ## Testing Guidelines
 Add unit tests alongside the module when logic is self-contained, as in `src-app/src/workspace.rs` and `crates/paneflow-config/src/*.rs`. Keep broader UI/layout checks in `src-app/tests/`. Name tests descriptively, for example `test_three_children_flex_basis`. Run `cargo test --workspace`, `cargo clippy`, and `cargo fmt --check` before opening a PR. UI changes should also include manual verification because there is no CI pipeline.
 
+## Pre-commit checks (mandatory)
+
+**Before EVERY `git commit` and EVERY `git push` that touches Rust code, run `cargo fmt --check`.** If it reports a diff, run `cargo fmt`, re-stage, then commit.
+
+This is the cheapest guard against the most expensive CI failure on this repo: the release pipeline runs `cargo fmt --check` on all four Build jobs (Linux x86_64, Linux aarch64, macOS aarch64, Windows x86_64) — a single mis-formatted line fails all four legs, skips "Publish GitHub Release", and burns a ~25 min run for nothing. Tag-push releases are extra-painful: a dirty tag commit forces a tag delete + re-create at the fix commit because the original tagged build can't be salvaged. Run `cargo fmt --check` one last time on the exact commit you're about to tag, before `git tag` and `git push origin <tag>`.
+
 ## Commit & Pull Request Guidelines
 Recent history uses Conventional Commit-style prefixes plus scope, for example `feat(app): US-004 — adapt paneflow-hook for Codex PID env var` and `chore(tasks): ...`. Follow `type(scope): description`; include the story ID when work maps to a tracked task. PRs should explain user-visible behavior, list validation steps, link the relevant issue or PRD entry, and include screenshots or short recordings for UI changes.
 
