@@ -230,12 +230,12 @@ impl PaneFlowApp {
                     // Scans for agents the user has hidden in Settings →
                     // AI Agent are skipped: with no UI to surface them
                     // the disk read would just be wasted I/O.
-                    let scan_claude = enabled_agents
-                        .contains(&crate::agent_sessions::SessionAgent::Claude);
-                    let scan_codex = enabled_agents
-                        .contains(&crate::agent_sessions::SessionAgent::Codex);
-                    let scan_opencode = enabled_agents
-                        .contains(&crate::agent_sessions::SessionAgent::OpenCode);
+                    let scan_claude =
+                        enabled_agents.contains(&crate::agent_sessions::SessionAgent::Claude);
+                    let scan_codex =
+                        enabled_agents.contains(&crate::agent_sessions::SessionAgent::Codex);
+                    let scan_opencode =
+                        enabled_agents.contains(&crate::agent_sessions::SessionAgent::OpenCode);
 
                     if scan_claude {
                         let claude_cwd_scan = cwd.clone();
@@ -284,9 +284,7 @@ impl PaneFlowApp {
                         let opencode_cwd_match = cwd;
                         cx.spawn(async move |this, cx| {
                             let sessions = smol::unblock(move || {
-                                crate::opencode_sessions::read_sessions_for_cwd(
-                                    &opencode_cwd_scan,
-                                )
+                                crate::opencode_sessions::read_sessions_for_cwd(&opencode_cwd_scan)
                             })
                             .await;
                             let _ = this.update(cx, |app, cx| {
