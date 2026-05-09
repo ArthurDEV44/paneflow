@@ -17,10 +17,13 @@
 //!
 //! App shell with sidebar workspace list + main content area.
 
+mod agent_sessions;
 mod ai_hooks;
 mod ai_types;
 mod app;
 mod assets;
+mod claude_sessions;
+mod codex_sessions;
 mod config_writer;
 mod fonts;
 mod ipc;
@@ -29,6 +32,7 @@ mod keys;
 mod layout;
 mod markdown;
 mod mouse;
+mod opencode_sessions;
 mod pane;
 mod pty;
 mod runtime_paths;
@@ -124,8 +128,14 @@ struct PaneFlowApp {
     git_watch_counts: std::collections::HashMap<std::path::PathBuf, usize>,
     /// Active settings section, or `None` if settings is closed.
     settings_section: Option<SettingsSection>,
+    /// Scroll state for the inline settings page.
+    settings_scroll: gpui::ScrollHandle,
+    settings_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
     /// Cached HOME directory for sidebar display (avoids per-render syscall).
     home_dir: String,
+    /// Scroll state for the persistent sidebar workspace list.
+    sidebar_scroll: gpui::ScrollHandle,
+    sidebar_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
     /// Effective keybindings (defaults merged with user overrides) for settings display.
     effective_shortcuts: Vec<keybindings::ShortcutEntry>,
     /// Index of the shortcut row currently being recorded (`None` = not recording).
@@ -145,6 +155,10 @@ struct PaneFlowApp {
     /// `title_bar_menu_open` so every dropdown is rendered via `deferred()`
     /// and clamped to the window bounds.
     notif_menu_open: Option<Point<Pixels>>,
+    /// Scroll state for the notification dropdown's list. Re-created on
+    /// each open so a fresh popover starts at offset 0.
+    notif_scroll: gpui::ScrollHandle,
+    notif_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
     /// Workflow action menu currently open in the sidebar (`None` = closed).
     workspace_menu_open: Option<WorkspaceContextMenu>,
     /// Burger menu currently open in the title bar (`None` = closed).
@@ -153,6 +167,47 @@ struct PaneFlowApp {
     /// Stores the click position so the menu can anchor near the profile
     /// button. `None` = closed.
     profile_menu_open: Option<Point<Pixels>>,
+    /// Claude Code sessions popover anchor (click position). `None` = closed.
+    /// Opened by clicking the sessions icon in a tab bar; rendered at the
+    /// `PaneFlowApp` level so the `deferred()` overlay is not clipped to the
+    /// pane bbox.
+    claude_sessions_menu_open: Option<Point<Pixels>>,
+    /// Claude Code sessions for the cwd associated with the currently
+    /// open popover. Filled asynchronously by a background fs scan;
+    /// stays empty while the scan is pending and after it resolves with
+    /// no matches.
+    claude_sessions: Vec<agent_sessions::SessionMeta>,
+    /// Codex CLI sessions for the same cwd, populated by a parallel
+    /// scan. The popover renders one of the two lists based on
+    /// [`Self::sessions_active_agent`].
+    codex_sessions: Vec<agent_sessions::SessionMeta>,
+    /// OpenCode CLI sessions for the same cwd, populated by a third
+    /// parallel scan that shells out to `opencode session list --format
+    /// json` (see `opencode_sessions.rs`). Rendered when
+    /// [`Self::sessions_active_agent`] is `OpenCode`.
+    opencode_sessions: Vec<agent_sessions::SessionMeta>,
+    /// Which agent's tab is currently selected in the popover header.
+    /// Defaults to `Claude` on every fresh open.
+    sessions_active_agent: agent_sessions::SessionAgent,
+    /// Working directory the popover was opened for. Used both to filter
+    /// stale scan results that resolve after the menu was closed and as the
+    /// label inside the popover header.
+    claude_sessions_cwd: Option<String>,
+    /// Weak handle to the pane whose tab-bar button opened the popover.
+    /// Used to route `claude --resume <id>` back to the *originating*
+    /// pane's terminal even if the user shifts focus while the popover is
+    /// open. Weak so the popover never keeps a closed pane alive.
+    claude_sessions_pane: Option<gpui::WeakEntity<crate::pane::Pane>>,
+    /// Scroll state for the sessions list. Re-created on every menu open
+    /// so a fresh popover always starts at offset 0 regardless of where
+    /// the previous one was scrolled.
+    claude_sessions_scroll: gpui::ScrollHandle,
+    /// Active scrollbar drag, if the user is currently holding the thumb.
+    /// Stores the mouse Y at drag-start and the scroll offset Y at
+    /// drag-start; mouse-move computes `(current_y - start_y)` and shifts
+    /// the offset by the same amount (track-space === content-space when
+    /// the thumb height is computed from the viewport ratio).
+    claude_sessions_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
     /// Ephemeral bottom-right toast.
     toast: Option<Toast>,
     /// Dismiss timer for the active toast — dropped on new toast to cancel the old timer.
@@ -173,6 +228,9 @@ struct PaneFlowApp {
     theme_picker_selected_idx: usize,
     /// Focus handle routing key events to the theme picker while it's open.
     theme_picker_focus: FocusHandle,
+    /// Scroll state for the theme picker list (visible scrollbar overlay).
+    theme_picker_scroll: gpui::ScrollHandle,
+    theme_picker_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
     /// Shared slot for the background update checker result.
     pending_update: update::checker::SharedUpdateSlot,
     /// Resolved update status (set once the background check completes).
@@ -627,6 +685,10 @@ impl Render for PaneFlowApp {
 
         if let Some(anchor) = self.notif_menu_open {
             app_content = app_content.child(self.render_notif_menu(anchor, window, cx));
+        }
+
+        if let Some(anchor) = self.claude_sessions_menu_open {
+            app_content = app_content.child(self.render_claude_sessions_menu(anchor, window, cx));
         }
 
         if self.show_theme_picker {

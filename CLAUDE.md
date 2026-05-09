@@ -174,14 +174,14 @@ Location: `~/.config/paneflow/paneflow.json` (Linux XDG).
 ```json
 {
   "default_shell": "/bin/zsh",
-  "theme": "Catppuccin Mocha",
+  "theme": "One Dark",
   "window_decorations": "client",
   "shortcuts": {},
   "commands": []
 }
 ```
 
-- **Theme hot-reload**: 500ms mtime polling in a `cx.spawn` loop. 6 bundled themes: Catppuccin Mocha (default), PaneFlow Light, One Dark, Dracula, Gruvbox Dark, Solarized Dark.
+- **Theme hot-reload**: 500ms mtime polling in a `cx.spawn` loop. 2 bundled themes: One Dark (default), PaneFlow Light.
 - **`window_decorations`**: read at startup only — requires restart. `"client"` = CSD, `"server"` = SSD.
 - **`shortcuts`**: wired via `keybindings::apply_keybindings()` at startup. Users can override default keybindings in config.
 - **`ConfigWatcher`** (notify crate, 300ms debounce): fully wired — background thread detects file changes and deposits new config for the GPUI main thread to apply.
@@ -201,7 +201,7 @@ Stateful methods dispatch to GPUI main thread via `mpsc::channel`, polled every 
 ## Styling conventions
 
 - **All styling is inline** via GPUI's Tailwind-like builder API: `.bg(rgb(0x181825)).px_3().rounded_md()`
-- **Sidebar/titlebar colors are hardcoded** Catppuccin Mocha hex values — they do NOT change with the terminal theme.
+- **Sidebar/titlebar colors are hardcoded** dark hex values — they do NOT change with the terminal theme.
 - **Terminal colors** use the `TerminalTheme` struct (30 Hsla slots) resolved via `active_theme()`.
 - **Font**: defaults to a platform-specific installed monospace fallback at 14px (`terminal_element.rs`). Invalid Linux font names fall back to the first available preferred mono family.
 

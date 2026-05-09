@@ -30,9 +30,9 @@ path = "src/main.rs"
 # The feature is a no-op on Linux/Windows (where `gpui_macos` isn't
 # compiled in), so it's safe in the cross-platform default declaration
 # below — the Linux-only override on line ~97 adds wayland/x11 on top.
-gpui = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868", features = ["font-kit"] }
-collections = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "c8f002686780fdfcdb9301bf234d0c4bf4563800" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "c8f002686780fdfcdb9301bf234d0c4bf4563800", features = ["font-kit"] }
+collections = { git = "https://github.com/zed-industries/zed", rev = "c8f002686780fdfcdb9301bf234d0c4bf4563800" }
 
 # Alacritty terminal emulation (upstream crates.io — migrated from Zed fork in US-005)
 alacritty_terminal = "0.26"
@@ -63,6 +63,14 @@ smol = "2.0"
 libc = "0.2"
 regex = "1"
 open = "5"
+# Native file picker (markdown "open file" button in the pane tab strip).
+# Default features = ["xdg-portal", "wayland"] on Linux: uses the FreeDesktop
+# file-chooser portal (no GTK3 runtime dep) and adds Wayland integration so
+# the dialog parents to our window. macOS uses NSOpenPanel, Windows uses the
+# native COM file-open dialog. `pollster` is pulled in by xdg-portal as the
+# tiny block-on executor — keeps the picker runtime-agnostic so we can drive
+# `AsyncFileDialog` from `cx.spawn` without a tokio/async-std dep.
+rfd = "0.17"
 # Markdown viewer pane (US-020 — prd-cmux-port-2026-q2.md). CommonMark + tables
 # + strikethrough + footnotes via the event API (we walk events directly into
 # a GPUI element tree rather than rendering HTML).
@@ -106,7 +114,7 @@ unicode-segmentation = "1"
 
 # Linux: enable Wayland + X11 display backends for gpui_platform
 [target.'cfg(target_os = "linux")'.dependencies]
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868", features = ["wayland", "x11"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "c8f002686780fdfcdb9301bf234d0c4bf4563800", features = ["wayland", "x11"] }
 
 # macOS: libproc powers detect_ports() (US-006) — walks per-PID socket FDs
 # via proc_pidinfo/proc_pidfdinfo wrappers. The macOS-only gate keeps it
@@ -131,7 +139,7 @@ core-text = "21"
 windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_Foundation"] }
 
 [dev-dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "0b984b5ade7604e3f1c618c0ef77879de800b868", features = ["test-support"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "c8f002686780fdfcdb9301bf234d0c4bf4563800", features = ["test-support"] }
 
 # Clippy lint policy (US-007). Mirrors `[workspace.lints.clippy]` in the
 # root Cargo.toml EXCEPT the unwrap/expect family is demoted from "warn"

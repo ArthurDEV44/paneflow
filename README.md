@@ -10,7 +10,7 @@ PaneFlow aims to be a modern alternative to tmux/screen with native GPU renderin
 - **Split panes** — horizontal and vertical, drag-to-resize, up to 32 panes
 - **Workspaces** — up to 20 workspaces with rename, quick-switch (Ctrl+1-9)
 - **Session persistence** — save/restore layouts, CWD, and workspace names
-- **Themes** — 5 bundled themes with hot-reload (Catppuccin Mocha, One Dark, Dracula, Gruvbox Dark, Solarized Dark)
+- **Themes** — 2 bundled themes with hot-reload (One Dark, PaneFlow Light)
 - **Custom keybindings** — configurable via JSON
 - **IPC** — Unix socket JSON-RPC 2.0 for scripting and AI agent integration
 - **Client-side decorations** — custom title bar with drag-to-move
@@ -405,7 +405,7 @@ Config file location: `~/.config/paneflow/paneflow.json`
 ```json
 {
   "default_shell": "/bin/zsh",
-  "theme": "Catppuccin Mocha",
+  "theme": "One Dark",
   "font_family": ".PaneflowMono",
   "font_size": 14,
   "line_height": 1.3,
@@ -426,7 +426,7 @@ Config file location: `~/.config/paneflow/paneflow.json`
 
 ### Available themes
 
-`Catppuccin Mocha` (default), `One Dark`, `Dracula`, `Gruvbox Dark`, `Solarized Dark`
+`One Dark` (default), `PaneFlow Light`
 
 Theme changes are hot-reloaded. Window decorations require a restart (`"client"` = CSD, `"server"` = SSD).
 
@@ -443,7 +443,7 @@ A versioned JSON Schema for `paneflow.json` lives at [`schemas/paneflow.schema.j
   "$schema": "https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json",
   "$schemaVersion": "1.0.0",
   "default_shell": "/bin/zsh",
-  "theme": "Catppuccin Mocha"
+  "theme": "One Dark"
 }
 ```
 

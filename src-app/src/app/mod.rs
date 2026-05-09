@@ -15,6 +15,7 @@ pub mod notifications;
 pub mod profile_menu;
 pub mod self_update_flow;
 pub mod session;
+pub mod sessions_menu;
 pub mod settings;
 pub mod sidebar;
 pub mod telemetry_events;

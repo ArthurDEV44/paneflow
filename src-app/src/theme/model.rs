@@ -220,10 +220,7 @@ pub fn ui_colors() -> UiColors {
 mod tests {
     use super::*;
     use crate::terminal::element::apca_contrast;
-    use crate::theme::builtin::{
-        catppuccin_mocha, dracula, gruvbox_dark, one_dark, paneflow_light, solarized_dark,
-        theme_by_name,
-    };
+    use crate::theme::builtin::{one_dark, paneflow_light, theme_by_name};
 
     #[test]
     fn light_theme_keeps_light_surfaces_after_overrides() {
@@ -236,7 +233,7 @@ mod tests {
 
     #[test]
     fn dark_theme_still_uses_dark_surface_overrides() {
-        let theme = apply_surface_overrides(catppuccin_mocha());
+        let theme = apply_surface_overrides(one_dark());
 
         assert_eq!(theme.background.l, h(TERMINAL_BACKGROUND_HEX).l);
         assert_eq!(theme.ansi_background.l, h(TERMINAL_BACKGROUND_HEX).l);
@@ -261,17 +258,10 @@ mod tests {
 
     #[test]
     fn bundled_themes_satisfy_selection_contrast_invariant() {
-        // All 6 bundled themes must produce a readable selection foreground.
+        // All bundled themes must produce a readable selection foreground.
         for (label, theme) in [
-            (
-                "Catppuccin Mocha",
-                apply_surface_overrides(catppuccin_mocha()),
-            ),
-            ("PaneFlow Light", apply_surface_overrides(paneflow_light())),
             ("One Dark", apply_surface_overrides(one_dark())),
-            ("Dracula", apply_surface_overrides(dracula())),
-            ("Gruvbox Dark", apply_surface_overrides(gruvbox_dark())),
-            ("Solarized Dark", apply_surface_overrides(solarized_dark())),
+            ("PaneFlow Light", apply_surface_overrides(paneflow_light())),
         ] {
             assert_selection_invariant(&theme, label);
         }
@@ -282,14 +272,7 @@ mod tests {
         // theme_by_name is the public entry point; users may call it without
         // going through apply_surface_overrides, so it must finalize on the
         // way out.
-        for name in [
-            "Catppuccin Mocha",
-            "PaneFlow Light",
-            "One Dark",
-            "Dracula",
-            "Gruvbox Dark",
-            "Solarized Dark",
-        ] {
+        for name in ["One Dark", "PaneFlow Light"] {
             let theme = theme_by_name(name).expect("bundled theme not found");
             assert_selection_invariant(&theme, name);
         }
@@ -302,7 +285,7 @@ mod tests {
         // recomputed selection_foreground still satisfies the invariant.
         // This is the canonical "user picked a clashing selection color"
         // failure mode US-007 must guard against.
-        let mut theme = catppuccin_mocha();
+        let mut theme = one_dark();
         theme.foreground = h(0xff0000); // bright red text
         theme.selection = ha(0xff0000, 0.4); // selection of the same hue
         theme.recompute_selection_foreground();
@@ -325,7 +308,7 @@ mod tests {
         // Running the recompute twice must yield the same value — guards
         // against accidental mutation of `foreground` or `selection` during
         // the algorithm.
-        let mut theme = catppuccin_mocha();
+        let mut theme = one_dark();
         theme.recompute_selection_foreground();
         let first = theme.selection_foreground;
         theme.recompute_selection_foreground();

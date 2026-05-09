@@ -25,9 +25,25 @@ impl LayoutTree {
         match self {
             LayoutTree::Leaf(pane) => {
                 let pane_ref = pane.read(cx);
+                // Markdown tabs are ephemeral — they hold no shell state and
+                // their file path can be reopened on demand. We persist only
+                // terminal tabs and let the user re-open markdown viewers
+                // after restart via the doc button. The active-tab marker
+                // tracks the position of the active terminal among terminals
+                // (not among all tabs), so the restore path lands focus
+                // somewhere meaningful even when the previously-focused tab
+                // was a markdown viewer.
+                let active_terminal_idx = pane_ref
+                    .tabs
+                    .iter()
+                    .take(pane_ref.selected_idx + 1)
+                    .filter(|t| t.as_terminal().is_some())
+                    .count()
+                    .saturating_sub(1);
                 let surfaces: Vec<SurfaceDefinition> = pane_ref
                     .tabs
                     .iter()
+                    .filter_map(|t| t.as_terminal())
                     .enumerate()
                     .map(|(i, tv)| {
                         let tv_ref = tv.read(cx);
@@ -47,7 +63,7 @@ impl LayoutTree {
                             command: None,
                             cwd,
                             env: None,
-                            focus: if i == pane_ref.selected_idx {
+                            focus: if i == active_terminal_idx {
                                 Some(true)
                             } else {
                                 None

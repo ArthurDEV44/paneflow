@@ -7,10 +7,12 @@
 //! Extracted from `main.rs` per US-018 of the src-app refactor PRD.
 
 use gpui::{
-    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
-    SharedString, Styled, Window, div, prelude::*, px,
+    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Point, SharedString, Styled, Window, div,
+    prelude::*, px,
 };
 
+use crate::widgets::scrollbar;
 use crate::{PaneFlowApp, SettingsSection, config_writer, keybindings};
 
 impl PaneFlowApp {
@@ -77,16 +79,75 @@ impl PaneFlowApp {
                     // Left sidebar
                     .child(self.render_settings_sidebar(section, ui, cx))
                     // Right content
-                    .child(
-                        div()
-                            .id("settings-content")
-                            .flex_1()
-                            .overflow_y_scroll()
-                            .px(px(24.))
-                            .py(px(12.))
-                            .child(content),
-                    ),
+                    .child(self.render_settings_content_scroll(content, cx)),
             )
+    }
+
+    /// Wrap the settings content area with the visible scrollbar overlay
+    /// (track + draggable thumb). Mirrors `SettingsWindow::render_content_scroll_area`.
+    fn render_settings_content_scroll(
+        &self,
+        content: gpui::AnyElement,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let inner = div()
+            .id("settings-content")
+            .flex_1()
+            .pr(scrollbar::SCROLLBAR_GUTTER)
+            .overflow_y_scroll()
+            .track_scroll(&self.settings_scroll)
+            .px(px(24.))
+            .py(px(12.))
+            .child(content);
+
+        let bar = scrollbar::render(
+            &self.settings_scroll,
+            crate::theme::ui_colors(),
+            None,
+            "settings-inline-scrollbar-track",
+            "settings-inline-scrollbar-thumb",
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                if let Some(off) =
+                    scrollbar::track_click_offset(&this.settings_scroll, ev.position.y)
+                {
+                    this.settings_scroll.set_offset(Point::new(px(0.), px(off)));
+                    cx.notify();
+                }
+            }),
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                this.settings_drag =
+                    Some(scrollbar::begin_drag(&this.settings_scroll, ev.position.y));
+                cx.stop_propagation();
+            }),
+        );
+
+        div()
+            .id("settings-inline-content-wrapper")
+            .relative()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                if let Some(drag) = this.settings_drag
+                    && let Some(off) =
+                        scrollbar::drag_offset(&this.settings_scroll, &drag, ev.position.y)
+                {
+                    this.settings_scroll.set_offset(Point::new(px(0.), px(off)));
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.settings_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(inner)
+            .when_some(bar, |d, sb| d.child(sb))
     }
 
     pub(crate) fn render_settings_sidebar(
@@ -252,7 +313,7 @@ impl PaneFlowApp {
         let current_theme = config
             .theme
             .clone()
-            .unwrap_or_else(|| "Catppuccin Mocha".to_string());
+            .unwrap_or_else(|| "One Dark".to_string());
 
         let section_header = div()
             .text_size(px(13.))
@@ -267,10 +328,7 @@ impl PaneFlowApp {
             .pb(px(6.))
             .child("Theme");
 
-        let themes = [
-            ("Catppuccin Mocha", "Default (Dark)"),
-            ("PaneFlow Light", "Light"),
-        ];
+        let themes = [("One Dark", "Default (Dark)"), ("PaneFlow Light", "Light")];
         let mut theme_row_inner = div().flex().flex_row().gap(px(8.));
 
         for (theme_id, label) in themes {

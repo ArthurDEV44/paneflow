@@ -26,7 +26,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
-use super::builtin::{catppuccin_mocha, theme_by_name};
+use super::builtin::{one_dark, theme_by_name};
 use super::model::{TerminalTheme, apply_surface_overrides};
 
 /// Polling fallback throttle — only consulted when [`WATCHER_ACTIVE`] is
@@ -60,7 +60,7 @@ fn read_config_theme_name() -> Option<String> {
     paneflow_config::loader::load_config().theme
 }
 
-/// Resolve the theme from config, falling back to Catppuccin Mocha.
+/// Resolve the theme from config, falling back to One Dark.
 fn resolve_theme() -> TerminalTheme {
     if let Some(name) = read_config_theme_name() {
         if let Some(theme) = theme_by_name(&name) {
@@ -68,7 +68,7 @@ fn resolve_theme() -> TerminalTheme {
         }
         log::warn!("Unknown theme '{}', using default", name);
     }
-    apply_surface_overrides(catppuccin_mocha())
+    apply_surface_overrides(one_dark())
 }
 
 /// Invalidate the theme cache so the next `active_theme()` call re-reads from disk.
@@ -95,7 +95,7 @@ pub fn config_mtime() -> Option<SystemTime> {
 ///     so the function still self-heals when notify isn't available.
 ///
 /// If the config is corrupted or missing, the resolver falls back to
-/// the built-in Catppuccin Mocha theme.
+/// the built-in One Dark theme.
 pub fn active_theme() -> TerminalTheme {
     let mut cache = THEME_CACHE.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -408,7 +408,7 @@ mod tests {
         let _g = serial();
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("paneflow.json");
-        write_config(&path, "Dracula");
+        write_config(&path, "One Dark");
 
         let watcher = ThemeWatcher::new_with_path(path.clone(), Arc::new(|| {}));
         watcher
@@ -426,7 +426,7 @@ mod tests {
         let _g = serial();
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("paneflow.json");
-        write_config(&path, "Dracula");
+        write_config(&path, "One Dark");
 
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_clone = Arc::clone(&counter);
@@ -456,7 +456,7 @@ mod tests {
         let _g = serial();
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("paneflow.json");
-        write_config(&path, "Dracula");
+        write_config(&path, "One Dark");
 
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_clone = Arc::clone(&counter);
@@ -528,7 +528,7 @@ mod tests {
         let _g = serial();
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("paneflow.json");
-        write_config(&path, "Dracula");
+        write_config(&path, "One Dark");
 
         let w1 = ThemeWatcher::new_with_path(path.clone(), Arc::new(|| {}));
         w1.start().expect("first start must succeed");
@@ -561,7 +561,7 @@ mod tests {
         let _g = serial();
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("paneflow.json");
-        write_config(&path, "Dracula");
+        write_config(&path, "One Dark");
 
         {
             let watcher = ThemeWatcher::new_with_path(path.clone(), Arc::new(|| {}));

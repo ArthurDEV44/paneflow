@@ -11,7 +11,7 @@
 mod git;
 mod ports;
 
-pub use git::{GitDiffStats, detect_branch, find_git_dir};
+pub use git::{GitDiffStats, detect_branch, find_git_dir, find_workdir};
 pub use ports::detect_ports;
 
 use std::cell::Cell;
@@ -187,14 +187,16 @@ impl Workspace {
     }
 
     /// Total number of terminal tabs across every pane in the layout.
-    /// A pane holds 1..N tabbed terminals, so this is ≥ `pane_count()`.
+    /// A pane holds 1..N mixed tabs (terminals + markdown viewers); this
+    /// counter only reflects terminals, since the sidebar badge advertises
+    /// terminal sessions specifically.
     pub fn terminal_count(&self, cx: &App) -> usize {
         let Some(root) = self.root.as_ref() else {
             return 0;
         };
         root.collect_leaves()
             .iter()
-            .map(|pane| pane.read(cx).tabs.len())
+            .map(|pane| pane.read(cx).terminals().count())
             .sum()
     }
 

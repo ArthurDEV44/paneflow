@@ -159,6 +159,151 @@ impl PaneFlowApp {
                 self.save_session(cx);
                 cx.notify();
             }
+            pane::PaneEvent::OpenClaudeSessions(position) => {
+                // Toggle: clicking the icon again with the menu open closes it.
+                if self.claude_sessions_menu_open.is_some() {
+                    self.claude_sessions_menu_open = None;
+                    self.claude_sessions.clear();
+                    self.codex_sessions.clear();
+                    self.opencode_sessions.clear();
+                    self.claude_sessions_cwd = None;
+                    self.claude_sessions_pane = None;
+                    self.sessions_active_agent = crate::agent_sessions::SessionAgent::Claude;
+                    cx.notify();
+                    return;
+                }
+
+                // Resolve the active terminal's cwd: prefer the OSC 7 push
+                // (`current_cwd`), fall back to the on-demand `cwd_now()`
+                // syscall for shells that don't emit OSC 7.
+                let cwd_str = pane.read(cx).active_terminal_opt().and_then(|tv| {
+                    let view = tv.read(cx);
+                    view.terminal.current_cwd.clone().or_else(|| {
+                        view.terminal
+                            .cwd_now()
+                            .map(|p| p.to_string_lossy().into_owned())
+                    })
+                });
+
+                // Mutually exclusive with the other dropdowns; matches the
+                // title-bar / profile / notif menu pattern.
+                self.workspace_menu_open = None;
+                self.title_bar_menu_open = None;
+                self.profile_menu_open = None;
+                self.notif_menu_open = None;
+
+                self.claude_sessions_menu_open = Some(*position);
+                self.claude_sessions_cwd = cwd_str.clone();
+                self.claude_sessions_pane = Some(pane.downgrade());
+                self.claude_sessions.clear();
+                self.codex_sessions.clear();
+                self.opencode_sessions.clear();
+                // Seed the active tab to the first agent the user has kept
+                // visible in Settings → AI Agent. Falling back to Claude
+                // when the list is empty is harmless: with no agent enabled
+                // the sessions icon itself is hidden in `pane.rs`, so this
+                // open path can't fire — the value just needs to satisfy
+                // the field's type.
+                let enabled_agents = crate::agent_sessions::enabled_session_agents();
+                self.sessions_active_agent = enabled_agents
+                    .first()
+                    .copied()
+                    .unwrap_or(crate::agent_sessions::SessionAgent::Claude);
+                // Fresh handle so a previous scroll offset doesn't bleed
+                // into the new popover.
+                self.claude_sessions_scroll = gpui::ScrollHandle::new();
+                self.claude_sessions_drag = None;
+
+                if let Some(cwd) = cwd_str {
+                    // Parallel scans — Claude Code under
+                    // `~/.claude/projects/<slug>/`, Codex CLI under
+                    // `~/.codex/sessions/YYYY/MM/DD/`, and OpenCode via
+                    // a `opencode session list --format json` shell-out
+                    // (the SQLite schema is unstable; the CLI is the
+                    // published contract — see US-001 spike notes).
+                    // Each task writes to its own Vec on the main
+                    // thread. The popover may be closed or re-opened
+                    // against a different cwd before any scan finishes,
+                    // so we drop stale results by checking
+                    // `claude_sessions_cwd` matches before applying.
+                    //
+                    // Scans for agents the user has hidden in Settings →
+                    // AI Agent are skipped: with no UI to surface them
+                    // the disk read would just be wasted I/O.
+                    let scan_claude = enabled_agents
+                        .contains(&crate::agent_sessions::SessionAgent::Claude);
+                    let scan_codex = enabled_agents
+                        .contains(&crate::agent_sessions::SessionAgent::Codex);
+                    let scan_opencode = enabled_agents
+                        .contains(&crate::agent_sessions::SessionAgent::OpenCode);
+
+                    if scan_claude {
+                        let claude_cwd_scan = cwd.clone();
+                        let claude_cwd_match = cwd.clone();
+                        cx.spawn(async move |this, cx| {
+                            let sessions = smol::unblock(move || {
+                                crate::claude_sessions::read_sessions_for_cwd(&claude_cwd_scan)
+                            })
+                            .await;
+                            let _ = this.update(cx, |app, cx| {
+                                if app.claude_sessions_menu_open.is_some()
+                                    && app.claude_sessions_cwd.as_deref()
+                                        == Some(claude_cwd_match.as_str())
+                                {
+                                    app.claude_sessions = sessions;
+                                    cx.notify();
+                                }
+                            });
+                        })
+                        .detach();
+                    }
+
+                    if scan_codex {
+                        let codex_cwd_scan = cwd.clone();
+                        let codex_cwd_match = cwd.clone();
+                        cx.spawn(async move |this, cx| {
+                            let sessions = smol::unblock(move || {
+                                crate::codex_sessions::read_sessions_for_cwd(&codex_cwd_scan)
+                            })
+                            .await;
+                            let _ = this.update(cx, |app, cx| {
+                                if app.claude_sessions_menu_open.is_some()
+                                    && app.claude_sessions_cwd.as_deref()
+                                        == Some(codex_cwd_match.as_str())
+                                {
+                                    app.codex_sessions = sessions;
+                                    cx.notify();
+                                }
+                            });
+                        })
+                        .detach();
+                    }
+
+                    if scan_opencode {
+                        let opencode_cwd_scan = cwd.clone();
+                        let opencode_cwd_match = cwd;
+                        cx.spawn(async move |this, cx| {
+                            let sessions = smol::unblock(move || {
+                                crate::opencode_sessions::read_sessions_for_cwd(
+                                    &opencode_cwd_scan,
+                                )
+                            })
+                            .await;
+                            let _ = this.update(cx, |app, cx| {
+                                if app.claude_sessions_menu_open.is_some()
+                                    && app.claude_sessions_cwd.as_deref()
+                                        == Some(opencode_cwd_match.as_str())
+                                {
+                                    app.opencode_sessions = sessions;
+                                    cx.notify();
+                                }
+                            });
+                        })
+                        .detach();
+                    }
+                }
+                cx.notify();
+            }
             pane::PaneEvent::Split(direction) => {
                 let direction = *direction;
                 const MAX_PANES: usize = 32;
@@ -257,63 +402,48 @@ impl PaneFlowApp {
                 self.show_toast("Copied", cx);
             }
             terminal::TerminalEvent::OpenMarkdownPath(path) => {
-                self.open_markdown_in_split(&terminal, path.clone(), cx);
+                self.open_markdown_in_pane(&terminal, path.clone(), cx);
             }
             // ChildExited + TitleChanged are handled by Pane's subscription
             _ => {}
         }
     }
 
-    /// US-020 — split the pane that owns `source_terminal` vertically and
-    /// install a fresh `MarkdownView` of `path` in the new half.
+    /// US-020 — append a markdown tab to the pane that owns `source_terminal`.
     ///
-    /// Mirrors the `PaneEvent::Split` flow but creates a markdown pane
-    /// instead of a terminal one, and forces the split direction to
-    /// `Vertical` (side-by-side) per the AC: the user wants the markdown
-    /// readable next to the terminal that referenced it, not stacked
-    /// above/below it.
-    fn open_markdown_in_split(
+    /// The historical implementation split the layout vertically and created
+    /// a dedicated markdown pane; the user feedback was that opening a doc
+    /// shouldn't shrink the terminal real-estate. The current behaviour is to
+    /// make markdown a peer tab inside the same pane — the user keeps the
+    /// terminal+markdown pair via Ctrl+Tab / mouse-click, and the layout tree
+    /// is untouched.
+    fn open_markdown_in_pane(
         &mut self,
         source_terminal: &Entity<TerminalView>,
         path: std::path::PathBuf,
         cx: &mut Context<Self>,
     ) {
-        const MAX_PANES: usize = 32;
         let Some(ws_idx) = self.workspace_idx_for_terminal(source_terminal, cx) else {
             return;
         };
-        if let Some(root) = &self.workspaces[ws_idx].root
-            && root.leaf_count() >= MAX_PANES
-        {
-            return;
-        }
-        // Find the source pane (the one whose tab strip contains this terminal).
         let source_pane = self.workspaces[ws_idx].root.as_ref().and_then(|root| {
             root.collect_leaves()
                 .into_iter()
-                .find(|pane| pane.read(cx).tabs.contains(source_terminal))
+                .find(|pane| pane.read(cx).contains_terminal(source_terminal))
         });
         let Some(source_pane) = source_pane else {
             return;
         };
 
-        let ws_id = self.workspaces[ws_idx].id;
         let path_for_pane = path.clone();
         let markdown = cx.new(|cx: &mut Context<crate::markdown::MarkdownView>| {
             crate::markdown::MarkdownView::open(path_for_pane, cx)
         });
-        let new_pane = cx.new(|cx| crate::pane::Pane::new_markdown(markdown, ws_id, cx));
-        cx.subscribe(&new_pane, Self::handle_pane_event).detach();
 
-        if let Some(ws) = self.workspaces.get_mut(ws_idx)
-            && let Some(root) = &mut ws.root
-        {
-            root.split_at_pane(
-                &source_pane,
-                crate::layout::SplitDirection::Vertical,
-                new_pane,
-            );
-        }
+        source_pane.update(cx, |pane, cx| {
+            pane.add_markdown_tab(markdown, cx);
+            cx.notify();
+        });
         self.save_session(cx);
         cx.notify();
     }
@@ -328,7 +458,7 @@ impl PaneFlowApp {
             ws.root.as_ref().is_some_and(|root| {
                 root.collect_leaves()
                     .iter()
-                    .any(|pane| pane.read(cx).tabs.contains(terminal))
+                    .any(|pane| pane.read(cx).contains_terminal(terminal))
             })
         })
     }
@@ -466,9 +596,9 @@ impl PaneFlowApp {
                     .iter()
                     .flat_map(|pane| {
                         pane.read(cx)
-                            .tabs
-                            .iter()
+                            .terminals()
                             .map(|tv| tv.read(cx).terminal.child_pid)
+                            .collect::<Vec<_>>()
                     })
                     .collect()
             })

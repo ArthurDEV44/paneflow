@@ -109,6 +109,28 @@ pub fn find_git_dir(cwd: &str) -> Option<std::path::PathBuf> {
     }
 }
 
+/// Find the working-tree root for a working directory.
+///
+/// Walks up from `cwd` and returns the first ancestor that contains a `.git`
+/// entry (file or directory) — i.e. the directory the user typically thinks of
+/// as "the repo root". Differs from [`find_git_dir`] in two ways: it returns
+/// the *parent* of `.git`, not `.git` itself, and for worktrees it returns the
+/// worktree's working directory rather than the resolved metadata gitdir.
+///
+/// Returns `None` when no `.git` ancestor is found.
+pub fn find_workdir(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut search_dir = cwd;
+    loop {
+        if search_dir.join(".git").exists() {
+            return Some(search_dir.to_path_buf());
+        }
+        match search_dir.parent() {
+            Some(parent) => search_dir = parent,
+            None => return None,
+        }
+    }
+}
+
 /// Parse branch name from a known `.git` directory's `HEAD` file.
 ///
 /// Returns `(branch_name, true)`. On read failure returns `("", true)` —

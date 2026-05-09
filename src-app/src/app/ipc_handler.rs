@@ -86,7 +86,7 @@ fn find_terminal_in_tree(
     match node {
         LayoutTree::Leaf(pane) => {
             let pane = pane.read(cx);
-            for terminal in &pane.tabs {
+            for terminal in pane.terminals() {
                 if terminal.entity_id().as_u64() == surface_id {
                     return Some(terminal.clone());
                 }

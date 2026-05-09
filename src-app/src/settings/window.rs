@@ -9,8 +9,9 @@
 
 use gpui::{
     App, Bounds, Context, CursorStyle, Decorations, FocusHandle, Focusable, HitboxBehavior,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, ResizeEdge,
-    Styled, Window, WindowControlArea, canvas, div, point, prelude::*, px, rgb, transparent_black,
+    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
+    Pixels, Point, Render, ResizeEdge, Styled, Window, WindowControlArea, canvas, div, point,
+    prelude::*, px, rgb, transparent_black,
 };
 
 use crate::keybindings;
@@ -61,6 +62,8 @@ pub struct SettingsWindow {
     pub(super) font_dropdown_open: bool,
     pub(super) font_search: String,
     pub(super) should_move: bool,
+    pub(super) content_scroll: gpui::ScrollHandle,
+    pub(super) content_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
 }
 
 impl SettingsWindow {
@@ -81,7 +84,90 @@ impl SettingsWindow {
             font_dropdown_open: false,
             font_search: String::new(),
             should_move: false,
+            content_scroll: gpui::ScrollHandle::new(),
+            content_drag: None,
         }
+    }
+
+    /// Compose the scrollable settings content area + visible scrollbar
+    /// overlay. Lives on the `SettingsWindow` Entity so the drag state
+    /// (`content_drag`) is local to this window — the parent `PaneFlowApp`
+    /// has its own copy for the inline-settings render path.
+    fn render_content_scroll_area(
+        &self,
+        content: gpui::AnyElement,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        use crate::widgets::scrollbar;
+
+        let inner = div()
+            .id("settings-content")
+            .flex_1()
+            .pr(scrollbar::SCROLLBAR_GUTTER)
+            .bg(settings_content_bg())
+            .overflow_y_scroll()
+            .track_scroll(&self.content_scroll)
+            .flex()
+            .flex_col()
+            .items_start()
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(720.))
+                    .px(px(28.))
+                    .pt(px(24.))
+                    .pb(px(16.))
+                    .child(content),
+            );
+
+        let bar = scrollbar::render(
+            &self.content_scroll,
+            crate::theme::ui_colors(),
+            None,
+            "settings-content-scrollbar-track",
+            "settings-content-scrollbar-thumb",
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                if let Some(off) =
+                    scrollbar::track_click_offset(&this.content_scroll, ev.position.y)
+                {
+                    this.content_scroll.set_offset(Point::new(px(0.), px(off)));
+                    cx.notify();
+                }
+            }),
+            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                this.content_drag =
+                    Some(scrollbar::begin_drag(&this.content_scroll, ev.position.y));
+                cx.stop_propagation();
+            }),
+        );
+
+        div()
+            .id("settings-content-wrapper")
+            .relative()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                if let Some(drag) = this.content_drag
+                    && let Some(off) =
+                        scrollbar::drag_offset(&this.content_scroll, &drag, ev.position.y)
+                {
+                    this.content_scroll.set_offset(Point::new(px(0.), px(off)));
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.content_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(inner)
+            .when_some(bar, |d, sb| d.child(sb))
     }
 
     fn cleanup(&mut self, cx: &mut App) {
@@ -284,25 +370,7 @@ impl Render for SettingsWindow {
                     .flex_1()
                     .min_h_0()
                     .child(self.render_settings_sidebar(self.section, ui, cx))
-                    .child(
-                        div()
-                            .id("settings-content")
-                            .flex_1()
-                            .bg(settings_content_bg())
-                            .overflow_y_scroll()
-                            .flex()
-                            .flex_col()
-                            .items_start()
-                            .child(
-                                div()
-                                    .w_full()
-                                    .max_w(px(720.))
-                                    .px(px(28.))
-                                    .pt(px(24.))
-                                    .pb(px(16.))
-                                    .child(content),
-                            ),
-                    ),
+                    .child(self.render_content_scroll_area(content, cx)),
             );
 
         div()

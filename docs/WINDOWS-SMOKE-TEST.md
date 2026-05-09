@@ -284,16 +284,16 @@ release on this specific edge case unless PaneFlow itself crashes.
    `%APPDATA%\paneflow\paneflow.json`.
    - On Windows this path resolves via `dirs::config_dir()` to
      `C:\Users\<you>\AppData\Roaming\paneflow\`.
-2. Edit the config (e.g., change `theme` from "Catppuccin Mocha" to
-   "Dracula") and save. Watch for hot-reload (500ms polling) — theme
-   should update within ~1 second.
+2. Edit the config (e.g., change `theme` from "One Dark" to
+   "PaneFlow Light") and save. Watch for hot-reload (500ms polling) —
+   theme should update within ~1 second.
 3. Close all PaneFlow windows.
 4. Relaunch from Start Menu.
-5. `[📸]` Capture the window showing the Dracula theme still applied.
+5. `[📸]` Capture the window showing the PaneFlow Light theme still applied.
 
 **Expected:**
-- Config file persists across launches — the "Dracula" setting from
-  step 2 is honored on relaunch.
+- Config file persists across launches — the "PaneFlow Light" setting
+  from step 2 is honored on relaunch.
 - No "default config created" message (would indicate the config
   file was wiped).
 
@@ -309,7 +309,7 @@ release on this specific edge case unless PaneFlow itself crashes.
 4. After uninstall completes:
    - Verify `%ProgramFiles%\PaneFlow\` is absent (or empty).
    - Verify `%APPDATA%\paneflow\paneflow.json` **STILL EXISTS** and
-     retains the Dracula theme setting from scenario 9.
+     retains the PaneFlow Light theme setting from scenario 9.
 5. `[📸]` Capture both `explorer` windows side by side: the empty
    Program Files path and the still-populated AppData path.
 

@@ -14,7 +14,7 @@ pub struct PaneFlowConfig {
     pub shortcuts: HashMap<String, String>,
     /// Default shell binary path. `None` uses the system default.
     pub default_shell: Option<String>,
-    /// Terminal color theme name (e.g. "Catppuccin Mocha", "Dracula").
+    /// Terminal color theme name (e.g. "One Dark", "PaneFlow Light").
     pub theme: Option<String>,
     /// Workspace command definitions (cmux-compatible format).
     pub commands: Vec<CommandDefinition>,
