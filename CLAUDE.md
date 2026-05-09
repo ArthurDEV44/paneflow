@@ -24,6 +24,24 @@ cargo clippy --workspace -- -D warnings
 cargo fmt --check
 ```
 
+## Pre-commit checks (mandatory)
+
+**Before EVERY `git commit` and EVERY `git push` that touches Rust code, run:**
+
+```bash
+cargo fmt --check
+```
+
+If it reports any diff, run `cargo fmt`, re-stage the touched files, then commit.
+
+Why this is non-negotiable on this repo:
+
+- The release pipeline (`.github/workflows/release.yml`) runs `cargo fmt --check` as step 9 of every Build job on all four matrix legs (Linux x86_64, Linux aarch64, macOS aarch64, Windows x86_64). A single mis-formatted line fails all four legs, skips the "Publish GitHub Release" step, and burns a ~25 min CI run before producing nothing.
+- It also blocks tag-push releases: if the tag commit is dirty, you have to delete + re-create the tag at the fix commit (force-update) to retry — the original tagged build cannot be salvaged.
+- rustfmt drifts between Rust point releases (`a4c75f6` was a v0.2.15 patch for rustfmt 1.9.0; `c292dfa` was the same patch for v0.2.16). Even code that compiled clean a week ago can need re-formatting after a toolchain bump.
+
+For tag-push releases specifically: run `cargo fmt --check` *one last time* on the exact commit you're about to tag, before `git tag` and `git push origin <tag>`. This is the cheapest possible guard against a wasted 25 min release run.
+
 ## Architecture
 
 ```
