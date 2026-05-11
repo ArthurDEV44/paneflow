@@ -1,48 +1,66 @@
 # PaneFlow
 
-A GPU-accelerated terminal multiplexer for Linux, built in Rust with [Zed's GPUI framework](https://github.com/zed-industries/zed/tree/main/crates/gpui).
+A GPU-accelerated terminal multiplexer built in Rust with [Zed's GPUI framework](https://github.com/zed-industries/zed/tree/main/crates/gpui).
 
-PaneFlow aims to be a modern alternative to tmux/screen with native GPU rendering, split panes, workspaces, and session persistence — all without requiring a terminal emulator host.
+PaneFlow aims to be a modern alternative to tmux/screen with native GPU rendering, split panes, workspaces, and session persistence, all without a terminal emulator host. Linux is the primary target; macOS and Windows are supported.
+
+<p align="center">
+  <img src="assets/images/hero-paneflow.png" alt="PaneFlow" width="100%" />
+</p>
 
 ## Features
 
-- **GPU-accelerated rendering** via Vulkan (GPUI)
-- **Split panes** — horizontal and vertical, drag-to-resize, up to 32 panes
-- **Workspaces** — up to 20 workspaces with rename, quick-switch (Ctrl+1-9)
-- **Session persistence** — save/restore layouts, CWD, and workspace names
-- **Themes** — 2 bundled themes with hot-reload (One Dark, PaneFlow Light)
-- **Custom keybindings** — configurable via JSON
-- **IPC** — Unix socket JSON-RPC 2.0 for scripting and AI agent integration
-- **Client-side decorations** — custom title bar with drag-to-move
-- **Wayland + X11** support
+- **GPU-accelerated rendering**: Vulkan on Linux, Metal on macOS, DirectX on Windows (handled by GPUI)
+- **Split panes**: horizontal and vertical, drag-to-resize, layout presets (even, main+stack, tiled), up to 32 panes
+- **Workspaces**: up to 20 workspaces with rename, quick-switch (`Ctrl+1`-`9`), undo close
+- **Session persistence**: save/restore layouts, CWD, workspace names, and custom buttons
+- **Themes**: 2 bundled themes with hot-reload (One Dark, PaneFlow Light)
+- **Custom keybindings**: JSON-configurable override of every default action (57 actions)
+- **Find-in-buffer**: `Ctrl+Shift+F`, regex toggle, match cycling
+- **Hyperlinks**: OSC 8 escape sequences + automatic URL detection
+- **Markdown pane**: render a Markdown file in-pane next to a terminal
+- **Dev-server detection**: surfaces Vite, Next.js, Webpack, and other local ports in the sidebar
+- **AI agent integration**: Claude Code / Codex / Opencode launchers, session tracking, JSON-RPC events
+- **Auto-update**: in-app updater for every supported install format
+- **IPC**: JSON-RPC 2.0 over Unix socket (Linux/macOS) or named pipe (Windows)
+- **Cross-platform**: Linux (Wayland + X11), macOS 13 Ventura+, Windows 10 1809+
 
 ## Prerequisites
 
-### System dependencies
+### Rust toolchain
 
-Install the required development libraries for your distribution:
+PaneFlow pins **Rust 1.95** via [`rust-toolchain.toml`](rust-toolchain.toml). [rustup](https://rustup.rs/) installs the exact version automatically the first time you run `cargo`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+### Linux system dependencies
+
+Install the build libraries for your distribution:
 
 **Debian/Ubuntu:**
 ```bash
-sudo apt install build-essential libvulkan-dev libwayland-dev libxkbcommon-dev \
-  libx11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-  libxkbcommon-x11-dev
+sudo apt install build-essential pkg-config libssl-dev libvulkan-dev \
+  libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxcb1-dev \
+  libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig-dev \
+  libfreetype-dev libdbus-1-dev
 ```
 
 **Fedora:**
 ```bash
-sudo dnf install gcc vulkan-loader-devel wayland-devel libxkbcommon-devel \
-  libX11-devel libxcb-devel
+sudo dnf install gcc pkgconf-pkg-config openssl-devel vulkan-loader-devel \
+  wayland-devel libxkbcommon-devel libX11-devel libxcb-devel \
+  fontconfig-devel freetype-devel dbus-devel
 ```
 
 **Arch Linux:**
 ```bash
-sudo pacman -S base-devel vulkan-icd-loader wayland libxkbcommon libx11 libxcb
+sudo pacman -S base-devel pkg-config openssl vulkan-icd-loader wayland \
+  libxkbcommon libx11 libxcb fontconfig freetype2 dbus
 ```
 
-### Vulkan GPU driver
-
-PaneFlow requires a GPU with Vulkan support:
+### Vulkan GPU driver (Linux only)
 
 ```bash
 # AMD/Intel (Mesa)
@@ -58,48 +76,33 @@ sudo pacman -S nvidia-utils                 # Arch
 vulkaninfo --summary
 ```
 
-### Rust toolchain
-
-Install via [rustup](https://rustup.rs/):
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
 ## Install
 
-Pick the format that matches your distro. Every format ships the same
-binary — the differences are how updates arrive and where files land on
-disk. All artifacts are attached to the [latest GitHub
-release](https://github.com/ArthurDEV44/paneflow/releases/latest).
+Pick the format that matches your platform. Every format ships the same binary; the differences are how updates arrive and where files land on disk. All artifacts are attached to the [latest GitHub release](https://github.com/ArthurDEV44/paneflow/releases/latest).
 
-> **Substitute placeholders before running.** The commands below use
-> two placeholders:
-> - `vX.Y.Z` — replace with the release tag on the GitHub Releases
->   page (e.g., `v0.2.0`). Copying the command verbatim will 404.
-> - `<ARCH>` — replace with `x86_64` or `aarch64` depending on your
->   machine (check with `uname -m`).
+> **Substitute placeholders before running.** The commands below use two placeholders:
+> - `X.Y.Z`: replace with the release version (e.g., `0.2.16`). **No leading `v`** in the asset filename.
+> - `<ARCH>`: replace with `x86_64` or `aarch64` (check with `uname -m`).
 >
 > To auto-resolve the latest version:
 > ```bash
 > VER=$(curl -fsSL https://api.github.com/repos/ArthurDEV44/paneflow/releases/latest \
->       | grep -oE '"tag_name":\s*"v[^"]+"' | cut -d\" -f4)
+>       | grep -oE '"tag_name":\s*"v[^"]+"' | cut -d\" -f4 | sed 's/^v//')
 > ARCH=$(uname -m)
 > ```
-> Then paste `$VER` and `$ARCH` in place of the placeholders below.
+> Then paste `$VER` and `$ARCH` in place of the placeholders below. The Git tag uses a `v` prefix (`v0.2.16`); the artifact filenames do not (`paneflow-0.2.16-x86_64.deb`).
 
 ### Ubuntu / Debian / Mint (apt + repo)
 
-One-shot install of the `.deb`. The package's `postinst` automatically
-wires `pkg.paneflow.dev` into `/etc/apt/sources.list.d/paneflow.list`,
-so `apt upgrade` pulls subsequent releases:
+One-shot install of the `.deb`. The package's `postinst` automatically wires `pkg.paneflow.dev` into `/etc/apt/sources.list.d/paneflow.list`, so `apt upgrade` pulls subsequent releases:
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-vX.Y.Z-<ARCH>.deb
-# Verify the signature BEFORE `apt install` — postinst runs as root,
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-<ARCH>.deb
+# Verify the signature BEFORE `apt install`: postinst runs as root,
 # so an unsigned/tampered .deb could write arbitrary repo sources.
 sudo apt install -y dpkg-sig
-dpkg-sig --verify paneflow-vX.Y.Z-<ARCH>.deb       # expect: GOODSIG
-sudo apt install ./paneflow-vX.Y.Z-<ARCH>.deb
+dpkg-sig --verify paneflow-X.Y.Z-<ARCH>.deb       # expect: GOODSIG
+sudo apt install ./paneflow-X.Y.Z-<ARCH>.deb
 paneflow --version
 ```
 
@@ -111,15 +114,14 @@ sudo apt update && sudo apt upgrade paneflow
 
 ### Fedora / RHEL / Rocky (dnf + repo)
 
-Same pattern with `.rpm`. The `%post` scriptlet drops
-`/etc/yum.repos.d/paneflow.repo` pointing at `pkg.paneflow.dev/rpm`:
+Same pattern with `.rpm`. The `%post` scriptlet drops `/etc/yum.repos.d/paneflow.repo` pointing at `pkg.paneflow.dev/rpm`:
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-vX.Y.Z-<ARCH>.rpm
-# Verify the signature BEFORE `dnf install` — %post runs as root.
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-<ARCH>.rpm
+# Verify the signature BEFORE `dnf install`: %post runs as root.
 sudo rpm --import https://pkg.paneflow.dev/gpg      # see Troubleshooting for the TOFU caveat
-rpm --checksig paneflow-vX.Y.Z-<ARCH>.rpm           # expect: digests signatures OK
-sudo dnf install ./paneflow-vX.Y.Z-<ARCH>.rpm
+rpm --checksig paneflow-X.Y.Z-<ARCH>.rpm            # expect: digests signatures OK
+sudo dnf install ./paneflow-X.Y.Z-<ARCH>.rpm
 paneflow --version
 ```
 
@@ -131,89 +133,96 @@ sudo dnf upgrade paneflow
 
 ### AppImage (portable, any distro)
 
-Single-file download. No install, no root — double-click to run or
-launch from the terminal. Best for distros with no official `.deb` /
-`.rpm` and for trying PaneFlow on a machine you don't manage:
+Single-file download. No install, no root; double-click to run or launch from the terminal:
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-vX.Y.Z-<ARCH>.AppImage
-chmod +x paneflow-vX.Y.Z-<ARCH>.AppImage
-./paneflow-vX.Y.Z-<ARCH>.AppImage --version   # `paneflow --version` equivalent (AppImage is not on $PATH)
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-<ARCH>.AppImage
+chmod +x paneflow-X.Y.Z-<ARCH>.AppImage
+./paneflow-X.Y.Z-<ARCH>.AppImage --version
 ```
 
-Ubuntu 24.04+ and Fedora Silverblue ship without FUSE 2 by default —
-see [Troubleshooting → AppImage won't run on Ubuntu
-24.04](#appimage-wont-run-on-ubuntu-2404) if the command above fails.
+Ubuntu 24.04+ and Fedora Silverblue ship without FUSE 2 by default; see [Troubleshooting > AppImage won't run on Ubuntu 24.04](#appimage-wont-run-on-ubuntu-2404) if the command above fails.
 
 ### Tarball (immutable distros, no-root installs)
 
-Use this on Fedora Silverblue, SteamOS, NixOS, or any machine where
-you'd rather not touch `/usr`. Installs to `~/.local/paneflow.app/`
-and symlinks `~/.local/bin/paneflow`:
+Use this on Fedora Silverblue, SteamOS, NixOS, or any machine where you'd rather not touch `/usr`. Installs to `~/.local/paneflow.app/` and symlinks `~/.local/bin/paneflow`:
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-vX.Y.Z-<ARCH>.tar.gz
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-vX.Y.Z-<ARCH>.tar.gz.sha256
-sha256sum --check paneflow-vX.Y.Z-<ARCH>.tar.gz.sha256
-tar xzf paneflow-vX.Y.Z-<ARCH>.tar.gz
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-<ARCH>.tar.gz
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-<ARCH>.tar.gz.sha256
+sha256sum --check paneflow-X.Y.Z-<ARCH>.tar.gz.sha256
+tar xzf paneflow-X.Y.Z-<ARCH>.tar.gz
 ./paneflow.app/install.sh
 ~/.local/bin/paneflow --version
 ```
 
-The in-app updater atomically swaps `~/.local/paneflow.app/` on new
-releases (no package manager involved).
+The in-app updater atomically swaps `~/.local/paneflow.app/` on new releases (no package manager involved).
+
+### macOS (Apple Silicon)
+
+The signed + notarized `.dmg` is published for `aarch64-apple-darwin` (Apple Silicon). Intel (`x86_64-apple-darwin`) is currently out of the build matrix and is targeted for re-introduction in a future release.
+
+```bash
+# Direct download. Drag PaneFlow.app into /Applications from the mounted DMG.
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-aarch64-apple-darwin.dmg
+open paneflow-X.Y.Z-aarch64-apple-darwin.dmg
+```
+
+A Homebrew cask (`brew tap arthurdev44/paneflow && brew install --cask paneflow`) is wired into the release pipeline and will publish from v0.3.0 onward. Until then, prefer the direct DMG download.
+
+Gatekeeper accepts the signed DMG offline; no `xattr -cr` workaround is needed for release builds.
+
+### Windows
+
+A signed `.msi` for `x86_64-pc-windows-msvc` (Windows 10 1809+ and Windows 11) is on the release roadmap; the Azure Trusted Signing pipeline is in place but the artifact is not yet attached to releases. winget (`winget install ArthurDev44.PaneFlow`) follows the first signed MSI submission to Microsoft. See [`docs/WINDOWS.md`](docs/WINDOWS.md) for the supported-versions matrix and known limitations, and the contributor build instructions below for building locally in the meantime.
 
 ## Troubleshooting
 
+### "No GPU adapter found" / Vulkan unavailable
+
+The most common first-launch error on Linux, especially in VMs, WSL2, or on hosts without an ICD installed. The fix depends on the platform:
+
+```bash
+# Install a Vulkan ICD (see Prerequisites > Vulkan GPU driver above).
+vulkaninfo --summary    # should list at least one physicalDevice
+
+# WSL2 / headless / GPU-less hosts: force the lavapipe software ICD.
+sudo apt install mesa-vulkan-drivers  # Debian/Ubuntu
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json paneflow
+```
+
+GPUI auto-selects Wayland or X11 based on `WAYLAND_DISPLAY` / `DISPLAY`. To force X11 on a Wayland session: `WAYLAND_DISPLAY= paneflow`.
+
 ### AppImage won't run on Ubuntu 24.04
 
-Ubuntu 24.04 and newer don't ship `libfuse2` by default. The error
-looks like `dlopen(): error loading libfuse.so.2`. Two fixes:
+Ubuntu 24.04 and newer don't ship `libfuse2` by default. The error looks like `dlopen(): error loading libfuse.so.2`. Two fixes:
 
 - **Preferred:** skip FUSE by mounting the AppImage in-process:
   ```bash
-  ./paneflow-vX.Y.Z-x86_64.AppImage --appimage-extract-and-run
+  ./paneflow-X.Y.Z-x86_64.AppImage --appimage-extract-and-run
   ```
 - **Alternative:** install the compatibility shim
   ```bash
   sudo apt install libfuse2t64
   ```
-  On Ubuntu 22.04 the package is `libfuse2` instead. Installing
-  `libfuse2` on 24.04 can remove `ubuntu-session` as a transitive
-  conflict — `--appimage-extract-and-run` avoids that risk.
+  On Ubuntu 22.04 the package is `libfuse2` instead. Installing `libfuse2` on 24.04 can remove `ubuntu-session` as a transitive conflict; `--appimage-extract-and-run` avoids that risk.
 
 ### Verifying releases
 
-Every Paneflow release is signed and the procedure to verify a
-downloaded artifact is documented per platform. Pick the runbook that
-matches what you downloaded:
+Every PaneFlow release is signed and the procedure to verify a downloaded artifact is documented per platform:
 
-- **Linux** (`.deb` / `.rpm` / `.tar.gz` / `.AppImage`) —
-  [`docs/release/linux-signing.md`](docs/release/linux-signing.md).
-  GPG-signed `.deb` + `.rpm` (key:
-  [`keys/paneflow-release.asc`](keys/paneflow-release.asc)); SHA-256
-  sidecars on `.tar.gz` and `.AppImage`.
-- **macOS** (`.dmg` / `.app`) —
-  [`docs/release/macos-signing.md`](docs/release/macos-signing.md).
-  Apple Developer ID signed + notarized + stapled — Gatekeeper accepts
-  offline.
-- **Windows** (`.msi`) —
-  [`docs/release/windows-signing.md`](docs/release/windows-signing.md).
-  Azure Trusted Signing — verify via
-  `signtool verify /pa /v paneflow-X.Y.Z-x86_64-pc-windows-msvc.msi`.
+- **Linux** (`.deb` / `.rpm` / `.tar.gz` / `.AppImage`): [`docs/release/linux-signing.md`](docs/release/linux-signing.md). GPG-signed `.deb` + `.rpm` (key: [`keys/paneflow-release.asc`](keys/paneflow-release.asc)); SHA-256 sidecars on `.tar.gz` and `.AppImage`.
+- **macOS** (`.dmg` / `.app`): [`docs/release/macos-signing.md`](docs/release/macos-signing.md). Apple Developer ID signed + notarized + stapled.
+- **Windows** (`.msi`): [`docs/release/windows-signing.md`](docs/release/windows-signing.md). Azure Trusted Signing; verify via `signtool verify /pa /v paneflow-X.Y.Z-x86_64-pc-windows-msvc.msi`.
 
-**Quick `.deb` verification** (full procedure — including the
-mandatory fingerprint cross-check before key import — in the Linux
-runbook §1; do NOT paste the snippet below until you have verified
-the key fingerprint matches
-`9809948F4433CF93DD1329449A252F0C183F2711`):
+**Quick `.deb` verification** (full procedure, including the mandatory fingerprint cross-check before key import, in the Linux runbook §1; do NOT paste the snippet below until you have verified the key fingerprint matches `9809948F4433CF93DD1329449A252F0C183F2711`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ArthurDEV44/paneflow/main/keys/paneflow-release.asc \
   | gpg --dearmor \
   | sudo tee /usr/share/keyrings/paneflow-archive.gpg >/dev/null
 sudo apt-get install -y dpkg-sig
-dpkg-sig --verify paneflow-vX.Y.Z-x86_64.deb   # expect: GOODSIG
+dpkg-sig --verify paneflow-X.Y.Z-x86_64.deb   # expect: GOODSIG
 ```
 
 ### Uninstall
@@ -234,9 +243,7 @@ sudo dnf remove paneflow
 sudo rm /etc/yum.repos.d/paneflow.repo                # remove DNF source
 ```
 
-**AppImage:** just `rm paneflow-vX.Y.Z-<ARCH>.AppImage`. Nothing else
-is installed on disk (PaneFlow's AppImage doesn't write to `~/.local`
-or `/etc`).
+**AppImage:** just `rm paneflow-X.Y.Z-<ARCH>.AppImage`. Nothing else is installed on disk.
 
 **.tar.gz:**
 
@@ -252,34 +259,18 @@ rm -rf ~/.config/paneflow ~/.cache/paneflow
 
 ## Build from source
 
+### Linux
+
 ```bash
 git clone https://github.com/ArthurDEV44/paneflow.git
 cd paneflow
-cargo build --release
-bash scripts/bundle-tarball.sh
+cargo build --release -p paneflow-app
+bash scripts/bundle-tarball.sh "$(cargo pkgid -p paneflow-app | sed 's/.*#//')"
 tar xzf target/bundle/paneflow-*.tar.gz -C /tmp
 /tmp/paneflow.app/install.sh
 ```
 
-## macOS
-
-PaneFlow supports macOS 13 Ventura or later on both Apple Silicon
-(`aarch64-apple-darwin`, primary target) and Intel (`x86_64-apple-darwin`,
-best-effort). Distribution is via signed + notarized `.dmg` on GitHub
-Releases and a Homebrew cask.
-
-**Install (end users):**
-
-```bash
-# Homebrew cask (recommended)
-brew tap arthurdev44/paneflow
-brew install --cask paneflow
-
-# Or direct download — drag PaneFlow.app into /Applications
-# from the mounted DMG.
-```
-
-**Build from source (contributors):**
+### macOS
 
 ```bash
 # 1. Install Xcode Command Line Tools (one-time)
@@ -289,7 +280,7 @@ xcode-select --install
 rustup target add aarch64-apple-darwin
 
 # 3. Build
-cargo build --release --target aarch64-apple-darwin
+cargo build --release -p paneflow-app --target aarch64-apple-darwin
 
 # 4. Bundle into a .app (produces dist/PaneFlow.app)
 bash scripts/bundle-macos.sh \
@@ -302,37 +293,14 @@ bash scripts/create-dmg.sh \
     --arch aarch64
 ```
 
-**Unsigned dev build first-launch:** macOS Gatekeeper rejects unsigned
-builds by default. For locally-built binaries (no Developer ID cert
-available), strip the quarantine attribute once:
+**Unsigned dev build first-launch:** macOS Gatekeeper rejects unsigned builds by default. For locally-built binaries (no Developer ID cert available), strip the quarantine attribute once:
 
 ```bash
 xattr -cr dist/PaneFlow.app
 open dist/PaneFlow.app
 ```
 
-Release builds downloaded from GitHub are always signed + notarized and
-skip this step.
-
-## Windows
-
-PaneFlow supports Windows 10 build 1809+ and Windows 11 on x86_64
-(`x86_64-pc-windows-msvc`). Distribution is via a signed MSI on GitHub
-Releases and the winget Microsoft Store catalog. ARM64 is deferred —
-see [`docs/WINDOWS.md`](docs/WINDOWS.md) for the supported-versions
-matrix and known limitations.
-
-**Install (end users):**
-
-```powershell
-# winget (recommended)
-winget install ArthurDev44.PaneFlow
-
-# Or direct download — double-click the signed MSI from the latest
-# GitHub Release (publisher "Strivex" via Azure Artifact Signing).
-```
-
-**Build from source (contributors):**
+### Windows
 
 ```powershell
 # 1. Install the Rust MSVC toolchain target (one-time)
@@ -341,21 +309,16 @@ rustup target add x86_64-pc-windows-msvc
 # 2. Compile the binary
 cargo build --release -p paneflow-app --target x86_64-pc-windows-msvc
 
-# 3. (Optional) Produce an MSI via cargo-wix + WiX 3.14 (preinstalled
-#    on the windows-2022 CI runner; locally, install via
-#    `choco install wixtoolset --version 3.14.1`)
+# 3. (Optional) Produce an MSI via cargo-wix + WiX 3.14
+choco install wixtoolset --version 3.14.1
 cargo install cargo-wix --version 0.3.9 --locked
-cargo wix build --no-build \
-    --package paneflow-app \
-    --target x86_64-pc-windows-msvc \
+cargo wix build --no-build `
+    --package paneflow-app `
+    --target x86_64-pc-windows-msvc `
     --install-version "$(cargo pkgid -p paneflow-app | ForEach-Object { $_ -replace '.*#','' })"
 ```
 
-**Reporting Windows-specific bugs:** use the
-[Windows bug report](https://github.com/ArthurDEV44/paneflow/issues/new?template=windows-bug-report.md)
-template (captures Windows version + build automatically) and see
-[`docs/WINDOWS.md`](docs/WINDOWS.md) for the full v1 limitations
-catalog + upstream-risk tracker.
+**Reporting Windows-specific bugs:** use the [Windows bug report](https://github.com/ArthurDEV44/paneflow/issues/new?template=windows-bug-report.md) template (captures Windows version + build automatically) and see [`docs/WINDOWS.md`](docs/WINDOWS.md) for the full v1 limitations catalog.
 
 ## Usage
 
@@ -365,9 +328,27 @@ paneflow
 
 # With logging
 RUST_LOG=info paneflow
+
+# Print version / help
+paneflow --version
+paneflow --help
+
+# CI self-update harness (exit codes 0-5)
+paneflow --update-and-exit
 ```
 
+### Environment variables
+
+| Variable | Effect |
+|----------|--------|
+| `RUST_LOG` | env_logger filter (e.g. `info`, `paneflow=debug`) |
+| `PANEFLOW_LATENCY_PROBE` | Set to `1` to trace keystroke -> pixel latency (debug builds only) |
+| `PANEFLOW_UPDATE_FEED_URL` | Override the update feed URL (testing) |
+| `PANEFLOW_NO_TELEMETRY` | Set to `1` to disable telemetry unconditionally (overrides config) |
+
 ## Keybindings
+
+All 57 actions are defined in `src-app/src/app/actions.rs` and bound in `src-app/src/keybindings/defaults.rs`. Every binding can be overridden via the `shortcuts` map in `paneflow.json`.
 
 ### Window & workspace management
 
@@ -376,17 +357,32 @@ RUST_LOG=info paneflow
 | `Ctrl+Shift+N` | New workspace |
 | `Ctrl+Shift+Q` | Close workspace |
 | `Ctrl+Tab` | Next workspace |
-| `Ctrl+Shift+Tab` | Previous workspace |
-| `Ctrl+1-9` | Switch to workspace N |
+| `Ctrl+1`-`Ctrl+9` | Switch to workspace N |
+| `Ctrl+Shift+Alt+C` | Copy workspace path |
+| `Ctrl+Alt+R` | Reveal workspace in file manager |
+| `Ctrl+Alt+Z` | Open workspace in Zed |
+| `Ctrl+Alt+C` | Open workspace in Cursor |
+| `Ctrl+Alt+V` | Open workspace in VS Code |
+| `Ctrl+Alt+W` | Open workspace in Windsurf |
 
-### Pane management
+### Pane & layout
 
 | Key | Action |
 |-----|--------|
 | `Ctrl+Shift+D` | Split horizontal (top/bottom) |
 | `Ctrl+Shift+E` | Split vertical (left/right) |
 | `Ctrl+Shift+W` | Close pane |
+| `Ctrl+Shift+T` | Undo close pane |
+| `Ctrl+Alt+T` | New tab |
+| `Ctrl+W` | Close tab |
 | `Alt+Arrow` | Focus adjacent pane |
+| `Ctrl+Shift+Z` | Toggle zoom (maximize active pane) |
+| `Ctrl+Shift+S` | Swap pane |
+| `Ctrl+Shift+=` | Equalize split ratios |
+| `Ctrl+Alt+1` | Layout preset: even horizontal |
+| `Ctrl+Alt+2` | Layout preset: even vertical |
+| `Ctrl+Alt+3` | Layout preset: main + vertical stack |
+| `Ctrl+Alt+4` | Layout preset: tiled |
 
 ### Terminal
 
@@ -396,75 +392,176 @@ RUST_LOG=info paneflow
 | `Ctrl+Shift+V` | Paste |
 | `Shift+PageUp` | Scroll up |
 | `Shift+PageDown` | Scroll down |
-| `Ctrl+Shift+F` | Search |
+| `Ctrl+Shift+F` | Open search |
+| `Ctrl+Shift+X` | Toggle copy mode |
+| `Ctrl+Shift+Up` | Jump to previous shell prompt |
+| `Ctrl+Shift+Down` | Jump to next shell prompt |
+
+### Search (when search bar is open)
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Next match |
+| `Shift+Enter` | Previous match |
+| `Alt+R` | Toggle regex mode |
+| `Escape` | Dismiss search |
+
+### Markdown pane
+
+| Key | Action |
+|-----|--------|
+| `Shift+PageUp` / `Shift+PageDown` | Scroll markdown |
+| `Ctrl+F` | Open find-in-markdown |
+| `Ctrl+Shift+C` | Copy selection |
+
+### macOS
+
+| Key | Action |
+|-----|--------|
+| `Cmd+C` / `Cmd+V` | Copy / paste (in addition to `Ctrl+Shift+C`/`V`) |
+| `Cmd+Q` | Quit |
 
 ## Configuration
 
-Config file location: `~/.config/paneflow/paneflow.json`
+PaneFlow reads `paneflow.json` from a platform-appropriate config directory:
 
-```json
-{
-  "default_shell": "/bin/zsh",
-  "theme": "One Dark",
-  "font_family": ".PaneflowMono",
-  "font_size": 14,
-  "line_height": 1.3,
-  "window_decorations": "client",
-  "option_as_meta": false,
-  "shortcuts": {},
-  "terminal": {
-    "ligatures": false
-  }
-}
-```
-
-`font_family` accepts:
-- `".PaneflowMono"` (default) — alias for the bundled Lilex monospace family
-- `".PaneflowSans"` — alias for the bundled IBM Plex Sans family
-- `"Lilex"` / `"IBM Plex Sans"` — concrete embedded family names (equivalent to the aliases)
-- Any installed system monospace family (`"Menlo"`, `"Cascadia Mono"`, `"DejaVu Sans Mono"`, etc.) — validated against the platform's font registry; falls back to the embedded Lilex with a warning if missing.
-
-### Available themes
-
-`One Dark` (default), `PaneFlow Light`
-
-Theme changes are hot-reloaded. Window decorations require a restart (`"client"` = CSD, `"server"` = SSD).
-
-### Terminal options
-
-- `terminal.ligatures` (default `false`) — when `true`, programming-font ligatures (FiraCode `=>` `!=`, JetBrains Mono, Cascadia Code) are rendered through to GPUI's text system. Hot-reloaded; takes effect on the next render. Note that some ligated glyphs span multiple cells, which can shift cell-width measurements compared to the default monospaced behavior.
-
-### Configuration schema
-
-A versioned JSON Schema for `paneflow.json` lives at [`schemas/paneflow.schema.json`](schemas/paneflow.schema.json) (draft-07). Editors that understand `$schema` (VS Code, Zed, JetBrains, neovim with `coc-json` / `nvim-lspconfig`) will give you autocomplete and inline validation when you point at it from your config:
+| Platform | Config path |
+|----------|-------------|
+| Linux | `$XDG_CONFIG_HOME/paneflow/paneflow.json` (default: `~/.config/paneflow/paneflow.json`) |
+| macOS | `~/Library/Application Support/paneflow/paneflow.json` |
+| Windows | `%APPDATA%\paneflow\paneflow.json` |
 
 ```json
 {
   "$schema": "https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json",
   "$schemaVersion": "1.0.0",
   "default_shell": "/bin/zsh",
-  "theme": "One Dark"
+  "theme": "One Dark",
+  "font_family": ".PaneflowMono",
+  "font_size": 14,
+  "line_height": 1.3,
+  "window_decorations": "client",
+  "option_as_meta": true,
+  "shortcuts": {},
+  "terminal": {
+    "ligatures": false
+  },
+  "telemetry": {
+    "enabled": null
+  },
+  "claude_code_button_visible": true,
+  "claude_code_bypass_permissions": false,
+  "codex_button_visible": true,
+  "opencode_button_visible": true,
+  "commands": []
 }
 ```
 
-Both `$schema` (the editor pointer) and `$schemaVersion` (the version pin) are optional. PaneFlow logs a warning when `$schemaVersion` is unknown but never refuses to load the file — schema validation is editor-side; runtime parsing stays tolerant.
+### Font
+
+`font_family` accepts:
+- `".PaneflowMono"` (default): alias for the bundled Lilex monospace family
+- `".PaneflowSans"`: alias for the bundled IBM Plex Sans family
+- `"Lilex"` / `"IBM Plex Sans"`: concrete embedded family names (equivalent to the aliases)
+- Any installed system monospace family (`"Menlo"`, `"Cascadia Mono"`, `"DejaVu Sans Mono"`, etc.): validated against the platform's font registry; falls back to the embedded Lilex with a warning if missing.
+
+### Themes
+
+`One Dark` (default) and `PaneFlow Light` ship in the binary. Theme changes are hot-reloaded (500 ms mtime poll on the config file).
+
+### Window decorations
+
+`"client"` = CSD (custom title bar), `"server"` = SSD (compositor-drawn). Read once at startup; changes require a restart.
+
+### Alt / Option behavior
+
+`option_as_meta` defaults to `true` and makes Alt send an ESC prefix. On macOS, set it to `false` if you rely on Option to produce Unicode characters.
+
+### Terminal options
+
+- `terminal.ligatures` (default `false`): when `true`, programming-font ligatures (FiraCode `=>` `!=`, JetBrains Mono, Cascadia Code) are rendered through GPUI's text system. Hot-reloaded; takes effect on the next render. Some ligated glyphs span multiple cells, which can shift cell-width measurements compared to default monospaced behavior.
+
+### AI agent buttons
+
+The tab bar can launch the [Claude Code](https://claude.com/claude-code), [Codex](https://github.com/openai/codex), and [Opencode](https://github.com/sst/opencode) CLIs. Each button is gated by a `*_button_visible` flag (all default `true`). `claude_code_bypass_permissions` (default `false`) controls whether the Claude Code button launches with `--permission-mode bypassPermissions`; that flag disables every permission prompt and offers no protection against prompt injection; opt in only on machines where that risk is acceptable.
+
+### Telemetry
+
+The `telemetry` block tracks opt-in desktop telemetry consent:
+
+- `null` (block missing or `enabled` unset): first-run consent modal is pending.
+- `enabled: true` / `false`: explicit user answer.
+- `PANEFLOW_NO_TELEMETRY=1` overrides this unconditionally.
+
+No event is sent unless `enabled` resolves to `true`.
+
+### Commands & workspaces
+
+The `commands` array accepts cmux-compatible entries. Each entry has a `name`, optional `description` and `keywords`, and either a `workspace` definition (layout + cwd + accent color) or a shell `command` string. See [`schemas/paneflow.schema.json`](schemas/paneflow.schema.json) for the full structure.
+
+### Configuration schema
+
+A versioned JSON Schema for `paneflow.json` lives at [`schemas/paneflow.schema.json`](schemas/paneflow.schema.json) (draft-07). Editors that understand `$schema` (VS Code, Zed, JetBrains, neovim with `coc-json` / `nvim-lspconfig`) give you autocomplete and inline validation when you point at it from your config:
+
+```json
+{
+  "$schema": "https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json",
+  "$schemaVersion": "1.0.0"
+}
+```
+
+Both `$schema` (the editor pointer) and `$schemaVersion` (the version pin) are optional. PaneFlow logs a warning when `$schemaVersion` is unknown but never refuses to load the file. Schema validation is editor-side; runtime parsing stays tolerant.
 
 ## IPC
 
-PaneFlow exposes a Unix socket at `$XDG_RUNTIME_DIR/paneflow/paneflow.sock` using JSON-RPC 2.0.
+PaneFlow exposes a JSON-RPC 2.0 endpoint:
+
+| Platform | Endpoint |
+|----------|----------|
+| Linux / macOS | Unix socket at `$XDG_RUNTIME_DIR/paneflow/paneflow.sock` (or `$TMPDIR` fallback on macOS) |
+| Windows | Named pipe `\\.\pipe\paneflow` |
+
+The `interprocess` crate handles the platform dispatch transparently for clients that speak both transports.
 
 ```bash
 # Ping
-echo '{"jsonrpc":"2.0","method":"system.ping","id":1}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/paneflow/paneflow.sock
+echo '{"jsonrpc":"2.0","method":"system.ping","id":1}' \
+  | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/paneflow/paneflow.sock
 
 # List workspaces
-echo '{"jsonrpc":"2.0","method":"workspace.list","id":1}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/paneflow/paneflow.sock
+echo '{"jsonrpc":"2.0","method":"workspace.list","id":1}' \
+  | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/paneflow/paneflow.sock
 
-# Send text to active pane
-echo '{"jsonrpc":"2.0","method":"surface.send_text","params":{"text":"ls\n"},"id":1}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/paneflow/paneflow.sock
+# Send text to active pane (or a specific surface)
+echo '{"jsonrpc":"2.0","method":"surface.send_text","params":{"text":"ls\n"},"id":1}' \
+  | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/paneflow/paneflow.sock
 ```
 
-Available methods: `system.ping`, `system.capabilities`, `system.identify`, `workspace.list`, `workspace.current`, `workspace.create`, `workspace.select`, `workspace.close`, `surface.list`, `surface.send_text`, `surface.split`.
+### Methods
+
+| Namespace | Method | Purpose |
+|-----------|--------|---------|
+| `system` | `ping` | Stateless health check |
+| `system` | `capabilities` | List supported methods and namespaces |
+| `system` | `identify` | Return version, build info, PID |
+| `workspace` | `list` | List all workspaces |
+| `workspace` | `current` | Return the active workspace |
+| `workspace` | `create` | Create a new workspace |
+| `workspace` | `select` | Switch to a workspace by index or id |
+| `workspace` | `close` | Close a workspace |
+| `workspace` | `restore_layout` | Apply a `LayoutNode` JSON tree to a workspace |
+| `surface` | `list` | List surfaces in a workspace |
+| `surface` | `send_text` | Send text to a surface (params: `text`, optional `surface_id`; max 64 KiB) |
+| `surface` | `send_keystroke` | Send a keystroke (params: `keystroke`, optional `surface_id`) |
+| `surface` | `split` | Split a surface |
+| `ai` | `session_start` | Notify Paneflow that an AI agent session began |
+| `ai` | `prompt_submit` | Record a prompt submission event |
+| `ai` | `tool_use` | Record a tool-use event |
+| `ai` | `notification` | Surface a notification from the agent |
+| `ai` | `stop` | Notify that the agent stopped |
+| `ai` | `session_end` | Notify that the session ended |
+
+Stateful methods are dispatched to the GPUI main thread; stateless methods (`system.*`) reply on the socket thread.
 
 ## License
 
