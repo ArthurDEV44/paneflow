@@ -16,10 +16,3 @@ mod registry;
 
 pub use apply::apply_keybindings;
 pub use display::{ShortcutEntry, action_name_at, effective_shortcuts, is_bare_modifier};
-
-// AC (US-022): `format_keystroke` is part of the public re-export surface even
-// though no caller inside this binary currently uses it directly — it's there
-// for the settings UI / menu-bar renderer to consume. `#[allow]` silences the
-// binary-crate unused-import lint without dropping the public symbol.
-#[allow(unused_imports)]
-pub use display::format_keystroke;

@@ -107,7 +107,7 @@ impl PaneFlowApp {
         // ~100 ms `kill -0` polling interval.
         if matches!(
             self.self_update_status,
-            update::SelfUpdateStatus::ReadyToRestart { .. }
+            update::SelfUpdateStatus::ReadyToRestart
         ) {
             log::info!("self-update: ReadyToRestart click — invoking cx.restart()");
             cx.restart();
@@ -262,7 +262,6 @@ impl PaneFlowApp {
                     match result {
                         Ok(()) => {
                             let restart_path = std::path::PathBuf::from("/usr/bin/paneflow");
-                            let restart_path_for_state = restart_path.clone();
                             let _ = this.update(cx, |app, cx| {
                                 // Pre-installed: flip to ReadyToRestart so the
                                 // pill becomes a one-call restart button. The
@@ -270,9 +269,7 @@ impl PaneFlowApp {
                                 // here (now, while the user is busy), not at
                                 // click time.
                                 app.self_update_status =
-                                    update::SelfUpdateStatus::ReadyToRestart {
-                                        restart_path: restart_path_for_state,
-                                    };
+                                    update::SelfUpdateStatus::ReadyToRestart;
                                 app.save_session(cx);
                                 app.emit_update_success_and_flush();
                                 cx.notify();
@@ -409,11 +406,8 @@ impl PaneFlowApp {
 
                 match result {
                     Ok(updated_path) => {
-                        let restart_path_for_state = updated_path.clone();
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart {
-                                restart_path: restart_path_for_state,
-                            };
+                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
                             app.save_session(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
@@ -473,11 +467,8 @@ impl PaneFlowApp {
 
                 match result {
                     Ok(restart_path) => {
-                        let restart_path_for_state = restart_path.clone();
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart {
-                                restart_path: restart_path_for_state,
-                            };
+                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
                             app.save_session(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
@@ -516,11 +507,8 @@ impl PaneFlowApp {
                 let result = smol::unblock(move || update::windows::msi::install(&url)).await;
                 match result {
                     Ok(restart_path) => {
-                        let restart_path_for_state = restart_path.clone();
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart {
-                                restart_path: restart_path_for_state,
-                            };
+                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
                             app.save_session(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
@@ -560,11 +548,8 @@ impl PaneFlowApp {
                 let result = smol::unblock(move || update::macos::dmg::install(&url)).await;
                 match result {
                     Ok(restart_path) => {
-                        let restart_path_for_state = restart_path.clone();
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart {
-                                restart_path: restart_path_for_state,
-                            };
+                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
                             app.save_session(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
@@ -649,11 +634,8 @@ impl PaneFlowApp {
                 // the top of `handle_start_self_update`.
                 match update::installed_binary_path() {
                     Ok(path) => {
-                        let path_for_state = path.clone();
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart {
-                                restart_path: path_for_state,
-                            };
+                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
                             app.save_session(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();

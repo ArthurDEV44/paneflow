@@ -21,9 +21,7 @@ use gpui::{
     UnderlineStyle, Window, px, relative,
 };
 
-use crate::terminal::types::{
-    CopyModeCursorState, HyperlinkSource, HyperlinkZone, SearchHighlight,
-};
+use crate::terminal::types::{CopyModeCursorState, SearchHighlight};
 use crate::terminal::{PtyNotifier, SpikeTermSize, ZedListener};
 
 mod color;
@@ -322,9 +320,6 @@ pub struct LayoutState {
     desired_cols: usize,
     /// Number of rows in the terminal grid
     desired_rows: usize,
-    /// OSC 8 hyperlink zones detected during cell iteration.
-    #[allow(dead_code)]
-    hyperlinks: Vec<HyperlinkZone>,
     /// Theme color for hyperlink underline and tooltip text.
     link_text_color: Hsla,
     /// Cursor position bounds for IME popup positioning (pixel coordinates).
@@ -675,38 +670,11 @@ impl TerminalElement {
             .ceil()
             .max(0.0) as i32;
 
-        // OSC 8 hyperlink zone accumulation
-        // Merge key is (id, uri) — empty IDs are common, so URI must also match.
-        // Zones are split at line boundaries for correct hit-test rectangles.
-        let mut hyperlinks: Vec<HyperlinkZone> = Vec::new();
-
-        for (point, c, cell_fg, cell_bg, flags, zw, hyperlink) in &cells {
+        for (point, c, cell_fg, cell_bg, flags, zw, _) in &cells {
             let point = *point;
             let flags = *flags;
 
-            // Accumulate OSC 8 hyperlink zones (before culling so offscreen links are tracked)
-            if let Some(hl) = hyperlink {
-                let can_extend = hyperlinks.last().is_some_and(|zone| {
-                    zone.id == hl.id() && zone.uri == hl.uri() && zone.end.line == point.line
-                });
-                if can_extend {
-                    hyperlinks.last_mut().unwrap().end = point;
-                } else {
-                    let uri = hl.uri().to_string();
-                    let is_openable = is_url_scheme_openable(&uri);
-                    hyperlinks.push(HyperlinkZone {
-                        uri,
-                        id: hl.id().to_string(),
-                        start: point,
-                        end: point,
-                        is_openable,
-                        source: HyperlinkSource::Osc8,
-                    });
-                }
-            }
-
             // Viewport culling: skip rendering for rows outside the visible content mask.
-            // Hyperlink accumulation above is preserved so cross-line links work at boundaries.
             if point.line.0 < first_visible_row || point.line.0 >= last_visible_row {
                 continue;
             }
@@ -1054,7 +1022,6 @@ impl TerminalElement {
             history_size,
             desired_cols,
             desired_rows,
-            hyperlinks,
             link_text_color: theme.link_text,
             ime_cursor_bounds,
         }

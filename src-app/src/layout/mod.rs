@@ -25,11 +25,3 @@ mod tree;
 
 pub use navigation::FocusDirection;
 pub use tree::{LayoutTree, SplitDirection};
-
-// PRD US-029 mandates these re-exports even though no caller currently
-// consumes them from outside this module. `#[allow]` keeps the documented
-// public surface without failing the binary-crate unused-imports lint.
-#[allow(unused_imports)]
-pub use navigation::FocusNav;
-#[allow(unused_imports)]
-pub use tree::LayoutChild;

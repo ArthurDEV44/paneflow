@@ -510,7 +510,6 @@ impl Drop for DetachGuard<'_> {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::io::Write;
 
     // ── Pure helpers ─────────────────────────────────────────────────
 
@@ -777,13 +776,5 @@ mod tests {
             append_suffix(&p, ".partial").unwrap(),
             PathBuf::from("/tmp/update-12345.dmg.partial")
         );
-    }
-
-    // Swallow the unused `Write` import when the whole module elides
-    // the tests that need it (none do right now, but the `use` reads
-    // better than a noisy cfg attr).
-    #[allow(dead_code)]
-    fn _keep_write_in_scope() {
-        let _: Option<Box<dyn Write>> = None;
     }
 }

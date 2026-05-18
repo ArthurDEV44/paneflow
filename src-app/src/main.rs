@@ -440,7 +440,7 @@ impl Render for PaneFlowApp {
             update::SelfUpdateStatus::Idle => title_bar::SelfUpdatePillState::Idle,
             update::SelfUpdateStatus::Downloading => title_bar::SelfUpdatePillState::Downloading,
             update::SelfUpdateStatus::Installing => title_bar::SelfUpdatePillState::Installing,
-            update::SelfUpdateStatus::ReadyToRestart { .. } => {
+            update::SelfUpdateStatus::ReadyToRestart => {
                 title_bar::SelfUpdatePillState::ReadyToRestart
             }
             update::SelfUpdateStatus::Errored(_) => title_bar::SelfUpdatePillState::Errored,
