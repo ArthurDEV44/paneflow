@@ -483,7 +483,6 @@ impl TerminalView {
     /// Detect regex URLs on the line at the given grid point.
     /// Extracts line text from the locked term grid, runs the URL regex,
     /// and returns zones that cover the given column (for hover hit-testing).
-    #[allow(dead_code)]
     pub fn detect_url_at_hover(&self) -> Vec<HyperlinkZone> {
         let point = match self.hovered_cell {
             Some(p) => p,
@@ -519,7 +518,6 @@ impl TerminalView {
     /// point (US-019). Mirrors `detect_url_at_hover`: extracts line text with
     /// wide-char-aware char→column mapping, then runs the file-path scanner
     /// against the pane's tracked CWD.
-    #[allow(dead_code)]
     pub(super) fn detect_file_path_at_hover(&self) -> Vec<HyperlinkZone> {
         let point = match self.hovered_cell {
             Some(p) => p,

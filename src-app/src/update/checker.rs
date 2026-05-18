@@ -187,24 +187,18 @@ pub enum UpdateStatus {
 
 pub type SharedUpdateSlot = std::sync::Arc<std::sync::Mutex<Option<UpdateStatus>>>;
 
-/// Trigger source for an `update_check_started` telemetry event
-/// (US-007). Today only [`UpdateCheckTrigger::Auto`] fires from the
-/// startup path; [`UpdateCheckTrigger::Manual`] is plumbed for a
-/// future "Check for updates…" menu entry — the variant is part of
-/// the v1 telemetry schema by design (AC1 spec) so the dashboards
-/// don't need a back-fill migration once the manual path lands.
+/// Trigger source for an `update_check_started` telemetry event.
+/// Only the startup auto-check exists today; a `Manual` variant should
+/// be added when a "Check for updates…" menu entry lands.
 #[derive(Clone, Copy, Debug)]
 pub enum UpdateCheckTrigger {
     Auto,
-    #[allow(dead_code)]
-    Manual,
 }
 
 impl UpdateCheckTrigger {
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             UpdateCheckTrigger::Auto => "auto",
-            UpdateCheckTrigger::Manual => "manual",
         }
     }
 }
@@ -825,9 +819,6 @@ mod tests {
         let props = update_check_started_props(UpdateCheckTrigger::Auto, "0.2.11");
         assert_eq!(props["trigger"], "auto");
         assert_eq!(props["current_version"], "0.2.11");
-
-        let manual = update_check_started_props(UpdateCheckTrigger::Manual, "0.2.11");
-        assert_eq!(manual["trigger"], "manual");
 
         // Null-client emit must not panic and must not enqueue.
         emit_update_check_started(&TelemetryClient::Null, UpdateCheckTrigger::Auto, "0.2.11");

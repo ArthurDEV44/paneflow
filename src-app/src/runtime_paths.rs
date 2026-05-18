@@ -95,10 +95,6 @@ pub(crate) fn socket_path() -> Option<PathBuf> {
     }))
 }
 
-// Wired by US-012 (telemetry capture client) + consumed transitively by
-// `telemetry::id::telemetry_id`. Tagged as allow(dead_code) until US-012
-// lands so the US-010 plumbing can ship independently.
-#[allow(dead_code)]
 /// Resolve the PaneFlow per-user data directory (cross-platform).
 ///
 /// - Linux: `$XDG_DATA_HOME/paneflow` (typically `~/.local/share/paneflow`)

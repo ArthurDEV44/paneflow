@@ -820,7 +820,7 @@ const CODEX_HOOK_EVENTS: &[&str] = &[
     "Stop",
 ];
 
-/// Marker for the TOML comment placed above `codex_hooks = true` in
+/// Marker for the TOML comment placed above `hooks = true` in
 /// `~/.codex/config.toml`. Cleanup scans for this literal line.
 #[cfg(unix)]
 const CODEX_TOML_MARKER: &str = "# _paneflow_managed: true";
@@ -877,7 +877,7 @@ impl CodexHookConfigGuard {
         let (hooks_json_path, created_dir) =
             install_hook_config_file(codex_dir, "hooks.json", "Codex", merge_codex_hooks)?;
 
-        // Codex-specific extra: enable the `codex_hooks = true` feature flag
+        // Codex-specific extra: enable the `hooks = true` feature flag
         // in `~/.codex/config.toml`. Failure here is non-fatal — the user
         // can enable it manually and the rest of the hook config is in
         // place. Runs AFTER the shared install so the per-project hooks.json
@@ -974,11 +974,11 @@ fn remove_codex_hooks(root: &mut serde_json::Value) {
     }
 }
 
-/// Append `[features]\ncodex_hooks = true` (with a marker comment) to the
-/// file at `path` iff: (a) the file doesn't already have `codex_hooks = true`
-/// anywhere, AND (b) there's no existing `[features]` section — appending
-/// would create a duplicate-section TOML error, so we abstain in that case
-/// and warn.
+/// Append `[features]\nhooks = true` (with a marker comment) to the
+/// file at `path` iff: (a) the file doesn't already have `hooks = true` (or
+/// the pre-Codex-0.130 alias `codex_hooks = true`) anywhere, AND (b) there's
+/// no existing `[features]` section — appending would create a duplicate-
+/// section TOML error, so we abstain in that case and warn.
 ///
 /// Returns `Some(true)` if we modified the file, `Some(false)` if the flag
 /// was already present (no-op), `None` if we aborted due to a conflict or
@@ -990,19 +990,19 @@ fn enable_codex_feature_flag(path: &Path) -> Option<bool> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => {
             eprintln!(
-                "paneflow-shim: cannot read {} ({e}); leaving codex_hooks feature flag alone",
+                "paneflow-shim: cannot read {} ({e}); leaving Codex `hooks` feature flag alone",
                 safe_path_display(path)
             );
             return None;
         }
     };
 
-    if has_codex_hooks_flag(&existing) {
+    if has_hooks_flag(&existing) {
         return Some(false);
     }
     if has_features_section(&existing) {
         eprintln!(
-            "paneflow-shim: {} already has a [features] section without codex_hooks; skipping auto-enable (add `codex_hooks = true` there manually to enable Codex hooks)",
+            "paneflow-shim: {} already has a [features] section without `hooks`; skipping auto-enable (add `hooks = true` there manually to enable Codex hooks)",
             safe_path_display(path)
         );
         return None;
@@ -1018,7 +1018,7 @@ fn enable_codex_feature_flag(path: &Path) -> Option<bool> {
     }
     next.push_str(CODEX_TOML_MARKER);
     next.push('\n');
-    next.push_str("[features]\ncodex_hooks = true\n");
+    next.push_str("[features]\nhooks = true\n");
 
     // Ensure the parent dir exists — the Codex config dir may be absent
     // if the user has never run Codex before, but the shim's own invocation
@@ -1029,7 +1029,7 @@ fn enable_codex_feature_flag(path: &Path) -> Option<bool> {
 
     if let Err(e) = write_text_atomic(path, &next) {
         eprintln!(
-            "paneflow-shim: cannot write {} ({e}); codex_hooks feature flag not set",
+            "paneflow-shim: cannot write {} ({e}); Codex `hooks` feature flag not set",
             safe_path_display(path)
         );
         return None;
@@ -1058,7 +1058,7 @@ fn disable_codex_feature_flag(path: &Path) {
     if let Err(e) = result {
         // Phase 7 security audit MEDIUM #12: if cleanup write fails, the
         // managed block stays in `~/.codex/config.toml` and subsequent
-        // shim runs see `codex_hooks = true` already set, so they never
+        // shim runs see `hooks = true` already set, so they never
         // retry the cleanup. Surface the failure so the user can remove
         // the block manually. Known silent-failure mode.
         eprintln!(
@@ -1090,7 +1090,9 @@ fn write_text_atomic(path: &Path, content: &str) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn has_codex_hooks_flag(content: &str) -> bool {
+fn has_hooks_flag(content: &str) -> bool {
+    // Codex 0.130 renamed `codex_hooks` -> `hooks`; accept both so the shim
+    // stays silent for configs from either era.
     content.lines().any(|line| {
         let l = line.trim_start();
         if l.starts_with('#') {
@@ -1099,7 +1101,10 @@ fn has_codex_hooks_flag(content: &str) -> bool {
         let stripped = l.split_once('#').map(|(k, _)| k).unwrap_or(l);
         let stripped = stripped.trim_end();
         match stripped.split_once('=') {
-            Some((key, value)) => key.trim() == "codex_hooks" && value.trim() == "true",
+            Some((key, value)) => {
+                let k = key.trim();
+                (k == "hooks" || k == "codex_hooks") && value.trim() == "true"
+            }
             None => false,
         }
     })
@@ -1111,23 +1116,28 @@ fn has_features_section(content: &str) -> bool {
 }
 
 /// Remove the exact 3-line PaneFlow block (marker comment + `[features]` +
-/// `codex_hooks = true`) from the file content. Returns the cleaned content
-/// if the block was found and removed; `None` if the marker wasn't present.
+/// `hooks = true`, or the legacy `codex_hooks = true` for installs predating
+/// Codex 0.130) from the file content. Returns the cleaned content if the
+/// block was found and removed; `None` if the marker wasn't present.
 #[cfg(unix)]
 fn strip_codex_feature_block(content: &str) -> Option<String> {
     let lines: Vec<&str> = content.lines().collect();
     let marker_idx = lines.iter().position(|l| l.trim() == CODEX_TOML_MARKER)?;
     // We expect the marker to be followed by exactly:
     //   `[features]`
-    //   `codex_hooks = true`
+    //   `hooks = true` (or the legacy `codex_hooks = true`)
     // Remove those three lines; anything else means the file was edited
     // and we should bail to avoid clobbering user content.
     let tail = lines.get(marker_idx + 1..marker_idx + 3)?;
-    // Exact-match both lines: `starts_with("codex_hooks")` would also strip
-    // a hypothetical future `codex_hooks_experimental = ...` line that
-    // happened to sit in the managed block. Exact match fails closed —
-    // safer to leave the block untouched than over-delete.
-    if tail[0].trim() != "[features]" || tail[1].trim() != "codex_hooks = true" {
+    // Exact-match both lines: `starts_with("hooks")` would also strip a
+    // hypothetical future `hooks_experimental = ...` line that happened
+    // to sit in the managed block. Exact match fails closed — safer to
+    // leave the block untouched than over-delete. Accept either key name
+    // because installs predating the Codex 0.130 rename wrote `codex_hooks`.
+    let second = tail[1].trim();
+    if tail[0].trim() != "[features]"
+        || (second != "hooks = true" && second != "codex_hooks = true")
+    {
         return None;
     }
 
@@ -1997,7 +2007,7 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains(CODEX_TOML_MARKER));
         assert!(content.contains("[features]"));
-        assert!(content.contains("codex_hooks = true"));
+        assert!(content.contains("hooks = true"));
     }
 
     #[cfg(unix)]
@@ -2005,7 +2015,7 @@ mod tests {
     fn enable_codex_feature_flag_noop_when_already_enabled() {
         let td = tempfile::TempDir::new().unwrap();
         let path = td.path().join("config.toml");
-        std::fs::write(&path, "[features]\ncodex_hooks = true\nother = false\n").unwrap();
+        std::fs::write(&path, "[features]\nhooks = true\nother = false\n").unwrap();
 
         let result = enable_codex_feature_flag(&path);
         assert_eq!(result, Some(false), "already-enabled must be a no-op");
@@ -2020,7 +2030,7 @@ mod tests {
     fn enable_codex_feature_flag_abstains_on_existing_features_section() {
         let td = tempfile::TempDir::new().unwrap();
         let path = td.path().join("config.toml");
-        // User already has `[features]` without codex_hooks — appending
+        // User already has `[features]` without `hooks` — appending
         // another `[features]` would trigger a duplicate-section TOML
         // parse error on Codex's side, so the shim must abstain.
         std::fs::write(&path, "[features]\nother_flag = false\n").unwrap();
@@ -2031,7 +2041,7 @@ mod tests {
         // File untouched.
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(!content.contains(CODEX_TOML_MARKER));
-        assert!(!content.contains("codex_hooks"));
+        assert!(!content.contains("hooks = true"));
     }
 
     #[cfg(unix)]
@@ -2076,7 +2086,7 @@ mod tests {
         let guard = CodexHookConfigGuard::install_at(&codex_dir, Some(&config_toml)).unwrap();
 
         let toml_content = std::fs::read_to_string(&config_toml).unwrap();
-        assert!(toml_content.contains("codex_hooks = true"));
+        assert!(toml_content.contains("hooks = true"));
         assert!(toml_content.contains(CODEX_TOML_MARKER));
 
         drop(guard);
