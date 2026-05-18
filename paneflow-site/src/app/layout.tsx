@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
+import Script from "next/script";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import { PHProvider } from "@/components/posthog-provider";
@@ -130,6 +131,16 @@ export default function RootLayout({
             <Analytics />
           </PHProvider>
         </Providers>
+        {/* Cloudflare Turnstile loader. `lazyOnload` keeps it off the
+            critical path - the waitlist form polls window.turnstile and
+            renders the widget once the script is ready. Without this
+            script, the form falls back to error-state on submit. */}
+        <Script
+          src="https://challenges.cloudflare.com/turnstile/v0/api.js"
+          strategy="lazyOnload"
+          async
+          defer
+        />
       </body>
     </html>
   );

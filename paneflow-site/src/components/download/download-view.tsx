@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import posthog from "posthog-js";
 import { AppleIcon, LinuxIcon, WindowsIcon } from "../os-icons";
+import { WaitlistForm } from "../waitlist-form";
 import { LATEST_VERSION } from "../../lib/release";
 
 // LATEST_VERSION is imported from `lib/release` — single source of
@@ -106,19 +107,22 @@ export function DownloadView() {
   return (
     <section className="pt-32 sm:pt-40 pb-20 sm:pb-24">
       <div className="max-w-5xl mx-auto px-6">
-        <div className="max-w-2xl mb-10 sm:mb-12">
+        <div
+          data-track-section="download_header"
+          className="max-w-2xl mb-10 sm:mb-12"
+        >
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-            Paneflow est disponible pour Linux et macOS.
+            Paneflow is available for Linux and macOS.
           </h1>
           <p className="mt-3 text-sm sm:text-base text-text-muted leading-relaxed">
-            Windows arrive très prochainement.
+            Windows is coming soon.
           </p>
         </div>
 
         {/* Primary "download for your system" card — client-side OS sniff
             picks the best format per platform and renders one big button.
             Users who want a different format scroll to the matrix below. */}
-        <div className="mb-12">
+        <div data-track-section="download_primary" className="mb-12">
           <PrimaryDownloadCard version={LATEST_VERSION} />
         </div>
 
@@ -268,7 +272,7 @@ function primaryDownload(
   if (platform.os === "windows") {
     return {
       available: false,
-      reason: "Windows MSI signé arrive très prochainement.",
+      reason: "Signed Windows MSI is coming soon.",
       icon: WindowsIcon,
     };
   }
@@ -308,7 +312,7 @@ function PrimaryDownloadCard({ version }: { version: string }) {
 
       <div className="flex-1 min-w-0">
         <div className="text-xs text-text-subtle font-mono uppercase tracking-wider">
-          Téléchargement recommandé
+          Recommended download
         </div>
         <div className="text-sm sm:text-base font-semibold mt-1">
           {pick.available ? `Paneflow ${version}, ${pick.format}` : pick.reason}
@@ -335,7 +339,7 @@ function PrimaryDownloadCard({ version }: { version: string }) {
           className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-accent text-bg font-semibold hover:brightness-110 transition-all duration-200 shrink-0"
         >
           <Download className="w-4 h-4" />
-          Télécharger
+          Download
         </a>
       ) : null}
     </div>
@@ -392,7 +396,8 @@ function VersionRow({
               Icon={WindowsIcon}
               label="Windows"
               items={[]}
-              placeholder="Arrive très prochainement"
+              placeholder="Coming soon"
+              waitlist={{ source: "download_matrix", version: entry.version }}
               platform="windows"
               version={entry.version}
             />
@@ -409,7 +414,7 @@ function VersionRow({
             href={entry.releaseNotes}
             className="inline-flex mt-6 text-sm text-text-muted hover:text-text transition-colors"
           >
-            Voir les notes de version &rarr;
+            See release notes &rarr;
           </a>
         </div>
       )}
@@ -440,6 +445,7 @@ function PlatformColumn({
   label,
   items,
   placeholder,
+  waitlist,
   platform,
   version,
 }: {
@@ -447,6 +453,15 @@ function PlatformColumn({
   label: string;
   items: DownloadItem[];
   placeholder?: string;
+  // When set on an empty-items column, renders an inline waitlist form
+  // that POSTs to /api/waitlist instead of static text. Used by the
+  // Windows column to convert the "Coming soon" line into
+  // an actionable signal - PostHog showed 20 Windows desktop sessions /
+  // 30 d hitting this page with 0 actionable CTA.
+  waitlist?: {
+    source: "download_matrix" | "download_primary";
+    version: string;
+  };
   platform: TrackedPlatform;
   version: string;
 }) {
@@ -459,9 +474,18 @@ function PlatformColumn({
         </span>
       </div>
       {items.length === 0 ? (
-        <p className="px-1 py-2 text-sm text-text-subtle">
-          {placeholder ?? "-"}
-        </p>
+        waitlist ? (
+          <div className="px-1 py-2 space-y-3">
+            <p className="text-sm text-text-subtle">
+              {placeholder ?? "Coming soon"}
+            </p>
+            <WaitlistForm source={waitlist.source} platform="windows" />
+          </div>
+        ) : (
+          <p className="px-1 py-2 text-sm text-text-subtle">
+            {placeholder ?? "-"}
+          </p>
+        )
       ) : (
         <ul>
           {items.map((item) => (

@@ -2,13 +2,27 @@
 
 import Image from "next/image";
 import { motion } from "framer-motion";
-import { Download } from "lucide-react";
+import { Check, Copy, Download, Mail } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import posthog from "posthog-js";
-import { AppleIcon } from "./os-icons";
+import { AppleIcon, WindowsIcon } from "./os-icons";
 import { GitHubIcon } from "./icons";
+import { WaitlistForm } from "./waitlist-form";
 import { linuxAppImageUrl, macOSDmgUrl } from "../lib/release";
 import { useDetectedLinuxArch } from "../lib/use-detected-arch";
 import { track } from "../lib/analytics";
+
+// PostHog data showed Windows users land on the page (20 sessions / 30 d)
+// but get zero CTAs they can act on — Linux + macOS buttons only — and
+// click out at a 5% rate vs 24-27% for Linux/macOS. The mobile audience
+// is 37% of traffic with a 0s median time on page and an 82% sub-5s
+// bounce rate, because the same desktop CTAs are served to phones that
+// can't run a desktop binary. This component adds:
+//   - a Windows "soon" CTA that captures intent
+//   - a mobile-only panel that explains the desktop-only constraint and
+//     gives the user a way to bring the link back to their desktop
+//   - section events tied to both (mobile_unsupported_seen,
+//     windows_waitlist_clicked)
 
 export function Hero() {
   const arch = useDetectedLinuxArch();
@@ -61,9 +75,11 @@ export function Hero() {
           notifications, and a socket API for automation.
         </motion.p>
 
-        {/* CTAs */}
+        {/* CTAs — desktop variant. Hidden on coarse-pointer + narrow
+            viewport via Tailwind so we avoid a hydration flash and the
+            user does not see desktop download buttons on a phone. */}
         <motion.div
-          className="mt-8 flex flex-wrap items-center gap-3"
+          className="mt-8 hidden md:flex flex-wrap items-center gap-3"
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.35 }}
@@ -98,6 +114,7 @@ export function Hero() {
             <AppleIcon className="w-4 h-4" />
             Download for macOS
           </a>
+          <WindowsSoonButton />
           <a
             href="https://github.com/ArthurDEV44/paneflow"
             onClick={() => track("github_link_clicked", { source: "hero" })}
@@ -107,6 +124,14 @@ export function Hero() {
             View on GitHub
           </a>
         </motion.div>
+
+        {/* CTAs — mobile variant. Replaces download buttons with a
+            "desktop-only" explainer + copy/email affordances so phone
+            visitors can bring the link back to a real machine instead
+            of bouncing. */}
+        <div className="mt-8 md:hidden">
+          <MobileDesktopOnlyPanel />
+        </div>
 
         {/* Feature list */}
         <motion.ul
@@ -182,5 +207,151 @@ export function Hero() {
         </div>
       </motion.div>
     </section>
+  );
+}
+
+function WindowsSoonButton() {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside click. Pointerdown rather than click so the gesture
+  // closes the popover before the next click reaches anything else - the
+  // form input keeps focus during in-popover clicks because containerRef
+  // covers it.
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: PointerEvent) => {
+      if (!containerRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("pointerdown", handler);
+    return () => window.removeEventListener("pointerdown", handler);
+  }, [open]);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => {
+          if (!open) track("windows_waitlist_clicked", { source: "hero" });
+          setOpen((v) => !v);
+        }}
+        className="inline-flex items-center gap-2.5 px-5 py-2.5 border border-surface-border text-text-muted rounded-full hover:bg-surface/40 hover:text-text transition-all duration-200"
+        aria-expanded={open}
+        aria-controls="windows-waitlist-hero"
+      >
+        <WindowsIcon className="w-4 h-4" />
+        Windows · soon
+      </button>
+      {open && (
+        <motion.div
+          id="windows-waitlist-hero"
+          role="dialog"
+          aria-label="Windows waitlist"
+          initial={{ opacity: 0, y: -4, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.15, ease: "easeOut" }}
+          className="absolute z-50 mt-2 w-[22rem] max-w-[calc(100vw-2rem)] left-0 sm:left-auto sm:right-0 rounded-xl border border-surface-border bg-bg p-5 shadow-2xl"
+        >
+          <div className="text-sm font-semibold text-text">
+            Windows build in progress.
+          </div>
+          <p className="mt-1 text-xs text-text-muted">
+            Drop your email, we&apos;ll let you know when it ships.
+          </p>
+          <div className="mt-4">
+            <WaitlistForm source="hero" platform="windows" />
+          </div>
+        </motion.div>
+      )}
+    </div>
+  );
+}
+
+// Mobile fallback. Fires `mobile_unsupported_seen` exactly once per
+// mount (the matchMedia gate prevents a desktop refresh into mobile from
+// triggering a no-op event). Provides Copy-link + mailto so the visitor
+// has a way to follow up on a desktop instead of leaving cold.
+function MobileDesktopOnlyPanel() {
+  const [copied, setCopied] = useState(false);
+  const seenRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || seenRef.current) return;
+    // matchMedia mirrors the Tailwind `md:hidden` breakpoint (Tailwind v4
+    // defaults md to 768px). Firing only when the mobile variant is the
+    // one actually displayed avoids polluting analytics on desktops
+    // resized below the breakpoint by devtools.
+    if (window.matchMedia("(max-width: 767px)").matches) {
+      seenRef.current = true;
+      track("mobile_unsupported_seen", { source: "hero" });
+    }
+  }, []);
+
+  const link = "https://paneflow.dev";
+  const subject = "Paneflow — desktop terminal multiplexer";
+  const body =
+    "Paneflow runs on Linux, macOS and (soon) Windows. Download it here: https://paneflow.dev";
+  const mailtoHref = `mailto:?subject=${encodeURIComponent(
+    subject,
+  )}&body=${encodeURIComponent(body)}`;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+      track("mobile_link_copied", { source: "hero" });
+    } catch {
+      // Older iOS / permission-denied paths: surface no error, leave the
+      // mailto button as the working fallback.
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-surface-border bg-surface/40 p-5">
+      <div className="text-sm font-semibold text-text">
+        Paneflow is a desktop app.
+      </div>
+      <p className="mt-1.5 text-sm text-text-muted leading-relaxed">
+        Open this page on a Mac, Linux or Windows machine to download.
+      </p>
+      <div className="mt-4 flex flex-wrap items-center gap-2.5">
+        <button
+          type="button"
+          onClick={copy}
+          className="inline-flex items-center gap-2 px-4 py-2 bg-accent text-bg text-sm font-semibold rounded-full hover:brightness-110 transition-all duration-200"
+        >
+          {copied ? (
+            <>
+              <Check className="w-3.5 h-3.5" />
+              Link copied
+            </>
+          ) : (
+            <>
+              <Copy className="w-3.5 h-3.5" />
+              Copy link
+            </>
+          )}
+        </button>
+        <a
+          href={mailtoHref}
+          onClick={() => track("mobile_email_reminder_clicked", { source: "hero" })}
+          className="inline-flex items-center gap-2 px-4 py-2 border border-surface-border text-text text-sm rounded-full hover:bg-surface/60 transition-all duration-200"
+        >
+          <Mail className="w-3.5 h-3.5" />
+          Email reminder
+        </a>
+        <a
+          href="https://github.com/ArthurDEV44/paneflow"
+          onClick={() =>
+            track("github_link_clicked", { source: "hero_mobile" })
+          }
+          className="inline-flex items-center gap-2 px-4 py-2 border border-surface-border text-text-muted text-sm rounded-full hover:bg-surface/60 hover:text-text transition-all duration-200"
+        >
+          <GitHubIcon className="w-3.5 h-3.5" />
+          GitHub
+        </a>
+      </div>
+    </div>
   );
 }

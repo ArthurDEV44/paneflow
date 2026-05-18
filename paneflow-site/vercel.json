@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "redirects": [
+    {
+      "source": "/legal/privacyClick",
+      "destination": "/legal/privacy",
+      "permanent": true
+    }
+  ]
+}
