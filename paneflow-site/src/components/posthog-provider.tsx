@@ -30,6 +30,13 @@ export function PHProvider({ children }: { children: React.ReactNode }) {
         // client-level opt-out makes the invariant local to the code.
         person_profiles: "never",
         defaults: "2026-01-30",
+        loaded: () => {
+          // Unblocks onPosthogReady() consumers (use-section-tracking,
+          // use-scroll-milestones, use-max-scroll-depth). Without this,
+          // child-component effects fire their first observer callbacks
+          // BEFORE init resolves and track() drops them silently.
+          window.dispatchEvent(new CustomEvent("posthog:ready"));
+        },
       });
     }
   }, []);

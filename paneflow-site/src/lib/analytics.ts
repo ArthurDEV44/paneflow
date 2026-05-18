@@ -17,3 +17,25 @@ export function track(event: string, properties?: Record<string, unknown>) {
     posthog.capture(event, properties);
   }
 }
+
+// Listener registry for `posthog:ready` — see PHProvider for the dispatch.
+// Hooks that set up IntersectionObserver / scroll listeners must wait for
+// posthog to be initialized; otherwise events fired between mount and init
+// hit `track()`'s window.posthog guard and are dropped silently. This was
+// the root cause behind zero `section_reached` events in 30 days of data
+// despite four sections being tagged with data-track-section.
+//
+// React effect order is bottom-up (child first, then parent), so
+// SectionTracker.useEffect runs BEFORE PHProvider.useEffect when both are
+// mounted in the same render pass. The CustomEvent bridges that gap
+// without coupling hooks to the provider's internal state.
+export function onPosthogReady(callback: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  if ((window as unknown as { posthog?: unknown }).posthog) {
+    callback();
+    return () => {};
+  }
+  const handler = () => callback();
+  window.addEventListener("posthog:ready", handler, { once: true });
+  return () => window.removeEventListener("posthog:ready", handler);
+}

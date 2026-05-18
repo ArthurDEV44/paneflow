@@ -66,7 +66,7 @@ export function Footer() {
               href="/legal/privacy"
               className="hover:text-text-muted transition-colors"
             >
-              Confidentialité
+              Privacy
             </Link>
             <span>MIT License</span>
           </div>

@@ -53,16 +53,16 @@ const breadcrumbSchema = {
 };
 
 export const metadata: Metadata = {
-  title: "Télécharger PaneFlow: Linux, macOS, Windows",
+  title: "Download PaneFlow: Linux, macOS, Windows",
   description:
-    "Télécharge PaneFlow, le multiplexeur de terminal GPU‑accéléré écrit en Rust. Disponible pour Linux (.deb, .rpm, AppImage, .tar.gz) et macOS (.dmg signé + notarisé, Apple Silicon). Windows bientôt.",
+    "Download PaneFlow, the GPU-accelerated terminal multiplexer written in Rust. Available for Linux (.deb, .rpm, AppImage, .tar.gz) and macOS (signed and notarized .dmg, Apple Silicon). Windows coming soon.",
   alternates: {
     canonical: "/download",
   },
   openGraph: {
-    title: "Télécharger PaneFlow",
+    title: "Download PaneFlow",
     description:
-      "Multiplexeur de terminal GPU‑accéléré en Rust. Linux et macOS disponibles, Windows bientôt.",
+      "GPU-accelerated terminal multiplexer in Rust. Linux and macOS available, Windows coming soon.",
     type: "website",
   },
 };
