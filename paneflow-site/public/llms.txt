@@ -1,6 +1,6 @@
 # PaneFlow
 
-> A GPU-accelerated terminal multiplexer built in pure Rust with Zed's GPUI framework. Split, organize, and control your terminal — Linux first, macOS and Windows porting in progress.
+> A native terminal workspace for orchestrating Claude Code, Codex, OpenCode, and other CLI coding agents. Split, supervise, and automate parallel agent sessions — Linux first, macOS available, Windows porting in progress.
 
 PaneFlow is open-source software released under the MIT license. The marketing site (https://paneflow.dev) is a small static surface — three pages today, expanding with comparison content and an `/about` page over the next quarter. The application source lives at https://github.com/ArthurDEV44/paneflow.
 
@@ -8,7 +8,7 @@ This file is published strictly as crawl hygiene — it is NOT a ranking signal,
 
 ## Pages
 
-- [Home](https://paneflow.dev/): Product overview, feature highlights, GPU rendering positioning.
+- [Home](https://paneflow.dev/): Product overview for the terminal workspace and orchestration layer for CLI coding agents.
 - [Download](https://paneflow.dev/download): Installation instructions and release artifacts.
 
 ## Optional

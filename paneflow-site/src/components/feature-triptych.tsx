@@ -9,19 +9,19 @@ interface Feature {
 
 const features: Feature[] = [
   {
-    title: "Split anything",
+    title: "One pane per agent",
     description:
-      "Binary tree splits, up to 32 panes per workspace. Run one agent per pane, drag dividers to give the busy one more room, navigate with the keyboard.",
+      "Run Claude Code, Codex, OpenCode, and custom CLIs side by side. Resize panes, keep reviews close, and navigate from the keyboard.",
   },
   {
-    title: "20 workspaces, one per branch",
+    title: "One workspace per task",
     description:
-      "Named workspaces with session restore. Your agent panes, git branch, and working directory survive restarts. Switch with Ctrl+1-9.",
+      "Keep agent panes, git branch, working directory, and local services tied to the same task. Restore everything after a restart.",
   },
   {
-    title: "Native, not Electron",
+    title: "Native, long-running by design",
     description:
-      "Built on Zed's GPU rendering engine and an Alacritty fork - the same stack Zed ships. No JIT, no embedded Chromium, no battery drain when your agents run all night.",
+      "Built on Zed's GPU rendering engine and an Alacritty fork. No embedded Chromium around agents that run for hours.",
   },
 ];
 
@@ -31,12 +31,12 @@ export function FeatureTriptych() {
       <FadeIn>
         <div className="max-w-2xl mx-auto px-6">
           <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-            One pane per agent.
+            Supervise the work, not the tabs.
           </h2>
           <p className="mt-3 text-sm sm:text-base text-text-muted leading-relaxed">
-            Stop juggling tmux windows to keep your coding agents in view.
-            Paneflow gives each session its own pane, tagged with the agent
-            and the branch it&apos;s working on.
+            PaneFlow turns terminal sessions into an agent control room: every
+            session stays visible, labeled, and recoverable while you decide
+            what needs attention.
           </p>
         </div>
       </FadeIn>

@@ -63,9 +63,9 @@ const websiteSchema = {
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://paneflow.dev"),
-  title: "Paneflow - the terminal workspace for Claude Code, Codex & OpenCode",
+  title: "Paneflow - terminal workspace for orchestrating coding agents",
   description:
-    "The terminal workspace built around how you actually work with Claude Code, Codex, and OpenCode. Parallel panes per agent, live branch and dev-server status, session restore. Native Linux and macOS.",
+    "A terminal workspace for orchestrating Claude Code, Codex, OpenCode, and other CLI coding agents. Parallel panes, branch-aware workspaces, dev-server status, session restore, and scripting hooks.",
   keywords: [
     "claude code",
     "codex",
@@ -73,6 +73,7 @@ export const metadata: Metadata = {
     "coding agent",
     "agentic workflow",
     "ai coding workspace",
+    "agent orchestration",
     "parallel agents",
     "agent terminal",
     "terminal multiplexer",
@@ -91,9 +92,9 @@ export const metadata: Metadata = {
     google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION,
   },
   openGraph: {
-    title: "Paneflow - the terminal workspace for Claude Code, Codex & OpenCode",
+    title: "Paneflow - terminal workspace for orchestrating coding agents",
     description:
-      "Run Claude Code, Codex, and OpenCode in parallel panes. Branch and dev-server status per workspace. Native Linux and macOS.",
+      "Supervise Claude Code, Codex, OpenCode, and other CLI agents in parallel panes with branch-aware workspaces and live dev-server status.",
     type: "website",
     siteName: "Paneflow",
   },
@@ -101,7 +102,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "Paneflow",
     description:
-      "The terminal workspace for Claude Code, Codex, and OpenCode. Parallel panes per agent, scriptable, native.",
+      "A terminal workspace for orchestrating Claude Code, Codex, OpenCode, and other CLI coding agents.",
     // twitter:image is auto-injected by src/app/twitter-image.tsx.
   },
 };

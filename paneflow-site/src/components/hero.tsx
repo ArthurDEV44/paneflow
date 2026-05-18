@@ -60,7 +60,7 @@ export function Hero() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.15 }}
         >
-          Three agents. Three branches. One window.
+          A terminal workspace for orchestrating coding agents.
         </motion.h1>
 
         {/* Subtitle */}
@@ -70,10 +70,9 @@ export function Hero() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.25 }}
         >
-          Paneflow is the terminal workspace built around how you actually
-          work with Claude Code, Codex, and OpenCode - parallel panes per
-          agent, live branch and dev-server status, session restore,
-          scriptable from any language. Native Linux and macOS.
+          Run Claude Code, Codex, OpenCode, and custom CLI agents side by side
+          with branch context, live services, session restore, and scriptable
+          control.
         </motion.p>
 
         {/* CTAs — desktop variant. Hidden on coarse-pointer + narrow
@@ -134,64 +133,6 @@ export function Hero() {
           <MobileDesktopOnlyPanel />
         </div>
 
-        {/* Feature list */}
-        <motion.ul
-          className="mt-12 space-y-3 text-sm sm:text-[15px] text-text-muted"
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.55 }}
-        >
-          <li className="flex gap-3">
-            <span className="text-text-muted/60 select-none">-</span>
-            <span>
-              <strong className="text-text font-semibold">
-                One pane per agent
-              </strong>
-              : detects Claude Code, Codex, and OpenCode sessions and tags
-              each pane with the right one
-            </span>
-          </li>
-          <li className="flex gap-3">
-            <span className="text-text-muted/60 select-none">-</span>
-            <span>
-              <strong className="text-text font-semibold">
-                Branch-aware workspaces
-              </strong>
-              : live git branch and dev-server ports per workspace, persisted
-              across restarts
-            </span>
-          </li>
-          <li className="flex gap-3">
-            <span className="text-text-muted/60 select-none">-</span>
-            <span>
-              <strong className="text-text font-semibold">
-                Scriptable from anywhere
-              </strong>
-              : JSON-RPC socket drives splits, prompts, and reads from any
-              language
-            </span>
-          </li>
-          <li className="flex gap-3">
-            <span className="text-text-muted/60 select-none">-</span>
-            <span>
-              <strong className="text-text font-semibold">
-                Splits that nest
-              </strong>
-              : horizontal and vertical, up to 32 panes per workspace, no
-              tmux gymnastics
-            </span>
-          </li>
-          <li className="flex gap-3">
-            <span className="text-text-muted/60 select-none">-</span>
-            <span>
-              <strong className="text-text font-semibold">
-                Native, not Electron
-              </strong>
-              : Rust on Zed&apos;s GPU engine, Linux and macOS, Windows in
-              progress
-            </span>
-          </li>
-        </motion.ul>
       </div>
 
       {/* Screenshot */}

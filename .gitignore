@@ -51,3 +51,4 @@ Thumbs.db
 
 # Local Claude Code agent state (memory, scheduled tasks) — never share publicly
 **/.claude/
+.vercel

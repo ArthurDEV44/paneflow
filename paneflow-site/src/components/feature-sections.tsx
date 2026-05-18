@@ -7,57 +7,32 @@ interface FeatureSection {
   badge: string;
   title: string;
   description: string;
-  details: string[];
 }
 
 const sections: FeatureSection[] = [
   {
     badge: "Layouts",
-    title: "Splits that just work",
+    title: "Terminal layouts for parallel agent work",
     description:
-      "A binary tree layout engine gives you arbitrary nesting. Split horizontal, vertical, zoom to fullscreen, or pick a preset. The layout adapts to your workflow, not the other way around.",
-    details: [
-      "4 preset layouts",
-      "Drag-to-resize dividers",
-      "In-buffer regex search",
-      "Undo close with Ctrl+Shift+T",
-    ],
+      "Give each agent, test runner, server, or review pane the space it needs. Split horizontal, vertical, zoom to fullscreen, or pick a preset.",
   },
   {
     badge: "Context-aware",
-    title: "Dev server detection",
+    title: "Know what each agent is touching",
     description:
-      "Paneflow detects running HTTP servers in each workspace automatically. Frontend and backend ports are labeled and displayed in the sidebar. No configuration, no guessing which port is which.",
-    details: [
-      "Auto-detect HTTP ports",
-      "Frontend / backend labels",
-      "Per-workspace service list",
-      "Live git branch & diff stats",
-    ],
+      "Paneflow keeps branches, diff stats, working directories, and running HTTP servers attached to the workspace. You can see which agent owns which task.",
   },
   {
     badge: "Agent-aware",
-    title: "Built for Claude Code, Codex, and OpenCode",
+    title: "Built to orchestrate CLI coding agents",
     description:
-      "Paneflow reads your Claude Code, Codex CLI, and OpenCode session histories and tags each pane with the right agent and its working branch. The built-in JSON-RPC socket lets you script splits, send prompts, and pull agent output from any language - your supervisor scripts stay in Python or Bash, not in your head.",
-    details: [
-      "Detects Claude Code, Codex & OpenCode sessions",
-      "One pane = one agent, tagged automatically",
-      "JSON-RPC 2.0 over Unix socket",
-      "Programmatic splits, prompts, and reads",
-    ],
+      "Paneflow detects Claude Code, Codex CLI, and OpenCode sessions, tags each pane, and keeps branch context in view. Use JSON-RPC to script splits, send prompts, and read agent output from any language.",
   },
   {
-    badge: "Polish",
-    title: "Everything you expect",
+    badge: "Sessions",
+    title: "Pick up any agent thread",
     description:
-      "24-bit color, IME input, drag-and-drop, regex URL detection, copy mode, and 6 hand-tuned themes with hot-reload. APCA perceptual contrast ensures readability across all themes.",
-    details: [
-      "6 themes, hot-reload",
-      "24-bit ANSI color",
-      "Drag-and-drop files",
-      "Regex URL auto-detection",
-    ],
+      "Paneflow reads each agent's native session history for the current project, groups Claude Code, Codex, and OpenCode in one popover, and resumes the selected thread in the terminal.",
   },
 ];
 
@@ -83,14 +58,6 @@ export function FeatureSections() {
                 <p className="text-sm sm:text-base text-text-muted leading-relaxed">
                   {section.description}
                 </p>
-                <ul className="pt-2 space-y-2 text-sm text-text-muted">
-                  {section.details.map((detail, j) => (
-                    <li key={j} className="flex gap-3">
-                      <span className="text-text-muted/60 select-none">-</span>
-                      <span>{detail}</span>
-                    </li>
-                  ))}
-                </ul>
               </div>
 
               {/* Visual */}
@@ -120,8 +87,11 @@ function FeatureVisual({ index }: { index: number }) {
       alt: "Paneflow with Claude Code session detected and AI agent running",
     },
     {
-      src: "/images/appearance.webp",
-      alt: "Paneflow settings window with theme and font customization",
+      src: "/images/session-agents.png",
+      alt: "Paneflow AI agent sessions popover showing Claude Code, Codex, and OpenCode history for the current project",
+      width: 764,
+      height: 588,
+      priority: true,
     },
   ];
   const visual = visuals[index] ?? visuals[visuals.length - 1];
@@ -131,9 +101,10 @@ function FeatureVisual({ index }: { index: number }) {
       <Image
         src={visual.src}
         alt={visual.alt}
-        width={1920}
-        height={1080}
+        width={visual.width ?? 1920}
+        height={visual.height ?? 1080}
         sizes="(max-width: 768px) 100vw, (max-width: 1024px) 50vw, 600px"
+        priority={visual.priority ?? false}
         className="w-full h-auto"
       />
     </div>

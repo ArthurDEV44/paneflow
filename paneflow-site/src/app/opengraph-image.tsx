@@ -15,7 +15,7 @@ import { join } from "node:path";
 export const dynamic = "force-static";
 
 export const alt =
-  "PaneFlow: GPU-accelerated terminal multiplexer";
+  "PaneFlow: terminal workspace for orchestrating coding agents";
 
 export const size = {
   width: 1200,
@@ -100,7 +100,7 @@ export default async function Image() {
               display: "flex",
             }}
           >
-            GPU-accelerated terminal multiplexer.
+            Terminal workspace for coding agents.
           </div>
           <div
             style={{
@@ -111,7 +111,7 @@ export default async function Image() {
               display: "flex",
             }}
           >
-            Built in pure Rust with Zed&rsquo;s GPUI framework.
+            Orchestrate Claude Code, Codex, and OpenCode.
           </div>
         </div>
 
