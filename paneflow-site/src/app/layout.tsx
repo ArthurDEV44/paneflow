@@ -35,7 +35,7 @@ const organizationSchema = {
   "@context": "https://schema.org",
   "@type": "Organization",
   "@id": "https://paneflow.dev/#organization",
-  name: "PaneFlow",
+  name: "Paneflow",
   url: "https://paneflow.dev",
   logo: "https://paneflow.dev/logos/paneflow-web-300.png",
   founder: {
@@ -56,25 +56,30 @@ const websiteSchema = {
   "@type": "WebSite",
   "@id": "https://paneflow.dev/#website",
   url: "https://paneflow.dev",
-  name: "PaneFlow",
+  name: "Paneflow",
   publisher: { "@id": "https://paneflow.dev/#organization" },
   inLanguage: "en-US",
 };
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://paneflow.dev"),
-  title: "PaneFlow: GPU-accelerated terminal multiplexer",
+  title: "Paneflow - the terminal workspace for Claude Code, Codex & OpenCode",
   description:
-    "A terminal multiplexer built in pure Rust with Zed's GPUI framework. Split, organize, and control your terminal. GPU-accelerated.",
+    "The terminal workspace built around how you actually work with Claude Code, Codex, and OpenCode. Parallel panes per agent, live branch and dev-server status, session restore. Native Linux and macOS.",
   keywords: [
-    "terminal",
-    "multiplexer",
+    "claude code",
+    "codex",
+    "opencode",
+    "coding agent",
+    "agentic workflow",
+    "ai coding workspace",
+    "parallel agents",
+    "agent terminal",
+    "terminal multiplexer",
+    "tmux alternative",
     "rust",
-    "gpui",
-    "gpu",
     "linux",
-    "tmux",
-    "pane",
+    "macos",
   ],
   alternates: {
     canonical: "/",
@@ -86,17 +91,17 @@ export const metadata: Metadata = {
     google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION,
   },
   openGraph: {
-    title: "PaneFlow: GPU-accelerated terminal multiplexer",
+    title: "Paneflow - the terminal workspace for Claude Code, Codex & OpenCode",
     description:
-      "Split, organize, and control your terminal. Built in pure Rust with Zed's rendering engine.",
+      "Run Claude Code, Codex, and OpenCode in parallel panes. Branch and dev-server status per workspace. Native Linux and macOS.",
     type: "website",
-    siteName: "PaneFlow",
+    siteName: "Paneflow",
   },
   twitter: {
     card: "summary_large_image",
-    title: "PaneFlow",
+    title: "Paneflow",
     description:
-      "GPU-accelerated terminal multiplexer in Rust + Zed's GPUI framework.",
+      "The terminal workspace for Claude Code, Codex, and OpenCode. Parallel panes per agent, scriptable, native.",
     // twitter:image is auto-injected by src/app/twitter-image.tsx.
   },
 };

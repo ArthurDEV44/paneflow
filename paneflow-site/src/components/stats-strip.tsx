@@ -3,9 +3,9 @@
 import { FadeIn } from "./fade-in";
 
 const stats = [
-  "Pure Rust, zero runtime overhead",
-  "GPU-accelerated, Zed's GPUI engine",
-  "< 5ms keystroke to pixel",
+  "Detects Claude Code, Codex & OpenCode sessions",
+  "Linux and macOS native, not Electron",
+  "JSON-RPC socket - script it from any language",
 ];
 
 export function StatsStrip() {

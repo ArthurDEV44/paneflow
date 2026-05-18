@@ -60,7 +60,7 @@ export function Hero() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.15 }}
         >
-          Your terminal, multiplied.
+          Three agents. Three branches. One window.
         </motion.h1>
 
         {/* Subtitle */}
@@ -70,9 +70,10 @@ export function Hero() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.25 }}
         >
-          GPU-accelerated terminal multiplexer built in Rust on Zed&apos;s
-          GPUI engine. Split panes, vertical workspaces, AI-aware
-          notifications, and a socket API for automation.
+          Paneflow is the terminal workspace built around how you actually
+          work with Claude Code, Codex, and OpenCode - parallel panes per
+          agent, live branch and dev-server status, session restore,
+          scriptable from any language. Native Linux and macOS.
         </motion.p>
 
         {/* CTAs — desktop variant. Hidden on coarse-pointer + narrow
@@ -144,44 +145,50 @@ export function Hero() {
             <span className="text-text-muted/60 select-none">-</span>
             <span>
               <strong className="text-text font-semibold">
-                GPU-accelerated
+                One pane per agent
               </strong>
-              : rendered on Zed&apos;s GPUI engine, no Electron, no JIT
+              : detects Claude Code, Codex, and OpenCode sessions and tags
+              each pane with the right one
             </span>
           </li>
           <li className="flex gap-3">
             <span className="text-text-muted/60 select-none">-</span>
             <span>
-              <strong className="text-text font-semibold">Split panes</strong>
-              : horizontal and vertical splits in any workspace
+              <strong className="text-text font-semibold">
+                Branch-aware workspaces
+              </strong>
+              : live git branch and dev-server ports per workspace, persisted
+              across restarts
             </span>
           </li>
           <li className="flex gap-3">
             <span className="text-text-muted/60 select-none">-</span>
             <span>
-              <strong className="text-text font-semibold">Workspaces</strong>
-              : keyboard switching, persisted across sessions
+              <strong className="text-text font-semibold">
+                Scriptable from anywhere
+              </strong>
+              : JSON-RPC socket drives splits, prompts, and reads from any
+              language
             </span>
           </li>
           <li className="flex gap-3">
             <span className="text-text-muted/60 select-none">-</span>
             <span>
-              <strong className="text-text font-semibold">AI-aware</strong>
-              : panes surface agent activity and notifications
+              <strong className="text-text font-semibold">
+                Splits that nest
+              </strong>
+              : horizontal and vertical, up to 32 panes per workspace, no
+              tmux gymnastics
             </span>
           </li>
           <li className="flex gap-3">
             <span className="text-text-muted/60 select-none">-</span>
             <span>
-              <strong className="text-text font-semibold">Scriptable</strong>
-              : JSON-RPC socket API for automation
-            </span>
-          </li>
-          <li className="flex gap-3">
-            <span className="text-text-muted/60 select-none">-</span>
-            <span>
-              <strong className="text-text font-semibold">Native</strong>:
-              pure Rust, Linux and macOS, Windows in progress
+              <strong className="text-text font-semibold">
+                Native, not Electron
+              </strong>
+              : Rust on Zed&apos;s GPU engine, Linux and macOS, Windows in
+              progress
             </span>
           </li>
         </motion.ul>
@@ -197,7 +204,7 @@ export function Hero() {
         <div className="max-w-[1440px] mx-auto">
           <Image
             src="/images/paneflow-hero.png"
-            alt="Paneflow terminal multiplexer: split panes, workspaces, and GPU-accelerated rendering"
+            alt="Paneflow showing parallel panes running Claude Code and Codex agent sessions side by side, each with its git branch and dev-server status"
             width={2491}
             height={1361}
             sizes="(max-width: 768px) 100vw, 1440px"
@@ -288,9 +295,9 @@ function MobileDesktopOnlyPanel() {
   }, []);
 
   const link = "https://paneflow.dev";
-  const subject = "Paneflow — desktop terminal multiplexer";
+  const subject = "Paneflow - the terminal workspace for coding agents";
   const body =
-    "Paneflow runs on Linux, macOS and (soon) Windows. Download it here: https://paneflow.dev";
+    "Paneflow runs Claude Code, Codex, and OpenCode in parallel panes on Linux, macOS, and (soon) Windows. Download it here: https://paneflow.dev";
   const mailtoHref = `mailto:?subject=${encodeURIComponent(
     subject,
   )}&body=${encodeURIComponent(body)}`;
