@@ -6,11 +6,9 @@ import { SectionTracker } from "@/components/section-tracker";
 import { LATEST_VERSION, linuxAppImageUrl } from "@/lib/release";
 
 // SoftwareApplication JSON-LD (US-010). Mirrors src/app/page.tsx but
-// adds installUrl for the recommended Linux x86_64 AppImage — the only
-// OS currently shipping. macOS/Windows binaries are not yet listed on
-// this page (heading: "PaneFlow est disponible pour Linux. macOS et
-// Windows bientôt"), so emitting installUrl for them would be a fake
-// feature. Append to installUrl as additional OS binaries ship.
+// adds installUrl for the recommended Linux x86_64 AppImage. The page
+// also lists macOS, but schema.org installUrl is singular here, so keep
+// the universal Linux artifact as the canonical install URL.
 // softwareVersion + installUrl both source from src/lib/release.ts — a
 // LATEST_VERSION bump there propagates here automatically.
 const softwareApplicationSchema = {
@@ -53,16 +51,16 @@ const breadcrumbSchema = {
 };
 
 export const metadata: Metadata = {
-  title: "Download PaneFlow: Linux, macOS, Windows",
+  title: "Download PaneFlow - terminal workspace for coding agents",
   description:
-    "Download PaneFlow, the GPU-accelerated terminal multiplexer written in Rust. Available for Linux (.deb, .rpm, AppImage, .tar.gz) and macOS (signed and notarized .dmg, Apple Silicon). Windows coming soon.",
+    "Download PaneFlow, the native terminal workspace for orchestrating Claude Code, Codex, OpenCode, and other CLI coding agents. Linux and macOS available now. Windows coming soon.",
   alternates: {
     canonical: "/download",
   },
   openGraph: {
     title: "Download PaneFlow",
     description:
-      "GPU-accelerated terminal multiplexer in Rust. Linux and macOS available, Windows coming soon.",
+      "The native terminal workspace for orchestrating CLI coding agents. Linux and macOS available now. Windows coming soon.",
     type: "website",
   },
 };

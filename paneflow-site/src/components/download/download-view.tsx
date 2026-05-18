@@ -22,78 +22,14 @@ import { LATEST_VERSION } from "../../lib/release";
 
 // LATEST_VERSION is imported from `lib/release` — single source of
 // truth shared with the Hero CTA. Bump it there to propagate
-// everywhere. Historical versions below stay local to this component
-// since they're only surfaced on the download page.
+// everywhere. Previous releases are linked to GitHub instead of mirrored
+// here so the page stays focused on the current build.
 
 const VERSIONS: VersionEntry[] = [
   {
     version: LATEST_VERSION,
     latest: true,
     releaseNotes: `https://github.com/ArthurDEV44/paneflow/releases/tag/v${LATEST_VERSION}`,
-  },
-  {
-    version: "0.2.15",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.15",
-  },
-  {
-    version: "0.2.14",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.14",
-  },
-  {
-    version: "0.2.13",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.13",
-  },
-  {
-    version: "0.2.12",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.12",
-  },
-  {
-    version: "0.2.11",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.11",
-  },
-  {
-    version: "0.2.10",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.10",
-  },
-  {
-    version: "0.2.9",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.9",
-  },
-  {
-    version: "0.2.8",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.8",
-  },
-  {
-    version: "0.2.7",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.7",
-  },
-  {
-    version: "0.2.6",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.6",
-  },
-  {
-    version: "0.2.5",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.5",
-  },
-  {
-    version: "0.2.4",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.4",
-  },
-  {
-    version: "0.2.3",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.3",
-  },
-  {
-    version: "0.2.2",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.2",
-  },
-  {
-    version: "0.2.1",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.1",
-  },
-  {
-    version: "0.2.0",
-    releaseNotes: "https://github.com/ArthurDEV44/paneflow/releases/tag/v0.2.0",
   },
 ];
 
@@ -112,10 +48,12 @@ export function DownloadView() {
           className="max-w-2xl mb-10 sm:mb-12"
         >
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-            Paneflow is available for Linux and macOS.
+            Download Paneflow for your agent workspace.
           </h1>
           <p className="mt-3 text-sm sm:text-base text-text-muted leading-relaxed">
-            Windows is coming soon.
+            Run Claude Code, Codex, OpenCode, and custom CLI agents in a native
+            terminal workspace. Linux and macOS are available now. Windows is
+            coming soon.
           </p>
         </div>
 
@@ -126,13 +64,27 @@ export function DownloadView() {
           <PrimaryDownloadCard version={LATEST_VERSION} />
         </div>
 
-        <div
-          data-track-section="download_matrix"
-          className="divide-y divide-surface-border border-y border-surface-border"
-        >
+        <div data-track-section="download_matrix" className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
+            <div>
+              <h2 className="text-base font-semibold">Release Downloads</h2>
+              <p className="mt-1 text-sm text-text-muted">
+                Direct links for the current release. Older builds stay
+                available on GitHub.
+              </p>
+            </div>
+            <a
+              href="https://github.com/ArthurDEV44/paneflow/releases"
+              className="text-sm text-text-muted hover:text-text transition-colors"
+            >
+              View Previous Releases &rarr;
+            </a>
+          </div>
+          <div className="divide-y divide-surface-border border-y border-surface-border">
           {VERSIONS.map((entry, i) => (
             <VersionRow key={entry.version} entry={entry} defaultOpen={i === 0} />
           ))}
+          </div>
         </div>
       </div>
     </section>
@@ -234,6 +186,7 @@ type PrimaryDownload =
       available: true;
       href: string;
       format: string;
+      cta: string;
       icon: ComponentType<{ className?: string }>;
     }
   | {
@@ -252,6 +205,7 @@ function primaryDownload(
       available: true,
       href: `${base}/paneflow-${version}-${platform.arch}.AppImage`,
       format: `AppImage (${platform.arch})`,
+      cta: "Download for Linux",
       icon: LinuxIcon,
     };
   }
@@ -266,6 +220,7 @@ function primaryDownload(
       available: true,
       href: `${base}/paneflow-${version}-aarch64-apple-darwin.dmg`,
       format: "DMG (Apple Silicon)",
+      cta: "Download for macOS",
       icon: AppleIcon,
     };
   }
@@ -278,7 +233,7 @@ function primaryDownload(
   }
   return {
     available: false,
-    reason: "OS non détecté. Choisis un format dans la liste ci-dessous.",
+    reason: "OS not detected. Choose a format from the release list below.",
     icon: Package,
   };
 }
@@ -319,7 +274,7 @@ function PrimaryDownloadCard({ version }: { version: string }) {
         </div>
         {!pick.available && platform.os !== "unknown" && (
           <div className="text-sm text-text-muted mt-1">
-            En attendant, utilise Linux ou choisis un format dans la liste ci-dessous.
+            Use Linux or macOS for now, or choose another format below.
           </div>
         )}
       </div>
@@ -339,7 +294,7 @@ function PrimaryDownloadCard({ version }: { version: string }) {
           className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-accent text-bg font-semibold hover:brightness-110 transition-all duration-200 shrink-0"
         >
           <Download className="w-4 h-4" />
-          Download
+          {pick.cta}
         </a>
       ) : null}
     </div>
@@ -370,7 +325,7 @@ function VersionRow({
         <div className="flex items-center gap-3">
           <span className="text-base font-semibold">{entry.version}</span>
           {entry.latest && (
-            <span className="px-2 py-0.5 rounded-full border border-surface-border text-[11px] text-text-muted font-mono">
+            <span className="px-2 py-0.5 rounded-full bg-accent text-bg text-[11px] font-mono font-semibold">
               Latest
             </span>
           )}

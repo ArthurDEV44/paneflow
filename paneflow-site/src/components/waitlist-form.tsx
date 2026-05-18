@@ -175,7 +175,7 @@ export function WaitlistForm({
 
   return (
     <form onSubmit={submit} className="space-y-2.5">
-      <label className="flex items-center gap-2 pl-3 pr-1 py-1 rounded-md border border-surface-border/50 bg-bg focus-within:border-surface-border transition-colors">
+      <label className="flex items-center gap-2 pl-3 pr-2 py-1 rounded-md border border-surface-border/50 bg-bg focus-within:border-surface-border transition-colors">
         <Mail className="w-3.5 h-3.5 text-text-subtle shrink-0" />
         <input
           type="email"
@@ -186,7 +186,7 @@ export function WaitlistForm({
           value={email}
           onChange={(ev) => setEmail(ev.target.value)}
           disabled={status === "submitting"}
-          className="flex-1 bg-transparent text-sm text-text placeholder:text-text-subtle outline-none disabled:opacity-60"
+          className="min-w-0 flex-1 bg-transparent text-sm text-text placeholder:text-text-subtle outline-none disabled:opacity-60"
         />
         <Button
           type="submit"
@@ -194,7 +194,7 @@ export function WaitlistForm({
           loading={status === "submitting"}
           disabled={!email}
           aria-label={status === "submitting" ? "Sending" : "Subscribe"}
-          className="rounded-sm before:rounded-[calc(var(--radius-sm)-1px)]"
+          className="ml-1 size-7 rounded-sm before:rounded-[calc(var(--radius-sm)-1px)] [&_svg:not([class*='size-'])]:size-3.5"
         >
           <Send strokeWidth={2} />
         </Button>

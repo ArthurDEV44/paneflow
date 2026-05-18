@@ -14,12 +14,11 @@ export function Footer() {
         <FadeIn>
           <div className="max-w-2xl mx-auto px-6">
             <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight leading-[1.15]">
-              Built for developers who live in the terminal - and run their
-              agents there too.
+              Keep your coding agents in one workspace.
             </h2>
             <p className="mt-4 text-sm sm:text-base text-text-muted leading-relaxed max-w-xl">
-              Open source. Written in Rust. Designed to stay out of your way
-              while Claude Code, Codex, and OpenCode work in parallel.
+              Open source, native, and built for supervising Claude Code, Codex,
+              OpenCode, and custom CLI agents from the terminal.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <a
