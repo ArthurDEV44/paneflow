@@ -36,15 +36,15 @@ const sections: FeatureSection[] = [
     ],
   },
   {
-    badge: "Programmable",
-    title: "AI-ready",
+    badge: "Agent-aware",
+    title: "Built for Claude Code, Codex, and OpenCode",
     description:
-      "Built-in IPC server exposes a JSON-RPC 2.0 API over Unix sockets. Claude Code and Codex sessions are detected automatically. Script your terminal from any language.",
+      "Paneflow reads your Claude Code, Codex CLI, and OpenCode session histories and tags each pane with the right agent and its working branch. The built-in JSON-RPC socket lets you script splits, send prompts, and pull agent output from any language - your supervisor scripts stay in Python or Bash, not in your head.",
     details: [
-      "Claude Code & Codex detection",
-      "JSON-RPC 2.0 via Unix socket",
-      "Programmatic splits & text send",
-      "Workspace management API",
+      "Detects Claude Code, Codex & OpenCode sessions",
+      "One pane = one agent, tagged automatically",
+      "JSON-RPC 2.0 over Unix socket",
+      "Programmatic splits, prompts, and reads",
     ],
   },
   {

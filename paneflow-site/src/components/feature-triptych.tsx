@@ -11,17 +11,17 @@ const features: Feature[] = [
   {
     title: "Split anything",
     description:
-      "Binary tree split system. Up to 32 panes per workspace with drag-to-resize dividers, preset layouts, and directional focus navigation.",
+      "Binary tree splits, up to 32 panes per workspace. Run one agent per pane, drag dividers to give the busy one more room, navigate with the keyboard.",
   },
   {
-    title: "20 workspaces",
+    title: "20 workspaces, one per branch",
     description:
-      "Named, tabbed workspaces with session persistence. Your layouts and working directories survive restarts. Switch with Ctrl+1–9.",
+      "Named workspaces with session restore. Your agent panes, git branch, and working directory survive restarts. Switch with Ctrl+1-9.",
   },
   {
-    title: "Zed’s terminal core",
+    title: "Native, not Electron",
     description:
-      "Same Alacritty fork and GPUI rendering engine as the Zed editor. GPU-accelerated, cell-by-cell paint with APCA contrast enforcement.",
+      "Built on Zed's GPU rendering engine and an Alacritty fork - the same stack Zed ships. No JIT, no embedded Chromium, no battery drain when your agents run all night.",
   },
 ];
 
@@ -31,11 +31,12 @@ export function FeatureTriptych() {
       <FadeIn>
         <div className="max-w-2xl mx-auto px-6">
           <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-            Terminal, evolved
+            One pane per agent.
           </h2>
           <p className="mt-3 text-sm sm:text-base text-text-muted leading-relaxed">
-            Everything you need to manage complex workflows in a single
-            window.
+            Stop juggling tmux windows to keep your coding agents in view.
+            Paneflow gives each session its own pane, tagged with the agent
+            and the branch it&apos;s working on.
           </p>
         </div>
       </FadeIn>
