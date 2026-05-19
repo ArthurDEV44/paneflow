@@ -15,7 +15,7 @@ import { join } from "node:path";
 export const dynamic = "force-static";
 
 export const alt =
-  "PaneFlow: terminal workspace for orchestrating coding agents";
+  "Paneflow: terminal workspace for orchestrating Claude Code, Codex, and OpenCode";
 
 export const size = {
   width: 1200,
@@ -76,7 +76,7 @@ export default async function Image() {
               display: "flex",
             }}
           >
-            PaneFlow
+            Paneflow
           </div>
         </div>
 

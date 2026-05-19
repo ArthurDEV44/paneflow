@@ -3,9 +3,9 @@ import { Navbar } from "@/components/navbar";
 import { Footer } from "@/components/footer";
 
 export const metadata: Metadata = {
-  title: "Politique de confidentialité — PaneFlow",
+  title: "Politique de confidentialité — Paneflow",
   description:
-    "Politique de confidentialité de PaneFlow : données collectées sur paneflow.dev, télémétrie desktop opt-in, sous-traitants (PostHog EU, Vercel, GitHub), droits RGPD.",
+    "Politique de confidentialité de Paneflow : données collectées sur paneflow.dev, télémétrie desktop opt-in, sous-traitants (PostHog EU, Vercel, GitHub), droits RGPD.",
   alternates: {
     canonical: "/legal/privacy",
     // hreflang signal — emits <link rel="alternate" hreflang="fr-FR" ...>.
@@ -16,9 +16,9 @@ export const metadata: Metadata = {
     },
   },
   openGraph: {
-    title: "Politique de confidentialité — PaneFlow",
+    title: "Politique de confidentialité — Paneflow",
     description:
-      "PaneFlow, site et application : données, sous-traitants, et droits RGPD.",
+      "Paneflow, site et application : données, sous-traitants, et droits RGPD.",
     type: "website",
   },
   robots: {

@@ -16,7 +16,9 @@ import { LATEST_VERSION } from "@/lib/release";
 const softwareApplicationSchema = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  name: "PaneFlow",
+  name: "Paneflow",
+  description:
+    "A native terminal workspace for orchestrating Claude Code, Codex, OpenCode, and other CLI coding agents. Parallel panes, branch-aware workspaces, live dev-server status, session restore, and a JSON-RPC IPC server. Written in pure Rust on top of Zed's GPUI rendering engine.",
   applicationCategory: "DeveloperApplication",
   operatingSystem: "Linux, macOS, Windows",
   url: "https://paneflow.dev",
