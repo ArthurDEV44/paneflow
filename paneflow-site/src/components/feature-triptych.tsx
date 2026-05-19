@@ -34,7 +34,7 @@ export function FeatureTriptych() {
             Supervise the work, not the tabs.
           </h2>
           <p className="mt-3 text-sm sm:text-base text-text-muted leading-relaxed">
-            PaneFlow turns terminal sessions into an agent control room: every
+            Paneflow turns terminal sessions into an agent control room: every
             session stays visible, labeled, and recoverable while you decide
             what needs attention.
           </p>

@@ -14,7 +14,9 @@ import { LATEST_VERSION, linuxAppImageUrl } from "@/lib/release";
 const softwareApplicationSchema = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  name: "PaneFlow",
+  name: "Paneflow",
+  description:
+    "A native terminal workspace for orchestrating Claude Code, Codex, OpenCode, and other CLI coding agents. Parallel panes, branch-aware workspaces, live dev-server status, session restore, and a JSON-RPC IPC server. Written in pure Rust on top of Zed's GPUI rendering engine.",
   applicationCategory: "DeveloperApplication",
   operatingSystem: "Linux, macOS, Windows",
   url: "https://paneflow.dev/download",
@@ -51,16 +53,16 @@ const breadcrumbSchema = {
 };
 
 export const metadata: Metadata = {
-  title: "Download PaneFlow - terminal workspace for coding agents",
+  title: "Download Paneflow - run Claude Code, Codex, and OpenCode in parallel",
   description:
-    "Download PaneFlow, the native terminal workspace for orchestrating Claude Code, Codex, OpenCode, and other CLI coding agents. Linux and macOS available now. Windows coming soon.",
+    "Download Paneflow, the native terminal workspace for orchestrating Claude Code, Codex, OpenCode, and other CLI coding agents in parallel panes with branch-aware workspaces and session restore. Linux and macOS available now. Windows coming soon.",
   alternates: {
     canonical: "/download",
   },
   openGraph: {
-    title: "Download PaneFlow",
+    title: "Download Paneflow - orchestrate Claude Code, Codex, and OpenCode",
     description:
-      "The native terminal workspace for orchestrating CLI coding agents. Linux and macOS available now. Windows coming soon.",
+      "The native terminal workspace for running CLI coding agents side by side. Linux and macOS available now. Windows coming soon.",
     type: "website",
   },
 };

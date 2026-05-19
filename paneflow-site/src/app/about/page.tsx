@@ -5,16 +5,16 @@ import { Footer } from "@/components/footer";
 import { SectionTracker } from "@/components/section-tracker";
 
 export const metadata: Metadata = {
-  title: "About PaneFlow — built by Arthur Jean (Strivex)",
+  title: "About Paneflow - built by Arthur Jean (Strivex)",
   description:
-    "Who builds PaneFlow, the GPU-accelerated terminal multiplexer in Rust. Founder bio, project background, and how to get in touch.",
+    "Who builds Paneflow, the native terminal workspace for orchestrating Claude Code, Codex, OpenCode, and other CLI coding agents. Founder bio, project background, and how to get in touch.",
   alternates: {
     canonical: "/about",
   },
   openGraph: {
-    title: "About PaneFlow — built by Arthur Jean (Strivex)",
+    title: "About Paneflow - built by Arthur Jean (Strivex)",
     description:
-      "GPU-accelerated terminal multiplexer in Rust. Built by Arthur Jean at Strivex.",
+      "The native terminal workspace for orchestrating CLI coding agents. Built by Arthur Jean at Strivex.",
     // og:type "website" matches the root layout. The "profile" type would
     // require og:profile:first_name / og:profile:last_name namespace props
     // which we don't emit; "website" avoids implicit-missing-property
@@ -97,18 +97,20 @@ export default function AboutPage() {
             <div className="space-y-10 text-sm sm:text-base text-text-muted leading-relaxed">
               <Section title="What Paneflow is">
                 <p>
-                  Paneflow is a GPU-accelerated terminal multiplexer written
-                  in pure Rust on top of Zed&rsquo;s GPUI rendering engine. It
-                  splits, organizes, and tracks multiple terminal sessions in
-                  one window, with workspaces, per-pane git and dev-server
-                  detection, and a JSON-RPC IPC server that lets Claude Code,
-                  Codex, and any other tool drive the editor programmatically.
+                  Paneflow is a native terminal workspace for orchestrating
+                  Claude Code, Codex, OpenCode, and other CLI coding agents
+                  in parallel. One pane per agent, branch-aware workspaces,
+                  live dev-server status, session restore, and a JSON-RPC
+                  IPC server that lets any tool drive the editor
+                  programmatically.
                 </p>
                 <p className="mt-3">
-                  It targets developers who live in the terminal and want a
-                  multiplexer that gets out of the way: native window
-                  decorations, no Electron, no JavaScript runtime, no input
-                  lag. Linux today; macOS and Windows in active porting.
+                  It targets developers running multiple coding agents side
+                  by side and want a workspace that gets out of the way:
+                  written in pure Rust on top of Zed&rsquo;s GPUI rendering
+                  engine, native window decorations, no Electron, no
+                  JavaScript runtime, no input lag. Linux today; macOS
+                  available; Windows in active porting.
                 </p>
               </Section>
 
