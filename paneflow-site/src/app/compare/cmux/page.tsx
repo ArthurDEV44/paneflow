@@ -94,7 +94,7 @@ export default function CompareCmuxPage() {
             <strong className="text-text">
               They diverge on philosophy.
             </strong>{" "}
-            <strong className="text-text">Paneflow</strong> is the minimal,
+            <strong className="text-text">Paneflow</strong>{" "}is the minimal,
             native core - pure Rust on Zed&rsquo;s GPUI engine, sub-200&nbsp;ms
             cold start, sub-4&nbsp;ms keystroke-to-pixel latency, single MIT
             binary, built by an indie dev who uses it daily.{" "}
@@ -140,8 +140,8 @@ export default function CompareCmuxPage() {
         <CompareTable
           headers={["", "Paneflow", "cmux"]}
           rows={[
-            ["Cold start", "<200 ms", "—"],
-            ["Keystroke-to-pixel latency", "<4 ms", "—"],
+            ["Cold start", "<200 ms", "n/a"],
+            ["Keystroke-to-pixel latency", "<4 ms", "n/a"],
             ["Language", "Rust", "Swift (with Go SSH daemon)"],
             ["UI framework", "GPUI (same as Zed)", "AppKit + SwiftUI"],
             [
@@ -189,21 +189,21 @@ export default function CompareCmuxPage() {
           rows={[
             [
               "Embedded browser",
-              "—",
+              "n/a",
               "WKWebView with Chrome/Firefox/Safari/Brave/Edge/Arc profile import",
             ],
-            ["Cloud VM provisioning", "—", "Yes (`cmux vm new`)"],
-            ["SSH remote workspaces", "—", "Auto-deployed Go daemon over scp/SSH"],
+            ["Cloud VM provisioning", "n/a", "Yes (`cmux vm new`)"],
+            ["SSH remote workspaces", "n/a", "Auto-deployed Go daemon over scp/SSH"],
             [
               "IPC surface",
               "JSON-RPC 2.0 over Unix socket (~13 methods)",
               "Dual socket: V1 space-delimited text + V2 newline-delimited JSON, several hundred commands",
             ],
-            ["Command palette", "—", "Yes (fuzzy-search)"],
-            ["AppleScript scripting", "—", "Yes (.sdef bundle)"],
+            ["Command palette", "n/a", "Yes (fuzzy-search)"],
+            ["AppleScript scripting", "n/a", "Yes (.sdef bundle)"],
             [
               "Tmux compatibility shim",
-              "—",
+              "n/a",
               "capture-pane, pipe-pane, bind-key, paste-buffer, set-hook",
             ],
             [
@@ -213,7 +213,7 @@ export default function CompareCmuxPage() {
             ],
             [
               "Per-directory config",
-              "—",
+              "n/a",
               "Ancestor-walk with trust modes",
             ],
             ["Notifications", "Basic (per-pane)", "Persistent with unread tracking"],
@@ -283,7 +283,7 @@ export default function CompareCmuxPage() {
           for session persistence.
         </p>
         <p>
-          <strong className="text-text">Paneflow</strong> is built in pure
+          <strong className="text-text">Paneflow</strong>{" "}is built in pure
           Rust on top of GPUI, the same UI framework Zed uses. In practical
           terms: there is no language boundary between the UI and the
           terminal - keystrokes travel through a single pure-Rust pipeline,
@@ -356,8 +356,8 @@ export default function CompareCmuxPage() {
             <span>
               <strong className="text-text">Config file</strong>: copy
               your <code>~/.config/cmux/cmux.json</code> to
-              <code> ~/.config/paneflow/paneflow.json</code> on Linux or
-              <code> ~/Library/Application Support/paneflow/paneflow.json</code>
+              <code> ~/.config/paneflow/paneflow.json</code>{" "}on Linux or
+              <code> ~/Library/Application Support/paneflow/paneflow.json</code>{" "}
               on macOS. Rename keys that differ (see the
               {" "}<Link
                 href="/docs/configuration/schema"
@@ -374,7 +374,7 @@ export default function CompareCmuxPage() {
               match for the core actions
               (<code>Cmd/Ctrl+Shift+D</code> split horizontal,
               <code> Cmd/Ctrl+Shift+E</code> split vertical,
-              <code> Alt+Arrow</code> focus, <code>Cmd/Ctrl+1-9</code>
+              <code> Alt+Arrow</code> focus, <code>Cmd/Ctrl+1-9</code>{" "}
               workspace switch). Custom overrides translate directly.
             </span>
           </li>
