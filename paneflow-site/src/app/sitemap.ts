@@ -36,6 +36,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.7,
     },
     {
+      url: `${ORIGIN}/compare/cmux`,
+      lastModified: buildTime,
+      changeFrequency: "monthly",
+      priority: 0.7,
+    },
+    {
       url: `${ORIGIN}/legal/privacy`,
       lastModified: buildTime,
       changeFrequency: "yearly",

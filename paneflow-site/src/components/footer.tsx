@@ -64,6 +64,12 @@ export function Footer() {
               About
             </Link>
             <Link
+              href="/compare/cmux"
+              className="hover:text-text-muted transition-colors"
+            >
+              vs cmux
+            </Link>
+            <Link
               href="/legal/privacy"
               className="hover:text-text-muted transition-colors"
             >
