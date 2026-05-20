@@ -1,35 +1,37 @@
-# PaneFlow
+# Paneflow
 
-A GPU-accelerated terminal multiplexer built in Rust with [Zed's GPUI framework](https://github.com/zed-industries/zed/tree/main/crates/gpui).
+**A terminal workspace for orchestrating coding agents.** Run Claude Code, Codex, OpenCode, and custom CLI agents side by side with branch-aware workspaces, live dev-server status, session restore, and a JSON-RPC IPC server.
 
-PaneFlow aims to be a modern alternative to tmux/screen with native GPU rendering, split panes, workspaces, and session persistence, all without a terminal emulator host. Linux is the primary target; macOS and Windows are supported.
+Paneflow is the minimal, native core: pure Rust on top of [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) rendering engine, sub-200 ms cold start, sub-4 ms keystroke-to-pixel latency, a single MIT-licensed binary, built by an indie maintainer who uses it daily. macOS (Apple Silicon) and Linux ship today; native Windows is on the roadmap.
+
+Paneflow's design is openly inspired by [cmux](https://github.com/lawrencecchen/cmux), which pioneered the "workspace per project, panes per agent" mental model for agent-first terminal multiplexing. Paneflow is not a fork; it is an independent Rust codebase that takes the workflow idea in a deliberately minimal, native direction. Side-by-side comparison vs cmux and other terminals: [paneflow.dev/compare](https://paneflow.dev/compare).
 
 <p align="center">
-  <img src="assets/images/hero-paneflow.png" alt="PaneFlow" width="100%" />
+  <img src="assets/images/hero-paneflow.png" alt="Paneflow" width="100%" />
 </p>
 
 ## Features
 
+- **Agent orchestration**: Claude Code / Codex / OpenCode launchers in the tab bar, session tracking, and a JSON-RPC event stream downstream tools can subscribe to
+- **Branch-aware workspaces**: up to 20 workspaces with rename, quick-switch (`Ctrl+1`-`9`), undo close; the sidebar surfaces the active git branch per workspace
+- **Parallel panes**: horizontal and vertical splits, drag-to-resize, layout presets (even, main+stack, tiled), up to 32 panes
+- **Dev-server detection**: surfaces Vite, Next.js, Webpack, and other local ports in the sidebar with one-click open
+- **Session restore**: save/restore layouts, CWD, workspace names, and custom buttons; resume yesterday's setup with one launch
+- **Markdown pane**: render a Markdown file in-pane next to a terminal (useful for keeping a PRD or README open beside the agent)
 - **GPU-accelerated rendering**: Vulkan on Linux, Metal on macOS, DirectX on Windows (handled by GPUI)
-- **Split panes**: horizontal and vertical, drag-to-resize, layout presets (even, main+stack, tiled), up to 32 panes
-- **Workspaces**: up to 20 workspaces with rename, quick-switch (`Ctrl+1`-`9`), undo close
-- **Session persistence**: save/restore layouts, CWD, workspace names, and custom buttons
-- **Themes**: 2 bundled themes with hot-reload (One Dark, PaneFlow Light)
-- **Custom keybindings**: JSON-configurable override of every default action (57 actions)
 - **Find-in-buffer**: `Ctrl+Shift+F`, regex toggle, match cycling
 - **Hyperlinks**: OSC 8 escape sequences + automatic URL detection
-- **Markdown pane**: render a Markdown file in-pane next to a terminal
-- **Dev-server detection**: surfaces Vite, Next.js, Webpack, and other local ports in the sidebar
-- **AI agent integration**: Claude Code / Codex / Opencode launchers, session tracking, JSON-RPC events
+- **Themes**: 2 bundled themes with hot-reload (One Dark, PaneFlow Light)
+- **Custom keybindings**: JSON-configurable override of every default action (57 actions)
 - **Auto-update**: in-app updater for every supported install format
 - **IPC**: JSON-RPC 2.0 over Unix socket (Linux/macOS) or named pipe (Windows)
-- **Cross-platform**: Linux (Wayland + X11), macOS 13 Ventura+, Windows 10 1809+
+- **Cross-platform**: Linux (Wayland + X11), macOS 13 Ventura+ (Apple Silicon today); Windows 10 1809+ planned
 
 ## Prerequisites
 
 ### Rust toolchain
 
-PaneFlow pins **Rust 1.95** via [`rust-toolchain.toml`](rust-toolchain.toml). [rustup](https://rustup.rs/) installs the exact version automatically the first time you run `cargo`:
+Paneflow pins **Rust 1.95** via [`rust-toolchain.toml`](rust-toolchain.toml). [rustup](https://rustup.rs/) installs the exact version automatically the first time you run `cargo`:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -209,7 +211,7 @@ Ubuntu 24.04 and newer don't ship `libfuse2` by default. The error looks like `d
 
 ### Verifying releases
 
-Every PaneFlow release is signed and the procedure to verify a downloaded artifact is documented per platform:
+Every Paneflow release is signed and the procedure to verify a downloaded artifact is documented per platform:
 
 - **Linux** (`.deb` / `.rpm` / `.tar.gz` / `.AppImage`): [`docs/release/linux-signing.md`](docs/release/linux-signing.md). GPG-signed `.deb` + `.rpm` (key: [`keys/paneflow-release.asc`](keys/paneflow-release.asc)); SHA-256 sidecars on `.tar.gz` and `.AppImage`.
 - **macOS** (`.dmg` / `.app`): [`docs/release/macos-signing.md`](docs/release/macos-signing.md). Apple Developer ID signed + notarized + stapled.
@@ -423,7 +425,7 @@ All 57 actions are defined in `src-app/src/app/actions.rs` and bound in `src-app
 
 ## Configuration
 
-PaneFlow reads `paneflow.json` from a platform-appropriate config directory:
+Paneflow reads `paneflow.json` from a platform-appropriate config directory:
 
 | Platform | Config path |
 |----------|-------------|
@@ -510,11 +512,11 @@ A versioned JSON Schema for `paneflow.json` lives at [`schemas/paneflow.schema.j
 }
 ```
 
-Both `$schema` (the editor pointer) and `$schemaVersion` (the version pin) are optional. PaneFlow logs a warning when `$schemaVersion` is unknown but never refuses to load the file. Schema validation is editor-side; runtime parsing stays tolerant.
+Both `$schema` (the editor pointer) and `$schemaVersion` (the version pin) are optional. Paneflow logs a warning when `$schemaVersion` is unknown but never refuses to load the file. Schema validation is editor-side; runtime parsing stays tolerant.
 
 ## IPC
 
-PaneFlow exposes a JSON-RPC 2.0 endpoint:
+Paneflow exposes a JSON-RPC 2.0 endpoint:
 
 | Platform | Endpoint |
 |----------|----------|
@@ -562,6 +564,16 @@ echo '{"jsonrpc":"2.0","method":"surface.send_text","params":{"text":"ls\n"},"id
 | `ai` | `session_end` | Notify that the session ended |
 
 Stateful methods are dispatched to the GPUI main thread; stateless methods (`system.*`) reply on the socket thread.
+
+## Compare
+
+Honest side-by-side comparisons of Paneflow against the terminals and multiplexers it overlaps with - architecture, feature matrices, performance numbers, when each tool wins:
+
+- **Hub:** [paneflow.dev/compare](https://paneflow.dev/compare)
+- [vs cmux](https://paneflow.dev/compare/cmux) - minimal native Rust vs the macOS kitchen-sink toolkit
+- [vs WezTerm](https://paneflow.dev/compare/wezterm) - agent-first workspace vs the Lua-scriptable cross-platform emulator
+- [vs iTerm2](https://paneflow.dev/compare/iterm2) - agent orchestration vs the long-standing macOS terminal
+- [vs Warp](https://paneflow.dev/compare/warp) - native indie tool vs the cloud-backed AI terminal
 
 ## License
 
