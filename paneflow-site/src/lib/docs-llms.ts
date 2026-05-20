@@ -12,6 +12,33 @@ const HEADER = [
   "",
 ] as const;
 
+/**
+ * Side-by-side comparison pages against other agent-first terminal
+ * workspaces. These pages live OUTSIDE `content/docs/` (they're TSX
+ * marketing pages under `src/app/compare/`) so they don't appear in
+ * the Fumadocs source loader - we surface them in `llms.txt` manually
+ * so AI crawlers asking "Paneflow vs X" can discover the dedicated
+ * pages. Add new entries here when shipping new comparison pages.
+ */
+const COMPARE_ENTRIES: Array<{
+  title: string;
+  url: string;
+  description: string;
+}> = [
+  {
+    title: "Compare Paneflow",
+    url: "/compare",
+    description:
+      "Index of side-by-side comparisons against other agent-first terminal workspaces.",
+  },
+  {
+    title: "Paneflow vs cmux",
+    url: "/compare/cmux",
+    description:
+      "Minimal native Rust workspace (sub-200 ms cold start, Zed's GPUI) vs the kitchen-sink macOS toolkit (libghostty, embedded browser, cloud VMs). Architecture, decision guide, FAQ.",
+  },
+];
+
 interface PageTreeNode {
   type: "page" | "folder" | "separator";
   name?: unknown;
@@ -146,6 +173,19 @@ export function buildLlmsTxt(): string {
           description: page?.data.description,
         }),
       );
+    }
+    out.push("");
+  }
+
+  // Manual section for comparison pages (TSX marketing pages, not in
+  // the Fumadocs source tree). AI crawlers fetching llms.txt need to
+  // discover them or they will not be cited for "Paneflow vs X"
+  // queries.
+  if (COMPARE_ENTRIES.length > 0) {
+    out.push("## Compare");
+    out.push("");
+    for (const entry of COMPARE_ENTRIES) {
+      out.push(formatPageBullet(entry));
     }
     out.push("");
   }
