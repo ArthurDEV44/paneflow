@@ -7,10 +7,10 @@ import { SectionTracker } from "@/components/section-tracker";
 import { LATEST_VERSION } from "@/lib/release";
 
 // SoftwareApplication JSON-LD (US-010). softwareVersion sources from
-// LATEST_VERSION (single source of truth in src/lib/release.ts) — keep
+// LATEST_VERSION (single source of truth in src/lib/release.ts) - keep
 // this in sync on every release cut; the per-release checklist
-// (tasks/seo-launch-checklist.md → US-010) tracks the verification.
-// Intentionally omits aggregateRating (no visible reviews on this page —
+// (tasks/seo-launch-checklist.md US-010) tracks the verification.
+// Intentionally omits aggregateRating (no visible reviews on this page
 // would fail Google's visible-reviews precondition) and FAQPage/HowTo
 // (not the primary content of this page).
 const softwareApplicationSchema = {
@@ -20,10 +20,15 @@ const softwareApplicationSchema = {
   description:
     "A native terminal workspace for orchestrating Claude Code, Codex, OpenCode, and other CLI coding agents. Parallel panes, branch-aware workspaces, live dev-server status, session restore, and a JSON-RPC IPC server. Written in pure Rust on top of Zed's GPUI rendering engine.",
   applicationCategory: "DeveloperApplication",
+  applicationSubCategory: "Terminal Multiplexer",
   operatingSystem: "Linux, macOS, Windows",
   url: "https://paneflow.dev",
   downloadUrl: "https://paneflow.dev/download",
   softwareVersion: LATEST_VERSION,
+  releaseNotes: `https://github.com/ArthurDEV44/paneflow/releases/tag/v${LATEST_VERSION}`,
+  softwareRequirements:
+    "Linux (Wayland or X11) with Vulkan driver, or macOS 13 Ventura+ on Apple Silicon. Windows 10 1809+ planned.",
+  screenshot: "https://paneflow.dev/images/paneflow-hero.png",
   license: "https://opensource.org/licenses/MIT",
   author: { "@id": "https://paneflow.dev/#organization" },
   offers: {

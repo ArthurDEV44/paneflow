@@ -25,30 +25,33 @@ export const metadata: Metadata = {
 
 // Person JSON-LD (US-013). @id matches the Organization.founder ref from
 // the root layout (US-009) so search engines collapse both Person nodes
-// into a single entity. image field intentionally omitted per AC7 — no
+// into a single entity. image field intentionally omitted per AC7: no
 // public/arthur.jpg exists; Person schema remains valid without it.
 //
-// Person.sameAs is intentionally limited to personal-identity URLs per
-// schema.org guidance — the Strivex org URL belongs in worksFor (already
-// modeled below), not in sameAs. sameAs grows over time:
-//   - TODO(OQ-2): add Arthur's dev.to handle once US-015 article publishes.
-//   - TODO(OQ-3): add public LinkedIn URL once Arthur confirms he wants it
-//     surfaced on /about.
-//   - TODO(US-014): add Wikidata Q-number (Person Q# if minted, or skip).
-//   - Twitter/X handle is intentionally absent — none currently confirmed.
+// Person.sameAs lists personal-identity URLs per schema.org guidance
+// (the Strivex org URL also appears here because it is treated as a
+// public-presence reference for Arthur, not only the employer record
+// already modeled below via worksFor). A Wikidata Person Q-number is
+// not yet minted; when it is, append the Q-URL to this array.
 const personSchema = {
   "@context": "https://schema.org",
   "@type": "Person",
   "@id": "https://paneflow.dev/#founder",
   name: "Arthur Jean",
   url: "https://paneflow.dev/about",
-  jobTitle: "Founder, Strivex — building developer tools",
+  jobTitle: "Founder, Strivex - building developer tools",
   worksFor: {
     "@type": "Organization",
     name: "Strivex",
     url: "https://strivex.fr",
   },
-  sameAs: ["https://github.com/ArthurDEV44"],
+  sameAs: [
+    "https://github.com/ArthurDEV44",
+    "https://www.linkedin.com/in/arthur-jean-strivex/",
+    "https://x.com/arthurjdev",
+    "https://dev.to/arthurj-dev",
+    "https://strivex.fr",
+  ],
 };
 
 // BreadcrumbList JSON-LD (extends the US-011 convention to /about). The

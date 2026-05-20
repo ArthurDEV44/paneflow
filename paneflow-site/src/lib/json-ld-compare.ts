@@ -30,6 +30,18 @@ export interface CompareJsonLdInput {
   dateModified: string;
   /** Question/Answer pairs for the FAQPage adjunct. */
   faq: Array<{ question: string; answer: string }>;
+  /**
+   * Optional inspiration link expressed as `Article.isBasedOn`. Use ONLY
+   * when the comparison page explicitly credits the competitor as a
+   * design inspiration (currently: cmux). Becomes a semantic edge that
+   * AI engines can follow to model the relationship between the two
+   * projects. Omit on neutral / purely comparative pages.
+   */
+  isBasedOn?: {
+    name: string;
+    /** Canonical URL for the source (typically a GitHub repo). */
+    url: string;
+  };
 }
 
 export function buildCompareJsonLd(
@@ -60,6 +72,15 @@ export function buildCompareJsonLd(
       "@id": pageUrl,
     },
   };
+
+  if (input.isBasedOn) {
+    article.isBasedOn = {
+      "@type": "SoftwareSourceCode",
+      name: input.isBasedOn.name,
+      url: input.isBasedOn.url,
+      codeRepository: input.isBasedOn.url,
+    };
+  }
 
   const software: Record<string, unknown> = {
     "@type": "SoftwareApplication",
