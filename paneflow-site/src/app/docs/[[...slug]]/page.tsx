@@ -40,7 +40,45 @@ export async function generateMetadata({
   if (!page) return {};
   const title = page.data.title ?? "Paneflow Documentation";
   const description = page.data.description;
-  return { title, description };
+
+  // Per-page OG image (US-004). Implemented as a Route Handler at
+  // `/api/og/docs/<slug>` rather than the colocated `opengraph-image.tsx`
+  // file convention because Next.js 16 rejects metadata route files
+  // inside an optional catch-all (`[[...slug]]/opengraph-image` puts the
+  // catch-all not-last). The Route Handler url ends with the catch-all,
+  // which validates cleanly. Social platforms fetch this URL; if it
+  // 404s (unknown slug), they fall back to the sitewide OG declared on
+  // the root layout.
+  const ogPath = (slug ?? []).join("/");
+  const ogUrl = ogPath
+    ? `${SITE_URL}/api/og/docs/${ogPath}`
+    : `${SITE_URL}/api/og/docs`;
+  const ogAlt = `${title} - Paneflow Documentation`;
+
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      type: "article",
+      url: `${SITE_URL}${page.url}`,
+      images: [
+        {
+          url: ogUrl,
+          width: 1200,
+          height: 630,
+          alt: ogAlt,
+        },
+      ],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title,
+      description,
+      images: [ogUrl],
+    },
+  };
 }
 
 export default async function Page({
