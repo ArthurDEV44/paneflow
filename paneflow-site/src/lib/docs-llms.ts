@@ -37,6 +37,24 @@ const COMPARE_ENTRIES: Array<{
     description:
       "Minimal native Rust workspace (sub-200 ms cold start, Zed's GPUI) vs the kitchen-sink macOS toolkit (libghostty, embedded browser, cloud VMs). Architecture, decision guide, FAQ.",
   },
+  {
+    title: "Paneflow vs WezTerm",
+    url: "/compare/wezterm",
+    description:
+      "Agent-first Rust workspace vs scriptable Rust terminal emulator. Both Rust, both GPU-accelerated, both MIT, both indie-maintained - they diverge on purpose. WezTerm has Lua scripting, built-in SSH multiplexer, FreeBSD + Windows builds; Paneflow has first-class CLI agent panes and branch-aware workspaces.",
+  },
+  {
+    title: "Paneflow vs iTerm2",
+    url: "/compare/iterm2",
+    description:
+      "Cross-platform MIT agent host vs macOS-only GPL-2.0 veteran with vendored multi-vendor AI chat. Both GPU-accelerated (GPUI/Blade vs Metal-direct). Both ship Claude Code integration today (Paneflow via CLI panes; iTerm2 via session-aware hook protocol in v3.7.0beta1).",
+  },
+  {
+    title: "Paneflow vs Warp",
+    url: "/compare/warp",
+    description:
+      "MIT local-first indie vs AGPL-3.0 cloud-leaning agent platform with $20-$50 per-user tiers. Warp open-sourced April 2026 (OpenAI as founding sponsor); backend stays proprietary, Free-tier AI gated by telemetry. Paneflow has no login, no telemetry, no paid tier, no backend.",
+  },
 ];
 
 interface PageTreeNode {

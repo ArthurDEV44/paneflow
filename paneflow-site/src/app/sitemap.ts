@@ -48,6 +48,24 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.7,
     },
     {
+      url: `${ORIGIN}/compare/wezterm`,
+      lastModified: buildTime,
+      changeFrequency: "monthly",
+      priority: 0.7,
+    },
+    {
+      url: `${ORIGIN}/compare/iterm2`,
+      lastModified: buildTime,
+      changeFrequency: "monthly",
+      priority: 0.7,
+    },
+    {
+      url: `${ORIGIN}/compare/warp`,
+      lastModified: buildTime,
+      changeFrequency: "monthly",
+      priority: 0.7,
+    },
+    {
       url: `${ORIGIN}/legal/privacy`,
       lastModified: buildTime,
       changeFrequency: "yearly",

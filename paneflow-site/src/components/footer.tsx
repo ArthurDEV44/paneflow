@@ -64,10 +64,10 @@ export function Footer() {
               About
             </Link>
             <Link
-              href="/compare/cmux"
+              href="/compare"
               className="hover:text-text-muted transition-colors"
             >
-              vs cmux
+              Compare
             </Link>
             <Link
               href="/legal/privacy"
