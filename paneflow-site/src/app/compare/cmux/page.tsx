@@ -16,12 +16,17 @@ const FAQ = [
   {
     question: "Is Paneflow a fork of cmux?",
     answer:
-      "No. Paneflow is an independent Rust implementation inspired by cmux's agent-first design. The two codebases share no source code. Paneflow uses GPUI (Zed's framework) + upstream alacritty_terminal; cmux uses AppKit + libghostty via C FFI.",
+      "No. Paneflow is an independent Rust implementation inspired by cmux's agent-first design. The two codebases share no source code. Paneflow uses GPUI (Zed's framework) + upstream alacritty_terminal; cmux uses AppKit + libghostty via the GhosttyKit.xcframework.",
+  },
+  {
+    question: "How many AI agents does each terminal support?",
+    answer:
+      "cmux ships first-class integration for 15+ agents: Claude Code, Codex, Grok, OpenCode, Cursor, Copilot, Gemini, Antigravity, Rovo Dev, Hermes, CodeBuddy, Factory, Qoder, Amp, Pi, plus a custom-agent slot. Paneflow ships first-class buttons for three today (Claude Code, Codex, OpenCode). If you rotate through several different agents, cmux has the broader zoo.",
   },
   {
     question: "Why pick Paneflow if cmux is more mature?",
     answer:
-      "If you need Linux today (Paneflow ships it, cmux is macOS-only), or you specifically want MIT-licensed tooling without a separate commercial license question, or you prefer a small Rust codebase you can audit and contribute to, Paneflow is the better fit. For macOS-only feature-rich workflows in May 2026, cmux is more polished and has a larger community.",
+      "If you need Linux today (Paneflow ships it, cmux is macOS-only), or you specifically want MIT-licensed tooling without a separate commercial license question, or you prefer a small Rust codebase you can audit and contribute to, Paneflow is the better fit. For macOS-only feature-rich workflows in May 2026, cmux is more polished and has a much larger surface (cloud VMs, command palette, AppleScript, tmux compatibility, embedded browser).",
   },
   {
     question: "Will Paneflow run on Windows?",
@@ -37,7 +42,7 @@ const FAQ = [
     question:
       "Why does Paneflow use alacritty_terminal instead of Ghostty?",
     answer:
-      "alacritty_terminal is published on crates.io with stable Rust semver guarantees and integrates cleanly with GPUI's render loop. Ghostty is a C library that cmux accesses via FFI through GhosttyKit.xcframework - perfectly fine in cmux's Swift app, but Paneflow's pure-Rust stack prefers a pure-Rust VT emulator. This is an architectural preference, not a quality judgment. Both engines are excellent.",
+      "alacritty_terminal is published on crates.io with stable Rust semver guarantees and integrates cleanly with GPUI's render loop. Ghostty is a C library that cmux accesses through the GhosttyKit.xcframework - perfectly fine in cmux's Swift app, but Paneflow's pure-Rust stack prefers a pure-Rust VT emulator. This is an architectural preference, not a quality judgment. Both engines are excellent.",
   },
   {
     question: "Does Paneflow support running agents on remote machines?",
@@ -47,7 +52,7 @@ const FAQ = [
   {
     question: "Is there an embedded browser in Paneflow?",
     answer:
-      "No. cmux ships a full WKWebView-based browser with omnibar, profile import from Chrome/Firefox/Safari, and tab management. Paneflow does not include a browser - it focuses on terminal panes plus a markdown viewer. If you want a browser inside your terminal workspace, cmux is the better choice.",
+      "No. cmux ships a full WKWebView-based browser with omnibar, profile import from Chrome/Firefox/Safari/Brave/Edge/Arc, and tab management. Paneflow does not include a browser - it focuses on terminal panes plus a markdown viewer. If you want a browser inside your terminal workspace, cmux is the better choice.",
   },
 ];
 
@@ -122,26 +127,46 @@ export default function CompareCmuxPage() {
           rows={[
             ["OS support", "Linux, macOS (Windows planned)", "macOS only"],
             ["License", "MIT", "GPL-3.0-or-later (+ commercial license)"],
-            ["Language", "Rust", "Swift"],
+            ["Language", "Rust", "Swift (with Go SSH daemon)"],
             ["UI framework", "GPUI (same as Zed)", "AppKit + SwiftUI"],
             [
               "Terminal engine",
               "alacritty_terminal 0.26 (upstream crates.io)",
-              "libghostty (via C FFI from GhosttyKit.xcframework)",
+              "libghostty via GhosttyKit.xcframework",
             ],
-            ["GPU stack", "Vulkan (Linux) / Metal (macOS) via Blade", "Metal + CAMetalLayer + IOSurface"],
+            ["GPU stack", "Vulkan (Linux) / Metal (macOS) via Blade", "Metal via CAMetalLayer"],
             ["Workspaces", "Yes", "Yes"],
-            ["Pane splits", "N-ary tree, 4 preset layouts", "Binary tree (Bonsplit)"],
-            ["AI agent buttons", "Claude Code, Codex, OpenCode", "Same + Claude Code Teams"],
+            ["Pane layout", "N-ary tree, 4 preset layouts", "N-ary tree via Bonsplit"],
+            [
+              "AI agent integrations",
+              "3 (Claude Code, Codex, OpenCode)",
+              "15+ (Claude Code, Codex, Grok, OpenCode, Cursor, Copilot, Gemini, Antigravity, Rovo Dev, Hermes, CodeBuddy, Factory, Qoder, Amp, Pi + custom)",
+            ],
+            ["Customizable shortcut actions", "~30 actions", "71 actions"],
             ["Session restore", "Yes (workspaces + CWD)", "Yes"],
             ["Dev-server port detection", "Yes", "Yes"],
             ["Branch-aware workspace badges", "Yes", "Yes"],
-            ["IPC", "JSON-RPC over Unix socket (~10 methods)", "V1 text + V2 JSON-RPC, 150+ commands"],
-            ["Embedded browser", "No", "Yes (WKWebView, profile import)"],
+            [
+              "IPC",
+              "JSON-RPC 2.0 over Unix socket (~13 methods)",
+              "Dual socket: V1 space-delimited text + V2 newline-delimited JSON, several hundred commands",
+            ],
+            ["Command palette", "No", "Yes (fuzzy-search)"],
+            ["AppleScript scripting", "No", "Yes (.sdef bundle)"],
+            ["Tmux compatibility shim", "No", "Yes (capture-pane, pipe-pane, bind-key, paste-buffer, set-hook)"],
+            ["Embedded browser", "No", "Yes (WKWebView, Chrome/Firefox/Safari/Brave/Edge/Arc profile import)"],
+            ["Cloud VM provisioning", "No", "Yes (`cmux vm new`)"],
+            [
+              "Notifications",
+              "Basic (per-pane)",
+              "Persistent store with unread tracking, jump-to-unread, set-status/progress commands",
+            ],
             ["Markdown panes", "Yes (beta)", "Yes"],
-            ["SSH remote workspaces", "No", "Yes (auto-deployed Go daemon)"],
-            ["Per-directory config", "No (cut from scope)", "Yes (with trust modes)"],
-            ["Current version", "v0.2.16 (May 2026)", "v0.64.7 (May 19, 2026)"],
+            ["Right sidebar panels", "Workspaces sidebar only", "5 panels: Files, Find, Vault, Feed, Dock"],
+            ["SSH remote workspaces", "No", "Yes (auto-deployed Go daemon over scp/SSH)"],
+            ["Per-directory config", "No (cut from scope)", "Yes (ancestor-walk) with trust modes"],
+            ["Socket access control modes", "Single trust mode", "5 modes (off, cmuxOnly, automation, password, allowAll)"],
+            ["Current version", "v0.2.16 (May 2026)", "v0.64.7 (May 19, 2026) — also tagged v1.38.1"],
             ["GitHub stars", "Early (under 100)", "17 500+"],
             ["First release", "Late 2025", "February 2026"],
             ["Pricing", "Free, MIT", "Free (GPL); commercial license available"],
@@ -173,10 +198,11 @@ export default function CompareCmuxPage() {
             bullets: [
               "You are macOS-only and want the most polished native experience today",
               "You need SSH remote workspaces (cmux is the only one shipping this)",
-              "You need an embedded browser with Chrome/Firefox/Safari profile import",
-              "You want a 17 500+ star community, a mature 150+ command socket API, and active commercial backing",
+              "You need an embedded browser with Chrome/Firefox/Safari/Brave/Edge/Arc profile import",
+              "You rotate through 15+ AI agents and want first-class integration for all of them",
+              "You want a 17 500+ star community, hundreds of socket commands, and active commercial backing",
+              "You want cloud VM provisioning, AppleScript scripting, or tmux compatibility built in",
               "You are comfortable with GPL-3.0 (or you will pay for the commercial license)",
-              "You want a feature-complete agent terminal you can deploy in production today",
             ],
           }}
         />
@@ -187,10 +213,13 @@ export default function CompareCmuxPage() {
           <strong className="text-text">cmux</strong> is a native macOS
           application built on AppKit and SwiftUI. Terminal emulation is
           delegated to libghostty, the C library that powers the Ghostty
-          terminal emulator, accessed via FFI through Apple&rsquo;s
-          <code> GhosttyKit.xcframework</code>. Rendering goes through
-          Metal + CAMetalLayer + IOSurface. Pane splits use Bonsplit, a
-          vendored binary-tree split layout engine.
+          terminal emulator, bridged into the Swift app through
+          <code> GhosttyKit.xcframework</code>. Rendering goes through a
+          custom <code>GhosttyMetalLayer</code> subclass of CAMetalLayer
+          (Ghostty drives Metal directly, no MTKView). Pane layout uses
+          Bonsplit, an N-ary tree layout library that exposes adjacency
+          queries (<code>adjacentPane(to:direction:)</code>) and snapshots
+          for session persistence.
         </p>
         <p>
           <strong className="text-text">Paneflow</strong> is built in pure
@@ -198,18 +227,24 @@ export default function CompareCmuxPage() {
           emulation is upstream <code>alacritty_terminal</code> 0.26 from
           crates.io - the public, stable Rust VT crate (no fork). The
           GPU layer is Blade (GPUI&rsquo;s renderer) over Vulkan on Linux
-          and Metal on macOS. Pane splits use an N-ary tree (not just
-          binary) which makes layout presets like
-          <em> main-vertical </em> and <em>tiled</em> cleaner to express.
+          and Metal on macOS. Pane layout is a hand-rolled N-ary tree
+          designed for the four preset layouts
+          (<em>even horizontal</em>, <em>even vertical</em>,
+          <em> main-vertical</em>, <em>tiled</em>).
         </p>
         <p>
-          On the IPC side, both projects expose a Unix socket. cmux has
-          two protocols (V1 text + V2 JSON-RPC) and over 150 commands
-          covering windows, panes, sessions, and remote workspaces.
-          Paneflow ships a single JSON-RPC 2.0 protocol with roughly ten
-          methods covering workspaces and panes - smaller surface, faster
-          to learn, less coverage. Catching up to cmux on the IPC API
-          surface is on the Paneflow roadmap.
+          On the IPC side, both projects expose a Unix socket. cmux runs
+          two protocols in parallel on the same socket: V1 is a
+          space-delimited text protocol
+          (e.g. <code>new-workspace</code>, <code>send-key &lt;args&gt;</code>),
+          V2 is newline-delimited JSON. The dispatcher inspects the first
+          byte of each line to route. Combined surface area is several
+          hundred commands covering windows, panes, sessions, notifications,
+          and remote workspaces. Paneflow ships a single JSON-RPC 2.0
+          protocol with roughly thirteen methods covering workspaces and
+          panes - smaller surface, faster to learn, far less coverage.
+          Catching up to cmux on the IPC API surface is on the Paneflow
+          roadmap.
         </p>
       </CompareSection>
 
@@ -301,8 +336,9 @@ export default function CompareCmuxPage() {
 
       <CompareSection id="when-not" title="When NOT to choose Paneflow">
         <p>
-          The honest, non-marketing list. If any of these matter to you
-          today, cmux is the better tool:
+          The honest, non-marketing list. cmux has shipped years of
+          surface that Paneflow has not built yet. If any of these matter
+          to you today, cmux is the better tool:
         </p>
         <ol className="space-y-3 text-sm">
           <li className="flex gap-3">
@@ -311,32 +347,87 @@ export default function CompareCmuxPage() {
               <strong className="text-text">
                 You need SSH remote workspaces.
               </strong>{" "}
-              cmux ships an auto-deploying Go daemon for this; Paneflow
-              has no equivalent and it is not on the immediate roadmap.
+              cmux ships an auto-deploying Go daemon (scp + SSH local-
+              forward to a Unix socket) for this. Paneflow has no
+              equivalent and it is not on the immediate roadmap.
             </span>
           </li>
           <li className="flex gap-3">
             <span className="text-text-muted/60 select-none mt-0.5">2.</span>
             <span>
               <strong className="text-text">
-                You need an embedded browser inside the terminal.
+                You rotate through more than three AI agents.
               </strong>{" "}
-              cmux&rsquo;s WKWebView integration with profile import is
-              unique to it. Paneflow does not plan a browser surface.
+              cmux ships first-class support for 15+ agents (Claude Code,
+              Codex, Grok, OpenCode, Cursor, Copilot, Gemini, Antigravity,
+              Rovo Dev, Hermes, CodeBuddy, Factory, Qoder, Amp, Pi, plus
+              custom). Paneflow ships three today.
             </span>
           </li>
           <li className="flex gap-3">
             <span className="text-text-muted/60 select-none mt-0.5">3.</span>
             <span>
               <strong className="text-text">
-                You want a 150+ command socket API.
+                You want a command palette, AppleScript, or tmux
+                compatibility.
               </strong>{" "}
-              Paneflow&rsquo;s JSON-RPC has roughly ten methods today.
-              Catching up is on the roadmap but cmux is years ahead.
+              cmux has a fuzzy-search command palette, AppleScript
+              scripting via <code>.sdef</code>, and a tmux compatibility
+              shim (<code>capture-pane</code>, <code>pipe-pane</code>,
+              <code> bind-key</code>, <code>paste-buffer</code>,
+              <code> set-hook</code>) that lets tmux-aware tools target
+              cmux. Paneflow has none of these.
             </span>
           </li>
           <li className="flex gap-3">
             <span className="text-text-muted/60 select-none mt-0.5">4.</span>
+            <span>
+              <strong className="text-text">
+                You need an embedded browser inside the terminal.
+              </strong>{" "}
+              cmux&rsquo;s WKWebView panel imports profiles from Chrome,
+              Firefox, Safari, Brave, Edge, and Arc. Paneflow does not
+              plan a browser surface.
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span className="text-text-muted/60 select-none mt-0.5">5.</span>
+            <span>
+              <strong className="text-text">
+                You need cloud VMs from the terminal.
+              </strong>{" "}
+              cmux ships integrated cloud VM provisioning
+              (<code>cmux vm new</code>). Paneflow has no equivalent.
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span className="text-text-muted/60 select-none mt-0.5">6.</span>
+            <span>
+              <strong className="text-text">
+                You want a several-hundred-command IPC surface.
+              </strong>{" "}
+              cmux exposes hundreds of commands over a dual V1 text + V2
+              JSON socket protocol, covering windows, panes, sessions,
+              notifications, and remote workspaces. Paneflow&rsquo;s
+              JSON-RPC has thirteen methods today.
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span className="text-text-muted/60 select-none mt-0.5">7.</span>
+            <span>
+              <strong className="text-text">
+                You want a richer side-panel surface or per-directory
+                trust modes.
+              </strong>{" "}
+              cmux ships a right sidebar with five panels (Files, Find,
+              Vault, Feed, Dock), persistent notification storage with
+              unread tracking, ancestor-walk per-directory config, and
+              five socket access control modes. Paneflow ships a single
+              workspaces sidebar.
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span className="text-text-muted/60 select-none mt-0.5">8.</span>
             <span>
               <strong className="text-text">
                 You need production-grade maturity now.
@@ -348,17 +439,7 @@ export default function CompareCmuxPage() {
             </span>
           </li>
           <li className="flex gap-3">
-            <span className="text-text-muted/60 select-none mt-0.5">5.</span>
-            <span>
-              <strong className="text-text">
-                You want per-directory config with trust modes.
-              </strong>{" "}
-              cmux has it; Paneflow explicitly cut this from scope to
-              keep the config surface small.
-            </span>
-          </li>
-          <li className="flex gap-3">
-            <span className="text-text-muted/60 select-none mt-0.5">6.</span>
+            <span className="text-text-muted/60 select-none mt-0.5">9.</span>
             <span>
               <strong className="text-text">
                 You want the most polished native macOS feel.
