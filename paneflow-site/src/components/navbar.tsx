@@ -65,7 +65,7 @@ export function Navbar() {
               Docs
             </Link>
             <Link
-              href="/compare/cmux"
+              href="/compare"
               onClick={() => track("nav_link_clicked", { label: "compare" })}
               className="text-sm text-text-muted hover:text-text transition-colors duration-200 hidden sm:block"
             >

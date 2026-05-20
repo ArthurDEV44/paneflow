@@ -28,6 +28,24 @@ const COMPARISONS: Array<{
     blurb:
       "macOS-native Swift terminal workspace built on libghostty. Mature (v0.64, 17 500+ stars), feature-rich (embedded browser, SSH daemon, cloud VMs), GPL-3.0 + commercial.",
   },
+  {
+    slug: "wezterm",
+    competitor: "WezTerm",
+    blurb:
+      "Architectural peer: same Rust + GPU + MIT lineage, different purpose. WezTerm is the highly configurable Lua-scripted terminal (26 k+ stars, eight years, FreeBSD + Windows builds, built-in SSH multiplexer). Paneflow is the agent-first workspace.",
+  },
+  {
+    slug: "iterm2",
+    competitor: "iTerm2",
+    blurb:
+      "macOS veteran (16 years, 17 500+ stars, GPL-2.0) that shipped Claude Code integration + multi-vendor AI chat in v3.7.0beta1 (April 2026). Cross-platform vs macOS-only, MIT vs GPL-2.0, CLI-agent-host vs vendored-chat architecture.",
+  },
+  {
+    slug: "warp",
+    competitor: "Warp",
+    blurb:
+      "Open-sourced in April 2026 (AGPL-3.0 client + MIT UI, OpenAI as founding sponsor). Cloud-leaning with $20-$50 per-user tiers, Free-tier telemetry gate for AI, Oz cloud-agent orchestration. Paneflow is local-first MIT with no login, no telemetry, no tiers.",
+  },
 ];
 
 const breadcrumbJsonLd = {
@@ -99,7 +117,8 @@ export default function ComparePage() {
       </div>
 
       <p className="mt-10 text-xs sm:text-sm text-text-subtle leading-relaxed">
-        Comparisons against WezTerm, Warp, and iTerm2 are planned. Open a{" "}
+        Future comparisons under consideration: tmux, zellij, Alacritty.
+        Open a{" "}
         <a
           href="https://github.com/ArthurDEV44/paneflow/issues"
           className="text-text underline underline-offset-4 decoration-surface-border-hover"
