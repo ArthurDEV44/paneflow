@@ -45,16 +45,31 @@ const organizationSchema = {
   ],
 };
 
-// Intentionally omits potentialAction.SearchAction — paneflow.dev has no
-// on-site search; declaring it would be a fake feature (AC US-009 #3).
+// `potentialAction.SearchAction` points at the docs search URL
+// (Orama-backed, shipped via `prd-fumadocs-docs.md`). The /docs route
+// honors the `?q=<term>` query convention via `SearchUrlSync` in
+// `src/app/docs/layout.tsx`, which opens the Fumadocs search dialog
+// when the param is present. The previous "no on-site search" rationale
+// (US-009) no longer applies. If a sitewide search ever ships, update
+// this urlTemplate to point at that route instead.
 const websiteSchema = {
   "@context": "https://schema.org",
   "@type": "WebSite",
   "@id": "https://paneflow.dev/#website",
   url: "https://paneflow.dev",
   name: "Paneflow",
+  description:
+    "A native terminal workspace for orchestrating Claude Code, Codex, OpenCode, and other CLI coding agents. Parallel panes, branch-aware workspaces, live dev-server status, session restore, and a JSON-RPC IPC server. Written in pure Rust on top of Zed's GPUI rendering engine.",
   publisher: { "@id": "https://paneflow.dev/#organization" },
   inLanguage: "en-US",
+  potentialAction: {
+    "@type": "SearchAction",
+    target: {
+      "@type": "EntryPoint",
+      urlTemplate: "https://paneflow.dev/docs?q={search_term_string}",
+    },
+    "query-input": "required name=search_term_string",
+  },
 };
 
 export const metadata: Metadata = {
@@ -88,7 +103,7 @@ export const metadata: Metadata = {
   },
   // GSC ownership verification. Token is provided via the
   // NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION env var (see .env.example);
-  // when unset, Next.js omits the meta tag entirely — no broken empty tag.
+  // when unset, Next.js omits the meta tag entirely - no broken empty tag.
   verification: {
     google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION,
   },
