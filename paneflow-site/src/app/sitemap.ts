@@ -88,18 +88,38 @@ interface DocsPageMeta {
  * a `dateModified` fall back to the current build time so the entry is
  * still emitted with a sensible value.
  *
+ * Each docs page emits TWO entries: the HTML route (canonical) and the
+ * `.md` raw-markdown twin served via the rewrite in `next.config.ts`
+ * (handler at `src/app/api/docs-raw/[[...slug]]/route.ts`). The `.md`
+ * URL shares the HTML twin's `lastModified` so traditional crawlers
+ * that only consume sitemaps can discover the markdown form without
+ * relying on `/llms.txt` (US-002).
+ *
  * Unhappy path: any throw or empty page set returns `[]` so the manual
  * top-level routes still ship in the sitemap.
  */
 function buildDocsEntries(buildTime: Date): MetadataRoute.Sitemap {
   try {
     const pages = source.getPages() as unknown as DocsPageMeta[];
-    return pages.map((page) => ({
-      url: `${ORIGIN}${page.url}`,
-      lastModified: parseDateOrFallback(page.data.dateModified, buildTime),
-      changeFrequency: "weekly" as const,
-      priority: 0.7,
-    }));
+    return pages.flatMap((page) => {
+      const lastModified = parseDateOrFallback(
+        page.data.dateModified,
+        buildTime,
+      );
+      const html = {
+        url: `${ORIGIN}${page.url}`,
+        lastModified,
+        changeFrequency: "weekly" as const,
+        priority: 0.7,
+      };
+      const markdown = {
+        url: `${ORIGIN}${page.url}.md`,
+        lastModified,
+        changeFrequency: "weekly" as const,
+        priority: 0.5,
+      };
+      return [html, markdown];
+    });
   } catch (err) {
     console.error(
       "sitemap: failed to enumerate /docs/** pages; emitting manual routes only",
