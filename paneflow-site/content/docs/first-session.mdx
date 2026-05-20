@@ -1,0 +1,98 @@
+---
+title: Your First Paneflow Session
+description: Launch Paneflow, split your first pane, and learn the core mental model in under five minutes.
+dateModified: 2026-05-19
+---
+
+<Callout type="info">
+**TL;DR.** Run `paneflow`. Hit `Cmd/Ctrl+Shift+D` to split horizontally,
+`Alt+Arrow` to move focus, `Cmd/Ctrl+Shift+N` to add a workspace. That
+is the entire core flow.
+</Callout>
+
+Paneflow's mental model is two layers: **workspaces** (independent
+project contexts) and **panes** (terminal splits inside a workspace).
+This page walks you from a fresh install to a working two-pane setup
+without any configuration.
+
+Keybindings use the `secondary` modifier, which resolves to `Cmd` on
+macOS and `Ctrl` on Linux. The notation `Cmd/Ctrl+Shift+D` below
+means "use whichever applies on your OS."
+
+<Callout type="warn">
+Screenshots for this page ship with the v0.3.0 docs sprint. The prose
+below assumes you are following along on your own machine.
+</Callout>
+
+## How do I launch Paneflow?
+
+Run the binary from a terminal, or open the app from Spotlight, the
+Applications folder, or your launcher:
+
+```bash
+paneflow
+```
+
+The window opens with a single workspace and a single shell pane. The
+workspace is named after the directory you launched from; a launch
+from `~/projects/api` opens a workspace called `api`. Your default
+shell (`$SHELL`) starts inside the pane.
+
+<Callout type="warn">
+**Window does not render?** Paneflow uses Vulkan on Linux and Metal
+on macOS. The window will fail to open if your graphics driver does
+not support the platform's required API. Confirm
+your driver is up to date, check the [Linux Vulkan note](/docs/installation/linux),
+or open a [GitHub issue](https://github.com/ArthurDEV44/paneflow/issues)
+with your OS and driver version.
+</Callout>
+
+## How do I split a pane?
+
+Two split directions:
+
+- `Cmd/Ctrl+Shift+D` splits the focused pane **horizontally** (top
+  and bottom).
+- `Cmd/Ctrl+Shift+E` splits the focused pane **vertically** (side by
+  side).
+
+Each new pane spawns a fresh shell in the same working directory as
+the source pane. Try both: split once horizontally, focus the new
+pane, then split that one vertically. You now have three shells in a
+single workspace.
+
+## How do I move focus between panes?
+
+`Alt+Arrow` works the same way on every OS:
+
+- `Alt+Left` and `Alt+Right` focus the pane to the left or right.
+- `Alt+Up` and `Alt+Down` focus the pane above or below.
+
+The active pane has a brighter title-bar border, so you can tell at a
+glance which pane will receive your next keystroke.
+
+## How do I create a second workspace?
+
+`Cmd/Ctrl+Shift+N` opens a native folder picker. Pick a directory and
+a new workspace appears in the sidebar, named after the folder. The
+workspace starts with one shell pane already CWD'd into your choice.
+
+To switch between workspaces:
+
+- `Cmd/Ctrl+1` through `Cmd/Ctrl+9` jumps to workspace 1 through 9.
+- `Cmd/Ctrl+Tab` rotates to the next workspace.
+
+The sidebar on the left lists every open workspace. Click a workspace
+name to jump to it.
+
+## How do I close a pane?
+
+`Cmd/Ctrl+Shift+W` closes the focused pane. If it is the last pane in
+a workspace, the workspace stays open with an empty placeholder until
+you open a new pane or close the workspace itself with
+`Cmd/Ctrl+Shift+Q`.
+
+## What's next?
+
+- Full shortcut table: [Keybindings](/docs/keybindings).
+- Configure shells, themes, and overrides: [Configuration](/docs/configuration).

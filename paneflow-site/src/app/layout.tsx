@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import Script from "next/script";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
+import { RootProvider } from "fumadocs-ui/provider/next";
 import { PHProvider } from "@/components/posthog-provider";
 import { PostHogPageView } from "@/components/posthog-pageview";
 import { Providers } from "@/components/providers";
@@ -19,17 +20,12 @@ const geistMono = Geist_Mono({
 });
 
 // Organization + WebSite JSON-LD (US-009).
-// Hardcoded absolute URLs — these schemas must remain valid even if the site
+// Hardcoded absolute URLs - these schemas must remain valid even if the site
 // is mirrored on a non-canonical host. Maintenance note: any change to founder
 // name, GitHub handle, or sameAs links must update this block in the same
-// commit. Organization.sameAs will grow over time:
-//   - TODO(US-014): add the project Wikidata Q-number once minted
-//     (e.g. "https://www.wikidata.org/wiki/Q<NNNNNN>"). Runbook in
-//     tasks/seo-launch-checklist.md → "US-014 — Wikidata entity stub".
-//   - TODO(US-015): add the dev.to article URL once it has accumulated
-//     reactions/comments (per US-015 AC: entity disambiguation signal).
+// commit. Wikidata entity Q139574816 is already in sameAs (US-014 done).
 // LinkedIn / dev.to handle for the founder live on Person.sameAs in
-// src/app/about/page.tsx (US-013), NOT here — Organization.sameAs is for
+// src/app/about/page.tsx (US-013), NOT here - Organization.sameAs is for
 // the project entity, not for Arthur personally.
 const organizationSchema = {
   "@context": "https://schema.org",
@@ -135,7 +131,13 @@ export default function RootLayout({
         />
         <Providers>
           <PHProvider>
-            {children}
+            {/* Fumadocs UI RootProvider drives sidebar/search context for
+                /docs/* routes. `theme={{ enabled: false }}` defers to the
+                project's next-themes ThemeProvider in <Providers> to avoid
+                double-wrapping (RootProvider ships next-themes by default). */}
+            <RootProvider theme={{ enabled: false }}>
+              {children}
+            </RootProvider>
             <Suspense fallback={null}>
               <PostHogPageView />
             </Suspense>

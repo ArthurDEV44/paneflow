@@ -1,0 +1,145 @@
+---
+title: Layouts
+description: Apply Paneflow's four built-in layout presets - even horizontal, even vertical, main vertical, and tiled - to reshape a workspace in one keystroke.
+dateModified: 2026-05-19
+---
+
+Paneflow ships four layout presets that reshape the active workspace
+into a canonical arrangement. Each preset preserves every shell - it
+moves the existing panes into new positions instead of opening or
+closing anything.
+
+<Callout type="info">
+**TL;DR.** `Cmd/Ctrl+Alt+1` lays panes out in a row, `Cmd/Ctrl+Alt+2`
+stacks them in a column, `Cmd/Ctrl+Alt+3` parks the focused pane on
+the left with the rest stacked on the right, and `Cmd/Ctrl+Alt+4`
+tiles everything into a grid.
+</Callout>
+
+The presets always operate on the active workspace's full set of
+panes. They never alter the workspace count or the active focus
+target; the focused pane stays focused after every preset.
+
+## How do I apply a layout preset?
+
+Each preset has a default keybinding and an action name you can
+remap in [paneflow.json](/docs/configuration/schema#how-do-i-set-shortcuts):
+
+| Preset | Default keys | Action name |
+| --- | --- | --- |
+| Even horizontal | `Cmd/Ctrl+Alt+1` | `layout_even_horizontal` |
+| Even vertical | `Cmd/Ctrl+Alt+2` | `layout_even_vertical` |
+| Main vertical | `Cmd/Ctrl+Alt+3` | `layout_main_vertical` |
+| Tiled | `Cmd/Ctrl+Alt+4` | `layout_tiled` |
+
+Press the key from any pane. The workspace immediately reflows; the
+focused pane keeps its content and selection state intact.
+
+## Even horizontal
+
+`layout_even_horizontal` lays every pane out in a single row, each
+with equal width.
+
+```text
++--------+--------+--------+--------+
+|        |        |        |        |
+|   1    |   2    |   3    |   4    |
+|        |        |        |        |
++--------+--------+--------+--------+
+```
+
+**When to use:** comparing four short-output streams side by side
+(test runners, log tails, build watchers). Best on wide monitors -
+on a 13-inch laptop, four columns get cramped past three panes.
+
+## Even vertical
+
+`layout_even_vertical` stacks every pane into a single column, each
+with equal height.
+
+```text
++-----------------------------------+
+|                                   |
+|                1                  |
+|                                   |
++-----------------------------------+
+|                                   |
+|                2                  |
+|                                   |
++-----------------------------------+
+|                                   |
+|                3                  |
+|                                   |
++-----------------------------------+
+```
+
+**When to use:** following a sequential workflow where you want each
+pane to keep its full terminal width (long log lines, wide tables,
+side-by-side diff output). Pairs naturally with a vertical-orientation
+monitor.
+
+## Main vertical
+
+`layout_main_vertical` parks the focused pane on the left at 60% of
+the width, then stacks the remaining panes vertically on the right
+at 40%.
+
+```text
++-------------------+---------------+
+|                   |       2       |
+|                   +---------------+
+|         1         |       3       |
+|       (main)      +---------------+
+|                   |       4       |
+|                   +---------------+
+|                   |       5       |
++-------------------+---------------+
+```
+
+**When to use:** one "primary" pane with supporting panes (a code
+editor or AI agent on the left, build / test / log tails on the
+right). The focused pane becomes the main pane, so move focus to the
+pane you want to enlarge before pressing the chord.
+
+## Tiled
+
+`layout_tiled` arranges every pane into a balanced grid. The
+algorithm matches tmux's: start at 1x1 and grow rows and columns
+alternately until the grid holds every pane. With 4 panes you get a
+2x2 grid, with 5 or 6 panes a 2x3 grid, with 7-9 panes a 3x3 grid.
+
+```text
+4 panes              6 panes
++--------+--------+  +------+------+------+
+|   1    |   2    |  |  1   |  2   |  3   |
+|        |        |  |      |      |      |
++--------+--------+  +------+------+------+
+|   3    |   4    |  |  4   |  5   |  6   |
+|        |        |  |      |      |      |
++--------+--------+  +------+------+------+
+```
+
+**When to use:** monitoring five or more shells with no clear primary
+- dashboards, multi-service development, fan-out background jobs. The
+tiled grid keeps every pane large enough to read at a glance on a
+1080p monitor up to about 9 panes; past that, prefer multiple
+workspaces or zoom (`Cmd/Ctrl+Shift+Z`) on whichever pane is
+currently the focus.
+
+## What happens to my pane content?
+
+Layout presets only reshape the pane tree. Each shell keeps:
+
+- Its running command or shell state.
+- Its scrollback buffer and selection.
+- Its environment, working directory, and process tree.
+- Its focus handle (the previously focused pane stays focused).
+
+If you have a long-running build in pane 3 and apply
+`layout_main_vertical`, the build keeps running uninterrupted in
+whichever slot pane 3 ends up in. Layout actions are non-destructive
+- nothing prompts you to confirm and nothing is unrecoverable.
+
+`Cmd/Ctrl+Shift+=` equalises every split ratio without changing the
+tree structure, which is a useful follow-up after manually resizing
+a few dividers.

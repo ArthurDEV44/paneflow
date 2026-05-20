@@ -1,0 +1,105 @@
+---
+title: Get started
+description: Install Paneflow and run your first multi-pane agent workspace in under two minutes.
+dateModified: 2026-05-20
+---
+
+Paneflow is a cross-platform terminal multiplexer built for agentic
+CLI workflows - Claude Code, Codex, OpenCode, and any other agent that
+speaks plain shell. Split panes, persistent sessions, dev-server port
+detection, and zero-config theming, all in a native GPU-accelerated
+app that boots in under 200 ms.
+
+<GetStartedDownloads />
+
+<Callout type="info">
+Paneflow ships signed binaries for **macOS** (notarized `.dmg`, Apple
+Silicon) and **Linux** (`.deb`, AppImage, tarball, x86_64 and ARM64).
+The buttons above grab the recommended format for each OS; the per-OS
+guides below cover every other path.
+</Callout>
+
+## Install for your platform
+
+<Cards>
+  <Card
+    title="Install on macOS"
+    description="Signed and notarized .dmg for Apple Silicon. Gatekeeper-clean on first launch, Homebrew tap in flight."
+    href="/docs/installation/macos"
+  />
+  <Card
+    title="Install on Linux"
+    description=".deb, AppImage, or tarball. Works on every modern distribution, Wayland and X11, x86_64 and ARM64."
+    href="/docs/installation/linux"
+  />
+  <Card
+    title="Compare install paths"
+    description="Side-by-side overview of every supported install format, dependency footprint, and PATH integration."
+    href="/docs/installation"
+  />
+</Cards>
+
+## First steps after install
+
+<Cards>
+  <Card
+    title="Your first session"
+    description="Open a workspace, split panes, run an agent, and learn the muscle memory."
+    href="/docs/first-session"
+  />
+  <Card
+    title="Keybindings"
+    description="The default keymap, the Terminal context, and how to remap any action in paneflow.json."
+    href="/docs/keybindings"
+  />
+  <Card
+    title="Layouts"
+    description="Even, main-vertical, tiled - and how to author your own with the layout tree."
+    href="/docs/layouts"
+  />
+  <Card
+    title="Themes"
+    description="Bundled themes, 35 terminal slots, and hot-reload from paneflow.json."
+    href="/docs/themes"
+  />
+  <Card
+    title="Configuration"
+    description="Where paneflow.json lives, what every key does, and the JSON schema."
+    href="/docs/configuration"
+  />
+  <Card
+    title="Troubleshooting"
+    description="Vulkan on Linux, Gatekeeper on macOS, PATH, fonts, fallback flags."
+    href="/docs/troubleshooting"
+  />
+</Cards>
+
+## What runs on the inside
+
+- **Pure Rust** + [GPUI](https://www.gpui.rs/) - the same framework Zed runs on.
+- **Native VT emulation** via `alacritty_terminal` (crates.io 0.26).
+- **Native PTY** via `portable-pty` - same code path on Linux and macOS.
+- **JSON-RPC IPC** at `$XDG_RUNTIME_DIR/paneflow/paneflow.sock` for headless scripting.
+- **Sub-200 ms cold start** and sub-4 ms keystroke-to-pixel on the latency probe.
+
+## System requirements
+
+| Platform | Minimum | GPU |
+| --- | --- | --- |
+| Linux | glibc 2.31+ (Ubuntu 20.04, Debian 11, Fedora 34) | Vulkan loader (`libvulkan1` / `vulkan-loader`) |
+| macOS | 13 Ventura, Apple Silicon | Metal (built-in) |
+
+## Install with your AI agent
+
+Already running Claude Code, Codex, OpenCode, or another agentic CLI?
+Hand the install over - the prompt below tells your agent to read this
+documentation, detect your OS, and walk the install one confirmation
+at a time.
+
+<AgentInstall />
+
+## Help and feedback
+
+- File a bug or feature request on [GitHub Issues](https://github.com/ArthurDEV44/paneflow/issues).
+- Browse all release artifacts on the [download page](/download).
+- Source code: [github.com/ArthurDEV44/paneflow](https://github.com/ArthurDEV44/paneflow).

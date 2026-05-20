@@ -16,6 +16,7 @@ import {
   Terminal,
 } from "lucide-react";
 import posthog from "posthog-js";
+import { AgentInstall } from "../docs/agent-install";
 import { AppleIcon, LinuxIcon, WindowsIcon } from "../os-icons";
 import { WaitlistForm } from "../waitlist-form";
 import { LATEST_VERSION } from "../../lib/release";
@@ -85,6 +86,20 @@ export function DownloadView() {
             <VersionRow key={entry.version} entry={entry} defaultOpen={i === 0} />
           ))}
           </div>
+        </div>
+
+        <div data-track-section="download_agent_install" className="mt-12">
+          <div className="mb-4">
+            <h2 className="text-base font-semibold">
+              Install with your AI agent
+            </h2>
+            <p className="mt-1 text-sm text-text-muted">
+              Paste this prompt into Claude Code, Codex, OpenCode, or any other
+              agentic CLI. Your agent reads the docs, detects your OS, and
+              walks the install one confirmation at a time.
+            </p>
+          </div>
+          <AgentInstall />
         </div>
       </div>
     </section>

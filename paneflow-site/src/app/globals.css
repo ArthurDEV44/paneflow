@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Fumadocs UI v16 - official theme. Neutral color preset gives a clean
+   monochrome base that matches CossUI's identity; preset.css ships the
+   prose/code-block/sidebar styling used by DocsLayout and DocsPage.
+   Order matters: tailwindcss -> color preset -> framework preset. */
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
 /* Tailwind v4 class-based dark variant.
    `next-themes` (attribute="class") flips `class="dark"` on <html>.
    The `:where(...)` keeps specificity 0 so utility classes still win. */
@@ -441,3 +448,4 @@ body {
     @apply font-sans font-mono;
   }
 }
+
