@@ -50,7 +50,7 @@ const personSchema = {
     "https://www.linkedin.com/in/arthur-jean-strivex/",
     "https://x.com/arthurjdev",
     "https://dev.to/arthurj-dev",
-    "https://strivex.fr",
+    "https://arthurjean.com",
   ],
 };
 
