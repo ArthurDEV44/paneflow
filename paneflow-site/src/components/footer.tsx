@@ -2,7 +2,7 @@
 
 import { FadeIn } from "./fade-in";
 import Link from "next/link";
-import { ExternalLink } from "lucide-react";
+import { BookOpen as BookOpenIcon } from "lucide-react";
 import { GitHubIcon } from "./icons";
 import { track } from "../lib/analytics";
 
@@ -34,19 +34,19 @@ export function Footer() {
                 <GitHubIcon className="w-4 h-4" />
                 Star on GitHub
               </a>
-              <a
-                href="https://github.com/ArthurDEV44/paneflow#readme"
+              <Link
+                href="/docs"
                 onClick={() =>
-                  track("github_link_clicked", {
+                  track("nav_link_clicked", {
                     source: "footer",
                     label: "docs",
                   })
                 }
                 className="inline-flex items-center gap-2.5 px-5 py-2.5 border border-surface-border text-text rounded-full hover:bg-surface/60 transition-all duration-200"
               >
-                <ExternalLink className="w-4 h-4" />
+                <BookOpenIcon className="w-4 h-4" />
                 Documentation
-              </a>
+              </Link>
             </div>
           </div>
         </FadeIn>

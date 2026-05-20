@@ -57,13 +57,13 @@ export function Navbar() {
             >
               Download
             </Link>
-            <a
-              href="https://github.com/ArthurDEV44/paneflow#readme"
+            <Link
+              href="/docs"
               onClick={() => track("nav_link_clicked", { label: "docs" })}
               className="text-sm text-text-muted hover:text-text transition-colors duration-200 hidden sm:block"
             >
               Docs
-            </a>
+            </Link>
             <a
               href="https://github.com/ArthurDEV44/paneflow"
               onClick={() => track("github_link_clicked", { source: "navbar" })}

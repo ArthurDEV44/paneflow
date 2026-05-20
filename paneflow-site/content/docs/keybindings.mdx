@@ -1,0 +1,271 @@
+---
+title: Keybindings
+description: Every Paneflow keyboard shortcut, grouped by what it controls, with the action name to use in paneflow.json overrides.
+dateModified: 2026-05-19
+---
+
+Paneflow ships with one keybinding table that resolves the right
+modifier per OS. Reach for `Cmd/Ctrl+Shift+D` on macOS and Linux alike
+- the binding metadata uses a `secondary` modifier that GPUI maps to
+`Cmd` on macOS and `Ctrl` on Linux.
+
+<Callout type="info">
+**TL;DR.** `Cmd/Ctrl+Shift+D` and `Cmd/Ctrl+Shift+E` split, `Alt+Arrow`
+moves focus, `Cmd/Ctrl+1-9` jumps workspaces, `Ctrl+Shift+C/V` copies
+and pastes inside a terminal pane. Override any of it in
+[paneflow.json](/docs/configuration/schema#how-do-i-set-shortcuts).
+</Callout>
+
+The "Context" column tells you when a binding fires:
+
+- **Global** - active everywhere in the window.
+- **Terminal** - only when a terminal pane has focus.
+- **Search** - only when the find-in-buffer overlay is open.
+- **Markdown** / **MarkdownSearch** - only when a markdown pane has
+  focus, or its find overlay is open.
+
+## How do I navigate panes?
+
+`Alt+Arrow` moves focus structurally across the pane tree on every
+OS:
+
+- `Alt+Left` / `Alt+Right` - move focus to the pane on the left or
+  right.
+- `Alt+Up` / `Alt+Down` - move focus to the pane above or below.
+
+Inside a terminal pane, two extras help you jump between shell
+prompts in the scrollback:
+
+- `Ctrl+Shift+Up` - jump to the previous shell prompt.
+- `Ctrl+Shift+Down` - jump to the next shell prompt.
+
+The active pane has a brighter title-bar border so you can always tell
+where the next keystroke will land.
+
+## How do I split or close panes?
+
+Split chord vocabulary:
+
+- `Cmd/Ctrl+Shift+D` - split horizontally (top and bottom).
+- `Cmd/Ctrl+Shift+E` - split vertically (side by side).
+- `Cmd/Ctrl+Shift+W` - close the focused pane.
+- `Cmd/Ctrl+Shift+T` - undo the last pane close.
+
+A few power-user chords keep the layout tidy:
+
+- `Cmd/Ctrl+Shift+Z` - zoom the focused pane (toggle full-window).
+- `Cmd/Ctrl+Shift+S` - swap the focused pane with its sibling.
+- `Cmd/Ctrl+Shift+=` - equalize all split ratios in the workspace.
+
+Preset layouts replace the current split tree with a canonical
+arrangement:
+
+- `Cmd/Ctrl+Alt+1` - even horizontal split.
+- `Cmd/Ctrl+Alt+2` - even vertical split.
+- `Cmd/Ctrl+Alt+3` - main pane on the left, stack on the right.
+- `Cmd/Ctrl+Alt+4` - tiled grid.
+
+See [Layouts](/docs/layouts) for diagrams and use cases.
+
+## How do I switch workspaces?
+
+Workspace shortcuts work from any pane:
+
+- `Cmd/Ctrl+Shift+N` - open a folder picker and create a new
+  workspace.
+- `Cmd/Ctrl+Shift+Q` - close the current workspace.
+- `Cmd/Ctrl+Tab` - rotate to the next workspace.
+- `Cmd/Ctrl+1` through `Cmd/Ctrl+9` - jump directly to workspace 1-9
+  by position.
+
+A handful of workspace-aware utilities are also available:
+
+- `Ctrl+Shift+Alt+C` - copy the active workspace's path to the
+  clipboard.
+- `Ctrl+Alt+R` - reveal the workspace folder in your file manager.
+- `Ctrl+Alt+Z` / `Ctrl+Alt+C` / `Ctrl+Alt+V` / `Ctrl+Alt+W` - open
+  the workspace folder in Zed, Cursor, VS Code, or Windsurf.
+
+## How do I copy and paste in a terminal pane?
+
+Terminal panes claim a tighter set of clipboard bindings so that
+`Ctrl+C` still reaches the shell as `SIGINT`:
+
+- `Ctrl+Shift+C` - copy the active selection.
+- `Ctrl+Shift+V` - paste from the clipboard.
+
+On macOS, the muscle-memory chords work as well:
+
+- `Cmd+C` - copy (alongside `Ctrl+Shift+C`).
+- `Cmd+V` - paste (alongside `Ctrl+Shift+V`).
+
+Both pairs land in the same Terminal context, so neither will fire
+when a non-terminal pane has focus.
+
+## How do I scroll the buffer?
+
+Scrollback navigation lives in the Terminal context:
+
+- `Shift+PageUp` - scroll one page up in the scrollback buffer.
+- `Shift+PageDown` - scroll one page down.
+
+The same chords scroll a markdown pane when one is focused.
+
+To search the buffer, open the find overlay with `Ctrl+Shift+F`, then
+use `Enter` / `Shift+Enter` to step through matches and `Escape` to
+dismiss the overlay. `Alt+R` toggles regular-expression matching
+while the overlay is open.
+
+## Full keybinding table
+
+Every default binding shipped today. The "Action" column is the
+string you use in [paneflow.json `shortcuts`](/docs/configuration/schema#how-do-i-set-shortcuts)
+overrides.
+
+### Panes
+
+<VersionBadge stability="stable" />
+
+| Action | Default keys | Context | Since |
+| --- | --- | --- | --- |
+| `split_horizontally` | `Cmd/Ctrl+Shift+D` | Global | 0.1.7 |
+| `split_vertically` | `Cmd/Ctrl+Shift+E` | Global | 0.1.7 |
+| `close_pane` | `Cmd/Ctrl+Shift+W` | Global | 0.1.7 |
+| `undo_close_pane` | `Cmd/Ctrl+Shift+T` | Global | 0.2.0 |
+| `toggle_zoom` | `Cmd/Ctrl+Shift+Z` | Global | 0.2.0 |
+| `swap_pane` | `Cmd/Ctrl+Shift+S` | Global | 0.2.0 |
+| `split_equalize` | `Cmd/Ctrl+Shift+=` | Global | 0.2.0 |
+| `new_tab` | `Cmd/Ctrl+Alt+T` | Global | 0.2.0 |
+| `close_tab` | `Cmd/Ctrl+W` | Global | 0.2.0 |
+
+### Pane focus
+
+| Action | Default keys | Context | Since |
+| --- | --- | --- | --- |
+| `focus_left` | `Alt+Left` | Global | 0.1.7 |
+| `focus_right` | `Alt+Right` | Global | 0.1.7 |
+| `focus_up` | `Alt+Up` | Global | 0.1.7 |
+| `focus_down` | `Alt+Down` | Global | 0.1.7 |
+
+### Layouts
+
+<VersionBadge stability="stable" />
+
+| Action | Default keys | Context | Since |
+| --- | --- | --- | --- |
+| `layout_even_horizontal` | `Cmd/Ctrl+Alt+1` | Global | 0.2.0 |
+| `layout_even_vertical` | `Cmd/Ctrl+Alt+2` | Global | 0.2.0 |
+| `layout_main_vertical` | `Cmd/Ctrl+Alt+3` | Global | 0.2.0 |
+| `layout_tiled` | `Cmd/Ctrl+Alt+4` | Global | 0.2.0 |
+
+### Workspaces
+
+| Action | Default keys | Context | Since |
+| --- | --- | --- | --- |
+| `new_workspace` | `Cmd/Ctrl+Shift+N` | Global | 0.1.7 |
+| `close_workspace` | `Cmd/Ctrl+Shift+Q` | Global | 0.1.7 |
+| `next_workspace` | `Cmd/Ctrl+Tab` | Global | 0.1.7 |
+| `select_workspace_1` | `Cmd/Ctrl+1` | Global | 0.1.7 |
+| `select_workspace_2` | `Cmd/Ctrl+2` | Global | 0.1.7 |
+| `select_workspace_3` | `Cmd/Ctrl+3` | Global | 0.1.7 |
+| `select_workspace_4` | `Cmd/Ctrl+4` | Global | 0.1.7 |
+| `select_workspace_5` | `Cmd/Ctrl+5` | Global | 0.1.7 |
+| `select_workspace_6` | `Cmd/Ctrl+6` | Global | 0.1.7 |
+| `select_workspace_7` | `Cmd/Ctrl+7` | Global | 0.1.7 |
+| `select_workspace_8` | `Cmd/Ctrl+8` | Global | 0.1.7 |
+| `select_workspace_9` | `Cmd/Ctrl+9` | Global | 0.1.7 |
+| `copy_workspace_path` | `Ctrl+Shift+Alt+C` | Global | 0.2.0 |
+| `reveal_workspace_in_file_manager` | `Ctrl+Alt+R` | Global | 0.2.0 |
+| `open_workspace_in_zed` | `Ctrl+Alt+Z` | Global | 0.2.0 |
+| `open_workspace_in_cursor` | `Ctrl+Alt+C` | Global | 0.2.0 |
+| `open_workspace_in_vscode` | `Ctrl+Alt+V` | Global | 0.2.0 |
+| `open_workspace_in_windsurf` | `Ctrl+Alt+W` | Global | 0.2.0 |
+
+### Terminal pane
+
+| Action | Default keys | Context | Since |
+| --- | --- | --- | --- |
+| `terminal_copy` | `Ctrl+Shift+C` | Terminal | 0.1.7 |
+| `terminal_paste` | `Ctrl+Shift+V` | Terminal | 0.1.7 |
+| `terminal_copy` | `Cmd+C` (macOS only) | Terminal | 0.2.9 |
+| `terminal_paste` | `Cmd+V` (macOS only) | Terminal | 0.2.9 |
+| `scroll_page_up` | `Shift+PageUp` | Terminal | 0.1.7 |
+| `scroll_page_down` | `Shift+PageDown` | Terminal | 0.1.7 |
+| `toggle_copy_mode` | `Ctrl+Shift+X` | Terminal | 0.2.0 |
+| `toggle_search` | `Ctrl+Shift+F` | Terminal | 0.2.0 |
+| `jump_to_prompt_prev` | `Ctrl+Shift+Up` | Terminal | 0.2.0 |
+| `jump_to_prompt_next` | `Ctrl+Shift+Down` | Terminal | 0.2.0 |
+
+### Search overlay
+
+| Action | Default keys | Context | Since |
+| --- | --- | --- | --- |
+| `search_next` | `Enter` | Search | 0.2.0 |
+| `search_prev` | `Shift+Enter` | Search | 0.2.0 |
+| `dismiss_search` | `Escape` | Search | 0.2.0 |
+| `toggle_search_regex` | `Alt+R` | Search | 0.2.0 |
+
+### Markdown pane
+
+<VersionBadge stability="beta" />
+
+| Action | Default keys | Context | Since |
+| --- | --- | --- | --- |
+| `markdown_scroll_page_up` | `Shift+PageUp` | Markdown | 0.2.14 |
+| `markdown_scroll_page_down` | `Shift+PageDown` | Markdown | 0.2.14 |
+| `markdown_find_open` | `Ctrl+F` | Markdown | 0.2.14 |
+| `markdown_copy` | `Ctrl+Shift+C` | Markdown | 0.2.14 |
+| `markdown_find_next` | `Enter` | MarkdownSearch | 0.2.14 |
+| `markdown_find_prev` | `Shift+Enter` | MarkdownSearch | 0.2.14 |
+| `markdown_find_dismiss` | `Escape` | MarkdownSearch | 0.2.14 |
+
+### macOS menu bar
+
+<VersionBadge stability="stable" />
+
+| Action | Default keys | Context | Since |
+| --- | --- | --- | --- |
+| `quit` | `Cmd+Q` (macOS only) | Global | 0.2.9 |
+
+### Actions without a default binding
+
+These actions ship with the runtime but are not bound to a key out of
+the box. Map them in [paneflow.json `shortcuts`](/docs/configuration/schema#how-do-i-set-shortcuts)
+to reach them from the keyboard.
+
+| Action | Description |
+| --- | --- |
+| `close_window` | Close the active window. |
+| `clear_scroll_history` | Drop the scrollback buffer in the focused terminal pane. |
+| `reset_terminal` | Send a full reset to the focused terminal pane. |
+| `start_self_update` | Trigger the in-app update flow. |
+| `dismiss_update` | Dismiss the update pill for the current launch. |
+| `about` | Open the About dialog. |
+| `open_help` | Open this documentation site. |
+| `copy` / `paste` / `select_all` | Generic clipboard fallbacks for non-terminal surfaces. |
+
+## How do I override a binding?
+
+Set the `shortcuts` object in `paneflow.json`. Keys are keystrokes;
+values are action names from the tables above.
+
+```json
+{
+  "shortcuts": {
+    "ctrl+shift+t": "new_tab",
+    "alt+1": "select_workspace_1"
+  }
+}
+```
+
+The full override syntax, including the `secondary` modifier and
+context scoping, lives on the
+[schema page](/docs/configuration/schema#how-do-i-set-shortcuts).
+
+<Callout type="warn">
+Bindings can be overridden in `paneflow.json`; conflicts resolve in
+last-write-wins order. Your user entries layer on top of the
+built-in defaults, so the most recently registered binding for a
+given keystroke wins. If two user entries map the same keystroke to
+different actions, the later entry takes effect.
+</Callout>

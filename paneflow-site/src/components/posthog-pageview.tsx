@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import posthog from "posthog-js";
+import { trackDocsPageView } from "@/lib/docs-analytics";
 
 // GDPR data-minimisation (Art. 5(1)(c)): `$pageview` intentionally drops
 // the query string — UTM parameters are surfaced as first-class properties
@@ -36,6 +37,10 @@ export function PostHogPageView() {
 
   useEffect(() => {
     posthog.capture("$pageview", sanitizedPageviewProps());
+    // US-017: additional `docs_page_view` enrichment for /docs/** routes.
+    // No-op for any non-docs path; helper handles the section derivation
+    // and the silent-on-failure guard.
+    trackDocsPageView(pathname);
   }, [pathname, searchParams]);
 
   return null;
