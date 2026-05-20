@@ -64,6 +64,13 @@ export function Navbar() {
             >
               Docs
             </Link>
+            <Link
+              href="/compare/cmux"
+              onClick={() => track("nav_link_clicked", { label: "compare" })}
+              className="text-sm text-text-muted hover:text-text transition-colors duration-200 hidden sm:block"
+            >
+              Compare
+            </Link>
             <a
               href="https://github.com/ArthurDEV44/paneflow"
               onClick={() => track("github_link_clicked", { source: "navbar" })}
