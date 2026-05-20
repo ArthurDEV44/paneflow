@@ -4,7 +4,7 @@
 
 Paneflow is the minimal, native core: pure Rust on top of [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) rendering engine, sub-200 ms cold start, sub-4 ms keystroke-to-pixel latency, a single MIT-licensed binary, built by an indie maintainer who uses it daily. macOS (Apple Silicon) and Linux ship today; native Windows is on the roadmap.
 
-Paneflow's design is openly inspired by [cmux](https://github.com/lawrencecchen/cmux), which pioneered the "workspace per project, panes per agent" mental model for agent-first terminal multiplexing. Paneflow is not a fork; it is an independent Rust codebase that takes the workflow idea in a deliberately minimal, native direction. Side-by-side comparison vs cmux and other terminals: [paneflow.dev/compare](https://paneflow.dev/compare).
+Paneflow's design is openly inspired by [cmux](https://github.com/manaflow-ai/cmux), which pioneered the "workspace per project, panes per agent" mental model for agent-first terminal multiplexing. Paneflow is not a fork; it is an independent Rust codebase that takes the workflow idea in a deliberately minimal, native direction. Side-by-side comparison vs cmux and other terminals: [paneflow.dev/compare](https://paneflow.dev/compare).
 
 <p align="center">
   <img src="assets/images/hero-paneflow.png" alt="Paneflow" width="100%" />
