@@ -81,6 +81,15 @@ export default function CompareCmuxPage() {
       "Cross-platform Rust agent-first terminal vs macOS-only Swift incumbent. Architecture, feature, and pricing comparison.",
     dateModified: DATE_MODIFIED,
     faq: FAQ,
+    // Paneflow's design is openly inspired by cmux (see the "Inspiration"
+    // section below). Declaring `Article.isBasedOn` makes that credit
+    // machine-readable so AI engines can follow the semantic edge
+    // between the two projects (matches the prose acknowledgment in
+    // README.md + this page's #inspiration section).
+    isBasedOn: {
+      name: "cmux",
+      url: "https://github.com/manaflow-ai/cmux",
+    },
   });
 
   return (

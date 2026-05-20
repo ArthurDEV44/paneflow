@@ -272,6 +272,15 @@ export interface ArticleInput {
 export function buildTechArticleJsonLd(input: ArticleInput): Record<string, unknown> {
   const url = absoluteUrl(input.url);
   const iso = toIso8601(input.dateModified);
+  // Per-page OG image (US-004) served at /api/og/docs/<slug>. Keeping
+  // TechArticle.image aligned with og:image avoids the JSON-LD vs
+  // OpenGraph divergence where AI engines pick one or the other. For
+  // the unlikely input.url that does not start with /docs, fall back to
+  // the sitewide OG.
+  const ogPath = input.url.startsWith("/docs")
+    ? input.url.replace(/^\/docs/, "/api/og/docs")
+    : "/opengraph-image";
+  const image = `${SITE_URL}${ogPath}`;
   return {
     "@context": "https://schema.org",
     "@type": "TechArticle",
@@ -282,10 +291,11 @@ export function buildTechArticleJsonLd(input: ArticleInput): Record<string, unkn
     inLanguage: "en-US",
     datePublished: iso,
     dateModified: iso,
-    image: `${SITE_URL}/opengraph-image`,
+    image,
     author: {
       "@type": "Person",
       name: "Arthur Jean",
+      "@id": `${SITE_URL}/#founder`,
       url: `${SITE_URL}/about`,
     },
     publisher: { "@id": `${SITE_URL}/#organization` },
