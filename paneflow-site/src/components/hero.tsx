@@ -2,8 +2,6 @@
 
 import Image from "next/image";
 import { motion } from "framer-motion";
-import { Check, Copy, Mail } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
 import { GitHubIcon } from "./icons";
 import { PrimaryDownloadCTA } from "./primary-download-cta";
 import { useDetectedLinuxArch } from "../lib/use-detected-arch";
@@ -15,10 +13,9 @@ import { track } from "../lib/analytics";
 //     between Linux .AppImage / macOS .dmg / Windows · Q3 2026 / mobile-
 //     fallback /download link based on useDetectedOS()
 //   - Secondary: GitHub pill
-// On mobile (md:hidden), both primary pills are replaced by the
-// MobileDesktopOnlyPanel which fires mobile_unsupported_seen once per
-// mount and offers copy-link + mailto so the visitor can bring the
-// link back to a desktop instead of bouncing cold.
+// Mobile visitors see the same pair: PrimaryDownloadCTA detects OS as
+// "mobile" and routes to /download with the full matrix + waitlist;
+// GitHub link works everywhere.
 
 export function Hero() {
   const arch = useDetectedLinuxArch();
@@ -64,15 +61,12 @@ export function Hero() {
             A terminal workspace for orchestrating Claude Code, Codex, OpenCode, and custom CLI agents.
           </motion.h1>
 
-          {/* CTAs — desktop variant. Hidden on coarse-pointer + narrow
-              viewport via Tailwind so we avoid a hydration flash and the
-              user does not see desktop download buttons on a phone. Just
-              two pills: the OS-aware Download primary + GitHub secondary.
-              The Download CTA adapts via useDetectedOS — Linux shows
-              AppImage, macOS shows .dmg, Windows shows the Q3 2026
-              waitlist link, mobile/unknown route to /download. */}
+          {/* CTAs — same pair on every viewport. PrimaryDownloadCTA
+              detects mobile OS internally and routes those visitors to
+              /download (full matrix + Windows waitlist) instead of
+              serving a desktop binary they can't run. */}
           <motion.div
-            className="mt-10 hidden md:flex flex-wrap items-center gap-3"
+            className="mt-10 flex flex-wrap items-center gap-3"
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.35 }}
@@ -87,14 +81,6 @@ export function Hero() {
               View on GitHub
             </a>
           </motion.div>
-
-          {/* CTAs — mobile variant. Replaces download buttons with a
-              "desktop-only" explainer + copy/email affordances so phone
-              visitors can bring the link back to a real machine instead
-              of bouncing. */}
-          <div className="mt-8 md:hidden">
-            <MobileDesktopOnlyPanel />
-          </div>
         </div>
 
         {/* Screenshot — pulled OUT of the narrow text wrapper. Sits
@@ -121,94 +107,5 @@ export function Hero() {
         </motion.div>
       </div>
     </section>
-  );
-}
-
-// Mobile fallback. Fires `mobile_unsupported_seen` exactly once per
-// mount (the matchMedia gate prevents a desktop refresh into mobile from
-// triggering a no-op event). Provides Copy-link + mailto so the visitor
-// has a way to follow up on a desktop instead of leaving cold.
-function MobileDesktopOnlyPanel() {
-  const [copied, setCopied] = useState(false);
-  const seenRef = useRef(false);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || seenRef.current) return;
-    // matchMedia mirrors the Tailwind `md:hidden` breakpoint (Tailwind v4
-    // defaults md to 768px). Firing only when the mobile variant is the
-    // one actually displayed avoids polluting analytics on desktops
-    // resized below the breakpoint by devtools.
-    if (window.matchMedia("(max-width: 767px)").matches) {
-      seenRef.current = true;
-      track("mobile_unsupported_seen", { source: "hero" });
-    }
-  }, []);
-
-  const link = "https://paneflow.dev";
-  const subject = "Paneflow - the terminal workspace for coding agents";
-  const body =
-    "Paneflow runs Claude Code, Codex, and OpenCode in parallel panes on Linux, macOS, and (soon) Windows. Download it here: https://paneflow.dev";
-  const mailtoHref = `mailto:?subject=${encodeURIComponent(
-    subject,
-  )}&body=${encodeURIComponent(body)}`;
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(link);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-      track("mobile_link_copied", { source: "hero" });
-    } catch {
-      // Older iOS / permission-denied paths: surface no error, leave the
-      // mailto button as the working fallback.
-    }
-  };
-
-  return (
-    <div className="rounded-xl border border-surface-border bg-surface/40 p-5">
-      <div className="text-sm font-semibold text-text">
-        Paneflow is a desktop app.
-      </div>
-      <p className="mt-1.5 text-sm text-text-muted leading-relaxed">
-        Open this page on a Mac, Linux or Windows machine to download.
-      </p>
-      <div className="mt-4 flex flex-wrap items-center gap-2.5">
-        <button
-          type="button"
-          onClick={copy}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-accent text-bg text-sm font-semibold rounded-full hover:brightness-110 transition-all duration-200"
-        >
-          {copied ? (
-            <>
-              <Check className="w-3.5 h-3.5" />
-              Link copied
-            </>
-          ) : (
-            <>
-              <Copy className="w-3.5 h-3.5" />
-              Copy link
-            </>
-          )}
-        </button>
-        <a
-          href={mailtoHref}
-          onClick={() => track("mobile_email_reminder_clicked", { source: "hero" })}
-          className="inline-flex items-center gap-2 px-4 py-2 border border-surface-border text-text text-sm rounded-full hover:bg-surface/60 transition-all duration-200"
-        >
-          <Mail className="w-3.5 h-3.5" />
-          Email reminder
-        </a>
-        <a
-          href="https://github.com/ArthurDEV44/paneflow"
-          onClick={() =>
-            track("github_link_clicked", { source: "hero_mobile" })
-          }
-          className="inline-flex items-center gap-2 px-4 py-2 border border-surface-border text-text-muted text-sm rounded-full hover:bg-surface/60 hover:text-text transition-all duration-200"
-        >
-          <GitHubIcon className="w-3.5 h-3.5" />
-          GitHub
-        </a>
-      </div>
-    </div>
   );
 }
