@@ -81,42 +81,50 @@ const graph = {
 export default function ComparePage() {
   return (
     <CompareLayout jsonLd={graph}>
-      <CompareHeader
-        title="Compare Paneflow"
-        tldr={
-          <>
-            Side-by-side comparisons of Paneflow against other agent-first
-            terminal workspaces. Every page below is written from the source
-            code of both projects, with a dedicated &ldquo;When NOT to
-            choose Paneflow&rdquo; section so you know exactly when to pick
-            the alternative.
-          </>
-        }
-      />
+      {/* Header — Cursor pattern: short h1 + tagline in a narrow column,
+          even though the card grid below spans the full container. */}
+      <div className="max-w-3xl mb-12 sm:mb-16">
+        <CompareHeader
+          title="Compare Paneflow"
+          tldr={
+            <>
+              Side-by-side comparisons of Paneflow against other agent-first
+              terminal workspaces. Every page below is written from the source
+              code of both projects, with a dedicated &ldquo;When NOT to
+              choose Paneflow&rdquo; section so you know exactly when to pick
+              the alternative.
+            </>
+          }
+        />
+      </div>
 
-      <div className="grid gap-3 sm:gap-4">
+      {/* Comparison cards — 2 columns on lg+, stacked on mobile. Each
+          card uses the same elevated-bg / rounded-md / p-[18px] language
+          as the FeatureSections + FeatureTriptych cards so the visual
+          system stays consistent across the site. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
         {COMPARISONS.map((c) => (
           <Link
             key={c.slug}
             href={`/compare/${c.slug}`}
-            className="group rounded-lg border border-surface-border bg-bg-elevated p-5 sm:p-6 transition-colors hover:bg-bg-subtle"
+            className="group rounded-md bg-bg-elevated p-[18px] transition-opacity hover:opacity-80"
           >
             <div className="flex items-baseline justify-between gap-4">
-              <h2 className="text-base sm:text-lg font-semibold text-text">
+              <h2 className="text-xl sm:text-2xl">
                 Paneflow vs {c.competitor}
               </h2>
-              <span className="text-xs sm:text-sm text-text-subtle group-hover:text-text-muted transition-colors">
+              <span className="text-sm text-text-muted group-hover:text-text transition-colors shrink-0">
                 Read &rarr;
               </span>
             </div>
-            <p className="mt-2 text-sm text-text-muted leading-relaxed">
+            <p className="mt-3 text-base text-text-muted leading-relaxed">
               {c.blurb}
             </p>
           </Link>
         ))}
       </div>
 
-      <p className="mt-10 text-xs sm:text-sm text-text-subtle leading-relaxed">
+      <p className="mt-12 sm:mt-16 max-w-3xl text-sm text-text-subtle leading-relaxed">
         Future comparisons under consideration: tmux, zellij, Alacritty.
         Open a{" "}
         <a

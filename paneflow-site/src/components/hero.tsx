@@ -2,216 +2,125 @@
 
 import Image from "next/image";
 import { motion } from "framer-motion";
-import { Check, Copy, Download, Mail } from "lucide-react";
+import { Check, Copy, Mail } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import posthog from "posthog-js";
-import { AppleIcon, WindowsIcon } from "./os-icons";
 import { GitHubIcon } from "./icons";
-import { WaitlistForm } from "./waitlist-form";
-import { linuxAppImageUrl, macOSDmgUrl } from "../lib/release";
+import { PrimaryDownloadCTA } from "./primary-download-cta";
 import { useDetectedLinuxArch } from "../lib/use-detected-arch";
+import { useDetectedOS } from "../lib/use-detected-os";
 import { track } from "../lib/analytics";
 
-// PostHog data showed Windows users land on the page (20 sessions / 30 d)
-// but get zero CTAs they can act on — Linux + macOS buttons only — and
-// click out at a 5% rate vs 24-27% for Linux/macOS. The mobile audience
-// is 37% of traffic with a 0s median time on page and an 82% sub-5s
-// bounce rate, because the same desktop CTAs are served to phones that
-// can't run a desktop binary. This component adds:
-//   - a Windows "soon" CTA that captures intent
-//   - a mobile-only panel that explains the desktop-only constraint and
-//     gives the user a way to bring the link back to their desktop
-//   - section events tied to both (mobile_unsupported_seen,
-//     windows_waitlist_clicked)
+// CTA model:
+//   - Primary: <PrimaryDownloadCTA> — OS-aware download pill that swaps
+//     between Linux .AppImage / macOS .dmg / Windows · Q3 2026 / mobile-
+//     fallback /download link based on useDetectedOS()
+//   - Secondary: GitHub pill
+// On mobile (md:hidden), both primary pills are replaced by the
+// MobileDesktopOnlyPanel which fires mobile_unsupported_seen once per
+// mount and offers copy-link + mailto so the visitor can bring the
+// link back to a desktop instead of bouncing cold.
 
 export function Hero() {
   const arch = useDetectedLinuxArch();
+  const os = useDetectedOS();
 
   return (
     <section
       data-track-section="hero"
-      className="relative pt-32 sm:pt-40 pb-16 sm:pb-20"
+      className="relative pt-32 sm:pt-40 pb-0"
     >
-      <div className="relative z-10 max-w-2xl mx-auto px-6">
-        {/* Brand row */}
-        <motion.div
-          className="flex items-center gap-3"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.05 }}
-        >
-          <Image
-            src="/logos/paneflow-web-300.png"
-            alt=""
-            width={40}
-            height={40}
-            priority
-            className="rounded-lg"
-          />
-          <span className="text-xl font-semibold tracking-tight">
-            Paneflow
-          </span>
-        </motion.div>
-
-        {/* Headline */}
-        <motion.h1
-          className="mt-10 text-2xl sm:text-3xl font-semibold tracking-tight leading-[1.15]"
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.15 }}
-        >
-          A terminal workspace for orchestrating coding agents.
-        </motion.h1>
-
-        {/* Subtitle */}
-        <motion.p
-          className="mt-4 text-sm sm:text-base text-text-muted leading-relaxed max-w-xl"
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.25 }}
-        >
-          Run Claude Code, Codex, OpenCode, and custom CLI agents side by side
-          with branch context, live services, session restore, and scriptable
-          control.
-        </motion.p>
-
-        {/* CTAs — desktop variant. Hidden on coarse-pointer + narrow
-            viewport via Tailwind so we avoid a hydration flash and the
-            user does not see desktop download buttons on a phone. */}
-        <motion.div
-          className="mt-8 hidden md:flex flex-wrap items-center gap-3"
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.35 }}
-        >
-          <a
-            href={linuxAppImageUrl(arch)}
-            onClick={() => {
-              posthog.capture("download_cta_clicked", {
-                source: "hero",
-                format: "AppImage",
-                platform: "linux",
-                arch,
-              });
-            }}
-            className="inline-flex items-center gap-2.5 px-5 py-2.5 bg-accent text-bg font-semibold rounded-full hover:brightness-110 transition-all duration-200"
+      {/* Outer container — centered + generous padding. Inner content is
+          left-aligned (no mx-auto on inner) to match Cursor's hero layout:
+          editorial weight settles to the left, screenshot floats below
+          full-bleed. Brand row (logo + "Paneflow") is intentionally absent —
+          the navbar already carries the brand mark, repeating it here is
+          the kind of redundancy Cursor avoids. */}
+      {/* Outer container — matches Cursor's hero pattern: a single
+          ~1300px max-width wrapper that mx-auto centers in the viewport,
+          with generous left/right padding. Cursor uses max-w-[1300px];
+          we use Tailwind's max-w-7xl (1280px), close enough that the
+          visual rhythm is the same. Inside this container, text and
+          screenshot share the same left edge but have *different* widths:
+          the text wraps inside a narrower column (editorial cadence),
+          while the screenshot fills the full available container width
+          for visual impact. This is the actual Cursor structure — not
+          "text and image at identical width", which we tried earlier
+          and felt cramped. */}
+      <div className="relative z-10 max-w-[1440px] mx-auto px-6 sm:px-10 lg:px-16">
+        {/* Text block — editorial column, intentionally wider than
+            Cursor's max-w-prose to give Hanken Grotesk's broader glyphs
+            room to land the 44px h1 on 2 lines without feeling cramped. */}
+        <div className="max-w-6xl">
+          {/* Headline — editorial display style. Headline absorbs what was
+              previously a separate subtitle: the agent names live inside
+              the h1 so the viewer gets the full pitch in one beat, the way
+              Cursor's hero h1 does ("Construit pour vous rendre…"). */}
+          <motion.h1
+            className="text-3xl sm:text-4xl md:text-[44px] md:leading-[1.08]"
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.15 }}
           >
-            <Download className="w-4 h-4" />
-            Download for Linux
-          </a>
-          <a
-            href={macOSDmgUrl()}
-            onClick={() => {
-              posthog.capture("download_cta_clicked", {
-                source: "hero",
-                format: "dmg",
-                platform: "macos",
-                arch: "aarch64",
-              });
-            }}
-            className="inline-flex items-center gap-2.5 px-5 py-2.5 bg-accent text-bg font-semibold rounded-full hover:brightness-110 transition-all duration-200"
-          >
-            <AppleIcon className="w-4 h-4" />
-            Download for macOS
-          </a>
-          <WindowsSoonButton />
-          <a
-            href="https://github.com/ArthurDEV44/paneflow"
-            onClick={() => track("github_link_clicked", { source: "hero" })}
-            className="inline-flex items-center gap-2.5 px-5 py-2.5 border border-surface-border text-text rounded-full hover:bg-surface/60 transition-all duration-200"
-          >
-            <GitHubIcon className="w-4 h-4" />
-            View on GitHub
-          </a>
-        </motion.div>
+            A terminal workspace for orchestrating Claude Code, Codex, OpenCode, and custom CLI agents.
+          </motion.h1>
 
-        {/* CTAs — mobile variant. Replaces download buttons with a
-            "desktop-only" explainer + copy/email affordances so phone
-            visitors can bring the link back to a real machine instead
-            of bouncing. */}
-        <div className="mt-8 md:hidden">
-          <MobileDesktopOnlyPanel />
+          {/* CTAs — desktop variant. Hidden on coarse-pointer + narrow
+              viewport via Tailwind so we avoid a hydration flash and the
+              user does not see desktop download buttons on a phone. Just
+              two pills: the OS-aware Download primary + GitHub secondary.
+              The Download CTA adapts via useDetectedOS — Linux shows
+              AppImage, macOS shows .dmg, Windows shows the Q3 2026
+              waitlist link, mobile/unknown route to /download. */}
+          <motion.div
+            className="mt-10 hidden md:flex flex-wrap items-center gap-3"
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.35 }}
+          >
+            <PrimaryDownloadCTA os={os} arch={arch} source="hero" />
+            <a
+              href="https://github.com/ArthurDEV44/paneflow"
+              onClick={() => track("github_link_clicked", { source: "hero" })}
+              className="inline-flex items-center gap-2.5 px-5 py-2.5 border border-surface-border text-text rounded-full hover:bg-surface/60 transition-all duration-200"
+            >
+              <GitHubIcon className="w-4 h-4" />
+              View on GitHub
+            </a>
+          </motion.div>
+
+          {/* CTAs — mobile variant. Replaces download buttons with a
+              "desktop-only" explainer + copy/email affordances so phone
+              visitors can bring the link back to a real machine instead
+              of bouncing. */}
+          <div className="mt-8 md:hidden">
+            <MobileDesktopOnlyPanel />
+          </div>
         </div>
 
-      </div>
-
-      {/* Screenshot */}
-      <motion.div
-        className="mt-10 sm:mt-14 w-full px-4 sm:px-8"
-        initial={{ opacity: 0, y: 24 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.7, delay: 0.7 }}
-      >
-        <div className="max-w-[1440px] mx-auto">
+        {/* Screenshot — pulled OUT of the narrow text wrapper. Sits
+            directly under the outer max-w-7xl container so it spans the
+            full available width (~1152px on desktop after lg:px-16
+            padding). Same left edge as the text above by virtue of
+            sharing the same outer container. This is exactly how Cursor
+            stages their hero demo block. */}
+        <motion.div
+          className="mt-12 sm:mt-16"
+          initial={{ opacity: 0, y: 24 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.7, delay: 0.7 }}
+        >
           <Image
             src="/images/paneflow-hero.png"
             alt="Paneflow showing parallel panes running Claude Code and Codex agent sessions side by side, each with its git branch and dev-server status"
             width={2491}
             height={1361}
-            sizes="(max-width: 768px) 100vw, 1440px"
+            sizes="(max-width: 768px) 100vw, (max-width: 1408px) 90vw, 1152px"
             priority
             className="w-full h-auto rounded-lg"
           />
-        </div>
-      </motion.div>
-    </section>
-  );
-}
-
-function WindowsSoonButton() {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // Close on outside click. Pointerdown rather than click so the gesture
-  // closes the popover before the next click reaches anything else - the
-  // form input keeps focus during in-popover clicks because containerRef
-  // covers it.
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: PointerEvent) => {
-      if (!containerRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    window.addEventListener("pointerdown", handler);
-    return () => window.removeEventListener("pointerdown", handler);
-  }, [open]);
-
-  return (
-    <div ref={containerRef} className="relative">
-      <button
-        type="button"
-        onClick={() => {
-          if (!open) track("windows_waitlist_clicked", { source: "hero" });
-          setOpen((v) => !v);
-        }}
-        className="inline-flex items-center gap-2.5 px-5 py-2.5 border border-surface-border text-text-muted rounded-full hover:bg-surface/40 hover:text-text transition-all duration-200"
-        aria-expanded={open}
-        aria-controls="windows-waitlist-hero"
-      >
-        <WindowsIcon className="w-4 h-4" />
-        Windows · soon
-      </button>
-      {open && (
-        <motion.div
-          id="windows-waitlist-hero"
-          role="dialog"
-          aria-label="Windows waitlist"
-          initial={{ opacity: 0, y: -4, scale: 0.98 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          transition={{ duration: 0.15, ease: "easeOut" }}
-          className="absolute z-50 mt-2 w-[22rem] max-w-[calc(100vw-2rem)] left-0 sm:left-auto sm:right-0 rounded-xl border border-surface-border bg-bg p-5 shadow-2xl"
-        >
-          <div className="text-sm font-semibold text-text">
-            Windows build in progress.
-          </div>
-          <p className="mt-1 text-xs text-text-muted">
-            Drop your email, we&apos;ll let you know when it ships.
-          </p>
-          <div className="mt-4">
-            <WaitlistForm source="hero" platform="windows" />
-          </div>
         </motion.div>
-      )}
-    </div>
+      </div>
+    </section>
   );
 }
 

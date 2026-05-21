@@ -8,9 +8,14 @@ import { SectionTracker } from "@/components/section-tracker";
  * Navbar + Footer + SectionTracker so each page only emits its
  * comparison content + JSON-LD.
  *
- * Layout intentionally mirrors `/about` typography (max-w-3xl,
- * text-sm sm:text-base) so the comparison pages feel consistent with
- * the rest of the marketing surface.
+ * The outer container (max-w-[1440px] + px-6 sm:px-10 lg:px-16) is the
+ * same one used by the hero / navbar / feature cards / footer so the
+ * comparison pages sit on the same vertical line as the rest of the
+ * site. There is no inner column constraint — articles span the full
+ * width of the outer container so paragraphs, decision cards and
+ * comparison tables all have room to breathe. Pages that want a
+ * narrower editorial column for a specific block (e.g. the index page's
+ * header) wrap that block themselves with `<div className="max-w-3xl">`.
  */
 export function CompareLayout({
   children,
@@ -28,7 +33,9 @@ export function CompareLayout({
       <Navbar />
       <main>
         <section className="pt-32 sm:pt-40 pb-20 sm:pb-24">
-          <div className="max-w-3xl mx-auto px-6">{children}</div>
+          <div className="max-w-[1440px] mx-auto px-6 sm:px-10 lg:px-16">
+            {children}
+          </div>
         </section>
       </main>
       <Footer />
@@ -50,7 +57,7 @@ export function CompareHeader({
 }): React.ReactElement {
   return (
     <header className="mb-12 sm:mb-14">
-      <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight leading-[1.15]">
+      <h1 className="text-3xl sm:text-4xl md:text-5xl">
         {title}
       </h1>
       <p className="mt-5 text-base sm:text-lg text-text-muted leading-relaxed">
@@ -77,7 +84,7 @@ export function CompareSection({
       id={id}
       className="mb-12 sm:mb-14 scroll-mt-24 text-sm sm:text-base text-text-muted leading-relaxed"
     >
-      <h2 className="text-xl sm:text-2xl font-semibold tracking-tight text-text mb-5">
+      <h2 className="text-2xl sm:text-3xl text-text mb-5">
         {title}
       </h2>
       <div className="space-y-4">{children}</div>
