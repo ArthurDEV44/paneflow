@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import Script from "next/script";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Hanken_Grotesk } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import { PHProvider } from "@/components/posthog-provider";
@@ -17,6 +17,16 @@ const geistSans = Geist({
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+});
+
+// Hanken Grotesk - neo-grotesque sans, gratuit via Google Fonts. Joue le
+// rôle de CursorGothic / Matter (Cursor / Warp) : weight 400 sur les
+// headings + letter-spacing tight donne un look éditorial chaud, sans
+// la signature "starter Next.js" qu'a Geist seul.
+const hankenGrotesk = Hanken_Grotesk({
+  variable: "--font-hanken-sans",
+  subsets: ["latin"],
+  display: "swap",
 });
 
 // Organization + WebSite JSON-LD (US-009).
@@ -132,7 +142,7 @@ export default function RootLayout({
     <html
       lang="en"
       data-scroll-behavior="smooth"
-      className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${hankenGrotesk.variable} antialiased`}
       suppressHydrationWarning
     >
       <body className="grain">

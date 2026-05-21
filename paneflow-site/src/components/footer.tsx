@@ -2,80 +2,80 @@
 
 import { FadeIn } from "./fade-in";
 import Link from "next/link";
-import { BookOpen as BookOpenIcon } from "lucide-react";
-import { GitHubIcon } from "./icons";
-import { track } from "../lib/analytics";
+import { PrimaryDownloadCTA } from "./primary-download-cta";
+import { ThemeSelector } from "./theme-selector";
+import { useDetectedLinuxArch } from "../lib/use-detected-arch";
+import { useDetectedOS } from "../lib/use-detected-os";
 
 export function Footer() {
+  const os = useDetectedOS();
+  const arch = useDetectedLinuxArch();
+
   return (
     <footer data-track-section="footer" className="relative overflow-hidden">
-      {/* CTA section */}
-      <div className="py-20 sm:py-24">
+      {/* CTA section — minimal Cursor-style closer. Centered headline,
+          single primary download button (OS-aware), massive vertical
+          breathing. Matches cursor.com's "Essayez Cursor dès maintenant"
+          minimal closer. GitHub + docs links remain in the bottom bar. */}
+      <div className="py-32 sm:py-40">
         <FadeIn>
-          <div className="max-w-2xl mx-auto px-6">
-            <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight leading-[1.15]">
-              Keep your coding agents in one workspace.
+          <div className="max-w-3xl mx-auto px-6 text-center">
+            <h2 className="text-4xl sm:text-5xl md:text-6xl">
+              Try Paneflow today.
             </h2>
-            <p className="mt-4 text-sm sm:text-base text-text-muted leading-relaxed max-w-xl">
-              Open source, native, and built for supervising Claude Code, Codex,
-              OpenCode, and custom CLI agents from the terminal.
-            </p>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
-              <a
-                href="https://github.com/ArthurDEV44/paneflow"
-                onClick={() =>
-                  track("github_link_clicked", {
-                    source: "footer",
-                    label: "star",
-                  })
-                }
-                className="inline-flex items-center gap-2.5 px-5 py-2.5 bg-accent text-bg font-semibold rounded-full hover:brightness-110 transition-all duration-200"
-              >
-                <GitHubIcon className="w-4 h-4" />
-                Star on GitHub
-              </a>
-              <Link
-                href="/docs"
-                onClick={() =>
-                  track("nav_link_clicked", {
-                    source: "footer",
-                    label: "docs",
-                  })
-                }
-                className="inline-flex items-center gap-2.5 px-5 py-2.5 border border-surface-border text-text rounded-full hover:bg-surface/60 transition-all duration-200"
-              >
-                <BookOpenIcon className="w-4 h-4" />
-                Documentation
-              </Link>
+            <div className="mt-10 flex justify-center">
+              <PrimaryDownloadCTA os={os} arch={arch} source="footer" />
             </div>
           </div>
         </FadeIn>
       </div>
 
-      {/* Bottom bar */}
-      <div className="py-6 border-t border-surface-border/50">
-        <div className="max-w-5xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-text-subtle">
-          <div className="font-mono">Paneflow</div>
-          <div className="flex items-center gap-6">
-            <Link
-              href="/about"
-              className="hover:text-text-muted transition-colors"
-            >
-              About
-            </Link>
-            <Link
-              href="/compare"
-              className="hover:text-text-muted transition-colors"
-            >
-              Compare
-            </Link>
-            <Link
-              href="/legal/privacy"
-              className="hover:text-text-muted transition-colors"
-            >
-              Privacy
-            </Link>
-            <span>MIT License</span>
+      {/* Bottom bar — two-column layout in the same max-w-[1440px] outer
+          container as hero / navbar. Left column stacks brand → tagline →
+          copyright; right column stacks nav links (top) → theme selector
+          (bottom), aligned via justify-between so the nav links sit at
+          the same baseline as the brand mark and the theme selector sits
+          at the same baseline as the copyright line. */}
+      <div className="py-10 sm:py-12 bg-bg-elevated">
+        <div className="max-w-[1440px] mx-auto px-6 sm:px-10 lg:px-16 flex flex-col sm:flex-row justify-between gap-8 text-sm">
+          {/* Left — brand stack */}
+          <div className="flex flex-col justify-between gap-4">
+            <div className="flex flex-col gap-2">
+              <span className="font-mono font-semibold text-text">
+                Paneflow
+              </span>
+              <p className="text-text-muted max-w-xs leading-relaxed">
+                The terminal workspace for orchestrating coding agents.
+              </p>
+            </div>
+            <p className="text-text-subtle text-xs">
+              © 2026 Strivex. All rights reserved.
+            </p>
+          </div>
+
+          {/* Right — nav links on top, theme selector on bottom */}
+          <div className="flex flex-col items-start sm:items-end justify-between gap-4">
+            <div className="flex items-center gap-6 text-text-muted">
+              <Link
+                href="/about"
+                className="hover:text-text transition-colors"
+              >
+                About
+              </Link>
+              <Link
+                href="/compare"
+                className="hover:text-text transition-colors"
+              >
+                Compare
+              </Link>
+              <Link
+                href="/legal/privacy"
+                className="hover:text-text transition-colors"
+              >
+                Privacy
+              </Link>
+            </div>
+            <ThemeSelector />
           </div>
         </div>
       </div>

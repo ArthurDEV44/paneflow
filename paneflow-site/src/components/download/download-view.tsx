@@ -12,14 +12,16 @@ import {
   ChevronDown,
   Copy,
   Download,
-  Package,
   Terminal,
 } from "lucide-react";
 import posthog from "posthog-js";
 import { AgentInstall } from "../docs/agent-install";
 import { AppleIcon, LinuxIcon, WindowsIcon } from "../os-icons";
+import { PrimaryDownloadCTA } from "../primary-download-cta";
 import { WaitlistForm } from "../waitlist-form";
 import { LATEST_VERSION } from "../../lib/release";
+import { useDetectedLinuxArch } from "../../lib/use-detected-arch";
+import { useDetectedOS } from "../../lib/use-detected-os";
 
 // LATEST_VERSION is imported from `lib/release` — single source of
 // truth shared with the Hero CTA. Bump it there to propagate
@@ -41,59 +43,74 @@ interface VersionEntry {
 }
 
 export function DownloadView() {
+  // OS + arch detection lives at the page-level so the primary CTA pill
+  // and the per-version matrix below stay in sync — both use the same
+  // hook outputs to render the right defaults.
+  const os = useDetectedOS();
+  const arch = useDetectedLinuxArch();
+
   return (
     <section className="pt-32 sm:pt-40 pb-20 sm:pb-24">
-      <div className="max-w-5xl mx-auto px-6">
+      {/* Outer container aligned with the rest of the site
+          (hero / navbar / cards / footer) so the page's left edge sits
+          at 64px from viewport on lg+. */}
+      <div className="max-w-[1440px] mx-auto px-6 sm:px-10 lg:px-16">
+        {/* Header — Cursor pattern: small h1 + tagline + primary CTA.
+            The pitch lives in a second descriptive paragraph below the
+            button so the visitor's eye lands on the CTA first. */}
         <div
           data-track-section="download_header"
           className="max-w-2xl mb-10 sm:mb-12"
         >
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-            Download Paneflow for your agent workspace.
+          <h1 className="text-3xl sm:text-4xl md:text-5xl">
+            Download Paneflow
           </h1>
-          <p className="mt-3 text-sm sm:text-base text-text-muted leading-relaxed">
-            Run Claude Code, Codex, OpenCode, and custom CLI agents in a native
-            terminal workspace. Linux and macOS are available now. Windows is
-            coming soon.
+          <p className="mt-3 text-base sm:text-lg text-text-muted leading-relaxed">
+            Available for Linux and macOS. Windows targeted for Q3 2026.
+          </p>
+          <div className="mt-8">
+            <PrimaryDownloadCTA
+              os={os}
+              arch={arch}
+              source="download_page_primary"
+            />
+          </div>
+        </div>
+
+        <div className="max-w-2xl mb-12 sm:mb-16">
+          <p className="text-base sm:text-lg leading-relaxed">
+            The Paneflow desktop app runs Claude Code, Codex, OpenCode, and
+            custom CLI agents in a native terminal workspace with parallel
+            panes, branch-aware sessions, and session restore.
           </p>
         </div>
 
-        {/* Primary "download for your system" card — client-side OS sniff
-            picks the best format per platform and renders one big button.
-            Users who want a different format scroll to the matrix below. */}
-        <div data-track-section="download_primary" className="mb-12">
-          <PrimaryDownloadCard version={LATEST_VERSION} />
-        </div>
-
+        {/* Release downloads matrix — collapsible version rows. The
+            current release is open by default, older ones link to
+            GitHub via the "View Previous Releases" link. */}
         <div data-track-section="download_matrix" className="space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
-            <div>
-              <h2 className="text-base font-semibold">Release Downloads</h2>
-              <p className="mt-1 text-sm text-text-muted">
-                Direct links for the current release. Older builds stay
-                available on GitHub.
-              </p>
-            </div>
+          <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2 mb-2">
+            <h2 className="text-xl sm:text-2xl">Release downloads</h2>
             <a
               href="https://github.com/ArthurDEV44/paneflow/releases"
               className="text-sm text-text-muted hover:text-text transition-colors"
             >
-              View Previous Releases &rarr;
+              View previous releases &rarr;
             </a>
           </div>
-          <div className="divide-y divide-surface-border border-y border-surface-border">
+          <div>
           {VERSIONS.map((entry, i) => (
             <VersionRow key={entry.version} entry={entry} defaultOpen={i === 0} />
           ))}
           </div>
         </div>
 
-        <div data-track-section="download_agent_install" className="mt-12">
-          <div className="mb-4">
-            <h2 className="text-base font-semibold">
+        <div data-track-section="download_agent_install" className="mt-16 sm:mt-20">
+          <div className="mb-5">
+            <h2 className="text-xl sm:text-2xl">
               Install with your AI agent
             </h2>
-            <p className="mt-1 text-sm text-text-muted">
+            <p className="mt-2 text-sm sm:text-base text-text-muted leading-relaxed max-w-2xl">
               Paste this prompt into Claude Code, Codex, OpenCode, or any other
               agentic CLI. Your agent reads the docs, detects your OS, and
               walks the install one confirmation at a time.
@@ -106,215 +123,14 @@ export function DownloadView() {
   );
 }
 
-// ─── OS + arch detection ──────────────────────────────────────────────────
+// ─── Per-row arch tag for analytics ────────────────────────────────────
 //
-// Runs after mount (SSR has no navigator). Until the detection resolves,
-// the primary card renders a neutral fallback so the server-rendered
-// HTML matches the first client paint (no hydration flash).
-//
-// Arch detection uses `navigator.userAgentData.architecture` when the
-// Client Hints API is available (Chrome 90+ / Edge 90+ on HTTPS origins).
-// Firefox and Safari don't expose it; fallback is x86_64 — ARM64 users
-// still get correct packages from the matrix below.
+// The OS + Linux arch detection used by the primary CTA now lives in the
+// shared `useDetectedOS` / `useDetectedLinuxArch` hooks (consumed at the
+// top of DownloadView). The matrix below doesn't need detection — it
+// lists every available binary regardless of the visitor's OS.
 
-type DetectedOs = "linux" | "macos" | "windows" | "unknown";
 type DetectedArch = "x86_64" | "aarch64";
-
-interface DetectedPlatform {
-  os: DetectedOs;
-  arch: DetectedArch;
-}
-
-type UserAgentDataLike = {
-  architecture?: string;
-  platform?: string;
-  getHighEntropyValues?: (hints: string[]) => Promise<Record<string, string>>;
-};
-
-function useDetectedPlatform(): DetectedPlatform | null {
-  const [platform, setPlatform] = useState<DetectedPlatform | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const uaData = (navigator as unknown as { userAgentData?: UserAgentDataLike })
-      .userAgentData;
-    const ua = navigator.userAgent || "";
-
-    const os: DetectedOs = (() => {
-      // Order matters: /Android/ contains "Linux", so Android must be
-      // ruled out first to avoid falsely matching Linux for mobile users
-      // (irrelevant audience for PaneFlow but correct-is-better-than-
-      // lucky on the sniff).
-      if (/Android/i.test(ua)) return "unknown";
-      if (/Linux/i.test(ua)) return "linux";
-      if (/Mac OS X|Macintosh/i.test(ua)) return "macos";
-      if (/Windows/i.test(ua)) return "windows";
-      return "unknown";
-    })();
-
-    // Low-entropy userAgentData.platform is exposed synchronously on
-    // supporting browsers. `getHighEntropyValues(["architecture"])`
-    // returns "arm" for aarch64 on an async promise — we use it when
-    // available to upgrade the default.
-    let arch: DetectedArch = "x86_64";
-    if (uaData?.architecture === "arm") arch = "aarch64";
-
-    if (uaData?.getHighEntropyValues) {
-      uaData
-        .getHighEntropyValues(["architecture"])
-        .then((values: Record<string, string>) => {
-          if (cancelled) return;
-          const upgraded: DetectedArch =
-            values.architecture === "arm" ? "aarch64" : "x86_64";
-          setPlatform({ os, arch: upgraded });
-        })
-        .catch(() => {
-          // Fall back to the sync guess if the async call rejects
-          // (permission policy, transient error, etc.).
-          if (!cancelled) setPlatform({ os, arch });
-        });
-    } else {
-      // Defer to the next microtask so the setState call does not land
-      // synchronously inside the effect body — the Next.js-strict
-      // react-hooks/set-state-in-effect rule rejects the sync variant,
-      // and calling setState in an effect callback is the documented
-      // way to satisfy it (react.dev "You Might Not Need an Effect").
-      queueMicrotask(() => {
-        if (!cancelled) setPlatform({ os, arch });
-      });
-    }
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return platform;
-}
-
-// For each OS, the "primary format" is the one most users should pick.
-// Linux → .AppImage is universal (no root needed, no apt/dnf, just run).
-// macOS + Windows → placeholders until signed builds ship in v0.3.0.
-type PrimaryDownload =
-  | {
-      available: true;
-      href: string;
-      format: string;
-      cta: string;
-      icon: ComponentType<{ className?: string }>;
-    }
-  | {
-      available: false;
-      reason: string;
-      icon: ComponentType<{ className?: string }>;
-    };
-
-function primaryDownload(
-  version: string,
-  platform: DetectedPlatform,
-): PrimaryDownload {
-  const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
-  if (platform.os === "linux") {
-    return {
-      available: true,
-      href: `${base}/paneflow-${version}-${platform.arch}.AppImage`,
-      format: `AppImage (${platform.arch})`,
-      cta: "Download for Linux",
-      icon: LinuxIcon,
-    };
-  }
-  if (platform.os === "macos") {
-    // Signed Developer ID + Apple-notarized .dmg. Apple Silicon only:
-    // the `x86_64-apple-darwin` target is a closed CI matrix entry
-    // until Intel-Mac CI is reactivated. Intel Mac users on a
-    // 2020-or-earlier laptop still see this card with the aarch64
-    // .dmg href, which will fail to launch on their hardware; the
-    // matrix below remains the recovery path until the cut.
-    return {
-      available: true,
-      href: `${base}/paneflow-${version}-aarch64-apple-darwin.dmg`,
-      format: "DMG (Apple Silicon)",
-      cta: "Download for macOS",
-      icon: AppleIcon,
-    };
-  }
-  if (platform.os === "windows") {
-    return {
-      available: false,
-      reason: "Signed Windows MSI is coming soon.",
-      icon: WindowsIcon,
-    };
-  }
-  return {
-    available: false,
-    reason: "OS not detected. Choose a format from the release list below.",
-    icon: Package,
-  };
-}
-
-function PrimaryDownloadCard({ version }: { version: string }) {
-  const platform = useDetectedPlatform();
-
-  // Server-render a neutral placeholder that matches the first client
-  // paint so hydration doesn't flash. Same container dimensions as the
-  // ready state.
-  if (!platform) {
-    return (
-      <div className="rounded-lg border border-surface-border p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-5">
-        <div className="w-9 h-9 rounded-md bg-bg-elevated" />
-        <div className="flex-1">
-          <div className="h-4 w-40 rounded bg-bg-elevated mb-2" />
-          <div className="h-3 w-28 rounded bg-bg-elevated" />
-        </div>
-      </div>
-    );
-  }
-
-  const pick = primaryDownload(version, platform);
-  const Icon = pick.icon;
-
-  return (
-    <div className="rounded-lg border border-surface-border p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-5">
-      <div className="w-9 h-9 rounded-md bg-bg-elevated flex items-center justify-center shrink-0">
-        <Icon className="w-4 h-4 text-text" />
-      </div>
-
-      <div className="flex-1 min-w-0">
-        <div className="text-xs text-text-subtle font-mono uppercase tracking-wider">
-          Recommended download
-        </div>
-        <div className="text-sm sm:text-base font-semibold mt-1">
-          {pick.available ? `Paneflow ${version}, ${pick.format}` : pick.reason}
-        </div>
-        {!pick.available && platform.os !== "unknown" && (
-          <div className="text-sm text-text-muted mt-1">
-            Use Linux or macOS for now, or choose another format below.
-          </div>
-        )}
-      </div>
-
-      {pick.available ? (
-        <a
-          href={pick.href}
-          onClick={() => {
-            posthog.capture("download_cta_clicked", {
-              source: "primary_card",
-              format: pick.format,
-              platform: platform.os,
-              arch: platform.arch,
-              version,
-            });
-          }}
-          className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-accent text-bg font-semibold hover:brightness-110 transition-all duration-200 shrink-0"
-        >
-          <Download className="w-4 h-4" />
-          {pick.cta}
-        </a>
-      ) : null}
-    </div>
-  );
-}
 
 function VersionRow({
   entry,
@@ -325,7 +141,7 @@ function VersionRow({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div>
+    <div className="border-b border-surface-border last:border-b-0">
       <button
         onClick={() => {
           const next = !open;
@@ -335,12 +151,12 @@ function VersionRow({
           });
           setOpen(next);
         }}
-        className="w-full flex items-center justify-between py-4 text-left"
+        className="w-full flex items-center justify-between py-5 text-left"
       >
         <div className="flex items-center gap-3">
-          <span className="text-base font-semibold">{entry.version}</span>
+          <span className="text-2xl sm:text-3xl">{entry.version}</span>
           {entry.latest && (
-            <span className="px-2 py-0.5 rounded-full bg-accent text-bg text-[11px] font-mono font-semibold">
+            <span className="px-2.5 py-0.5 rounded-full border border-surface-border text-xs text-text-muted">
               Latest
             </span>
           )}
@@ -354,7 +170,9 @@ function VersionRow({
 
       {open && (
         <div className="pb-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-x-8 gap-y-6">
+          {/* 3-column platform grid — gap-2 (8px) is Cursor's exact
+              measurement (gap-g1 → 10px). On mobile the columns stack. */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
             <PlatformColumn
               Icon={AppleIcon}
               label="macOS"
@@ -366,7 +184,7 @@ function VersionRow({
               Icon={WindowsIcon}
               label="Windows"
               items={[]}
-              placeholder="Coming soon"
+              placeholder={`Windows binary is targeted for Q3 2026.`}
               waitlist={{ source: "download_matrix", version: entry.version }}
               platform="windows"
               version={entry.version}
@@ -382,9 +200,9 @@ function VersionRow({
 
           <a
             href={entry.releaseNotes}
-            className="inline-flex mt-6 text-sm text-text-muted hover:text-text transition-colors"
+            className="inline-flex mt-5 text-sm text-orange-700 dark:text-orange-300 hover:opacity-80 transition-opacity"
           >
-            See release notes &rarr;
+            View release notes &rarr;
           </a>
         </div>
       )}
@@ -425,8 +243,8 @@ function PlatformColumn({
   placeholder?: string;
   // When set on an empty-items column, renders an inline waitlist form
   // that POSTs to /api/waitlist instead of static text. Used by the
-  // Windows column to convert the "Coming soon" line into
-  // an actionable signal - PostHog showed 20 Windows desktop sessions /
+  // Windows column to convert the "Q3 2026" placeholder into an
+  // actionable signal - PostHog showed 20 Windows desktop sessions /
   // 30 d hitting this page with 0 actionable CTA.
   waitlist?: {
     source: "download_matrix" | "download_primary";
@@ -436,23 +254,25 @@ function PlatformColumn({
   version: string;
 }) {
   return (
-    <div className="rounded-lg border border-surface-border bg-bg-elevated p-4">
-      <div className="flex items-center gap-2 mb-3 px-1">
-        <Icon className="w-3.5 h-3.5 text-text-muted" />
-        <span className="text-xs font-mono text-text-muted uppercase tracking-wider">
+    <div className="rounded-md bg-bg-elevated p-4 sm:p-5">
+      {/* Platform header — bold weight 700 matches Cursor's matrix card
+          headings (.type-base.type-md). Icon + label inline. */}
+      <div className="flex items-center gap-2 mb-3">
+        <Icon className="w-4 h-4 text-text" />
+        <h3 className="text-base font-bold text-text">
           {label}
-        </span>
+        </h3>
       </div>
       {items.length === 0 ? (
         waitlist ? (
-          <div className="px-1 py-2 space-y-3">
+          <div className="space-y-3">
             <p className="text-sm text-text-subtle">
               {placeholder ?? "Coming soon"}
             </p>
             <WaitlistForm source={waitlist.source} platform="windows" />
           </div>
         ) : (
-          <p className="px-1 py-2 text-sm text-text-subtle">
+          <p className="text-sm text-text-subtle">
             {placeholder ?? "-"}
           </p>
         )
@@ -496,8 +316,11 @@ function DownloadRow({
   }, []);
 
   const LeadingIcon = item.icon;
+  // Row styling — Cursor measures padding 13px 0px on each download
+  // anchor, no horizontal padding (the card's p-5 owns left/right space)
+  // and no hover bg. Just a text color shift + icon to signal action.
   const baseClass =
-    "flex items-center justify-between w-full px-2 py-2.5 rounded-md text-sm text-text-muted hover:text-text hover:bg-bg-elevated transition-colors text-left";
+    "flex items-center justify-between w-full py-3 text-sm text-text hover:text-text-muted transition-colors text-left";
   // Linux rows carry no per-item icon — keep the pre-US-020 layout (just
   // a label on the left, download arrow on the right). Windows rows
   // carry WindowsIcon / Terminal which render as a leading glyph.

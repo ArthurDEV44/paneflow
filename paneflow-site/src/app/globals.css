@@ -86,23 +86,27 @@
   initial-value: #5a5a5a;
 }
 
-/* Light theme (default) — off-white monochrome inspired by Vercel /
-   Linear. Lives in :root so it applies before next-themes resolves
-   the user's stored preference, matching SSR output. */
+/* Light theme (default) — warm cream off-white inspired by Cursor /
+   Warp ("editorial frontier" 2026). Lives in :root so it applies before
+   next-themes resolves the user's stored preference, matching SSR output.
+   `--bg` (#f7f7f4) and `--bg-elevated` (#f2f1ed, used for cards) are
+   user-picked hex values: bg is the slightly-warmer-than-white canvas,
+   bg-elevated is one shade darker so cards float subtly against it
+   (no shadow needed). */
 :root {
-  --bg: #f5f5f3;
-  --bg-elevated: #ffffff;
-  --surface: #ebebea;
-  --surface-border: rgba(0, 0, 0, 0.08);
-  --surface-border-hover: rgba(0, 0, 0, 0.16);
-  --text: #111111;
-  --text-muted: #444444;
-  --text-subtle: #777777;
-  --accent: #000000;
-  --accent-dim: rgba(0, 0, 0, 0.08);
-  --accent-warm: #1a1a1a;
-  --accent-green: #4a4a4a;
-  --accent-blue: #5a5a5a;
+  --bg: #f7f7f4;
+  --bg-elevated: #f2f1ed;
+  --surface: oklch(0.94 0.006 80);
+  --surface-border: oklch(0.18 0.01 80 / 0.08);
+  --surface-border-hover: oklch(0.18 0.01 80 / 0.16);
+  --text: oklch(0.2 0.012 80);
+  --text-muted: oklch(0.4 0.013 80);
+  --text-subtle: oklch(0.55 0.012 80);
+  --accent: oklch(0.18 0.01 80);
+  --accent-dim: oklch(0.18 0.01 80 / 0.08);
+  --accent-warm: oklch(0.25 0.014 80);
+  --accent-green: oklch(0.4 0.014 80);
+  --accent-blue: oklch(0.5 0.012 80);
   --destructive-foreground: var(--color-red-700);
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-700);
@@ -146,21 +150,25 @@
   --sidebar-ring: var(--color-neutral-400);
 }
 
-/* Dark theme — the original monochrome palette, moved here from :root. */
+/* Dark theme — warm-dark + cream palette modeled on Cursor (cursor.com)
+   and Warp (warp.dev). Both ship the same text token oklch(0.97 0.01 84.6)
+   over a warm-tinted black, which has become the de facto "frontier dev
+   tool" signature in 2026. Replaces the previous neutral monochrome
+   (#0a0a0a / #e8e8e8) that read as "starter Next.js theme". */
 .dark {
-  --bg: #0a0a0a;
-  --bg-elevated: #141414;
-  --surface: #1a1a1a;
-  --surface-border: rgba(255, 255, 255, 0.08);
-  --surface-border-hover: rgba(255, 255, 255, 0.16);
-  --text: #e8e8e8;
-  --text-muted: #888888;
-  --text-subtle: #555555;
-  --accent: #ffffff;
-  --accent-dim: rgba(255, 255, 255, 0.08);
-  --accent-warm: #cccccc;
-  --accent-green: #b0b0b0;
-  --accent-blue: #a0a0a0;
+  --bg: oklch(0.16 0.008 75);
+  --bg-elevated: oklch(0.2 0.01 75);
+  --surface: oklch(0.23 0.011 75);
+  --surface-border: oklch(0.97 0.01 84.6 / 0.08);
+  --surface-border-hover: oklch(0.97 0.01 84.6 / 0.16);
+  --text: oklch(0.97 0.01 84.6);
+  --text-muted: oklch(0.75 0.014 80);
+  --text-subtle: oklch(0.55 0.012 80);
+  --accent: oklch(0.97 0.01 84.6);
+  --accent-dim: oklch(0.97 0.01 84.6 / 0.08);
+  --accent-warm: oklch(0.86 0.013 80);
+  --accent-green: oklch(0.7 0.014 80);
+  --accent-blue: oklch(0.65 0.012 80);
   --destructive-foreground: var(--color-red-400);
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-400);
@@ -219,13 +227,14 @@
   --color-accent-blue: var(--accent-blue);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-hanken-sans);
   --animate-skeleton: skeleton 2s -1s infinite linear;
   --animate-caret-blink: 1s ease-out infinite caret-blink;
   --animate-toast-success-odd: toast-success-odd 0.32s cubic-bezier(0.5, 1, 0.89, 1);
   --animate-toast-success-even: toast-success-even 0.32s cubic-bezier(0.5, 1, 0.89, 1);
   --animate-toast-error-odd: toast-error-odd 0.28s cubic-bezier(0.5, 1, 0.89, 1);
   --animate-toast-error-even: toast-error-even 0.28s cubic-bezier(0.5, 1, 0.89, 1);
-  --font-heading: var(--font-geist-sans);
+  --font-heading: var(--font-hanken-sans);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -446,6 +455,16 @@ body {
   }
   html {
     @apply font-sans font-mono;
+  }
+  /* Editorial headings — neo-grotesque (Hanken) at weight 400 with tight
+     tracking. Mirrors the Cursor / Warp signature (custom CursorGothic
+     / Matter, both rendered at weight 400). Component utility classes
+     can still override per-element (e.g. navbar logo keeps font-semibold). */
+  h1, h2, h3, h4 {
+    font-family: var(--font-heading), system-ui, sans-serif;
+    font-weight: 400;
+    letter-spacing: -0.035em;
+    line-height: 1.08;
   }
 }
 

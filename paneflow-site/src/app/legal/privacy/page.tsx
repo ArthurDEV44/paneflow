@@ -74,7 +74,7 @@ export default function PrivacyPage() {
         <section className="pt-32 sm:pt-40 pb-20 sm:pb-24">
           <div className="max-w-2xl mx-auto px-6">
             <header className="mb-10 sm:mb-12">
-              <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
+              <h1 className="text-3xl sm:text-4xl md:text-5xl">
                 Politique de confidentialité
               </h1>
               <p className="mt-3 text-sm sm:text-base text-text-muted leading-relaxed">
