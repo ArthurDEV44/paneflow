@@ -1,0 +1,265 @@
+---
+title: paneflow.json 模式参考
+description: 每个 paneflow.json 键的类型、默认值、稳定性和一个示例。
+dateModified: 2026-05-22
+howto: true
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow 今天识别的每个键，按它所控制的内容分组。所有键都是可
+选的，省略时解析为合理的默认值。权威来源是随每个版本一起交付
+的 [JSON Schema](https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json)。
+
+## 核心
+
+最常被问到的五个键。
+
+### 如何设置 `default_shell`？
+
+<VersionBadge stability="stable" /> <Since v="0.1.7" />
+
+类型：`string`（可选）。默认值：`$SHELL`。
+
+```json
+{ "default_shell": "/bin/zsh" }
+```
+
+Paneflow 通过回退链解析值：配置的路径（如果可执行）-> `$SHELL`
+-> `/bin/sh`。配置的 shell 缺失或不可执行时，会跳到下一个环节
+并发出日志警告。
+
+### 如何设置 `theme`？
+
+<VersionBadge stability="stable" /> <Since v="0.1.7" />
+
+类型：`string`（可选）。默认值：`"One Dark"`。
+
+内置主题：
+
+- `"One Dark"` - 深色主题，默认。
+- `"PaneFlow Light"` - 浅色主题。
+
+```json
+{ "theme": "PaneFlow Light" }
+```
+
+未知名称回退到 `"One Dark"` 并发出日志警告。主题在文件保存时
+热重载（500 ms mtime 轮询）- 无需重启。
+
+### 如何设置 `window_decorations`？
+
+<VersionBadge stability="stable" /> <Since v="0.2.3" />
+
+类型：`"client" | "server"`（可选）。默认值：`"client"`。
+
+```json
+{ "window_decorations": "client" }
+```
+
+`"client"` 绘制自定义标题栏（CSD）；`"server"` 委托给 OS 合成
+器（SSD）。在所有平台上默认值都是 `"client"`；没有 OS 特定的
+覆盖。**在启动时一次性读取 - 修改需要重启。**
+
+### 如何设置 `shortcuts`？
+
+<VersionBadge stability="stable" /> <Since v="0.1.7" />
+
+类型：将 `按键 -> action_name` 映射的 `object`（可选）。默认
+值：空对象（应用内置默认值）。
+
+```json
+{
+  "shortcuts": {
+    "ctrl+shift+t": "new_tab",
+    "ctrl+shift+w": "close_pane"
+  }
+}
+```
+
+键是按键字符串；值是操作名。参见完整
+[快捷键参考](/docs/keybindings) 获取操作词汇表。用户条目以
+「后写者胜」语义覆盖内置默认值。
+
+### 如何设置 `commands`？
+
+<VersionBadge stability="beta" /> <Since v="0.1.7" />
+
+类型：命令定义的 `array`（可选）。默认值：空数组。
+
+```json
+{
+  "commands": [
+    {
+      "name": "Open API",
+      "workspace": { "cwd": "~/projects/api" }
+    }
+  ]
+}
+```
+
+<Callout type="warn">
+schema 接受 `commands` 条目，但运行时目前会忽略它们并记录
+`"commands are not yet implemented - they will be ignored"`。
+结构形状是稳定的；运行时激活将在后续版本中提供。
+</Callout>
+
+## 字体
+
+三个字体键在早期 0.2.x 版本中落地；项目没有按键固定发布标签，
+因此精确的 `since` 值是大约的。
+
+### 如何设置 `font_family`？
+
+<VersionBadge stability="stable" />
+
+类型：`string`（可选）。默认值：平台等宽字体回退链。
+
+```json
+{ "font_family": "JetBrains Mono" }
+```
+
+Paneflow 首先尝试配置的字体族，然后回退到它能定位到的第一个
+已安装的等宽字体族。
+
+### 如何设置 `font_size`？
+
+<VersionBadge stability="stable" />
+
+类型：`number`（可选，像素）。默认值：`14`。
+
+```json
+{ "font_size": 14 }
+```
+
+### 如何设置 `line_height`？
+
+<VersionBadge stability="stable" />
+
+类型：`number`（可选，`1.0`–`2.5` 范围内的乘数）。默认值：`1.3`。
+
+```json
+{ "line_height": 1.3 }
+```
+
+`1.0`–`2.5` 范围外的值会被拒绝并发出日志警告，改用默认值。
+
+## 输入
+
+### 如何设置 `option_as_meta`？
+
+<VersionBadge stability="stable" /> <Since v="0.2.14" />
+
+类型：`boolean`（可选，Unix）。默认值：`true`。
+
+```json
+{ "option_as_meta": false }
+```
+
+为 `true` 时（默认），Alt 键（Linux）或 Option 键（macOS）发
+送一个 ESC 前缀 - Emacs、Vim 和大多数终端应用使用的标准 Meta
+键行为。如果你希望 Option 在 macOS 上产生原生 Unicode 字符
+（例如 `Option+e` -> `é`），设为 `false`。
+
+## AI 代理按钮
+
+窗格标题栏中按代理划分的快速启动按钮的开关。
+
+### 如何设置 `claude_code_button_visible`？
+
+<VersionBadge stability="stable" /> <Since v="0.2.10" />
+
+类型：`boolean`（可选）。默认值：`true`。
+
+```json
+{ "claude_code_button_visible": false }
+```
+
+### 如何设置 `claude_code_bypass_permissions`？
+
+<VersionBadge stability="stable" /> <Since v="0.2.10" />
+
+类型：`boolean`（可选）。默认值：`false`。
+
+```json
+{ "claude_code_bypass_permissions": true }
+```
+
+为 `true` 时，Claude Code 启动器使用
+`--dangerously-skip-permissions` 调用 CLI。出于安全考虑默认关闭。
+
+### 如何设置 `codex_button_visible`？
+
+<VersionBadge stability="stable" /> <Since v="0.2.10" />
+
+类型：`boolean`（可选）。默认值：`true`。
+
+```json
+{ "codex_button_visible": false }
+```
+
+### 如何设置 `opencode_button_visible`？
+
+<VersionBadge stability="stable" /> <Since v="0.2.13" />
+
+类型：`boolean`（可选）。默认值：`true`。
+
+```json
+{ "opencode_button_visible": false }
+```
+
+## 遥测
+
+### 如何设置 `telemetry`？
+
+<VersionBadge stability="stable" /> <Since v="0.2.9" />
+
+类型：`object` `{ enabled: boolean | null }`（可选）。默认值：
+`{ "enabled": null }`（首次启动时提示）。
+
+```json
+{ "telemetry": { "enabled": false } }
+```
+
+设 `enabled: false` 禁用所有 PostHog 报告。设 `enabled: true`
+在没有首次启动提示的情况下选择加入。
+
+## 终端
+
+### 如何设置 `terminal.ligatures`？
+
+<VersionBadge stability="stable" /> <Since v="0.2.14" />
+
+类型：`terminal` 对象内的 `boolean`（可选）。默认值：`false`。
+
+```json
+{ "terminal": { "ligatures": true } }
+```
+
+为附带这些功能的字体（Fira Code、JetBrains Mono、Iosevka 等）
+启用编程连字。字体必须包含连字字形该功能才会生效。
+
+## 一个完整示例
+
+```json
+{
+  "$schema": "https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json",
+  "default_shell": "/bin/zsh",
+  "theme": "One Dark",
+  "font_family": "JetBrains Mono",
+  "font_size": 14,
+  "line_height": 1.3,
+  "window_decorations": "client",
+  "option_as_meta": true,
+  "shortcuts": {},
+  "terminal": { "ligatures": false },
+  "telemetry": { "enabled": null },
+  "claude_code_button_visible": true,
+  "claude_code_bypass_permissions": false,
+  "codex_button_visible": true,
+  "opencode_button_visible": true,
+  "commands": []
+}
+```
+
+实时 schema 定义请见
+[`paneflow.schema.json`](https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json)。

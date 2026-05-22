@@ -1,0 +1,286 @@
+---
+title: paneflow.json-Schema-Referenz
+description: Jeder paneflow.json-Schlüssel mit Typ, Standardwert, Stabilität und einem Beispiel.
+dateModified: 2026-05-22
+howto: true
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Jeder Schlüssel, den Paneflow heute erkennt, gruppiert nach dem,
+was er steuert. Alle Schlüssel sind optional und lösen sich zu
+einem sinnvollen Standardwert auf, wenn weggelassen. Die maßgebliche
+Quelle ist das [JSON-Schema](https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json),
+das mit jedem Release ausgeliefert wird.
+
+## Kern
+
+Die fünf am häufigsten erfragten Schlüssel.
+
+### Wie setze ich `default_shell`?
+
+<VersionBadge stability="stable" /> <Since v="0.1.7" />
+
+Typ: `string` (optional). Standard: `$SHELL`.
+
+```json
+{ "default_shell": "/bin/zsh" }
+```
+
+Paneflow löst den Wert über eine Fallback-Kette auf: konfigurierter
+Pfad (falls ausführbar) -> `$SHELL` -> `/bin/sh`. Eine konfigurierte
+Shell, die fehlt oder nicht ausführbar ist, fällt zum nächsten Glied
+durch und gibt eine Log-Warnung aus.
+
+### Wie setze ich `theme`?
+
+<VersionBadge stability="stable" /> <Since v="0.1.7" />
+
+Typ: `string` (optional). Standard: `"One Dark"`.
+
+Eingebaute Designs:
+
+- `"One Dark"` - dunkles Design, Standard.
+- `"PaneFlow Light"` - helles Design.
+
+```json
+{ "theme": "PaneFlow Light" }
+```
+
+Unbekannte Namen fallen auf `"One Dark"` zurück und geben eine
+Log-Warnung aus. Designs werden beim Speichern der Datei (500 ms
+mtime-Polling) hot-reloaded - kein Neustart nötig.
+
+### Wie setze ich `window_decorations`?
+
+<VersionBadge stability="stable" /> <Since v="0.2.3" />
+
+Typ: `"client" | "server"` (optional). Standard: `"client"`.
+
+```json
+{ "window_decorations": "client" }
+```
+
+`"client"` zeichnet eine benutzerdefinierte Titelleiste (CSD);
+`"server"` überlässt es dem OS-Compositor (SSD). Der Standard ist
+`"client"` auf allen Plattformen; es gibt keine OS-spezifische
+Überschreibung. **Einmalig beim Start gelesen - Änderungen
+erfordern einen Neustart.**
+
+### Wie setze ich `shortcuts`?
+
+<VersionBadge stability="stable" /> <Since v="0.1.7" />
+
+Typ: `object`, das `Tastendruck -> action_name` mappt (optional).
+Standard: leeres Objekt (eingebaute Standards gelten).
+
+```json
+{
+  "shortcuts": {
+    "ctrl+shift+t": "new_tab",
+    "ctrl+shift+w": "close_pane"
+  }
+}
+```
+
+Schlüssel sind Tastendruck-Strings; Werte sind Aktionsnamen. Siehe
+die vollständige [Tastenkürzel-Referenz](/docs/keybindings) für das
+Aktions-Vokabular. Benutzereinträge überschreiben die eingebauten
+Standards mit Last-Write-Wins-Semantik.
+
+### Wie setze ich `commands`?
+
+<VersionBadge stability="beta" /> <Since v="0.1.7" />
+
+Typ: `array` von Befehlsdefinitionen (optional). Standard: leeres
+Array.
+
+```json
+{
+  "commands": [
+    {
+      "name": "Open API",
+      "workspace": { "cwd": "~/projects/api" }
+    }
+  ]
+}
+```
+
+<Callout type="warn">
+Das Schema akzeptiert `commands`-Einträge, aber die Laufzeit
+ignoriert sie derzeit und loggt
+`"commands are not yet implemented - they will be ignored"`. Die
+strukturelle Form ist stabil; die Laufzeit-Aktivierung kommt in
+einem späteren Release.
+</Callout>
+
+## Typografie
+
+Die drei Typografie-Schlüssel landeten in einem frühen
+0.2.x-Release; das Projekt hat keine pro-Schlüssel-Release-Tags
+gepinnt, also ist der genaue `since`-Wert ungefähr.
+
+### Wie setze ich `font_family`?
+
+<VersionBadge stability="stable" />
+
+Typ: `string` (optional). Standard: Plattform-Monospace-Fallback-
+Kette.
+
+```json
+{ "font_family": "JetBrains Mono" }
+```
+
+Paneflow probiert zuerst die konfigurierte Familie, dann fällt es
+auf die erste installierte Monospace-Familie zurück, die es
+lokalisieren kann.
+
+### Wie setze ich `font_size`?
+
+<VersionBadge stability="stable" />
+
+Typ: `number` (optional, Pixel). Standard: `14`.
+
+```json
+{ "font_size": 14 }
+```
+
+### Wie setze ich `line_height`?
+
+<VersionBadge stability="stable" />
+
+Typ: `number` (optional, Multiplikator im Bereich `1.0`–`2.5`).
+Standard: `1.3`.
+
+```json
+{ "line_height": 1.3 }
+```
+
+Werte außerhalb des Bereichs `1.0`–`2.5` werden mit einer
+Log-Warnung abgelehnt, und stattdessen wird der Standard verwendet.
+
+## Eingabe
+
+### Wie setze ich `option_as_meta`?
+
+<VersionBadge stability="stable" /> <Since v="0.2.14" />
+
+Typ: `boolean` (optional, Unix). Standard: `true`.
+
+```json
+{ "option_as_meta": false }
+```
+
+Wenn `true` (der Standard), sendet die Alt-Taste (Linux) oder
+Option-Taste (macOS) ein ESC-Präfix - das standardmäßige
+Meta-Taste-Verhalten, das von Emacs, Vim und den meisten
+Terminal-Anwendungen verwendet wird. Setze auf `false`, wenn du
+willst, dass Option native Unicode-Zeichen unter macOS erzeugt
+(z. B. `Option+e` -> `é`).
+
+## KI-Agent-Buttons
+
+Schalter für die per-Agent Quick-Launch-Buttons in der Bereichs-
+Titelleiste.
+
+### Wie setze ich `claude_code_button_visible`?
+
+<VersionBadge stability="stable" /> <Since v="0.2.10" />
+
+Typ: `boolean` (optional). Standard: `true`.
+
+```json
+{ "claude_code_button_visible": false }
+```
+
+### Wie setze ich `claude_code_bypass_permissions`?
+
+<VersionBadge stability="stable" /> <Since v="0.2.10" />
+
+Typ: `boolean` (optional). Standard: `false`.
+
+```json
+{ "claude_code_bypass_permissions": true }
+```
+
+Wenn `true`, ruft der Claude-Code-Launcher die CLI mit
+`--dangerously-skip-permissions` auf. Standardmäßig aus
+Sicherheitsgründen deaktiviert.
+
+### Wie setze ich `codex_button_visible`?
+
+<VersionBadge stability="stable" /> <Since v="0.2.10" />
+
+Typ: `boolean` (optional). Standard: `true`.
+
+```json
+{ "codex_button_visible": false }
+```
+
+### Wie setze ich `opencode_button_visible`?
+
+<VersionBadge stability="stable" /> <Since v="0.2.13" />
+
+Typ: `boolean` (optional). Standard: `true`.
+
+```json
+{ "opencode_button_visible": false }
+```
+
+## Telemetrie
+
+### Wie setze ich `telemetry`?
+
+<VersionBadge stability="stable" /> <Since v="0.2.9" />
+
+Typ: `object` `{ enabled: boolean | null }` (optional). Standard:
+`{ "enabled": null }` (Abfrage beim ersten Start).
+
+```json
+{ "telemetry": { "enabled": false } }
+```
+
+Setze `enabled: false`, um alle PostHog-Reportings zu deaktivieren.
+Setze `enabled: true`, um ohne die Erstabfrage einzuwilligen.
+
+## Terminal
+
+### Wie setze ich `terminal.ligatures`?
+
+<VersionBadge stability="stable" /> <Since v="0.2.14" />
+
+Typ: `boolean` innerhalb des `terminal`-Objekts (optional).
+Standard: `false`.
+
+```json
+{ "terminal": { "ligatures": true } }
+```
+
+Aktiviert Programmier-Ligaturen für Schriftarten, die diese
+mitliefern (Fira Code, JetBrains Mono, Iosevka, usw.). Die Schrift
+muss die Ligatur-Glyphen enthalten, damit das Feature wirkt.
+
+## Ein vollständiges Beispiel
+
+```json
+{
+  "$schema": "https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json",
+  "default_shell": "/bin/zsh",
+  "theme": "One Dark",
+  "font_family": "JetBrains Mono",
+  "font_size": 14,
+  "line_height": 1.3,
+  "window_decorations": "client",
+  "option_as_meta": true,
+  "shortcuts": {},
+  "terminal": { "ligatures": false },
+  "telemetry": { "enabled": null },
+  "claude_code_button_visible": true,
+  "claude_code_bypass_permissions": false,
+  "codex_button_visible": true,
+  "opencode_button_visible": true,
+  "commands": []
+}
+```
+
+Für die Live-Schema-Definition siehe
+[`paneflow.schema.json`](https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json).

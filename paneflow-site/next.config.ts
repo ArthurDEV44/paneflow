@@ -1,5 +1,6 @@
 import { createMDX } from "fumadocs-mdx/next";
 import type { NextConfig } from "next";
+import createNextIntlPlugin from "next-intl/plugin";
 
 // `output: "export"` was removed (commit pending) so that
 // `app/api/waitlist/route.ts` can run as a Vercel Function. Static pages
@@ -21,5 +22,6 @@ const nextConfig: NextConfig = {
 };
 
 const withMDX = createMDX();
+const withNextIntl = createNextIntlPlugin();
 
-export default withMDX(nextConfig);
+export default withNextIntl(withMDX(nextConfig));

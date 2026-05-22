@@ -1,0 +1,119 @@
+---
+title: macOS に Paneflow をインストール
+description: 署名と公証が済んだ .dmg を使って macOS 13 Ventura 以降に Paneflow をインストールします。
+dateModified: 2026-05-22
+howto: true
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow は macOS 13 Ventura 以降で動作します。現時点では `.dmg`
+が唯一の macOS インストール パスです。Homebrew tap は準備中です。
+Apple Silicon は v0.2.x でサポートされるアーキテクチャです。Intel
+ビルドは将来のリリースで提供されます。
+
+<Callout type="info">
+`.dmg` は Developer ID Application 証明書で署名され、Apple に
+よって公証されています。公証チケットがバンドルにステープルされて
+いるため、Gatekeeper は「身元不明の開発元」ダイアログを出さずに
+初回起動でこれを受け入れます。
+</Callout>
+
+## Homebrew で Paneflow をインストールするには？
+
+Homebrew tap はロードマップにあります。公開されたら、このセクション
+に貼り付け可能なワンライナーが表示されます。それまでは、下記の
+`.dmg` パスを使ってください。これが v0.2.x でサポートされる唯一の
+macOS インストール方法です。
+
+## .dmg から Paneflow をインストールするには？
+
+最新の Apple Silicon `.dmg` をダウンロードし、開いて、アプリを
+Applications にドラッグします。
+
+```bash
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-aarch64-apple-darwin.dmg
+open paneflow-0.2.16-aarch64-apple-darwin.dmg
+```
+
+Finder がディスク イメージをマウントし、`Paneflow` アプリと
+`Applications` のシンボリック リンクが入ったウィンドウを開きます。
+`Paneflow` を `Applications` にドラッグしてから、マウントされた
+ボリュームを取り出してください。
+
+Spotlight（`Cmd+Space` のあと「Paneflow」）から起動するか、直接：
+
+```bash
+open /Applications/Paneflow.app
+```
+
+<Callout type="warn">
+Intel Mac は CI でまだビルドされていません。2020 年以前の Mac を
+お使いの場合、Apple Silicon バイナリはアーキテクチャ エラーで
+起動に失敗します。ユニバーサルまたは Intel 専用の DMG は将来の
+リリースで提供されます。通知を受け取るには
+[GitHub releases](https://github.com/ArthurDEV44/paneflow/releases)
+を購読してください。
+</Callout>
+
+## インストールを検証するには？
+
+`Paneflow.app` は `paneflow` を自動的に `PATH` に追加しません。
+バイナリは `/Applications/Paneflow.app/Contents/MacOS/paneflow`
+にあります。最もシンプルな検証方法は、Spotlight（`Cmd+Space` の
+あと「Paneflow」）またはターミナルからアプリを起動することです：
+
+```bash
+open -a Paneflow
+```
+
+タイトル バーは最初のフレームで動作中のバージョンを表示します。
+
+任意のターミナルから CLI アクセスをするには、バイナリを一度だけ
+`/usr/local/bin` にシンボリック リンクしてください：
+
+```bash
+sudo ln -sf /Applications/Paneflow.app/Contents/MacOS/paneflow /usr/local/bin/paneflow
+```
+
+リンクが配置されたら、標準の検証コマンドが動作します：
+
+```bash
+paneflow --version
+# paneflow 0.2.x
+```
+
+## macOS Gatekeeper がアプリをブロックした場合は？
+
+公証済み `.dmg` は「Apple がこの App に悪意のあるソフトウェアが
+含まれていないか確認できません」というダイアログを決して出すべき
+ではありません。それでも表示される場合は、異常な転送（Safari 以
+外のブラウザで外付けドライブにダウンロードしたなど）の間に検疫
+属性が保持されたことを意味します。摩擦の少ない順に 3 つの解決方法
+があります：
+
+**右クリックで開く**（アプリごとに 1 回）：
+
+1. Finder を開き、`Applications` に移動します。
+2. `Paneflow.app` を Control クリック（または右クリック）します。
+3. **開く** を選択してください。
+4. 確認ダイアログで **開く** をクリックしてください。
+
+**システム設定パス**（macOS 13+）：
+
+1. **システム設定** を開きます。
+2. **プライバシーとセキュリティ** に移動します。
+3. 「Paneflow はブロックされました」という通知までスクロール
+   します。
+4. **このまま開く** をクリックしてください。
+
+**CLI パス**：
+
+```bash
+xattr -d com.apple.quarantine /Applications/Paneflow.app
+```
+
+`xattr` コマンドが拡張属性の検疫を削除するため、Gatekeeper は以後
+の起動をブロックしなくなります。自分でダウンロードして
+`/Applications` にドラッグしたアプリには `sudo` は不要です。MDM
+で管理されているか root でインストールされたアプリには `sudo`
+が必要な場合があります。

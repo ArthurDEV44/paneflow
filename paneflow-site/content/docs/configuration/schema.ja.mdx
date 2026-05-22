@@ -1,0 +1,290 @@
+---
+title: paneflow.json スキーマ リファレンス
+description: paneflow.json の各キーの型、デフォルト値、安定性、例。
+dateModified: 2026-05-22
+howto: true
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow が今日認識するすべてのキーを、それが制御するものごとに
+グループ化しています。すべてのキーはオプションで、省略された
+ときに妥当なデフォルトに解決されます。権威ある情報源は、各
+リリースで提供される
+[JSON スキーマ](https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json)
+です。
+
+## コア
+
+最もよく質問される 5 つのキー。
+
+### `default_shell` を設定するには？
+
+<VersionBadge stability="stable" /> <Since v="0.1.7" />
+
+型：`string`（オプション）。デフォルト：`$SHELL`。
+
+```json
+{ "default_shell": "/bin/zsh" }
+```
+
+Paneflow はフォールバック チェーンで値を解決します：設定された
+パス（実行可能な場合）-> `$SHELL` -> `/bin/sh`。設定されたシェル
+が欠落しているか実行可能でない場合、次のリンクにフォール
+スルーし、ログ警告を発します。
+
+### `theme` を設定するには？
+
+<VersionBadge stability="stable" /> <Since v="0.1.7" />
+
+型：`string`（オプション）。デフォルト：`"One Dark"`。
+
+組み込みテーマ：
+
+- `"One Dark"` - ダーク テーマ、デフォルト。
+- `"PaneFlow Light"` - ライト テーマ。
+
+```json
+{ "theme": "PaneFlow Light" }
+```
+
+未知の名前は `"One Dark"` にフォールバックし、ログ警告を発しま
+す。テーマはファイル保存時にホット リロードされます（500 ms の
+mtime ポーリング）。再起動は不要です。
+
+### `window_decorations` を設定するには？
+
+<VersionBadge stability="stable" /> <Since v="0.2.3" />
+
+型：`"client" | "server"`（オプション）。デフォルト：`"client"`。
+
+```json
+{ "window_decorations": "client" }
+```
+
+`"client"` はカスタム タイトル バー（CSD）を描画します。
+`"server"` は OS コンポジタ（SSD）に委ねます。すべてのプラット
+フォームで `"client"` がデフォルトで、OS 固有のオーバーライド
+はありません。**起動時に一度だけ読み込まれます。変更には再起動
+が必要です。**
+
+### `shortcuts` を設定するには？
+
+<VersionBadge stability="stable" /> <Since v="0.1.7" />
+
+型：`キー入力 -> action_name` をマッピングする `object`（オプ
+ション）。デフォルト：空オブジェクト（組み込みデフォルトが適用
+されます）。
+
+```json
+{
+  "shortcuts": {
+    "ctrl+shift+t": "new_tab",
+    "ctrl+shift+w": "close_pane"
+  }
+}
+```
+
+キーはキー入力の文字列、値はアクション名です。アクションの語彙
+については完全な
+[キーバインド リファレンス](/docs/keybindings) を参照してくだ
+さい。ユーザー エントリは、最後の書き込みが勝つというセマン
+ティクスで組み込みデフォルトをオーバーライドします。
+
+### `commands` を設定するには？
+
+<VersionBadge stability="beta" /> <Since v="0.1.7" />
+
+型：コマンド定義の `array`（オプション）。デフォルト：空配列。
+
+```json
+{
+  "commands": [
+    {
+      "name": "Open API",
+      "workspace": { "cwd": "~/projects/api" }
+    }
+  ]
+}
+```
+
+<Callout type="warn">
+スキーマは `commands` エントリを受け入れますが、ランタイムは
+現在それらを無視し、
+`"commands are not yet implemented - they will be ignored"` を
+ログに記録します。構造的な形は安定していますが、ランタイムの
+アクティベーションは将来のリリースで提供されます。
+</Callout>
+
+## タイポグラフィ
+
+3 つのタイポグラフィ キーは早期の 0.2.x リリースに着地しまし
+た。プロジェクトはキーごとのリリース タグをピン留めしていない
+ため、正確な `since` 値は概算です。
+
+### `font_family` を設定するには？
+
+<VersionBadge stability="stable" />
+
+型：`string`（オプション）。デフォルト：プラットフォームの
+モノスペース フォールバック チェーン。
+
+```json
+{ "font_family": "JetBrains Mono" }
+```
+
+Paneflow はまず設定されたファミリーを試し、その後、見つけられる
+最初のインストール済みモノスペース ファミリーにフォールバック
+します。
+
+### `font_size` を設定するには？
+
+<VersionBadge stability="stable" />
+
+型：`number`（オプション、ピクセル）。デフォルト：`14`。
+
+```json
+{ "font_size": 14 }
+```
+
+### `line_height` を設定するには？
+
+<VersionBadge stability="stable" />
+
+型：`number`（オプション、`1.0`–`2.5` の範囲の倍率）。
+デフォルト：`1.3`。
+
+```json
+{ "line_height": 1.3 }
+```
+
+`1.0`–`2.5` の範囲外の値はログ警告で拒否され、代わりにデフォル
+トが使用されます。
+
+## 入力
+
+### `option_as_meta` を設定するには？
+
+<VersionBadge stability="stable" /> <Since v="0.2.14" />
+
+型：`boolean`（オプション、Unix）。デフォルト：`true`。
+
+```json
+{ "option_as_meta": false }
+```
+
+`true`（デフォルト）の場合、Alt キー（Linux）または Option キー
+（macOS）は ESC プレフィックスを送信します。これは Emacs、Vim、
+ほとんどのターミナル アプリケーションで使用される標準的な Meta
+キー動作です。macOS で Option がネイティブの Unicode 文字を生成
+する（例：`Option+e` -> `é`）ようにしたい場合は、`false` に
+設定してください。
+
+## AI エージェント ボタン
+
+ペイン タイトル バーのエージェントごとのクイック起動ボタンの
+トグル。
+
+### `claude_code_button_visible` を設定するには？
+
+<VersionBadge stability="stable" /> <Since v="0.2.10" />
+
+型：`boolean`（オプション）。デフォルト：`true`。
+
+```json
+{ "claude_code_button_visible": false }
+```
+
+### `claude_code_bypass_permissions` を設定するには？
+
+<VersionBadge stability="stable" /> <Since v="0.2.10" />
+
+型：`boolean`（オプション）。デフォルト：`false`。
+
+```json
+{ "claude_code_bypass_permissions": true }
+```
+
+`true` の場合、Claude Code ランチャーは
+`--dangerously-skip-permissions` で CLI を呼び出します。安全
+のため、デフォルトでオフです。
+
+### `codex_button_visible` を設定するには？
+
+<VersionBadge stability="stable" /> <Since v="0.2.10" />
+
+型：`boolean`（オプション）。デフォルト：`true`。
+
+```json
+{ "codex_button_visible": false }
+```
+
+### `opencode_button_visible` を設定するには？
+
+<VersionBadge stability="stable" /> <Since v="0.2.13" />
+
+型：`boolean`（オプション）。デフォルト：`true`。
+
+```json
+{ "opencode_button_visible": false }
+```
+
+## テレメトリ
+
+### `telemetry` を設定するには？
+
+<VersionBadge stability="stable" /> <Since v="0.2.9" />
+
+型：`object` `{ enabled: boolean | null }`（オプション）。
+デフォルト：`{ "enabled": null }`（初回起動時にプロンプト）。
+
+```json
+{ "telemetry": { "enabled": false } }
+```
+
+すべての PostHog レポートを無効にするには `enabled: false` に
+設定してください。初回起動プロンプトなしでオプトインするには
+`enabled: true` に設定してください。
+
+## ターミナル
+
+### `terminal.ligatures` を設定するには？
+
+<VersionBadge stability="stable" /> <Since v="0.2.14" />
+
+型：`terminal` オブジェクト内の `boolean`（オプション）。
+デフォルト：`false`。
+
+```json
+{ "terminal": { "ligatures": true } }
+```
+
+リガチャを同梱するフォント（Fira Code、JetBrains Mono、Iosevka
+など）に対してプログラミング リガチャを有効にします。フォント
+がリガチャ グリフを含む必要があり、機能が有効になります。
+
+## 完全な例
+
+```json
+{
+  "$schema": "https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json",
+  "default_shell": "/bin/zsh",
+  "theme": "One Dark",
+  "font_family": "JetBrains Mono",
+  "font_size": 14,
+  "line_height": 1.3,
+  "window_decorations": "client",
+  "option_as_meta": true,
+  "shortcuts": {},
+  "terminal": { "ligatures": false },
+  "telemetry": { "enabled": null },
+  "claude_code_button_visible": true,
+  "claude_code_bypass_permissions": false,
+  "codex_button_visible": true,
+  "opencode_button_visible": true,
+  "commands": []
+}
+```
+
+ライブ スキーマ定義については
+[`paneflow.schema.json`](https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json)
+を参照してください。

@@ -1,19 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
+import { Link } from "@/i18n/navigation";
 import Image from "next/image";
 import { Menu, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { GitHubIcon } from "./icons";
 import { track } from "../lib/analytics";
 
 const NAV_LINKS = [
-  { href: "/download", label: "Download" },
-  { href: "/docs", label: "Docs" },
-  { href: "/compare", label: "Compare" },
-] as const;
+  { href: "/download", key: "download" as const, trackLabel: "download" },
+  { href: "/docs", key: "docs" as const, trackLabel: "docs" },
+  { href: "/compare", key: "compare" as const, trackLabel: "compare" },
+];
 
 export function Navbar() {
+  const t = useTranslations("Navbar");
   const [mobileOpen, setMobileOpen] = useState(false);
 
   // Lock body scroll while the mobile menu is open so the page behind
@@ -53,33 +55,34 @@ export function Navbar() {
           >
             <Image
               src="/logos/paneflow-web-300.png"
-              alt="Paneflow"
+              alt={t("logoAlt")}
               width={28}
               height={28}
               sizes="28px"
               priority
               className="h-7 w-7"
             />
-            Paneflow
+            {t("brand")}
           </Link>
 
-          {/* Right (desktop) — primary nav + GitHub icon. Hidden under
-              sm; replaced by the burger trigger below at that breakpoint. */}
+          {/* Right (desktop) — primary nav + GitHub icon. Hidden
+              under sm; replaced by the burger trigger below at that
+              breakpoint. */}
           <div className="hidden sm:flex items-center gap-7 shrink-0">
             {NAV_LINKS.map((link) => (
               <Link
                 key={link.href}
                 href={link.href}
-                onClick={() => track("nav_link_clicked", { label: link.label.toLowerCase() })}
+                onClick={() => track("nav_link_clicked", { label: link.trackLabel })}
                 className="text-sm text-text-muted hover:text-text transition-colors duration-200"
               >
-                {link.label}
+                {t(`links.${link.key}`)}
               </Link>
             ))}
             <a
               href="https://github.com/ArthurDEV44/paneflow"
               onClick={() => track("github_link_clicked", { source: "navbar" })}
-              aria-label="Paneflow on GitHub"
+              aria-label={t("aria.githubLink")}
               className="flex items-center text-text-muted hover:text-text transition-colors duration-200"
             >
               <GitHubIcon className="w-4 h-4" />
@@ -96,7 +99,7 @@ export function Navbar() {
               if (next) track("mobile_nav_opened", { source: "navbar" });
               setMobileOpen(next);
             }}
-            aria-label={mobileOpen ? "Close menu" : "Open menu"}
+            aria-label={mobileOpen ? t("aria.closeMenu") : t("aria.openMenu")}
             aria-expanded={mobileOpen}
             aria-controls="mobile-nav"
             className="sm:hidden flex items-center justify-center w-9 h-9 -mr-2 text-text-muted hover:text-text transition-colors"
@@ -119,7 +122,7 @@ export function Navbar() {
           id="mobile-nav"
           role="dialog"
           aria-modal="true"
-          aria-label="Site navigation"
+          aria-label={t("aria.mobileNav")}
           className="sm:hidden fixed inset-x-0 top-16 bottom-0 z-30 bg-bg flex flex-col"
         >
           <nav className="flex flex-col gap-1 px-6 pt-8 pb-6">
@@ -129,14 +132,14 @@ export function Navbar() {
                 href={link.href}
                 onClick={() => {
                   track("nav_link_clicked", {
-                    label: link.label.toLowerCase(),
+                    label: link.trackLabel,
                     source: "mobile_nav",
                   });
                   setMobileOpen(false);
                 }}
                 className="text-2xl py-3 text-text"
               >
-                {link.label}
+                {t(`links.${link.key}`)}
               </Link>
             ))}
             <a
@@ -148,7 +151,7 @@ export function Navbar() {
               className="inline-flex items-center gap-3 text-2xl py-3 text-text"
             >
               <GitHubIcon className="w-5 h-5" />
-              GitHub
+              {t("github")}
             </a>
           </nav>
         </div>

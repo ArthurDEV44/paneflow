@@ -1,0 +1,156 @@
+---
+title: Dispositions
+description: Applique les quatre dispositions prédéfinies intégrées de Paneflow - horizontale uniforme, verticale uniforme, vertical principal et en mosaïque - pour remodeler un espace de travail en une seule frappe.
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow embarque quatre dispositions prédéfinies qui remodèlent
+l'espace de travail actif en un arrangement canonique. Chaque préset
+préserve chaque shell - il déplace les volets existants vers de
+nouvelles positions sans rien ouvrir ni rien fermer.
+
+<Callout type="info">
+**TL;DR.** `Cmd/Ctrl+Alt+1` aligne les volets en une rangée,
+`Cmd/Ctrl+Alt+2` les empile en colonne, `Cmd/Ctrl+Alt+3` gare le
+volet focalisé à gauche avec le reste empilé à droite, et
+`Cmd/Ctrl+Alt+4` met tout en mosaïque dans une grille.
+</Callout>
+
+Les présets opèrent toujours sur l'ensemble complet des volets de
+l'espace de travail actif. Ils ne modifient jamais le nombre
+d'espaces de travail ni la cible de focus active ; le volet focalisé
+reste focalisé après chaque préset.
+
+## Comment appliquer une disposition prédéfinie ?
+
+Chaque préset a un raccourci par défaut et un nom d'action que tu
+peux réassigner dans [paneflow.json](/docs/configuration/schema#how-do-i-set-shortcuts) :
+
+| Préset | Touches par défaut | Nom d'action |
+| --- | --- | --- |
+| Horizontale uniforme | `Cmd/Ctrl+Alt+1` | `layout_even_horizontal` |
+| Verticale uniforme | `Cmd/Ctrl+Alt+2` | `layout_even_vertical` |
+| Vertical principal | `Cmd/Ctrl+Alt+3` | `layout_main_vertical` |
+| En mosaïque | `Cmd/Ctrl+Alt+4` | `layout_tiled` |
+
+Appuie sur la touche depuis n'importe quel volet. L'espace de
+travail se réorganise immédiatement ; le volet focalisé conserve
+intacts son contenu et son état de sélection.
+
+## Horizontale uniforme
+
+`layout_even_horizontal` aligne chaque volet en une seule rangée,
+chacun avec une largeur égale.
+
+```text
++--------+--------+--------+--------+
+|        |        |        |        |
+|   1    |   2    |   3    |   4    |
+|        |        |        |        |
++--------+--------+--------+--------+
+```
+
+**Quand l'utiliser :** comparer quatre flux à sortie courte côte à
+côte (test runners, suivis de logs, build watchers). Idéal sur des
+écrans larges - sur un laptop 13 pouces, quatre colonnes deviennent
+serrées au-delà de trois volets.
+
+## Verticale uniforme
+
+`layout_even_vertical` empile chaque volet en une seule colonne,
+chacun avec une hauteur égale.
+
+```text
++-----------------------------------+
+|                                   |
+|                1                  |
+|                                   |
++-----------------------------------+
+|                                   |
+|                2                  |
+|                                   |
++-----------------------------------+
+|                                   |
+|                3                  |
+|                                   |
++-----------------------------------+
+```
+
+**Quand l'utiliser :** suivre un workflow séquentiel où tu veux que
+chaque volet garde sa largeur de terminal complète (longues lignes
+de log, tableaux larges, sortie de diff côte à côte). S'accorde
+naturellement avec un écran en orientation verticale.
+
+## Vertical principal
+
+`layout_main_vertical` gare le volet focalisé à gauche à 60 % de la
+largeur, puis empile les volets restants verticalement à droite à
+40 %.
+
+```text
++-------------------+---------------+
+|                   |       2       |
+|                   +---------------+
+|         1         |       3       |
+|     (principal)   +---------------+
+|                   |       4       |
+|                   +---------------+
+|                   |       5       |
++-------------------+---------------+
+```
+
+**Quand l'utiliser :** un volet « principal » avec des volets de
+support (un éditeur de code ou un agent IA à gauche, builds / tests /
+suivis de logs à droite). Le volet focalisé devient le volet
+principal, donc déplace le focus vers le volet que tu veux agrandir
+avant d'appuyer sur le chord.
+
+## En mosaïque
+
+`layout_tiled` arrange chaque volet dans une grille équilibrée.
+L'algorithme correspond à celui de tmux : commence à 1x1 et fait
+croître rangées et colonnes alternativement jusqu'à ce que la grille
+contienne chaque volet. Avec 4 volets, tu obtiens une grille 2x2,
+avec 5 ou 6 volets une grille 2x3, avec 7-9 volets une grille 3x3.
+
+```text
+4 volets             6 volets
++--------+--------+  +------+------+------+
+|   1    |   2    |  |  1   |  2   |  3   |
+|        |        |  |      |      |      |
++--------+--------+  +------+------+------+
+|   3    |   4    |  |  4   |  5   |  6   |
+|        |        |  |      |      |      |
++--------+--------+  +------+------+------+
+```
+
+**Quand l'utiliser :** surveiller cinq volets ou plus sans clair
+principal - tableaux de bord, développement multi-services, jobs en
+arrière-plan en fan-out. La grille en mosaïque garde chaque volet
+assez grand pour être lu d'un coup d'œil sur un écran 1080p
+jusqu'à environ 9 volets ; au-delà, préfère plusieurs espaces de
+travail ou le zoom (`Cmd/Ctrl+Shift+Z`) sur le volet actuellement
+focalisé.
+
+## Qu'arrive-t-il au contenu de mes volets ?
+
+Les dispositions prédéfinies remodèlent uniquement l'arbre des
+volets. Chaque shell conserve :
+
+- Sa commande en cours ou l'état du shell.
+- Son tampon de défilement et sa sélection.
+- Son environnement, son dossier de travail et son arbre de
+  processus.
+- Sa poignée de focus (le volet précédemment focalisé reste
+  focalisé).
+
+Si tu as un build long en cours dans le volet 3 et que tu appliques
+`layout_main_vertical`, le build continue ininterrompu dans la place
+où le volet 3 atterrit. Les actions de disposition sont non
+destructives - rien ne te demande de confirmer et rien n'est
+irrécupérable.
+
+`Cmd/Ctrl+Shift+=` égalise chaque ratio de division sans changer la
+structure de l'arbre, ce qui est utile après avoir redimensionné
+manuellement quelques séparateurs.

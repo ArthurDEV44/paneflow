@@ -10,6 +10,8 @@ const HEADER = [
   "Site: https://paneflow.dev",
   "Repository: https://github.com/ArthurDEV44/paneflow",
   "",
+  "Localization: every URL below has hreflang variants for English (default, no prefix), French (/fr/), Simplified Chinese (/zh-Hans/), German (/de/), Spanish (/es/), and Japanese (/ja/). Translated docs ship progressively per `tasks/prd-docs-i18n-content.md`; locales without a translated MDX file fall back to the English canonical with `<html lang>` matching the locale prefix. Raw Markdown twins are served at the same URL plus `.md` (e.g. https://paneflow.dev/docs/installation/linux.md).",
+  "",
 ] as const;
 
 /**

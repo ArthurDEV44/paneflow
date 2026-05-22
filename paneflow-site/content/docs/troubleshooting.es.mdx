@@ -1,0 +1,221 @@
+---
+title: Solución de problemas
+description: Soluciones para los problemas de lanzamiento, configuración e instalación más comunes de Paneflow - errores de GPU, PATH faltante, instaladores bloqueados, problemas con la recarga de tema.
+dateModified: 2026-05-22
+faqpage: true
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Ocho modos de fallo conocidos con sus soluciones. Si tu problema
+no está en esta página, salta a la sección
+[¿Aún atascado?](#still-stuck) para una plantilla de issue de
+GitHub prerellenada.
+
+## Problemas de lanzamiento y renderizado
+
+### ¿Por qué Paneflow falla al lanzarse con un error de GPU?
+
+Paneflow renderiza vía GPUI, que necesita Vulkan en Linux y Metal
+en macOS. Un error de arranque tipo `Failed to initialize renderer`
+o `No suitable GPU adapter found` casi siempre significa que el
+stack de GPU de la plataforma falta o está roto.
+
+**Solución Linux:**
+
+```bash
+# Debian / Ubuntu
+sudo apt install libvulkan1 mesa-vulkan-drivers
+# Fedora
+sudo dnf install vulkan-loader mesa-vulkan-drivers
+# Arch
+sudo pacman -S vulkan-icd-loader mesa
+```
+
+Luego ejecuta `vulkaninfo --summary` para confirmar que al menos
+un ICD carga.
+**Solución macOS:** actualiza a macOS 13 Ventura o posterior - las
+versiones anteriores traen una API de Metal que GPUI no admite.
+
+Mira la [nota de Vulkan de instalación Linux](/docs/installation/linux)
+para la lista de dependencias de instalación correspondiente.
+
+### ¿Por qué mi sesión Wayland está en blanco en Paneflow?
+
+Una ventana en blanco bajo Wayland es casi siempre el ICD de
+Vulkan fallando en negociar una superficie con el compositor. La
+ventana aparece en la barra de tareas pero no renderiza contenido.
+
+**Confirma el diagnóstico** con `vulkaninfo --summary` - si
+ningún driver lista `VK_KHR_wayland_surface`, tienes el síntoma
+correcto.
+
+**Fuerza el respaldo XWayland** para un workaround rápido:
+
+```bash
+WAYLAND_DISPLAY= GDK_BACKEND=x11 paneflow
+```
+
+**Solución permanente:** instala el paquete del driver Mesa Vulkan
+de tu distribución (`mesa-vulkan-drivers` en Debian / Ubuntu,
+`vulkan-radeon` o `vulkan-intel` en Fedora / Arch según tu
+proveedor de GPU).
+
+En drivers propietarios NVIDIA, asegúrate de que el paquete
+coincide con tu kernel en ejecución - un módulo obsoleto es la
+causa raíz más común de pantalla en blanco bajo Wayland.
+
+## La configuración no surte efecto
+
+### ¿Por qué mi paneflow.json no carga?
+
+Paneflow lee exactamente un archivo de configuración por SO e
+ignora silenciosamente las claves desconocidas. Una queja de «la
+config no se aplica» casi siempre es una de tres cosas: ruta
+incorrecta, error de sintaxis JSON, o la excepción de
+`window_decorations` (solo se lee al arranque).
+
+**Confirma la ruta:**
+
+| SO | Ruta |
+| --- | --- |
+| Linux | `~/.config/paneflow/paneflow.json` |
+| macOS | `~/Library/Application Support/paneflow/paneflow.json` |
+
+**Valida el JSON** antes de guardar:
+
+```bash
+cat ~/.config/paneflow/paneflow.json | python3 -m json.tool
+```
+
+Un error de parseo significa que Paneflow cae silenciosamente a
+los predeterminados en el próximo lanzamiento y registra una
+advertencia. Fija el [JSON Schema](/docs/configuration#editor-autocomplete-with-json-schema)
+para detectar errores tipográficos en tu editor antes de guardar.
+
+Los cambios en `window_decorations` requieren un reinicio completo
+- esa clave se lee una sola vez al arrancar, no se recarga en
+caliente.
+
+### ¿Por qué mis atajos no funcionan?
+
+Tres causas comunes:
+
+1. **Error tipográfico en el nombre de acción.** Los valores de
+   sobrescritura deben coincidir con el nombre de acción canónico
+   en `snake_case` (`split_horizontally`, no `split-horizontal` ni
+   `splitHorizontally`). Los nombres desconocidos se ignoran. Mira
+   la lista completa en la [referencia de atajos](/docs/keybindings).
+2. **Discrepancia en modificador de tecla.** Usa la forma
+   `ctrl+shift+t`, no `ctrl-shift-t` ni `Ctrl+Shift+T`. Minúsculas,
+   separadas por más.
+3. **Conflicto de contexto.** Un atajo en el contexto `Terminal`
+   solo se dispara cuando un panel de terminal tiene el foco. Los
+   contextos [Search](/docs/keybindings#search-overlay) y
+   [Markdown](/docs/keybindings#markdown-pane) son incluso más
+   estrechos.
+
+Ejemplo de sobrescritura:
+
+```json
+{
+  "shortcuts": {
+    "ctrl+shift+t": "new_tab"
+  }
+}
+```
+
+Si dos entradas mapean la misma pulsación, gana la última. Mira la
+[sintaxis de sobrescritura](/docs/configuration/schema#how-do-i-set-shortcuts)
+para atajos sensibles al contexto.
+
+### ¿Por qué mi tema no se recarga en caliente?
+
+La recarga en caliente del tema usa un watcher de sistema de
+archivos `notify` con un debounce de 300 ms, cayendo a un sondeo
+de `mtime` de 500 ms cuando el watcher no arranca. Si un cambio
+guardado en `paneflow.json` no surte efecto en un segundo, está
+ocurriendo una de tres cosas:
+
+1. **Error tipográfico en el nombre del tema.** Los nombres son
+   sensibles a mayúsculas: `"PaneFlow Light"` funciona,
+   `"paneflow light"` no. Los nombres desconocidos caen
+   silenciosamente a `"One Dark"`.
+2. **El sistema de archivos no admite vigilancia de archivos.**
+   Los recursos compartidos NFS, los contenedores de apps en
+   sandbox y algunas rutas WSL no admiten inotify / FSEvents /
+   ReadDirectoryChangesW. El respaldo de sondeo de 500 ms debería
+   funcionar igualmente - si no, tu editor probablemente está
+   escribiendo en un archivo temporal y renombrando, lo cual en
+   sistemas de archivos raros rompe la señal `mtime`.
+3. **Editaste el archivo equivocado.** Confirma que la ruta que
+   guardaste coincide con la ubicación específica del SO en la
+   [guía de temas](/docs/themes#how-do-i-switch-the-active-theme).
+
+`window_decorations` es la única clave adyacente a tema que no se
+recarga en caliente; esa necesita un reinicio completo.
+
+## Avisos de instalación y firma
+
+### ¿Por qué paneflow no está en mi PATH?
+
+Dos rutas de instalación añaden `paneflow` al `PATH`
+automáticamente: el `.deb` de Linux (deja un binario en
+`/usr/bin/paneflow`) y Homebrew (cuando llegue el tap). Las rutas
+de AppImage y tarball dejan el binario donde lo pongas.
+
+**Solución tarball Linux:**
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Usa `~/.zshrc` para zsh o `fish_add_path ~/.local/bin` para fish.
+La [sección PATH de instalación Linux](/docs/installation/linux#what-if-paneflow-is-not-found-in-my-path)
+cubre las variantes por shell en detalle.
+
+**Solución `.app` macOS:** el binario vive dentro del bundle y no
+está en `PATH` por defecto. Enlázalo una vez:
+
+```bash
+sudo ln -sf /Applications/Paneflow.app/Contents/MacOS/paneflow /usr/local/bin/paneflow
+```
+
+### ¿Por qué macOS dice que Apple no puede verificar esta app?
+
+El `.dmg` notarizado nunca debería disparar este diálogo, pero si
+moviste el bundle por una ruta de transferencia inusual
+(descargado por un navegador distinto a Safari a un disco externo,
+copiado a través de un recurso de red), el atributo de cuarentena
+puede haberse preservado.
+
+**Solución más rápida (una vez por app):**
+
+1. Abre Finder, navega a `Applications`.
+2. Control-clic en `Paneflow.app`.
+3. Elige **Abrir**.
+4. Haz clic en **Abrir** en el diálogo de confirmación.
+
+**Solución CLI:**
+
+```bash
+xattr -d com.apple.quarantine /Applications/Paneflow.app
+```
+
+Quita el atributo extendido de cuarentena para ese bundle a nivel
+de sistema. No se requiere `sudo` si instalaste la app tú mismo.
+La guía completa con la ruta de Ajustes del Sistema vive en la
+[página de instalación macOS](/docs/installation/macos#what-if-macos-gatekeeper-blocks-the-app).
+
+## ¿Aún atascado?
+
+Si nada de lo anterior resuelve tu problema, abre un issue de
+GitHub con tu SO, versión de Paneflow y una reproducción. El
+enlace de abajo abre una plantilla prerellenada:
+
+[**Abrir un issue de GitHub**](https://github.com/ArthurDEV44/paneflow/issues/new?title=%5Bbug%5D%20short%20summary&body=%23%23%20Environment%0A-%20OS%3A%20%28Linux%20distro%20%2B%20version%20%2F%20macOS%20version%29%0A-%20Paneflow%20version%3A%20%28paneflow%20--version%29%0A-%20GPU%20%2F%20driver%3A%20%0A-%20Display%20server%20%28Linux%29%3A%20Wayland%20%2F%20X11%0A%0A%23%23%20Steps%20to%20reproduce%0A1.%20%0A2.%20%0A3.%20%0A%0A%23%23%20Expected%20behaviour%0A%0A%0A%23%23%20Actual%20behaviour%0A%0A%0A%23%23%20Logs%20%2F%20screenshots%0A)
+
+Pega cualquier salida relevante de `RUST_LOG=info paneflow` si el
+problema es reproducible desde la CLI - las líneas de log nos
+dicen qué subsistema falló y ahorran una ronda de preguntas de
+clarificación.

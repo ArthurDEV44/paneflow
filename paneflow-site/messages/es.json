@@ -1,0 +1,866 @@
+{
+  "Hero": {
+    "headline": "Un espacio de trabajo en terminal para orquestar Claude Code, Codex, OpenCode y agentes CLI personalizados.",
+    "imageAlt": "Paneflow mostrando paneles paralelos que ejecutan sesiones de Claude Code y Codex lado a lado, cada uno con su rama git y estado del servidor de desarrollo",
+    "cta": {
+      "github": "Ver en GitHub"
+    }
+  },
+  "FeatureTriptych": {
+    "heading": "Supervisa el trabajo, no las pestañas.",
+    "subhead": "Paneflow convierte las sesiones de terminal en una sala de control de agentes: cada sesión permanece visible, etiquetada y recuperable mientras tú decides a qué prestar atención.",
+    "features": {
+      "0": {
+        "title": "Un panel por agente",
+        "description": "Ejecuta Claude Code, Codex, OpenCode y CLIs personalizadas en paralelo. Redimensiona paneles, mantén las revisiones a mano y navega desde el teclado."
+      },
+      "1": {
+        "title": "Un espacio de trabajo por tarea",
+        "description": "Mantén los paneles de agentes, la rama git, el directorio de trabajo y los servicios locales atados a la misma tarea. Restaura todo tras un reinicio."
+      },
+      "2": {
+        "title": "Nativo, diseñado para ejecuciones largas",
+        "description": "Construido sobre el motor de renderizado por GPU de Zed y un fork de Alacritty. Sin Chromium embebido alrededor de agentes que se ejecutan durante horas."
+      }
+    }
+  },
+  "FeatureSections": {
+    "sections": {
+      "0": {
+        "title": "Layouts de terminal para trabajo paralelo con agentes",
+        "description": "Da a cada agente, test runner, servidor o panel de revisión el espacio que necesita. Divide horizontal o verticalmente, haz zoom a pantalla completa o elige un preset.",
+        "imageAlt": "Layout dividido de Paneflow con múltiples paneles y espacios de trabajo"
+      },
+      "1": {
+        "title": "Sabe qué está tocando cada agente",
+        "description": "Paneflow mantiene ramas, estadísticas de diff, directorios de trabajo y servidores HTTP en ejecución vinculados al espacio de trabajo. Puedes ver qué agente posee qué tarea.",
+        "imageAlt": "Barra lateral de Paneflow mostrando servidores de desarrollo detectados y rama git por espacio de trabajo"
+      },
+      "2": {
+        "title": "Hecho para orquestar agentes de codificación CLI",
+        "description": "Paneflow detecta sesiones de Claude Code, Codex CLI y OpenCode, etiqueta cada panel y mantiene el contexto de rama visible. Usa JSON-RPC para programar divisiones, enviar prompts y leer la salida del agente desde cualquier lenguaje.",
+        "imageAlt": "Paneflow con sesión de Claude Code detectada y un agente IA en ejecución"
+      },
+      "3": {
+        "title": "Retoma cualquier hilo de agente",
+        "description": "Paneflow lee el historial nativo de sesiones de cada agente para el proyecto actual, agrupa Claude Code, Codex y OpenCode en un único popover y reanuda el hilo seleccionado en la terminal.",
+        "imageAlt": "Popover de sesiones de agentes IA de Paneflow mostrando el historial de Claude Code, Codex y OpenCode para el proyecto actual"
+      }
+    }
+  },
+  "Navbar": {
+    "brand": "Paneflow",
+    "logoAlt": "Paneflow",
+    "links": {
+      "download": "Descargar",
+      "docs": "Docs",
+      "compare": "Comparar"
+    },
+    "aria": {
+      "githubLink": "Paneflow en GitHub",
+      "openMenu": "Abrir menú",
+      "closeMenu": "Cerrar menú",
+      "mobileNav": "Navegación del sitio",
+      "languageMenu": "Cambiar idioma"
+    },
+    "github": "GitHub"
+  },
+  "Footer": {
+    "ctaHeadline": "Prueba Paneflow hoy.",
+    "brand": "Paneflow",
+    "tagline": "El espacio de trabajo en terminal para orquestar agentes de codificación.",
+    "copyright": "© 2026 Strivex. Todos los derechos reservados.",
+    "links": {
+      "about": "Acerca de",
+      "compare": "Comparar",
+      "privacy": "Privacidad"
+    }
+  },
+  "Install": {
+    "heading": "Empezar",
+    "subhead": "Compila desde el código fuente con el toolchain de Rust. Solo Linux.",
+    "commentClone": "# Clonar y compilar",
+    "commentRun": "# Ejecutar",
+    "requirements": "Requiere Rust 1.82+, GPU compatible con Vulkan y Linux (Wayland o X11)",
+    "aria": {
+      "copy": "Copiar al portapapeles"
+    }
+  },
+  "Download": {
+    "header": {
+      "title": "Descargar Paneflow",
+      "subhead": "Disponible para Linux y macOS. Windows previsto para Q3 de 2026.",
+      "pitch": "La app de escritorio Paneflow ejecuta Claude Code, Codex, OpenCode y agentes CLI personalizados en un espacio de trabajo nativo en terminal con paneles paralelos, sesiones conscientes de la rama y restauración de sesiones."
+    },
+    "matrix": {
+      "heading": "Descargas de release",
+      "viewPrevious": "Ver releases anteriores →",
+      "latestBadge": "Última",
+      "viewReleaseNotes": "Ver notas de la release →",
+      "platforms": {
+        "macos": "macOS",
+        "windows": "Windows",
+        "linux": "Linux"
+      },
+      "placeholders": {
+        "windows": "El binario de Windows está previsto para Q3 de 2026.",
+        "comingSoon": "Próximamente",
+        "empty": "-"
+      },
+      "items": {
+        "dmgAppleSilicon": "DMG (Apple Silicon)",
+        "appImageX64": "AppImage (x64)",
+        "appImageArm64": "AppImage (ARM64)",
+        "debX64": ".deb (x64)",
+        "debArm64": ".deb (ARM64)",
+        "rpmX64": ".rpm (x64)",
+        "rpmArm64": ".rpm (ARM64)",
+        "tarGzX64": "tar.gz (x64)",
+        "tarGzArm64": "tar.gz (ARM64)",
+        "windowsMsi": "Windows x86_64 MSI",
+        "wingetInstall": "winget install"
+      },
+      "aria": {
+        "copyCommand": "Copiar el comando: {command}"
+      }
+    },
+    "agentInstall": {
+      "heading": "Instalar con tu agente IA",
+      "subhead": "Pega este prompt en Claude Code, Codex, OpenCode o cualquier otra CLI agéntica. Tu agente lee los docs, detecta tu OS y guía la instalación una confirmación a la vez."
+    }
+  },
+  "DownloadCTA": {
+    "macos": "Descargar para macOS",
+    "linux": "Descargar para Linux",
+    "generic": "Descargar Paneflow",
+    "windowsBadge": "Windows · Q3 2026"
+  },
+  "Waitlist": {
+    "placeholder": {
+      "email": "tu@email.com"
+    },
+    "aria": {
+      "sending": "Enviando",
+      "subscribe": "Suscribirse"
+    },
+    "errors": {
+      "verifying": "Verificando. Vuelve a intentarlo en 2s.",
+      "rateLimit": "Demasiados intentos. Espera un minuto.",
+      "validation": "Correo no válido.",
+      "turnstile": "Verificación fallida. Recarga la página.",
+      "generic": "Algo salió mal. Vuelve a intentarlo en 30s.",
+      "network": "Conexión perdida. Reintenta."
+    },
+    "success": "Estás dentro. Te escribimos a <strong>{email}</strong>.",
+    "footnote": "Un solo correo, el día que salga Windows. Sin marketing."
+  },
+  "HomePage": {
+    "Metadata": {
+      "title": "Paneflow - espacio de trabajo en terminal para orquestar agentes de codificación",
+      "description": "Un espacio de trabajo en terminal para orquestar Claude Code, Codex, OpenCode y otros agentes de codificación CLI. Paneles paralelos, espacios de trabajo conscientes de la rama, estado del servidor de desarrollo, restauración de sesiones y hooks de scripting.",
+      "ogTitle": "Paneflow - espacio de trabajo en terminal para orquestar agentes de codificación",
+      "ogDescription": "Paneles paralelos, espacios de trabajo conscientes de la rama, estado del servidor de desarrollo, restauración de sesiones. La terminal nativa para agentes de codificación CLI."
+    },
+    "schema": {
+      "description": "Un espacio de trabajo nativo en terminal para orquestar Claude Code, Codex, OpenCode y otros agentes de codificación CLI. Paneles paralelos, espacios de trabajo conscientes de la rama, estado en vivo del servidor de desarrollo, restauración de sesiones y un servidor IPC JSON-RPC. Escrito en Rust puro sobre el motor de renderizado GPUI de Zed.",
+      "softwareRequirements": "Linux (Wayland o X11) con driver Vulkan, o macOS 13 Ventura+ en Apple Silicon. Windows 10 1809+ previsto."
+    }
+  },
+  "AboutPage": {
+    "Metadata": {
+      "title": "Acerca de Paneflow - creado por Arthur Jean (Strivex)",
+      "description": "Quién construye Paneflow, el espacio de trabajo nativo en terminal para orquestar Claude Code, Codex, OpenCode y otros agentes de codificación CLI. Bio del fundador, contexto del proyecto y cómo contactar.",
+      "ogTitle": "Acerca de Paneflow - creado por Arthur Jean (Strivex)",
+      "ogDescription": "El espacio de trabajo nativo en terminal para orquestar agentes de codificación CLI. Creado por Arthur Jean en Strivex."
+    },
+    "schema": {
+      "jobTitle": "Fundador, Strivex - construye herramientas para desarrolladores",
+      "breadcrumbHome": "Inicio",
+      "breadcrumbAbout": "Acerca de"
+    },
+    "heading": "Acerca de Paneflow y del equipo detrás",
+    "sections": {
+      "what": {
+        "title": "Qué es Paneflow",
+        "p1": "Paneflow es un espacio de trabajo nativo en terminal para orquestar Claude Code, Codex, OpenCode y otros agentes de codificación CLI en paralelo. Un panel por agente, espacios de trabajo conscientes de la rama, estado en vivo del servidor de desarrollo, restauración de sesiones y un servidor IPC JSON-RPC que permite a cualquier herramienta controlar el editor de forma programática.",
+        "p2": "Dirigido a desarrolladores que ejecutan varios agentes de codificación a la vez y quieren un espacio de trabajo que no estorbe: escrito en Rust puro sobre el motor de renderizado GPUI de Zed, decoraciones de ventana nativas, sin Electron, sin runtime de JavaScript, sin lag de entrada. Linux hoy; macOS disponible; Windows en portado activo."
+      },
+      "who": {
+        "title": "Quién lo construye",
+        "p1": "Paneflow está construido por <strong>Arthur Jean</strong>, fundador de <link>Strivex</link>. El proyecto comenzó como un port multiplataforma en Rust de cmux (un multiplexor de terminal solo para Swift). El objetivo era mantener la ergonomía del flujo de trabajo y al mismo tiempo entregar binarios nativos para todos los principales sistemas operativos de escritorio.",
+        "p2": "Strivex es un pequeño estudio centrado en herramientas para desarrolladores. Paneflow es su primer lanzamiento open source. Todo bajo licencia MIT y desarrollado de forma abierta."
+      },
+      "links": {
+        "title": "Enlaces",
+        "sourceCode": "Código fuente",
+        "githubProfile": "Perfil de GitHub",
+        "studio": "Estudio",
+        "privacyLabel": "Privacidad:"
+      },
+      "contact": {
+        "title": "Ubicación y contacto",
+        "p1": "Trabajando desde Francia. Para preguntas sobre el proyecto, reportes de bugs o colaboraciones: <email>arthur.jean@strivex.fr</email>.",
+        "p2": "Para bugs y solicitudes de funcionalidades, abrir un issue en GitHub es más rápido: <link>paneflow/issues</link>."
+      }
+    }
+  },
+  "DownloadPage": {
+    "Metadata": {
+      "title": "Descargar Paneflow - ejecuta Claude Code, Codex y OpenCode en paralelo",
+      "description": "Descarga Paneflow, el espacio de trabajo nativo en terminal para orquestar Claude Code, Codex, OpenCode y otros agentes de codificación CLI en paneles paralelos con espacios de trabajo conscientes de la rama y restauración de sesiones. Linux y macOS disponibles ahora. Windows previsto para Q3 de 2026.",
+      "ogTitle": "Descargar Paneflow - orquesta Claude Code, Codex y OpenCode",
+      "ogDescription": "El espacio de trabajo nativo en terminal para ejecutar agentes de codificación CLI lado a lado. Linux y macOS disponibles ahora. Windows previsto para Q3 de 2026."
+    },
+    "schema": {
+      "description": "Un espacio de trabajo nativo en terminal para orquestar Claude Code, Codex, OpenCode y otros agentes de codificación CLI. Paneles paralelos, espacios de trabajo conscientes de la rama, estado en vivo del servidor de desarrollo, restauración de sesiones y un servidor IPC JSON-RPC. Escrito en Rust puro sobre el motor de renderizado GPUI de Zed.",
+      "breadcrumbHome": "Inicio",
+      "breadcrumbDownload": "Descargar"
+    }
+  },
+  "ComparePage": {
+    "Metadata": {
+      "title": "Compara Paneflow frente a otros multiplexores de terminal",
+      "description": "Comparaciones honestas, lado a lado, de Paneflow frente a cmux y otros espacios de trabajo de terminal. Arquitectura, funciones, precios y cuándo cada uno es la elección correcta.",
+      "ogTitle": "Compara Paneflow frente a otros espacios de trabajo de terminal",
+      "ogDescription": "Comparaciones honestas de Paneflow frente a cmux y otros multiplexores de terminal centrados en agentes."
+    },
+    "schema": {
+      "breadcrumbHome": "Inicio",
+      "breadcrumbCompare": "Comparar",
+      "collectionName": "Compara Paneflow frente a otros espacios de trabajo de terminal"
+    },
+    "header": {
+      "title": "Compara Paneflow",
+      "tldr": "Comparaciones lado a lado de Paneflow frente a otros espacios de trabajo de terminal centrados en agentes. Cada página se escribe a partir del código fuente de ambos proyectos, con una sección dedicada «Cuándo NO elegir Paneflow» para que sepas exactamente cuándo optar por la alternativa."
+    },
+    "comparisons": {
+      "cmux": {
+        "competitor": "cmux",
+        "blurb": "Espacio de trabajo de terminal Swift nativo de macOS basado en libghostty. Maduro (v0.64, 17.500+ stars), rico en funciones (navegador embebido, daemon SSH, VMs en la nube), GPL-3.0 + comercial."
+      },
+      "wezterm": {
+        "competitor": "WezTerm",
+        "blurb": "Pariente arquitectónico: misma línea Rust + GPU + MIT, propósito distinto. WezTerm es la terminal altamente configurable scriptable en Lua (26k+ stars, ocho años, builds para FreeBSD + Windows, multiplexor SSH integrado). Paneflow es el espacio de trabajo agent-first."
+      },
+      "iterm2": {
+        "competitor": "iTerm2",
+        "blurb": "Veterano de macOS (16 años, 17.500+ stars, GPL-2.0) que en v3.7.0beta1 (abril de 2026) integró Claude Code + chat IA multi-proveedor. Multiplataforma vs solo macOS, MIT vs GPL-2.0, host de agente CLI vs arquitectura de chat embebido."
+      },
+      "warp": {
+        "competitor": "Warp",
+        "blurb": "Open source desde abril de 2026 (cliente AGPL-3.0 + UI MIT, OpenAI como patrocinador fundador). Orientado a la nube con planes $20-$50 por usuario, telemetría obligatoria para IA en el plan Free, orquestación de agentes en la nube Oz. Paneflow es MIT local-first sin login, sin telemetría, sin planes."
+      }
+    },
+    "cardCta": "Leer →",
+    "cardTitle": "Paneflow vs {competitor}",
+    "futureNote": "Próximas comparaciones en estudio: tmux, zellij, Alacritty. Abre un <link>issue en GitHub</link> si quieres votar cuál se publica a continuación."
+  },
+  "CompareWarp": {
+    "Metadata": {
+      "title": "Paneflow vs Warp (2026): host CLI local MIT vs plataforma de agentes orientada a la nube AGPL",
+      "description": "Paneflow vs Warp: ambos Rust + GPU + multiplataforma, ambos integran IA hoy. Paneflow es MIT, sin login, sin telemetría, sin plan de pago, lanza los agentes CLI que ya usas. Warp es cliente AGPL-3.0 + UI MIT, con planes de pago, agente integrado y una capa de orquestación en la nube (Oz). Guía honesta de decisión.",
+      "ogTitle": "Paneflow vs Warp (2026)",
+      "ogDescription": "Indie MIT local-first vs plataforma de agentes AGPL-3.0 orientada a la nube con planes $20-$50. Arquitectura, licencia, telemetría y guía de decisión para flujos con Claude Code, Codex, OpenCode."
+    },
+    "schema": {
+      "headline": "Paneflow vs Warp (2026)",
+      "description": "Host de agentes Rust MIT local-first vs plataforma de agentes Rust AGPL-3.0 orientada a la nube con planes de pago por equipo. Ambos Rust, ambos acelerados por GPU, ambos con IA - divergen en la estructura de incentivos. Guía de decisión."
+    },
+    "header": {
+      "title": "Paneflow vs Warp",
+      "tldr": "Paneflow y Warp son ambos terminales Rust + GPU + multiplataforma que integran IA hoy. <strong>Divergen en estructura de incentivos, no en categoría.</strong> <strong>Paneflow</strong> es MIT de principio a fin, sin login, sin telemetría, sin plan de pago, sin backend de servidor — un único binario que lanza los agentes CLI (Claude Code, Codex, OpenCode) que ya usas, sobre el motor GPUI de Zed. <strong>Warp</strong> es AGPL-3.0 en el cliente (MIT para los crates warpui) con un backend de código cerrado, planes de pago de $20-$50 por usuario y mes, requisito de telemetría para IA en el plan Free y un producto separado de orquestación en la nube llamado Oz. OpenAI es el patrocinador fundador del nuevo repositorio open source. Elige Paneflow si quieres un host de agentes local-first MIT sin ataduras. Elige Warp si quieres un agente IA integrado, una biblioteca de comandos compartida por el equipo (Warp Drive) y una ruta comercial empresarial."
+    },
+    "context": {
+      "title": "Una nota sobre el contexto",
+      "p1": "Warp abrió el código de su cliente a finales de abril de 2026 — un cambio real respecto al modelo SaaS de código cerrado pre-2026, y vale la pena reconocerlo honestamente antes de comparar. Según el bloque <em>NOTE</em> del propio master/README.md de Warp: «OpenAI es el patrocinador fundador del nuevo repositorio open source de Warp, y los nuevos flujos de gestión agéntica están impulsados por modelos GPT». Cualquiera que evalúe Warp debería tratar el giro open source como el cambio principal de 2026.",
+      "p2": "Un giro no obvio: el código vive en la rama <code>master</code> de <code>github.com/warpdotdev/Warp</code>, no en <code>main</code> (que sigue siendo un repo de solo issues con un LICENSE obsoleto que dice «currently closed-source»). Los archivos reales <code>Cargo.toml</code>, <code>LICENSE-AGPL</code> y <code>LICENSE-MIT</code> están todos en <code>master</code>. Quien solo revise <code>main</code> llegará a la conclusión equivocada - vale la pena señalarlo de entrada porque cambia cómo leer el resto de la página. Todas las referencias al código de Warp más abajo apuntan a URLs de <code>master</code>.",
+      "p3": "El giro open source no borra el modelo de negocio subyacente. El backend de servidor de Warp sigue siendo cerrado, el plan Free condiciona la IA a la activación de telemetría, y los planes de pago ($20-$50 por usuario y mes) son la vía para usar IA sin telemetría y para acceder a funciones de equipo (Warp Drive, SSO, Zero Data Retention). Paneflow no tiene nada de esa maquinaria — todo el producto es un único binario MIT."
+    },
+    "quick": {
+      "title": "Comparación rápida",
+      "intro": "Agrupado en tres zonas — licencia y postura de datos (donde Paneflow lidera), paridad de terminal nuclear (donde ambos son equivalentes) y superficie de agente y equipo (donde Warp ha enviado mucho más).",
+      "licenseHeading": "Licencia y postura de datos",
+      "coreHeading": "Paridad de terminal nuclear",
+      "agentHeading": "Superficie de agente y equipo",
+      "footnote": "<strong>Versiones:</strong> Paneflow v0.2.16 (mayo de 2026), primer commit 2026-04-01. Cliente Warp open source desde 2026-04-28 (Denver Technologies, Inc., Copyright 2020-2026). <strong>Precios:</strong> Paneflow MIT, gratis. Warp Free 75 créditos/mes (150 los dos primeros meses) + Build $20/mes + Business $50/usuario/mes + Enterprise (a medida)."
+    },
+    "decision": {
+      "title": "¿Cuál te conviene?",
+      "intro": "La versión honesta: la elección va sobre todo de cómo quieres que tu terminal se relacione con un backend de proveedor. Si quieres cero relación con un backend, Paneflow. Si quieres un agente IA integrado pulido + una ruta hacia escala de equipo, Warp.",
+      "leftHeading": "Elige Paneflow si",
+      "leftBullets": {
+        "0": "Quieres local-first - sin login, sin telemetría, sin backend de servidor, sin plan de pago nunca",
+        "1": "Quieres MIT de principio a fin, para que incrustar código de terminal en un producto de código cerrado sea simple",
+        "2": "Tu flujo con agentes es lanzar los CLI (Claude Code, Codex, OpenCode) que ya usas, no integrar una superficie de chat",
+        "3": "Prefieres un mantenedor indie alineado con la filosofía de Zed a un producto respaldado por capital riesgo con planes de pago",
+        "4": "No necesitas bibliotecas de comandos compartidos del equipo, SSO ni soporte comercial",
+        "5": "Quieres un único binario que puedas auditar, forkear y enviar sin una frontera de licencia dentro del código"
+      },
+      "rightHeading": "Elige Warp si",
+      "rightBullets": {
+        "0": "Quieres un agente IA integrado y pulido dentro de la terminal, no solo agentes CLI lanzados como un panel",
+        "1": "Quieres una biblioteca de comandos compartida por el equipo (Warp Drive) y settings sincronizados en la nube",
+        "2": "Necesitas SAML SSO, SCIM, funciones de administración de equipo o facturación centralizada",
+        "3": "Quieres orquestación en la nube Oz para lanzar agentes de codificación paralelos del lado del servidor a escala",
+        "4": "Estás cómodo con AGPL-3.0 en el cliente (o solo necesitas los crates MIT warpui) y aceptas un backend de código cerrado",
+        "5": "Quieres a OpenAI como patrocinador fundador y rutas directas de soporte comercial vía Enterprise",
+        "6": "Pagarás $20-$50 por usuario y mes por créditos IA, aplicación de ZDR y funciones de equipo"
+      }
+    },
+    "architecture": {
+      "title": "Arquitectura en profundidad",
+      "p1": "<strong>Warp</strong> es un workspace Rust con crates como <code>app</code>, <code>warp_terminal</code>, <code>warpui</code>, <code>warp_completer</code>, <code>editor</code>, <code>markdown_parser</code> y otros — el <code>Cargo.toml</code> del workspace declara <code>license = \"AGPL-3.0-only\"</code>, con los crates warpui recortados como MIT. El renderer es a medida: Warp forkeó la grid y el modelo VT de Alacritty pero escribió su propio renderer GPU que habla con Metal directamente en macOS, con unos 200 líneas de shaders propios. Junto a la app local, Warp envía un backend de servidor de código cerrado que alimenta las funciones IA, Warp Drive y los settings sincronizados en la nube; Oz, el producto de orquestación en la nube, ejecuta agentes en el servidor y se conecta vía «handoff» desde la terminal local.",
+      "p2": "<strong>Paneflow</strong> es una app Rust pura construida sobre el motor GPUI de Zed — sin frontera de lenguaje entre UI y terminal, sin backend de código cerrado, sin servicio IA que alimentar. La emulación de terminal es <code>alacritty_terminal</code> 0.26 upstream desde crates.io (donde Warp usa su propio fork del modelo de grid). La capa GPU es el renderer Blade de GPUI sobre Vulkan en Linux y Metal en macOS. La superficie de agente es deliberadamente fina: Paneflow ofrece espacios de trabajo, paneles, detección de rama y tres botones de agente CLI de primera clase (Claude Code, Codex, OpenCode). Cualquier binario que ejecutes en una shell se ejecuta en un panel de Paneflow; a diferencia de Warp, no hay chat multi-proveedor integrado. Sin telemetría, sin servicio de analytics, sin login.",
+      "p3": "Las superficies IPC también son reveladoras. Warp habla con su backend por GraphQL (el crate <code>graphql</code> está en el workspace) además de un pipeline de telemetría que es obligatorio para IA en el plan Free según los propios docs de Warp. Paneflow expone un único servidor JSON-RPC 2.0 sobre un socket Unix en <code>$XDG_RUNTIME_DIR/paneflow/paneflow.sock</code> con aproximadamente trece métodos — sin telemetría, sin analytics. Para la mayoría de desarrolladores la diferencia es invisible; para quien le importa la postura local-first, es el producto entero."
+    },
+    "pricing": {
+      "title": "Precios",
+      "intro": "Los modelos de licencia y precio difieren bruscamente.",
+      "paneflow": "<strong>Paneflow</strong>: MIT, Copyright (c) 2026 Arthur Jean. Tier gratuito único, sin planes de pago, sin precios por usuario, sin créditos IA, sin telemetría. Incrústalo en productos comerciales sin preocupaciones.",
+      "warp": "<strong>Warp</strong>: licencia híbrida (cliente AGPL-3.0 + crates warpui MIT), Copyright (c) 2020-2026 Denver Technologies, Inc. Cuatro tiers: Free ($0, 75 créditos IA/mes tras un bonus de 2 meses, telemetría obligatoria para IA), Build ($20/mes, 1.500 créditos + BYOK), Business ($50/usuario/mes, SSO + Zero Data Retention forzado a nivel de equipo + créditos compartidos) y Enterprise (a medida, con soporte comercial)."
+    },
+    "migrating": {
+      "title": "Migrar de Warp a Paneflow",
+      "intro": "No hay ruta automática. Warp usa una configuración YAML más settings sincronizados en la nube ligados a tu cuenta Warp; Paneflow usa un archivo JSON estático en <code>~/.config/paneflow/paneflow.json</code> en Linux y <code>~/Library/Application Support/paneflow/paneflow.json</code> en macOS. Cuenta diez minutos para una configuración nueva: shell por defecto, theme, atajos de teclado, botones de agente. Tres funciones de Warp no tienen equivalente en Paneflow y el plan de migración es «sigue usando Warp para eso» en lugar de «recréalo localmente»:",
+      "bullets": {
+        "0": "<strong>Warp Drive</strong>: biblioteca compartida de comandos y snippets del equipo. Sin equivalente en Paneflow. Si Warp Drive es nuclear para tu equipo, quédate con Warp.",
+        "1": "<strong>Agente IA integrado</strong>: Paneflow no envía una superficie de chat integrada. La migración consiste en usar el agente CLI de tu elección (Claude Code, Codex, OpenCode) lanzado como panel.",
+        "2": "<strong>Orquestación en la nube Oz</strong>: sin equivalente en Paneflow. Si necesitas agentes paralelos del lado servidor a escala, Oz es la herramienta correcta.",
+        "3": "<strong>SSO + administración de equipo</strong>: sin equivalente en Paneflow. Paneflow está pensado para desarrolladores individuales, no para orgs que necesitan gestión centralizada del terminal."
+      }
+    },
+    "whenNot": {
+      "title": "Cuándo NO elegir Paneflow",
+      "intro": "Los rompedores honestos. Si cualquiera de los cinco de abajo te importa, Warp es la herramienta correcta hoy — no tiene sentido pelear:",
+      "items": {
+        "0": "<strong>Quieres un agente IA integrado dentro de la terminal.</strong> Warp envía un chat IA pulido dentro de la terminal — Paneflow solo lanza agentes CLI externos (Claude Code, Codex, OpenCode) como paneles. Si tu flujo es «chatear sobre la salida de mi terminal sin salir de la app», Warp es la opción correcta.",
+        "1": "<strong>Quieres una biblioteca de comandos compartida del equipo (Warp Drive).</strong> Warp Drive es la función de producto única que Paneflow no puede replicar sin un backend. Si tu equipo depende de comandos, snippets y notebooks compartidos, Warp es la herramienta correcta.",
+        "2": "<strong>Necesitas SAML SSO, SCIM o administración central de equipo.</strong> Warp Business a $50/usuario/mes envía esto para orgs que necesitan auth, auditoría y aprovisionamiento centralizados. Paneflow no tiene plan de equipo ni consola de admin.",
+        "3": "<strong>Quieres un contrato de soporte comercial.</strong> Warp Enterprise ofrece soporte de pago; Paneflow es un proyecto indie sin pista de soporte comercial. Si necesitas un teléfono al que llamar cuando algo se rompe, Warp es la opción correcta.",
+        "4": "<strong>Quieres settings sincronizados en la nube.</strong> Warp sincroniza settings, themes y workflows a través de tu cuenta. Paneflow almacena todo en un archivo JSON local — portátil vía git o dotfiles, pero sin sincronización en la nube integrada."
+      }
+    },
+    "faq": {
+      "title": "Preguntas frecuentes",
+      "items": {
+        "0": {
+          "question": "¿Paneflow es un fork de Warp?",
+          "answer": "No. Warp es una terminal Rust + Metal construida por Denver Technologies, Inc., abierta en open source en abril de 2026 con una licencia híbrida (AGPL-3.0 para el cliente, MIT para los crates warpui_core y warpui). Paneflow es una codebase separada Rust + GPUI de Arthur Jean, MIT de principio a fin. Las dos no comparten código fuente y se envían bajo modelos de negocio distintos (Warp con planes de pago + backend cerrado; Paneflow como un único binario MIT)."
+        },
+        "1": {
+          "question": "Ambos son Rust + GPU + multiplataforma. ¿Cuál es la diferencia real?",
+          "answer": "Estructura de incentivos y arquitectura de agente. Warp es AGPL-3.0 en el cliente pero el backend de servidor sigue siendo cerrado, la IA del plan Free requiere telemetría y las funciones de equipo (Warp Drive, SSO, ZDR, créditos compartidos) están detrás de planes de $20-$50 por usuario y mes. Paneflow es MIT de principio a fin, sin login, sin telemetría, sin plan de pago, sin backend. Warp envía un agente IA integrado más Oz (orquestación en la nube); Paneflow solo lanza los agentes CLI (Claude Code, Codex, OpenCode) que ya usas."
+        },
+        "2": {
+          "question": "¿El código de Warp es público de verdad? Vi en github.com/warpdotdev/Warp «currently closed-source».",
+          "answer": "Sí, el código es público, en la rama master — que es el giro no obvio. github.com/warpdotdev/Warp tiene dos ramas: main está configurada como un repo de solo issues con un LICENSE obsoleto que aún dice «currently closed-source», mientras que master contiene el workspace Rust real abierto en open source (Cargo.toml, LICENSE-AGPL, LICENSE-MIT, árbol de fuentes completo). El anuncio de abril de 2026 es real. Si solo miras main, concluirás que Warp sigue cerrado — mira master."
+        },
+        "3": {
+          "question": "¿Qué significa «cliente AGPL-3.0 + framework UI MIT» para incrustar?",
+          "answer": "El repo de Warp divide la licencia en la frontera del crate: los crates warpui_core y warpui son MIT, el resto del código (núcleo de terminal, superficie IA, código de orquestación) es AGPL-3.0-only según el Cargo.toml del workspace. Puedes tirar de warpui hacia un producto de código cerrado; del resto no. El MIT de Paneflow cubre todo — núcleo de terminal, integración con GPUI y servidor IPC son todos MIT — así que quien incrusta no tiene que llevar la cuenta de una frontera de licencia dentro del código."
+        },
+        "4": {
+          "question": "¿Por qué la IA del plan Free de Warp exige telemetría y Paneflow no?",
+          "answer": "Modelos de negocio distintos. El plan Free de Warp es el embudo: la telemetría alimenta el producto IA, el producto IA genera conversión a planes de pago. De los propios docs de Warp en docs.warp.dev: «Telemetry must be enabled to use AI features on the Free plan, while paid plans can opt out at any time and continue using Warp, including AI.» Paneflow no tiene plan de pago, no tiene servicio IA que alimentar y no tiene razón de negocio para recoger telemetría. El login también fue eliminado de Warp en noviembre de 2024, pero la barrera de telemetría sobre la IA del plan Free sigue en 2026."
+        },
+        "5": {
+          "question": "¿Y Oz? ¿Es lo mismo que el agente IA de Warp dentro de la terminal?",
+          "answer": "No. Oz es una capa de orquestación en la nube separada, a partir del plan Build ($20/usuario/mes): lanza agentes de codificación paralelos del lado del servidor, con un «handoff» que mueve una sesión desde la terminal local a Oz para más cómputo. El agente IA de Warp dentro de la terminal es la función interactiva local. Paneflow no tiene ninguna de las dos — lanza agentes CLI locales en paneles, sin capa de nube, sin servicio de orquestación."
+        },
+        "6": {
+          "question": "¿Paneflow tiene precios de equipo o SSO como el plan Business de Warp?",
+          "answer": "No. Paneflow es un único binario MIT sin plan de equipo, sin SSO, sin SCIM, sin consola de admin de equipo, sin facturación por usuario. Si necesitas algo de eso, Warp Business a $50/usuario/mes es la herramienta correcta — envía SAML SSO, Zero Data Retention forzado a nivel de equipo, pools de créditos compartidos y facturación centralizada hasta 50 asientos. Paneflow está construido para desarrolladores individuales; si tu org necesita gestión centralizada del terminal con controles de auth, mira Warp."
+        },
+        "7": {
+          "question": "¿Puedo migrar mis settings de Warp a Paneflow?",
+          "answer": "No hay ruta automática. Warp usa configuración YAML más settings sincronizados en la nube; Paneflow usa un archivo JSON estático en ~/.config/paneflow/paneflow.json en Linux. Cuenta diez minutos para una configuración nueva: shell por defecto, theme, atajos, botones de agente. Los flujos que dependen de Warp Drive (la biblioteca compartida de comandos y snippets) no tienen equivalente en Paneflow — si Warp Drive es nuclear para el workflow de tu equipo, quédate con Warp."
+        }
+      }
+    },
+    "next": {
+      "title": "Próximos pasos",
+      "body": "¿Listo para probar Paneflow? <download>Descarga la última release</download> o lee la <docs>guía de inicio</docs>. ¿Curioso por Warp? <repo>El código open source de Warp está en GitHub</repo> (rama master, no main) — el giro open source fue el cambio principal de 2026 y vale la pena respetarlo por principio, aunque Paneflow caiga del otro lado del trade-off local-vs-nube."
+    }
+  },
+  "CompareIterm2": {
+    "Metadata": {
+      "title": "Paneflow vs iTerm2 (2026): host de agentes multiplataforma vs veterano de macOS con chat integrado",
+      "description": "Paneflow vs iTerm2: espacio de trabajo de agentes con licencia MIT multiplataforma (Linux + macOS, Windows previsto) que ejecuta los agentes CLI que ya usas, vs veterano GPL-2.0 solo para macOS con chat IA multi-proveedor integrado. Guía honesta de decisión, arquitectura, FAQ.",
+      "ogTitle": "Paneflow vs iTerm2 (2026)",
+      "ogDescription": "Host de agentes MIT multiplataforma vs veterano GPL-2.0 solo macOS. Ambos integran Claude Code; las arquitecturas y las historias de portabilidad difieren. Guía de decisión para flujos con Claude Code, Codex, OpenCode."
+    },
+    "schema": {
+      "headline": "Paneflow vs iTerm2 (2026)",
+      "description": "Host de agentes Rust multiplataforma vs veterano Objective-C/Swift solo macOS. Ambos acelerados por GPU, ambos integran Claude Code; difieren en portabilidad y arquitectura de agente. Guía de decisión."
+    },
+    "header": {
+      "title": "Paneflow vs iTerm2",
+      "tldr": "iTerm2 es el veterano de macOS (codebase de 16 años, 17.500+ stars, GPL-2.0) que en v3.7.0beta1 envía un chat IA multi-proveedor integrado y una integración con Claude Code consciente de la sesión. Paneflow es el novato indie multiplataforma (un mes de vida, MIT, Rust puro sobre GPUI de Zed) que ejecuta Claude Code, Codex y OpenCode como paneles CLI de primera clase. <strong>Ambos están acelerados por GPU. Ambos integran Claude Code hoy.</strong> Divergen en portabilidad (Paneflow corre en Linux + macOS hoy con Windows previsto; iTerm2 es solo macOS por diseño), licencia (MIT vs GPL-2.0) y arquitectura de agente (Paneflow lanza los agentes CLI que ya usas; iTerm2 envía una superficie de chat integrada más hooks). Elige Paneflow si quieres un host de agentes multiplataforma. Elige iTerm2 si quieres 16 años de pulido en macOS con AppleScript y Python integrados."
+    },
+    "context": {
+      "title": "Una nota sobre el contexto",
+      "p1": "Algunas cosas en la investigación de entrada de esta página estaban mal, y esta sección las corrige de entrada. iTerm2 NO está limitada por CPU — su propia AGENTS.md indica «PTYTextView - Metal-accelerated rendering». El encuadre USP más limpio no es «GPU moderno vs veterano CPU»; es <em>Metal (solo macOS) vs GPUI/Blade (multiplataforma)</em>. Y la integración de iTerm2 con Claude Code NO es un stub de launcher: el archivo <code>ClaudeCodeHookEvent.swift</code> en la raíz del repo de iTerm2 parsea el protocolo upstream de eventos hook de Claude Code mediante tipos Codable completos, con archivos compañeros para onboarding, monitoreo de salud y un controlador de modo workgroup. El encuadre USP honesto no es «agent-first vs agent-free»; es <em>host de agente CLI (Paneflow) vs chat multi-proveedor integrado (iTerm2)</em>.",
+      "p2": "Dicho esto: los dos productos resuelven problemas que se solapan con prioridades distintas. iTerm2 ha pasado 16 años convirtiéndose en la terminal macOS más minuciosamente pulida que existe, y en 2026 añadió una superficie IA seria (chat multi-proveedor cubriendo OpenAI, Anthropic, Gemini y DeepSeek según su propio AI live harness, además de hooks de sesión de Claude Code). Paneflow ha pasado un mes convirtiéndose en un host de agentes multiplataforma donde Claude Code, Codex y OpenCode son los binarios CLI que ya usas, montados en un espacio de trabajo con detección de rama, banners de puerto de servidor de desarrollo y restauración de sesiones."
+    },
+    "quick": {
+      "title": "Comparación rápida",
+      "intro": "Agrupado en tres zonas — portabilidad y superficie de agente (donde Paneflow lidera), paridad de terminal nuclear (donde ambos son equivalentes hoy) y pulido nativo de macOS (donde iTerm2 ha enviado mucha más superficie).",
+      "portabilityHeading": "Portabilidad y superficie de agente",
+      "coreHeading": "Paridad de terminal nuclear",
+      "macosHeading": "Pulido nativo de macOS",
+      "footnote": "<strong>Versiones:</strong> Paneflow v0.2.16 (mayo de 2026), primer commit 2026-04-01. iTerm2 v3.7.0beta1 publicado 2026-04-20 (commit <code>2b7b5bff</code>), con v3.6.10 (2026-04-20) y v3.5.15 (2025-08-13) como líneas estables más antiguas. Las propias notas de release de iTerm2 marcan la integración con Claude Code como «still a work in progress as of 3.7.0beta1». <strong>Precios:</strong> ambos gratis. Paneflow MIT; iTerm2 GPL-2.0 con soporte por donaciones."
+    },
+    "decision": {
+      "title": "¿Cuál te conviene?",
+      "intro": "La versión honesta: esto es un o-uno-o-otro limpio para la mayoría. Las dos listas de bullets de abajo capturan para quién está realmente construido cada herramienta. La mayoría de decisiones caen en portabilidad + arquitectura de agente vs profundidad nativa de macOS.",
+      "leftHeading": "Elige Paneflow si",
+      "leftBullets": {
+        "0": "Necesitas multiplataforma — Linux + macOS hoy, Windows previsto. iTerm2 es solo macOS por diseño (Metal es una API de Apple)",
+        "1": "Quieres MIT por flexibilidad de incrustación, no GPL-2.0",
+        "2": "Tu workflow de agentes es lanzar binarios CLI que ya usas (Claude Code, Codex, OpenCode) con un botón UI dedicado por agente",
+        "3": "Quieres un modelo de workspace con badges conscientes de la rama, detección de puerto de servidor de desarrollo y restauración de sesiones integrados",
+        "4": "Prefieres una config JSON que lees de un vistazo a un plist binario con semántica de sincronización iCloud",
+        "5": "Apoyas a un dev indie que envía releases menores semanales en el linaje de la filosofía Zed"
+      },
+      "rightHeading": "Elige iTerm2 si",
+      "rightBullets": {
+        "0": "Estás solo en macOS y quieres la experiencia nativa más pulida que existe hoy",
+        "1": "Dependes de la automatización AppleScript o de la API de scripting Python",
+        "2": "Quieres un chat IA multi-proveedor integrado (OpenAI, Anthropic, Gemini, DeepSeek) dentro de la terminal en lugar de lanzar agentes CLI externos",
+        "3": "Usas las funciones de integración con la shell de iTerm2 — triggers, smart selection, navegación consciente del prompt, marks",
+        "4": "Quieres la nueva función Workgroups con modo Code Review y toolbars por sesión",
+        "5": "Valoras una codebase de 16 años con mantenimiento consistente y una comunidad 17k+ stars",
+        "6": "Estás cómodo con GPL-2.0 o nunca planeas incrustar código de terminal en un producto de código cerrado"
+      }
+    },
+    "architecture": {
+      "title": "Arquitectura en profundidad",
+      "p1": "<strong>iTerm2</strong> es una aplicación híbrida Objective-C / Swift dirigida a macOS. El flujo de la app es App -> Window/Tab -> Session -> Terminal Emulation -> Rendering. El stack de emulación de terminal es propio (<code>VT100Parser</code>, <code>VT100Terminal</code>, <code>VT100ScreenMutableState</code>, <code>VT100Screen</code>, <code>VT100Grid</code>), y el renderer es <code>PTYTextView</code> con aceleración Metal — el renderer está atado a plataformas Apple. La superficie IA vive en <code>sources/AITerm/</code> (unos 81 archivos incluyendo AIConversation, AIPluginClient y una familia Chat* de view controllers) más <code>sources/ClaudeCode/</code> (seis archivos: ClaudeCodeIntegrationMenuController, ClaudeCodeOnboarding, ClaudeIntegrationHealthMonitor, ClaudeWatcher, GlobalJobMonitor, PeerSessionSettingsViewController). La superficie de hooks en la raíz del repo - <code>ClaudeCodeHookEvent.swift</code> - es un conjunto completo de tipos Codable que coinciden con el protocolo upstream de hooks de Claude Code, de modo que iTerm2 puede reaccionar a eventos de sesión del CLI Claude en tiempo real.",
+      "p2": "<strong>Paneflow</strong> es una app Rust pura construida sobre el motor GPUI de Zed. No hay frontera de lenguaje entre la UI y la terminal — las teclas viajan por un único pipeline Rust desde <code>KeyDownEvent</code> hasta el paint, por eso la latencia tecla-a-píxel se mantiene por debajo de 4 ms y el arranque en frío por debajo de 200 ms. La emulación de terminal es <code>alacritty_terminal</code> 0.26 upstream desde crates.io (sin fork que mantener). El stack GPU es el renderer Blade de GPUI sobre Vulkan en Linux y Metal en macOS — así que el renderer viaja entre plataformas junto con el resto de la app. La superficie de agente es un modelo de workspace: cada workspace agrupa paneles alrededor de una raíz de proyecto, con detección de rama, banners de puerto y tres botones de agente CLI de primera clase (Claude Code, Codex, OpenCode). Los agentes CLI externos también son ilimitados: cualquier binario que ejecutes en una shell se ejecuta en un panel de Paneflow.",
+      "p3": "Las superficies IPC también dicen mucho de la era de cada proyecto. iTerm2 expone AppleScript (un largo bundle .sdef legacy) y una API de scripting Python con soporte para scripts de larga duración, además de una integración con la shell extensa (triggers, smart selection, funciones conscientes del prompt). Paneflow expone un único servidor JSON-RPC 2.0 sobre un socket Unix en <code>$XDG_RUNTIME_DIR/paneflow/paneflow.sock</code> con aproximadamente trece métodos — superficie más pequeña, más rápida de aprender, muy lejos de los dieciséis años de acumulación de scripting de iTerm2. Alcanzar a iTerm2 en automatización no está en el roadmap inmediato de Paneflow."
+    },
+    "pricing": {
+      "title": "Precios",
+      "intro": "Ambos proyectos son gratis. Los modelos de licencia difieren:",
+      "paneflow": "<strong>Paneflow</strong>: MIT, Copyright (c) 2026 Arthur Jean. Incrústalo en productos comerciales sin preocupaciones; sin restricción copyleft.",
+      "iterm2": "<strong>iTerm2</strong>: GPL-2.0, sostenido por donaciones. Copyleft fuerte — si redistribuyes versiones modificadas debes liberar el fuente. Incrustar código de iTerm2 en un producto de código cerrado no es funcionalmente una opción. Para un usuario final esta diferencia es invisible; para un integrador es toda la diferencia."
+    },
+    "migrating": {
+      "title": "Migrar de iTerm2 a Paneflow",
+      "p1": "No hay traducción directa de configuración. iTerm2 guarda los settings en un plist binario (<code>com.googlecode.iterm2.plist</code>) que se sincroniza por iCloud; Paneflow usa un archivo JSON estático en <code>~/.config/paneflow/paneflow.json</code> en Linux y <code>~/Library/Application Support/paneflow/paneflow.json</code> en macOS. La instalación es una configuración nueva que lleva unos diez minutos — shell por defecto, theme, atajos, botones de agente IA. La buena noticia: Paneflow envía defaults sensatos para las cosas que iTerm2 te hace configurar manualmente (layout del workspace, botones de agente, theme), así que la experiencia con config vacía está más cerca de «listo para usar» que la de iTerm2.",
+      "p2": "Lo que NO se traslada:",
+      "bullets": {
+        "0": "<strong>Scripts AppleScript / Python</strong>: sin equivalente en Paneflow. Si tienes automatización escrita contra la API Python o la superficie AppleScript de iTerm2, quédate con iTerm2.",
+        "1": "<strong>Funciones de integración con la shell</strong>: triggers, smart selection, navegación consciente del prompt, marks — son específicos de iTerm2. Paneflow usa una superficie de integración distinta y más pequeña.",
+        "2": "<strong>Chat IA multi-proveedor</strong>: Paneflow no envía un chat integrado. La migración es usar el agente CLI de tu elección (Claude Code, Codex, OpenCode) lanzado como panel.",
+        "3": "<strong>Workgroups + modo Code Review</strong>: sin equivalente en Paneflow. El concepto más cercano es un workspace con múltiples paneles, pero el overlay de prompt Code Review y las toolbars por sesión no tienen análogos."
+      }
+    },
+    "whenNot": {
+      "title": "Cuándo NO elegir Paneflow",
+      "intro": "Los rompedores honestos. Si cualquiera de los cinco de abajo te importa, iTerm2 es la herramienta correcta hoy — no tiene sentido pelear:",
+      "items": {
+        "0": "<strong>Dependes de AppleScript o de la API Python de iTerm2.</strong> iTerm2 tiene un bundle AppleScript .sdef bien establecido y una API de scripting Python con soporte para scripts de larga duración. Paneflow tiene un JSON-RPC de trece métodos y ya. Dieciséis años de automatización no se trasladan.",
+        "1": "<strong>Quieres un chat IA multi-proveedor integrado en la terminal.</strong> iTerm2 envía un chat multi-proveedor cubriendo OpenAI, Anthropic, Gemini y DeepSeek con una UI unificada dentro del panel de la terminal. Paneflow solo lanza agentes CLI externos — no hay panel de chat dentro de la terminal.",
+        "2": "<strong>Te apoyas en funciones de integración con la shell de iTerm2.</strong> Triggers, smart selection, navegación consciente del prompt, marks — son específicos de iTerm2. Si dependes de cualquiera de ellos, Paneflow no tiene reemplazo en el roadmap inmediato.",
+        "3": "<strong>Quieres Workgroups con modo Code Review.</strong> Workgroups + modo Code Review de v3.7 es genuinamente nuevo: muestra un overlay de prompt dentro de la sesión antes de que el programa corra, expone el texto introducido como variable para interpolación swifty y te deja construir pipelines de revisión a su alrededor. Paneflow no tiene equivalente.",
+        "4": "<strong>Quieres dieciséis años de pulido y una comunidad 17k+ stars.</strong> iTerm2 está en v3.7 con dieciséis años de bugfixes acumulados, edge cases y ecosistema (entradas terminfo, dotfiles, Stack Overflow). Paneflow está en v0.2.x con una fracción de ese tiempo de validación."
+      }
+    },
+    "faq": {
+      "title": "Preguntas frecuentes",
+      "items": {
+        "0": {
+          "question": "¿Paneflow es un fork de iTerm2?",
+          "answer": "No. iTerm2 es una codebase híbrida Objective-C y Swift de 16 años de George Nachman que solo apunta a macOS (el stack AppKit + Metal está atado a plataformas Apple). Paneflow es una codebase Rust pura de un mes de vida de Arthur Jean que corre en Linux y macOS hoy, con Windows previsto. Las dos no comparten código fuente y apuntan a audiencias distintas."
+        },
+        "1": {
+          "question": "Ambas integran Claude Code en 2026. ¿Cuál es la diferencia real?",
+          "answer": "Arquitectura y portabilidad. La v3.7.0beta1 (abril de 2026) de iTerm2 envía una integración consciente de la sesión que parsea el protocolo de hooks de Claude Code vía ClaudeCodeHookEvent.swift y aflora los hooks a través de un chat IA multi-proveedor integrado (OpenAI, Anthropic, Gemini, DeepSeek según el propio AI live harness de iTerm2). Paneflow ejecuta el CLI Claude Code como un panel de primera clase con botón UI dedicado — el mismo binario de agente que ya usas en la línea de comandos, con workspace y restauración de sesiones a su alrededor. Elige el modelo iTerm2 si quieres una experiencia de chat integrada; elige Paneflow si quieres los agentes CLI que ya usas, en un host multiplataforma."
+        },
+        "2": {
+          "question": "iTerm2 tiene AppleScript y una API Python. ¿Qué ofrece Paneflow?",
+          "answer": "Paneflow expone un único servidor JSON-RPC 2.0 sobre un socket Unix con aproximadamente trece métodos cubriendo workspaces y paneles. iTerm2 envía una superficie de scripting mucho más amplia: un bundle AppleScript .sdef, una API de scripting Python con soporte para scripts de larga duración y una integración con la shell extensa que expone triggers, smart selection y funciones conscientes del prompt. Si dependes hoy de automatización AppleScript o de la API de scripting Python, Paneflow no tiene reemplazo."
+        },
+        "3": {
+          "question": "¿Por qué elegir Paneflow si iTerm2 tiene 16 años de pulido y 17k stars?",
+          "answer": "Si necesitas multiplataforma (Linux + macOS ahora, Windows previsto), o quieres MIT en lugar de GPL-2.0 por flexibilidad de incrustación, o específicamente quieres la arquitectura de host de agente donde Claude Code, Codex y OpenCode corren como los mismos binarios CLI que ya usas, Paneflow encaja mejor. Si estás solo en macOS, quieres pulido máximo y valoras la automatización AppleScript / Python, iTerm2 encaja mejor."
+        },
+        "4": {
+          "question": "¿Corre iTerm2 en Linux o Windows?",
+          "answer": "No. iTerm2 es solo macOS por diseño. El stack de renderizado es Metal directo (PTYTextView está acelerado por Metal según la propia AGENTS.md de iTerm2), una API solo de Apple, y la UI es AppKit + SwiftUI. No hay build para Linux ni planes. Paneflow envía Linux y macOS hoy y tiene Windows en el roadmap."
+        },
+        "5": {
+          "question": "¿Puedo migrar mis settings de iTerm2 a Paneflow?",
+          "answer": "No hay ruta automática. iTerm2 guarda la configuración en un plist binario que se sincroniza por iCloud; Paneflow usa un archivo JSON estático en ~/.config/paneflow/paneflow.json en Linux. Los schemas, la notación de teclas y el modelo de integración IA difieren. Cuenta diez minutos para una configuración nueva: shell por defecto, theme, atajos."
+        },
+        "6": {
+          "question": "¿iTerm2 sigue siendo de un único mantenedor?",
+          "answer": "Sí. George Nachman acumula 15.169 de los commits de iTerm2 a fecha 2026-05-20 — aproximadamente el 98% del proyecto, con el siguiente contribuidor en 149 commits. Mismo patrón estructural que Paneflow (Arthur Jean, en solitario) y WezTerm (Wez Furlong, ~98% en solitario). El mantenedor único es la norma en este conjunto competitivo; la diferencia es que la carrera en solitario de iTerm2 lleva ya 16 años."
+        },
+        "7": {
+          "question": "¿Y la función Workgroups de iTerm2 en v3.7? ¿Paneflow tiene equivalente?",
+          "answer": "Workgroups (nueva en v3.7.0beta1) te permite transformar una sesión en un grupo de sesiones relacionadas (peers, paneles split o tabs) cada una con su propia toolbar, además de un modo Code Review que muestra un overlay de prompt dentro de la sesión antes de que el programa corra. El modelo de workspace de Paneflow es conceptualmente distinto: cada workspace agrupa paneles alrededor de una raíz de proyecto con detección de rama, y los overlays estilo Code Review no están en el roadmap. Si específicamente quieres Workgroups, iTerm2 encaja mejor."
+        }
+      }
+    },
+    "next": {
+      "title": "Próximos pasos",
+      "body": "¿Listo para probar Paneflow? <download>Descarga la última release</download> o lee la <docs>guía de inicio</docs>. ¿Curioso por iTerm2? <repo>iTerm2 está en GitHub</repo> — es la terminal macOS más pulida que existe y una alternativa digna para cualquier workflow solo macOS que valore la automatización AppleScript o Python."
+    }
+  },
+  "CompareWezterm": {
+    "Metadata": {
+      "title": "Paneflow vs WezTerm (2026): espacio de trabajo agent-first vs terminal Rust scriptable",
+      "description": "Paneflow vs WezTerm: ambos Rust + GPU + MIT. Paneflow es un espacio de trabajo agent-first con paneles de primera clase para Claude Code, Codex y OpenCode. WezTerm es la terminal Rust configurable que scriptas en Lua. Guía honesta de decisión, arquitectura, FAQ.",
+      "ogTitle": "Paneflow vs WezTerm (2026)",
+      "ogDescription": "Espacio de trabajo Rust agent-first vs terminal Rust configurable scriptable en Lua. Rendimiento, arquitectura, licencia y guía de decisión para flujos con Claude Code, Codex, OpenCode."
+    },
+    "schema": {
+      "headline": "Paneflow vs WezTerm (2026)",
+      "description": "Espacio de trabajo Rust agent-first vs emulador de terminal Rust scriptable. Ambos Rust, ambos acelerados por GPU, ambos MIT — divergen en propósito. Comparación de arquitectura, funciones y precios."
+    },
+    "header": {
+      "title": "Paneflow vs WezTerm",
+      "tldr": "Paneflow y WezTerm son parientes arquitectónicos: ambos Rust puro, ambos acelerados por GPU, ambos MIT, ambos construidos por un mantenedor indie. <strong>Divergen en propósito.</strong> <strong>Paneflow</strong> es un espacio de trabajo agent-first — Claude Code, Codex y OpenCode son paneles de primera clase con espacios de trabajo conscientes de la rama, detección de puertos de servidor de desarrollo y restauración de sesiones, sobre el motor GPUI de Zed con arranque en frío por debajo de 200 ms y latencia tecla-a-píxel por debajo de 4 ms. <strong>WezTerm</strong> es un emulador de terminal Rust altamente configurable con una superficie de scripting en Lua, multiplexor SSH integrado y alcance multiplataforma (Linux, macOS, Windows, FreeBSD). Elige Paneflow si quieres un espacio de trabajo de agentes que no estorbe. Elige WezTerm si quieres una terminal que puedas programar en Lua y correr en FreeBSD."
+    },
+    "context": {
+      "title": "Una nota sobre el contexto",
+      "p1": "WezTerm es el pariente arquitectónico más cercano a Paneflow. Mismo lenguaje (Rust), misma familia de renderer (Paneflow usa Blade de GPUI sobre Vulkan/Metal; WezTerm usa wgpu 25.0.2, la misma familia), misma licencia MIT, misma historia de mantenedor indie (Wez Furlong tiene ~98% de los commits de WezTerm). Los dos proyectos podrían compartir una página de linaje; en su lugar divergen bruscamente en propósito.",
+      "p2": "WezTerm es un emulador de terminal configurable. Su identidad es «una terminal donde puedes scriptar todo en Lua». Paneflow es un espacio de trabajo de agentes — un único binario que abre con paneles, workspaces y una UI para lanzar agentes de codificación CLI, diseñado alrededor del flujo de ejecutar Claude Code, Codex y OpenCode lado a lado. WezTerm no tiene concepto de panel de agente IA, ni modelo workspace-por-proyecto con detección de rama, ni banner de puerto de servidor de desarrollo. Paneflow no tiene superficie de scripting en Lua, ni multiplexor SSH integrado, ni build para FreeBSD. El resto de la página mapea el trade-off."
+    },
+    "quick": {
+      "title": "Comparación rápida",
+      "intro": "Agrupado en tres zonas — rendimiento y superficie de agente (donde Paneflow lidera), paridad de terminal nuclear (donde ambos son equivalentes) y configuración y ecosistema (donde WezTerm ha enviado más superficie).",
+      "perfHeading": "Rendimiento y superficie de agente",
+      "coreHeading": "Paridad de terminal nuclear",
+      "configHeading": "Configuración y ecosistema",
+      "footnote": "<strong>Versiones:</strong> Paneflow v0.2.16 (mayo de 2026), primer commit 2026-04-01, v0.1.0 etiquetada 2026-04-16. Último estable de WezTerm 20240203-110809-5046fc22 (febrero de 2024), primer commit 2017-12-07 (c53ca64c). La rama main de WezTerm está activa (último push 2026-05-01) pero no se ha cortado una release estable desde febrero de 2024. <strong>Precios:</strong> ambos gratis. Ambos MIT."
+    },
+    "decision": {
+      "title": "¿Cuál te conviene?",
+      "intro": "La versión honesta: WezTerm es la respuesta correcta si quieres una terminal que scriptas. Paneflow es la respuesta correcta si quieres un workspace donde los agentes son de primera clase. Los bullets de abajo capturan las elecciones realistas para cada lado.",
+      "leftHeading": "Elige Paneflow si",
+      "leftBullets": {
+        "0": "Ejecutas varios agentes de codificación CLI (Claude Code, Codex, OpenCode) y quieres botones UI de primera clase + un modelo de workspace diseñado para ello",
+        "1": "Te importa el rendimiento — Paneflow arranca en <200 ms con <4 ms tecla-a-píxel sobre la pipeline de renderizado GPUI de Zed",
+        "2": "Quieres espacios de trabajo conscientes de la rama, detección de puerto de servidor de desarrollo y restauración de sesiones integrados (sin scripting Lua)",
+        "3": "Prefieres una config JSON estática que lees de un vistazo a una superficie de scripting Lua con programabilidad completa",
+        "4": "Quieres desarrollo activo fresco — primer estable en abril de 2026, releases menores semanales hasta mayo",
+        "5": "Apoyas a un dev indie que usa Paneflow a diario y envía con frecuencia"
+      },
+      "rightHeading": "Elige WezTerm si",
+      "rightBullets": {
+        "0": "Quieres scriptar tu terminal en Lua — formatear títulos de tab, reaccionar a eventos mux, construir keymaps con lógica",
+        "1": "Necesitas un multiplexor SSH integrado (dominios SSH: y SSHMUX:) para que tu sesión sobreviva a desconexiones sin tmux",
+        "2": "Corres FreeBSD o quieres un build de Windows hoy (Windows en Paneflow está previsto, no enviado)",
+        "3": "Valoras una comunidad 26k+ stars con 8 años de themes, plugins y respuestas de Stack Overflow",
+        "4": "No ejecutas agentes de codificación IA y quieres una terminal que se mantenga fuera de la conversación IA por completo",
+        "5": "Prefieres la filosofía de diseño Lua-driven de wez donde todo es sobreescribible en el código del usuario"
+      }
+    },
+    "architecture": {
+      "title": "Arquitectura en profundidad",
+      "p1": "<strong>WezTerm</strong> es un workspace Rust con un subcrate GUI (<code>wezterm-gui</code>) que consume <code>wgpu 25.0.2</code> y <code>mlua</code>. El renderer despacha a través de wgpu al backend que proporcione el host: Vulkan en Linux, Metal en macOS, DX12 en Windows — multi-API sin fork. La configuración es un script Lua (<code>~/.wezterm.lua</code>) que devuelve una tabla de config; el script corre in-process vía mlua, así que cualquier expresión Lua (callbacks, funciones de formato, manejadores de eventos mux) está permitida. La grid y la máquina de estados VT son internas; el multiplexor SSH es un protocolo WezTerm separado que conecta dos procesos WezTerm sobre SSH.",
+      "p2": "<strong>Paneflow</strong> también es un workspace Rust, también acelerado por GPU, pero la historia de integración es más estrecha y la historia de configuración más ligera. La UI está construida sobre GPUI — el framework UI de Zed — así que el pipeline de teclas se mantiene en Rust puro desde <code>KeyDownEvent</code> hasta el paint. La emulación de terminal es <code>alacritty_terminal</code> 0.26 upstream desde crates.io, el crate VT Rust público, no un fork. La capa GPU es Blade (el renderer de GPUI) sobre Vulkan en Linux y Metal en macOS. La configuración es JSON estático en <code>~/.config/paneflow/paneflow.json</code>; no hay superficie de scripting ni hook de event-handler, por diseño — el objetivo es una config que puedas leer de arriba abajo en un minuto.",
+      "p3": "Los dos proyectos también divergen en qué es el «producto». WezTerm es una terminal en la que inviertes tiempo configurándola para que encaje con tu workflow. Paneflow es un workspace que lanzas y usas de inmediato con tres botones de agente IA preestablecidos, detección de rama y cuatro layouts de panel ya cableados — el trade-off es que no hay vía de escape Lua cuando Paneflow aún no hace lo que quieres."
+    },
+    "pricing": {
+      "title": "Precios",
+      "intro": "Ambos proyectos son gratis, ambos MIT, ambos sin tier comercial.",
+      "paneflow": "<strong>Paneflow</strong>: MIT, Copyright (c) 2026 Arthur Jean. Sin dual licensing. Incrústalo en productos comerciales sin preguntas.",
+      "wezterm": "<strong>WezTerm</strong>: MIT, Copyright (c) 2018-Present Wez Furlong. Misma libertad de incrustación; no se ofrece licencia comercial (no se necesita ninguna)."
+    },
+    "migrating": {
+      "title": "Migrar de WezTerm a Paneflow",
+      "intro": "No hay traducción limpia entre el script Lua de WezTerm y el JSON de Paneflow. La instalación es una configuración nueva que lleva unos diez minutos. La buena noticia: Paneflow viene con defaults sensatos para las cosas que WezTerm te hace configurar (layout del workspace, botones de agente, theme), así que la experiencia con config vacía está más cerca de «listo para usar» que la de WezTerm.",
+      "bullets": {
+        "0": "<strong>Shell + theme</strong>: ajusta <code>default_shell</code> y <code>theme</code> en <code>~/.config/paneflow/paneflow.json</code>. Los dos themes incluidos son <em>One Dark</em> (default) y <em>Paneflow Light</em>.",
+        "1": "<strong>Atajos</strong>: consulta la <link>referencia del esquema</link>. Las acciones por defecto cubren splits, foco y workspaces. Si tienes un keymap Lua con lógica, esa lógica no se traslada — elegirás el binding estático más cercano.",
+        "2": "<strong>Manejadores de eventos Lua</strong>: sin equivalente en Paneflow. Si dependes de <code>format-tab-title</code>, <code>mux-startup</code> u otros callbacks Lua, quédate con WezTerm.",
+        "3": "<strong>Multiplexor SSH</strong>: Paneflow no envía un mux. Corre tmux o zellij en un panel Paneflow, o quédate con WezTerm para sesiones remotas."
+      }
+    },
+    "whenNot": {
+      "title": "Cuándo NO elegir Paneflow",
+      "intro": "Los rompedores honestos. Si cualquiera de los cinco de abajo te importa, WezTerm es la herramienta correcta hoy — no tiene sentido pelear:",
+      "items": {
+        "0": "<strong>Quieres una superficie de scripting Lua.</strong> WezTerm te deja expresar lógica de keymap, títulos de tab dinámicos, hooks de eventos mux y callbacks completos en Lua. Paneflow usa JSON estático sin hook de scripting. Si tienes una config Lua que adoras, odiarás Paneflow.",
+        "1": "<strong>Necesitas un multiplexor SSH integrado.</strong> Los dominios SSH: y SSHMUX: de WezTerm mantienen tu sesión viva a través de desconexiones sin tmux. Paneflow no tiene multiplexor y no tiene plan actual de enviar uno.",
+        "2": "<strong>Corres Windows o FreeBSD.</strong> WezTerm envía hoy builds para Linux, macOS, Windows y FreeBSD. Paneflow envía Linux y macOS; Windows está en el roadmap sin ETA de envío, FreeBSD no está en el roadmap.",
+        "3": "<strong>Quieres un ecosistema grande y maduro.</strong> WezTerm tiene 26k+ stars en GitHub, ocho años de themes acumulados, plugins y respuestas de Stack Overflow. Paneflow lleva un mes desde su primer estable público — puede que las respuestas que necesites aún no estén en Google.",
+        "4": "<strong>No ejecutas agentes de codificación IA.</strong> Toda la razón de ser de Paneflow es el workspace de agentes. Si no usas Claude Code, Codex, OpenCode o similares, estás usando quizás el 30% del producto y pagando por el resto. WezTerm encaja mejor para un workflow de terminal tradicional."
+      }
+    },
+    "faq": {
+      "title": "Preguntas frecuentes",
+      "items": {
+        "0": {
+          "question": "¿Paneflow es un fork de WezTerm?",
+          "answer": "No. Paneflow y WezTerm son codebases Rust independientes que no comparten código fuente. WezTerm empezó a finales de 2017 y lo mantiene Wez Furlong (~98% de los ~7.400 commits); Paneflow empezó en abril de 2026 y está construida sobre el motor GPUI de Zed con alacritty_terminal upstream como capa VT. Los dos proyectos son parientes arquitectónicos — ambos Rust puro, ambos acelerados por GPU, ambos MIT — pero apuntan a propósitos distintos."
+        },
+        "1": {
+          "question": "Ambos son Rust + GPU + MIT. ¿Cuál es la diferencia real?",
+          "answer": "Propósito. WezTerm es un emulador de terminal altamente configurable que scriptas en Lua. Paneflow es un workspace agent-first donde Claude Code, Codex y OpenCode aparecen como paneles de primera clase con espacios de trabajo conscientes de la rama, detección de puerto de servidor de desarrollo y restauración de sesiones. WezTerm no tiene nada de eso integrado; Paneflow no aspira a competir con WezTerm en extensibilidad Lua-driven. Si quieres una terminal configurable, gana WezTerm. Si quieres un workspace de agentes, gana Paneflow."
+        },
+        "2": {
+          "question": "¿WezTerm tiene alguna integración nativa con agentes IA hoy?",
+          "answer": "Ninguna integración nativa. El repo de WezTerm no contiene CLAUDE.md, ni AGENTS.md, ni .cursorrules, ni dependencia IA en wezterm-gui/Cargo.toml. Puedes lanzar cualquier agente CLI (Claude Code, Codex, OpenCode) desde un panel WezTerm con un atajo escribiendo Lua, pero eso es configuración del usuario, no función del producto. Paneflow envía botones UI dedicados y un modelo de workspace diseñado para correr agentes en paralelo."
+        },
+        "3": {
+          "question": "¿Por qué elegir Paneflow si WezTerm tiene 26k stars y 8 años de codebase?",
+          "answer": "Si necesitas un workspace agent-first hoy (Paneflow lo envía, WezTerm no), o quieres desarrollo 2026 activo (Paneflow envió su primer estable en abril de 2026 con releases menores semanales; el último estable etiquetado de WezTerm es 20240203-110809, una brecha de 15+ meses, aunque main sigue recibiendo commits), o quieres una superficie de config más pequeña (JSON vs Lua), Paneflow encaja mejor. Si quieres una terminal totalmente configurable que puedas scriptar en Lua y correr en FreeBSD, WezTerm encaja mejor."
+        },
+        "4": {
+          "question": "¿Puedo migrar mi config Lua de WezTerm a Paneflow?",
+          "answer": "No hay ruta automática. WezTerm usa un script Lua en ~/.wezterm.lua que devuelve una tabla de config; Paneflow usa un archivo JSON estático en ~/.config/paneflow/paneflow.json en Linux. Las funciones Lua y los manejadores de eventos no pueden expresarse en JSON. La migración es una configuración nueva que lleva unos diez minutos — shell por defecto, theme, atajos — en lugar de una traducción."
+        },
+        "5": {
+          "question": "¿Corre Paneflow en Windows o FreeBSD como WezTerm?",
+          "answer": "Aún no. WezTerm envía builds para Linux, macOS, Windows y FreeBSD. Paneflow envía Linux y macOS hoy; Windows está previsto (port nativo, no WSL) y no tiene ETA de envío. FreeBSD y NetBSD no están en el roadmap de Paneflow. Si el soporte cross-BSD o un build de Windows actual son innegociables, WezTerm es la mejor herramienta."
+        },
+        "6": {
+          "question": "¿Paneflow tiene un multiplexor SSH integrado como el mux de WezTerm?",
+          "answer": "No. WezTerm envía su propio protocolo de multiplexor con dominios SSH: y SSHMUX: — puedes engancharte a un WezTerm remoto y mantener tu sesión viva a través de desconexiones sin correr tmux. Paneflow no envía multiplexor. Si necesitas sesiones remotas persistentes, usa tmux o zellij dentro de paneles Paneflow, o quédate con WezTerm."
+        },
+        "7": {
+          "question": "¿WezTerm sigue mantenido activamente?",
+          "answer": "Sí en la rama de desarrollo, pero con cadencia de estables lenta. La última release etiquetada en github.com/wezterm/wezterm es 20240203-110809-5046fc22, fechada 2024-02-03 — más de 15 meses antes de escribir esta comparación. La rama main está activa (último push 2026-05-01), y los empaquetadores rolling-release siguen main. Los usuarios que siguen releases etiquetadas siguen en el build de febrero de 2024."
+        }
+      }
+    },
+    "next": {
+      "title": "Próximos pasos",
+      "body": "¿Listo para probar Paneflow? <download>Descarga la última release</download> o lee la <docs>guía de inicio</docs>. ¿Curioso por WezTerm? <repo>WezTerm está en GitHub</repo> — es una terminal Rust genuinamente excelente que resuelve un problema distinto del de Paneflow, y la recomendamos para cualquier workflow donde el scripting Lua sea el punto."
+    }
+  },
+  "CompareCmux": {
+    "Metadata": {
+      "title": "Paneflow vs cmux (2026): Rust nativo minimal vs toolkit macOS todo-en-uno",
+      "description": "Paneflow vs cmux: workspace Rust nativo minimal con arranque en frío por debajo de 200 ms y motor GPUI de Zed, vs el toolkit macOS todo-en-uno (navegador embebido, VMs en la nube, daemon SSH). Guía honesta de decisión, arquitectura, FAQ.",
+      "ogTitle": "Paneflow vs cmux (2026)",
+      "ogDescription": "Workspace Rust nativo minimal vs toolkit todo-en-uno de macOS. Rendimiento, arquitectura y guía de decisión para flujos con Claude Code, Codex, OpenCode."
+    },
+    "schema": {
+      "headline": "Paneflow vs cmux (2026)",
+      "description": "Terminal Rust agent-first multiplataforma vs predecesor Swift solo macOS. Comparación de arquitectura, funciones y precios."
+    },
+    "header": {
+      "title": "Paneflow vs cmux",
+      "tldr": "Tanto Paneflow como cmux te dejan correr Claude Code, Codex, OpenCode y otros agentes de codificación CLI lado a lado. <strong>Divergen en filosofía.</strong> <strong>Paneflow</strong> es el núcleo minimal y nativo — Rust puro sobre el motor GPUI de Zed, arranque en frío por debajo de 200 ms, latencia tecla-a-píxel por debajo de 4 ms, único binario MIT, construido por un dev indie que lo usa a diario. <strong>cmux</strong> es el toolkit macOS todo-en-uno — Swift + libghostty + navegador embebido + VMs en la nube + daemon SSH, GPL con opción comercial. Elige Paneflow si quieres un workspace de agentes rápido y ergonómico que no estorbe. Elige cmux si quieres cada herramienta adyacente integrada en un solo producto."
+    },
+    "inspiration": {
+      "title": "Una nota sobre la inspiración",
+      "p1": "El diseño de Paneflow está abiertamente inspirado en cmux. cmux fue el primer proyecto en enviar un multiplexor de terminal agent-first pulido para desarrolladores que ejecutan varios agentes de codificación IA en paralelo, y el modelo mental «workspace por proyecto, paneles por agente» viene de ahí.",
+      "p2": "Paneflow no es un fork. Es una codebase Rust independiente que reimplementa ese modelo mental con elecciones arquitectónicas distintas: Rust puro en lugar de Swift, GPUI en lugar de AppKit, <code>alacritty_terminal</code> upstream en lugar de libghostty y multiplataforma desde el día uno en lugar de primero-macOS. Ambos proyectos existen en paralelo y resuelven problemas que se solapan con trade-offs distintos — el resto de la página los expone."
+    },
+    "quick": {
+      "title": "Comparación rápida",
+      "intro": "Agrupado en tres zonas — rendimiento y arquitectura (donde Paneflow lidera), workspace de agentes nuclear (donde ambos son equivalentes) y el toolkit adyacente (donde cmux ha enviado más superficie).",
+      "perfHeading": "Rendimiento y arquitectura",
+      "coreHeading": "Workspace de agentes nuclear",
+      "toolkitHeading": "Toolkit adyacente",
+      "footnote": "<strong>Versiones:</strong> Paneflow v0.2.16 (mayo de 2026), primera release abril de 2026 (v0.1.0). cmux v0.64.7 (19 de mayo de 2026, también etiquetada v1.38.1), primera release enero de 2026 (v0.2.0). <strong>Precios:</strong> ambos gratis. Paneflow MIT; cmux GPL-3.0-or-later con licencia comercial separada disponible."
+    },
+    "decision": {
+      "title": "¿Cuál te conviene?",
+      "intro": "La versión honesta: es un o-uno-o-otro limpio para la mayoría. Las dos listas de bullets de abajo capturan para quién está realmente construida cada herramienta. Si no encajas en ninguna, probablemente quieras algo más simple (tmux puro, WezTerm, iTerm2).",
+      "leftHeading": "Elige Paneflow si",
+      "leftBullets": {
+        "0": "Te importa el rendimiento — Paneflow arranca en <200 ms con <4 ms tecla-a-píxel sobre la pipeline de renderizado GPUI de Zed",
+        "1": "Valoras el minimalismo — un único binario estático, una config JSON, sin navegador integrado / aprovisionador de VMs en la nube / API socket de varios cientos de comandos que aprender",
+        "2": "Quieres una herramienta que se sienta como Zed — mismo motor, misma obsesión con scroll nativo, foco instantáneo, sin lag de entrada, sin Electron",
+        "3": "Estás en macOS o Linux y quieres un workspace que corra igual de bien en ambos, para que tu equipo pueda ser multiplataforma sin divergencia de herramientas",
+        "4": "Prefieres MIT — sin pregunta de licencia comercial, sin restricción copyleft si alguna vez la incrustas",
+        "5": "Te gusta apoyar a un dev indie que usa Paneflow a diario en lugar de a un estudio que envía un roadmap de producto"
+      },
+      "rightHeading": "Elige cmux si",
+      "rightBullets": {
+        "0": "Estás solo en macOS y quieres la experiencia nativa más pulida hoy",
+        "1": "Necesitas workspaces remotos SSH (cmux es el único que envía esto)",
+        "2": "Necesitas un navegador embebido con importación de perfiles de Chrome/Firefox/Safari/Brave/Edge/Arc",
+        "3": "Rotas entre 15+ agentes IA y quieres integración de primera clase para todos",
+        "4": "Quieres una comunidad 17.500+ stars, cientos de comandos socket y respaldo comercial activo",
+        "5": "Quieres aprovisionamiento de VMs en la nube, scripting AppleScript o compatibilidad tmux integrados",
+        "6": "Estás cómodo con GPL-3.0 (o pagarás la licencia comercial)"
+      }
+    },
+    "architecture": {
+      "title": "Arquitectura en profundidad",
+      "p1": "<strong>cmux</strong> es una aplicación nativa de macOS construida sobre AppKit y SwiftUI. La emulación de terminal está delegada a libghostty, la biblioteca C que impulsa el emulador de terminal Ghostty, puenteada en la app Swift a través de <code>GhosttyKit.xcframework</code>. El renderizado pasa por una subclase custom <code>GhosttyMetalLayer</code> de CAMetalLayer (Ghostty conduce Metal directamente, sin MTKView). El layout de paneles usa Bonsplit, una librería de layout de árbol N-ario que expone consultas de adyacencia (<code>adjacentPane(to:direction:)</code>) y snapshots para persistencia de sesiones.",
+      "p2": "<strong>Paneflow</strong> está construido en Rust puro sobre GPUI, el mismo framework UI que usa Zed. En términos prácticos: no hay frontera de lenguaje entre la UI y la terminal — las teclas viajan por un único pipeline Rust puro, por eso la latencia tecla-a-píxel se mantiene por debajo de 4 ms y la app arranca en frío en menos de 200 ms. La emulación de terminal es <code>alacritty_terminal</code> 0.26 upstream desde crates.io — el crate VT Rust público y estable. Sin fork que mantener, así que futuras mejoras del ecosistema Rust fluyen naturalmente. La capa GPU es Blade (el renderer de GPUI) sobre Vulkan en Linux y Metal en macOS. El layout de paneles es un árbol N-ario hecho a mano diseñado para los cuatro layouts preestablecidos (<em>even horizontal</em>, <em>even vertical</em>, <em>main-vertical</em>, <em>tiled</em>).",
+      "p3": "En el lado IPC, ambos proyectos exponen un socket Unix. cmux corre dos protocolos en paralelo sobre el mismo socket: V1 es un protocolo de texto delimitado por espacios (p. ej. <code>new-workspace</code>, <code>send-key &lt;args&gt;</code>), V2 es JSON delimitado por saltos de línea. El dispatcher inspecciona el primer byte de cada línea para enrutar. El área de superficie combinada es de varios cientos de comandos cubriendo ventanas, paneles, sesiones, notificaciones y workspaces remotos. Paneflow envía un único protocolo JSON-RPC 2.0 con aproximadamente trece métodos cubriendo workspaces y paneles — superficie más pequeña, más rápida de aprender, mucha menos cobertura. Alcanzar a cmux en superficie de API IPC está en el roadmap de Paneflow."
+    },
+    "pricing": {
+      "title": "Precios",
+      "intro": "Ambos proyectos son gratis. Los modelos de licencia difieren:",
+      "paneflow": "<strong>Paneflow</strong>: licencia MIT, sin dual licensing, sin tier comercial. Úsalo como quieras, incluyendo incrustarlo dentro de productos comerciales.",
+      "cmux": "<strong>cmux</strong>: GPL-3.0 por defecto con una licencia comercial separada disponible para organizaciones que necesitan términos no-copyleft. El precio de la licencia comercial no está listado públicamente; contacta con los mantenedores."
+    },
+    "migrating": {
+      "title": "Migrar de cmux a Paneflow",
+      "intro": "Puedes mover la mayoría de un setup cmux a Paneflow en unos diez minutos. Los esquemas de config son formas JSON similares; la notación de teclas coincide; el concepto de botón de agente IA es el mismo.",
+      "bullets": {
+        "0": "<strong>Archivo de configuración</strong>: copia tu <code>~/.config/cmux/cmux.json</code> a <code>~/.config/paneflow/paneflow.json</code> en Linux o <code>~/Library/Application Support/paneflow/paneflow.json</code> en macOS. Renombra las claves que difieran (consulta la <link>referencia del esquema</link>).",
+        "1": "<strong>Atajos de teclado</strong>: los defaults coinciden para las acciones nucleares (<code>Cmd/Ctrl+Shift+D</code> split horizontal, <code>Cmd/Ctrl+Shift+E</code> split vertical, <code>Alt+Arrow</code> foco, <code>Cmd/Ctrl+1-9</code> cambio de workspace). Los overrides custom se traducen directamente.",
+        "2": "<strong>Sesiones</strong>: no portables. Los formatos de sesión en disco difieren; tendrás que recrear los workspaces en el primer arranque. La detección de rama y la restauración de CWD se activan automáticamente después.",
+        "3": "<strong>Flujos SSH</strong>: sin ruta de migración directa. Si dependes de <code>cmux ssh user@host</code>, quédate con cmux hasta que Paneflow envíe soporte de workspaces remotos."
+      }
+    },
+    "whenNot": {
+      "title": "Cuándo NO elegir Paneflow",
+      "intro": "Los rompedores honestos. Si cualquiera de los cinco de abajo te importa, cmux es la herramienta correcta hoy — no tiene sentido pelear:",
+      "items": {
+        "0": "<strong>Necesitas workspaces remotos SSH.</strong> cmux envía un daemon Go auto-desplegable (scp + SSH local-forward a un socket Unix) para que <code>cmux ssh user@host</code> te dé un workspace remoto de forma transparente. Paneflow no tiene equivalente en el roadmap inmediato.",
+        "1": "<strong>Necesitas un navegador embebido dentro de la terminal.</strong> El panel WKWebView de cmux importa perfiles de Chrome, Firefox, Safari, Brave, Edge y Arc. Paneflow no planea una superficie de navegador.",
+        "2": "<strong>Necesitas VMs en la nube aprovisionadas desde la terminal.</strong> cmux envía aprovisionamiento de VMs integrado (<code>cmux vm new</code>) cableado con el resto del workspace. Paneflow no tiene equivalente.",
+        "3": "<strong>Necesitas una superficie IPC de varios cientos de comandos para automatización.</strong> cmux expone cientos de comandos sobre un protocolo socket dual V1 texto + V2 JSON. El JSON-RPC de Paneflow tiene hoy trece métodos — suficiente para control básico de agentes, no suficiente para pipelines de automatización pesados.",
+        "4": "<strong>Necesitas madurez de grado producción ahora mismo.</strong> cmux está en v0.64 con meses de feedback real de usuarios y respaldo comercial activo. Paneflow está en v0.2.x con una comunidad pequeña. Los esquemas de config e IPC pueden seguir moviéndose entre versiones menores hasta v1.0."
+      }
+    },
+    "faq": {
+      "title": "Preguntas frecuentes",
+      "items": {
+        "0": {
+          "question": "¿Paneflow es un fork de cmux?",
+          "answer": "No. Paneflow es una implementación Rust independiente inspirada por el diseño agent-first de cmux. Las dos codebases no comparten código fuente. Paneflow usa GPUI (el framework de Zed) + alacritty_terminal upstream; cmux usa AppKit + libghostty vía el GhosttyKit.xcframework."
+        },
+        "1": {
+          "question": "¿Cuántos agentes IA soporta cada terminal?",
+          "answer": "Ambos pueden lanzar cualquier agente de codificación CLI — son multiplexores de terminal, así que cualquier cosa que ejecutes en una shell corre ahí. La diferencia es la UI dedicada: Paneflow envía botones de primera clase para Claude Code, Codex y OpenCode (los tres que el dev que construyó Paneflow usa a diario). cmux envía UI dedicada para 15+ agentes. Si rotas entre muchos agentes y quieres lanzamiento de un clic para cada uno, el zoo más amplio de cmux ayuda. Si usas principalmente dos o tres, ambos se sienten igual."
+        },
+        "2": {
+          "question": "¿Por qué elegir Paneflow si cmux es más maduro?",
+          "answer": "Si necesitas Linux hoy (Paneflow lo envía, cmux es solo macOS), o específicamente quieres tooling con licencia MIT sin pregunta de licencia comercial separada, o prefieres una codebase Rust pequeña que puedas auditar y a la que contribuir, Paneflow encaja mejor. Para flujos solo macOS ricos en funciones en mayo de 2026, cmux está más pulido y tiene una superficie mucho mayor (VMs en la nube, paleta de comandos, AppleScript, compatibilidad tmux, navegador embebido)."
+        },
+        "3": {
+          "question": "¿Correrá Paneflow en Windows?",
+          "answer": "Windows nativo está previsto, sin ETA de envío aún. WSL2 + el build Linux no es viable actualmente: el renderer de GPUI necesita la extensión Vulkan VK_EXT_inline_uniform_block que el driver dzn de WSLg no implementa, así que caería a renderizado por software llvmpipe — inusable para un multiplexor de terminal."
+        },
+        "4": {
+          "question": "¿Puedo migrar mi config de cmux a Paneflow?",
+          "answer": "Parcialmente. Ambos proyectos usan un archivo de configuración JSON con forma similar (shell por defecto, theme, atajos, botones de agente IA). La notación de teclas coincide en el modificador (Cmd en macOS, Ctrl en Linux). Los archivos de sesión NO son portables — el formato en disco difiere. Un script auxiliar de migración está en el roadmap; por ahora la traducción manual lleva unos diez minutos."
+        },
+        "5": {
+          "question": "¿Por qué Paneflow usa alacritty_terminal en lugar de Ghostty?",
+          "answer": "alacritty_terminal está publicada en crates.io con garantías semver estables de Rust e integra limpiamente con el render loop de GPUI. Ghostty es una biblioteca C que cmux accede a través del GhosttyKit.xcframework — perfectamente bien en la app Swift de cmux, pero el stack Rust puro de Paneflow prefiere un emulador VT Rust puro. Esta es una preferencia arquitectónica, no un juicio de calidad. Ambos motores son excelentes."
+        },
+        "6": {
+          "question": "¿Paneflow soporta ejecutar agentes en máquinas remotas?",
+          "answer": "Hoy no. cmux envía un daemon Go que se auto-despliega sobre SSH (`cmux ssh user@host`) para crear un workspace remoto de forma transparente. El roadmap de Paneflow no incluye actualmente esta función. Si tu workflow depende de agentes remotos, cmux es la mejor elección hoy."
+        },
+        "7": {
+          "question": "¿Hay un navegador embebido en Paneflow?",
+          "answer": "No. cmux envía un navegador completo basado en WKWebView con omnibar, importación de perfiles de Chrome/Firefox/Safari/Brave/Edge/Arc y gestión de tabs. Paneflow no incluye un navegador — se centra en paneles de terminal más un visor markdown. Si quieres un navegador dentro de tu workspace de terminal, cmux es la mejor elección."
+        }
+      }
+    },
+    "next": {
+      "title": "Próximos pasos",
+      "body": "¿Listo para probar Paneflow? <download>Descarga la última release</download> o lee la <docs>guía de inicio</docs>. ¿Curioso por cmux? <repo>cmux está en GitHub</repo> y vale la pena echarle un vistazo — resuelve un problema que el equipo de Paneflow respeta profundamente."
+    }
+  },
+  "LegalPrivacy": {
+    "Metadata": {
+      "title": "Política de privacidad — Paneflow",
+      "description": "Política de privacidad de Paneflow: datos recogidos en paneflow.dev, telemetría opt-in de la app de escritorio, encargados de tratamiento (PostHog EU, Vercel, GitHub), derechos RGPD.",
+      "ogTitle": "Política de privacidad — Paneflow",
+      "ogDescription": "Paneflow, sitio web y aplicación: datos, encargados de tratamiento y derechos RGPD."
+    },
+    "schema": {
+      "breadcrumbHome": "Inicio",
+      "breadcrumbPrivacy": "Política de privacidad"
+    },
+    "heading": "Política de privacidad",
+    "lastUpdated": "Última actualización: {date}",
+    "sections": {
+      "controller": {
+        "title": "1. Responsable del tratamiento",
+        "intro": "El responsable del tratamiento en el sentido del artículo 4 del RGPD es:",
+        "name": "Strivex",
+        "contactLabel": "Contacto:"
+      },
+      "siteData": {
+        "title": "2. Datos recogidos en paneflow.dev",
+        "intro": "El sitio <mono>paneflow.dev</mono> usa dos herramientas de analítica complementarias:",
+        "vercel": "<strong>Vercel Analytics</strong> · métricas de infraestructura (páginas vistas, Web Vitals) proporcionadas por el hosting.",
+        "posthog": "<strong>PostHog</strong> · modo <em>cookieless</em>, no se deposita ninguna cookie, no se persiste ningún identificador en el navegador. Se recogen: páginas vistas anónimas, clics en los botones de descarga, scrolls hasta secciones clave, parámetros UTM y el <mono>referer</mono> de llegada. Las direcciones IP <strong>nunca se almacenan</strong> (enmascarado activado en el servidor PostHog).",
+        "outro": "El sitio no recoge ningún dato personal identificativo (nombre, correo, identificador de cuenta). No se realiza ningún perfilado publicitario."
+      },
+      "telemetry": {
+        "title": "3. Telemetría de la aplicación de escritorio (opt-in)",
+        "p1": "La aplicación Paneflow instalada en tu equipo no transmite <strong>ningún dato</strong> mientras no hayas dado tu consentimiento explícito mediante el diálogo de consentimiento mostrado en el primer arranque.",
+        "p2": "Si aceptas, se transmiten los siguientes eventos:",
+        "events": {
+          "0": "<mono>app_started</mono> · arranque de la aplicación",
+          "1": "<mono>app_exited</mono> · cierre de la aplicación",
+          "2": "<mono>update_installed</mono> · instalación de una actualización"
+        },
+        "p3": "Cada evento está asociado a un identificador de máquina anónimo (UUID v4 aleatorio, almacenado localmente y reiniciable por el usuario), al sistema operativo y a la versión de Paneflow. <strong>No se transmite ningún path de archivo, nombre de proyecto, contenido de terminal, comando de shell ni información personal.</strong>",
+        "p4": "La variable de entorno <mono>PANEFLOW_NO_TELEMETRY=1</mono> desactiva toda la telemetría de forma incondicional, incluso antes de que se muestre el diálogo de consentimiento. El diálogo de consentimiento puede reabrirse en cualquier momento desde las preferencias de la aplicación para revisar tu elección."
+      },
+      "subprocessors": {
+        "title": "4. Encargados de tratamiento",
+        "intro": "De acuerdo con el artículo 28 del RGPD, Paneflow recurre a los siguientes encargados de tratamiento:",
+        "locationLabel": "Ubicación:",
+        "roleLabel": "Rol:",
+        "items": {
+          "0": {
+            "name": "PostHog Inc.",
+            "region": "EU Cloud · AWS Frankfurt (Alemania)",
+            "role": "Analítica de producto (sitio y telemetría opt-in de escritorio)",
+            "notes": "Modo cookieless, direcciones IP no almacenadas, retención de 12 meses, DPA firmado con SCC módulo 2 (responsable-encargado)."
+          },
+          "1": {
+            "name": "Vercel Inc.",
+            "region": "Estados Unidos (red edge en Europa)",
+            "role": "Hosting estático del sitio paneflow.dev y Web Vitals",
+            "notes": "Aceptado en el onboarding de Vercel. Sin transferencia de datos personales identificativos."
+          },
+          "2": {
+            "name": "GitHub Inc. (Microsoft Corporation)",
+            "region": "Estados Unidos",
+            "role": "Hosting del código fuente y de los artefactos de release descargados desde el sitio",
+            "notes": "Los logs de descarga están sujetos a los términos de servicio de GitHub."
+          }
+        }
+      },
+      "retention": {
+        "title": "5. Periodo de conservación",
+        "items": {
+          "0": "PostHog: 12 meses rolling",
+          "1": "Vercel Analytics: 30 días (valor por defecto)",
+          "2": "GitHub: periodo determinado por la política de GitHub para los logs de acceso a artefactos públicos"
+        },
+        "outro": "Más allá, los datos se eliminan o agregan de manera anónima."
+      },
+      "rights": {
+        "title": "6. Derechos de las personas interesadas",
+        "intro": "De acuerdo con el RGPD (artículos 15 a 21), dispones de los siguientes derechos sobre los datos que te conciernen:",
+        "items": {
+          "0": "<strong>Artículo 15</strong> · Derecho de acceso: obtener la confirmación de que se están tratando datos que te conciernen y recibir una copia.",
+          "1": "<strong>Artículo 16</strong> · Derecho de rectificación: solicitar la corrección de datos inexactos o incompletos.",
+          "2": "<strong>Artículo 17</strong> · Derecho de supresión («derecho al olvido»): solicitar la eliminación de tus datos cuando se cumplan las condiciones legales.",
+          "3": "<strong>Artículo 18</strong> · Derecho a la limitación del tratamiento: solicitar la suspensión temporal del tratamiento.",
+          "4": "<strong>Artículo 19</strong> · Obligación de notificación: ser informado de las rectificaciones, supresiones o limitaciones comunicadas a los destinatarios de los datos.",
+          "5": "<strong>Artículo 20</strong> · Derecho a la portabilidad: recibir tus datos en un formato estructurado, de uso común y de lectura mecánica, y transmitirlos a otro responsable.",
+          "6": "<strong>Artículo 21</strong> · Derecho de oposición: oponerte en cualquier momento al tratamiento de tus datos por motivos relacionados con tu situación particular."
+        },
+        "outro": "Cualquier solicitud de ejercicio de estos derechos debe enviarse por correo electrónico a <email>arthur.jean@strivex.fr</email>. Se te responderá en un plazo máximo de un mes. En caso de respuesta insatisfactoria, puedes presentar una reclamación ante la <cnil>CNIL</cnil>."
+      },
+      "contact": {
+        "title": "7. Contacto",
+        "intro": "Para cualquier pregunta relativa a esta política o al tratamiento de tus datos:",
+        "emailLabel": "Correo:",
+        "publisherLabel": "Editor:",
+        "publisherName": "Strivex"
+      }
+    }
+  },
+  "NotFound": {
+    "title": "Página no encontrada",
+    "description": "No pudimos encontrar la página que buscabas. Es posible que se haya movido, renombrado o que nunca existiera.",
+    "ctaHome": "Volver al inicio",
+    "ctaDocs": "Explorar los docs"
+  }
+}

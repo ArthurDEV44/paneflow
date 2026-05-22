@@ -1,4 +1,6 @@
+import type { Locale } from "next-intl";
 import { LATEST_VERSION } from "@/lib/release";
+import { bcp47ForJsonLd } from "@/lib/i18n-bcp47";
 
 /**
  * JSON-LD builders for comparison pages (`/compare/<x>`). One function
@@ -30,6 +32,8 @@ export interface CompareJsonLdInput {
   dateModified: string;
   /** Question/Answer pairs for the FAQPage adjunct. */
   faq: Array<{ question: string; answer: string }>;
+  /** Current page locale. Mapped to a BCP 47 tag via `bcp47ForJsonLd`. */
+  locale: Locale;
   /**
    * Optional inspiration link expressed as `Article.isBasedOn`. Use ONLY
    * when the comparison page explicitly credits the competitor as a
@@ -56,7 +60,7 @@ export function buildCompareJsonLd(
     headline: input.headline,
     description: input.description,
     url: pageUrl,
-    inLanguage: "en-US",
+    inLanguage: bcp47ForJsonLd(input.locale),
     datePublished: iso,
     dateModified: iso,
     image: `${SITE_URL}/opengraph-image`,

@@ -1,0 +1,90 @@
+---
+title: 你的第一个 Paneflow 会话
+description: 启动 Paneflow，分屏出你的第一个窗格，并在五分钟内学会核心心智模型。
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+<Callout type="info">
+**TL;DR。** 运行 `paneflow`。按 `Cmd/Ctrl+Shift+D` 水平分屏，按
+`Alt+Arrow` 移动焦点，按 `Cmd/Ctrl+Shift+N` 添加一个工作区。这就
+是全部核心流程。
+</Callout>
+
+Paneflow 的心智模型分为两层：**工作区**（独立的项目上下文）和
+**窗格**（工作区内部的终端分屏）。这一页带你从一次全新的安装走到
+一个可用的双窗格设置，不需要任何配置。
+
+快捷键使用 `secondary` 修饰符，它在 macOS 上解析为 `Cmd`，在 Linux
+上解析为 `Ctrl`。下面的 `Cmd/Ctrl+Shift+D` 表示"用适用于你 OS 的
+那个"。
+
+<Callout type="warn">
+本页的截图随 v0.3.0 文档冲刺一起交付。下面的文字假设你正在自己的
+机器上跟着操作。
+</Callout>
+
+## 如何启动 Paneflow？
+
+从终端运行二进制文件，或者从 Spotlight、应用程序文件夹或你的启动
+器打开应用：
+
+```bash
+paneflow
+```
+
+窗口打开，带有一个工作区和一个 shell 窗格。工作区以你启动它所在的
+目录命名；从 `~/projects/api` 启动会打开一个名为 `api` 的工作区。
+你的默认 shell（`$SHELL`）在窗格内启动。
+
+<Callout type="warn">
+**窗口没渲染？** Paneflow 在 Linux 上使用 Vulkan，在 macOS 上使用
+Metal。如果你的显卡驱动不支持平台所需的 API，窗口将无法打开。确认
+你的驱动是最新版本，查看 [Linux Vulkan 备注](/docs/installation/linux)，
+或者带上你的 OS 和驱动版本提交一个 [GitHub issue](https://github.com/ArthurDEV44/paneflow/issues)。
+</Callout>
+
+## 如何分屏一个窗格？
+
+两个分屏方向：
+
+- `Cmd/Ctrl+Shift+D` 把焦点窗格**水平**分屏（上下）。
+- `Cmd/Ctrl+Shift+E` 把焦点窗格**垂直**分屏（左右）。
+
+每个新窗格都会在与源窗格相同的工作目录中启动一个全新的 shell。两
+个都试一下：先水平分屏一次，把焦点移到新窗格，然后再把它垂直分屏。
+现在你在一个工作区里有了三个 shell。
+
+## 如何在窗格之间移动焦点？
+
+`Alt+Arrow` 在每个 OS 上工作方式相同：
+
+- `Alt+Left` 和 `Alt+Right` 把焦点切到左边或右边的窗格。
+- `Alt+Up` 和 `Alt+Down` 把焦点切到上面或下面的窗格。
+
+活动窗格的标题栏边框更亮，因此你能一眼看出哪个窗格会接收你的下一
+次按键。
+
+## 如何创建第二个工作区？
+
+`Cmd/Ctrl+Shift+N` 打开一个原生文件夹选择器。选一个目录，侧边栏
+里就会出现一个新的工作区，以该文件夹命名。这个工作区启动时已经有
+一个 shell 窗格，CWD 在你选中的目录里。
+
+在工作区之间切换：
+
+- `Cmd/Ctrl+1` 到 `Cmd/Ctrl+9` 跳到第 1 到 9 个工作区。
+- `Cmd/Ctrl+Tab` 轮转到下一个工作区。
+
+左边的侧边栏列出每一个打开的工作区。点击工作区的名字就跳过去。
+
+## 如何关闭一个窗格？
+
+`Cmd/Ctrl+Shift+W` 关闭焦点窗格。如果它是工作区里的最后一个窗格，
+工作区将保持打开并显示一个空占位符，直到你打开一个新窗格，或者
+用 `Cmd/Ctrl+Shift+Q` 关闭这个工作区本身。
+
+## 接下来呢？
+
+- 完整快捷键表：[快捷键](/docs/keybindings)。
+- 配置 shell、主题和覆盖：[配置](/docs/configuration)。

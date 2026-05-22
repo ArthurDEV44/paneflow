@@ -369,6 +369,40 @@ body {
   font-family: var(--font-sans), system-ui, sans-serif;
 }
 
+/* zh-Hans locale: prefer Noto Sans SC with a CJK system fallback chain.
+   The variable is only attached on /zh-Hans routes by the locale layout
+   so non-CJK readers never download the SC woff2 chunks. */
+html[lang="zh-Hans"] body {
+  font-family:
+    var(--font-noto-sans-sc), system-ui, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+}
+html[lang="zh-Hans"] h1,
+html[lang="zh-Hans"] h2,
+html[lang="zh-Hans"] h3,
+html[lang="zh-Hans"] h4 {
+  font-family:
+    var(--font-noto-sans-sc), system-ui, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+}
+
+/* ja locale: prefer Noto Sans JP with a JP system fallback chain. The
+   variable is only attached on /ja routes by the locale layout so
+   non-JP readers never download the JP woff2 chunks. */
+html[lang="ja"] body {
+  font-family:
+    var(--font-noto-sans-jp), system-ui, "Hiragino Sans", "Yu Gothic", Meiryo,
+    sans-serif;
+}
+html[lang="ja"] h1,
+html[lang="ja"] h2,
+html[lang="ja"] h3,
+html[lang="ja"] h4 {
+  font-family:
+    var(--font-noto-sans-jp), system-ui, "Hiragino Sans", "Yu Gothic", Meiryo,
+    sans-serif;
+}
+
 /* Smooth fade between light and dark themes via Houdini @property
    variable interpolation. Transition lives on :root so the custom
    properties animate at the cascade root; var() consumers throughout

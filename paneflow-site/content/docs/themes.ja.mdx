@@ -1,0 +1,114 @@
+---
+title: テーマ
+description: Paneflow の同梱テーマ - One Dark と PaneFlow Light - をホット リロードで切り替えます。再起動は不要です。
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow は今日、2 つの同梱テーマを提供しています。ダーク系デフォ
+ルト（`One Dark`）と、ライト系の代替（`PaneFlow Light`）です。
+テーマはすべてのターミナル サーフェスのカラー（ANSI パレット、
+カーソル、選択、スクロールバックのハイライト、検索マッチ）を制御
+します。サイドバーとタイトル バーは Paneflow のアプリ クロームの
+パレットを維持し、テーマには制御されません。
+
+<Callout type="info">
+**TL;DR。** `paneflow.json` に `"theme": "PaneFlow Light"` を設定
+してライト テーマに切り替えます。ファイルを保存してください。
+動作中のウィンドウは ~300 ms 以内に新しい色を取得し、再起動は
+不要です。
+</Callout>
+
+## アクティブ テーマを切り替えるには？
+
+`paneflow.json` で `theme` キーを設定してください：
+
+```json
+{
+  "theme": "PaneFlow Light"
+}
+```
+
+値は大文字小文字を含めて、同梱テーマ名の 1 つと正確に一致する
+必要があります。未知の名前は `One Dark` にフォールバックし、
+ファイルが次に解析されるときにログ警告を発します。
+
+設定ファイルの場所：
+
+| OS | パス |
+| --- | --- |
+| Linux | `~/.config/paneflow/paneflow.json` |
+| macOS | `~/Library/Application Support/paneflow/paneflow.json` |
+
+## 今日 Paneflow と一緒に提供されるテーマは？
+
+<VersionBadge stability="stable" />
+
+| 名前 | 説明 |
+| --- | --- |
+| `"One Dark"` | ダーク テーマ、デフォルト。Atom の One Dark パレットに着想を得ています。 |
+| `"PaneFlow Light"` | ライト テーマ。日光下のワークステーション向けに調整された高コントラスト パレット。 |
+
+両テーマとも、16 個すべての ANSI カラー スロット、フォアグラウン
+ド / バックグラウンド、カーソル、選択、検索ハイライトの色が、
+標準的なプロンプトで WCAG AA コントラストを満たすように事前に
+調整されて出荷されます。
+
+<Callout type="warn">
+プロジェクトの以前の計画では、6 つの同梱テーマが言及されていま
+した。v0.2.x の現実は 2 つです。追加の同梱テーマ（Solarized、
+Gruvbox、ハイ コントラスト バリアント）はロードマップにあります。
+発表については
+[GitHub releases](https://github.com/ArthurDEV44/paneflow/releases)
+を追跡してください。
+</Callout>
+
+## テーマのホット リロードはどう動作しますか？
+
+`paneflow.json` を保存すると、Paneflow はテーマをその場で再解決
+します。再起動も、ウィンドウのリロードもありません。
+
+2 つのメカニズムがリロードを駆動します：
+
+- **イベント駆動（優先）。** 設定ディレクトリにインストールされ
+  た `notify` ウォッチャが、保存後ミリ秒単位で発火します。イベ
+  ントは 300 ms でデバウンスされるため、エディタの保存バースト
+  （write -> fsync -> atomic-rename）はリロードを 1 回だけトリガ
+  します。
+- **ポーリング フォールバック。** inotify / FSEvents /
+  ReadDirectoryChangesW をサポートしないファイル システム（NFS
+  共有、ロックダウンされたサンドボックス、一部の WSL パス）は
+  500 ms の `mtime` ポーリングにフォールバックします。フォール
+  バックは、イベント ウォッチャの起動に失敗したときにのみ動作
+  します。
+
+新しいパレットは、ウォッチャが発火した後の次のレンダー フレーム
+で有効になります。通常、保存から ~300 ms 以内です。
+
+<Callout type="tip">
+ホット リロードは `paneflow.json` のすべてのテーマ関連フィールド
+を扱います。タイポグラフィ キー（`font_family`、`font_size`、
+`line_height`）も含みます。`window_decorations` キーは起動時に
+一度だけ読み込まれる唯一の設定フィールドです。これを変更するに
+は Paneflow を再起動する必要があります。
+</Callout>
+
+## カスタム テーマを作成するには？
+
+ユーザー提供のカスタム テーマは、v0.3.0 後のリリースに向けて
+ロードマップにあります。v0.2.x は上に挙げた同梱テーマ名のみを
+認識します。`theme.json` やカスタム パレット形式はまだありません。
+
+それまでに特定のパレットが欲しい場合は、最も直接的な方法は、
+欲しいパレットを添えた
+[GitHub issue](https://github.com/ArthurDEV44/paneflow/issues)
+を開くことです。同梱テーマは `src-app/src/theme/builtin.rs` で
+調整され、各リリースで提供されます。明確なユース ケースがある
+場合、新しいパレットは優先的に進められます。
+
+将来のカスタム テーマ キーのためのスキーマ レベルのプレース
+ホルダーは意図的にまだ定義されていません。そのため、今日
+`paneflow.json` にそれを追加しても効果はありません。寛容な
+ランタイムによって静かに無視されます
+（[設定の概要](/docs/configuration#how-does-paneflow-handle-unknown-keys)
+を参照）。

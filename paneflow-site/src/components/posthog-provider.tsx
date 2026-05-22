@@ -10,7 +10,31 @@ import posthog from "posthog-js";
 // makes the intent auditable from the provider file alone.
 const POSTHOG_EU_HOST = "https://eu.i.posthog.com";
 
-export function PHProvider({ children }: { children: React.ReactNode }) {
+function hasPosthog(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    Boolean((window as unknown as { posthog?: unknown }).posthog)
+  );
+}
+
+export function PHProvider({
+  children,
+  locale,
+}: {
+  children: React.ReactNode;
+  // When supplied, becomes a PostHog super property so every captured
+  // event (incl. $pageview, windows_waitlist_*, download_cta_clicked,
+  // language_switched, docs_search_query, etc.) automatically carries
+  // the active locale. The only PHProvider in the tree lives in
+  // [locale]/layout.tsx, which forwards its `locale` param — so docs
+  // routes (now under [locale]/docs/) inherit the URL locale verbatim,
+  // including the EN root (locale="en") and the 5 prefixed locales.
+  // Compatible with cookieless_mode: 'always' - super properties live
+  // in posthog-js memory for the session, no cookie write required.
+  // First wired by prd-i18n-fr-zh-Hans US-018; docs coverage closed by
+  // prd-fumadocs-docs-i18n US-004.
+  locale?: string;
+}) {
   useEffect(() => {
     if (typeof window !== "undefined" && process.env.NEXT_PUBLIC_POSTHOG_KEY) {
       posthog.init(process.env.NEXT_PUBLIC_POSTHOG_KEY!, {
@@ -40,6 +64,31 @@ export function PHProvider({ children }: { children: React.ReactNode }) {
       });
     }
   }, []);
+
+  // US-018: keep the `locale` super property in sync with the active
+  // route. Two timing cases need to be handled separately:
+  //   1. First mount before init resolves -> register on `posthog:ready`.
+  //   2. Subsequent locale changes (client-side nav from the language
+  //      switcher) -> register immediately because posthog-js is already
+  //      loaded.
+  // posthog-js queues captures until init completes, so the first
+  // $pageview (fired by PostHogPageView with the same `pathname` dep)
+  // is also covered as long as register() lands in the same tick window.
+  useEffect(() => {
+    if (typeof window === "undefined" || !locale) return;
+    const register = () => {
+      if (hasPosthog()) {
+        posthog.register({ locale });
+      }
+    };
+    if (hasPosthog()) {
+      register();
+      return;
+    }
+    const handler = () => register();
+    window.addEventListener("posthog:ready", handler, { once: true });
+    return () => window.removeEventListener("posthog:ready", handler);
+  }, [locale]);
 
   return <>{children}</>;
 }

@@ -1,0 +1,117 @@
+---
+title: 开始使用
+description: 在两分钟内安装 Paneflow 并启动你的第一个面向 AI 代理的多窗格工作区。
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow 是为 AI 代理 CLI 工作流构建的跨平台终端复用器 - Claude
+Code、Codex、OpenCode 以及任何其他能讲原生 shell 的代理。分屏窗格、
+持久会话、开发服务器端口检测以及零配置主题，全部集成在一个原生 GPU
+加速的应用中，启动时间低于 200 ms。
+
+<GetStartedDownloads />
+
+<Callout type="info">
+Paneflow 为 **macOS**（已公证的 `.dmg`，Apple Silicon）和 **Linux**
+（`.deb`、AppImage、tarball、x86_64 和 ARM64）提供签名二进制文件。
+上面的按钮为每个 OS 抓取推荐格式；下面按 OS 划分的指南覆盖了其他所
+有路径。
+</Callout>
+
+## 安装到你的平台
+
+<Cards>
+  <Card
+    title="在 macOS 上安装"
+    description=".dmg 已签名并公证，针对 Apple Silicon。首次启动通过 Gatekeeper，Homebrew tap 正在准备中。"
+    href="/docs/installation/macos"
+  />
+  <Card
+    title="在 Linux 上安装"
+    description=".deb、AppImage 或 tarball。在每个现代发行版上都能运行，Wayland 和 X11，x86_64 和 ARM64。"
+    href="/docs/installation/linux"
+  />
+  <Card
+    title="对比安装路径"
+    description="并列展示每种受支持的安装格式、依赖足迹和 PATH 集成。"
+    href="/docs/installation"
+  />
+</Cards>
+
+## 安装后的第一步
+
+<Cards>
+  <Card
+    title="你的第一个会话"
+    description="打开一个工作区，分屏窗格，运行一个代理，培养肌肉记忆。"
+    href="/docs/first-session"
+  />
+  <Card
+    title="快捷键"
+    description="默认键盘映射、Terminal 上下文以及如何在 paneflow.json 中重新映射任何操作。"
+    href="/docs/keybindings"
+  />
+  <Card
+    title="布局"
+    description="均匀、主竖直、平铺 - 以及如何用布局树编写自己的布局。"
+    href="/docs/layouts"
+  />
+  <Card
+    title="主题"
+    description="内置主题、35 个终端槽位，以及从 paneflow.json 热重载。"
+    href="/docs/themes"
+  />
+  <Card
+    title="配置"
+    description="paneflow.json 的位置、每个键的功能以及 JSON 模式。"
+    href="/docs/configuration"
+  />
+  <Card
+    title="故障排除"
+    description="Linux 上的 Vulkan、macOS 上的 Gatekeeper、PATH、字体和回退标志。"
+    href="/docs/troubleshooting"
+  />
+</Cards>
+
+## 内部运行什么
+
+- **纯 Rust** + [GPUI](https://www.gpui.rs/) - 与 Zed 运行的同一框架。
+- **原生 VT 仿真**通过 `alacritty_terminal`（crates.io 0.26）。
+- **原生 PTY** 通过 `portable-pty` - Linux 和 macOS 上同一份代码路径。
+- **JSON-RPC IPC** 在 `$XDG_RUNTIME_DIR/paneflow/paneflow.sock`，用于无头脚本。
+- **冷启动低于 200 ms**，延迟探针上按键到像素低于 4 ms。
+
+## 系统要求
+
+| 平台 | 最低要求 | GPU |
+| --- | --- | --- |
+| Linux | glibc 2.31+（Ubuntu 20.04、Debian 11、Fedora 34） | Vulkan 加载器（`libvulkan1` / `vulkan-loader`） |
+| macOS | 13 Ventura，Apple Silicon | Metal（内置） |
+
+## 用你的 AI 代理安装
+
+已经在用 Claude Code、Codex、OpenCode 或其他 AI 代理 CLI？把安装
+交出去 - 下面的提示词让你的代理读取此文档，检测你的 OS，并一次确认
+一步地完成安装。
+
+<AgentInstall />
+
+## Paneflow 如何对比？
+
+在 Paneflow 与另一个面向代理优先的终端之间权衡？并列分析覆盖架构、
+性能、决策指南，以及一份诚实的清单 - 列出竞品胜出的关键点。
+
+<Cards>
+  <Card
+    title="Paneflow vs cmux"
+    description="极简原生 Rust 工作区（200 ms 以下冷启动，Zed 的 GPUI）对比一应俱全的 macOS 工具集。架构、决策指南、FAQ。"
+    href="/compare/cmux"
+  />
+</Cards>
+
+## 帮助与反馈
+
+- 在 [GitHub Issues](https://github.com/ArthurDEV44/paneflow/issues) 上提交 bug 或功能请求。
+- 在 [下载页面](/download) 浏览所有发布工件。
+- 源代码：[github.com/ArthurDEV44/paneflow](https://github.com/ArthurDEV44/paneflow)。

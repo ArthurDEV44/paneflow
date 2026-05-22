@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { motion } from "framer-motion";
+import { useTranslations } from "next-intl";
 import { GitHubIcon } from "./icons";
 import { PrimaryDownloadCTA } from "./primary-download-cta";
 import { useDetectedLinuxArch } from "../lib/use-detected-arch";
@@ -18,13 +19,14 @@ import { track } from "../lib/analytics";
 // GitHub link works everywhere.
 
 export function Hero() {
+  const t = useTranslations("Hero");
   const arch = useDetectedLinuxArch();
   const os = useDetectedOS();
 
   return (
     <section
       data-track-section="hero"
-      className="relative pt-32 sm:pt-40 pb-0"
+      className="relative pt-24 sm:pt-40 pb-0"
     >
       {/* Outer container — centered + generous padding. Inner content is
           left-aligned (no mx-auto on inner) to match Cursor's hero layout:
@@ -58,7 +60,7 @@ export function Hero() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.15 }}
           >
-            A terminal workspace for orchestrating Claude Code, Codex, OpenCode, and custom CLI agents.
+            {t("headline")}
           </motion.h1>
 
           {/* CTAs — same pair on every viewport. PrimaryDownloadCTA
@@ -66,7 +68,7 @@ export function Hero() {
               /download (full matrix + Windows waitlist) instead of
               serving a desktop binary they can't run. */}
           <motion.div
-            className="mt-10 flex flex-wrap items-center gap-3"
+            className="mt-6 sm:mt-10 flex flex-wrap items-center gap-3"
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.35 }}
@@ -78,7 +80,7 @@ export function Hero() {
               className="inline-flex items-center gap-2.5 px-5 py-2.5 border border-surface-border text-text rounded-full hover:bg-surface/60 transition-all duration-200"
             >
               <GitHubIcon className="w-4 h-4" />
-              View on GitHub
+              {t("cta.github")}
             </a>
           </motion.div>
         </div>
@@ -90,14 +92,14 @@ export function Hero() {
             sharing the same outer container. This is exactly how Cursor
             stages their hero demo block. */}
         <motion.div
-          className="mt-12 sm:mt-16"
+          className="mt-8 sm:mt-16"
           initial={{ opacity: 0, y: 24 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.7, delay: 0.7 }}
         >
           <Image
             src="/images/paneflow-hero.png"
-            alt="Paneflow showing parallel panes running Claude Code and Codex agent sessions side by side, each with its git branch and dev-server status"
+            alt={t("imageAlt")}
             width={2491}
             height={1361}
             sizes="(max-width: 768px) 100vw, (max-width: 1408px) 90vw, 1152px"

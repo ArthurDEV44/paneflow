@@ -1,0 +1,120 @@
+---
+title: Paneflow unter macOS installieren
+description: Installiere Paneflow unter macOS 13 Ventura oder später über das signierte und notarisierte .dmg.
+dateModified: 2026-05-22
+howto: true
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow läuft unter macOS 13 Ventura und später. Heute ist das
+`.dmg` der einzige macOS-Installationspfad; ein Homebrew-Tap ist in
+Arbeit. Apple Silicon ist die unterstützte Architektur in v0.2.x;
+Intel-Builds kommen in einem späteren Release.
+
+<Callout type="info">
+Das `.dmg` ist mit einem Developer ID Application-Zertifikat
+signiert und von Apple notarisiert. Das Notarisierungs-Ticket ist
+am Bundle befestigt, sodass Gatekeeper es beim ersten Start ohne den
+„unidentifizierter Entwickler"-Dialog akzeptiert.
+</Callout>
+
+## Wie installiere ich Paneflow mit Homebrew?
+
+Ein Homebrew-Tap ist auf der Roadmap. Sobald er veröffentlicht ist,
+wird dieser Abschnitt einen Einzeiler zeigen, den du einfügen
+kannst. Bis dahin nutze den `.dmg`-Pfad unten; er ist die einzige
+unterstützte macOS-Installation in v0.2.x.
+
+## Wie installiere ich Paneflow aus einem .dmg?
+
+Lade das neueste Apple Silicon `.dmg` herunter, öffne es und ziehe
+die App in Applications.
+
+```bash
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-aarch64-apple-darwin.dmg
+open paneflow-0.2.16-aarch64-apple-darwin.dmg
+```
+
+Finder mountet das Disk-Image und öffnet ein Fenster mit der App
+`Paneflow` und einem `Applications`-Symlink. Ziehe `Paneflow` auf
+`Applications`, dann wirf das gemountete Volume aus.
+
+Starte aus Spotlight (`Cmd+Space` dann „Paneflow") oder direkt:
+
+```bash
+open /Applications/Paneflow.app
+```
+
+<Callout type="warn">
+Intel-Macs werden noch nicht in CI gebaut. Wenn du auf einem Mac
+vor 2020 bist, wird die Apple-Silicon-Binärdatei mit einem
+Architektur-Fehler nicht starten. Ein universelles oder
+Intel-only-DMG kommt in einem späteren Release; abonniere die
+[GitHub Releases](https://github.com/ArthurDEV44/paneflow/releases),
+um benachrichtigt zu werden.
+</Callout>
+
+## Wie verifiziere ich die Installation?
+
+`Paneflow.app` setzt `paneflow` nicht automatisch auf deinen `PATH` -
+die Binärdatei liegt unter
+`/Applications/Paneflow.app/Contents/MacOS/paneflow`. Die einfachste
+Verifikation ist, die App aus Spotlight (`Cmd+Space` dann
+„Paneflow") oder aus dem Terminal zu starten:
+
+```bash
+open -a Paneflow
+```
+
+Die Titelleiste zeigt die laufende Version beim ersten Frame.
+
+Für CLI-Zugriff aus jedem Terminal, symlinke die Binärdatei einmal
+in `/usr/local/bin`:
+
+```bash
+sudo ln -sf /Applications/Paneflow.app/Contents/MacOS/paneflow /usr/local/bin/paneflow
+```
+
+Nachdem der Symlink platziert ist, funktioniert der standardmäßige
+Verifikationsbefehl:
+
+```bash
+paneflow --version
+# paneflow 0.2.x
+```
+
+## Was, wenn macOS Gatekeeper die App blockiert?
+
+Das notarisierte `.dmg` sollte nie den „Apple konnte diese App
+nicht auf bösartige Software prüfen"-Dialog auslösen. Wenn du ihn
+siehst, bedeutet das, dass das Quarantäne-Attribut bei einem
+ungewöhnlichen Transfer (z. B. heruntergeladen über einen
+Nicht-Safari-Browser auf eine externe Festplatte) erhalten geblieben
+ist. Drei Wege zur Lösung, in der Reihenfolge der Reibung:
+
+**Rechtsklick öffnen** (einmalig pro App):
+
+1. Öffne Finder, navigiere zu `Applications`.
+2. Strg-Klick (oder Rechtsklick) auf `Paneflow.app`.
+3. Wähle **Öffnen**.
+4. Klicke auf **Öffnen** im Bestätigungs-Dialog.
+
+**Systemeinstellungen-Pfad** (macOS 13+):
+
+1. Öffne **Systemeinstellungen**.
+2. Gehe zu **Datenschutz und Sicherheit**.
+3. Scrolle zum Hinweis „Paneflow wurde blockiert".
+4. Klicke auf **Trotzdem öffnen**.
+
+**CLI-Pfad**:
+
+```bash
+xattr -d com.apple.quarantine /Applications/Paneflow.app
+```
+
+Der `xattr`-Befehl entfernt das erweiterte
+Quarantäne-Attribut, sodass Gatekeeper aufhört, nachfolgende
+Starts zu blockieren. Kein `sudo` notwendig für Apps, die du selbst
+heruntergeladen und nach `/Applications` gezogen hast; eine
+MDM-verwaltete oder root-installierte App benötigt möglicherweise
+`sudo`.

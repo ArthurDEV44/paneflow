@@ -1,13 +1,16 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { FadeIn } from "./fade-in";
-import Link from "next/link";
+import { Link } from "@/i18n/navigation";
 import { PrimaryDownloadCTA } from "./primary-download-cta";
 import { ThemeSelector } from "./theme-selector";
+import { LanguageSwitcher } from "./language-switcher";
 import { useDetectedLinuxArch } from "../lib/use-detected-arch";
 import { useDetectedOS } from "../lib/use-detected-os";
 
 export function Footer() {
+  const t = useTranslations("Footer");
   const os = useDetectedOS();
   const arch = useDetectedLinuxArch();
 
@@ -21,7 +24,7 @@ export function Footer() {
         <FadeIn>
           <div className="max-w-3xl mx-auto px-6 text-center">
             <h2 className="text-4xl sm:text-5xl md:text-6xl">
-              Try Paneflow today.
+              {t("ctaHeadline")}
             </h2>
             <div className="mt-10 flex justify-center">
               <PrimaryDownloadCTA os={os} arch={arch} source="footer" />
@@ -42,14 +45,14 @@ export function Footer() {
           <div className="flex flex-col justify-between gap-4">
             <div className="flex flex-col gap-2">
               <span className="font-mono font-semibold text-text">
-                Paneflow
+                {t("brand")}
               </span>
               <p className="text-text-muted max-w-xs leading-relaxed">
-                The terminal workspace for orchestrating coding agents.
+                {t("tagline")}
               </p>
             </div>
             <p className="text-text-subtle text-xs">
-              © 2026 Strivex. All rights reserved.
+              {t("copyright")}
             </p>
           </div>
 
@@ -60,22 +63,25 @@ export function Footer() {
                 href="/about"
                 className="hover:text-text transition-colors"
               >
-                About
+                {t("links.about")}
               </Link>
               <Link
                 href="/compare"
                 className="hover:text-text transition-colors"
               >
-                Compare
+                {t("links.compare")}
               </Link>
               <Link
                 href="/legal/privacy"
                 className="hover:text-text transition-colors"
               >
-                Privacy
+                {t("links.privacy")}
               </Link>
             </div>
-            <ThemeSelector />
+            <div className="flex items-center gap-3">
+              <ThemeSelector />
+              <LanguageSwitcher variant="pill" />
+            </div>
           </div>
         </div>
       </div>

@@ -1,0 +1,866 @@
+{
+  "Hero": {
+    "headline": "用于编排 Claude Code、Codex、OpenCode 和自定义 CLI 智能体的终端工作区。",
+    "imageAlt": "Paneflow 并排显示运行 Claude Code 和 Codex 智能体会话的并行面板，每个面板都带有 git 分支和开发服务器状态",
+    "cta": {
+      "github": "在 GitHub 上查看"
+    }
+  },
+  "FeatureTriptych": {
+    "heading": "管理工作，而非标签页。",
+    "subhead": "Paneflow 将终端会话变成智能体控制中心：每个会话保持可见、可标记、可恢复，由您决定该关注什么。",
+    "features": {
+      "0": {
+        "title": "每个智能体一个面板",
+        "description": "并排运行 Claude Code、Codex、OpenCode 和自定义 CLI。调整面板大小，让审阅触手可及，通过键盘导航。"
+      },
+      "1": {
+        "title": "每个任务一个工作区",
+        "description": "将智能体面板、git 分支、工作目录和本地服务绑定到同一任务。重启后恢复所有内容。"
+      },
+      "2": {
+        "title": "原生设计，支持长时间运行",
+        "description": "基于 Zed 的 GPU 渲染引擎和 Alacritty 分叉构建。运行数小时的智能体周围没有嵌入式 Chromium。"
+      }
+    }
+  },
+  "FeatureSections": {
+    "sections": {
+      "0": {
+        "title": "面向智能体并行工作的终端布局",
+        "description": "为每个智能体、测试运行器、服务器或审阅面板提供所需空间。水平分屏、垂直分屏、全屏放大，或选择预设。",
+        "imageAlt": "Paneflow 多面板和多工作区的分屏布局"
+      },
+      "1": {
+        "title": "了解每个智能体正在处理什么",
+        "description": "Paneflow 将分支、差异统计、工作目录和运行中的 HTTP 服务器绑定到工作区。您可以看到哪个智能体负责哪个任务。",
+        "imageAlt": "Paneflow 侧边栏显示每个工作区检测到的开发服务器和 git 分支"
+      },
+      "2": {
+        "title": "为编排 CLI 编码智能体而构建",
+        "description": "Paneflow 检测 Claude Code、Codex CLI 和 OpenCode 会话，为每个面板打标签，并保持分支上下文可见。使用 JSON-RPC 脚本化分屏、发送提示，并从任何语言读取智能体输出。",
+        "imageAlt": "Paneflow 检测到 Claude Code 会话并运行 AI 智能体"
+      },
+      "3": {
+        "title": "随时接续任何智能体线程",
+        "description": "Paneflow 读取当前项目下每个智能体的原生会话历史，将 Claude Code、Codex 和 OpenCode 归类到同一弹出层，并在终端中恢复所选线程。",
+        "imageAlt": "Paneflow AI 智能体会话弹出层显示当前项目的 Claude Code、Codex 和 OpenCode 历史"
+      }
+    }
+  },
+  "Navbar": {
+    "brand": "Paneflow",
+    "logoAlt": "Paneflow",
+    "links": {
+      "download": "下载",
+      "docs": "文档",
+      "compare": "对比"
+    },
+    "aria": {
+      "githubLink": "GitHub 上的 Paneflow",
+      "openMenu": "打开菜单",
+      "closeMenu": "关闭菜单",
+      "mobileNav": "站点导航",
+      "languageMenu": "切换语言"
+    },
+    "github": "GitHub"
+  },
+  "Footer": {
+    "ctaHeadline": "立即试用 Paneflow。",
+    "brand": "Paneflow",
+    "tagline": "用于编排编码智能体的终端工作区。",
+    "copyright": "© 2026 Strivex。保留所有权利。",
+    "links": {
+      "about": "关于",
+      "compare": "对比",
+      "privacy": "隐私"
+    }
+  },
+  "Install": {
+    "heading": "开始使用",
+    "subhead": "使用 Rust 工具链从源码构建。仅限 Linux。",
+    "commentClone": "# 克隆并构建",
+    "commentRun": "# 运行",
+    "requirements": "需要 Rust 1.82+、支持 Vulkan 的 GPU 和 Linux（Wayland 或 X11）",
+    "aria": {
+      "copy": "复制到剪贴板"
+    }
+  },
+  "Download": {
+    "header": {
+      "title": "下载 Paneflow",
+      "subhead": "支持 Linux 和 macOS。Windows 计划于 2026 年 Q3 推出。",
+      "pitch": "Paneflow 桌面应用在原生终端工作区中运行 Claude Code、Codex、OpenCode 和自定义 CLI 智能体，提供并行面板、分支感知会话和会话恢复。"
+    },
+    "matrix": {
+      "heading": "版本下载",
+      "viewPrevious": "查看历史版本 →",
+      "latestBadge": "最新",
+      "viewReleaseNotes": "查看版本说明 →",
+      "platforms": {
+        "macos": "macOS",
+        "windows": "Windows",
+        "linux": "Linux"
+      },
+      "placeholders": {
+        "windows": "Windows 二进制文件计划于 2026 年 Q3 推出。",
+        "comingSoon": "即将推出",
+        "empty": "-"
+      },
+      "items": {
+        "dmgAppleSilicon": "DMG (Apple Silicon)",
+        "appImageX64": "AppImage (x64)",
+        "appImageArm64": "AppImage (ARM64)",
+        "debX64": ".deb (x64)",
+        "debArm64": ".deb (ARM64)",
+        "rpmX64": ".rpm (x64)",
+        "rpmArm64": ".rpm (ARM64)",
+        "tarGzX64": "tar.gz (x64)",
+        "tarGzArm64": "tar.gz (ARM64)",
+        "windowsMsi": "Windows x86_64 MSI",
+        "wingetInstall": "winget install"
+      },
+      "aria": {
+        "copyCommand": "复制命令：{command}"
+      }
+    },
+    "agentInstall": {
+      "heading": "通过您的 AI 智能体安装",
+      "subhead": "将此提示粘贴到 Claude Code、Codex、OpenCode 或任何其他智能体 CLI。您的智能体会阅读文档、检测您的操作系统，并逐步引导完成安装。"
+    }
+  },
+  "DownloadCTA": {
+    "macos": "下载 macOS 版",
+    "linux": "下载 Linux 版",
+    "generic": "下载 Paneflow",
+    "windowsBadge": "Windows · 2026 Q3"
+  },
+  "Waitlist": {
+    "placeholder": {
+      "email": "your@email.com"
+    },
+    "aria": {
+      "sending": "发送中",
+      "subscribe": "订阅"
+    },
+    "errors": {
+      "verifying": "验证中。2 秒后重试。",
+      "rateLimit": "尝试次数过多。稍等一分钟后重试。",
+      "validation": "邮箱无效。",
+      "turnstile": "验证失败。请重新加载页面。",
+      "generic": "出现问题。30 秒后重试。",
+      "network": "连接已断开。请重试。"
+    },
+    "success": "已加入。我们将发送邮件至 <strong>{email}</strong>。",
+    "footnote": "仅在 Windows 发布当天发送一封邮件。无营销内容。"
+  },
+  "HomePage": {
+    "Metadata": {
+      "title": "Paneflow - 用于编排编码智能体的终端工作区",
+      "description": "用于编排 Claude Code、Codex、OpenCode 和其他 CLI 编码智能体的终端工作区。并行面板、分支感知工作区、开发服务器状态、会话恢复和脚本钩子。",
+      "ogTitle": "Paneflow - 用于编排编码智能体的终端工作区",
+      "ogDescription": "并行面板、分支感知工作区、开发服务器状态、会话恢复。面向 CLI 编码智能体的原生终端。"
+    },
+    "schema": {
+      "description": "用于编排 Claude Code、Codex、OpenCode 和其他 CLI 编码智能体的原生终端工作区。并行面板、分支感知工作区、实时开发服务器状态、会话恢复和 JSON-RPC IPC 服务器。基于 Zed 的 GPUI 渲染引擎，使用纯 Rust 编写。",
+      "softwareRequirements": "Linux（Wayland 或 X11）带 Vulkan 驱动，或 macOS 13 Ventura+（Apple Silicon）。计划支持 Windows 10 1809+。"
+    }
+  },
+  "AboutPage": {
+    "Metadata": {
+      "title": "关于 Paneflow - 由 Arthur Jean（Strivex）打造",
+      "description": "Paneflow 的开发者，用于编排 Claude Code、Codex、OpenCode 和其他 CLI 编码智能体的原生终端工作区。创始人简介、项目背景和联系方式。",
+      "ogTitle": "关于 Paneflow - 由 Arthur Jean（Strivex）打造",
+      "ogDescription": "用于编排 CLI 编码智能体的原生终端工作区。由 Strivex 的 Arthur Jean 打造。"
+    },
+    "schema": {
+      "jobTitle": "Strivex 创始人 - 开发者工具构建者",
+      "breadcrumbHome": "首页",
+      "breadcrumbAbout": "关于"
+    },
+    "heading": "关于 Paneflow 及其背后的团队",
+    "sections": {
+      "what": {
+        "title": "Paneflow 是什么",
+        "p1": "Paneflow 是一个原生终端工作区，用于并行编排 Claude Code、Codex、OpenCode 和其他 CLI 编码智能体。每个智能体一个面板，分支感知工作区，实时开发服务器状态，会话恢复，以及让任何工具能够以编程方式驱动编辑器的 JSON-RPC IPC 服务器。",
+        "p2": "它面向同时运行多个编码智能体且希望工作区不挡路的开发者：基于 Zed 的 GPUI 渲染引擎，使用纯 Rust 编写，原生窗口装饰，无 Electron、无 JavaScript 运行时、无输入延迟。当前支持 Linux；macOS 可用；Windows 正在移植中。"
+      },
+      "who": {
+        "title": "由谁打造",
+        "p1": "Paneflow 由 <link>Strivex</link> 创始人 <strong>Arthur Jean</strong> 打造。项目最初是 cmux（一个仅支持 Swift 的终端复用器）的跨平台 Rust 移植。目标是保留工作流人体工学的同时，向每个主流桌面操作系统交付原生二进制文件。",
+        "p2": "Strivex 是一家专注于开发者工具的小型工作室。Paneflow 是其首个开源项目。所有内容均采用 MIT 协议并公开构建。"
+      },
+      "links": {
+        "title": "链接",
+        "sourceCode": "源代码",
+        "githubProfile": "GitHub 主页",
+        "studio": "工作室",
+        "privacyLabel": "隐私："
+      },
+      "contact": {
+        "title": "位置与联系方式",
+        "p1": "在法国办公。如有项目问题、缺陷报告或合作意向：<email>arthur.jean@strivex.fr</email>。",
+        "p2": "对于缺陷和功能请求，提交 GitHub issue 更快：<link>paneflow/issues</link>。"
+      }
+    }
+  },
+  "DownloadPage": {
+    "Metadata": {
+      "title": "下载 Paneflow - 并行运行 Claude Code、Codex 和 OpenCode",
+      "description": "下载 Paneflow，用于在并行面板中编排 Claude Code、Codex、OpenCode 和其他 CLI 编码智能体的原生终端工作区，配有分支感知工作区和会话恢复。Linux 和 macOS 现已可用。Windows 计划于 2026 年 Q3 推出。",
+      "ogTitle": "下载 Paneflow - 编排 Claude Code、Codex 和 OpenCode",
+      "ogDescription": "用于并排运行 CLI 编码智能体的原生终端工作区。Linux 和 macOS 现已可用。Windows 计划于 2026 年 Q3 推出。"
+    },
+    "schema": {
+      "description": "用于编排 Claude Code、Codex、OpenCode 和其他 CLI 编码智能体的原生终端工作区。并行面板、分支感知工作区、实时开发服务器状态、会话恢复和 JSON-RPC IPC 服务器。基于 Zed 的 GPUI 渲染引擎，使用纯 Rust 编写。",
+      "breadcrumbHome": "首页",
+      "breadcrumbDownload": "下载"
+    }
+  },
+  "ComparePage": {
+    "Metadata": {
+      "title": "对比 Paneflow 与其他终端复用器",
+      "description": "Paneflow 与 cmux 及其他终端工作区的诚实对比。架构、功能、定价、各自的最佳适用场景。",
+      "ogTitle": "对比 Paneflow 与其他终端工作区",
+      "ogDescription": "Paneflow 与 cmux 及其他智能体优先的终端复用器的诚实对比。"
+    },
+    "schema": {
+      "breadcrumbHome": "首页",
+      "breadcrumbCompare": "对比",
+      "collectionName": "对比 Paneflow 与其他终端工作区"
+    },
+    "header": {
+      "title": "对比 Paneflow",
+      "tldr": "Paneflow 与其他智能体优先终端工作区的并排对比。下方每个页面均根据双方项目的源代码撰写，并配有专门的「何时不应选择 Paneflow」章节，让您清楚知道何时该选择另一方。"
+    },
+    "comparisons": {
+      "cmux": {
+        "competitor": "cmux",
+        "blurb": "基于 libghostty 构建的 macOS 原生 Swift 终端工作区。成熟（v0.64，17 500+ 星）、功能丰富（嵌入式浏览器、SSH 守护进程、云虚拟机），GPL-3.0 + 商业双协议。"
+      },
+      "wezterm": {
+        "competitor": "WezTerm",
+        "blurb": "架构上的同类：同样的 Rust + GPU + MIT 血统，但目的不同。WezTerm 是高度可配置、用 Lua 脚本化的终端（26 k+ 星，八年历史，提供 FreeBSD + Windows 构建，内置 SSH 复用器）。Paneflow 则是智能体优先的工作区。"
+      },
+      "iterm2": {
+        "competitor": "iTerm2",
+        "blurb": "macOS 老将（16 年，17 500+ 星，GPL-2.0），在 v3.7.0beta1（2026 年 4 月）中推出了 Claude Code 集成 + 多厂商 AI 对话。跨平台 vs 仅 macOS，MIT vs GPL-2.0，CLI 智能体宿主 vs 内嵌对话架构。"
+      },
+      "warp": {
+        "competitor": "Warp",
+        "blurb": "2026 年 4 月开源（AGPL-3.0 客户端 + MIT UI，OpenAI 为首要赞助者）。偏向云端，配有 $20-$50 每用户的付费档位，免费档位 AI 需要遥测同意，并提供 Oz 云智能体编排。Paneflow 则是本地优先的 MIT，无登录、无遥测、无档位。"
+      }
+    },
+    "cardCta": "阅读 →",
+    "cardTitle": "Paneflow 对比 {competitor}",
+    "futureNote": "正在考虑的未来对比对象：tmux、zellij、Alacritty。如果您想投票决定下一个上线的对比，请提交 <link>GitHub issue</link>。"
+  },
+  "CompareWarp": {
+    "Metadata": {
+      "title": "Paneflow 对比 Warp（2026）：MIT 本地 CLI 宿主 vs AGPL 云端智能体平台",
+      "description": "Paneflow 对比 Warp：同为 Rust + GPU + 跨平台，同样在今天提供 AI。Paneflow 采用 MIT 协议，无登录、无遥测、无付费档位，启动您已经在用的 CLI 智能体。Warp 是 AGPL-3.0 客户端 + MIT UI，配有付费档位、内置智能体和云编排层（Oz）。诚实的决策指南。",
+      "ogTitle": "Paneflow 对比 Warp（2026）",
+      "ogDescription": "MIT 本地优先独立项目 vs AGPL-3.0 偏向云端、配有 $20-$50 档位的智能体平台。架构、协议、遥测，以及 Claude Code、Codex、OpenCode 工作流的决策指南。"
+    },
+    "schema": {
+      "headline": "Paneflow 对比 Warp（2026）",
+      "description": "MIT 本地优先 Rust 智能体宿主 vs AGPL-3.0 偏向云端、配有付费团队档位的 Rust 智能体平台。同为 Rust，同样 GPU 加速，同样在今天提供 AI - 它们在激励结构上分道扬镳。决策指南。"
+    },
+    "header": {
+      "title": "Paneflow 对比 Warp",
+      "tldr": "Paneflow 和 Warp 都是 Rust + GPU + 跨平台终端，并且都已在今天提供 AI。<strong>它们的分歧在于激励结构，而不是品类。</strong> <strong>Paneflow</strong> 全程 MIT，无登录、无遥测、无付费档位、无服务端后台 - 单一二进制启动您已经在用的 CLI 智能体（Claude Code、Codex、OpenCode），运行在 Zed 的 GPUI 引擎上。<strong>Warp</strong> 客户端采用 AGPL-3.0（warpui crate 为 MIT），配有闭源后端，每用户每月 $20-$50 的付费档位、免费档位访问 AI 需要遥测同意，以及一个独立的云编排产品 Oz。OpenAI 是新开源仓库的首要赞助者。如果您想要本地优先、MIT、无附加条件的智能体宿主，选择 Paneflow。如果您想要内置 AI 智能体、共享团队命令库（Warp Drive）和企业商业路径，选择 Warp。"
+    },
+    "context": {
+      "title": "关于背景的说明",
+      "p1": "Warp 于 2026 年 4 月底开源了其客户端代码库 - 这相较于 2026 年之前的闭源 SaaS 模式是一次实质性转变，值得在对比之前坦诚承认。引用 Warp 自身 master/README.md 中的 <em>NOTE</em> 段落：「OpenAI is the founding sponsor of the new, open-source Warp repository, and the new agentic management workflows are powered by GPT models.」任何评估 Warp 的人都应将开源转向视为 2026 年的头条变化。",
+      "p2": "一个不那么显眼的细节：源代码位于 <code>github.com/warpdotdev/Warp</code> 的 <code>master</code> 分支，而非 <code>main</code>（后者仍是仅含 issue 的仓库，附带一份过时的「currently closed-source」LICENSE 文件）。仓库实际的 <code>Cargo.toml</code>、<code>LICENSE-AGPL</code> 和 <code>LICENSE-MIT</code> 都在 <code>master</code> 上。只查看 <code>main</code> 的读者会得出错误结论 - 这一点值得提前指出，因为它会改变您阅读本页其余部分的方式。下文所有 Warp 源代码引用都指向 <code>master</code> 上的 URL。",
+      "p3": "开源转向并未抹除其底层商业模式。Warp 的服务端后台仍为闭源，免费档位将 AI 限于遥测同意之后，付费档位（每用户每月 $20-$50）是通往无遥测 AI 和团队功能（Warp Drive、SSO、零数据保留）的路径。Paneflow 没有任何此类机制 - 整个产品就是单一 MIT 二进制。"
+    },
+    "quick": {
+      "title": "快速对比",
+      "intro": "分为三个维度 - 协议与数据姿态（Paneflow 领先）、核心终端对等性（双方相当）、智能体与团队能力面（Warp 已交付更多）。",
+      "licenseHeading": "协议与数据姿态",
+      "coreHeading": "核心终端对等性",
+      "agentHeading": "智能体与团队能力",
+      "footnote": "<strong>版本：</strong>Paneflow v0.2.16（2026 年 5 月），首次提交于 2026-04-01。Warp 客户端于 2026-04-28 开源（Denver Technologies, Inc.，版权 2020-2026）。<strong>定价：</strong>Paneflow 免费 MIT。Warp 免费档 75 积分/月（前两个月为 150） + Build $20/月 + Business $50/用户/月 + Enterprise 定制。"
+    },
+    "decision": {
+      "title": "哪一个适合您？",
+      "intro": "诚实的回答：这个选择主要取决于您希望终端与厂商后端建立何种关系。如果您不想与后端建立任何关系，选择 Paneflow。如果您想要打磨过的内置 AI 智能体 + 团队规模化路径，选择 Warp。",
+      "leftHeading": "选择 Paneflow 如果",
+      "leftBullets": {
+        "0": "您想要本地优先 - 无登录、无遥测、无服务端后台、永无付费档位",
+        "1": "您想要全程 MIT，将终端代码嵌入闭源产品就很简单",
+        "2": "您的智能体工作流是启动您已经在用的 CLI 智能体（Claude Code、Codex、OpenCode），而非内嵌一个对话界面",
+        "3": "比起背靠风险投资、配有付费档位的产品，您更偏好与 Zed 哲学一致的独立维护者",
+        "4": "您不需要共享团队命令库、SSO 或商业支持",
+        "5": "您想要一份可以审计、可以分叉、可以发布且代码库内没有协议边界的单一二进制"
+      },
+      "rightHeading": "选择 Warp 如果",
+      "rightBullets": {
+        "0": "您想要在终端内部内置一个打磨过的 AI 智能体，而不只是在面板里启动 CLI 智能体",
+        "1": "您想要共享团队命令库（Warp Drive）和云端同步设置",
+        "2": "您需要 SAML SSO、SCIM、团队管理功能或集中计费",
+        "3": "您想要 Oz 云编排在服务端并行生成编码智能体并支持规模化",
+        "4": "您接受客户端 AGPL-3.0（或只需要 MIT 的 warpui crate）且接受闭源后端",
+        "5": "您希望由 OpenAI 作为首要赞助者，并通过 Enterprise 档位获得直接的商业支持",
+        "6": "您愿意为 AI 积分、ZDR 强制执行和团队功能每用户每月支付 $20-$50"
+      }
+    },
+    "architecture": {
+      "title": "架构深入剖析",
+      "p1": "<strong>Warp</strong> 是一个 Rust 工作空间，其 crate 包括 <code>app</code>、<code>warp_terminal</code>、<code>warpui</code>、<code>warp_completer</code>、<code>editor</code>、<code>markdown_parser</code> 等 - 工作空间 <code>Cargo.toml</code> 声明 <code>license = \"AGPL-3.0-only\"</code>，并将 warpui crate 拆分为 MIT。渲染器是定制的：Warp 分叉了 Alacritty 的网格和 VT 模型，但写了自己的 GPU 渲染器，在 macOS 上直接调用 Metal，约 200 行自定义着色器。除了本地应用，Warp 还提供闭源服务端后台，为 AI 功能、Warp Drive 和云同步设置提供支持；云编排产品 Oz 在服务端运行智能体，并通过本地终端的「交接」连接。",
+      "p2": "<strong>Paneflow</strong> 是基于 Zed 的 GPUI 引擎构建的纯 Rust 应用 - UI 与终端之间没有语言边界，没有闭源后端，没有需要喂养的 AI 服务。终端模拟使用来自 crates.io 的上游 <code>alacritty_terminal</code> 0.26（而 Warp 使用自己分叉的网格模型）。GPU 层是 GPUI 的 Blade 渲染器，在 Linux 上跑 Vulkan，在 macOS 上跑 Metal。智能体能力面有意保持精简：Paneflow 提供工作区、面板、分支检测，以及三个一等公民 CLI 智能体按钮（Claude Code、Codex、OpenCode）。您可以在 shell 中运行的任何二进制都能在 Paneflow 面板中运行；与 Warp 不同，没有内嵌的多厂商对话。无遥测，无分析服务，无登录。",
+      "p3": "IPC 能力面同样能说明问题。Warp 通过 GraphQL（工作空间内附带 <code>graphql</code> crate）与其后端通信，并配有一条遥测管道 - 按 Warp 自身文档，免费档位 AI 必须使用。Paneflow 在 Unix 套接字 <code>$XDG_RUNTIME_DIR/paneflow/paneflow.sock</code> 上暴露单一的 JSON-RPC 2.0 服务器，大约十三个方法 - 无遥测，无分析。对大多数开发者而言这种差异不可见；但对在意本地优先姿态的人来说，这就是整个产品。"
+    },
+    "pricing": {
+      "title": "定价",
+      "intro": "协议与定价模型差异显著。",
+      "paneflow": "<strong>Paneflow</strong>：MIT，版权 (c) 2026 Arthur Jean。单一免费档，无付费方案，无按席位定价，无 AI 积分，无遥测。可放心嵌入到商业产品中。",
+      "warp": "<strong>Warp</strong>：混合协议（AGPL-3.0 客户端 + MIT warpui crate），版权 (c) 2020-2026 Denver Technologies, Inc.。四档：免费档（$0，前两个月加成期之后每月 75 个 AI 积分，AI 需要遥测）、Build（$20/月，1 500 积分 + BYOK）、Business（$50/用户/月，SSO + 全团队强制零数据保留 + 共享积分），以及 Enterprise（定制，附带商业支持）。"
+    },
+    "migrating": {
+      "title": "从 Warp 迁移到 Paneflow",
+      "intro": "没有自动迁移路径。Warp 使用 YAML 配置加上绑定到您 Warp 账号的云同步设置；Paneflow 使用 Linux 下 <code>~/.config/paneflow/paneflow.json</code> 和 macOS 下 <code>~/Library/Application Support/paneflow/paneflow.json</code> 的静态 JSON 文件。预留十分钟做全新配置：默认 shell、主题、键位绑定、智能体按钮。Warp 的三项功能在 Paneflow 中没有等价物，迁移计划是「这些功能继续用 Warp」而非「在本地重建」：",
+      "bullets": {
+        "0": "<strong>Warp Drive</strong>：共享团队命令与片段库。Paneflow 无等价物。如果 Warp Drive 是您团队的核心，请留在 Warp。",
+        "1": "<strong>内置 AI 智能体</strong>：Paneflow 不提供内嵌对话界面。迁移方式是把您选择的 CLI 智能体（Claude Code、Codex、OpenCode）作为面板启动。",
+        "2": "<strong>Oz 云编排</strong>：Paneflow 无等价物。如果您需要规模化的服务端并行智能体，Oz 是正确的工具。",
+        "3": "<strong>SSO + 团队管理</strong>：Paneflow 无等价物。Paneflow 是为单个开发者构建的，不针对需要集中式终端管理的组织。"
+      }
+    },
+    "whenNot": {
+      "title": "何时不应选择 Paneflow",
+      "intro": "诚实的硬性决断。如果以下五点中的任何一项对您重要，Warp 才是今天合适的工具 - 不必勉强：",
+      "items": {
+        "0": "<strong>您想要在终端内置一个内嵌的多厂商 AI 智能体。</strong>Warp 提供打磨过的终端内 AI 对话 - Paneflow 只把外部 CLI 智能体（Claude Code、Codex、OpenCode）作为面板启动。如果您的工作流是「不离开终端应用就能针对终端输出对话」，Warp 才合适。",
+        "1": "<strong>您想要共享团队命令库（Warp Drive）。</strong>Warp Drive 是 Paneflow 在没有后端的情况下无法复刻的独特产品功能。如果您团队依赖共享命令、片段和笔记本，Warp 才是正确的工具。",
+        "2": "<strong>您需要 SAML SSO、SCIM 或集中团队管理。</strong>$50/用户/月 的 Warp Business 为需要集中式认证、审计和配置的组织提供这些。Paneflow 没有团队档位，也没有管理后台。",
+        "3": "<strong>您想要商业支持合同。</strong>Warp Enterprise 提供付费支持；Paneflow 是独立项目，没有商业支持渠道。如果您需要一个出问题时可以拨打的电话号码，Warp 才合适。",
+        "4": "<strong>您想要云同步设置。</strong>Warp 通过您的账号同步设置、主题和工作流。Paneflow 把所有内容存储在本地 JSON 文件中 - 通过 git 或 dotfiles 可移植，但没有内置云同步。"
+      }
+    },
+    "faq": {
+      "title": "常见问题",
+      "items": {
+        "0": {
+          "question": "Paneflow 是 Warp 的分叉吗？",
+          "answer": "不是。Warp 是由 Denver Technologies, Inc. 构建的 Rust + Metal 终端，于 2026 年 4 月以混合协议开源（客户端 AGPL-3.0，warpui_core 和 warpui crate 为 MIT）。Paneflow 是 Arthur Jean 的独立 Rust + GPUI 代码库，全程 MIT。两者没有共享源代码，并以不同的商业模式发布（Warp 有付费档位 + 闭源后端；Paneflow 是单一 MIT 二进制）。"
+        },
+        "1": {
+          "question": "两者都是 Rust + GPU + 跨平台。实际差别在哪？",
+          "answer": "激励结构和智能体架构。Warp 客户端 AGPL-3.0 但服务端后台仍闭源，免费档位 AI 需要遥测，团队功能（Warp Drive、SSO、ZDR、共享积分）位于 $20-$50 每用户每月的档位之后。Paneflow 全程 MIT，无登录、无遥测、无付费档位、无后端。Warp 提供内置 AI 智能体加 Oz（云编排）；Paneflow 只启动您已经在用的 CLI 智能体（Claude Code、Codex、OpenCode）。"
+        },
+        "2": {
+          "question": "Warp 的源代码真的公开了吗？我查看了 github.com/warpdotdev/Warp 看到「currently closed-source」。",
+          "answer": "是的，源代码已公开，位于 master 分支 - 这是一个不显眼的转折。github.com/warpdotdev/Warp 有两个分支：main 配置为仅 issue 的仓库，附带过时的 LICENSE 文件，仍写着「currently closed-source」；而 master 则承载实际开源的 Rust 工作空间（Cargo.toml、LICENSE-AGPL、LICENSE-MIT、完整源代码树）。2026 年 4 月的公告是真实的。如果您只看 main，会得出 Warp 仍闭源的结论 - 请查看 master。"
+        },
+        "3": {
+          "question": "「AGPL-3.0 客户端 + MIT UI 框架」对嵌入意味着什么？",
+          "answer": "Warp 仓库在 crate 边界处拆分协议：warpui_core 和 warpui crate 为 MIT，代码库其余部分（终端核心、AI 能力面、编排代码）按工作空间 Cargo.toml 为 AGPL-3.0-only。您可以把 warpui 拉入闭源产品；其余部分不能。Paneflow 的 MIT 覆盖一切 - 终端核心、GPUI 集成和 IPC 服务器都是 MIT - 因此嵌入者不必在代码库内追踪协议边界。"
+        },
+        "4": {
+          "question": "为什么 Warp 免费档位需要遥测而 Paneflow 不需要？",
+          "answer": "商业模式不同。Warp 的免费档是漏斗：遥测喂养 AI 产品，AI 产品促成向付费档位的转化。引用 Warp 自身文档 docs.warp.dev：「Telemetry must be enabled to use AI features on the Free plan, while paid plans can opt out at any time and continue using Warp, including AI.」Paneflow 没有付费档位，没有需要喂养的 AI 服务，也没有收集遥测的商业理由。Warp 在 2024 年 11 月去掉了登录要求，但 2026 年免费档位 AI 的遥测门槛仍然存在。"
+        },
+        "5": {
+          "question": "Oz 是什么？跟终端内的 Warp AI 智能体一样吗？",
+          "answer": "不一样。Oz 是 Build 方案（$20/用户/月）下独立的云编排层：它在服务端并行生成编码智能体，并通过「交接」把会话从本地终端转移到 Oz 以获得更多算力。终端内的 Warp AI 智能体是本地交互功能。Paneflow 两者都没有 - 它在面板中启动本地 CLI 智能体，没有云层，没有编排服务。"
+        },
+        "6": {
+          "question": "Paneflow 有像 Warp Business 那样的团队定价或 SSO 吗？",
+          "answer": "没有。Paneflow 是单一 MIT 二进制，没有团队档位、没有 SSO、没有 SCIM、没有团队管理后台、没有按席位计费。如果您需要这些，$50/用户/月 的 Warp Business 才是正确的工具 - 它提供 SAML SSO、强制全团队零数据保留、共享积分池和集中计费，最多 50 席。Paneflow 是为单个开发者构建的；如果您的组织需要带认证控制的集中式终端管理，请看 Warp。"
+        },
+        "7": {
+          "question": "我能把 Warp 设置迁移到 Paneflow 吗？",
+          "answer": "没有自动路径。Warp 使用 YAML 配置加云同步设置；Paneflow 在 Linux 上使用静态 JSON 文件 ~/.config/paneflow/paneflow.json。预留十分钟做全新配置：默认 shell、主题、键位绑定、智能体按钮。依赖 Warp Drive（共享命令与片段库）的工作流在 Paneflow 中没有等价物 - 如果 Warp Drive 是您团队工作流的核心，请留在 Warp。"
+        }
+      }
+    },
+    "next": {
+      "title": "下一步",
+      "body": "准备好试用 Paneflow 了吗？<download>下载最新版本</download> 或阅读 <docs>入门指南</docs>。对 Warp 感兴趣？<repo>Warp 的开源代码在 GitHub 上</repo>（master 分支，不是 main） - 开源转向是 2026 年的头条变化，原则上值得尊重，即使 Paneflow 站在本地与云端权衡的另一边。"
+    }
+  },
+  "CompareIterm2": {
+    "Metadata": {
+      "title": "Paneflow 对比 iTerm2（2026）：跨平台智能体宿主 vs 内置对话的 macOS 老将",
+      "description": "Paneflow 对比 iTerm2：跨平台（Linux + macOS，计划 Windows）MIT 协议的智能体工作区，运行您已经在用的 CLI 智能体；vs 仅支持 macOS、GPL-2.0、内嵌多厂商 AI 对话的老将。诚实的决策指南、架构、FAQ。",
+      "ogTitle": "Paneflow 对比 iTerm2（2026）",
+      "ogDescription": "跨平台 MIT 智能体宿主 vs 仅 macOS 的 GPL-2.0 老将。双方都提供 Claude Code 集成；架构和可移植性不同。Claude Code、Codex、OpenCode 工作流的决策指南。"
+    },
+    "schema": {
+      "headline": "Paneflow 对比 iTerm2（2026）",
+      "description": "跨平台 Rust 智能体宿主 vs 仅 macOS 的 Objective-C/Swift 老将。两者都 GPU 加速，都提供 Claude Code 集成；可移植性和智能体架构不同。决策指南。"
+    },
+    "header": {
+      "title": "Paneflow 对比 iTerm2",
+      "tldr": "iTerm2 是 macOS 老将（16 年代码库、17 500+ 星、GPL-2.0），在 v3.7.0beta1 中提供了内嵌多厂商 AI 对话和会话感知的 Claude Code 集成。Paneflow 是跨平台的独立新手（一个月历史、MIT、基于 Zed GPUI 的纯 Rust），将 Claude Code、Codex 和 OpenCode 作为一等公民 CLI 面板运行。<strong>两者都 GPU 加速。两者都已提供 Claude Code 集成。</strong> 它们的分歧在于可移植性（Paneflow 当前支持 Linux + macOS，计划 Windows；iTerm2 设计上仅 macOS）、协议（MIT vs GPL-2.0）和智能体架构（Paneflow 启动您已经在用的 CLI 智能体；iTerm2 提供内嵌对话界面加 hook）。如果您想要跨平台智能体宿主，选择 Paneflow。如果您想要 16 年 macOS 打磨加上内置 AppleScript 和 Python 自动化，选择 iTerm2。"
+    },
+    "context": {
+      "title": "关于背景的说明",
+      "p1": "本页的输入研究有几处出错，先在此说明以便其余部分如实呈现。iTerm2 并非 CPU 受限 - 其自身 AGENTS.md 明确写道「PTYTextView - Metal-accelerated rendering.」最干净的 USP 框定不是「现代 GPU vs CPU 老将」；而是 <em>Metal（仅 macOS）vs GPUI/Blade（跨平台）</em>。iTerm2 的 Claude Code 集成也不是启动器桩：iTerm2 仓库根目录的 <code>ClaudeCodeHookEvent.swift</code> 通过完整的 Codable 类型解析上游 Claude Code hook 事件协议，并配套了用于引导、健康监控和工作组模式控制器的文件。诚实的 USP 框定不是「智能体优先 vs 无智能体」；而是 <em>CLI 智能体宿主（Paneflow）vs 内嵌多厂商对话（iTerm2）</em>。",
+      "p2": "厘清这一点后：两个产品解决的是重叠的问题，但优先级不同。iTerm2 用 16 年成为现存打磨最彻底的 macOS 终端，并在 2026 年新增了重要的 AI 能力面（按其自身 AI live harness，多厂商对话覆盖 OpenAI、Anthropic、Gemini 和 DeepSeek，加上 Claude Code 会话 hook）。Paneflow 用一个月成为跨平台智能体宿主，把您已经在用的 CLI 二进制（Claude Code、Codex、OpenCode）挂载到一个带分支检测、开发服务器端口横幅和会话恢复的工作区中。"
+    },
+    "quick": {
+      "title": "快速对比",
+      "intro": "分为三个维度 - 可移植性与智能体能力面（Paneflow 领先）、核心终端对等性（当前双方相当）和 macOS 原生打磨度（iTerm2 已交付更多）。",
+      "portabilityHeading": "可移植性与智能体能力面",
+      "coreHeading": "核心终端对等性",
+      "macosHeading": "macOS 原生打磨度",
+      "footnote": "<strong>版本：</strong>Paneflow v0.2.16（2026 年 5 月），首次提交 2026-04-01。iTerm2 v3.7.0beta1 于 2026-04-20 发布（提交 <code>2b7b5bff</code>），v3.6.10（2026-04-20）和 v3.5.15（2025-08-13）为更早的稳定线。iTerm2 自身的版本说明把 Claude Code 集成标注为「still a work in progress as of 3.7.0beta1.」<strong>定价：</strong>两者均免费。Paneflow MIT；iTerm2 GPL-2.0 接受捐赠支持。"
+    },
+    "decision": {
+      "title": "哪一个适合您？",
+      "intro": "诚实的回答：对大多数用户而言这是清晰的二选一。下面两个清单分别刻画了两款工具真正服务的人群。多数决定落在可移植性 + 智能体架构 vs macOS 原生深度上。",
+      "leftHeading": "选择 Paneflow 如果",
+      "leftBullets": {
+        "0": "您需要跨平台 - 当前 Linux + macOS，计划 Windows。iTerm2 设计上仅 macOS（Metal 是 Apple API）",
+        "1": "您想要 MIT 以便嵌入，而不是 GPL-2.0",
+        "2": "您的智能体工作流是启动您已经在用的 CLI 二进制（Claude Code、Codex、OpenCode），每个智能体配有专属的 UI 按钮",
+        "3": "您想要内置带分支感知徽章、开发服务器端口检测和会话恢复的工作区模型",
+        "4": "比起带 iCloud 同步语义的二进制 plist，您更喜欢一眼可读的 JSON 配置",
+        "5": "您支持通过 Zed 哲学血统每周发布次要版本的独立开发者"
+      },
+      "rightHeading": "选择 iTerm2 如果",
+      "rightBullets": {
+        "0": "您只用 macOS，且想要当前最打磨的原生体验",
+        "1": "您依赖 AppleScript 自动化或 Python 脚本 API",
+        "2": "您想要在终端内嵌入多厂商 AI 对话（OpenAI、Anthropic、Gemini、DeepSeek），而不是启动外部 CLI 智能体",
+        "3": "您使用 iTerm2 的 shell 集成功能 - 触发器、智能选择、提示符感知导航、标记",
+        "4": "您想要新的 Workgroups 功能，包括 Code Review 模式和每会话工具栏",
+        "5": "您看重一份具备一致维护和 17 k+ 星社区的 16 年代码库",
+        "6": "您接受 GPL-2.0，或您从未计划在闭源产品中嵌入终端代码"
+      }
+    },
+    "architecture": {
+      "title": "架构深入剖析",
+      "p1": "<strong>iTerm2</strong> 是面向 macOS 的 Objective-C / Swift 混合应用。应用流程是 App -> Window/Tab -> Session -> Terminal Emulation -> Rendering。终端模拟栈是自有的（<code>VT100Parser</code>、<code>VT100Terminal</code>、<code>VT100ScreenMutableState</code>、<code>VT100Screen</code>、<code>VT100Grid</code>），渲染器是带 Metal 加速的 <code>PTYTextView</code> - 渲染器硬绑定到 Apple 平台。AI 能力面位于 <code>sources/AITerm/</code>（约 81 个文件，包括 AIConversation、AIPluginClient 和一个 Chat* 视图控制器家族），再加上 <code>sources/ClaudeCode/</code>（六个文件：ClaudeCodeIntegrationMenuController、ClaudeCodeOnboarding、ClaudeIntegrationHealthMonitor、ClaudeWatcher、GlobalJobMonitor、PeerSessionSettingsViewController）。仓库根目录的 hook 能力面 - <code>ClaudeCodeHookEvent.swift</code> - 是一组与上游 Claude Code hook 协议匹配的完整 Codable 类型，因此 iTerm2 能在 Claude CLI 的会话事件发生时实时响应。",
+      "p2": "<strong>Paneflow</strong> 是基于 Zed GPUI 引擎构建的纯 Rust 应用。UI 与终端之间没有语言边界 - 按键通过单一 Rust 管道从 <code>KeyDownEvent</code> 一路抵达绘制，这就是为何按键到像素延迟保持在 4 ms 以下、冷启动在 200 ms 以下。终端模拟使用来自 crates.io 的上游 <code>alacritty_terminal</code> 0.26（无需维护分叉）。GPU 栈是 GPUI 的 Blade 渲染器，在 Linux 上跑 Vulkan，在 macOS 上跑 Metal - 渲染器随应用其余部分跨平台。智能体能力面是一个工作区模型：每个工作区围绕项目根目录组织面板，带分支检测、端口横幅和三个一等公民 CLI 智能体按钮（Claude Code、Codex、OpenCode）。外部 CLI 智能体也不受限：您可以在 shell 中运行的任何二进制都能在 Paneflow 面板中运行。",
+      "p3": "IPC 能力面同样能说明两个项目的时代背景。iTerm2 暴露了 AppleScript（一份悠久的 .sdef 文件包）和带长期运行脚本支持的 Python 脚本 API，外加广泛的 shell 集成（触发器、智能选择、提示符感知功能）。Paneflow 在 Unix 套接字 <code>$XDG_RUNTIME_DIR/paneflow/paneflow.sock</code> 上暴露单一的 JSON-RPC 2.0 服务器，约十三个方法 - 能力面更小、学习更快，远不及 iTerm2 十六年脚本积累的覆盖度。在自动化方面追赶 iTerm2 不在 Paneflow 的近期路线图上。"
+    },
+    "pricing": {
+      "title": "定价",
+      "intro": "两个项目都免费。协议模型不同：",
+      "paneflow": "<strong>Paneflow</strong>：MIT，版权 (c) 2026 Arthur Jean。可放心嵌入到商业产品中，没有 copyleft 约束。",
+      "iterm2": "<strong>iTerm2</strong>：GPL-2.0，接受捐赠支持。强 copyleft - 如果您再发布修改后的版本，必须同时发布源代码。把 iTerm2 代码嵌入闭源产品基本上不是选项。对终端用户来说这种差异看不见；对嵌入者来说这就是全部差异。"
+    },
+    "migrating": {
+      "title": "从 iTerm2 迁移到 Paneflow",
+      "p1": "没有直接的配置转换。iTerm2 把设置存在通过 iCloud 同步的二进制 plist（<code>com.googlecode.iterm2.plist</code>）中；Paneflow 使用 Linux 下 <code>~/.config/paneflow/paneflow.json</code> 和 macOS 下 <code>~/Library/Application Support/paneflow/paneflow.json</code> 的静态 JSON 文件。安装就是约十分钟的全新配置 - 默认 shell、主题、键位绑定、AI 智能体按钮。好消息：Paneflow 对 iTerm2 让您手动配置的项目（工作区布局、智能体按钮、主题）提供了合理默认值，所以空白配置的开箱体验更接近「即用」而非 iTerm2 的初始状态。",
+      "p2": "无法迁移的内容：",
+      "bullets": {
+        "0": "<strong>AppleScript / Python 脚本</strong>：Paneflow 无等价物。如果您有针对 iTerm2 Python API 或 AppleScript 能力面写的自动化，请留在 iTerm2。",
+        "1": "<strong>Shell 集成功能</strong>：触发器、智能选择、提示符感知导航、标记 - 这些是 iTerm2 特有的。Paneflow 使用不同的、更小的集成能力面。",
+        "2": "<strong>多厂商 AI 对话</strong>：Paneflow 不提供内嵌对话。迁移方式是把您选择的 CLI 智能体（Claude Code、Codex、OpenCode）作为面板启动。",
+        "3": "<strong>Workgroups + Code Review 模式</strong>：Paneflow 无等价物。最接近的概念是带多面板的工作区，但 Code Review 提示覆盖层和每会话工具栏没有对应物。"
+      }
+    },
+    "whenNot": {
+      "title": "何时不应选择 Paneflow",
+      "intro": "诚实的硬性决断。如果以下五点中的任何一项对您重要，iTerm2 才是今天合适的工具 - 不必勉强：",
+      "items": {
+        "0": "<strong>您依赖 AppleScript 或 iTerm2 的 Python API。</strong>iTerm2 拥有悠久的 .sdef AppleScript 包和带长期运行脚本支持的 Python 脚本 API。Paneflow 只有一个十三方法的 JSON-RPC，仅此而已。十六年积累的自动化工作无法迁移。",
+        "1": "<strong>您想要在终端中嵌入多厂商 AI 对话。</strong>iTerm2 在终端面板内提供覆盖 OpenAI、Anthropic、Gemini 和 DeepSeek 的统一 UI 多厂商对话。Paneflow 只启动外部 CLI 智能体 - 没有终端内的对话面板。",
+        "2": "<strong>您依赖 iTerm2 的 shell 集成功能。</strong>触发器、智能选择、提示符感知导航、标记 - 这些是 iTerm2 特有的。如果您依赖其中任何一项，Paneflow 在近期路线图上没有替代。",
+        "3": "<strong>您想要带 Code Review 模式的 Workgroups。</strong>v3.7 的 Workgroups + Code Review 模式确实新颖：在程序运行前显示会话内提示覆盖层，把输入的文本暴露为可被 swifty 插值的变量，并允许您围绕它构建审阅管道。Paneflow 没有等价物。",
+        "4": "<strong>您想要十六年的打磨和 17 k+ 星的社区。</strong>iTerm2 已到 v3.7，积累了十六年的缺陷修复、边界情况和生态系统（terminfo 条目、dotfiles、Stack Overflow）。Paneflow 处在 v0.2.x，仅有其零头的实战时间。"
+      }
+    },
+    "faq": {
+      "title": "常见问题",
+      "items": {
+        "0": {
+          "question": "Paneflow 是 iTerm2 的分叉吗？",
+          "answer": "不是。iTerm2 是 George Nachman 维护 16 年的 Objective-C 与 Swift 混合代码库，仅支持 macOS（AppKit + Metal 栈硬绑定到 Apple 平台）。Paneflow 是 Arthur Jean 的一个月历史的纯 Rust 代码库，当前支持 Linux 和 macOS，计划 Windows。两者没有共享源代码，也面向不同受众。"
+        },
+        "1": {
+          "question": "两者都在 2026 年提供 Claude Code 集成。实际差别在哪？",
+          "answer": "架构和可移植性。iTerm2 v3.7.0beta1（2026 年 4 月）提供会话感知集成，通过 ClaudeCodeHookEvent.swift 解析 Claude Code hook 事件协议，并通过内嵌多厂商 AI 对话（按 iTerm2 自身 AI live harness：OpenAI、Anthropic、Gemini、DeepSeek）呈现 hook。Paneflow 把 Claude Code CLI 作为一等公民面板运行，配有专属 UI 按钮 - 与您命令行上已经在用的智能体二进制相同，外加工作区和会话恢复。如果您想要内嵌对话体验，选 iTerm2 模型；如果您想要在跨平台宿主中使用您已经在用的 CLI 智能体，选 Paneflow。"
+        },
+        "2": {
+          "question": "iTerm2 有 AppleScript 和 Python API。Paneflow 提供什么？",
+          "answer": "Paneflow 在 Unix 套接字上暴露单一的 JSON-RPC 2.0 服务器，约十三个方法，覆盖工作区和面板。iTerm2 提供的脚本能力面要广得多：AppleScript .sdef 包、带长期运行脚本支持的 Python 脚本 API，以及广泛的 shell 集成（暴露触发器、智能选择和提示符感知功能）。如果您今天依赖 AppleScript 自动化或 Python 脚本 API，Paneflow 没有替代。"
+        },
+        "3": {
+          "question": "如果 iTerm2 有 16 年打磨和 17 k 星社区，为何选 Paneflow？",
+          "answer": "如果您需要跨平台（当前 Linux + macOS，计划 Windows）、或想要 MIT 而非 GPL-2.0 以便嵌入、或特别想要让 Claude Code、Codex 和 OpenCode 作为您已经在用的 CLI 二进制运行的智能体宿主架构，Paneflow 更合适。如果您仅用 macOS、想要最大化打磨、看重 AppleScript / Python 自动化，iTerm2 更合适。"
+        },
+        "4": {
+          "question": "iTerm2 在 Linux 或 Windows 上运行吗？",
+          "answer": "不。iTerm2 设计上仅支持 macOS。渲染栈直接调用 Metal（按 iTerm2 自身 AGENTS.md：PTYTextView 是 Metal 加速的），这是 Apple 专属 API，UI 是 AppKit + SwiftUI。没有 Linux 构建，也没有计划。Paneflow 当前支持 Linux 和 macOS，且 Windows 在路线图上。"
+        },
+        "5": {
+          "question": "我能把 iTerm2 设置迁移到 Paneflow 吗？",
+          "answer": "没有自动路径。iTerm2 把配置存在通过 iCloud 同步的二进制 plist 中；Paneflow 在 Linux 上使用静态 JSON 文件 ~/.config/paneflow/paneflow.json。schema、按键记法和 AI 集成模型都不同。预留十分钟做全新配置：默认 shell、主题、键位绑定。"
+        },
+        "6": {
+          "question": "iTerm2 仍是单一维护者吗？",
+          "answer": "是的。截至 2026-05-20，George Nachman 持有 iTerm2 的 15 169 次提交 - 约占项目的 98%，下一位贡献者为 149 次提交。结构性模式与 Paneflow（Arthur Jean，单人）和 WezTerm（Wez Furlong，约 98% 单人）相同。在这个竞品集中，单一维护者是常态；差异在于 iTerm2 的单人长跑已持续 16 年。"
+        },
+        "7": {
+          "question": "iTerm2 v3.7 的 Workgroups 功能呢？Paneflow 有等价物吗？",
+          "answer": "Workgroups（v3.7.0beta1 新增）让您把一个会话转换为一组相关会话（peer、分屏面板或标签页），每个都带专属工具栏，加上 Code Review 模式 - 在程序运行前显示会话内提示覆盖层。Paneflow 的工作区模型在概念上不同：每个工作区围绕项目根目录组织面板并带分支检测，Code Review 风格的覆盖层不在路线图上。如果您特别想要 Workgroups，iTerm2 更合适。"
+        }
+      }
+    },
+    "next": {
+      "title": "下一步",
+      "body": "准备好试用 Paneflow 了吗？<download>下载最新版本</download> 或阅读 <docs>入门指南</docs>。对 iTerm2 感兴趣？<repo>iTerm2 在 GitHub 上</repo> - 它是现存最打磨的 macOS 终端，对任何看重 AppleScript 或 Python 自动化的 macOS 工作流而言都是值得选择的替代品。"
+    }
+  },
+  "CompareWezterm": {
+    "Metadata": {
+      "title": "Paneflow 对比 WezTerm（2026）：智能体优先工作区 vs 可脚本化 Rust 终端",
+      "description": "Paneflow 对比 WezTerm：同为 Rust + GPU + MIT。Paneflow 是智能体优先工作区，以 Claude Code、Codex、OpenCode 为一等公民面板。WezTerm 是您用 Lua 脚本化配置的 Rust 终端。诚实的决策指南、架构、FAQ。",
+      "ogTitle": "Paneflow 对比 WezTerm（2026）",
+      "ogDescription": "智能体优先 Rust 工作区 vs 可脚本化、用 Lua 配置的 Rust 终端。性能、架构、协议，以及 Claude Code、Codex、OpenCode 工作流的决策指南。"
+    },
+    "schema": {
+      "headline": "Paneflow 对比 WezTerm（2026）",
+      "description": "智能体优先 Rust 工作区 vs 可脚本化 Rust 终端模拟器。两者都是 Rust，都是 GPU 加速，都是 MIT - 它们在目标上分道扬镳。架构、功能和定价对比。"
+    },
+    "header": {
+      "title": "Paneflow 对比 WezTerm",
+      "tldr": "Paneflow 和 WezTerm 是架构上的同类：都是纯 Rust、都是 GPU 加速、都是 MIT、都由独立维护者打造。<strong>它们在目标上分道扬镳。</strong> <strong>Paneflow</strong> 是智能体优先的工作区 - Claude Code、Codex 和 OpenCode 是一等公民面板，配有分支感知工作区、开发服务器端口检测和会话恢复，基于 Zed 的 GPUI 引擎，冷启动低于 200 ms，按键到像素延迟低于 4 ms。<strong>WezTerm</strong> 是高度可配置的 Rust 终端模拟器，带 Lua 脚本能力面、内置 SSH 复用器，以及跨平台覆盖（Linux、macOS、Windows、FreeBSD）。如果您想要不挡路的智能体工作区，选 Paneflow。如果您想要可用 Lua 编程并能在 FreeBSD 上运行的终端，选 WezTerm。"
+    },
+    "context": {
+      "title": "关于背景的说明",
+      "p1": "WezTerm 是 Paneflow 在架构上最接近的同类。同样的语言（Rust），同样的渲染器家族（Paneflow 使用 GPUI 的 Blade，跑 Vulkan/Metal；WezTerm 使用 wgpu 25.0.2，同一家族），同样的 MIT 协议，同样的独立维护者故事（Wez Furlong 持有 WezTerm 约 98% 的提交）。两个项目可以共享一个渊源页面；但它们在目标上明显分道扬镳。",
+      "p2": "WezTerm 是可配置的终端模拟器。它的身份是「一个您可以用 Lua 脚本化一切的终端」。Paneflow 是智能体工作区 - 单一二进制，启动后即提供面板、工作区和用于启动 CLI 编码智能体的 UI，围绕并排运行 Claude Code、Codex 和 OpenCode 的工作流而设计。WezTerm 没有 AI 智能体面板的概念，没有带分支检测的每项目工作区模型，没有开发服务器端口横幅。Paneflow 没有 Lua 脚本能力面，没有内置 SSH 复用器，没有 FreeBSD 构建。本页其余部分梳理这种权衡。"
+    },
+    "quick": {
+      "title": "快速对比",
+      "intro": "分为三个维度 - 性能与智能体能力面（Paneflow 领先）、核心终端对等性（双方相当）和配置与生态（WezTerm 已交付更多）。",
+      "perfHeading": "性能与智能体能力面",
+      "coreHeading": "核心终端对等性",
+      "configHeading": "配置与生态",
+      "footnote": "<strong>版本：</strong>Paneflow v0.2.16（2026 年 5 月），首次提交 2026-04-01，v0.1.0 于 2026-04-16 打标签。WezTerm 最新稳定版 20240203-110809-5046fc22（2024 年 2 月），首次提交 2017-12-07（c53ca64c）。WezTerm 的 main 分支仍活跃（最近一次推送 2026-05-01），但自 2024 年 2 月以来未发布稳定版。<strong>定价：</strong>两者均免费。两者均 MIT。"
+    },
+    "decision": {
+      "title": "哪一个适合您？",
+      "intro": "诚实的回答：如果您想要可脚本化的终端，WezTerm 是正确答案。如果您想要让智能体成为一等公民的工作区，Paneflow 是正确答案。下方的项目列出了双方现实中的选择依据。",
+      "leftHeading": "选择 Paneflow 如果",
+      "leftBullets": {
+        "0": "您运行多个 CLI 编码智能体（Claude Code、Codex、OpenCode），并希望获得一等公民的 UI 按钮 + 为此设计的工作区模型",
+        "1": "您看重性能 - Paneflow 在 Zed 的 GPUI 渲染管线上冷启动 <200 ms，按键到像素延迟 <4 ms",
+        "2": "您想要内置分支感知工作区、开发服务器端口检测和会话恢复（无需 Lua 脚本）",
+        "3": "比起具备完整可编程性的 Lua 脚本能力面，您更喜欢一眼可读的静态 JSON 配置",
+        "4": "您想要活跃的最新开发 - 2026 年 4 月首个稳定版，5 月内每周次要版本",
+        "5": "您支持一位每天使用 Paneflow 并频繁发布的独立开发者"
+      },
+      "rightHeading": "选择 WezTerm 如果",
+      "rightBullets": {
+        "0": "您想要用 Lua 脚本化终端 - 格式化标签页标题、响应 mux 事件、构建带逻辑的自定义键位映射",
+        "1": "您需要内置 SSH 复用器（SSH: 和 SSHMUX: 域），以便会话在断线后无需 tmux 也能存活",
+        "2": "您使用 FreeBSD 或今天就需要 Windows 构建（Paneflow Windows 计划中，尚未发布）",
+        "3": "您看重 26 k+ 星社区，以及八年积累的主题、插件和 Stack Overflow 答案",
+        "4": "您不运行 AI 编码智能体，并想要一个完全置身于 AI 话题之外的终端",
+        "5": "您喜欢 wez 以 Lua 为驱动的设计哲学，一切都可在用户代码中覆盖"
+      }
+    },
+    "architecture": {
+      "title": "架构深入剖析",
+      "p1": "<strong>WezTerm</strong> 是一个 Rust 工作空间 crate，带一个 GUI 子 crate（<code>wezterm-gui</code>），消费 <code>wgpu 25.0.2</code> 和 <code>mlua</code>。渲染器通过 wgpu 派发到宿主提供的后端：Linux 上 Vulkan、macOS 上 Metal、Windows 上 DX12 - 跨 API 而无需分叉。配置是一份 Lua 脚本（<code>~/.wezterm.lua</code>），返回一个 config 表；脚本通过 mlua 在进程内运行，因此允许任何 Lua 表达式（回调、format 函数、mux 事件处理器）。终端网格和 VT 状态机内置；SSH 复用器是一个独立的 WezTerm 协议，通过 SSH 连接两个 WezTerm 进程。",
+      "p2": "<strong>Paneflow</strong> 同样是 Rust 工作空间、同样 GPU 加速，但集成更紧密、配置更精简。UI 基于 GPUI - Zed 的 UI 框架 - 因此按键管线从 <code>KeyDownEvent</code> 一路到绘制都保持在纯 Rust 中。终端模拟使用来自 crates.io 的上游 <code>alacritty_terminal</code> 0.26，这是公开的 Rust VT crate，并非分叉。GPU 层是 Blade（GPUI 的渲染器），在 Linux 上跑 Vulkan，在 macOS 上跑 Metal。配置是 <code>~/.config/paneflow/paneflow.json</code> 中的静态 JSON；没有脚本能力面，也没有事件回调 hook，这是有意的 - 目标是让您能在一分钟内从上到下读完配置。",
+      "p3": "两个项目在「产品是什么」上也不一样。WezTerm 是您要花时间配置以贴合工作流的终端。Paneflow 是您启动后即可使用的工作区，已经预设了三个 AI 智能体按钮、分支检测和四种面板布局 - 权衡在于：当 Paneflow 尚未支持您要的功能时，没有 Lua 逃生舱。"
+    },
+    "pricing": {
+      "title": "定价",
+      "intro": "两个项目都免费，都是 MIT，都没有商业档位。",
+      "paneflow": "<strong>Paneflow</strong>：MIT，版权 (c) 2026 Arthur Jean。无双协议。可放心嵌入到商业产品中。",
+      "wezterm": "<strong>WezTerm</strong>：MIT，版权 (c) 2018-至今 Wez Furlong。同样的嵌入自由；不提供商业协议（也无需提供）。"
+    },
+    "migrating": {
+      "title": "从 WezTerm 迁移到 Paneflow",
+      "intro": "WezTerm 的 Lua 脚本和 Paneflow 的 JSON 之间没有干净的转换。安装就是约十分钟的全新配置。好消息：Paneflow 对 WezTerm 让您手动配置的项目（工作区布局、智能体按钮、主题）提供了合理默认值，所以空白配置的开箱体验更接近「即用」而非 WezTerm 的初始状态。",
+      "bullets": {
+        "0": "<strong>Shell + 主题</strong>：在 <code>~/.config/paneflow/paneflow.json</code> 中设置 <code>default_shell</code> 和 <code>theme</code>。两个内置主题是 <em>One Dark</em>（默认）和 <em>Paneflow Light</em>。",
+        "1": "<strong>键位绑定</strong>：参见 <link>schema 参考</link>。默认动作涵盖分屏、聚焦、工作区。如果您有带逻辑的 Lua 键位映射，逻辑无法迁移 - 您需要选择最接近的静态绑定。",
+        "2": "<strong>Lua 事件处理器</strong>：Paneflow 无等价物。如果您依赖 <code>format-tab-title</code>、<code>mux-startup</code> 或其他 Lua 回调，请留在 WezTerm。",
+        "3": "<strong>SSH 复用器</strong>：Paneflow 不提供 mux。在 Paneflow 面板里跑 tmux 或 zellij，或在远程会话上继续用 WezTerm。"
+      }
+    },
+    "whenNot": {
+      "title": "何时不应选择 Paneflow",
+      "intro": "诚实的硬性决断。如果以下五点中的任何一项对您重要，WezTerm 才是今天合适的工具 - 不必勉强：",
+      "items": {
+        "0": "<strong>您想要 Lua 脚本能力面。</strong>WezTerm 允许您用 Lua 表达键位逻辑、动态标签页标题、mux 事件 hook 和完整回调。Paneflow 使用静态 JSON，没有脚本 hook。如果您有心爱的 Lua 配置，您会讨厌 Paneflow。",
+        "1": "<strong>您需要内置 SSH 复用器。</strong>WezTerm 的 SSH: 和 SSHMUX: 域让您的会话在断线后无需 tmux 也能存活。Paneflow 没有复用器，目前也没有发布计划。",
+        "2": "<strong>您使用 Windows 或 FreeBSD。</strong>WezTerm 当前为 Linux、macOS、Windows 和 FreeBSD 提供构建。Paneflow 当前发布 Linux 和 macOS；Windows 在路线图上但无发布 ETA，FreeBSD 不在路线图上。",
+        "3": "<strong>您想要成熟的大型生态。</strong>WezTerm 拥有 26 k+ GitHub 星，以及八年积累的主题、插件和 Stack Overflow 答案。Paneflow 距其首个公开稳定版只有一个月 - 您需要的答案可能尚未出现在 Google 上。",
+        "4": "<strong>您不运行 AI 编码智能体。</strong>Paneflow 存在的全部理由就是智能体工作区。如果您不用 Claude Code、Codex、OpenCode 或同类工具，您只用到产品的约 30%，为其余部分白付代价。对传统终端工作流，WezTerm 更合适。"
+      }
+    },
+    "faq": {
+      "title": "常见问题",
+      "items": {
+        "0": {
+          "question": "Paneflow 是 WezTerm 的分叉吗？",
+          "answer": "不是。Paneflow 和 WezTerm 是不共享源代码的两个独立 Rust 代码库。WezTerm 始于 2017 年末，由 Wez Furlong 维护（约占约 7 400 次提交的 98%）；Paneflow 始于 2026 年 4 月，基于 Zed 的 GPUI 引擎，VT 层使用上游 alacritty_terminal。两个项目在架构上是同类 - 都是纯 Rust、都是 GPU 加速、都是 MIT - 但目标不同。"
+        },
+        "1": {
+          "question": "两者都是 Rust + GPU + MIT。实际差别在哪？",
+          "answer": "目标。WezTerm 是您用 Lua 脚本化的高度可配置终端模拟器。Paneflow 是智能体优先工作区，Claude Code、Codex 和 OpenCode 作为一等公民面板出现，配有分支感知工作区、开发服务器端口检测和会话恢复。WezTerm 内置没有这些；Paneflow 不打算在 Lua 驱动的可扩展性上与 WezTerm 竞争。如果您想要可配置终端，WezTerm 胜出。如果您想要智能体工作区，Paneflow 胜出。"
+        },
+        "2": {
+          "question": "WezTerm 当前有任何 AI 智能体集成吗？",
+          "answer": "没有原生集成。WezTerm 仓库中没有 CLAUDE.md、AGENTS.md、.cursorrules，wezterm-gui/Cargo.toml 中没有 AI 依赖。您可以通过编写 Lua、用键位绑定从 WezTerm 面板生成任何 CLI 智能体（Claude Code、Codex、OpenCode），但那是用户配置而非产品功能。Paneflow 提供专属 UI 按钮，并配有围绕并行运行智能体设计的工作区模型。"
+        },
+        "3": {
+          "question": "如果 WezTerm 有 26 k 星和八年代码库，为何选 Paneflow？",
+          "answer": "如果您今天就需要智能体优先工作区（Paneflow 已交付，WezTerm 未交付），或您想要 2026 年活跃开发（Paneflow 在 2026 年 4 月发布首个稳定版，5 月内每周次要版本；WezTerm 最新打标签稳定版是 20240203-110809，相隔 15+ 个月，尽管 main 仍在收提交），或您想要更小的配置能力面（JSON vs Lua），Paneflow 更合适。如果您想要一个可用 Lua 完全脚本化、可在 FreeBSD 上运行的终端，WezTerm 更合适。"
+        },
+        "4": {
+          "question": "我能把 WezTerm 的 Lua 配置迁移到 Paneflow 吗？",
+          "answer": "没有自动路径。WezTerm 使用 ~/.wezterm.lua 中的 Lua 脚本返回 config 表；Paneflow 在 Linux 上使用静态 JSON 文件 ~/.config/paneflow/paneflow.json。Lua 函数和事件处理器无法用 JSON 表达。迁移是约十分钟的全新配置 - 默认 shell、主题、键位绑定 - 而不是翻译。"
+        },
+        "5": {
+          "question": "Paneflow 像 WezTerm 那样在 Windows 或 FreeBSD 上运行吗？",
+          "answer": "尚未。WezTerm 为 Linux、macOS、Windows 和 FreeBSD 发布构建。Paneflow 当前支持 Linux 和 macOS；Windows 计划中（原生移植，不是 WSL），无发布 ETA。FreeBSD 和 NetBSD 不在 Paneflow 路线图上。如果跨 BSD 支持或当前的 Windows 构建是硬性要求，WezTerm 是更合适的工具。"
+        },
+        "6": {
+          "question": "Paneflow 有像 WezTerm 那样的内置 SSH 复用器吗？",
+          "answer": "没有。WezTerm 提供自有复用器协议，带 SSH: 和 SSHMUX: 域 - 您可以附加到远程的 WezTerm，让会话在断线后无需运行 tmux 也能存活。Paneflow 不提供复用器。如果您需要持久的远程会话，在 Paneflow 面板中使用 tmux 或 zellij，或继续使用 WezTerm。"
+        },
+        "7": {
+          "question": "WezTerm 仍在积极维护吗？",
+          "answer": "开发分支上是的，但稳定版节奏缓慢。github.com/wezterm/wezterm 最新打标签的发布是 20240203-110809-5046fc22，日期 2024-02-03 - 比撰写本对比早 15+ 个月。main 分支仍活跃（最近一次推送 2026-05-01），并由滚动发行的打包者跟踪 main。跟踪打标签版本的用户仍停留在 2024 年 2 月的构建上。"
+        }
+      }
+    },
+    "next": {
+      "title": "下一步",
+      "body": "准备好试用 Paneflow 了吗？<download>下载最新版本</download> 或阅读 <docs>入门指南</docs>。对 WezTerm 感兴趣？<repo>WezTerm 在 GitHub 上</repo> - 它是一个真正优秀的 Rust 终端，解决的问题与 Paneflow 不同，对任何以 Lua 脚本化为重点的工作流，我们都推荐它。"
+    }
+  },
+  "CompareCmux": {
+    "Metadata": {
+      "title": "Paneflow 对比 cmux（2026）：精简原生 Rust vs 大而全的 macOS 工具箱",
+      "description": "Paneflow 对比 cmux：精简的原生 Rust 工作区，冷启动低于 200 ms，基于 Zed 的 GPUI 引擎；vs 大而全的 macOS 工具箱（嵌入式浏览器、云虚拟机、SSH 守护进程）。诚实的决策指南、架构、FAQ。",
+      "ogTitle": "Paneflow 对比 cmux（2026）",
+      "ogDescription": "精简的原生 Rust 工作区 vs macOS 大而全工具箱。Claude Code、Codex、OpenCode 工作流的性能、架构与决策指南。"
+    },
+    "schema": {
+      "headline": "Paneflow 对比 cmux（2026）",
+      "description": "跨平台 Rust 智能体优先终端 vs 仅 macOS 的 Swift 现任者。架构、功能和定价对比。"
+    },
+    "header": {
+      "title": "Paneflow 对比 cmux",
+      "tldr": "Paneflow 和 cmux 都能让您并排运行 Claude Code、Codex、OpenCode 和其他 CLI 编码智能体。<strong>它们在哲学上分道扬镳。</strong> <strong>Paneflow</strong> 是精简的原生内核 - 基于 Zed GPUI 引擎的纯 Rust，冷启动低于 200 ms、按键到像素延迟低于 4 ms，单一 MIT 二进制，由每日使用它的独立开发者打造。<strong>cmux</strong> 是大而全的 macOS 工具箱 - Swift + libghostty + 嵌入式浏览器 + 云虚拟机 + SSH 守护进程，GPL 加可选商业协议。如果您想要快速、符合人体工学且不挡路的智能体工作区，选 Paneflow。如果您想要每一项相邻工具都内置在一个产品里，选 cmux。"
+    },
+    "inspiration": {
+      "title": "关于致敬的说明",
+      "p1": "Paneflow 的设计公开致敬 cmux。cmux 是首个面向并行运行多个 AI 编码智能体的开发者、交付了一款打磨过的智能体优先终端复用器，「每个项目一个工作区、每个智能体一个面板」的心智模型就来自它。",
+      "p2": "Paneflow 不是分叉。它是用不同架构选择重新实现该心智模型的独立 Rust 代码库：用纯 Rust 代替 Swift，用 GPUI 代替 AppKit，用上游 <code>alacritty_terminal</code> 代替 libghostty，从第一天起就是跨平台而非以 macOS 优先。两个项目并行存在，以不同的权衡解决重叠的问题 - 本页其余部分把它们一一摆出。"
+    },
+    "quick": {
+      "title": "快速对比",
+      "intro": "分为三个维度 - 性能与架构（Paneflow 领先）、核心智能体工作区（双方相当）和相邻工具箱（cmux 已交付更多）。",
+      "perfHeading": "性能与架构",
+      "coreHeading": "核心智能体工作区",
+      "toolkitHeading": "相邻工具箱",
+      "footnote": "<strong>版本：</strong>Paneflow v0.2.16（2026 年 5 月），首次发布 2026 年 4 月（v0.1.0）。cmux v0.64.7（2026 年 5 月 19 日，也打标签 v1.38.1），首次发布 2026 年 1 月（v0.2.0）。<strong>定价：</strong>两者均免费。Paneflow MIT；cmux GPL-3.0-或更新版本，可单独获取商业协议。"
+    },
+    "decision": {
+      "title": "哪一个适合您？",
+      "intro": "诚实的回答：对大多数用户而言这是清晰的二选一。下面两个清单分别刻画了两款工具真正服务的人群。如果两边都不合，您可能想要更简单的东西（裸 tmux、WezTerm、iTerm2）。",
+      "leftHeading": "选择 Paneflow 如果",
+      "leftBullets": {
+        "0": "您看重性能 - Paneflow 在 Zed 的 GPUI 渲染管线上冷启动 <200 ms，按键到像素延迟 <4 ms",
+        "1": "您看重精简 - 单一静态二进制、JSON 配置，无内置浏览器 / 云虚拟机配置器 / 数百命令的套接字 API 需要学习",
+        "2": "您想要一个体感像 Zed 的工具 - 同一引擎，同样痴迷于原生滚动、即时聚焦、无输入延迟、无 Electron",
+        "3": "您使用 macOS 或 Linux，想要一个在两边都同样好用的工作区，让团队能跨平台而不出现工具分歧",
+        "4": "您偏好 MIT - 没有商业协议问题，嵌入时也没有 copyleft 约束",
+        "5": "比起按产品路线图发布的工作室，您更愿意支持一位每天使用 Paneflow 的独立开发者"
+      },
+      "rightHeading": "选择 cmux 如果",
+      "rightBullets": {
+        "0": "您只用 macOS，且想要今天最打磨的原生体验",
+        "1": "您需要 SSH 远程工作区（cmux 是目前唯一交付该功能的）",
+        "2": "您需要嵌入式浏览器，并支持从 Chrome/Firefox/Safari/Brave/Edge/Arc 导入配置",
+        "3": "您要轮换使用 15+ 个 AI 智能体，并想要为它们全部提供一等公民集成",
+        "4": "您想要 17 500+ 星的社区、数百个套接字命令和活跃的商业支持",
+        "5": "您想要云虚拟机配置、AppleScript 脚本，或内置的 tmux 兼容性",
+        "6": "您接受 GPL-3.0（或您会付费购买商业协议）"
+      }
+    },
+    "architecture": {
+      "title": "架构深入剖析",
+      "p1": "<strong>cmux</strong> 是基于 AppKit 和 SwiftUI 的原生 macOS 应用。终端模拟委托给 libghostty - 驱动 Ghostty 终端模拟器的 C 库，通过 <code>GhosttyKit.xcframework</code> 桥接到 Swift 应用中。渲染走自定义的 <code>GhosttyMetalLayer</code>（CAMetalLayer 的子类，Ghostty 直接驱动 Metal，不使用 MTKView）。面板布局使用 Bonsplit，一个 N 叉树布局库，暴露邻接查询（<code>adjacentPane(to:direction:)</code>）和用于会话持久化的快照。",
+      "p2": "<strong>Paneflow</strong> 基于 GPUI（Zed 使用的同款 UI 框架）以纯 Rust 构建。实际意义是：UI 与终端之间没有语言边界 - 按键通过单一的纯 Rust 管道传递，这就是为何按键到像素延迟保持在 4 ms 以下、应用冷启动在 200 ms 以下。终端模拟使用来自 crates.io 的上游 <code>alacritty_terminal</code> 0.26 - 公开、稳定的 Rust VT crate。无需维护分叉，因此未来 Rust 生态系统的改进会自然流入。GPU 层是 Blade（GPUI 的渲染器），在 Linux 上跑 Vulkan，在 macOS 上跑 Metal。面板布局是手写的 N 叉树，专为四种预设布局（<em>水平等分</em>、<em>垂直等分</em>、<em>主垂直</em>、<em>平铺</em>）设计。",
+      "p3": "IPC 方面，两个项目都在 Unix 套接字上暴露能力。cmux 在同一套接字上并行运行两套协议：V1 是空格分隔的文本协议（例如 <code>new-workspace</code>、<code>send-key &lt;args&gt;</code>），V2 是换行分隔的 JSON。派发器检查每行的首字节进行路由。合并能力面是数百条命令，覆盖窗口、面板、会话、通知和远程工作区。Paneflow 提供单一的 JSON-RPC 2.0 协议，约十三个方法，覆盖工作区和面板 - 能力面更小、学习更快，覆盖度远不及。追赶 cmux 的 IPC API 能力面在 Paneflow 的路线图上。"
+    },
+    "pricing": {
+      "title": "定价",
+      "intro": "两个项目都免费使用。协议模型不同：",
+      "paneflow": "<strong>Paneflow</strong>：MIT 协议，无双协议，无商业档位。怎么用都行，包括嵌入到商业产品中。",
+      "cmux": "<strong>cmux</strong>：默认 GPL-3.0，并为需要非 copyleft 条款的组织提供单独的商业协议。商业协议价格未公开列出；请联系维护者。"
+    },
+    "migrating": {
+      "title": "从 cmux 迁移到 Paneflow",
+      "intro": "您大约能在十分钟内把多数 cmux 设置迁移到 Paneflow。配置 schema 形状类似的 JSON；按键记法匹配；AI 智能体按钮的概念相同。",
+      "bullets": {
+        "0": "<strong>配置文件</strong>：把您的 <code>~/.config/cmux/cmux.json</code> 复制到 Linux 上的 <code>~/.config/paneflow/paneflow.json</code> 或 macOS 上的 <code>~/Library/Application Support/paneflow/paneflow.json</code>。重命名差异化的键（参见 <link>schema 参考</link>）。",
+        "1": "<strong>键位绑定</strong>：核心动作的默认值匹配（<code>Cmd/Ctrl+Shift+D</code> 水平分屏，<code>Cmd/Ctrl+Shift+E</code> 垂直分屏，<code>Alt+Arrow</code> 聚焦，<code>Cmd/Ctrl+1-9</code> 切换工作区）。自定义覆盖直接转换。",
+        "2": "<strong>会话</strong>：不可移植。磁盘上的会话格式不同；您需要在首次启动时重新创建工作区。之后分支检测和 CWD 恢复会自动生效。",
+        "3": "<strong>SSH 工作流</strong>：没有直接迁移路径。如果您依赖 <code>cmux ssh user@host</code>，请留在 cmux，直到 Paneflow 发布远程工作区支持。"
+      }
+    },
+    "whenNot": {
+      "title": "何时不应选择 Paneflow",
+      "intro": "诚实的硬性决断。如果以下五点中的任何一项对您重要，cmux 才是今天合适的工具 - 不必勉强：",
+      "items": {
+        "0": "<strong>您需要 SSH 远程工作区。</strong>cmux 提供自动部署的 Go 守护进程（scp + SSH 本地转发到 Unix 套接字），让 <code>cmux ssh user@host</code> 透明地给您一个远程工作区。Paneflow 在近期路线图上无等价物。",
+        "1": "<strong>您需要终端内的嵌入式浏览器。</strong>cmux 的 WKWebView 面板支持从 Chrome、Firefox、Safari、Brave、Edge 和 Arc 导入配置。Paneflow 不计划提供浏览器能力面。",
+        "2": "<strong>您需要从终端配置云虚拟机。</strong>cmux 提供集成的虚拟机配置（<code>cmux vm new</code>），并与工作区其余部分打通。Paneflow 无等价物。",
+        "3": "<strong>您需要数百命令的 IPC 能力面以做自动化。</strong>cmux 在 V1 文本 + V2 JSON 双协议套接字上暴露数百条命令。Paneflow 的 JSON-RPC 当前有十三个方法 - 够用于基础智能体控制，不足以支持重型自动化管线。",
+        "4": "<strong>您现在就需要生产级成熟度。</strong>cmux 已到 v0.64，积累了数月的实战用户反馈和活跃的商业支持。Paneflow 在 v0.2.x，社区较小。在 v1.0 之前，配置和 IPC schema 在次要版本之间仍可能变动。"
+      }
+    },
+    "faq": {
+      "title": "常见问题",
+      "items": {
+        "0": {
+          "question": "Paneflow 是 cmux 的分叉吗？",
+          "answer": "不是。Paneflow 是受 cmux 智能体优先设计启发的独立 Rust 实现。两份代码库没有共享源代码。Paneflow 使用 GPUI（Zed 的框架）+ 上游 alacritty_terminal；cmux 通过 GhosttyKit.xcframework 使用 AppKit + libghostty。"
+        },
+        "1": {
+          "question": "每个终端支持多少个 AI 智能体？",
+          "answer": "两者都能启动任何 CLI 编码智能体 - 它们是终端复用器，所以任何能在 shell 中运行的都能在里面跑。差别在专属 UI：Paneflow 为 Claude Code、Codex 和 OpenCode 提供一等公民按钮（Paneflow 作者每天使用的三个）。cmux 为 15+ 个智能体提供专属 UI。如果您要轮换很多智能体并希望为每个都获得一键启动，cmux 更广的覆盖有帮助。如果您主要使用两三个，两者体感相同。"
+        },
+        "2": {
+          "question": "如果 cmux 更成熟，为何选 Paneflow？",
+          "answer": "如果您今天就需要 Linux（Paneflow 提供，cmux 仅 macOS），或您特别想要 MIT 协议工具而不必单独处理商业协议问题，或您偏好可审计并贡献的小型 Rust 代码库，Paneflow 更合适。对 2026 年 5 月仅 macOS、功能丰富的工作流，cmux 更打磨且覆盖面更大（云虚拟机、命令面板、AppleScript、tmux 兼容性、嵌入式浏览器）。"
+        },
+        "3": {
+          "question": "Paneflow 会在 Windows 上运行吗？",
+          "answer": "原生 Windows 在计划中，尚无发布 ETA。WSL2 + Linux 构建目前不可行：GPUI 的渲染器需要 VK_EXT_inline_uniform_block Vulkan 扩展，而 WSLg 的 dzn 驱动未实现，因此会回退到 llvmpipe 软件渲染 - 对终端复用器而言无法接受。"
+        },
+        "4": {
+          "question": "我能把 cmux 配置迁移到 Paneflow 吗？",
+          "answer": "部分可以。两个项目都使用形状相似的 JSON 配置文件（默认 shell、主题、键位绑定、AI 智能体按钮）。按键记法在修饰键上匹配（macOS 上 Cmd，Linux 上 Ctrl）。会话文件不可移植 - 磁盘格式不同。迁移辅助脚本在路线图上；目前手动转换约需十分钟。"
+        },
+        "5": {
+          "question": "Paneflow 为什么用 alacritty_terminal 而不是 Ghostty？",
+          "answer": "alacritty_terminal 发布在 crates.io 上，遵守稳定的 Rust semver 保证，并与 GPUI 的渲染循环干净集成。Ghostty 是 C 库，cmux 通过 GhosttyKit.xcframework 访问 - 在 cmux 的 Swift 应用里完全合适，但 Paneflow 的纯 Rust 栈更偏好纯 Rust VT 模拟器。这是架构偏好，并非质量判断。两个引擎都很优秀。"
+        },
+        "6": {
+          "question": "Paneflow 支持在远程机器上运行智能体吗？",
+          "answer": "今天不支持。cmux 提供一个通过 SSH 自动部署的 Go 守护进程（`cmux ssh user@host`），透明地创建远程工作区。Paneflow 路线图目前不包括该功能。如果您的工作流依赖远程智能体，cmux 是今天更合适的选择。"
+        },
+        "7": {
+          "question": "Paneflow 里有嵌入式浏览器吗？",
+          "answer": "没有。cmux 提供完整的基于 WKWebView 的浏览器，带地址栏、从 Chrome/Firefox/Safari/Brave/Edge/Arc 导入配置以及标签页管理。Paneflow 不包含浏览器 - 它专注于终端面板加 markdown 阅读器。如果您想要终端工作区内的浏览器，cmux 是更合适的选择。"
+        }
+      }
+    },
+    "next": {
+      "title": "下一步",
+      "body": "准备好试用 Paneflow 了吗？<download>下载最新版本</download> 或阅读 <docs>入门指南</docs>。对 cmux 感兴趣？<repo>cmux 在 GitHub 上</repo>，值得一看 - 它解决的问题 Paneflow 团队深深尊重。"
+    }
+  },
+  "LegalPrivacy": {
+    "Metadata": {
+      "title": "Politique de confidentialité — Paneflow",
+      "description": "Politique de confidentialité de Paneflow : données collectées sur paneflow.dev, télémétrie desktop opt-in, sous-traitants (PostHog EU, Vercel, GitHub), droits RGPD.",
+      "ogTitle": "Politique de confidentialité — Paneflow",
+      "ogDescription": "Paneflow, site et application : données, sous-traitants, et droits RGPD."
+    },
+    "schema": {
+      "breadcrumbHome": "Home",
+      "breadcrumbPrivacy": "Politique de confidentialité"
+    },
+    "heading": "Politique de confidentialité",
+    "lastUpdated": "Dernière mise à jour : {date}",
+    "sections": {
+      "controller": {
+        "title": "1. Responsable du traitement",
+        "intro": "Le responsable du traitement au sens de l'article 4 du RGPD est :",
+        "name": "Strivex",
+        "contactLabel": "Contact :"
+      },
+      "siteData": {
+        "title": "2. Données collectées sur paneflow.dev",
+        "intro": "Le site <mono>paneflow.dev</mono> utilise deux outils d'analytique complémentaires :",
+        "vercel": "<strong>Vercel Analytics</strong> · métriques d'infrastructure (pages vues, Web Vitals) fournies par l'hébergeur.",
+        "posthog": "<strong>PostHog</strong> · mode <em>cookieless</em>, aucun cookie n'est déposé, aucun identifiant n'est persisté dans le navigateur. Sont collectés : pages vues anonymes, clics sur les boutons de téléchargement, défilements jusqu'aux sections clés, paramètres UTM et <mono>referer</mono> d'arrivée. Les adresses IP ne sont <strong>jamais stockées</strong> (masquage activé côté serveur PostHog).",
+        "outro": "Aucune donnée nominative (nom, e-mail, identifiant de compte) n'est collectée par le site. Aucun profilage publicitaire n'est effectué."
+      },
+      "telemetry": {
+        "title": "3. Télémétrie de l'application desktop (opt-in)",
+        "p1": "L'application Paneflow installée sur votre poste ne transmet <strong>aucune donnée</strong> tant que vous n'y avez pas explicitement consenti via la fenêtre de consentement affichée au premier lancement.",
+        "p2": "Si vous acceptez, les événements suivants sont transmis :",
+        "events": {
+          "0": "<mono>app_started</mono> · démarrage de l'application",
+          "1": "<mono>app_exited</mono> · arrêt de l'application",
+          "2": "<mono>update_installed</mono> · installation d'une mise à jour"
+        },
+        "p3": "Chaque événement est associé à un identifiant machine anonyme (UUID v4 aléatoire, stocké localement et réinitialisable par l'utilisateur), au système d'exploitation et à la version de Paneflow. <strong>Aucun chemin de fichier, nom de projet, contenu de terminal, commande shell ou information personnelle n'est transmis.</strong>",
+        "p4": "La variable d'environnement <mono>PANEFLOW_NO_TELEMETRY=1</mono> désactive toute télémétrie de manière inconditionnelle, avant même l'affichage de la fenêtre de consentement. La fenêtre de consentement peut être ré-ouverte à tout moment depuis les préférences de l'application pour réviser votre choix."
+      },
+      "subprocessors": {
+        "title": "4. Sous-traitants",
+        "intro": "Conformément à l'article 28 du RGPD, Paneflow recourt aux sous-traitants suivants :",
+        "locationLabel": "Localisation :",
+        "roleLabel": "Rôle :",
+        "items": {
+          "0": {
+            "name": "PostHog Inc.",
+            "region": "EU Cloud · AWS Frankfurt (Allemagne)",
+            "role": "Analytique produit (site et télémétrie desktop opt-in)",
+            "notes": "Mode cookieless, adresses IP non stockées, rétention 12 mois, DPA signé avec SCC module 2 (contrôleur-processeur)."
+          },
+          "1": {
+            "name": "Vercel Inc.",
+            "region": "États-Unis (edge réseau en Europe)",
+            "role": "Hébergement statique du site paneflow.dev et Web Vitals",
+            "notes": "Accepté au moment de l'onboarding Vercel. Aucun transfert de données personnelles identifiantes."
+          },
+          "2": {
+            "name": "GitHub Inc. (Microsoft Corporation)",
+            "region": "États-Unis",
+            "role": "Hébergement du code source et des artefacts de version téléchargés depuis le site",
+            "notes": "Les logs de téléchargement relèvent des conditions de service GitHub."
+          }
+        }
+      },
+      "retention": {
+        "title": "5. Durée de conservation",
+        "items": {
+          "0": "PostHog : 12 mois glissants",
+          "1": "Vercel Analytics : 30 jours (valeur par défaut)",
+          "2": "GitHub : durée déterminée par la politique GitHub pour les logs d'accès aux artefacts publics"
+        },
+        "outro": "Au-delà, les données sont supprimées ou agrégées de manière anonyme."
+      },
+      "rights": {
+        "title": "6. Droits des personnes concernées",
+        "intro": "Conformément au RGPD (articles 15 à 21), vous disposez des droits suivants sur les données vous concernant :",
+        "items": {
+          "0": "<strong>Article 15</strong> · Droit d'accès : obtenir la confirmation que des données vous concernant sont traitées, et en recevoir une copie.",
+          "1": "<strong>Article 16</strong> · Droit de rectification : faire corriger des données inexactes ou incomplètes.",
+          "2": "<strong>Article 17</strong> · Droit à l'effacement (« droit à l'oubli ») : faire supprimer vos données lorsque les conditions légales sont réunies.",
+          "3": "<strong>Article 18</strong> · Droit à la limitation du traitement : faire suspendre temporairement le traitement.",
+          "4": "<strong>Article 19</strong> · Obligation de notification : être informé des rectifications, effacements ou limitations communiqués aux destinataires des données.",
+          "5": "<strong>Article 20</strong> · Droit à la portabilité : recevoir vos données dans un format structuré, couramment utilisé et lisible par machine, et les transmettre à un autre responsable.",
+          "6": "<strong>Article 21</strong> · Droit d'opposition : vous opposer à tout moment au traitement de vos données pour des raisons tenant à votre situation particulière."
+        },
+        "outro": "Toute demande d'exercice de ces droits est à adresser par courriel à <email>arthur.jean@strivex.fr</email>. Une réponse vous sera apportée dans un délai maximal d'un mois. En cas de réponse insatisfaisante, vous pouvez introduire une réclamation auprès de la <cnil>CNIL</cnil>."
+      },
+      "contact": {
+        "title": "7. Contact",
+        "intro": "Pour toute question relative à la présente politique ou au traitement de vos données :",
+        "emailLabel": "E-mail :",
+        "publisherLabel": "Éditeur :",
+        "publisherName": "Strivex"
+      }
+    }
+  },
+  "NotFound": {
+    "title": "页面未找到",
+    "description": "我们无法找到您要查找的页面。它可能已被移动、重命名，或从未存在。",
+    "ctaHome": "返回首页",
+    "ctaDocs": "浏览文档"
+  }
+}

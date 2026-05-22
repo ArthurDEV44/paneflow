@@ -1,0 +1,108 @@
+---
+title: Deine erste Paneflow-Sitzung
+description: Starte Paneflow, teile deinen ersten Bereich und lerne das mentale Kernmodell in unter fünf Minuten.
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+<Callout type="info">
+**TL;DR.** Führe `paneflow` aus. Drücke `Cmd/Ctrl+Shift+D` zum
+horizontalen Teilen, `Alt+Arrow` zum Verschieben des Fokus,
+`Cmd/Ctrl+Shift+N` zum Hinzufügen eines Arbeitsbereichs. Das ist der
+gesamte Kern-Flow.
+</Callout>
+
+Das mentale Modell von Paneflow besteht aus zwei Schichten:
+**Arbeitsbereiche** (unabhängige Projektkontexte) und **Bereiche**
+(Terminal-Aufteilungen innerhalb eines Arbeitsbereichs). Diese Seite
+führt dich von einer frischen Installation zu einem funktionierenden
+Setup mit zwei Bereichen, ohne jegliche Konfiguration.
+
+Tastenkürzel nutzen den Modifier `secondary`, der zu `Cmd` unter
+macOS und `Ctrl` unter Linux aufgelöst wird. Die Notation
+`Cmd/Ctrl+Shift+D` unten bedeutet „nimm den, der auf deinem OS
+greift".
+
+<Callout type="warn">
+Die Screenshots für diese Seite kommen mit dem v0.3.0 Docs-Sprint.
+Die Prosa unten geht davon aus, dass du auf deiner eigenen Maschine
+mitarbeitest.
+</Callout>
+
+## Wie starte ich Paneflow?
+
+Führe die Binärdatei aus einem Terminal aus, oder öffne die App über
+Spotlight, den Programme-Ordner oder deinen Launcher:
+
+```bash
+paneflow
+```
+
+Das Fenster öffnet sich mit einem einzigen Arbeitsbereich und einem
+einzigen Shell-Bereich. Der Arbeitsbereich ist nach dem Verzeichnis
+benannt, aus dem du gestartet hast; ein Start aus `~/projects/api`
+öffnet einen Arbeitsbereich namens `api`. Deine Standard-Shell
+(`$SHELL`) startet innerhalb des Bereichs.
+
+<Callout type="warn">
+**Fenster rendert nicht?** Paneflow nutzt Vulkan unter Linux und
+Metal unter macOS. Das Fenster wird nicht öffnen, wenn dein
+Grafiktreiber die von der Plattform geforderte API nicht
+unterstützt. Bestätige, dass dein Treiber aktuell ist, prüfe den
+[Linux-Vulkan-Hinweis](/docs/installation/linux) oder öffne ein
+[GitHub-Issue](https://github.com/ArthurDEV44/paneflow/issues) mit
+deinem OS und deiner Treiber-Version.
+</Callout>
+
+## Wie teile ich einen Bereich?
+
+Zwei Teilrichtungen:
+
+- `Cmd/Ctrl+Shift+D` teilt den fokussierten Bereich **horizontal**
+  (oben und unten).
+- `Cmd/Ctrl+Shift+E` teilt den fokussierten Bereich **vertikal**
+  (nebeneinander).
+
+Jeder neue Bereich startet eine frische Shell im gleichen
+Arbeitsverzeichnis wie der Quellbereich. Probiere beides: teile einmal
+horizontal, fokussiere den neuen Bereich und teile diesen dann
+vertikal. Du hast jetzt drei Shells in einem einzigen Arbeitsbereich.
+
+## Wie verschiebe ich den Fokus zwischen Bereichen?
+
+`Alt+Arrow` funktioniert auf jedem OS gleich:
+
+- `Alt+Left` und `Alt+Right` fokussieren den Bereich links oder rechts.
+- `Alt+Up` und `Alt+Down` fokussieren den Bereich oben oder unten.
+
+Der aktive Bereich hat einen helleren Titelleisten-Rand, sodass du
+auf einen Blick siehst, welcher Bereich deine nächste Tastatureingabe
+empfängt.
+
+## Wie erstelle ich einen zweiten Arbeitsbereich?
+
+`Cmd/Ctrl+Shift+N` öffnet eine native Ordner-Auswahl. Wähle ein
+Verzeichnis und ein neuer Arbeitsbereich erscheint in der Seitenleiste,
+benannt nach dem Ordner. Der Arbeitsbereich startet mit einem
+Shell-Bereich, dessen CWD bereits auf deine Wahl gesetzt ist.
+
+Zum Wechseln zwischen Arbeitsbereichen:
+
+- `Cmd/Ctrl+1` bis `Cmd/Ctrl+9` springt zu Arbeitsbereich 1 bis 9.
+- `Cmd/Ctrl+Tab` rotiert zum nächsten Arbeitsbereich.
+
+Die Seitenleiste links listet jeden geöffneten Arbeitsbereich. Klicke
+auf den Namen eines Arbeitsbereichs, um dorthin zu springen.
+
+## Wie schließe ich einen Bereich?
+
+`Cmd/Ctrl+Shift+W` schließt den fokussierten Bereich. Wenn es der
+letzte Bereich in einem Arbeitsbereich ist, bleibt der Arbeitsbereich
+mit einem leeren Platzhalter offen, bis du einen neuen Bereich
+öffnest oder den Arbeitsbereich selbst mit `Cmd/Ctrl+Shift+Q`
+schließt.
+
+## Wie geht es weiter?
+
+- Vollständige Kürzel-Tabelle: [Tastenkürzel](/docs/keybindings).
+- Shells, Designs und Überschreibungen konfigurieren: [Konfiguration](/docs/configuration).

@@ -19,6 +19,8 @@
       }
     ],
     "paths": {
+      "@/i18n/*": ["./i18n/*"],
+      "@/messages/*": ["./messages/*"],
       "@/*": ["./src/*"],
       "collections/*": ["./.source/*"]
     }

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Check, Mail, Send } from "lucide-react";
+import { useTranslations } from "next-intl";
 import posthog from "posthog-js";
 import { Button } from "@/components/ui/button";
 
@@ -65,6 +66,7 @@ export function WaitlistForm({
   platform?: "windows" | "macos" | "linux";
   onSuccess?: () => void;
 }) {
+  const t = useTranslations("Waitlist");
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -105,7 +107,7 @@ export function WaitlistForm({
     e.preventDefault();
     if (status === "submitting" || status === "success") return;
     if (!token) {
-      setErrorMsg("Verifying. Try again in 2s.");
+      setErrorMsg(t("errors.verifying"));
       setStatus("error");
       return;
     }
@@ -135,12 +137,12 @@ export function WaitlistForm({
         setStatus("error");
         setErrorMsg(
           code === "rate_limit_exceeded"
-            ? "Too many attempts. Wait a minute."
+            ? t("errors.rateLimit")
             : code === "validation_error"
-              ? "Invalid email."
+              ? t("errors.validation")
               : code === "turnstile_failed"
-                ? "Verification failed. Reload the page."
-                : "Something went wrong. Try again in 30s.",
+                ? t("errors.turnstile")
+                : t("errors.generic"),
         );
         if (widgetIdRef.current && window.turnstile) {
           window.turnstile.reset(widgetIdRef.current);
@@ -157,7 +159,7 @@ export function WaitlistForm({
         code: "network_error",
       });
       setStatus("error");
-      setErrorMsg("Connection lost. Retry.");
+      setErrorMsg(t("errors.network"));
     }
   };
 
@@ -166,8 +168,12 @@ export function WaitlistForm({
       <div className="flex items-center gap-2 text-sm text-text-muted">
         <Check className="w-4 h-4 text-accent-green" />
         <span>
-          You&apos;re in. We&apos;ll email you at{" "}
-          <strong className="text-text font-semibold">{email}</strong>.
+          {t.rich("success", {
+            email,
+            strong: (chunks) => (
+              <strong className="text-text font-semibold">{chunks}</strong>
+            ),
+          })}
         </span>
       </div>
     );
@@ -182,7 +188,7 @@ export function WaitlistForm({
           name="email"
           required
           autoComplete="email"
-          placeholder="ton@email.com"
+          placeholder={t("placeholder.email")}
           value={email}
           onChange={(ev) => setEmail(ev.target.value)}
           disabled={status === "submitting"}
@@ -193,7 +199,7 @@ export function WaitlistForm({
           size="icon-sm"
           loading={status === "submitting"}
           disabled={!email}
-          aria-label={status === "submitting" ? "Sending" : "Subscribe"}
+          aria-label={status === "submitting" ? t("aria.sending") : t("aria.subscribe")}
           className="ml-1 size-7 rounded-sm before:rounded-[calc(var(--radius-sm)-1px)] [&_svg:not([class*='size-'])]:size-3.5"
         >
           <Send strokeWidth={2} />
@@ -219,7 +225,7 @@ export function WaitlistForm({
         <p className="text-xs text-accent-red/90">{errorMsg}</p>
       )}
       <p className="text-[11px] text-text-subtle">
-        One email, the day Windows ships. No marketing.
+        {t("footnote")}
       </p>
     </form>
   );

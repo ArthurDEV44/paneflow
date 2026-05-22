@@ -1,0 +1,115 @@
+---
+title: Designs
+description: Wechsle zwischen Paneflows mitgelieferten Designs - One Dark und PaneFlow Light - mit Hot-Reload, kein Neustart nötig.
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow liefert heute zwei mitgelieferte Designs aus: ein dunkles
+Standard-Design (`One Dark`) und eine helle Alternative
+(`PaneFlow Light`). Designs steuern jede Farbe der Terminal-Oberfläche -
+ANSI-Palette, Cursor, Auswahl, Scrollback-Highlights,
+Suchtreffer. Die Seitenleiste und die Titelleiste bleiben auf
+Paneflows App-Chrome-Palette und werden nicht vom Design gesteuert.
+
+<Callout type="info">
+**TL;DR.** Setze `"theme": "PaneFlow Light"` in `paneflow.json`, um
+zum hellen Design zu wechseln. Speichere die Datei; das laufende
+Fenster nimmt die neuen Farben innerhalb von ~300 ms ohne Neustart
+auf.
+</Callout>
+
+## Wie wechsle ich das aktive Design?
+
+Setze den Schlüssel `theme` in `paneflow.json`:
+
+```json
+{
+  "theme": "PaneFlow Light"
+}
+```
+
+Der Wert muss exakt einem der mitgelieferten Design-Namen
+entsprechen, einschließlich der Groß-/Kleinschreibung. Unbekannte
+Namen fallen auf `One Dark` zurück und geben eine Log-Warnung aus,
+wenn die Datei das nächste Mal geparst wird.
+
+Die Konfigurationsdatei liegt unter:
+
+| OS | Pfad |
+| --- | --- |
+| Linux | `~/.config/paneflow/paneflow.json` |
+| macOS | `~/Library/Application Support/paneflow/paneflow.json` |
+
+## Welche Designs werden heute mit Paneflow ausgeliefert?
+
+<VersionBadge stability="stable" />
+
+| Name | Beschreibung |
+| --- | --- |
+| `"One Dark"` | Dunkles Design, Standard. Inspiriert von Atoms One-Dark-Palette. |
+| `"PaneFlow Light"` | Helles Design. Höherkontrast-Palette, abgestimmt auf Tageslicht-Arbeitsplätze. |
+
+Beide Designs werden mit allen 16 ANSI-Farb-Slots,
+Vordergrund- / Hintergrundfarben, Cursor-, Auswahl- und
+Suchhighlight-Farben ausgeliefert, vorab so abgestimmt, dass sie auf
+Standard-Prompts WCAG-AA-Kontrast erfüllen.
+
+<Callout type="warn">
+Frühere Projektpläne erwähnten sechs mitgelieferte Designs. Die
+Realität in v0.2.x sind zwei. Zusätzliche mitgelieferte Designs
+(Solarized, Gruvbox und eine Hochkontrast-Variante) stehen auf der
+Roadmap; verfolge die [GitHub Releases](https://github.com/ArthurDEV44/paneflow/releases)
+für die Ankündigung.
+</Callout>
+
+## Wie funktioniert der Design-Hot-Reload?
+
+Wenn du `paneflow.json` speicherst, löst Paneflow das Design
+sofort neu auf - kein Neustart, kein Fenster-Reload.
+
+Zwei Mechanismen treiben den Reload an:
+
+- **Ereignisgesteuert (bevorzugt).** Ein `notify`-Watcher, der auf
+  dem Konfigurations-Verzeichnis installiert ist, feuert
+  innerhalb von Millisekunden nach einem Speichern. Ereignisse
+  werden um 300 ms entprellt, sodass Editor-Speicherbursts (write
+  -> fsync -> atomic-rename) nur einen Reload auslösen.
+- **Polling-Fallback.** Dateisysteme, die inotify / FSEvents /
+  ReadDirectoryChangesW nicht unterstützen (NFS-Freigaben,
+  abgeschottete Sandboxen, einige WSL-Pfade) fallen auf ein
+  500-ms-`mtime`-Polling zurück. Der Fallback läuft nur, wenn der
+  Ereignis-Watcher nicht startet.
+
+Du wirst die neue Palette beim nächsten Render-Frame nach dem
+Auslösen des Watchers wirksam sehen - typischerweise innerhalb von
+~300 ms nach dem Speichern.
+
+<Callout type="tip">
+Hot-Reload deckt jedes design-bezogene Feld in `paneflow.json` ab,
+einschließlich der Typografie-Schlüssel (`font_family`,
+`font_size`, `line_height`). Der Schlüssel `window_decorations`
+ist das eine Konfigurationsfeld, das einmalig beim Start gelesen
+wird - eine Änderung erfordert einen Neustart von Paneflow.
+</Callout>
+
+## Wie erstelle ich ein benutzerdefiniertes Design?
+
+Vom Benutzer mitgelieferte benutzerdefinierte Designs stehen auf
+der Roadmap für ein Post-v0.3.0-Release. v0.2.x erkennt nur die oben
+aufgelisteten mitgelieferten Design-Namen; es gibt noch kein
+`theme.json` oder ein benutzerdefiniertes Palettenformat.
+
+Wenn du in der Zwischenzeit eine bestimmte Palette willst, ist der
+direkteste Weg, ein [GitHub-Issue](https://github.com/ArthurDEV44/paneflow/issues)
+mit der gewünschten Palette zu öffnen. Mitgelieferte Designs werden
+in `src-app/src/theme/builtin.rs` abgestimmt und mit jedem Release
+ausgeliefert - neue Paletten werden beschleunigt, wenn sie einen
+klaren Anwendungsfall haben.
+
+Der Schema-Platzhalter für einen zukünftigen Custom-Theme-Schlüssel
+ist bewusst noch nicht definiert, sodass das Hinzufügen eines zu
+`paneflow.json` heute keine Wirkung hat - er wird von der
+nachsichtigen Laufzeit gemäß der
+[Konfigurations-Übersicht](/docs/configuration#how-does-paneflow-handle-unknown-keys)
+stillschweigend ignoriert.

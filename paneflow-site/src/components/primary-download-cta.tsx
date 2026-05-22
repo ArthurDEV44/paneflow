@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { Download } from "lucide-react";
+import { useTranslations } from "next-intl";
 import posthog from "posthog-js";
 import { AppleIcon, WindowsIcon } from "./os-icons";
 import { linuxAppImageUrl, macOSDmgUrl } from "../lib/release";
@@ -35,6 +36,7 @@ export function PrimaryDownloadCTA({
   source: string;
   className?: string;
 }) {
+  const t = useTranslations("DownloadCTA");
   const pillCls =
     className ??
     "inline-flex items-center gap-2.5 px-5 py-2.5 bg-accent text-bg font-semibold rounded-full hover:brightness-110 transition-all duration-200";
@@ -54,7 +56,7 @@ export function PrimaryDownloadCTA({
         className={pillCls}
       >
         <AppleIcon className="w-4 h-4" />
-        Download for macOS
+        {t("macos")}
       </a>
     );
   }
@@ -69,7 +71,7 @@ export function PrimaryDownloadCTA({
         className={pillCls}
       >
         <WindowsIcon className="w-4 h-4" />
-        Windows · Q3 2026
+        {t("windowsBadge")}
       </Link>
     );
   }
@@ -84,7 +86,7 @@ export function PrimaryDownloadCTA({
         className={pillCls}
       >
         <Download className="w-4 h-4" />
-        Download Paneflow
+        {t("generic")}
       </Link>
     );
   }
@@ -104,7 +106,7 @@ export function PrimaryDownloadCTA({
       className={pillCls}
     >
       <Download className="w-4 h-4" />
-      Download for Linux
+      {t("linux")}
     </a>
   );
 }

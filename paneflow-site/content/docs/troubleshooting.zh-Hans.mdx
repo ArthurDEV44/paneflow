@@ -1,0 +1,197 @@
+---
+title: 故障排除
+description: 修复 Paneflow 最常见的启动、配置和安装问题 - GPU 错误、缺失 PATH、被阻止的安装器、主题重载问题。
+dateModified: 2026-05-22
+faqpage: true
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+八种已知故障模式及其修复。如果你的问题不在本页面上，跳到
+[仍然卡住？](#still-stuck) 部分获取预填的 GitHub issue 模板。
+
+## 启动和渲染问题
+
+### 为什么 Paneflow 启动失败并报 GPU 错误？
+
+Paneflow 通过 GPUI 渲染，需要 Linux 上的 Vulkan 和 macOS 上的
+Metal。`Failed to initialize renderer` 或
+`No suitable GPU adapter found` 这类启动错误几乎总是意味着平台
+GPU 堆栈缺失或损坏。
+
+**Linux 修复：**
+
+```bash
+# Debian / Ubuntu
+sudo apt install libvulkan1 mesa-vulkan-drivers
+# Fedora
+sudo dnf install vulkan-loader mesa-vulkan-drivers
+# Arch
+sudo pacman -S vulkan-icd-loader mesa
+```
+
+然后运行 `vulkaninfo --summary` 确认至少有一个 ICD 加载。
+**macOS 修复：** 升级到 macOS 13 Ventura 或更高版本 - 早期版本
+提供的 Metal API GPUI 不支持。
+
+参见 [Linux 安装 Vulkan 备注](/docs/installation/linux) 获取
+对应的安装依赖列表。
+
+### 为什么我的 Wayland 会话在 Paneflow 中是空白的？
+
+Wayland 下的空白窗口几乎总是 Vulkan ICD 与合成器协商 surface
+失败。窗口出现在任务栏中但没有渲染任何内容。
+
+**用 `vulkaninfo --summary` 确认诊断** - 如果没有驱动列出
+`VK_KHR_wayland_surface`，那就是这个症状。
+
+**强制 XWayland 回退** 作为快速绕过：
+
+```bash
+WAYLAND_DISPLAY= GDK_BACKEND=x11 paneflow
+```
+
+**永久修复：** 安装你所在发行版的 Mesa Vulkan 驱动包（Debian /
+Ubuntu 上是 `mesa-vulkan-drivers`，Fedora / Arch 上根据 GPU 厂商
+是 `vulkan-radeon` 或 `vulkan-intel`）。
+
+在 NVIDIA 专有驱动上，确保软件包与正在运行的内核匹配 - 过时模
+块是 Wayland 空白屏幕最常见的根因。
+
+## 配置不生效
+
+### 为什么我的 paneflow.json 没有加载？
+
+Paneflow 在每个 OS 上只读取一个配置文件，并静默忽略未知键。
+「配置不生效」这种抱怨几乎总是三种情况之一：错误路径、JSON 语
+法错误，或 `window_decorations` 例外（只在启动时读取）。
+
+**确认路径：**
+
+| OS | 路径 |
+| --- | --- |
+| Linux | `~/.config/paneflow/paneflow.json` |
+| macOS | `~/Library/Application Support/paneflow/paneflow.json` |
+
+**在保存之前验证 JSON：**
+
+```bash
+cat ~/.config/paneflow/paneflow.json | python3 -m json.tool
+```
+
+解析错误意味着 Paneflow 在下次启动时静默回退到默认值并记录一条
+警告。固定一个 [JSON Schema](/docs/configuration#editor-autocomplete-with-json-schema)
+以在编辑器中保存前抓住拼写错误。
+
+`window_decorations` 修改需要完整重启 - 这个键在启动时一次性
+读取，不热重载。
+
+### 为什么我的快捷键不工作？
+
+三个常见原因：
+
+1. **操作名拼写错误。** 覆盖值必须匹配规范的 `snake_case` 操作
+   名（`split_horizontally`，不是 `split-horizontal` 也不是
+   `splitHorizontally`）。未知名称会被忽略。参见
+   [快捷键参考](/docs/keybindings) 中的完整列表。
+2. **按键修饰符不匹配。** 使用 `ctrl+shift+t` 这种形式，不是
+   `ctrl-shift-t` 也不是 `Ctrl+Shift+T`。小写，加号分隔。
+3. **上下文冲突。** `Terminal` 上下文中的绑定只在终端窗格获得
+   焦点时触发。[Search](/docs/keybindings#search-overlay) 和
+   [Markdown](/docs/keybindings#markdown-pane) 上下文更窄。
+
+覆盖示例：
+
+```json
+{
+  "shortcuts": {
+    "ctrl+shift+t": "new_tab"
+  }
+}
+```
+
+如果两个条目映射同一个按键，最后一个胜出。参见
+[覆盖语法](/docs/configuration/schema#how-do-i-set-shortcuts)
+以了解上下文相关的绑定。
+
+### 为什么我的主题没有热重载？
+
+主题热重载使用 `notify` 文件系统监视器，去抖时间 300 ms，
+监视器启动失败时回退到 500 ms 的 `mtime` 轮询。如果已保存的
+`paneflow.json` 修改在一秒内没有生效，那么正在发生三件事中的
+一件：
+
+1. **主题名拼写错误。** 名称区分大小写：`"PaneFlow Light"` 有
+   效，`"paneflow light"` 无效。未知名称静默回退到
+   `"One Dark"`。
+2. **文件系统不支持文件监视。** NFS 共享、沙箱应用容器和某些
+   WSL 路径不支持 inotify / FSEvents / ReadDirectoryChangesW。
+   500 ms 的轮询回退应该仍然能工作 - 如果不工作，你的编辑器
+   可能在写入临时文件并重命名，这在某些罕见文件系统上会破坏
+   `mtime` 信号。
+3. **你编辑了错误的文件。** 确认你保存的路径匹配
+   [主题指南](/docs/themes#how-do-i-switch-the-active-theme)
+   中的 OS 特定位置。
+
+`window_decorations` 是唯一不热重载的与主题相邻的键；那个需要
+完整重启。
+
+## 安装和签名提示
+
+### 为什么 paneflow 不在我的 PATH 中？
+
+两条安装路径会自动把 `paneflow` 加到 `PATH`：Linux 的 `.deb`
+（在 `/usr/bin/paneflow` 放一个二进制文件）和 Homebrew（当
+tap 发布后）。AppImage 和 tarball 路径会把二进制文件留在你
+放置的地方。
+
+**Linux tarball 修复：**
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+zsh 使用 `~/.zshrc`，fish 使用 `fish_add_path ~/.local/bin`。
+[Linux 安装 PATH 部分](/docs/installation/linux#what-if-paneflow-is-not-found-in-my-path)
+详细涵盖每个 shell 的变体。
+
+**macOS `.app` 修复：** 二进制文件在 bundle 内部，默认不在
+`PATH` 上。符号链接一次：
+
+```bash
+sudo ln -sf /Applications/Paneflow.app/Contents/MacOS/paneflow /usr/local/bin/paneflow
+```
+
+### 为什么 macOS 说 Apple 无法检查此应用？
+
+公证过的 `.dmg` 永远不应触发此对话框，但如果你通过异常传输路
+径移动 bundle（通过非 Safari 浏览器下载到外部硬盘、通过网络共
+享复制），隔离属性可能被保留下来。
+
+**最快修复（每个应用一次）：**
+
+1. 打开 Finder，导航到 `Applications`。
+2. Control 单击 `Paneflow.app`。
+3. 选择 **打开**。
+4. 在确认对话框中点击 **打开**。
+
+**CLI 修复：**
+
+```bash
+xattr -d com.apple.quarantine /Applications/Paneflow.app
+```
+
+为该 bundle 在系统范围内移除隔离扩展属性。如果你自己安装了应
+用，则不需要 `sudo`。完整指南（含系统设置路径）位于
+[macOS 安装页面](/docs/installation/macos#what-if-macos-gatekeeper-blocks-the-app)。
+
+## 仍然卡住？
+
+如果以上都没有解决你的问题，开一个 GitHub issue，附上你的 OS、
+Paneflow 版本和复现步骤。下面的链接会打开一个预填模板：
+
+[**开一个 GitHub issue**](https://github.com/ArthurDEV44/paneflow/issues/new?title=%5Bbug%5D%20short%20summary&body=%23%23%20Environment%0A-%20OS%3A%20%28Linux%20distro%20%2B%20version%20%2F%20macOS%20version%29%0A-%20Paneflow%20version%3A%20%28paneflow%20--version%29%0A-%20GPU%20%2F%20driver%3A%20%0A-%20Display%20server%20%28Linux%29%3A%20Wayland%20%2F%20X11%0A%0A%23%23%20Steps%20to%20reproduce%0A1.%20%0A2.%20%0A3.%20%0A%0A%23%23%20Expected%20behaviour%0A%0A%0A%23%23%20Actual%20behaviour%0A%0A%0A%23%23%20Logs%20%2F%20screenshots%0A)
+
+如果问题可从 CLI 复现，请粘贴 `RUST_LOG=info paneflow` 的任何
+相关输出 - 日志行能告诉我们哪个子系统失败，省去一轮澄清问题
+的来回。
