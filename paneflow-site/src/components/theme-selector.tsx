@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useTheme } from "next-themes";
+import { useTheme } from "@/lib/theme";
 import { Monitor, Moon, Sun } from "lucide-react";
 
 const OPTIONS = [

@@ -1,4 +1,7 @@
 import { LATEST_VERSION } from "@/lib/release";
+import { bcp47ForJsonLd } from "@/lib/i18n-bcp47";
+import { routing } from "@/i18n/routing";
+import { localePath } from "@/lib/i18n-metadata";
 
 const SITE_URL = "https://paneflow.dev";
 
@@ -252,6 +255,22 @@ export interface ArticleInput {
   url: string;
   /** YYYY-MM-DD or full ISO 8601 - normalised internally. */
   dateModified?: string;
+  /**
+   * Page locale (raw segment value, e.g. "en", "fr", "zh-Hans").
+   * Mapped to a BCP 47 tag via `bcp47ForJsonLd`. Typed `string` so
+   * callers can pass `params.locale` from Next.js dynamic segments
+   * without narrowing through `hasLocale` first — the helper is
+   * defensive and falls back to "en-US" on unknown values.
+   */
+  locale: string;
+  /**
+   * Locale-independent canonical pathname (e.g. `/docs/installation/linux`).
+   * When the page locale differs from `routing.defaultLocale`, this is
+   * used to emit `translationOfWork` pointing at the EN canonical
+   * article, signalling to AI engines and Google that this page is a
+   * translation of an English source rather than independent content.
+   */
+  canonicalPath?: string;
 }
 
 /**
@@ -281,14 +300,15 @@ export function buildTechArticleJsonLd(input: ArticleInput): Record<string, unkn
     ? input.url.replace(/^\/docs/, "/api/og/docs")
     : "/opengraph-image";
   const image = `${SITE_URL}${ogPath}`;
-  return {
+
+  const payload: Record<string, unknown> = {
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "@id": `${url}#article`,
     headline: input.title,
     description: input.description,
     url,
-    inLanguage: "en-US",
+    inLanguage: bcp47ForJsonLd(input.locale),
     datePublished: iso,
     dateModified: iso,
     image,
@@ -305,6 +325,38 @@ export function buildTechArticleJsonLd(input: ArticleInput): Record<string, unkn
       "@id": url,
     },
   };
+
+  // Translation cluster: when this page is a non-default-locale variant,
+  // declare it as a translation of the EN canonical via `translationOfWork`.
+  // On the EN canonical, declare every non-default locale variant via
+  // `workTranslation`. Both link via stable `@id` URLs to the article's
+  // schema node so AI engines (Perplexity, ChatGPT, Claude) can resolve
+  // the multilingual cluster from any entry point.
+  if (input.canonicalPath) {
+    const enUrl = `${SITE_URL}${localePath(routing.defaultLocale, input.canonicalPath)}`;
+    if (input.locale !== routing.defaultLocale) {
+      payload.translationOfWork = {
+        "@type": "TechArticle",
+        "@id": `${enUrl}#article`,
+        url: enUrl,
+        inLanguage: bcp47ForJsonLd(routing.defaultLocale),
+      };
+    } else {
+      payload.workTranslation = routing.locales
+        .filter((loc) => loc !== routing.defaultLocale)
+        .map((loc) => {
+          const variantUrl = `${SITE_URL}${localePath(loc, input.canonicalPath as string)}`;
+          return {
+            "@type": "TechArticle",
+            "@id": `${variantUrl}#article`,
+            url: variantUrl,
+            inLanguage: bcp47ForJsonLd(loc),
+          };
+        });
+    }
+  }
+
+  return payload;
 }
 
 export interface BreadcrumbCrumb {

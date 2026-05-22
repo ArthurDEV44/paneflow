@@ -1,0 +1,866 @@
+{
+  "Hero": {
+    "headline": "Claude Code、Codex、OpenCode、カスタムCLIエージェントをオーケストレーションするためのターミナルワークスペース。",
+    "imageAlt": "Claude CodeとCodexのエージェントセッションを並列ペインで実行するPaneflow。各ペインにgitブランチと開発サーバーのステータスが表示されています",
+    "cta": {
+      "github": "GitHubで見る"
+    }
+  },
+  "FeatureTriptych": {
+    "heading": "タブではなく、作業を監督する。",
+    "subhead": "Paneflowはターミナルセッションをエージェント司令室に変えます。すべてのセッションが見え、ラベル付けされ、復元可能な状態を保ちながら、注意が必要な対象を判断できます。",
+    "features": {
+      "0": {
+        "title": "エージェントごとに1ペイン",
+        "description": "Claude Code、Codex、OpenCode、カスタムCLIを並べて実行。ペインのサイズを変更し、レビューを身近に保ち、キーボードから操作できます。"
+      },
+      "1": {
+        "title": "タスクごとに1ワークスペース",
+        "description": "エージェントペイン、gitブランチ、作業ディレクトリ、ローカルサービスを同じタスクに紐づけて維持。再起動後にすべて復元します。"
+      },
+      "2": {
+        "title": "ネイティブ、長時間実行設計",
+        "description": "ZedのGPUレンダリングエンジンとAlacrittyフォークの上に構築。何時間も動作するエージェントの周りにChromiumを組み込みません。"
+      }
+    }
+  },
+  "FeatureSections": {
+    "sections": {
+      "0": {
+        "title": "並列エージェント作業のためのターミナルレイアウト",
+        "description": "各エージェント、テストランナー、サーバー、レビューペインに必要なスペースを与えます。水平・垂直に分割、フルスクリーンにズーム、またはプリセットから選択。",
+        "imageAlt": "複数ペインとワークスペースを持つPaneflowの分割レイアウト"
+      },
+      "1": {
+        "title": "各エージェントが何に触れているか把握する",
+        "description": "Paneflowはブランチ、差分統計、作業ディレクトリ、稼働中のHTTPサーバーをワークスペースに紐づけて保持します。どのエージェントがどのタスクを担当しているか一目で分かります。",
+        "imageAlt": "ワークスペースごとに検出された開発サーバーとgitブランチを表示するPaneflowサイドバー"
+      },
+      "2": {
+        "title": "CLIコーディングエージェントのオーケストレーション専用",
+        "description": "PaneflowはClaude Code、Codex CLI、OpenCodeのセッションを検出し、各ペインにタグを付け、ブランチコンテキストを表示し続けます。JSON-RPCを使えばどんな言語からでも分割をスクリプトし、プロンプトを送信し、エージェントの出力を読み取れます。",
+        "imageAlt": "Claude Codeセッションが検出され、AIエージェントが実行中のPaneflow"
+      },
+      "3": {
+        "title": "どのエージェントスレッドからでも再開できる",
+        "description": "Paneflowは現在のプロジェクトに対する各エージェントのネイティブセッション履歴を読み取り、Claude Code、Codex、OpenCodeを1つのポップオーバーにまとめ、選択したスレッドをターミナルで再開します。",
+        "imageAlt": "現在のプロジェクトのClaude Code、Codex、OpenCode履歴を表示するPaneflow AIエージェントセッションポップオーバー"
+      }
+    }
+  },
+  "Navbar": {
+    "brand": "Paneflow",
+    "logoAlt": "Paneflow",
+    "links": {
+      "download": "ダウンロード",
+      "docs": "ドキュメント",
+      "compare": "比較"
+    },
+    "aria": {
+      "githubLink": "GitHubのPaneflow",
+      "openMenu": "メニューを開く",
+      "closeMenu": "メニューを閉じる",
+      "mobileNav": "サイトナビゲーション",
+      "languageMenu": "言語を変更"
+    },
+    "github": "GitHub"
+  },
+  "Footer": {
+    "ctaHeadline": "今日、Paneflowを試そう。",
+    "brand": "Paneflow",
+    "tagline": "コーディングエージェントをオーケストレーションするためのターミナルワークスペース。",
+    "copyright": "© 2026 Strivex. All rights reserved.",
+    "links": {
+      "about": "概要",
+      "compare": "比較",
+      "privacy": "プライバシー"
+    }
+  },
+  "Install": {
+    "heading": "始める",
+    "subhead": "Rustツールチェーンを使ってソースからビルド。Linuxのみ。",
+    "commentClone": "# クローンしてビルド",
+    "commentRun": "# 実行",
+    "requirements": "Rust 1.82+、Vulkan対応GPU、Linux (WaylandまたはX11) が必要",
+    "aria": {
+      "copy": "クリップボードにコピー"
+    }
+  },
+  "Download": {
+    "header": {
+      "title": "Paneflowをダウンロード",
+      "subhead": "LinuxとmacOSに対応。Windowsは2026年Q3予定。",
+      "pitch": "Paneflowデスクトップアプリは、並列ペイン、ブランチ対応セッション、セッション復元を備えたネイティブターミナルワークスペースで、Claude Code、Codex、OpenCode、カスタムCLIエージェントを実行します。"
+    },
+    "matrix": {
+      "heading": "リリースダウンロード",
+      "viewPrevious": "過去のリリースを見る →",
+      "latestBadge": "最新",
+      "viewReleaseNotes": "リリースノートを見る →",
+      "platforms": {
+        "macos": "macOS",
+        "windows": "Windows",
+        "linux": "Linux"
+      },
+      "placeholders": {
+        "windows": "Windows版バイナリは2026年Q3予定。",
+        "comingSoon": "近日公開",
+        "empty": "-"
+      },
+      "items": {
+        "dmgAppleSilicon": "DMG (Apple Silicon)",
+        "appImageX64": "AppImage (x64)",
+        "appImageArm64": "AppImage (ARM64)",
+        "debX64": ".deb (x64)",
+        "debArm64": ".deb (ARM64)",
+        "rpmX64": ".rpm (x64)",
+        "rpmArm64": ".rpm (ARM64)",
+        "tarGzX64": "tar.gz (x64)",
+        "tarGzArm64": "tar.gz (ARM64)",
+        "windowsMsi": "Windows x86_64 MSI",
+        "wingetInstall": "winget install"
+      },
+      "aria": {
+        "copyCommand": "コマンドをコピー: {command}"
+      }
+    },
+    "agentInstall": {
+      "heading": "AIエージェントでインストール",
+      "subhead": "このプロンプトをClaude Code、Codex、OpenCode、その他のエージェント型CLIに貼り付けてください。エージェントがドキュメントを読み、OSを検出し、確認を取りながらインストールを進めます。"
+    }
+  },
+  "DownloadCTA": {
+    "macos": "macOS 版をダウンロード",
+    "linux": "Linux 版をダウンロード",
+    "generic": "Paneflow をダウンロード",
+    "windowsBadge": "Windows · 2026 Q3"
+  },
+  "Waitlist": {
+    "placeholder": {
+      "email": "your@email.com"
+    },
+    "aria": {
+      "sending": "送信中",
+      "subscribe": "登録"
+    },
+    "errors": {
+      "verifying": "確認中。2秒後に再試行してください。",
+      "rateLimit": "試行回数が多すぎます。1分待ってください。",
+      "validation": "無効なメールアドレスです。",
+      "turnstile": "認証に失敗しました。ページを再読み込みしてください。",
+      "generic": "問題が発生しました。30秒後に再試行してください。",
+      "network": "接続が切れました。再試行してください。"
+    },
+    "success": "登録完了。<strong>{email}</strong> 宛にメールします。",
+    "footnote": "Windowsリリース当日に1通のみ。マーケティングは一切ありません。"
+  },
+  "HomePage": {
+    "Metadata": {
+      "title": "Paneflow - コーディングエージェントをオーケストレーションするターミナルワークスペース",
+      "description": "Claude Code、Codex、OpenCode、その他のCLIコーディングエージェントをオーケストレーションするターミナルワークスペース。並列ペイン、ブランチ対応ワークスペース、開発サーバーステータス、セッション復元、スクリプトフック。",
+      "ogTitle": "Paneflow - コーディングエージェントをオーケストレーションするターミナルワークスペース",
+      "ogDescription": "並列ペイン、ブランチ対応ワークスペース、開発サーバーステータス、セッション復元。CLIコーディングエージェント専用のネイティブターミナル。"
+    },
+    "schema": {
+      "description": "Claude Code、Codex、OpenCode、その他のCLIコーディングエージェントをオーケストレーションするためのネイティブターミナルワークスペース。並列ペイン、ブランチ対応ワークスペース、ライブ開発サーバーステータス、セッション復元、JSON-RPC IPCサーバー。ZedのGPUIレンダリングエンジン上に純粋なRustで構築。",
+      "softwareRequirements": "Vulkanドライバ搭載のLinux (WaylandまたはX11)、またはApple Silicon上のmacOS 13 Ventura以降。Windows 10 1809以降は計画中。"
+    }
+  },
+  "AboutPage": {
+    "Metadata": {
+      "title": "Paneflowについて - Arthur Jean (Strivex) が開発",
+      "description": "Claude Code、Codex、OpenCode、その他のCLIコーディングエージェントをオーケストレーションするネイティブターミナルワークスペース、Paneflowを誰が作っているのか。創設者のバイオ、プロジェクト背景、連絡方法。",
+      "ogTitle": "Paneflowについて - Arthur Jean (Strivex) が開発",
+      "ogDescription": "CLIコーディングエージェント専用のネイティブターミナルワークスペース。StrivexのArthur Jeanが開発。"
+    },
+    "schema": {
+      "jobTitle": "Strivex創設者 - 開発者向けツールを構築",
+      "breadcrumbHome": "ホーム",
+      "breadcrumbAbout": "概要"
+    },
+    "heading": "Paneflowと開発チームについて",
+    "sections": {
+      "what": {
+        "title": "Paneflowとは",
+        "p1": "Paneflowは、Claude Code、Codex、OpenCode、その他のCLIコーディングエージェントを並列でオーケストレーションするためのネイティブターミナルワークスペースです。エージェントごとに1つのペイン、ブランチ対応ワークスペース、ライブ開発サーバーステータス、セッション復元、任意のツールからエディタをプログラム的に操作できるJSON-RPC IPCサーバー。",
+        "p2": "複数のコーディングエージェントを並行して実行し、邪魔にならないワークスペースを求める開発者向け。ZedのGPUIレンダリングエンジン上に純粋なRustで書かれ、ネイティブウィンドウ装飾、Electronなし、JavaScriptランタイムなし、入力遅延なし。現在はLinux、macOSも利用可能、Windowsは移植作業中。"
+      },
+      "who": {
+        "title": "誰が作っているか",
+        "p1": "Paneflowは <link>Strivex</link> の創設者 <strong>Arthur Jean</strong> が開発しています。このプロジェクトは、Swift専用のターミナルマルチプレクサであるcmuxのクロスプラットフォームRust移植として始まりました。目標は、ワークフローの使いやすさを保ちながら、すべての主要デスクトップOSにネイティブバイナリを提供することでした。",
+        "p2": "Strivexは開発者向けツールに焦点を当てた小さなスタジオです。Paneflowは初のオープンソースリリース。すべてMITライセンスで、オープンに開発されています。"
+      },
+      "links": {
+        "title": "リンク",
+        "sourceCode": "ソースコード",
+        "githubProfile": "GitHubプロフィール",
+        "studio": "スタジオ",
+        "privacyLabel": "プライバシー:"
+      },
+      "contact": {
+        "title": "所在地と連絡先",
+        "p1": "フランスから活動中。プロジェクトに関する質問、バグ報告、コラボレーション: <email>arthur.jean@strivex.fr</email>。",
+        "p2": "バグや機能リクエストはGitHub issueの方が早いです: <link>paneflow/issues</link>。"
+      }
+    }
+  },
+  "DownloadPage": {
+    "Metadata": {
+      "title": "Paneflowをダウンロード - Claude Code、Codex、OpenCodeを並列実行",
+      "description": "Paneflowをダウンロード。Claude Code、Codex、OpenCode、その他のCLIコーディングエージェントを、ブランチ対応ワークスペースとセッション復元を備えた並列ペインで実行するネイティブターミナルワークスペース。LinuxとmacOSで現在利用可能。Windowsは2026年Q3予定。",
+      "ogTitle": "Paneflowをダウンロード - Claude Code、Codex、OpenCodeをオーケストレーション",
+      "ogDescription": "CLIコーディングエージェントを並べて実行するネイティブターミナルワークスペース。LinuxとmacOSで現在利用可能。Windowsは2026年Q3予定。"
+    },
+    "schema": {
+      "description": "Claude Code、Codex、OpenCode、その他のCLIコーディングエージェントをオーケストレーションするためのネイティブターミナルワークスペース。並列ペイン、ブランチ対応ワークスペース、ライブ開発サーバーステータス、セッション復元、JSON-RPC IPCサーバー。ZedのGPUIレンダリングエンジン上に純粋なRustで構築。",
+      "breadcrumbHome": "ホーム",
+      "breadcrumbDownload": "ダウンロード"
+    }
+  },
+  "ComparePage": {
+    "Metadata": {
+      "title": "Paneflowと他のターミナルマルチプレクサを比較",
+      "description": "cmuxやその他のターミナルワークスペースとPaneflowの正直な比較。アーキテクチャ、機能、価格、それぞれが最適な選択肢となる場合。",
+      "ogTitle": "Paneflowと他のターミナルワークスペースを比較",
+      "ogDescription": "cmuxやその他のエージェント特化型ターミナルマルチプレクサとPaneflowの正直な比較。"
+    },
+    "schema": {
+      "breadcrumbHome": "ホーム",
+      "breadcrumbCompare": "比較",
+      "collectionName": "Paneflowと他のターミナルワークスペースを比較"
+    },
+    "header": {
+      "title": "Paneflowを比較",
+      "tldr": "Paneflowと他のエージェント特化型ターミナルワークスペースの並列比較。以下の各ページは両プロジェクトのソースコードから書かれており、「Paneflowを選ばない方が良い場合」セクションを必ず設けているので、いつ代替を選ぶべきか正確に分かります。"
+    },
+    "comparisons": {
+      "cmux": {
+        "competitor": "cmux",
+        "blurb": "libghostty上に構築されたmacOSネイティブのSwiftターミナルワークスペース。成熟 (v0.64、17,500+ stars)、機能豊富 (組込みブラウザ、SSHデーモン、クラウドVM)、GPL-3.0 + 商用ライセンス。"
+      },
+      "wezterm": {
+        "competitor": "WezTerm",
+        "blurb": "アーキテクチャ的に近い: 同じRust + GPU + MITの系譜、異なる目的。WezTermは高度に設定可能でLuaでスクリプト可能なターミナル (26k+ stars、8年、FreeBSD + Windowsビルド、SSHマルチプレクサ内蔵)。Paneflowはエージェント特化のワークスペース。"
+      },
+      "iterm2": {
+        "competitor": "iTerm2",
+        "blurb": "macOSのベテラン (16年、17,500+ stars、GPL-2.0)。v3.7.0beta1 (2026年4月) でClaude Code統合 + マルチベンダーAIチャットを搭載。クロスプラットフォーム vs macOS専用、MIT vs GPL-2.0、CLIエージェントホスト vs ベンダー型チャットアーキテクチャ。"
+      },
+      "warp": {
+        "competitor": "Warp",
+        "blurb": "2026年4月にオープンソース化 (AGPL-3.0クライアント + MIT UI、OpenAIが創設スポンサー)。クラウド志向、$20-$50/ユーザーの有料プラン、Freeプランの一部AI機能はテレメトリ必須、Ozクラウドエージェントオーケストレーション。PaneflowはローカルファーストMIT、ログイン不要、テレメトリなし、プランなし。"
+      }
+    },
+    "cardCta": "読む →",
+    "cardTitle": "Paneflow vs {competitor}",
+    "futureNote": "今後の比較候補: tmux、zellij、Alacritty。次にどれを公開するか投票したい方は <link>GitHub issue</link> を開いてください。"
+  },
+  "CompareWarp": {
+    "Metadata": {
+      "title": "Paneflow vs Warp (2026): MITローカルCLIホスト vs AGPLクラウド志向エージェントプラットフォーム",
+      "description": "Paneflow vs Warp: 両者ともRust + GPU + クロスプラットフォーム、両者ともAIを搭載。PaneflowはMIT、ログイン不要、テレメトリなし、有料プランなし、既存のCLIエージェントを起動。WarpはAGPL-3.0クライアント + MIT UI、有料プラン、組込みエージェント、クラウドオーケストレーション層 (Oz)。正直な判断ガイド。",
+      "ogTitle": "Paneflow vs Warp (2026)",
+      "ogDescription": "MITローカルファーストの個人開発 vs AGPL-3.0クラウド志向エージェントプラットフォーム ($20-$50プラン)。Claude Code、Codex、OpenCodeワークフローのアーキテクチャ、ライセンス、テレメトリ、判断ガイド。"
+    },
+    "schema": {
+      "headline": "Paneflow vs Warp (2026)",
+      "description": "MITローカルファーストRustエージェントホスト vs AGPL-3.0クラウド志向Rustエージェントプラットフォーム (チーム有料プランあり)。両者ともRust、両者ともGPUアクセラレーション、両者ともAI搭載 — インセンティブ構造で分岐。判断ガイド。"
+    },
+    "header": {
+      "title": "Paneflow vs Warp",
+      "tldr": "PaneflowとWarpは両者ともRust + GPU + クロスプラットフォームのターミナルで、両者ともAIを搭載しています。<strong>分岐するのはカテゴリーではなくインセンティブ構造です。</strong> <strong>Paneflow</strong>は全体がMIT、ログインなし、テレメトリなし、有料プランなし、サーバーバックエンドなし — ZedのGPUIエンジン上で既存のCLIエージェント (Claude Code、Codex、OpenCode) を起動する単一バイナリ。<strong>Warp</strong>はクライアントがAGPL-3.0 (warpuiクレートはMIT)、クローズドソースのバックエンド、$20-$50/ユーザー/月の有料プラン、Freeプランの一部AI機能にテレメトリ必須、Ozという別のクラウドオーケストレーションプロダクト。新しいOSSリポジトリの創設スポンサーはOpenAI。ローカルファースト、MIT、紐付きなしのエージェントホストが欲しいならPaneflow。組込みAIエージェント、チーム共有コマンドライブラリ (Warp Drive)、エンタープライズ商用パスが欲しいならWarp。"
+    },
+    "context": {
+      "title": "コンテキストに関する注記",
+      "p1": "Warpは2026年4月下旬にクライアントコードベースをオープンソース化しました — 2026年以前のクローズドソースSaaSモデルからの実質的な転換で、比較する前に正直に認めるべき変化です。WarpのmasterブランチのREADME.mdの<em>NOTE</em>ブロックより: 「OpenAIは新しいオープンソースWarpリポジトリの創設スポンサーであり、新しいエージェント型管理ワークフローはGPTモデルを活用しています」。Warpを評価する人は、2026年の最大の変化としてこのオープンソース化を真摯に受け止めるべきです。",
+      "p2": "非自明な落とし穴が1つあります: ソースコードは <code>github.com/warpdotdev/Warp</code> の <code>master</code> ブランチにあり、<code>main</code> ではありません (<code>main</code> は依然としてissueのみで、古い「現在クローズドソース」LICENSEファイルが残っています)。リポジトリの実際の <code>Cargo.toml</code>、<code>LICENSE-AGPL</code>、<code>LICENSE-MIT</code> はすべて <code>master</code> にあります。<code>main</code> だけを確認した人は誤った結論に達するので、本ページの読み方を変えるため最初に明示します。以下のWarpソースコード参照はすべて <code>master</code> のURLを指します。",
+      "p3": "オープンソース化はビジネスモデルを消し去りません。Warpのサーバーバックエンドはクローズドソースのまま、Freeプランは一部AI機能にテレメトリ必須、有料プラン ($20-$50/ユーザー/月) はテレメトリなしでAIを使う道、およびチーム機能 (Warp Drive、SSO、ゼロデータリテンション) への道です。Paneflowにはそうした仕組みは一切ありません — プロダクト全体が単一のMITバイナリです。"
+    },
+    "quick": {
+      "title": "簡易比較",
+      "intro": "3つのゾーンにグループ化 — ライセンス & データ姿勢 (Paneflowが優位)、コアターミナル機能の同等性 (両者同等)、エージェント & チーム機能 (Warpがより多く提供)。",
+      "licenseHeading": "ライセンス & データ姿勢",
+      "coreHeading": "コアターミナルの同等性",
+      "agentHeading": "エージェント & チーム機能",
+      "footnote": "<strong>バージョン:</strong> Paneflow v0.2.16 (2026年5月)、初コミット2026-04-01。Warpクライアントオープンソース化2026-04-28 (Denver Technologies, Inc.、Copyright 2020-2026)。<strong>価格:</strong> PaneflowはMIT無料。Warp Free 75クレジット/月 (最初の2ヶ月は150) + Build $20/月 + Business $50/ユーザー/月 + Enterprise (カスタム)。"
+    },
+    "decision": {
+      "title": "あなたに合うのはどちら?",
+      "intro": "率直に言えば、選択はターミナルとベンダーバックエンドの関係をどう設計したいかで決まります。バックエンドとの関係をゼロにしたいならPaneflow。洗練された組込みAIエージェント + チーム規模のパスが欲しいならWarp。",
+      "leftHeading": "Paneflowを選ぶべき場合",
+      "leftBullets": {
+        "0": "ローカルファーストを望む — ログインなし、テレメトリなし、サーバーバックエンドなし、有料プランなし",
+        "1": "全体がMITであることを望む — クローズドソースプロダクトへの埋め込みが容易",
+        "2": "エージェントワークフローが既に使っているCLIエージェント (Claude Code、Codex、OpenCode) の起動であって、チャット画面のベンダー実装ではない",
+        "3": "有料プランのあるベンチャー支援プロダクトより、Zed哲学に沿った個人メンテナーを支持したい",
+        "4": "チーム共有コマンドライブラリ、SSO、商用サポートは不要",
+        "5": "監査・フォーク・出荷可能な単一バイナリが欲しく、コードベース内にライセンス境界がない方が良い"
+      },
+      "rightHeading": "Warpを選ぶべき場合",
+      "rightBullets": {
+        "0": "ペインでCLIエージェントを起動するだけでなく、ターミナル内蔵の洗練されたAIエージェントが欲しい",
+        "1": "チーム共有コマンドライブラリ (Warp Drive) とクラウド同期設定が欲しい",
+        "2": "SAML SSO、SCIM、チーム管理機能、または中央課金が必要",
+        "3": "Ozクラウドオーケストレーションでサーバー側に並列コーディングエージェントを大規模生成したい",
+        "4": "クライアントのAGPL-3.0に納得できる (またはMITのwarpuiクレートのみで十分)、クローズドソースバックエンドを受け入れる",
+        "5": "OpenAIが創設スポンサーで、Enterpriseティア経由の直接的な商用サポートパスが欲しい",
+        "6": "AIクレジット、ZDR強制、チーム機能のために $20-$50/ユーザー/月を支払う"
+      }
+    },
+    "architecture": {
+      "title": "アーキテクチャ詳細",
+      "p1": "<strong>Warp</strong>は <code>app</code>、<code>warp_terminal</code>、<code>warpui</code>、<code>warp_completer</code>、<code>editor</code>、<code>markdown_parser</code> などのクレートを含むRustワークスペース — ワークスペースの <code>Cargo.toml</code> は <code>license = \"AGPL-3.0-only\"</code> を宣言し、warpuiクレートはMITとして切り出されています。レンダラーはカスタム: WarpはAlacrittyのグリッドとVTモデルをフォークし、macOSではMetalを直接呼ぶ独自GPUレンダラー (約200行のカスタムシェーダー) を書きました。ローカルアプリと並行して、Warpはクローズドソースのサーバーバックエンドを出荷しており、AI機能、Warp Drive、クラウド同期設定を支えます。クラウドオーケストレーションプロダクトのOzはエージェントをサーバー側で実行し、ローカルターミナルから「ハンドオフ」で接続します。",
+      "p2": "<strong>Paneflow</strong>はZedのGPUIエンジン上に構築された純粋なRustアプリケーション — UIとターミナルの間に言語境界なし、クローズドソースバックエンドなし、AIサービスへのデータ供給なし。ターミナルエミュレーションはcrates.ioの上流 <code>alacritty_terminal</code> 0.26 (Warpはグリッドモデルの独自フォーク)。GPU層はGPUIのBladeレンダラーで、LinuxではVulkan、macOSではMetalを使用。エージェント機能は意図的に薄く: Paneflowはワークスペース、ペイン、ブランチ検出、3つの一級CLIエージェントボタン (Claude Code、Codex、OpenCode) を提供。シェルで実行可能なバイナリは何でもPaneflowペインで実行できます。Warpとは違い、ベンダー実装のマルチベンダーチャットはありません。テレメトリなし、アナリティクスサービスなし、ログインなし。",
+      "p3": "IPC機能も示唆的です。WarpはGraphQLでバックエンドと通信 (<code>graphql</code> クレートがワークスペースに含まれる) し、加えてFreeプランの一部AI機能に必要なテレメトリパイプラインを持ちます (Warp自身のドキュメントより)。Paneflowは <code>$XDG_RUNTIME_DIR/paneflow/paneflow.sock</code> のUnixソケット上で単一のJSON-RPC 2.0サーバーを公開し、メソッドは約13個 — テレメトリなし、アナリティクスなし。多くの開発者にとってこの差は不可視ですが、ローカルファースト姿勢を重視する人にとってはプロダクトそのものです。"
+    },
+    "pricing": {
+      "title": "価格",
+      "intro": "ライセンスと価格モデルは大きく異なります。",
+      "paneflow": "<strong>Paneflow</strong>: MIT、Copyright (c) 2026 Arthur Jean。単一の無料ティア、有料プランなし、シート単価なし、AIクレジットなし、テレメトリなし。商用プロダクトへの埋め込みも問題なし。",
+      "warp": "<strong>Warp</strong>: ハイブリッドライセンス (AGPL-3.0クライアント + MIT warpuiクレート)、Copyright (c) 2020-2026 Denver Technologies, Inc.。4ティア: Free ($0、2ヶ月のブースト後に月75 AIクレジット、AIにはテレメトリ必須)、Build ($20/月、1,500クレジット + BYOK)、Business ($50/ユーザー/月、SSO + チーム全体のゼロデータリテンション強制 + クレジット共有)、Enterprise (カスタム、商用サポート付き)。"
+    },
+    "migrating": {
+      "title": "WarpからPaneflowへの移行",
+      "intro": "自動パスはありません。WarpはYAML設定 + Warpアカウントに紐付くクラウド同期設定を使い、Paneflowは静的JSONファイル (Linux: <code>~/.config/paneflow/paneflow.json</code>、macOS: <code>~/Library/Application Support/paneflow/paneflow.json</code>) を使います。新規セットアップに10分を見込んでください: デフォルトシェル、テーマ、キーバインド、エージェントボタン。Paneflowに同等品がないWarpの機能が3つあり、移行プランは「ローカルで再現」ではなく「該当機能はWarpを使い続ける」です:",
+      "bullets": {
+        "0": "<strong>Warp Drive</strong>: チーム共有のコマンド & スニペットライブラリ。Paneflowに同等品なし。Warp Driveがチームの中核ならWarpに留まってください。",
+        "1": "<strong>組込みAIエージェント</strong>: Paneflowはベンダー実装のチャット画面を持ちません。移行は、選択したCLIエージェント (Claude Code、Codex、OpenCode) をペインで起動することです。",
+        "2": "<strong>Ozクラウドオーケストレーション</strong>: Paneflowに同等品なし。大規模に並列サーバーサイドエージェントが必要ならOzが適切。",
+        "3": "<strong>SSO + チーム管理</strong>: Paneflowに同等品なし。Paneflowは個人開発者向けで、ターミナル管理の中央集権化が必要な組織向けではありません。"
+      }
+    },
+    "whenNot": {
+      "title": "Paneflowを選ばない方が良い場合",
+      "intro": "正直な決定打。以下5つのいずれかが重要ならWarpが今日の正解です — 戦う意味はありません:",
+      "items": {
+        "0": "<strong>ターミナル内蔵の洗練されたAIエージェントが欲しい。</strong> WarpはターミナルにポリッシュされたAIチャットを内蔵 — Paneflowは外部CLIエージェント (Claude Code、Codex、OpenCode) をペインとして起動するのみ。「ターミナルアプリを離れずにターミナル出力についてチャット」がワークフローならWarpが適切。",
+        "1": "<strong>チーム共有コマンドライブラリ (Warp Drive) が欲しい。</strong> Warp DriveはバックエンドなしではPaneflowが複製できない独自プロダクト機能。チームが共有コマンド、スニペット、ノートブックに依存するならWarpが適切。",
+        "2": "<strong>SAML SSO、SCIM、または中央チーム管理が必要。</strong> Warp Business $50/ユーザー/月は中央認証、監査、プロビジョニングが必要な組織向けにこれらを出荷。Paneflowにチームプランや管理コンソールはありません。",
+        "3": "<strong>商用サポート契約が欲しい。</strong> Warp Enterpriseは有料サポートを提供。Paneflowは個人プロジェクトで商用サポートトラックがありません。何か壊れたときに電話する番号が必要ならWarpが適切。",
+        "4": "<strong>クラウド同期設定が欲しい。</strong> Warpは設定、テーマ、ワークフローをアカウント経由で同期。Paneflowはすべてローカルのjsonファイルに保存 — gitやdotfiles経由で持ち運び可能ですが、組込みクラウド同期はありません。"
+      }
+    },
+    "faq": {
+      "title": "よくある質問",
+      "items": {
+        "0": {
+          "question": "PaneflowはWarpのフォーク?",
+          "answer": "いいえ。WarpはDenver Technologies, Inc.が構築したRust + Metalターミナルで、2026年4月にハイブリッドライセンス (クライアントAGPL-3.0、warpui_core + warpuiクレートMIT) でオープンソース化されました。PaneflowはArthur Jeanによる別個のRust + GPUIコードベースで、全体MIT。両者はソースコードを共有せず、異なるビジネスモデルで出荷されます (Warpは有料プラン + クローズドバックエンド、Paneflowは単一MITバイナリ)。"
+        },
+        "1": {
+          "question": "両者ともRust + GPU + クロスプラットフォーム。実際の違いは?",
+          "answer": "インセンティブ構造とエージェントアーキテクチャ。Warpはクライアントが AGPL-3.0 ですがサーバーバックエンドはクローズドソースのまま、FreeプランのAIにはテレメトリ必須、チーム機能 (Warp Drive、SSO、ZDR、共有クレジット) は$20-$50/ユーザー/月の有料プランの裏。Paneflowは全体MIT、ログインなし、テレメトリなし、有料プランなし、バックエンドなし。Warpは組込みAIエージェント + Oz (クラウドオーケストレーション) を出荷、Paneflowは既に使っているCLIエージェント (Claude Code、Codex、OpenCode) を起動するのみ。"
+        },
+        "2": {
+          "question": "Warpのソースコードは本当に公開されている? github.com/warpdotdev/Warp を見たら「現在クローズドソース」と書かれていた。",
+          "answer": "はい、ソースは公開されています、ただしmasterブランチにあります — これが非自明な落とし穴。github.com/warpdotdev/Warpには2つのブランチがあり、mainはissueのみのリポジトリとして設定され古いLICENSEファイルに「現在クローズドソース」と残っていますが、masterに実際のオープンソース化されたRustワークスペース (Cargo.toml、LICENSE-AGPL、LICENSE-MIT、ソースツリー全体) があります。2026年4月の発表は本物。mainだけを見るとWarpがまだクローズドソースだと結論づけてしまうので、masterを確認してください。"
+        },
+        "3": {
+          "question": "「AGPL-3.0クライアント + MIT UIフレームワーク」は埋め込みにとって何を意味する?",
+          "answer": "Warpのリポジトリはクレート境界でライセンスを分けています: warpui_coreとwarpuiクレートはMIT、その他のコードベース (ターミナルコア、AI機能、オーケストレーションコード) はワークスペースの Cargo.toml に従い AGPL-3.0-only。warpuiはクローズドソースプロダクトに取り込めますが、その他はできません。PaneflowのMITは全体をカバー — ターミナルコア、GPUI統合、IPCサーバーすべてMIT — 埋め込み側はコードベース内のライセンス境界を追う必要がありません。"
+        },
+        "4": {
+          "question": "なぜWarpのFreeプランのAIはテレメトリが必須なのにPaneflowは要らないのか?",
+          "answer": "ビジネスモデルが違うから。WarpのFreeプランはファネル: テレメトリがAIプロダクトを養い、AIプロダクトが有料プランへの転換を生みます。Warp自身のdocs.warp.devより: 「FreeプランでAI機能を使うにはテレメトリを有効にする必要があり、有料プランはいつでもオプトアウトしてWarp (AI含む) を使い続けられます」。Paneflowには有料プランがなく、AIサービスへの供給もなく、テレメトリ収集のビジネス上の理由がありません。ログインも2024年11月にWarpから外されましたが、FreeプランAIへのテレメトリゲートは2026年も残ります。"
+        },
+        "5": {
+          "question": "Ozとは? ターミナル内のWarp AIエージェントと同じ?",
+          "answer": "いいえ。OzはBuildプラン ($20/ユーザー/月) からの別個のクラウドオーケストレーション層です: サーバー側で並列コーディングエージェントを生成し、ローカルターミナルからOzへセッションを移してより多くの計算リソースを使う「ハンドオフ」機能。ターミナル内のWarp AIエージェントはローカルでインタラクティブな機能。Paneflowはどちらも持たず、ローカルCLIエージェントをペインで起動するだけで、クラウド層もオーケストレーションサービスもありません。"
+        },
+        "6": {
+          "question": "PaneflowはWarpのBusinessプランのようなチーム価格やSSOを持っている?",
+          "answer": "いいえ。Paneflowはチームプランなし、SSOなし、SCIMなし、チーム管理コンソールなし、シート単価なしの単一MITバイナリ。それらが必要ならWarp Business $50/ユーザー/月が正解 — SAML SSO、強制的なチーム全体ZDR、共有クレジットプール、最大50席までの中央課金を出荷します。Paneflowは個人開発者向け。組織で認証管理付きの中央集権ターミナル管理が必要ならWarpを検討してください。"
+        },
+        "7": {
+          "question": "Warpの設定をPaneflowに移行できる?",
+          "answer": "自動パスはありません。WarpはYAML設定 + クラウド同期、Paneflowは静的JSONファイル (Linux: ~/.config/paneflow/paneflow.json)。新規セットアップに10分を見込んでください: デフォルトシェル、テーマ、キーバインド、エージェントボタン。Warp Drive (チーム共有のコマンド & スニペットライブラリ) に依存するワークフローにPaneflowの同等品はありません — チームワークフローの中核ならWarpに留まってください。"
+        }
+      }
+    },
+    "next": {
+      "title": "次のステップ",
+      "body": "Paneflowを試す準備はできた? <download>最新リリースをダウンロード</download> または <docs>入門ガイド</docs> を読んでください。Warpに興味がある? <repo>WarpのオープンソースコードはGitHub</repo> (masterブランチ、mainではない) — オープンソース化は2026年の大きな転換で、Paneflowがローカル vs クラウドのトレードオフで反対側に立っていても、その姿勢は尊重に値します。"
+    }
+  },
+  "CompareIterm2": {
+    "Metadata": {
+      "title": "Paneflow vs iTerm2 (2026): クロスプラットフォームのエージェントホスト vs 組込みチャット付きmacOSベテラン",
+      "description": "Paneflow vs iTerm2: クロスプラットフォーム (Linux + macOS、Windows計画中) のMITライセンスエージェントワークスペースで既存のCLIエージェントを実行 vs macOS専用GPL-2.0ベテランでベンダー実装のマルチベンダーAIチャット。正直な判断ガイド、アーキテクチャ、FAQ。",
+      "ogTitle": "Paneflow vs iTerm2 (2026)",
+      "ogDescription": "クロスプラットフォームMITエージェントホスト vs macOS専用GPL-2.0ベテラン。両者ともClaude Code統合を搭載 — アーキテクチャと移植性の物語が異なる。Claude Code、Codex、OpenCodeワークフローの判断ガイド。"
+    },
+    "schema": {
+      "headline": "Paneflow vs iTerm2 (2026)",
+      "description": "クロスプラットフォームRustエージェントホスト vs macOS専用Objective-C/Swiftベテラン。両者ともGPUアクセラレーション、両者ともClaude Code統合搭載 — 移植性とエージェントアーキテクチャが異なる。判断ガイド。"
+    },
+    "header": {
+      "title": "Paneflow vs iTerm2",
+      "tldr": "iTerm2はmacOSのベテラン (16年のコードベース、17,500+ stars、GPL-2.0) で、v3.7.0beta1にベンダー実装のマルチベンダーAIチャットとセッション対応のClaude Code統合を搭載。Paneflowはクロスプラットフォームのインディー新参者 (誕生1ヶ月、MIT、ZedのGPUI上の純粋なRust) で、Claude Code、Codex、OpenCodeを一級CLIペインとして実行。<strong>両者ともGPUアクセラレーション。両者とも今日Claude Code統合を搭載。</strong> 分岐するのは移植性 (PaneflowはLinux + macOSで動作、Windowsは計画中、iTerm2はmacOS専用)、ライセンス (MIT vs GPL-2.0)、エージェントアーキテクチャ (Paneflowは既存のCLIエージェントを起動、iTerm2はベンダー実装のチャット画面 + フック)。クロスプラットフォームのエージェントホストが欲しいならPaneflow。AppleScriptとPython自動化を組込んだ16年分のmacOSポリッシュが欲しいならiTerm2。"
+    },
+    "context": {
+      "title": "コンテキストに関する注記",
+      "p1": "本ページの入力リサーチで間違っていた点を最初に正します。iTerm2はCPU束縛ではありません — iTerm2自身のAGENTS.mdに「PTYTextView - Metalアクセラレーションレンダリング」とあります。最もクリーンなUSPの言い方は「モダンGPU vs CPUベテラン」ではなく、<em>Metal (macOS専用) vs GPUI/Blade (クロスプラットフォーム)</em>。そしてiTerm2のClaude Code統合はランチャースタブではありません: iTerm2リポジトリルートの <code>ClaudeCodeHookEvent.swift</code> は、上流のClaude Codeフックイベントプロトコルを完全なCodable型でパースし、オンボーディング、ヘルス監視、ワークグループモードコントローラーのコンパニオンファイルを伴います。誠実なUSPの言い方は「エージェント特化 vs エージェントなし」ではなく、<em>CLIエージェントホスト (Paneflow) vs ベンダー実装のマルチベンダーチャット (iTerm2)</em>。",
+      "p2": "それを踏まえて: 両プロダクトは重なる問題を異なる優先順位で解きます。iTerm2は16年をかけて最も徹底的にポリッシュされたmacOSターミナルになり、2026年には真剣なAI機能 (OpenAI、Anthropic、Gemini、DeepSeekを網羅するマルチベンダーチャット + Claude Codeセッションフック) を追加しました。Paneflowは1ヶ月をかけて、Claude Code、Codex、OpenCodeが既に使っているCLIバイナリとしてマウントされたクロスプラットフォームのエージェントホストになり、ブランチ検出、開発サーバーポートバナー、セッション復元を搭載しています。"
+    },
+    "quick": {
+      "title": "簡易比較",
+      "intro": "3つのゾーンにグループ化 — 移植性 & エージェント機能 (Paneflowが優位)、コアターミナル機能の同等性 (今日両者同等)、macOSネイティブのポリッシュ (iTerm2がより多く出荷)。",
+      "portabilityHeading": "移植性 & エージェント機能",
+      "coreHeading": "コアターミナルの同等性",
+      "macosHeading": "macOSネイティブのポリッシュ",
+      "footnote": "<strong>バージョン:</strong> Paneflow v0.2.16 (2026年5月)、初コミット2026-04-01。iTerm2 v3.7.0beta1リリース2026-04-20 (コミット <code>2b7b5bff</code>)、v3.6.10 (2026-04-20) と v3.5.15 (2025-08-13) を旧安定ラインに。iTerm2自身のリリースノートにClaude Code統合は「3.7.0beta1時点で進行中」と明記。<strong>価格:</strong> 両者無料。PaneflowはMIT、iTerm2はGPL-2.0で寄付ベース。"
+    },
+    "decision": {
+      "title": "あなたに合うのはどちら?",
+      "intro": "率直に言えば、これは大半のユーザーにとってクリーンな二者択一です。下の2つのブレットリストが各ツールが真に対象とするユーザーを捉えます。多くの判断は移植性 + エージェントアーキテクチャ vs macOSネイティブの奥行きに落ち着きます。",
+      "leftHeading": "Paneflowを選ぶべき場合",
+      "leftBullets": {
+        "0": "クロスプラットフォームが必要 — Linux + macOS今日、Windows計画中。iTerm2は設計上macOS専用 (MetalはAppleのAPI)",
+        "1": "埋め込み柔軟性のためにGPL-2.0ではなくMITが欲しい",
+        "2": "エージェントワークフローが既に使っているCLIバイナリ (Claude Code、Codex、OpenCode) を、エージェントごとに専用UIボタンで起動する",
+        "3": "ブランチ対応バッジ、開発サーバーポート検出、セッション復元が組込まれたワークスペースモデルが欲しい",
+        "4": "iCloud同期セマンティクスを持つバイナリplistより、一目で読めるJSON設定の方が好き",
+        "5": "Zed哲学の系譜から毎週マイナーリリースを出荷するインディー開発者を支持する"
+      },
+      "rightHeading": "iTerm2を選ぶべき場合",
+      "rightBullets": {
+        "0": "macOS専用で、今日最も洗練されたネイティブ体験が欲しい",
+        "1": "AppleScript自動化またはPythonスクリプティングAPIに依存している",
+        "2": "外部CLIエージェントを起動するのではなく、ターミナル内蔵のベンダー実装マルチベンダーAIチャット (OpenAI、Anthropic、Gemini、DeepSeek) が欲しい",
+        "3": "iTerm2のシェル統合機能 (トリガー、スマートセレクション、プロンプト対応ナビゲーション、マーク) を使う",
+        "4": "Code ReviewモードとセッションごとのツールバーがあるWorkgroups新機能が欲しい",
+        "5": "16年のコードベース、一貫したメンテナンス、17k+ stars コミュニティを評価する",
+        "6": "GPL-2.0に納得できる、またはクローズドソースプロダクトへのターミナルコード埋め込みを予定しない"
+      }
+    },
+    "architecture": {
+      "title": "アーキテクチャ詳細",
+      "p1": "<strong>iTerm2</strong>はmacOSをターゲットとするObjective-C / Swiftのハイブリッドアプリケーションです。アプリケーションフローはApp -> Window/Tab -> Session -> Terminal Emulation -> Rendering。ターミナルエミュレーションスタックは独自 (<code>VT100Parser</code>、<code>VT100Terminal</code>、<code>VT100ScreenMutableState</code>、<code>VT100Screen</code>、<code>VT100Grid</code>) で、レンダラーはMetalアクセラレーションの <code>PTYTextView</code> — レンダラーはApple プラットフォームにハードロックされています。AI機能は <code>sources/AITerm/</code> (AIConversation、AIPluginClient、Chat*ファミリーのビューコントローラーを含む約81ファイル) と <code>sources/ClaudeCode/</code> (ClaudeCodeIntegrationMenuController、ClaudeCodeOnboarding、ClaudeIntegrationHealthMonitor、ClaudeWatcher、GlobalJobMonitor、PeerSessionSettingsViewControllerの6ファイル) に存在します。リポジトリルートのフック面 — <code>ClaudeCodeHookEvent.swift</code> — は上流のClaude CodeフックプロトコルにマッチするCodable型の完全セットで、iTerm2はClaude CLIからのセッションイベントにリアルタイムで反応できます。",
+      "p2": "<strong>Paneflow</strong>はZedのGPUIエンジン上に構築された純粋なRustアプリケーション。UIとターミナルの間に言語境界なし — キー入力は <code>KeyDownEvent</code> からペイントまで単一のRustパイプラインを通り、これがキーストロークからピクセルまでのレイテンシが4ms以下、コールドスタートが200ms以下である理由。ターミナルエミュレーションはcrates.ioの上流 <code>alacritty_terminal</code> 0.26 (保守するフォークなし)。GPUスタックはGPUIのBladeレンダラーで、LinuxはVulkan、macOSはMetal — レンダラーがアプリの残りと一緒にプラットフォームを横断します。エージェント機能はワークスペースモデル: 各ワークスペースはプロジェクトルートを中心にペインをグループ化し、ブランチ検出、ポートバナー、3つの一級CLIエージェントボタン (Claude Code、Codex、OpenCode) を持ちます。外部CLIエージェントも無制限: シェルで実行可能なバイナリは何でもPaneflowペインで実行できます。",
+      "p3": "IPC面も各プロジェクトの時代を物語ります。iTerm2はAppleScript (長いレガシー.sdefバンドル) と長時間実行スクリプト対応のPythonスクリプティングAPIを公開し、加えて広範なシェル統合 (トリガー、スマートセレクション、プロンプト対応機能) を提供。Paneflowは <code>$XDG_RUNTIME_DIR/paneflow/paneflow.sock</code> のUnixソケット上に単一のJSON-RPC 2.0サーバーを公開し、メソッドは約13個 — 機能は小さく、学習が速く、iTerm2の16年のスクリプティング蓄積よりも遥かに少ない。iTerm2の自動化機能に追いつくことは当面のPaneflowロードマップにはありません。"
+    },
+    "pricing": {
+      "title": "価格",
+      "intro": "両プロジェクトとも無料。ライセンスモデルが異なります:",
+      "paneflow": "<strong>Paneflow</strong>: MIT、Copyright (c) 2026 Arthur Jean。コピーレフト制約なしで商用プロダクトに埋め込み可能。",
+      "iterm2": "<strong>iTerm2</strong>: GPL-2.0、寄付ベース。強いコピーレフト — 変更版を再配布する場合はソースも公開する必要があります。iTerm2コードのクローズドソースプロダクトへの埋め込みは事実上不可能。エンドユーザーにこの差は不可視ですが、埋め込み側にとっては全てを決める差です。"
+    },
+    "migrating": {
+      "title": "iTerm2からPaneflowへの移行",
+      "p1": "直接的な設定変換はありません。iTerm2はバイナリplist (<code>com.googlecode.iterm2.plist</code>) に設定を保存しiCloud経由で同期、Paneflowは静的JSONファイル (Linux: <code>~/.config/paneflow/paneflow.json</code>、macOS: <code>~/Library/Application Support/paneflow/paneflow.json</code>)。インストールは新規セットアップで約10分 — デフォルトシェル、テーマ、キーバインド、AIエージェントボタン。良いニュース: PaneflowはiTerm2が手動設定を要求するもの (ワークスペースレイアウト、エージェントボタン、テーマ) に妥当なデフォルトを出荷するので、空設定の体験はiTerm2より「すぐ使える」に近い。",
+      "p2": "移行できないもの:",
+      "bullets": {
+        "0": "<strong>AppleScript / Pythonスクリプト</strong>: Paneflowに同等品なし。iTerm2のPython APIやAppleScript面に対して書かれた自動化があるならiTerm2に留まってください。",
+        "1": "<strong>シェル統合機能</strong>: トリガー、スマートセレクション、プロンプト対応ナビゲーション、マーク — これらはiTerm2固有。Paneflowは異なるより小さな統合面を使います。",
+        "2": "<strong>マルチベンダーAIチャット</strong>: Paneflowはベンダー実装のチャットを出荷しません。移行は、選択したCLIエージェント (Claude Code、Codex、OpenCode) をペインで起動することです。",
+        "3": "<strong>Workgroups + Code Reviewモード</strong>: Paneflowに同等品なし。最も近い概念は複数ペインのワークスペースですが、Code Reviewプロンプトオーバーレイとセッションごとのツールバーに類似物はありません。"
+      }
+    },
+    "whenNot": {
+      "title": "Paneflowを選ばない方が良い場合",
+      "intro": "正直な決定打。以下5つのいずれかが重要ならiTerm2が今日の正解です — 戦う意味はありません:",
+      "items": {
+        "0": "<strong>AppleScriptまたはiTerm2のPython APIに依存している。</strong> iTerm2は長期確立された.sdef AppleScriptバンドルと長時間実行スクリプト対応のPythonスクリプティングAPIを持ちます。Paneflowは13メソッドのJSON-RPCだけ。16年分の自動化作業は移植できません。",
+        "1": "<strong>ターミナル内蔵のベンダー実装マルチベンダーAIチャットが欲しい。</strong> iTerm2はOpenAI、Anthropic、Gemini、DeepSeekを網羅するマルチベンダーチャットを統一UIでターミナルペイン内に出荷。Paneflowは外部CLIエージェントを起動するのみで、ターミナル内チャットパネルはありません。",
+        "2": "<strong>iTerm2のシェル統合機能に依存している。</strong> トリガー、スマートセレクション、プロンプト対応ナビゲーション、マーク — これらはiTerm2固有。いずれかに依存しているなら、Paneflowは当面のロードマップに代替を持ちません。",
+        "3": "<strong>Code Reviewモード付きWorkgroupsが欲しい。</strong> v3.7のWorkgroups + Code Reviewモードは真に新しい: プログラム実行前にセッション内プロンプトオーバーレイを表示し、入力テキストをswiftyな補間用変数として公開し、その周りにレビューパイプラインを構築可能。Paneflowに同等品なし。",
+        "4": "<strong>16年のポリッシュと17k+ stars コミュニティが欲しい。</strong> iTerm2はv3.7で16年分のバグ修正、エッジケース、エコシステム (terminfo エントリ、dotfiles、Stack Overflow) を蓄積。Paneflowはv0.2.xでその実証時間の何分の一かしかありません。"
+      }
+    },
+    "faq": {
+      "title": "よくある質問",
+      "items": {
+        "0": {
+          "question": "PaneflowはiTerm2のフォーク?",
+          "answer": "いいえ。iTerm2はGeorge Nachmanによる16年前からのObjective-CとSwiftのハイブリッドコードベースで、macOSのみをターゲットにします (AppKit + MetalスタックはApple プラットフォームにハードロックされる)。PaneflowはArthur Jeanによる誕生1ヶ月の純粋なRustコードベースで、今日Linux と macOSで動作し、Windowsが計画中。両者はソースコードを共有せず、異なるオーディエンスを狙います。"
+        },
+        "1": {
+          "question": "両者とも2026年にClaude Code統合を搭載。実際の違いは?",
+          "answer": "アーキテクチャと移植性。iTerm2のv3.7.0beta1 (2026年4月) はClaudeCodeHookEvent.swiftでClaude Codeフックイベントプロトコルをパースするセッション対応統合を出荷し、フックをベンダー実装のマルチベンダーAIチャット (iTerm2自身のAIライブハーネスより OpenAI、Anthropic、Gemini、DeepSeek) を通じて表面化させます。PaneflowはClaude Code CLIを専用UIボタン付きの一級ペインとして実行 — コマンドラインで既に使っているのと同じエージェントバイナリを、ワークスペースとセッション復元と共に。ベンダー実装チャット体験が欲しいならiTerm2モデル、既に使っているCLIエージェントをクロスプラットフォームホストで欲しいならPaneflow。"
+        },
+        "2": {
+          "question": "iTerm2にはAppleScriptとPython APIがある。Paneflowは何を提供する?",
+          "answer": "Paneflowはワークスペースとペインを網羅する約13メソッドの単一JSON-RPC 2.0サーバーをUnixソケット上で公開。iTerm2はずっと広いスクリプティング面を出荷: AppleScript.sdefバンドル、長時間実行スクリプト対応のPythonスクリプティングAPI、トリガー、スマートセレクション、プロンプト対応機能を公開する広範なシェル統合。AppleScript自動化やPythonスクリプティングAPIに今日依存しているなら、Paneflowに代替はありません。"
+        },
+        "3": {
+          "question": "iTerm2に16年のポリッシュと17k stars コミュニティがあるのに、なぜPaneflowを選ぶ?",
+          "answer": "クロスプラットフォームが必要 (Linux + macOS今、Windows計画中) なら、または埋め込み柔軟性のためにGPL-2.0ではなくMITが欲しいなら、または既に使っているのと同じCLIバイナリ (Claude Code、Codex、OpenCode) を実行するエージェントホストアーキテクチャを特に望むなら、Paneflowが適切。macOS専用で、最大限のポリッシュが欲しく、AppleScript / Python自動化を評価するなら、iTerm2が適切。"
+        },
+        "4": {
+          "question": "iTerm2はLinuxやWindowsで動く?",
+          "answer": "いいえ。iTerm2は設計上macOS専用。レンダリングスタックはMetal直接 (iTerm2自身のAGENTS.mdよりPTYTextViewはMetalアクセラレーション) でAppleのみのAPIで、UIはAppKit + SwiftUI。Linuxビルドは存在せず計画もありません。Paneflowは今日Linux と macOSを出荷し、Windowsをロードマップに持ちます。"
+        },
+        "5": {
+          "question": "iTerm2の設定をPaneflowに移行できる?",
+          "answer": "自動パスはありません。iTerm2はバイナリplistにiCloud同期で設定を保存、Paneflowは静的JSONファイル (Linux: ~/.config/paneflow/paneflow.json)。スキーマ、キーストローク表記、AI統合モデルすべて異なります。新規セットアップに10分を見込んでください: デフォルトシェル、テーマ、キーバインド。"
+        },
+        "6": {
+          "question": "iTerm2はまだ単独メンテナー?",
+          "answer": "はい。George Nachmanはfetch日2026-05-20時点でiTerm2のコミットを15,169件保有 — プロジェクトの約98%、次の貢献者は149コミット。Paneflow (Arthur Jean、ソロ) や WezTerm (Wez Furlong、約98%ソロ) と同じ構造パターン。単独メンテナーはこの競合セット全体で標準で、違いはiTerm2のソロ運転が今や16年続いていること。"
+        },
+        "7": {
+          "question": "iTerm2のv3.7のWorkgroups機能は? Paneflowに同等品はある?",
+          "answer": "Workgroups (v3.7.0beta1で新規) は、セッションを関連セッションのグループ (ピア、分割ペイン、タブ) に変換し、それぞれに独自ツールバーを持たせ、加えてプログラム実行前にセッション内プロンプトオーバーレイを表示するCode Reviewモードを可能にします。Paneflowのワークスペースモデルは概念的に異なる: 各ワークスペースはブランチ検出と共にプロジェクトルートを中心にペインをグループ化し、Code Reviewスタイルのオーバーレイはロードマップにありません。Workgroupsが特に欲しいならiTerm2が適切。"
+        }
+      }
+    },
+    "next": {
+      "title": "次のステップ",
+      "body": "Paneflowを試す準備はできた? <download>最新リリースをダウンロード</download> または <docs>入門ガイド</docs> を読んでください。iTerm2に興味がある? <repo>iTerm2はGitHubにあります</repo> — 存在する中で最もポリッシュされたmacOSターミナルで、AppleScriptやPython自動化を評価するmacOS専用ワークフローに値する代替です。"
+    }
+  },
+  "CompareWezterm": {
+    "Metadata": {
+      "title": "Paneflow vs WezTerm (2026): エージェント特化ワークスペース vs スクリプタブルRustターミナル",
+      "description": "Paneflow vs WezTerm: 両者ともRust + GPU + MIT。Paneflowは一級のClaude Code、Codex、OpenCodeペインを持つエージェント特化ワークスペース。WezTermはLuaで設定する設定可能なRustターミナル。正直な判断ガイド、アーキテクチャ、FAQ。",
+      "ogTitle": "Paneflow vs WezTerm (2026)",
+      "ogDescription": "エージェント特化Rustワークスペース vs スクリプタブルなLua設定のRustターミナル。Claude Code、Codex、OpenCodeワークフローのパフォーマンス、アーキテクチャ、ライセンス、判断ガイド。"
+    },
+    "schema": {
+      "headline": "Paneflow vs WezTerm (2026)",
+      "description": "エージェント特化Rustワークスペース vs スクリプタブルRustターミナルエミュレータ。両者ともRust、両者ともGPUアクセラレーション、両者ともMIT — 目的で分岐。アーキテクチャ、機能、価格の比較。"
+    },
+    "header": {
+      "title": "Paneflow vs WezTerm",
+      "tldr": "PaneflowとWezTermはアーキテクチャ的に近い: 両者とも純粋なRust、両者ともGPUアクセラレーション、両者ともMIT、両者ともインディーメンテナーが構築。<strong>目的で分岐します。</strong> <strong>Paneflow</strong>はエージェント特化のワークスペース — Claude Code、Codex、OpenCodeは一級ペインで、ブランチ対応ワークスペース、開発サーバーポート検出、セッション復元を備え、ZedのGPUIエンジン上で200ms未満のコールドスタートと4ms未満のキーストロークからピクセルまでのレイテンシ。<strong>WezTerm</strong>は高度に設定可能なRustターミナルエミュレータで、Luaスクリプティング面、SSHマルチプレクサ内蔵、クロスプラットフォームの到達範囲 (Linux、macOS、Windows、FreeBSD) を持ちます。邪魔にならないエージェントワークスペースが欲しいならPaneflow。Luaでプログラムできるターミナル & FreeBSDでも動くものが欲しいならWezTerm。"
+    },
+    "context": {
+      "title": "コンテキストに関する注記",
+      "p1": "WezTermはPaneflowに最も近いアーキテクチャの仲間です。同じ言語 (Rust)、同じレンダラーファミリー (PaneflowはGPUIのBladeをVulkan/Metalで使用、WezTermはwgpu 25.0.2を使用 — 同じファミリー)、同じMITライセンス、同じインディーメンテナーの物語 (Wez FurlongがWezTermのコミットの約98%を保有)。両プロジェクトは系譜ページを共有できるほどですが、代わりに目的で鋭く分岐します。",
+      "p2": "WezTermは設定可能なターミナルエミュレータ。アイデンティティは「Luaで全てをスクリプトできるターミナル」。Paneflowはエージェントワークスペース — ペイン、ワークスペース、CLIコーディングエージェント起動用UIを開いた単一バイナリで、Claude Code、Codex、OpenCodeを並べて実行するワークフローを中心に設計。WezTermにはAIエージェントペインの概念なし、ブランチ検出付きプロジェクトごとのワークスペースモデルなし、開発サーバーポートバナーなし。PaneflowにはLuaスクリプティング面なし、SSHマルチプレクサ内蔵なし、FreeBSDビルドなし。残りのページがトレードオフをマップします。"
+    },
+    "quick": {
+      "title": "簡易比較",
+      "intro": "3つのゾーンにグループ化 — パフォーマンス & エージェント機能 (Paneflowが優位)、コアターミナル機能の同等性 (両者同等)、設定 & エコシステム (WezTermがより多く出荷)。",
+      "perfHeading": "パフォーマンス & エージェント機能",
+      "coreHeading": "コアターミナルの同等性",
+      "configHeading": "設定 & エコシステム",
+      "footnote": "<strong>バージョン:</strong> Paneflow v0.2.16 (2026年5月)、初コミット2026-04-01、v0.1.0タグ2026-04-16。WezTerm最新安定版20240203-110809-5046fc22 (2024年2月)、初コミット2017-12-07 (c53ca64c)。WezTermのmainブランチは活発 (最終プッシュ2026-05-01) ですが、2024年2月以降安定リリースは切られていません。<strong>価格:</strong> 両者無料。両者MIT。"
+    },
+    "decision": {
+      "title": "あなたに合うのはどちら?",
+      "intro": "率直に言えば、スクリプトするターミナルが欲しいならWezTermが正解。エージェントが一級のワークスペースが欲しいならPaneflowが正解。下のブレットが各側の現実的な選択を捉えます。",
+      "leftHeading": "Paneflowを選ぶべき場合",
+      "leftBullets": {
+        "0": "複数のCLIコーディングエージェント (Claude Code、Codex、OpenCode) を実行し、それのために設計された一級UIボタン + ワークスペースモデルが欲しい",
+        "1": "パフォーマンスを重視 — PaneflowはZedのGPUIレンダリングパイプラインで200ms未満で起動し、4ms未満のキーストロークからピクセルまでのレイテンシ",
+        "2": "ブランチ対応ワークスペース、開発サーバーポート検出、セッション復元が組込まれていて欲しい (Luaスクリプティング不要)",
+        "3": "完全プログラマブルなLuaスクリプティング面より、一目で読める静的JSON設定の方が好き",
+        "4": "新鮮な活発な開発が欲しい — 2026年4月初安定、5月まで毎週マイナーリリース",
+        "5": "Paneflowを毎日使い頻繁に出荷するインディー開発者を支持する"
+      },
+      "rightHeading": "WezTermを選ぶべき場合",
+      "rightBullets": {
+        "0": "ターミナルをLuaでスクリプトしたい — タブタイトルのフォーマット、muxイベントへの反応、ロジック付きのカスタムキーマップを構築",
+        "1": "tmuxなしでセッションが切断から生き残るSSHマルチプレクサ内蔵 (SSH:とSSHMUX:ドメイン) が必要",
+        "2": "FreeBSDを使うか、今日Windowsビルドが欲しい (PaneflowのWindowsは計画中で未出荷)",
+        "3": "26k+ stars コミュニティと8年分のテーマ、プラグイン、Stack Overflow回答を評価",
+        "4": "AIコーディングエージェントを実行せず、AI会話から完全に外れるターミナルが欲しい",
+        "5": "全てがユーザーコードでオーバーライド可能なwezのLua駆動設計哲学を好む"
+      }
+    },
+    "architecture": {
+      "title": "アーキテクチャ詳細",
+      "p1": "<strong>WezTerm</strong>は <code>wgpu 25.0.2</code> と <code>mlua</code> を消費するGUIサブクレート (<code>wezterm-gui</code>) を持つRustワークスペースクレート。レンダラーはホストが提供するバックエンドにwgpu経由でディスパッチ: LinuxはVulkan、macOSはMetal、WindowsはDX12 — フォークなしのクロスAPI。設定はconfigテーブルを返すLuaスクリプト (<code>~/.wezterm.lua</code>); スクリプトはmlua経由でインプロセス実行されるため、任意のLua式 (コールバック、フォーマット関数、muxイベントハンドラー) が許可されます。ターミナルグリッドとVT状態機械は内蔵; SSHマルチプレクサは2つのWezTermプロセスをSSH経由で接続する別個のWezTermプロトコル。",
+      "p2": "<strong>Paneflow</strong>もRustワークスペース、もGPUアクセラレーションですが、統合の物語はよりタイトで、設定の物語はより薄い。UIはGPUI上に構築 — ZedのUIフレームワーク — のため、キーストロークパイプラインは <code>KeyDownEvent</code> からペイントまで純粋なRustに留まります。ターミナルエミュレーションはcrates.ioの上流 <code>alacritty_terminal</code> 0.26、フォークではない公開のRust VTクレート。GPU層はBlade (GPUIのレンダラー) でLinuxはVulkan、macOSはMetal。設定は <code>~/.config/paneflow/paneflow.json</code> の静的JSON; スクリプティング面もイベントハンドラーフックもなく、設計上、1分で上から下まで読める設定が目標。",
+      "p3": "両プロジェクトは「プロダクト」が何かでも分岐します。WezTermはワークフローに合わせて時間をかけて設定するターミナル。Paneflowは起動して即座に3つのプリセットAIエージェントボタン、ブランチ検出、4つのペインレイアウトが既に配線されている状態で使うワークスペース — トレードオフは、Paneflowが望むことをまだ実装していないときにLuaの脱出口がないこと。"
+    },
+    "pricing": {
+      "title": "価格",
+      "intro": "両プロジェクトとも無料、両者ともMIT、両者とも商用ティアなし。",
+      "paneflow": "<strong>Paneflow</strong>: MIT、Copyright (c) 2026 Arthur Jean。デュアルライセンスなし。商用プロダクトに躊躇なく埋め込み可能。",
+      "wezterm": "<strong>WezTerm</strong>: MIT、Copyright (c) 2018-Present Wez Furlong。同じ埋め込み自由度; 商用ライセンスは提供されない (必要ない)。"
+    },
+    "migrating": {
+      "title": "WezTermからPaneflowへの移行",
+      "intro": "WezTermのLuaスクリプトとPaneflowのJSONの間にクリーンな変換はありません。インストールは新規セットアップで約10分。良いニュース: PaneflowはWezTermが設定を要求するもの (ワークスペースレイアウト、エージェントボタン、テーマ) に妥当なデフォルトを出荷するので、空設定の体験はWezTermより「すぐ使える」に近い。",
+      "bullets": {
+        "0": "<strong>シェル + テーマ</strong>: <code>~/.config/paneflow/paneflow.json</code> で <code>default_shell</code> と <code>theme</code> を設定。バンドルされた2つのテーマは <em>One Dark</em> (デフォルト) と <em>Paneflow Light</em>。",
+        "1": "<strong>キーバインド</strong>: <link>スキーマリファレンス</link> を参照。デフォルトのアクションは分割、フォーカス、ワークスペースを網羅。ロジック付きのLuaキーマップを持っているなら、そのロジックは移植されません — 最も近い静的バインドを選ぶことになります。",
+        "2": "<strong>Luaイベントハンドラー</strong>: Paneflowに同等品なし。<code>format-tab-title</code>、<code>mux-startup</code>、その他のLuaコールバックに依存しているならWezTermに留まってください。",
+        "3": "<strong>SSHマルチプレクサ</strong>: Paneflowはmuxを出荷しません。Paneflowペイン内でtmuxやzellijを実行するか、リモートセッションはWezTermを使い続けてください。"
+      }
+    },
+    "whenNot": {
+      "title": "Paneflowを選ばない方が良い場合",
+      "intro": "正直な決定打。以下5つのいずれかが重要ならWezTermが今日の正解です — 戦う意味はありません:",
+      "items": {
+        "0": "<strong>Luaスクリプティング面が欲しい。</strong> WezTermはキーマップロジック、動的タブタイトル、muxイベントフック、完全なコールバックをLuaで表現可能。Paneflowは静的JSONで、スクリプティングフックなし。気に入っているLua設定があるならPaneflowが嫌になります。",
+        "1": "<strong>SSHマルチプレクサ内蔵が必要。</strong> WezTermのSSH:とSSHMUX:ドメインはtmuxなしでセッションを切断越しに生き残らせます。Paneflowにマルチプレクサはなく、出荷する現在の計画もありません。",
+        "2": "<strong>WindowsかFreeBSDで動かす。</strong> WezTermは今日Linux、macOS、Windows、FreeBSDのビルドを出荷。PaneflowはLinuxとmacOSを出荷、Windowsはロードマップ上で出荷ETAなし、FreeBSDはロードマップ外。",
+        "3": "<strong>大きな成熟したエコシステムが欲しい。</strong> WezTermは26k+ GitHub stars、8年分のテーマ、プラグイン、Stack Overflow回答を蓄積。Paneflowは初の公開安定版から1ヶ月 — 必要な答えがまだGoogleに無いかもしれません。",
+        "4": "<strong>AIコーディングエージェントを実行しない。</strong> Paneflowが存在する全理由はエージェントワークスペース。Claude Code、Codex、OpenCode、または類似品を使わないなら、プロダクトの30%程度しか使わず残りの分を払うことになります。伝統的なターミナルワークフローにはWezTermの方が適切。"
+      }
+    },
+    "faq": {
+      "title": "よくある質問",
+      "items": {
+        "0": {
+          "question": "PaneflowはWezTermのフォーク?",
+          "answer": "いいえ。PaneflowとWezTermはソースを共有しない独立したRustコードベース。WezTermは2017年末に始まりWez Furlongがメンテナンス (約7,400コミットの約98%); PaneflowはZedのGPUIエンジン上で2026年4月に始まりalacritty_terminal上流をVT層に持ちます。アーキテクチャ的に近い仲間 — 両者とも純粋なRust、両者ともGPUアクセラレーション、両者ともMIT — ですが、異なる目的を狙います。"
+        },
+        "1": {
+          "question": "両者ともRust + GPU + MIT。実際の違いは?",
+          "answer": "目的。WezTermはLuaでスクリプトする高度に設定可能なターミナルエミュレータ。PaneflowはClaude Code、Codex、OpenCodeが一級ペインとして登場するエージェント特化のワークスペースで、ブランチ対応ワークスペース、開発サーバーポート検出、セッション復元を備えます。WezTermにはそれらが組込まれていません; PaneflowはLua駆動の拡張性でWezTermと競合することは狙いません。設定可能なターミナルが欲しいならWezTerm、エージェントワークスペースが欲しいならPaneflow。"
+        },
+        "2": {
+          "question": "WezTermに今日ネイティブなAIエージェント統合はある?",
+          "answer": "ネイティブ統合なし。WezTermのリポジトリにCLAUDE.mdなし、AGENTS.mdなし、.cursorrulesなし、wezterm-gui/Cargo.tomlにAI依存なし。LuaでキーバインドからWezTermペインの任意のCLIエージェント (Claude Code、Codex、OpenCode) を生成可能ですが、それはプロダクト機能ではなくユーザー設定。Paneflowは並列でエージェントを実行するように設計された専用UIボタンとワークスペースモデルを出荷します。"
+        },
+        "3": {
+          "question": "WezTermに26k starsと8年のコードベースがあるのに、なぜPaneflowを選ぶ?",
+          "answer": "今日エージェント特化のワークスペースが必要なら (Paneflowが出荷、WezTermは出荷しない)、または2026年の活発な開発が欲しいなら (Paneflowは2026年4月に初安定を毎週マイナーリリースと共に出荷; WezTermの最新タグ安定版は20240203-110809、15ヶ月以上のギャップ、mainは依然コミットを受けている)、または小さな設定面 (JSON vs Lua) が欲しいなら、Paneflowが適切。Luaでスクリプトできて FreeBSDでも動く完全に設定可能なターミナルが欲しいなら、WezTermが適切。"
+        },
+        "4": {
+          "question": "WezTermのLua設定をPaneflowに移行できる?",
+          "answer": "自動パスはありません。WezTermはconfigテーブルを返す ~/.wezterm.luaのLuaスクリプトを使い、Paneflowは静的JSONファイル (Linux: ~/.config/paneflow/paneflow.json)。Lua関数とイベントハンドラーはJSONで表現できません。移行は約10分の新規セットアップ — デフォルトシェル、テーマ、キーバインド — であって変換ではありません。"
+        },
+        "5": {
+          "question": "PaneflowはWezTermのようにWindowsやFreeBSDで動く?",
+          "answer": "まだです。WezTermはLinux、macOS、Windows、FreeBSDのビルドを出荷。PaneflowはLinux と macOSを今日出荷; Windowsは計画中 (ネイティブポート、WSLではない) で出荷ETAなし。FreeBSDとNetBSDはPaneflowのロードマップにありません。クロスBSDサポートや現在のWindowsビルドが譲れないなら、WezTermが適切。"
+        },
+        "6": {
+          "question": "PaneflowはWezTermのmuxのようなSSHマルチプレクサ内蔵を持っている?",
+          "answer": "いいえ。WezTermはSSH:とSSHMUX:ドメインで独自のマルチプレクサプロトコルを出荷 — リモートWezTermにアタッチしtmuxなしでセッションを切断越しに生き残らせられます。Paneflowはマルチプレクサを出荷しません。永続的なリモートセッションが必要なら、Paneflowペイン内でtmuxまたはzellijを使うか、WezTermに留まってください。"
+        },
+        "7": {
+          "question": "WezTermはまだ活発にメンテナンスされている?",
+          "answer": "開発ブランチでははい、ただし安定版のペースは遅い。github.com/wezterm/wezterm の最新タグリリースは20240203-110809-5046fc22、日付は2024-02-03 — この比較が書かれた15ヶ月以上前。mainブランチは活発 (最終プッシュ2026-05-01) で、ローリングリリースパッケージャーはmainを追跡。タグリリースを追跡するユーザーは依然2024年2月のビルド上にいます。"
+        }
+      }
+    },
+    "next": {
+      "title": "次のステップ",
+      "body": "Paneflowを試す準備はできた? <download>最新リリースをダウンロード</download> または <docs>入門ガイド</docs> を読んでください。WezTermに興味がある? <repo>WezTermはGitHub</repo> — Paneflowとは異なる問題を解決する真に優れたRustターミナルで、Luaスクリプティングが要点のあらゆるワークフローに推奨します。"
+    }
+  },
+  "CompareCmux": {
+    "Metadata": {
+      "title": "Paneflow vs cmux (2026): ミニマルなネイティブRust vs キッチンシンク的macOSツールキット",
+      "description": "Paneflow vs cmux: 200ms未満のコールドスタートとZedのGPUIエンジンを持つミニマルなネイティブRustワークスペース vs キッチンシンク的macOSツールキット (組込みブラウザ、クラウドVM、SSHデーモン)。正直な判断ガイド、アーキテクチャ、FAQ。",
+      "ogTitle": "Paneflow vs cmux (2026)",
+      "ogDescription": "ミニマルなネイティブRustワークスペース vs macOSキッチンシンク的ツールキット。Claude Code、Codex、OpenCodeワークフローのパフォーマンス、アーキテクチャ、判断ガイド。"
+    },
+    "schema": {
+      "headline": "Paneflow vs cmux (2026)",
+      "description": "クロスプラットフォームRustエージェント特化ターミナル vs macOS専用Swiftの先行者。アーキテクチャ、機能、価格の比較。"
+    },
+    "header": {
+      "title": "Paneflow vs cmux",
+      "tldr": "Paneflowもcmuxも、Claude Code、Codex、OpenCode、その他のCLIコーディングエージェントを並べて実行できます。<strong>哲学で分岐します。</strong> <strong>Paneflow</strong>はミニマルでネイティブなコア — ZedのGPUIエンジン上の純粋なRust、200ms未満のコールドスタート、4ms未満のキーストロークからピクセルまでのレイテンシ、単一MITバイナリ、毎日使うインディー開発者が構築。<strong>cmux</strong>はキッチンシンク的なmacOSツールキット — Swift + libghostty + 組込みブラウザ + クラウドVM + SSHデーモン、商用オプション付きのGPL。邪魔にならない高速で使いやすいエージェントワークスペースが欲しいならPaneflow。すべての隣接ツールを1つのプロダクトに組込みたいならcmux。"
+    },
+    "inspiration": {
+      "title": "インスピレーションに関する注記",
+      "p1": "Paneflowのデザインはcmuxに公然とインスパイアされています。cmuxは並列で複数のAIコーディングエージェントを実行する開発者向けにポリッシュされたエージェント特化ターミナルマルチプレクサを最初に出荷したプロジェクトで、「プロジェクトごとのワークスペース、エージェントごとのペイン」のメンタルモデルはそこから来ました。",
+      "p2": "Paneflowはフォークではありません。同じメンタルモデルを異なるアーキテクチャ選択で再実装した独立したRustコードベース: Swiftの代わりに純粋なRust、AppKitの代わりにGPUI、libghosttyの代わりに上流の <code>alacritty_terminal</code>、macOSファーストの代わりに初日からクロスプラットフォーム。両プロジェクトは並行して存在し、重なる問題を異なるトレードオフで解きます — 残りのページがそれをマップします。"
+    },
+    "quick": {
+      "title": "簡易比較",
+      "intro": "3つのゾーンにグループ化 — パフォーマンス & アーキテクチャ (Paneflowが優位)、コアエージェントワークスペース (両者同等)、隣接ツールキット (cmuxがより多く出荷)。",
+      "perfHeading": "パフォーマンス & アーキテクチャ",
+      "coreHeading": "コアエージェントワークスペース",
+      "toolkitHeading": "隣接ツールキット",
+      "footnote": "<strong>バージョン:</strong> Paneflow v0.2.16 (2026年5月)、初リリース2026年4月 (v0.1.0)。cmux v0.64.7 (2026年5月19日、v1.38.1ともタグ付け)、初リリース2026年1月 (v0.2.0)。<strong>価格:</strong> 両者無料。PaneflowはMIT、cmuxはGPL-3.0-or-laterで別個の商用ライセンスが利用可能。"
+    },
+    "decision": {
+      "title": "あなたに合うのはどちら?",
+      "intro": "率直に言えば、大半のユーザーにとってクリーンな二者択一。下の2つのブレットが各ツールが真に対象とするユーザーを捉えます。どちらにも当てはまらないなら、よりシンプルなもの (素のtmux、WezTerm、iTerm2) が欲しいかもしれません。",
+      "leftHeading": "Paneflowを選ぶべき場合",
+      "leftBullets": {
+        "0": "パフォーマンスを重視 — PaneflowはZedのGPUIレンダリングパイプラインで200ms未満で起動し、4ms未満のキーストロークからピクセルまでのレイテンシ",
+        "1": "ミニマリズムを評価 — 単一の静的バイナリ、JSON設定、組込みブラウザ / クラウドVMプロビジョナー / 数百コマンドのソケットAPIを学ぶ必要なし",
+        "2": "Zedのような感覚のツールが欲しい — 同じエンジン、ネイティブなスクロール・即時フォーカス・入力遅延なし・Electronなしへの同じこだわり",
+        "3": "macOSかLinuxで、両者で同様に動くワークスペースが欲しい — チームをツール乖離なくクロスプラットフォームに",
+        "4": "MITを好む — 商用ライセンス問題なし、埋め込み時のコピーレフト制約なし",
+        "5": "プロダクトロードマップを出荷するスタジオより、Paneflowを毎日使うインディー開発者を支持したい"
+      },
+      "rightHeading": "cmuxを選ぶべき場合",
+      "rightBullets": {
+        "0": "macOS専用で、今日最もポリッシュされたネイティブ体験が欲しい",
+        "1": "SSHリモートワークスペースが必要 (cmuxがこれを出荷する唯一)",
+        "2": "Chrome/Firefox/Safari/Brave/Edge/Arcのプロファイルインポート付きの組込みブラウザが必要",
+        "3": "15+のAIエージェントを回し、すべてに一級統合が欲しい",
+        "4": "17,500+ stars コミュニティ、数百のソケットコマンド、活発な商用バックを欲しい",
+        "5": "クラウドVMプロビジョニング、AppleScriptスクリプティング、tmux互換性を組込みで欲しい",
+        "6": "GPL-3.0に納得できる (または商用ライセンスを支払う)"
+      }
+    },
+    "architecture": {
+      "title": "アーキテクチャ詳細",
+      "p1": "<strong>cmux</strong>はAppKitとSwiftUIに構築されたmacOSネイティブアプリケーション。ターミナルエミュレーションはGhosttyターミナルエミュレータを駆動するCライブラリlibghosttyに委譲され、<code>GhosttyKit.xcframework</code> を通じてSwiftアプリにブリッジされます。レンダリングはCAMetalLayerのカスタム <code>GhosttyMetalLayer</code> サブクラスを通る (GhosttyはMetalを直接駆動、MTKView非使用)。ペインレイアウトはBonsplit、隣接性クエリ (<code>adjacentPane(to:direction:)</code>) とセッション永続化のためのスナップショットを公開するN進ツリーレイアウトライブラリ。",
+      "p2": "<strong>Paneflow</strong>はZedが使うのと同じUIフレームワークGPUI上に純粋なRustで構築されています。実用的には: UIとターミナルの間に言語境界なし — キー入力は単一の純粋なRustパイプラインを通り、これがキーストロークからピクセルまでのレイテンシが4ms以下、アプリのコールドスタートが200ms以下である理由。ターミナルエミュレーションはcrates.ioの上流 <code>alacritty_terminal</code> 0.26 — 公開された安定なRust VTクレート。保守するフォークなしで、Rustエコシステムの将来の改善が自然に流入します。GPU層はBlade (GPUIのレンダラー) でLinuxはVulkan、macOSはMetal。ペインレイアウトは4つのプリセットレイアウト (<em>均等水平</em>、<em>均等垂直</em>、<em>メイン垂直</em>、<em>タイル</em>) 用に設計された手作りのN進ツリー。",
+      "p3": "IPC側でも両プロジェクトはUnixソケットを公開。cmuxは同じソケット上で2つのプロトコルを並行実行: V1はスペース区切りテキストプロトコル (例: <code>new-workspace</code>、<code>send-key &lt;args&gt;</code>)、V2は改行区切りJSON。ディスパッチャーは各行の最初のバイトを検査してルーティング。組み合わせた機能面積は数百コマンドでウィンドウ、ペイン、セッション、通知、リモートワークスペースを網羅。Paneflowはワークスペースとペインを網羅する約13メソッドの単一JSON-RPC 2.0プロトコルを出荷 — 機能は小さく、学習が速く、網羅性は遥かに少ない。IPC API機能でcmuxに追いつくことはPaneflowロードマップ上にあります。"
+    },
+    "pricing": {
+      "title": "価格",
+      "intro": "両プロジェクトとも無料で使用可能。ライセンスモデルが異なります:",
+      "paneflow": "<strong>Paneflow</strong>: MITライセンス、デュアルライセンスなし、商用ティアなし。商用プロダクトへの埋め込みを含めて好きなように使用可能。",
+      "cmux": "<strong>cmux</strong>: デフォルトはGPL-3.0で、コピーレフトでない条件が必要な組織には別個の商用ライセンスが利用可能。商用ライセンスの価格は公開されていません; メンテナーに連絡してください。"
+    },
+    "migrating": {
+      "title": "cmuxからPaneflowへの移行",
+      "intro": "cmuxセットアップの大部分を約10分でPaneflowに移行できます。設定スキーマは似たJSON形状; キーストローク表記は一致; AIエージェントボタンの概念は同じ。",
+      "bullets": {
+        "0": "<strong>設定ファイル</strong>: <code>~/.config/cmux/cmux.json</code> を Linux の <code>~/.config/paneflow/paneflow.json</code> または macOS の <code>~/Library/Application Support/paneflow/paneflow.json</code> にコピー。異なるキーは名前変更 (<link>スキーマリファレンス</link> 参照)。",
+        "1": "<strong>キーバインド</strong>: コアアクションのデフォルトが一致 (<code>Cmd/Ctrl+Shift+D</code> 水平分割、<code>Cmd/Ctrl+Shift+E</code> 垂直分割、<code>Alt+Arrow</code> フォーカス、<code>Cmd/Ctrl+1-9</code> ワークスペース切替)。カスタムオーバーライドは直接変換可能。",
+        "2": "<strong>セッション</strong>: 移植不可。オンディスクセッション形式が異なるため、初回起動時にワークスペースを再作成する必要があります。ブランチ検出とCWD復元はその後自動的に有効になります。",
+        "3": "<strong>SSHワークフロー</strong>: 直接的な移行パスなし。<code>cmux ssh user@host</code> に依存しているならPaneflowがリモートワークスペースサポートを出荷するまでcmuxに留まってください。"
+      }
+    },
+    "whenNot": {
+      "title": "Paneflowを選ばない方が良い場合",
+      "intro": "正直な決定打。以下5つのいずれかが重要ならcmuxが今日の正解です — 戦う意味はありません:",
+      "items": {
+        "0": "<strong>SSHリモートワークスペースが必要。</strong> cmuxは自動デプロイ型のGoデーモン (scp + SSHローカル転送をUnixソケットに) を出荷するので <code>cmux ssh user@host</code> でリモートワークスペースが透過的に得られます。Paneflowに当面の同等品はありません。",
+        "1": "<strong>ターミナル内の組込みブラウザが必要。</strong> cmuxのWKWebViewパネルはChrome、Firefox、Safari、Brave、Edge、Arcからプロファイルをインポート。Paneflowにブラウザ機能の計画はありません。",
+        "2": "<strong>ターミナルからクラウドVMをプロビジョニングしたい。</strong> cmuxは統合VMプロビジョニング (<code>cmux vm new</code>) をワークスペースの残りと配線済みで出荷。Paneflowに同等品なし。",
+        "3": "<strong>自動化のために数百コマンドのIPC面が必要。</strong> cmuxはデュアルV1テキスト + V2 JSONソケットプロトコル上で数百コマンドを公開。PaneflowのJSON-RPCは今日13メソッド — 基本的なエージェント制御には十分、重い自動化パイプラインには不十分。",
+        "4": "<strong>今プロダクション級の成熟が必要。</strong> cmuxはv0.64で数ヶ月の実証ユーザーフィードバックと活発な商用バックを持ちます。Paneflowはv0.2.xで小さなコミュニティ。設定とIPCスキーマはv1.0までマイナーバージョン間で動く可能性があります。"
+      }
+    },
+    "faq": {
+      "title": "よくある質問",
+      "items": {
+        "0": {
+          "question": "Paneflowはcmuxのフォーク?",
+          "answer": "いいえ。Paneflowはcmuxのエージェント特化設計にインスパイアされた独立したRust実装です。2つのコードベースはソースコードを共有しません。PaneflowはGPUI (Zedのフレームワーク) + 上流alacritty_terminalを使用; cmuxはAppKit + GhosttyKit.xcframework経由のlibghosttyを使用。"
+        },
+        "1": {
+          "question": "各ターミナルがサポートするAIエージェントは何個?",
+          "answer": "両者とも任意のCLIコーディングエージェントを起動可能 — ターミナルマルチプレクサなので、シェルで実行可能なものは何でもそこで実行できます。違いは専用UI: PaneflowはClaude Code、Codex、OpenCode (Paneflowを構築した開発者が毎日使う3つ) に一級ボタンを出荷。cmuxは15+のエージェントに専用UIを出荷。多くのエージェントを回しそれぞれにワンクリック起動が欲しいなら、cmuxの広い動物園が助けに。主に2-3しか使わないなら、両者は同じに感じられます。"
+        },
+        "2": {
+          "question": "cmuxの方が成熟しているのに、なぜPaneflowを選ぶ?",
+          "answer": "今日Linuxが必要なら (Paneflowが出荷、cmuxはmacOS専用)、または別個の商用ライセンス問題なしのMITライセンスツールを特に望むなら、または監査と貢献ができる小さなRustコードベースを好むなら、Paneflowが適切。2026年5月の機能豊富なmacOS専用ワークフローでは、cmuxの方がポリッシュされており、遥かに大きな機能面 (クラウドVM、コマンドパレット、AppleScript、tmux互換性、組込みブラウザ) を持ちます。"
+        },
+        "3": {
+          "question": "PaneflowはWindowsで動く?",
+          "answer": "ネイティブWindowsは計画中、出荷ETAなし。WSL2 + Linuxビルドは現在実行可能ではありません: GPUIのレンダラーはWSLgのdznドライバが実装しないVK_EXT_inline_uniform_block Vulkan拡張を必要とし、llvmpipeソフトウェアレンダリングにフォールバックします — ターミナルマルチプレクサには使い物になりません。"
+        },
+        "4": {
+          "question": "cmuxの設定をPaneflowに移行できる?",
+          "answer": "部分的に。両プロジェクトとも似た形のJSON設定ファイル (デフォルトシェル、テーマ、キーバインド、AIエージェントボタン) を使用。キーストローク表記は修飾子で一致 (macOSはCmd、LinuxはCtrl)。セッションファイルは移植不可 — オンディスク形式が異なります。移行ヘルパースクリプトはロードマップ上にありますが、今のところ手動翻訳は約10分。"
+        },
+        "5": {
+          "question": "なぜPaneflowはGhosttyではなくalacritty_terminalを使う?",
+          "answer": "alacritty_terminalは安定なRust semver保証付きでcrates.ioに公開されており、GPUIのレンダループにクリーンに統合されます。GhosttyはcmuxがGhosttyKit.xcframework経由でアクセスするCライブラリ — cmuxのSwiftアプリでは完璧に問題ありませんが、Paneflowの純粋なRustスタックは純粋なRust VTエミュレータを好みます。これはアーキテクチャの好みであって品質判断ではありません。両エンジンとも優秀です。"
+        },
+        "6": {
+          "question": "Paneflowはリモートマシン上でエージェントを実行できる?",
+          "answer": "今日はできません。cmuxはSSH経由で自動デプロイされるGoデーモン (`cmux ssh user@host`) を出荷してリモートワークスペースを透過的に作成。Paneflowのロードマップにこの機能は現在含まれません。ワークフローがリモートエージェントに依存するなら、cmuxが今日の良い選択。"
+        },
+        "7": {
+          "question": "Paneflowに組込みブラウザはある?",
+          "answer": "いいえ。cmuxはオムニバー、Chrome/Firefox/Safari/Brave/Edge/Arcからのプロファイルインポート、タブ管理付きの完全なWKWebViewベースブラウザを出荷。Paneflowにブラウザは含まれません — ターミナルペイン + マークダウンビューアにフォーカスします。ターミナルワークスペース内にブラウザが欲しいなら、cmuxが良い選択。"
+        }
+      }
+    },
+    "next": {
+      "title": "次のステップ",
+      "body": "Paneflowを試す準備はできた? <download>最新リリースをダウンロード</download> または <docs>入門ガイド</docs> を読んでください。cmuxに興味がある? <repo>cmuxはGitHub</repo> で一見の価値あり — Paneflowチームが深く尊敬する問題を解決します。"
+    }
+  },
+  "LegalPrivacy": {
+    "Metadata": {
+      "title": "プライバシーポリシー — Paneflow",
+      "description": "Paneflowのプライバシーポリシー: paneflow.devで収集されるデータ、オプトイン制のデスクトップテレメトリ、サブプロセッサ (PostHog EU、Vercel、GitHub)、GDPR上の権利。",
+      "ogTitle": "プライバシーポリシー — Paneflow",
+      "ogDescription": "Paneflow、サイトおよびアプリケーション: データ、サブプロセッサ、GDPR上の権利。"
+    },
+    "schema": {
+      "breadcrumbHome": "ホーム",
+      "breadcrumbPrivacy": "プライバシーポリシー"
+    },
+    "heading": "プライバシーポリシー",
+    "lastUpdated": "最終更新: {date}",
+    "sections": {
+      "controller": {
+        "title": "1. データ管理者",
+        "intro": "GDPR第4条に基づくデータ管理者:",
+        "name": "Strivex",
+        "contactLabel": "連絡先:"
+      },
+      "siteData": {
+        "title": "2. paneflow.devで収集されるデータ",
+        "intro": "サイト <mono>paneflow.dev</mono> は2つの補完的なアナリティクスツールを使用します:",
+        "vercel": "<strong>Vercel Analytics</strong> · ホストが提供するインフラストラクチャメトリクス (ページビュー、Web Vitals)。",
+        "posthog": "<strong>PostHog</strong> · <em>cookieless</em> モード、Cookieは設置されず、ブラウザに識別子は永続化されません。収集対象: 匿名のページビュー、ダウンロードボタンのクリック、主要セクションへのスクロール、UTMパラメータ、到達 <mono>referer</mono>。IPアドレスは <strong>一切保存されません</strong> (PostHogサーバー側でマスキング有効)。",
+        "outro": "サイトは個人を特定できるデータ (氏名、メールアドレス、アカウント識別子) を収集しません。広告プロファイリングは行いません。"
+      },
+      "telemetry": {
+        "title": "3. デスクトップアプリケーションのテレメトリ (オプトイン)",
+        "p1": "お使いの端末にインストールされたPaneflowアプリケーションは、初回起動時に表示される同意ダイアログを通じて明示的に同意するまで <strong>いかなるデータも送信しません</strong>。",
+        "p2": "同意する場合、以下のイベントが送信されます:",
+        "events": {
+          "0": "<mono>app_started</mono> · アプリケーションの起動",
+          "1": "<mono>app_exited</mono> · アプリケーションの停止",
+          "2": "<mono>update_installed</mono> · アップデートのインストール"
+        },
+        "p3": "各イベントは匿名のマシン識別子 (ランダムなUUID v4、ローカルに保存されユーザーがリセット可能)、オペレーティングシステム、Paneflowバージョンに紐付けられます。<strong>ファイルパス、プロジェクト名、ターミナル内容、シェルコマンド、個人情報は一切送信されません。</strong>",
+        "p4": "環境変数 <mono>PANEFLOW_NO_TELEMETRY=1</mono> は、同意ダイアログ表示前であってもすべてのテレメトリを無条件に無効化します。同意ダイアログはアプリケーションの環境設定からいつでも再表示でき、選択を変更できます。"
+      },
+      "subprocessors": {
+        "title": "4. サブプロセッサ",
+        "intro": "GDPR第28条に従い、Paneflowは以下のサブプロセッサを使用します:",
+        "locationLabel": "所在地:",
+        "roleLabel": "役割:",
+        "items": {
+          "0": {
+            "name": "PostHog Inc.",
+            "region": "EU Cloud · AWS Frankfurt (ドイツ)",
+            "role": "プロダクトアナリティクス (サイトおよびオプトインデスクトップテレメトリ)",
+            "notes": "Cookielessモード、IPアドレス非保存、12ヶ月保持、SCCモジュール2 (管理者-処理者) でDPA署名済み。"
+          },
+          "1": {
+            "name": "Vercel Inc.",
+            "region": "米国 (欧州エッジネットワーク)",
+            "role": "paneflow.devサイトの静的ホスティングとWeb Vitals",
+            "notes": "Vercelオンボーディング時に受諾。個人を特定できるデータの転送なし。"
+          },
+          "2": {
+            "name": "GitHub Inc. (Microsoft Corporation)",
+            "region": "米国",
+            "role": "ソースコードおよびサイトからダウンロードされるリリースアーティファクトのホスティング",
+            "notes": "ダウンロードログはGitHubサービス利用規約に従います。"
+          }
+        }
+      },
+      "retention": {
+        "title": "5. 保持期間",
+        "items": {
+          "0": "PostHog: 12ヶ月のローリング",
+          "1": "Vercel Analytics: 30日 (デフォルト値)",
+          "2": "GitHub: 公開アーティファクトのアクセスログに対するGitHubのポリシーが定める期間"
+        },
+        "outro": "それを超えると、データは匿名で削除または集計されます。"
+      },
+      "rights": {
+        "title": "6. データ主体の権利",
+        "intro": "GDPR (第15条から第21条) に従い、お客様に関するデータについて以下の権利があります:",
+        "items": {
+          "0": "<strong>第15条</strong> · アクセス権: お客様に関するデータが処理されていることの確認とそのコピーの受領。",
+          "1": "<strong>第16条</strong> · 訂正権: 不正確または不完全なデータの訂正。",
+          "2": "<strong>第17条</strong> · 消去権 (「忘れられる権利」): 法的条件が満たされる場合のデータ削除。",
+          "3": "<strong>第18条</strong> · 処理制限権: 処理の一時停止。",
+          "4": "<strong>第19条</strong> · 通知義務: データの受取人に伝達された訂正、消去、または制限の通知。",
+          "5": "<strong>第20条</strong> · データポータビリティ権: 構造化され一般的に使用され機械可読の形式でデータを受領し、別の管理者に送信する。",
+          "6": "<strong>第21条</strong> · 異議権: 個別の状況に関する理由により、いつでもデータの処理に異議を申し立てる。"
+        },
+        "outro": "これらの権利の行使に関するすべての要求は <email>arthur.jean@strivex.fr</email> までメールで送ってください。最大1ヶ月以内に回答します。回答が不満足な場合は、<cnil>CNIL</cnil> に申し立てを行うことができます。"
+      },
+      "contact": {
+        "title": "7. お問い合わせ",
+        "intro": "本ポリシーまたはデータ処理に関するすべての質問について:",
+        "emailLabel": "メール:",
+        "publisherLabel": "発行者:",
+        "publisherName": "Strivex"
+      }
+    }
+  },
+  "NotFound": {
+    "title": "ページが見つかりません",
+    "description": "お探しのページが見つかりませんでした。移動、名前変更、または存在しなかった可能性があります。",
+    "ctaHome": "ホームに戻る",
+    "ctaDocs": "ドキュメントを見る"
+  }
+}

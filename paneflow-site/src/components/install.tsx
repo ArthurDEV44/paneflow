@@ -1,30 +1,33 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { FadeIn } from "./fade-in";
 import { Copy, Check } from "lucide-react";
 import { useState } from "react";
 import { track } from "../lib/analytics";
 
 export function Install() {
+  const t = useTranslations("Install");
   return (
     <section className="py-24 sm:py-32 border-t border-surface-border">
       <div className="max-w-3xl mx-auto px-6">
         <FadeIn>
           <div className="text-center mb-12">
             <h2 className="text-3xl sm:text-4xl font-bold tracking-tight mb-4">
-              Get started
+              {t("heading")}
             </h2>
             <p className="text-text-muted">
-              Build from source with the Rust toolchain. Linux only.
+              {t("subhead")}
             </p>
           </div>
 
           <div className="code-block relative">
             <CopyButton
               text={`git clone https://github.com/ArthurDEV44/paneflow\ncd paneflow && cargo build --release\n./target/release/paneflow-app`}
+              ariaLabel={t("aria.copy")}
             />
             <div>
-              <span className="comment"># Clone and build</span>
+              <span className="comment">{t("commentClone")}</span>
             </div>
             <div>
               <span className="command">git clone</span>{" "}
@@ -40,7 +43,7 @@ export function Install() {
               <span className="flag">--release</span>
             </div>
             <div className="mt-3">
-              <span className="comment"># Run</span>
+              <span className="comment">{t("commentRun")}</span>
             </div>
             <div>
               <span className="command">./target/release/paneflow-app</span>
@@ -48,7 +51,7 @@ export function Install() {
           </div>
 
           <div className="mt-6 text-center text-sm text-text-subtle">
-            Requires Rust 1.82+, Vulkan-capable GPU, and Linux (Wayland or X11)
+            {t("requirements")}
           </div>
         </FadeIn>
       </div>
@@ -56,7 +59,7 @@ export function Install() {
   );
 }
 
-function CopyButton({ text }: { text: string }) {
+function CopyButton({ text, ariaLabel }: { text: string; ariaLabel: string }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -70,7 +73,7 @@ function CopyButton({ text }: { text: string }) {
     <button
       onClick={handleCopy}
       className="absolute top-4 right-4 p-2 rounded-md border border-surface-border hover:border-surface-border-hover text-text-subtle hover:text-text-muted transition-all duration-200"
-      aria-label="Copy to clipboard"
+      aria-label={ariaLabel}
     >
       {copied ? (
         <Check className="w-4 h-4 text-accent-green" />

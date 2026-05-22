@@ -1,0 +1,57 @@
+---
+title: Configuration
+description: Personnalise Paneflow avec un seul fichier paneflow.json - shell par défaut, thème, raccourcis clavier, décorations de fenêtre et plus.
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow lit un unique fichier JSON au démarrage : `paneflow.json`.
+Chaque clé est optionnelle et a une valeur par défaut raisonnable,
+donc un `{}` vide est une configuration valide. La référence
+complète, incluant types, valeurs par défaut et stabilité par clé,
+vit sur la [page du schéma](/docs/configuration/schema).
+
+## Où est `paneflow.json` ?
+
+| OS | Chemin |
+| --- | --- |
+| Linux | `~/.config/paneflow/paneflow.json` (ou `$XDG_CONFIG_HOME/paneflow/paneflow.json`) |
+| macOS | `~/Library/Application Support/paneflow/paneflow.json` |
+
+Si le fichier n'existe pas au premier lancement, Paneflow démarre
+avec tous les défauts. Crée le fichier au chemin ci-dessus pour
+commencer à personnaliser.
+
+## Autocomplétion d'éditeur avec JSON Schema
+
+Pose une référence `$schema` pour obtenir l'autocomplétion instantanée
+et la vérification de types dans VS Code, JetBrains, Zed, Helix ou
+n'importe quel éditeur avec un serveur de langage JSON Schema :
+
+```json
+{
+  "$schema": "https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json",
+  "theme": "One Dark"
+}
+```
+
+Le schéma est publié avec chaque version et suit l'ensemble exact de
+clés que le build en cours d'exécution accepte.
+
+## Comment Paneflow gère-t-il les clés inconnues ?
+
+Paneflow est **permissif à l'exécution** : les clés de premier niveau
+inconnues sont silencieusement ignorées, et les clés manquantes se
+résolvent à leurs valeurs par défaut. Cela garde ta configuration
+compatible avec l'avenir entre les versions - déposer une clé d'un
+build plus récent ne casse jamais un binaire Paneflow plus ancien.
+
+Le JSON Schema rejette en plus les clés inconnues au moment de
+l'édition (`additionalProperties: false`), donc ton éditeur signale
+les fautes de frappe avant que tu sauvegardes. Le runtime reste
+permissif à dessein.
+
+## Et après ?
+
+- Référence complète du schéma avec chaque clé : [Schéma](/docs/configuration/schema).
+- Personnalisation des raccourcis clavier : [Raccourcis clavier](/docs/keybindings).

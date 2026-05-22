@@ -1,0 +1,119 @@
+---
+title: Instalar Paneflow en macOS
+description: Instala Paneflow en macOS 13 Ventura o posterior vía el .dmg firmado y notarizado.
+dateModified: 2026-05-22
+howto: true
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow corre en macOS 13 Ventura y posteriores. Hoy el `.dmg` es
+la única ruta de instalación de macOS; un tap de Homebrew está en
+preparación. Apple Silicon es la arquitectura admitida en v0.2.x;
+los builds Intel llegan en un release futuro.
+
+<Callout type="info">
+El `.dmg` está firmado con un certificado Developer ID Application
+y notarizado por Apple. El ticket de notarización está grapado al
+bundle, así que Gatekeeper lo acepta en el primer lanzamiento sin
+el diálogo de «desarrollador no identificado».
+</Callout>
+
+## ¿Cómo instalo Paneflow con Homebrew?
+
+Un tap de Homebrew está en la hoja de ruta. Una vez publicado, esta
+sección mostrará un comando de una línea que puedes pegar. Mientras
+tanto, usa la ruta `.dmg` de abajo; es la única instalación de
+macOS admitida en v0.2.x.
+
+## ¿Cómo instalo Paneflow desde un .dmg?
+
+Descarga el último `.dmg` de Apple Silicon, ábrelo y arrastra la
+app a Applications.
+
+```bash
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-aarch64-apple-darwin.dmg
+open paneflow-0.2.16-aarch64-apple-darwin.dmg
+```
+
+Finder monta la imagen de disco y abre una ventana con la app
+`Paneflow` y un enlace simbólico `Applications`. Arrastra
+`Paneflow` sobre `Applications`, luego expulsa el volumen montado.
+
+Lanza desde Spotlight (`Cmd+Space` luego «Paneflow») o directamente:
+
+```bash
+open /Applications/Paneflow.app
+```
+
+<Callout type="warn">
+Los Macs Intel aún no se construyen en CI. Si estás en un Mac
+anterior a 2020, el binario de Apple Silicon fallará al lanzarse
+con un error de arquitectura. Un DMG universal o solo Intel llega
+en un release futuro; suscríbete a los [GitHub releases](https://github.com/ArthurDEV44/paneflow/releases)
+para recibir aviso.
+</Callout>
+
+## ¿Cómo verifico la instalación?
+
+`Paneflow.app` no pone `paneflow` en tu `PATH` automáticamente -
+el binario vive en
+`/Applications/Paneflow.app/Contents/MacOS/paneflow`. La
+verificación más simple es lanzar la app desde Spotlight
+(`Cmd+Space` luego «Paneflow») o desde el terminal:
+
+```bash
+open -a Paneflow
+```
+
+La barra de título muestra la versión en ejecución en el primer
+frame.
+
+Para acceso CLI desde cualquier terminal, enlaza el binario en
+`/usr/local/bin` una sola vez:
+
+```bash
+sudo ln -sf /Applications/Paneflow.app/Contents/MacOS/paneflow /usr/local/bin/paneflow
+```
+
+Una vez que el enlace esté en su sitio, el comando de verificación
+estándar funciona:
+
+```bash
+paneflow --version
+# paneflow 0.2.x
+```
+
+## ¿Qué pasa si Gatekeeper de macOS bloquea la app?
+
+El `.dmg` notarizado nunca debería disparar el diálogo «Apple no
+pudo verificar que esta app no contenga software malicioso». Si lo
+ves, significa que el atributo de cuarentena se preservó durante
+una transferencia inusual (por ejemplo, descargado por un navegador
+distinto a Safari a un disco externo). Tres formas de resolver,
+por orden de fricción:
+
+**Clic derecho en Abrir** (una vez por app):
+
+1. Abre Finder, navega a `Applications`.
+2. Control-clic (o clic derecho) en `Paneflow.app`.
+3. Elige **Abrir**.
+4. Haz clic en **Abrir** en el diálogo de confirmación.
+
+**Ruta Ajustes** (macOS 13+):
+
+1. Abre **Ajustes del Sistema**.
+2. Ve a **Privacidad y seguridad**.
+3. Desplázate al aviso «Paneflow ha sido bloqueado».
+4. Haz clic en **Abrir de todos modos**.
+
+**Ruta CLI**:
+
+```bash
+xattr -d com.apple.quarantine /Applications/Paneflow.app
+```
+
+El comando `xattr` quita el atributo extendido de cuarentena, así
+que Gatekeeper deja de bloquear los lanzamientos posteriores. No
+se requiere `sudo` para apps que descargaste y arrastraste a
+`/Applications` tú mismo; una app gestionada por MDM o instalada
+como root puede necesitar `sudo`.

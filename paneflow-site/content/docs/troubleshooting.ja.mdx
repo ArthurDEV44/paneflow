@@ -1,0 +1,227 @@
+---
+title: トラブルシューティング
+description: Paneflow の最も一般的な起動、設定、インストール問題の修正 - GPU エラー、PATH の不足、ブロックされたインストーラ、テーマ リロードの問題。
+dateModified: 2026-05-22
+faqpage: true
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+8 つの既知の障害モードとその修正です。このページに問題がない
+場合は、[まだ詰まっていますか？](#still-stuck) セクションへ
+ジャンプして、事前入力された GitHub issue テンプレートを利用
+してください。
+
+## 起動とレンダリングの問題
+
+### Paneflow が GPU エラーで起動に失敗するのはなぜですか？
+
+Paneflow は GPUI 経由でレンダリングします。Linux では Vulkan、
+macOS では Metal が必要です。`Failed to initialize renderer`
+または `No suitable GPU adapter found` のような起動エラーは、
+ほぼ常にプラットフォームの GPU スタックが欠落しているか壊れて
+いることを意味します。
+
+**Linux の修正：**
+
+```bash
+# Debian / Ubuntu
+sudo apt install libvulkan1 mesa-vulkan-drivers
+# Fedora
+sudo dnf install vulkan-loader mesa-vulkan-drivers
+# Arch
+sudo pacman -S vulkan-icd-loader mesa
+```
+
+そして `vulkaninfo --summary` を実行して、少なくとも 1 つの
+ICD がロードされることを確認してください。
+**macOS の修正：** macOS 13 Ventura 以降にアップデートしてくだ
+さい。それより前のバージョンは、GPUI がサポートしない Metal API
+を提供しています。
+
+対応するインストール時の依存関係リストについては
+[Linux インストール Vulkan メモ](/docs/installation/linux)
+を参照してください。
+
+### Paneflow の Wayland セッションが空白なのはなぜですか？
+
+Wayland 下での空白ウィンドウは、ほぼ常に Vulkan ICD がコンポジ
+タとサーフェスのネゴシエーションに失敗しているケースです。
+ウィンドウはタスク バーに表示されますが、コンテンツはレンダ
+リングされません。
+
+**`vulkaninfo --summary` で診断を確認してください** - どの
+ドライバも `VK_KHR_wayland_surface` をリストしない場合、正しい
+症状を見ています。
+
+**XWayland フォールバックを強制** することでクイックな回避が
+できます：
+
+```bash
+WAYLAND_DISPLAY= GDK_BACKEND=x11 paneflow
+```
+
+**永続的な修正：** ディストリビューションの Mesa Vulkan ドライバ
+パッケージ（Debian / Ubuntu では `mesa-vulkan-drivers`、GPU
+ベンダーに応じて Fedora / Arch では `vulkan-radeon` または
+`vulkan-intel`）をインストールしてください。
+
+NVIDIA 専有ドライバでは、パッケージが動作中のカーネルと一致して
+いることを確認してください。古いモジュールは、Wayland の空白
+ウィンドウの最も一般的な根本原因です。
+
+## 設定が反映されない
+
+### paneflow.json がロードされないのはなぜですか？
+
+Paneflow は OS ごとに正確に 1 つの設定ファイルを読み、未知の
+キーを静かに無視します。「設定が適用されない」という苦情はほぼ
+常に 3 つのうちのいずれかです。誤ったパス、JSON 構文エラー、
+または `window_decorations` の例外（起動時にのみ読み込まれる）。
+
+**パスを確認してください：**
+
+| OS | パス |
+| --- | --- |
+| Linux | `~/.config/paneflow/paneflow.json` |
+| macOS | `~/Library/Application Support/paneflow/paneflow.json` |
+
+**保存前に JSON を検証してください：**
+
+```bash
+cat ~/.config/paneflow/paneflow.json | python3 -m json.tool
+```
+
+パース エラーは、Paneflow が次の起動時に静かにデフォルトに
+フォールバックし、警告をログに記録することを意味します。
+[JSON スキーマ](/docs/configuration#editor-autocomplete-with-json-schema)
+をピン留めして、エディタが保存前にタイプミスを捕捉するように
+してください。
+
+`window_decorations` の変更には完全な再起動が必要です。この
+キーはブート時に一度読み込まれ、ホット リロードされません。
+
+### ショートカットが動作しないのはなぜですか？
+
+3 つの一般的な原因：
+
+1. **アクション名のタイプミス。** オーバーライドの値は、正規の
+   `snake_case` アクション名（`split_horizontally`、
+   `split-horizontal` や `splitHorizontally` ではない）と一致
+   する必要があります。未知の名前は無視されます。完全なリストは
+   [キーバインド リファレンス](/docs/keybindings) を参照して
+   ください。
+2. **修飾キーの不一致。** `ctrl+shift+t` の形式を使ってください。
+   `ctrl-shift-t` や `Ctrl+Shift+T` ではありません。小文字、
+   プラス区切りです。
+3. **コンテキストの競合。** `Terminal` コンテキストのバインディ
+   ングは、ターミナル ペインがフォーカスされている場合にのみ
+   発火します。[Search](/docs/keybindings#search-overlay) や
+   [Markdown](/docs/keybindings#markdown-pane) コンテキストは
+   さらに狭いです。
+
+オーバーライド例：
+
+```json
+{
+  "shortcuts": {
+    "ctrl+shift+t": "new_tab"
+  }
+}
+```
+
+2 つのエントリが同じキー入力をマッピングする場合、最後のもの
+が勝ちます。コンテキスト対応バインディングについては
+[オーバーライド構文](/docs/configuration/schema#how-do-i-set-shortcuts)
+を参照してください。
+
+### テーマがホット リロードされないのはなぜですか？
+
+テーマのホット リロードは、デバウンス 300 ms の `notify` ファ
+イル システム ウォッチャを使用し、ウォッチャの起動に失敗した
+ときは 500 ms の `mtime` ポーリングにフォールバックします。
+保存された `paneflow.json` の変更が 1 秒以内に反映されない
+場合、3 つのうちのいずれかが発生しています：
+
+1. **テーマ名のタイプミス。** 名前は大文字小文字を区別します。
+   `"PaneFlow Light"` は動作し、`"paneflow light"` は動作しま
+   せん。未知の名前は静かに `"One Dark"` にフォールバックします。
+2. **ファイル システムがファイル監視をサポートしていません。**
+   NFS 共有、サンドボックス アプリ コンテナ、一部の WSL パスは
+   inotify / FSEvents / ReadDirectoryChangesW をサポートしませ
+   ん。500 ms のポーリング フォールバックは引き続き動作する
+   はずです。動作しない場合、エディタがテンプ ファイルに書き
+   込んでリネームしている可能性が高く、まれなファイル システム
+   では `mtime` シグナルが壊れます。
+3. **間違ったファイルを編集しました。** 保存したパスが
+   [テーマ ガイド](/docs/themes#how-do-i-switch-the-active-theme)
+   の OS 固有の場所と一致することを確認してください。
+
+`window_decorations` はテーマ隣接のキーで唯一ホット リロード
+されません。これには完全な再起動が必要です。
+
+## インストールと署名のプロンプト
+
+### paneflow が PATH にないのはなぜですか？
+
+2 つのインストール パスは `paneflow` を `PATH` に自動的に追加
+します。Linux の `.deb`（`/usr/bin/paneflow` にバイナリを配置）
+と Homebrew（tap が出荷されたとき）です。AppImage と tarball
+パスは、バイナリを置いた場所に残します。
+
+**Linux tarball の修正：**
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+zsh の場合は `~/.zshrc`、fish の場合は
+`fish_add_path ~/.local/bin` を使ってください。
+[Linux インストール PATH セクション](/docs/installation/linux#what-if-paneflow-is-not-found-in-my-path)
+にシェルごとのバリアントが詳しく説明されています。
+
+**macOS `.app` の修正：** バイナリはバンドル内にあり、デフォルト
+では `PATH` にありません。一度だけシンボリック リンクしてくだ
+さい：
+
+```bash
+sudo ln -sf /Applications/Paneflow.app/Contents/MacOS/paneflow /usr/local/bin/paneflow
+```
+
+### macOS が「Apple がこの App をチェックできません」と言うのはなぜですか？
+
+公証済み `.dmg` はこのダイアログを決して出すべきではありません
+が、バンドルを異常な転送パスで移動した場合（Safari 以外の
+ブラウザで外付けドライブにダウンロード、ネットワーク共有経由
+でコピー）、検疫属性が保持されている可能性があります。
+
+**最速の修正（アプリごとに 1 回）：**
+
+1. Finder を開き、`Applications` に移動します。
+2. `Paneflow.app` を Control クリックします。
+3. **開く** を選択してください。
+4. 確認ダイアログで **開く** をクリックしてください。
+
+**CLI 修正：**
+
+```bash
+xattr -d com.apple.quarantine /Applications/Paneflow.app
+```
+
+そのバンドルからシステム ワイドで検疫拡張属性を削除します。
+アプリを自分でインストールした場合、`sudo` は不要です。
+システム設定パスを含む完全なウォークスルーは
+[macOS インストール ページ](/docs/installation/macos#what-if-macos-gatekeeper-blocks-the-app)
+にあります。
+
+## まだ詰まっていますか？
+
+上記のどれもあなたの問題を解決しない場合は、OS、Paneflow の
+バージョン、再現手順を添えて GitHub issue を開いてください。
+下のリンクは事前入力されたテンプレートを開きます：
+
+[**GitHub issue を開く**](https://github.com/ArthurDEV44/paneflow/issues/new?title=%5Bbug%5D%20short%20summary&body=%23%23%20Environment%0A-%20OS%3A%20%28Linux%20distro%20%2B%20version%20%2F%20macOS%20version%29%0A-%20Paneflow%20version%3A%20%28paneflow%20--version%29%0A-%20GPU%20%2F%20driver%3A%20%0A-%20Display%20server%20%28Linux%29%3A%20Wayland%20%2F%20X11%0A%0A%23%23%20Steps%20to%20reproduce%0A1.%20%0A2.%20%0A3.%20%0A%0A%23%23%20Expected%20behaviour%0A%0A%0A%23%23%20Actual%20behaviour%0A%0A%0A%23%23%20Logs%20%2F%20screenshots%0A)
+
+CLI から問題が再現できる場合は、`RUST_LOG=info paneflow` の
+関連する出力を貼り付けてください。ログ行は、どのサブシステム
+が失敗したかを教えてくれて、明確化の質問の往復を省きます。

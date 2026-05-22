@@ -14,6 +14,7 @@ import {
   Download,
   Terminal,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import posthog from "posthog-js";
 import { AgentInstall } from "../docs/agent-install";
 import { AppleIcon, LinuxIcon, WindowsIcon } from "../os-icons";
@@ -43,6 +44,7 @@ interface VersionEntry {
 }
 
 export function DownloadView() {
+  const t = useTranslations("Download");
   // OS + arch detection lives at the page-level so the primary CTA pill
   // and the per-version matrix below stay in sync — both use the same
   // hook outputs to render the right defaults.
@@ -63,10 +65,10 @@ export function DownloadView() {
           className="max-w-2xl mb-10 sm:mb-12"
         >
           <h1 className="text-3xl sm:text-4xl md:text-5xl">
-            Download Paneflow
+            {t("header.title")}
           </h1>
           <p className="mt-3 text-base sm:text-lg text-text-muted leading-relaxed">
-            Available for Linux and macOS. Windows targeted for Q3 2026.
+            {t("header.subhead")}
           </p>
           <div className="mt-8">
             <PrimaryDownloadCTA
@@ -79,9 +81,7 @@ export function DownloadView() {
 
         <div className="max-w-2xl mb-12 sm:mb-16">
           <p className="text-base sm:text-lg leading-relaxed">
-            The Paneflow desktop app runs Claude Code, Codex, OpenCode, and
-            custom CLI agents in a native terminal workspace with parallel
-            panes, branch-aware sessions, and session restore.
+            {t("header.pitch")}
           </p>
         </div>
 
@@ -90,12 +90,12 @@ export function DownloadView() {
             GitHub via the "View Previous Releases" link. */}
         <div data-track-section="download_matrix" className="space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2 mb-2">
-            <h2 className="text-xl sm:text-2xl">Release downloads</h2>
+            <h2 className="text-xl sm:text-2xl">{t("matrix.heading")}</h2>
             <a
               href="https://github.com/ArthurDEV44/paneflow/releases"
               className="text-sm text-text-muted hover:text-text transition-colors"
             >
-              View previous releases &rarr;
+              {t("matrix.viewPrevious")}
             </a>
           </div>
           <div>
@@ -108,12 +108,10 @@ export function DownloadView() {
         <div data-track-section="download_agent_install" className="mt-16 sm:mt-20">
           <div className="mb-5">
             <h2 className="text-xl sm:text-2xl">
-              Install with your AI agent
+              {t("agentInstall.heading")}
             </h2>
             <p className="mt-2 text-sm sm:text-base text-text-muted leading-relaxed max-w-2xl">
-              Paste this prompt into Claude Code, Codex, OpenCode, or any other
-              agentic CLI. Your agent reads the docs, detects your OS, and
-              walks the install one confirmation at a time.
+              {t("agentInstall.subhead")}
             </p>
           </div>
           <AgentInstall />
@@ -139,6 +137,7 @@ function VersionRow({
   entry: VersionEntry;
   defaultOpen: boolean;
 }) {
+  const t = useTranslations("Download.matrix");
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="border-b border-surface-border last:border-b-0">
@@ -157,7 +156,7 @@ function VersionRow({
           <span className="text-2xl sm:text-3xl">{entry.version}</span>
           {entry.latest && (
             <span className="px-2.5 py-0.5 rounded-full border border-surface-border text-xs text-text-muted">
-              Latest
+              {t("latestBadge")}
             </span>
           )}
         </div>
@@ -175,24 +174,33 @@ function VersionRow({
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
             <PlatformColumn
               Icon={AppleIcon}
-              label="macOS"
-              items={macOSItems(entry.version)}
+              label={t("platforms.macos")}
+              items={macOSItems(entry.version, t("items.dmgAppleSilicon"))}
               platform="macos"
               version={entry.version}
             />
             <PlatformColumn
               Icon={WindowsIcon}
-              label="Windows"
+              label={t("platforms.windows")}
               items={[]}
-              placeholder={`Windows binary is targeted for Q3 2026.`}
+              placeholder={t("placeholders.windows")}
               waitlist={{ source: "download_matrix", version: entry.version }}
               platform="windows"
               version={entry.version}
             />
             <PlatformColumn
               Icon={LinuxIcon}
-              label="Linux"
-              items={linuxItems(entry.version)}
+              label={t("platforms.linux")}
+              items={linuxItems(entry.version, {
+                appImageX64: t("items.appImageX64"),
+                appImageArm64: t("items.appImageArm64"),
+                debX64: t("items.debX64"),
+                debArm64: t("items.debArm64"),
+                rpmX64: t("items.rpmX64"),
+                rpmArm64: t("items.rpmArm64"),
+                tarGzX64: t("items.tarGzX64"),
+                tarGzArm64: t("items.tarGzArm64"),
+              })}
               platform="linux"
               version={entry.version}
             />
@@ -202,7 +210,7 @@ function VersionRow({
             href={entry.releaseNotes}
             className="inline-flex mt-5 text-sm text-orange-700 dark:text-orange-300 hover:opacity-80 transition-opacity"
           >
-            View release notes &rarr;
+            {t("viewReleaseNotes")}
           </a>
         </div>
       )}
@@ -253,6 +261,7 @@ function PlatformColumn({
   platform: TrackedPlatform;
   version: string;
 }) {
+  const t = useTranslations("Download.matrix.placeholders");
   return (
     <div className="rounded-md bg-bg-elevated p-4 sm:p-5">
       {/* Platform header — bold weight 700 matches Cursor's matrix card
@@ -267,13 +276,13 @@ function PlatformColumn({
         waitlist ? (
           <div className="space-y-3">
             <p className="text-sm text-text-subtle">
-              {placeholder ?? "Coming soon"}
+              {placeholder ?? t("comingSoon")}
             </p>
             <WaitlistForm source={waitlist.source} platform="windows" />
           </div>
         ) : (
           <p className="text-sm text-text-subtle">
-            {placeholder ?? "-"}
+            {placeholder ?? t("empty")}
           </p>
         )
       ) : (
@@ -303,6 +312,7 @@ function DownloadRow({
   platform: TrackedPlatform;
   version: string;
 }) {
+  const t = useTranslations("Download.matrix.aria");
   const [copied, setCopied] = useState(false);
   // timerRef lets us cancel the pending setCopied(false) on rapid
   // re-clicks (so the badge re-resets 2s after the LAST click, not the
@@ -363,7 +373,7 @@ function DownloadRow({
       <button
         type="button"
         onClick={handleCopy}
-        aria-label={`Copier la commande: ${copyText}`}
+        aria-label={t("copyCommand", { command: copyText })}
         className={baseClass}
       >
         {Label}
@@ -404,11 +414,11 @@ function DownloadRow({
 // version segment), matching `update_checker.rs::pick_asset` (US-008).
 // When the Intel Mac leg ships, add a second row with
 // `paneflow-<semver>-x86_64-apple-darwin.dmg`, same hyphen pattern.
-function macOSItems(version: string): DownloadItem[] {
+function macOSItems(version: string, dmgLabel: string): DownloadItem[] {
   const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
   return [
     {
-      label: "DMG (Apple Silicon)",
+      label: dmgLabel,
       href: `${base}/paneflow-${version}-aarch64-apple-darwin.dmg`,
     },
   ];
@@ -421,47 +431,59 @@ function macOSItems(version: string): DownloadItem[] {
 // (`update_checker.rs::pick_asset`) is suffix-only, so existing pre-rename
 // clients still discover post-rename assets correctly. If you need to
 // point at a pre-v0.2.10 release, add the `v` back into the asset name.
-function linuxItems(version: string): DownloadItem[] {
+function linuxItems(
+  version: string,
+  labels: {
+    appImageX64: string;
+    appImageArm64: string;
+    debX64: string;
+    debArm64: string;
+    rpmX64: string;
+    rpmArm64: string;
+    tarGzX64: string;
+    tarGzArm64: string;
+  },
+): DownloadItem[] {
   const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
   const asset = (name: string) => `${base}/${name}`;
   return [
     {
-      label: "AppImage (x64)",
+      label: labels.appImageX64,
       href: asset(`paneflow-${version}-x86_64.AppImage`),
       arch: "x86_64",
     },
     {
-      label: "AppImage (ARM64)",
+      label: labels.appImageArm64,
       href: asset(`paneflow-${version}-aarch64.AppImage`),
       arch: "aarch64",
     },
     {
-      label: ".deb (x64)",
+      label: labels.debX64,
       href: asset(`paneflow-${version}-x86_64.deb`),
       arch: "x86_64",
     },
     {
-      label: ".deb (ARM64)",
+      label: labels.debArm64,
       href: asset(`paneflow-${version}-aarch64.deb`),
       arch: "aarch64",
     },
     {
-      label: ".rpm (x64)",
+      label: labels.rpmX64,
       href: asset(`paneflow-${version}-x86_64.rpm`),
       arch: "x86_64",
     },
     {
-      label: ".rpm (ARM64)",
+      label: labels.rpmArm64,
       href: asset(`paneflow-${version}-aarch64.rpm`),
       arch: "aarch64",
     },
     {
-      label: "tar.gz (x64)",
+      label: labels.tarGzX64,
       href: asset(`paneflow-${version}-x86_64.tar.gz`),
       arch: "x86_64",
     },
     {
-      label: "tar.gz (ARM64)",
+      label: labels.tarGzArm64,
       href: asset(`paneflow-${version}-aarch64.tar.gz`),
       arch: "aarch64",
     },
@@ -481,16 +503,19 @@ function linuxItems(version: string): DownloadItem[] {
 // function stays dead-code past v0.3.0's release cut, delete it + the
 // Terminal import together.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function _windowsItems(version: string): DownloadItem[] {
+function _windowsItems(
+  version: string,
+  labels: { msi: string; wingetInstall: string },
+): DownloadItem[] {
   const base = `https://github.com/ArthurDEV44/paneflow/releases/download/v${version}`;
   return [
     {
-      label: "Windows x86_64 MSI",
+      label: labels.msi,
       href: `${base}/paneflow-${version}-x86_64-pc-windows-msvc.msi`,
       icon: WindowsIcon,
     },
     {
-      label: "winget install",
+      label: labels.wingetInstall,
       copyText: "winget install ArthurDev44.PaneFlow",
       icon: Terminal,
     },

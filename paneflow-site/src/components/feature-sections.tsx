@@ -1,44 +1,21 @@
 "use client";
 
 import Image from "next/image";
+import { useTranslations } from "next-intl";
 import { FadeIn } from "./fade-in";
 
-interface FeatureSection {
-  title: string;
-  description: string;
-}
-
-const sections: FeatureSection[] = [
-  {
-    title: "Terminal layouts for parallel agent work",
-    description:
-      "Give each agent, test runner, server, or review pane the space it needs. Split horizontal, vertical, zoom to fullscreen, or pick a preset.",
-  },
-  {
-    title: "Know what each agent is touching",
-    description:
-      "Paneflow keeps branches, diff stats, working directories, and running HTTP servers attached to the workspace. You can see which agent owns which task.",
-  },
-  {
-    title: "Built to orchestrate CLI coding agents",
-    description:
-      "Paneflow detects Claude Code, Codex CLI, and OpenCode sessions, tags each pane, and keeps branch context in view. Use JSON-RPC to script splits, send prompts, and read agent output from any language.",
-  },
-  {
-    title: "Pick up any agent thread",
-    description:
-      "Paneflow reads each agent's native session history for the current project, groups Claude Code, Codex, and OpenCode in one popover, and resumes the selected thread in the terminal.",
-  },
-];
+const SECTION_KEYS = ["0", "1", "2", "3"] as const;
 
 export function FeatureSections() {
+  const t = useTranslations("FeatureSections");
+
   return (
     <section className="pt-12 sm:pt-16 pb-16 sm:pb-20" id="features">
       {/* Outer container aligned with hero & navbar so the cards' left edge
           sits at the same 64px-from-viewport line as the h1 above. */}
       <div className="max-w-[1440px] mx-auto px-6 sm:px-10 lg:px-16 space-y-12 sm:space-y-16">
-        {sections.map((section, i) => (
-          <FadeIn key={i}>
+        {SECTION_KEYS.map((key, i) => (
+          <FadeIn key={key}>
             {/* Cursor-style card: warm-dark elevated bg, subtle radius,
                 tight inner padding. Measured on cursor.com: their
                 .card--feature ships padding:17.5px, border-radius:4px,
@@ -65,10 +42,10 @@ export function FeatureSections() {
                   }`}
                 >
                   <h3 className="text-3xl sm:text-4xl">
-                    {section.title}
+                    {t(`sections.${key}.title`)}
                   </h3>
                   <p className="text-base sm:text-lg text-text-muted leading-relaxed">
-                    {section.description}
+                    {t(`sections.${key}.description`)}
                   </p>
                 </div>
 
@@ -76,7 +53,7 @@ export function FeatureSections() {
                     of side; on odd cards lg:order-1 places it on the
                     left while the 2fr track is also on the left. */}
                 <div className={i % 2 === 1 ? "lg:order-1" : ""}>
-                  <FeatureVisual index={i} />
+                  <FeatureVisual index={i} alt={t(`sections.${key}.imageAlt`)} />
                 </div>
               </div>
             </article>
@@ -87,23 +64,13 @@ export function FeatureSections() {
   );
 }
 
-function FeatureVisual({ index }: { index: number }) {
+function FeatureVisual({ index, alt }: { index: number; alt: string }) {
   const visuals = [
-    {
-      src: "/images/layouts.webp",
-      alt: "Paneflow split layout with multiple panes and workspaces",
-    },
-    {
-      src: "/images/context-aware.webp",
-      alt: "Paneflow sidebar showing detected dev servers and git branch per workspace",
-    },
-    {
-      src: "/images/ai-ready.webp",
-      alt: "Paneflow with Claude Code session detected and AI agent running",
-    },
+    { src: "/images/layouts.webp" },
+    { src: "/images/context-aware.webp" },
+    { src: "/images/ai-ready.webp" },
     {
       src: "/images/session-agents.png",
-      alt: "Paneflow AI agent sessions popover showing Claude Code, Codex, and OpenCode history for the current project",
       width: 764,
       height: 588,
       priority: true,
@@ -115,7 +82,7 @@ function FeatureVisual({ index }: { index: number }) {
     <div className="rounded border border-surface-border overflow-hidden">
       <Image
         src={visual.src}
-        alt={visual.alt}
+        alt={alt}
         width={visual.width ?? 1920}
         height={visual.height ?? 1080}
         sizes="(max-width: 768px) 100vw, (max-width: 1280px) 67vw, 850px"

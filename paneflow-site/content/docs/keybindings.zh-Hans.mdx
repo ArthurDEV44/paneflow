@@ -1,0 +1,262 @@
+---
+title: 快捷键
+description: 每一个 Paneflow 快捷键，按所控制的对象分组，并附上在 paneflow.json 覆盖中使用的操作名。
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow 提供一份能为每个 OS 解析出正确修饰符的快捷键表。在 macOS
+和 Linux 上同样按 `Cmd/Ctrl+Shift+D` - 快捷键元数据使用 `secondary`
+修饰符，GPUI 在 macOS 上把它映射到 `Cmd`，在 Linux 上映射到 `Ctrl`。
+
+<Callout type="info">
+**TL;DR。** `Cmd/Ctrl+Shift+D` 和 `Cmd/Ctrl+Shift+E` 分屏，
+`Alt+Arrow` 移动焦点，`Cmd/Ctrl+1-9` 在工作区之间跳转，
+`Ctrl+Shift+C/V` 在终端窗格内部复制和粘贴。在
+[paneflow.json](/docs/configuration/schema#how-do-i-set-shortcuts)
+中覆盖其中任何一个。
+</Callout>
+
+"上下文"列告诉你一个绑定何时触发：
+
+- **Global** - 在窗口内任何位置都有效。
+- **Terminal** - 仅当终端窗格获得焦点时。
+- **Search** - 仅当缓冲区内查找浮层打开时。
+- **Markdown** / **MarkdownSearch** - 仅当 markdown 窗格获得焦点，
+  或它的查找浮层打开时。
+
+## 如何在窗格之间导航？
+
+`Alt+Arrow` 在每个 OS 上结构化地移动焦点，遍历窗格树：
+
+- `Alt+Left` / `Alt+Right` - 把焦点移到左边或右边的窗格。
+- `Alt+Up` / `Alt+Down` - 把焦点移到上面或下面的窗格。
+
+在终端窗格内，两个附加键帮助你在滚动缓冲区中的 shell 提示符之间
+跳转：
+
+- `Ctrl+Shift+Up` - 跳到上一个 shell 提示符。
+- `Ctrl+Shift+Down` - 跳到下一个 shell 提示符。
+
+活动窗格的标题栏边框更亮，因此你能始终看到下一次按键将落在哪里。
+
+## 如何分屏或关闭窗格？
+
+分屏 chord 词汇：
+
+- `Cmd/Ctrl+Shift+D` - 水平分屏（上下）。
+- `Cmd/Ctrl+Shift+E` - 垂直分屏（左右）。
+- `Cmd/Ctrl+Shift+W` - 关闭焦点窗格。
+- `Cmd/Ctrl+Shift+T` - 撤销上一次窗格关闭。
+
+几个高级用户 chord 让布局保持整洁：
+
+- `Cmd/Ctrl+Shift+Z` - 缩放焦点窗格（切换全窗口）。
+- `Cmd/Ctrl+Shift+S` - 把焦点窗格与同级窗格交换。
+- `Cmd/Ctrl+Shift+=` - 把工作区中所有分屏比例均衡化。
+
+预设布局会用一个规范化的排列替换当前的分屏树：
+
+- `Cmd/Ctrl+Alt+1` - 均匀水平分屏。
+- `Cmd/Ctrl+Alt+2` - 均匀垂直分屏。
+- `Cmd/Ctrl+Alt+3` - 主窗格在左，堆叠在右。
+- `Cmd/Ctrl+Alt+4` - 平铺网格。
+
+参见 [布局](/docs/layouts) 查看示意图和使用场景。
+
+## 如何切换工作区？
+
+工作区快捷键在任何窗格下都能用：
+
+- `Cmd/Ctrl+Shift+N` - 打开文件夹选择器并创建一个新工作区。
+- `Cmd/Ctrl+Shift+Q` - 关闭当前工作区。
+- `Cmd/Ctrl+Tab` - 轮转到下一个工作区。
+- `Cmd/Ctrl+1` 到 `Cmd/Ctrl+9` - 按位置直接跳到第 1-9 个工作区。
+
+还有少量面向工作区的实用功能：
+
+- `Ctrl+Shift+Alt+C` - 把活动工作区的路径复制到剪贴板。
+- `Ctrl+Alt+R` - 在文件管理器中显示工作区文件夹。
+- `Ctrl+Alt+Z` / `Ctrl+Alt+C` / `Ctrl+Alt+V` / `Ctrl+Alt+W` -
+  在 Zed、Cursor、VS Code 或 Windsurf 中打开工作区文件夹。
+
+## 如何在终端窗格中复制和粘贴？
+
+终端窗格使用一组更严格的剪贴板绑定，以便 `Ctrl+C` 仍然以 `SIGINT`
+的形式抵达 shell：
+
+- `Ctrl+Shift+C` - 复制当前选区。
+- `Ctrl+Shift+V` - 从剪贴板粘贴。
+
+在 macOS 上，肌肉记忆 chord 同样可用：
+
+- `Cmd+C` - 复制（与 `Ctrl+Shift+C` 并存）。
+- `Cmd+V` - 粘贴（与 `Ctrl+Shift+V` 并存）。
+
+两组都落在同一个 Terminal 上下文中，因此当非终端窗格获得焦点时，
+两组都不会触发。
+
+## 如何滚动缓冲区？
+
+滚动缓冲区导航位于 Terminal 上下文：
+
+- `Shift+PageUp` - 在滚动缓冲区中向上滚动一页。
+- `Shift+PageDown` - 向下滚动一页。
+
+当 markdown 窗格获得焦点时，相同的 chord 也会滚动它。
+
+要搜索缓冲区，按 `Ctrl+Shift+F` 打开查找浮层，然后用
+`Enter` / `Shift+Enter` 在匹配项之间步进，用 `Escape` 关闭浮层。
+浮层打开时，`Alt+R` 切换正则表达式匹配。
+
+## 完整快捷键表
+
+今天交付的每一个默认绑定。"操作"列是你在
+[paneflow.json `shortcuts`](/docs/configuration/schema#how-do-i-set-shortcuts)
+覆盖中使用的字符串。
+
+### 窗格
+
+<VersionBadge stability="stable" />
+
+| 操作 | 默认键 | 上下文 | 起始版本 |
+| --- | --- | --- | --- |
+| `split_horizontally` | `Cmd/Ctrl+Shift+D` | Global | 0.1.7 |
+| `split_vertically` | `Cmd/Ctrl+Shift+E` | Global | 0.1.7 |
+| `close_pane` | `Cmd/Ctrl+Shift+W` | Global | 0.1.7 |
+| `undo_close_pane` | `Cmd/Ctrl+Shift+T` | Global | 0.2.0 |
+| `toggle_zoom` | `Cmd/Ctrl+Shift+Z` | Global | 0.2.0 |
+| `swap_pane` | `Cmd/Ctrl+Shift+S` | Global | 0.2.0 |
+| `split_equalize` | `Cmd/Ctrl+Shift+=` | Global | 0.2.0 |
+| `new_tab` | `Cmd/Ctrl+Alt+T` | Global | 0.2.0 |
+| `close_tab` | `Cmd/Ctrl+W` | Global | 0.2.0 |
+
+### 窗格焦点
+
+| 操作 | 默认键 | 上下文 | 起始版本 |
+| --- | --- | --- | --- |
+| `focus_left` | `Alt+Left` | Global | 0.1.7 |
+| `focus_right` | `Alt+Right` | Global | 0.1.7 |
+| `focus_up` | `Alt+Up` | Global | 0.1.7 |
+| `focus_down` | `Alt+Down` | Global | 0.1.7 |
+
+### 布局
+
+<VersionBadge stability="stable" />
+
+| 操作 | 默认键 | 上下文 | 起始版本 |
+| --- | --- | --- | --- |
+| `layout_even_horizontal` | `Cmd/Ctrl+Alt+1` | Global | 0.2.0 |
+| `layout_even_vertical` | `Cmd/Ctrl+Alt+2` | Global | 0.2.0 |
+| `layout_main_vertical` | `Cmd/Ctrl+Alt+3` | Global | 0.2.0 |
+| `layout_tiled` | `Cmd/Ctrl+Alt+4` | Global | 0.2.0 |
+
+### 工作区
+
+| 操作 | 默认键 | 上下文 | 起始版本 |
+| --- | --- | --- | --- |
+| `new_workspace` | `Cmd/Ctrl+Shift+N` | Global | 0.1.7 |
+| `close_workspace` | `Cmd/Ctrl+Shift+Q` | Global | 0.1.7 |
+| `next_workspace` | `Cmd/Ctrl+Tab` | Global | 0.1.7 |
+| `select_workspace_1` | `Cmd/Ctrl+1` | Global | 0.1.7 |
+| `select_workspace_2` | `Cmd/Ctrl+2` | Global | 0.1.7 |
+| `select_workspace_3` | `Cmd/Ctrl+3` | Global | 0.1.7 |
+| `select_workspace_4` | `Cmd/Ctrl+4` | Global | 0.1.7 |
+| `select_workspace_5` | `Cmd/Ctrl+5` | Global | 0.1.7 |
+| `select_workspace_6` | `Cmd/Ctrl+6` | Global | 0.1.7 |
+| `select_workspace_7` | `Cmd/Ctrl+7` | Global | 0.1.7 |
+| `select_workspace_8` | `Cmd/Ctrl+8` | Global | 0.1.7 |
+| `select_workspace_9` | `Cmd/Ctrl+9` | Global | 0.1.7 |
+| `copy_workspace_path` | `Ctrl+Shift+Alt+C` | Global | 0.2.0 |
+| `reveal_workspace_in_file_manager` | `Ctrl+Alt+R` | Global | 0.2.0 |
+| `open_workspace_in_zed` | `Ctrl+Alt+Z` | Global | 0.2.0 |
+| `open_workspace_in_cursor` | `Ctrl+Alt+C` | Global | 0.2.0 |
+| `open_workspace_in_vscode` | `Ctrl+Alt+V` | Global | 0.2.0 |
+| `open_workspace_in_windsurf` | `Ctrl+Alt+W` | Global | 0.2.0 |
+
+### 终端窗格
+
+| 操作 | 默认键 | 上下文 | 起始版本 |
+| --- | --- | --- | --- |
+| `terminal_copy` | `Ctrl+Shift+C` | Terminal | 0.1.7 |
+| `terminal_paste` | `Ctrl+Shift+V` | Terminal | 0.1.7 |
+| `terminal_copy` | `Cmd+C`（仅 macOS） | Terminal | 0.2.9 |
+| `terminal_paste` | `Cmd+V`（仅 macOS） | Terminal | 0.2.9 |
+| `scroll_page_up` | `Shift+PageUp` | Terminal | 0.1.7 |
+| `scroll_page_down` | `Shift+PageDown` | Terminal | 0.1.7 |
+| `toggle_copy_mode` | `Ctrl+Shift+X` | Terminal | 0.2.0 |
+| `toggle_search` | `Ctrl+Shift+F` | Terminal | 0.2.0 |
+| `jump_to_prompt_prev` | `Ctrl+Shift+Up` | Terminal | 0.2.0 |
+| `jump_to_prompt_next` | `Ctrl+Shift+Down` | Terminal | 0.2.0 |
+
+### 搜索浮层
+
+| 操作 | 默认键 | 上下文 | 起始版本 |
+| --- | --- | --- | --- |
+| `search_next` | `Enter` | Search | 0.2.0 |
+| `search_prev` | `Shift+Enter` | Search | 0.2.0 |
+| `dismiss_search` | `Escape` | Search | 0.2.0 |
+| `toggle_search_regex` | `Alt+R` | Search | 0.2.0 |
+
+### Markdown 窗格
+
+<VersionBadge stability="beta" />
+
+| 操作 | 默认键 | 上下文 | 起始版本 |
+| --- | --- | --- | --- |
+| `markdown_scroll_page_up` | `Shift+PageUp` | Markdown | 0.2.14 |
+| `markdown_scroll_page_down` | `Shift+PageDown` | Markdown | 0.2.14 |
+| `markdown_find_open` | `Ctrl+F` | Markdown | 0.2.14 |
+| `markdown_copy` | `Ctrl+Shift+C` | Markdown | 0.2.14 |
+| `markdown_find_next` | `Enter` | MarkdownSearch | 0.2.14 |
+| `markdown_find_prev` | `Shift+Enter` | MarkdownSearch | 0.2.14 |
+| `markdown_find_dismiss` | `Escape` | MarkdownSearch | 0.2.14 |
+
+### macOS 菜单栏
+
+<VersionBadge stability="stable" />
+
+| 操作 | 默认键 | 上下文 | 起始版本 |
+| --- | --- | --- | --- |
+| `quit` | `Cmd+Q`（仅 macOS） | Global | 0.2.9 |
+
+### 没有默认绑定的操作
+
+这些操作随运行时一起交付，但开箱即用时没有绑定到任何键。在
+[paneflow.json `shortcuts`](/docs/configuration/schema#how-do-i-set-shortcuts)
+中映射它们，即可从键盘抵达。
+
+| 操作 | 描述 |
+| --- | --- |
+| `close_window` | 关闭活动窗口。 |
+| `clear_scroll_history` | 清空焦点终端窗格中的滚动缓冲区。 |
+| `reset_terminal` | 向焦点终端窗格发送完整 reset。 |
+| `start_self_update` | 触发应用内更新流程。 |
+| `dismiss_update` | 为本次启动忽略更新提示。 |
+| `about` | 打开"关于"对话框。 |
+| `open_help` | 打开此文档站点。 |
+| `copy` / `paste` / `select_all` | 用于非终端表面的通用剪贴板回退。 |
+
+## 如何覆盖一个绑定？
+
+在 `paneflow.json` 中设置 `shortcuts` 对象。键是按键，值是上面表
+中的操作名。
+
+```json
+{
+  "shortcuts": {
+    "ctrl+shift+t": "new_tab",
+    "alt+1": "select_workspace_1"
+  }
+}
+```
+
+完整的覆盖语法，包括 `secondary` 修饰符和上下文作用域，参见
+[模式页面](/docs/configuration/schema#how-do-i-set-shortcuts)。
+
+<Callout type="warn">
+绑定可以在 `paneflow.json` 中被覆盖；冲突按"后写者胜"顺序解决。
+你的用户条目叠加在内置默认值之上，因此对于给定按键，最近注册的
+绑定胜出。如果两个用户条目把同一个按键映射到不同操作，后一条
+生效。
+</Callout>

@@ -1,0 +1,56 @@
+---
+title: 設定
+description: 単一の paneflow.json ファイルで Paneflow をカスタマイズ - デフォルト シェル、テーマ、ショートカット、ウィンドウ装飾など。
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow は起動時に単一の JSON ファイル `paneflow.json` を読み
+込みます。すべてのキーはオプションで、適切なデフォルト値を持つ
+ため、空の `{}` も有効な設定です。型、デフォルト値、キーごとの
+安定性を含む完全なリファレンスは
+[スキーマ ページ](/docs/configuration/schema)にあります。
+
+## `paneflow.json` はどこにありますか？
+
+| OS | パス |
+| --- | --- |
+| Linux | `~/.config/paneflow/paneflow.json`（または `$XDG_CONFIG_HOME/paneflow/paneflow.json`） |
+| macOS | `~/Library/Application Support/paneflow/paneflow.json` |
+
+初回起動時にファイルが存在しない場合、Paneflow はすべての
+デフォルト値で起動します。カスタマイズを始めるには、上記のパスに
+ファイルを作成してください。
+
+## JSON スキーマによるエディタの自動補完
+
+`$schema` 参照を固定すれば、VS Code、JetBrains、Zed、Helix、その他
+JSON スキーマ言語サーバーを持つ任意のエディタで、即座に自動補完と
+型チェックが得られます：
+
+```json
+{
+  "$schema": "https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json",
+  "theme": "One Dark"
+}
+```
+
+スキーマはリリースごとに公開され、実行中のビルドが受け付ける
+キー セットを正確に追跡します。
+
+## Paneflow は未知のキーをどう扱いますか？
+
+Paneflow は**ランタイムでは寛容**です。未知のトップレベル キーは
+静かに無視され、欠けているキーはデフォルト値に解決されます。
+これによって、設定はリリースをまたいで前方互換性を保ちます -
+新しいビルドのキーを差し込んでも、古い Paneflow バイナリを
+壊すことはありません。
+
+JSON スキーマは編集時には未知のキーを拒否します
+（`additionalProperties: false`）。そのため、エディタは保存前に
+タイプミスを指摘してくれます。ランタイムは意図的に寛容なままです。
+
+## 次は何をしますか？
+
+- すべてのキーを含む完全なスキーマ リファレンス：[スキーマ](/docs/configuration/schema)。
+- キーボード ショートカットのカスタマイズ：[ショートカット](/docs/keybindings)。

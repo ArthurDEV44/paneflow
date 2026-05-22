@@ -1,0 +1,123 @@
+---
+title: Erste Schritte
+description: Installiere Paneflow und starte deinen ersten Mehrfach-Bereich-Arbeitsbereich für Agenten in unter zwei Minuten.
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow ist ein plattformübergreifender Terminal-Multiplexer, gebaut
+für agentische CLI-Workflows - Claude Code, Codex, OpenCode und jeden
+anderen Agenten, der natives Shell spricht. Geteilte Bereiche,
+persistente Sitzungen, Erkennung von Entwicklungsserver-Ports und
+konfigurationsfreie Designs, alles in einer nativen,
+GPU-beschleunigten Anwendung, die in unter 200 ms startet.
+
+<GetStartedDownloads />
+
+<Callout type="info">
+Paneflow vertreibt signierte Binärdateien für **macOS** (notarisiertes
+`.dmg`, Apple Silicon) und **Linux** (`.deb`, AppImage, Tarball,
+x86_64 und ARM64). Die Buttons oben holen das empfohlene Format für
+jedes OS; die OS-spezifischen Anleitungen unten decken jeden anderen
+Weg ab.
+</Callout>
+
+## Installation für deine Plattform
+
+<Cards>
+  <Card
+    title="Auf macOS installieren"
+    description="Signiertes und notarisiertes .dmg für Apple Silicon. Beim ersten Start Gatekeeper-konform, Homebrew-Tap in Arbeit."
+    href="/docs/installation/macos"
+  />
+  <Card
+    title="Auf Linux installieren"
+    description=".deb, AppImage oder Tarball. Funktioniert auf jeder modernen Distribution, Wayland und X11, x86_64 und ARM64."
+    href="/docs/installation/linux"
+  />
+  <Card
+    title="Installationspfade vergleichen"
+    description="Übersicht aller unterstützten Installations-Formate, Abhängigkeits-Footprint und PATH-Integration nebeneinander."
+    href="/docs/installation"
+  />
+</Cards>
+
+## Erste Schritte nach der Installation
+
+<Cards>
+  <Card
+    title="Deine erste Sitzung"
+    description="Öffne einen Arbeitsbereich, teile Bereiche, starte einen Agenten und lerne die Bewegungsabläufe."
+    href="/docs/first-session"
+  />
+  <Card
+    title="Tastenkürzel"
+    description="Das Standard-Tastenlayout, der Terminal-Kontext und wie du jede Aktion in paneflow.json neu zuweist."
+    href="/docs/keybindings"
+  />
+  <Card
+    title="Layouts"
+    description="Gleichmäßig, Haupt-Vertikal, gekachelt - und wie du dein eigenes mit dem Layout-Baum baust."
+    href="/docs/layouts"
+  />
+  <Card
+    title="Designs"
+    description="Mitgelieferte Designs, 35 Terminal-Slots und Hot-Reload aus paneflow.json."
+    href="/docs/themes"
+  />
+  <Card
+    title="Konfiguration"
+    description="Wo paneflow.json liegt, was jeder Schlüssel macht und das JSON-Schema."
+    href="/docs/configuration"
+  />
+  <Card
+    title="Fehlerbehebung"
+    description="Vulkan unter Linux, Gatekeeper unter macOS, PATH, Schriftarten und Fallback-Flags."
+    href="/docs/troubleshooting"
+  />
+</Cards>
+
+## Was im Innern läuft
+
+- **Reines Rust** + [GPUI](https://www.gpui.rs/) - das gleiche Framework, auf dem Zed läuft.
+- **Native VT-Emulation** über `alacritty_terminal` (crates.io 0.26).
+- **Native PTY** über `portable-pty` - gleicher Code-Pfad unter Linux und macOS.
+- **JSON-RPC IPC** unter `$XDG_RUNTIME_DIR/paneflow/paneflow.sock` für Headless-Scripting.
+- **Kaltstart unter 200 ms** und Tastendruck-zu-Pixel unter 4 ms auf der Latenz-Sonde.
+
+## Systemanforderungen
+
+| Plattform | Minimum | GPU |
+| --- | --- | --- |
+| Linux | glibc 2.31+ (Ubuntu 20.04, Debian 11, Fedora 34) | Vulkan-Loader (`libvulkan1` / `vulkan-loader`) |
+| macOS | 13 Ventura, Apple Silicon | Metal (eingebaut) |
+
+## Mit deinem KI-Agenten installieren
+
+Du nutzt bereits Claude Code, Codex, OpenCode oder eine andere
+agentische CLI? Übergib die Installation - der Prompt unten weist
+deinen Agenten an, diese Dokumentation zu lesen, dein OS zu erkennen
+und die Installation eine Bestätigung nach der anderen durchzugehen.
+
+<AgentInstall />
+
+## Wie schneidet Paneflow im Vergleich ab?
+
+Du wägst Paneflow gegen ein anderes agent-first Terminal ab? Die
+Gegenüberstellung deckt Architektur, Performance,
+Entscheidungs-Leitfaden und eine ehrliche Liste der Punkte ab, an
+denen die Alternative gewinnt.
+
+<Cards>
+  <Card
+    title="Paneflow vs cmux"
+    description="Minimaler nativer Rust-Arbeitsbereich (Kaltstart unter 200 ms, Zeds GPUI) gegen das Rundum-sorglos macOS-Toolkit. Architektur, Entscheidungs-Leitfaden, FAQ."
+    href="/compare/cmux"
+  />
+</Cards>
+
+## Hilfe und Feedback
+
+- Melde einen Bug oder eine Feature-Anfrage auf [GitHub Issues](https://github.com/ArthurDEV44/paneflow/issues).
+- Durchsuche alle Release-Artefakte auf der [Download-Seite](/download).
+- Quellcode: [github.com/ArthurDEV44/paneflow](https://github.com/ArthurDEV44/paneflow).

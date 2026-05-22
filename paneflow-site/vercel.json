@@ -3,7 +3,12 @@
   "redirects": [
     {
       "source": "/legal/privacyClick",
-      "destination": "/legal/privacy",
+      "destination": "/fr/legal/privacy",
+      "permanent": true
+    },
+    {
+      "source": "/legal/privacy",
+      "destination": "/fr/legal/privacy",
       "permanent": true
     }
   ]

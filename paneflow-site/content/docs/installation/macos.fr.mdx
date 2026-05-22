@@ -1,0 +1,119 @@
+---
+title: Installer Paneflow sur macOS
+description: Installe Paneflow sur macOS 13 Ventura ou ultérieur via le .dmg signé et notarisé.
+dateModified: 2026-05-22
+howto: true
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow tourne sur macOS 13 Ventura et ultérieur. Aujourd'hui le
+`.dmg` est l'unique chemin d'installation macOS ; un tap Homebrew est
+en préparation. Apple Silicon est l'architecture prise en charge en
+v0.2.x ; les builds Intel arrivent dans une version ultérieure.
+
+<Callout type="info">
+Le `.dmg` est signé avec un certificat Developer ID Application et
+notarisé par Apple. Le ticket de notarisation est agrafé au bundle,
+donc Gatekeeper l'accepte au premier lancement sans la boîte de
+dialogue « développeur non identifié ».
+</Callout>
+
+## Comment installer Paneflow avec Homebrew ?
+
+Un tap Homebrew figure sur la feuille de route. Une fois publié,
+cette section affichera une commande à coller. En attendant, utilise
+le chemin `.dmg` ci-dessous ; c'est la seule installation macOS prise
+en charge en v0.2.x.
+
+## Comment installer Paneflow depuis un .dmg ?
+
+Télécharge le dernier `.dmg` Apple Silicon, ouvre-le et glisse
+l'application dans Applications.
+
+```bash
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-aarch64-apple-darwin.dmg
+open paneflow-0.2.16-aarch64-apple-darwin.dmg
+```
+
+Finder monte l'image disque et ouvre une fenêtre avec l'application
+`Paneflow` et un lien symbolique `Applications`. Glisse `Paneflow`
+sur `Applications`, puis éjecte le volume monté.
+
+Lance depuis Spotlight (`Cmd+Space` puis « Paneflow ») ou
+directement :
+
+```bash
+open /Applications/Paneflow.app
+```
+
+<Callout type="warn">
+Les Macs Intel ne sont pas encore construits en CI. Si tu es sur un
+Mac d'avant 2020, le binaire Apple Silicon échouera au lancement avec
+une erreur d'architecture. Un DMG universel ou Intel-only arrive dans
+une version future ; abonne-toi aux [GitHub releases](https://github.com/ArthurDEV44/paneflow/releases)
+pour être notifié.
+</Callout>
+
+## Comment vérifier l'installation ?
+
+`Paneflow.app` ne met pas automatiquement `paneflow` sur ton `PATH` -
+le binaire vit dans `/Applications/Paneflow.app/Contents/MacOS/paneflow`.
+La vérification la plus simple consiste à lancer l'application depuis
+Spotlight (`Cmd+Space` puis « Paneflow ») ou depuis le terminal :
+
+```bash
+open -a Paneflow
+```
+
+La barre de titre affiche la version en cours d'exécution dès la
+première frame.
+
+Pour un accès CLI depuis n'importe quel terminal, fais un lien
+symbolique du binaire dans `/usr/local/bin` une seule fois :
+
+```bash
+sudo ln -sf /Applications/Paneflow.app/Contents/MacOS/paneflow /usr/local/bin/paneflow
+```
+
+Une fois le lien en place, la commande de vérification standard
+fonctionne :
+
+```bash
+paneflow --version
+# paneflow 0.2.x
+```
+
+## Que faire si Gatekeeper bloque l'application ?
+
+Le `.dmg` notarisé ne devrait jamais déclencher la boîte de dialogue
+« Apple n'a pas pu vérifier que cette application ne contient pas de
+logiciel malveillant ». Si tu la vois, c'est que l'attribut de
+quarantaine a été préservé lors d'un transfert inhabituel (par
+exemple, téléchargé via un navigateur non-Safari sur un disque
+externe). Trois façons de résoudre, par ordre de friction :
+
+**Clic droit Ouvrir** (une seule fois par application) :
+
+1. Ouvre Finder, navigue vers `Applications`.
+2. Control-clic (ou clic droit) sur `Paneflow.app`.
+3. Choisis **Ouvrir**.
+4. Clique sur **Ouvrir** dans la boîte de dialogue de confirmation.
+
+**Chemin Réglages** (macOS 13+) :
+
+1. Ouvre **Réglages Système**.
+2. Va dans **Confidentialité et sécurité**.
+3. Fais défiler jusqu'à l'avis « Paneflow a été bloqué ».
+4. Clique sur **Ouvrir quand même**.
+
+**Chemin CLI** :
+
+```bash
+xattr -d com.apple.quarantine /Applications/Paneflow.app
+```
+
+La commande `xattr` retire l'attribut étendu de quarantaine, donc
+Gatekeeper cesse de bloquer les lancements suivants. Pas de `sudo`
+requis pour les applications que tu as téléchargées et glissées
+toi-même dans `/Applications` ; une application gérée par MDM ou
+installée en root peut nécessiter `sudo`.

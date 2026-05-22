@@ -1,0 +1,95 @@
+---
+title: 主题
+description: 在 Paneflow 的内置主题之间切换 - One Dark 和 PaneFlow Light - 支持热重载，无需重启。
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow 今天提供两个内置主题：一个深色默认主题（`One Dark`）和
+一个浅色替代主题（`PaneFlow Light`）。主题驱动每一种终端表面颜
+色 - ANSI 调色板、光标、选区、滚动缓冲区高亮、搜索匹配。侧边
+栏和标题栏保持在 Paneflow 应用外观的调色板上，不受主题控制。
+
+<Callout type="info">
+**TL;DR。** 在 `paneflow.json` 中设置
+`"theme": "PaneFlow Light"` 切换到浅色主题。保存文件；正在运
+行的窗口会在 ~300 ms 内拾取新颜色，无需重启。
+</Callout>
+
+## 如何切换活动主题？
+
+在 `paneflow.json` 中设置 `theme` 键：
+
+```json
+{
+  "theme": "PaneFlow Light"
+}
+```
+
+值必须与某个内置主题名完全匹配，包括大小写。未知名称会回退到
+`One Dark` 并在下一次解析文件时记录一条日志警告。
+
+配置文件位于：
+
+| OS | 路径 |
+| --- | --- |
+| Linux | `~/.config/paneflow/paneflow.json` |
+| macOS | `~/Library/Application Support/paneflow/paneflow.json` |
+
+## Paneflow 今天交付哪些主题？
+
+<VersionBadge stability="stable" />
+
+| 名称 | 描述 |
+| --- | --- |
+| `"One Dark"` | 深色主题，默认。灵感来自 Atom 的 One Dark 调色板。 |
+| `"PaneFlow Light"` | 浅色主题。为日光工作站调校的高对比度调色板。 |
+
+两个主题都附带全部 16 个 ANSI 颜色槽位、前景 / 背景、光标、选
+区和搜索高亮颜色，预先调校以在标准提示符上满足 WCAG AA 对比度。
+
+<Callout type="warn">
+项目早期计划提到过六个内置主题。v0.2.x 的现实是两个。其他内置
+主题（Solarized、Gruvbox 和一个高对比度变体）在路线图上；关注
+[GitHub releases](https://github.com/ArthurDEV44/paneflow/releases)
+获取公告。
+</Callout>
+
+## 主题热重载如何工作？
+
+当你保存 `paneflow.json` 时，Paneflow 会即时重新解析主题 - 不
+需要重启，不需要重新加载窗口。
+
+两种机制驱动重载：
+
+- **事件驱动（首选）。** 安装在配置目录上的 `notify` 监视器
+  在保存后几毫秒内触发。事件以 300 ms 去抖，让编辑器的保存连
+  发（write -> fsync -> atomic-rename）只触发一次重载。
+- **轮询回退。** 不支持 inotify / FSEvents /
+  ReadDirectoryChangesW 的文件系统（NFS 共享、锁定的沙箱、
+  某些 WSL 路径）会回退到 500 ms 的 `mtime` 轮询。回退只在事
+  件监视器启动失败时运行。
+
+你会在监视器触发后的下一个渲染帧看到新调色板生效 - 通常在保存
+后 ~300 ms 内。
+
+<Callout type="tip">
+热重载覆盖 `paneflow.json` 中每一个与主题相关的字段，包括字体
+键（`font_family`、`font_size`、`line_height`）。`window_decorations`
+是唯一在启动时一次性读取的配置字段 - 修改它需要重启 Paneflow。
+</Callout>
+
+## 如何创建自定义主题？
+
+用户提供的自定义主题在 v0.3.0 之后的版本路线图上。v0.2.x 只识
+别上面列出的内置主题名；目前还没有 `theme.json` 或自定义调色板
+格式。
+
+如果你在等待期间想要某个特定调色板，最直接的路径是带着你想要
+的调色板开一个 [GitHub issue](https://github.com/ArthurDEV44/paneflow/issues)。
+内置主题在 `src-app/src/theme/builtin.rs` 中调校并随每个版本
+交付 - 有明确使用场景的新调色板会被加速推进。
+
+未来自定义主题键的 schema 级占位符故意尚未定义，因此今天在
+`paneflow.json` 中添加它没有效果 - 它会被宽容的运行时静默忽略，
+符合 [配置概述](/docs/configuration#how-does-paneflow-handle-unknown-keys)。

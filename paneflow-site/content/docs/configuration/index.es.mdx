@@ -1,0 +1,58 @@
+---
+title: Configuración
+description: Personaliza Paneflow con un único archivo paneflow.json - shell predeterminada, tema, atajos de teclado, decoraciones de ventana y más.
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow lee un único archivo JSON al arranque: `paneflow.json`. Cada
+clave es opcional y tiene un valor predeterminado sensato, así que
+un `{}` vacío es una configuración válida. La referencia completa,
+incluyendo tipos, valores predeterminados y estabilidad por clave,
+vive en la [página del esquema](/docs/configuration/schema).
+
+## ¿Dónde está `paneflow.json`?
+
+| SO | Ruta |
+| --- | --- |
+| Linux | `~/.config/paneflow/paneflow.json` (o `$XDG_CONFIG_HOME/paneflow/paneflow.json`) |
+| macOS | `~/Library/Application Support/paneflow/paneflow.json` |
+
+Si el archivo no existe en el primer arranque, Paneflow arranca con
+todos los valores predeterminados. Crea el archivo en la ruta de
+arriba para empezar a personalizar.
+
+## Autocompletado del editor con JSON Schema
+
+Fija una referencia `$schema` para obtener autocompletado instantáneo
+y verificación de tipos en VS Code, JetBrains, Zed, Helix o cualquier
+editor con un servidor de lenguaje JSON Schema:
+
+```json
+{
+  "$schema": "https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json",
+  "theme": "One Dark"
+}
+```
+
+El esquema se publica con cada release y rastrea el conjunto exacto
+de claves que acepta el build en ejecución.
+
+## ¿Cómo maneja Paneflow las claves desconocidas?
+
+Paneflow es **permisivo en tiempo de ejecución**: las claves de nivel
+superior desconocidas se ignoran silenciosamente, y las claves
+faltantes se resuelven a sus valores predeterminados. Esto mantiene
+tu configuración compatible hacia adelante entre releases - meter una
+clave de un build más nuevo nunca rompe un binario de Paneflow más
+antiguo.
+
+El JSON Schema además rechaza claves desconocidas en tiempo de
+edición (`additionalProperties: false`), así que tu editor señala
+errores tipográficos antes de que guardes. El runtime se mantiene
+permisivo a propósito.
+
+## ¿Qué sigue?
+
+- Referencia completa del esquema con cada clave: [Esquema](/docs/configuration/schema).
+- Personalización de atajos de teclado: [Atajos de teclado](/docs/keybindings).

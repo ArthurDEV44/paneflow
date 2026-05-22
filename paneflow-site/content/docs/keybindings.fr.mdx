@@ -1,0 +1,289 @@
+---
+title: Raccourcis clavier
+description: Chaque raccourci clavier Paneflow, regroupé par ce qu'il contrôle, avec le nom d'action à utiliser dans les surcharges paneflow.json.
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow embarque un seul tableau de raccourcis qui résout le bon
+modificateur par OS. Tire sur `Cmd/Ctrl+Shift+D` sur macOS comme sur
+Linux - les métadonnées de raccourci utilisent un modificateur
+`secondary` que GPUI mappe à `Cmd` sur macOS et `Ctrl` sur Linux.
+
+<Callout type="info">
+**TL;DR.** `Cmd/Ctrl+Shift+D` et `Cmd/Ctrl+Shift+E` divisent,
+`Alt+Arrow` déplace le focus, `Cmd/Ctrl+1-9` saute entre les espaces
+de travail, `Ctrl+Shift+C/V` copie et colle à l'intérieur d'un volet
+terminal. Surcharge n'importe lequel dans
+[paneflow.json](/docs/configuration/schema#how-do-i-set-shortcuts).
+</Callout>
+
+La colonne « Contexte » te dit quand un raccourci se déclenche :
+
+- **Global** - actif partout dans la fenêtre.
+- **Terminal** - seulement quand un volet terminal a le focus.
+- **Search** - seulement quand l'overlay de recherche dans le tampon
+  est ouvert.
+- **Markdown** / **MarkdownSearch** - seulement quand un volet
+  markdown a le focus, ou son overlay de recherche est ouvert.
+
+## Comment naviguer entre les volets ?
+
+`Alt+Arrow` déplace le focus structurellement à travers l'arbre des
+volets sur tous les OS :
+
+- `Alt+Left` / `Alt+Right` - déplace le focus vers le volet à gauche
+  ou à droite.
+- `Alt+Up` / `Alt+Down` - déplace le focus vers le volet au-dessus ou
+  en dessous.
+
+À l'intérieur d'un volet terminal, deux extras t'aident à sauter
+entre les prompts shell dans le tampon :
+
+- `Ctrl+Shift+Up` - saute au prompt shell précédent.
+- `Ctrl+Shift+Down` - saute au prompt shell suivant.
+
+Le volet actif a une bordure de barre de titre plus brillante donc
+tu peux toujours voir où atterrira la prochaine frappe.
+
+## Comment diviser ou fermer des volets ?
+
+Vocabulaire des chords de division :
+
+- `Cmd/Ctrl+Shift+D` - divise horizontalement (haut et bas).
+- `Cmd/Ctrl+Shift+E` - divise verticalement (côte à côte).
+- `Cmd/Ctrl+Shift+W` - ferme le volet focalisé.
+- `Cmd/Ctrl+Shift+T` - annule la dernière fermeture de volet.
+
+Quelques chords power-user gardent la disposition propre :
+
+- `Cmd/Ctrl+Shift+Z` - zoome le volet focalisé (bascule plein-écran).
+- `Cmd/Ctrl+Shift+S` - échange le volet focalisé avec son voisin.
+- `Cmd/Ctrl+Shift+=` - égalise tous les ratios de division dans
+  l'espace de travail.
+
+Les dispositions prédéfinies remplacent l'arbre de division courant
+par un arrangement canonique :
+
+- `Cmd/Ctrl+Alt+1` - division horizontale uniforme.
+- `Cmd/Ctrl+Alt+2` - division verticale uniforme.
+- `Cmd/Ctrl+Alt+3` - volet principal à gauche, pile à droite.
+- `Cmd/Ctrl+Alt+4` - grille en mosaïque.
+
+Voir [Dispositions](/docs/layouts) pour les diagrammes et cas
+d'usage.
+
+## Comment changer d'espace de travail ?
+
+Les raccourcis d'espace de travail fonctionnent depuis n'importe quel
+volet :
+
+- `Cmd/Ctrl+Shift+N` - ouvre un sélecteur de dossier et crée un
+  nouvel espace de travail.
+- `Cmd/Ctrl+Shift+Q` - ferme l'espace de travail courant.
+- `Cmd/Ctrl+Tab` - fait tourner vers l'espace de travail suivant.
+- `Cmd/Ctrl+1` à `Cmd/Ctrl+9` - saute directement à l'espace de
+  travail 1-9 par position.
+
+Quelques utilitaires liés à l'espace de travail sont aussi
+disponibles :
+
+- `Ctrl+Shift+Alt+C` - copie le chemin de l'espace de travail actif
+  dans le presse-papiers.
+- `Ctrl+Alt+R` - révèle le dossier de l'espace de travail dans ton
+  gestionnaire de fichiers.
+- `Ctrl+Alt+Z` / `Ctrl+Alt+C` / `Ctrl+Alt+V` / `Ctrl+Alt+W` - ouvre
+  le dossier de l'espace de travail dans Zed, Cursor, VS Code ou
+  Windsurf.
+
+## Comment copier et coller dans un volet terminal ?
+
+Les volets terminal réclament un ensemble plus serré de raccourcis
+presse-papiers pour que `Ctrl+C` atteigne toujours le shell en tant
+que `SIGINT` :
+
+- `Ctrl+Shift+C` - copie la sélection active.
+- `Ctrl+Shift+V` - colle depuis le presse-papiers.
+
+Sur macOS, les chords de mémoire musculaire fonctionnent aussi :
+
+- `Cmd+C` - copie (en plus de `Ctrl+Shift+C`).
+- `Cmd+V` - colle (en plus de `Ctrl+Shift+V`).
+
+Les deux paires atterrissent dans le même contexte Terminal, donc
+aucune ne se déclenchera quand un volet non-terminal a le focus.
+
+## Comment faire défiler le tampon ?
+
+La navigation dans le tampon de défilement vit dans le contexte
+Terminal :
+
+- `Shift+PageUp` - fait défiler une page vers le haut dans le tampon
+  de défilement.
+- `Shift+PageDown` - fait défiler une page vers le bas.
+
+Les mêmes chords font défiler un volet markdown quand l'un d'eux est
+focalisé.
+
+Pour chercher dans le tampon, ouvre l'overlay de recherche avec
+`Ctrl+Shift+F`, puis utilise `Enter` / `Shift+Enter` pour parcourir
+les correspondances et `Escape` pour fermer l'overlay. `Alt+R`
+bascule la correspondance par expression régulière pendant que
+l'overlay est ouvert.
+
+## Tableau complet des raccourcis
+
+Chaque raccourci par défaut livré aujourd'hui. La colonne « Action »
+est la chaîne que tu utilises dans les surcharges
+[paneflow.json `shortcuts`](/docs/configuration/schema#how-do-i-set-shortcuts).
+
+### Volets
+
+<VersionBadge stability="stable" />
+
+| Action | Touches par défaut | Contexte | Depuis |
+| --- | --- | --- | --- |
+| `split_horizontally` | `Cmd/Ctrl+Shift+D` | Global | 0.1.7 |
+| `split_vertically` | `Cmd/Ctrl+Shift+E` | Global | 0.1.7 |
+| `close_pane` | `Cmd/Ctrl+Shift+W` | Global | 0.1.7 |
+| `undo_close_pane` | `Cmd/Ctrl+Shift+T` | Global | 0.2.0 |
+| `toggle_zoom` | `Cmd/Ctrl+Shift+Z` | Global | 0.2.0 |
+| `swap_pane` | `Cmd/Ctrl+Shift+S` | Global | 0.2.0 |
+| `split_equalize` | `Cmd/Ctrl+Shift+=` | Global | 0.2.0 |
+| `new_tab` | `Cmd/Ctrl+Alt+T` | Global | 0.2.0 |
+| `close_tab` | `Cmd/Ctrl+W` | Global | 0.2.0 |
+
+### Focus des volets
+
+| Action | Touches par défaut | Contexte | Depuis |
+| --- | --- | --- | --- |
+| `focus_left` | `Alt+Left` | Global | 0.1.7 |
+| `focus_right` | `Alt+Right` | Global | 0.1.7 |
+| `focus_up` | `Alt+Up` | Global | 0.1.7 |
+| `focus_down` | `Alt+Down` | Global | 0.1.7 |
+
+### Dispositions
+
+<VersionBadge stability="stable" />
+
+| Action | Touches par défaut | Contexte | Depuis |
+| --- | --- | --- | --- |
+| `layout_even_horizontal` | `Cmd/Ctrl+Alt+1` | Global | 0.2.0 |
+| `layout_even_vertical` | `Cmd/Ctrl+Alt+2` | Global | 0.2.0 |
+| `layout_main_vertical` | `Cmd/Ctrl+Alt+3` | Global | 0.2.0 |
+| `layout_tiled` | `Cmd/Ctrl+Alt+4` | Global | 0.2.0 |
+
+### Espaces de travail
+
+| Action | Touches par défaut | Contexte | Depuis |
+| --- | --- | --- | --- |
+| `new_workspace` | `Cmd/Ctrl+Shift+N` | Global | 0.1.7 |
+| `close_workspace` | `Cmd/Ctrl+Shift+Q` | Global | 0.1.7 |
+| `next_workspace` | `Cmd/Ctrl+Tab` | Global | 0.1.7 |
+| `select_workspace_1` | `Cmd/Ctrl+1` | Global | 0.1.7 |
+| `select_workspace_2` | `Cmd/Ctrl+2` | Global | 0.1.7 |
+| `select_workspace_3` | `Cmd/Ctrl+3` | Global | 0.1.7 |
+| `select_workspace_4` | `Cmd/Ctrl+4` | Global | 0.1.7 |
+| `select_workspace_5` | `Cmd/Ctrl+5` | Global | 0.1.7 |
+| `select_workspace_6` | `Cmd/Ctrl+6` | Global | 0.1.7 |
+| `select_workspace_7` | `Cmd/Ctrl+7` | Global | 0.1.7 |
+| `select_workspace_8` | `Cmd/Ctrl+8` | Global | 0.1.7 |
+| `select_workspace_9` | `Cmd/Ctrl+9` | Global | 0.1.7 |
+| `copy_workspace_path` | `Ctrl+Shift+Alt+C` | Global | 0.2.0 |
+| `reveal_workspace_in_file_manager` | `Ctrl+Alt+R` | Global | 0.2.0 |
+| `open_workspace_in_zed` | `Ctrl+Alt+Z` | Global | 0.2.0 |
+| `open_workspace_in_cursor` | `Ctrl+Alt+C` | Global | 0.2.0 |
+| `open_workspace_in_vscode` | `Ctrl+Alt+V` | Global | 0.2.0 |
+| `open_workspace_in_windsurf` | `Ctrl+Alt+W` | Global | 0.2.0 |
+
+### Volet terminal
+
+| Action | Touches par défaut | Contexte | Depuis |
+| --- | --- | --- | --- |
+| `terminal_copy` | `Ctrl+Shift+C` | Terminal | 0.1.7 |
+| `terminal_paste` | `Ctrl+Shift+V` | Terminal | 0.1.7 |
+| `terminal_copy` | `Cmd+C` (macOS uniquement) | Terminal | 0.2.9 |
+| `terminal_paste` | `Cmd+V` (macOS uniquement) | Terminal | 0.2.9 |
+| `scroll_page_up` | `Shift+PageUp` | Terminal | 0.1.7 |
+| `scroll_page_down` | `Shift+PageDown` | Terminal | 0.1.7 |
+| `toggle_copy_mode` | `Ctrl+Shift+X` | Terminal | 0.2.0 |
+| `toggle_search` | `Ctrl+Shift+F` | Terminal | 0.2.0 |
+| `jump_to_prompt_prev` | `Ctrl+Shift+Up` | Terminal | 0.2.0 |
+| `jump_to_prompt_next` | `Ctrl+Shift+Down` | Terminal | 0.2.0 |
+
+### Overlay de recherche
+
+| Action | Touches par défaut | Contexte | Depuis |
+| --- | --- | --- | --- |
+| `search_next` | `Enter` | Search | 0.2.0 |
+| `search_prev` | `Shift+Enter` | Search | 0.2.0 |
+| `dismiss_search` | `Escape` | Search | 0.2.0 |
+| `toggle_search_regex` | `Alt+R` | Search | 0.2.0 |
+
+### Volet markdown
+
+<VersionBadge stability="beta" />
+
+| Action | Touches par défaut | Contexte | Depuis |
+| --- | --- | --- | --- |
+| `markdown_scroll_page_up` | `Shift+PageUp` | Markdown | 0.2.14 |
+| `markdown_scroll_page_down` | `Shift+PageDown` | Markdown | 0.2.14 |
+| `markdown_find_open` | `Ctrl+F` | Markdown | 0.2.14 |
+| `markdown_copy` | `Ctrl+Shift+C` | Markdown | 0.2.14 |
+| `markdown_find_next` | `Enter` | MarkdownSearch | 0.2.14 |
+| `markdown_find_prev` | `Shift+Enter` | MarkdownSearch | 0.2.14 |
+| `markdown_find_dismiss` | `Escape` | MarkdownSearch | 0.2.14 |
+
+### Barre de menus macOS
+
+<VersionBadge stability="stable" />
+
+| Action | Touches par défaut | Contexte | Depuis |
+| --- | --- | --- | --- |
+| `quit` | `Cmd+Q` (macOS uniquement) | Global | 0.2.9 |
+
+### Actions sans raccourci par défaut
+
+Ces actions sont livrées avec le runtime mais ne sont pas liées à
+une touche par défaut. Mappe-les dans
+[paneflow.json `shortcuts`](/docs/configuration/schema#how-do-i-set-shortcuts)
+pour les atteindre depuis le clavier.
+
+| Action | Description |
+| --- | --- |
+| `close_window` | Ferme la fenêtre active. |
+| `clear_scroll_history` | Vide le tampon de défilement dans le volet terminal focalisé. |
+| `reset_terminal` | Envoie un reset complet au volet terminal focalisé. |
+| `start_self_update` | Déclenche le flow de mise à jour intégré. |
+| `dismiss_update` | Rejette la pastille de mise à jour pour le lancement courant. |
+| `about` | Ouvre la boîte de dialogue À propos. |
+| `open_help` | Ouvre ce site de documentation. |
+| `copy` / `paste` / `select_all` | Replis génériques du presse-papiers pour les surfaces non-terminal. |
+
+## Comment surcharger un raccourci ?
+
+Définis l'objet `shortcuts` dans `paneflow.json`. Les clés sont des
+frappes ; les valeurs sont des noms d'action des tableaux
+ci-dessus.
+
+```json
+{
+  "shortcuts": {
+    "ctrl+shift+t": "new_tab",
+    "alt+1": "select_workspace_1"
+  }
+}
+```
+
+La syntaxe complète des surcharges, incluant le modificateur
+`secondary` et le scoping par contexte, vit sur la
+[page du schéma](/docs/configuration/schema#how-do-i-set-shortcuts).
+
+<Callout type="warn">
+Les raccourcis peuvent être surchargés dans `paneflow.json` ; les
+conflits se résolvent par dernière écriture gagnante. Tes entrées
+utilisateur se superposent aux défauts intégrés, donc le raccourci
+enregistré le plus récemment pour une frappe donnée gagne. Si deux
+entrées utilisateur mappent la même frappe à des actions différentes,
+l'entrée la plus tardive prend effet.
+</Callout>

@@ -1,0 +1,123 @@
+---
+title: はじめに
+description: Paneflow をインストールし、2 分以内に最初のマルチペイン エージェント ワークスペースを起動します。
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow は、AI エージェント CLI ワークフロー向けに構築された
+クロスプラットフォームのターミナル マルチプレクサです -
+Claude Code、Codex、OpenCode、そしてネイティブシェルを話すあらゆる
+エージェントに対応します。ペインの分割、永続セッション、開発
+サーバー ポートの検出、設定不要のテーマ。これらすべてが、200 ms
+未満で起動するネイティブ GPU 加速アプリケーションに統合されて
+います。
+
+<GetStartedDownloads />
+
+<Callout type="info">
+Paneflow は、**macOS**（公証済み `.dmg`、Apple Silicon）と
+**Linux**（`.deb`、AppImage、tarball、x86_64 および ARM64）向けに
+署名済みバイナリを配布しています。上のボタンは各 OS に推奨される
+形式を取得します。下の OS 別ガイドはその他すべてのパスをカバー
+します。
+</Callout>
+
+## あなたのプラットフォームにインストール
+
+<Cards>
+  <Card
+    title="macOS にインストール"
+    description="Apple Silicon 向けに署名と公証が済んだ .dmg。初回起動時に Gatekeeper をクリア。Homebrew tap は準備中。"
+    href="/docs/installation/macos"
+  />
+  <Card
+    title="Linux にインストール"
+    description=".deb、AppImage、tarball のいずれか。すべてのモダンなディストリビューション、Wayland と X11、x86_64 と ARM64 で動作します。"
+    href="/docs/installation/linux"
+  />
+  <Card
+    title="インストール パスを比較"
+    description="サポートされているすべてのインストール形式、依存関係のフットプリント、PATH 統合を並べて確認できます。"
+    href="/docs/installation"
+  />
+</Cards>
+
+## インストール後の最初のステップ
+
+<Cards>
+  <Card
+    title="最初のセッション"
+    description="ワークスペースを開き、ペインを分割し、エージェントを実行し、操作の感覚を身につけます。"
+    href="/docs/first-session"
+  />
+  <Card
+    title="ショートカット"
+    description="デフォルトのキーマップ、Terminal コンテキスト、そして paneflow.json で任意のアクションを再マッピングする方法。"
+    href="/docs/keybindings"
+  />
+  <Card
+    title="レイアウト"
+    description="均等、メイン縦型、タイル状 - そしてレイアウト ツリーで独自のレイアウトを作成する方法。"
+    href="/docs/layouts"
+  />
+  <Card
+    title="テーマ"
+    description="同梱のテーマ、35 個のターミナル スロット、paneflow.json からのホット リロード。"
+    href="/docs/themes"
+  />
+  <Card
+    title="設定"
+    description="paneflow.json の場所、各キーの動作、そして JSON スキーマ。"
+    href="/docs/configuration"
+  />
+  <Card
+    title="トラブルシューティング"
+    description="Linux 上の Vulkan、macOS 上の Gatekeeper、PATH、フォント、フォールバック フラグ。"
+    href="/docs/troubleshooting"
+  />
+</Cards>
+
+## 内部で動くもの
+
+- **純粋な Rust** + [GPUI](https://www.gpui.rs/) - Zed が動作する同じフレームワーク。
+- **ネイティブ VT エミュレーション**、`alacritty_terminal`（crates.io 0.26）経由。
+- **ネイティブ PTY**、`portable-pty` 経由 - Linux と macOS で同じコード パス。
+- **JSON-RPC IPC**、`$XDG_RUNTIME_DIR/paneflow/paneflow.sock`、ヘッドレス スクリプト用。
+- **コールド スタート 200 ms 未満**、レイテンシ プローブでキーストロークからピクセルまで 4 ms 未満。
+
+## システム要件
+
+| プラットフォーム | 最小要件 | GPU |
+| --- | --- | --- |
+| Linux | glibc 2.31+（Ubuntu 20.04、Debian 11、Fedora 34） | Vulkan ローダ（`libvulkan1` / `vulkan-loader`） |
+| macOS | 13 Ventura、Apple Silicon | Metal（内蔵） |
+
+## AI エージェントを使ったインストール
+
+すでに Claude Code、Codex、OpenCode、または他のエージェント型 CLI
+を使っていますか？インストールを任せましょう - 下のプロンプトに
+よって、エージェントはこのドキュメントを読み、OS を検出し、
+インストールを一度に 1 つの確認ステップずつ進めてくれます。
+
+<AgentInstall />
+
+## Paneflow はどう比較できますか？
+
+Paneflow を別のエージェント志向ターミナルと比較検討していますか？
+並列比較はアーキテクチャ、パフォーマンス、判断ガイド、そして
+代替製品が勝っている点を正直にまとめたリストをカバーしています。
+
+<Cards>
+  <Card
+    title="Paneflow vs cmux"
+    description="最小限のネイティブ Rust ワークスペース（200 ms 未満のコールド スタート、Zed の GPUI）と、全部入りの macOS ツールキット。アーキテクチャ、判断ガイド、FAQ。"
+    href="/compare/cmux"
+  />
+</Cards>
+
+## ヘルプとフィードバック
+
+- バグやフィーチャー リクエストは [GitHub Issues](https://github.com/ArthurDEV44/paneflow/issues) で報告してください。
+- すべてのリリース成果物は [ダウンロード ページ](/download) で確認できます。
+- ソース コード：[github.com/ArthurDEV44/paneflow](https://github.com/ArthurDEV44/paneflow)。

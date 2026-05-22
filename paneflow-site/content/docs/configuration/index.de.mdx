@@ -1,0 +1,58 @@
+---
+title: Konfiguration
+description: Passe Paneflow mit einer einzigen paneflow.json-Datei an - Standard-Shell, Design, Tastenkürzel, Fensterdekorationen und mehr.
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow liest beim Start eine einzige JSON-Datei: `paneflow.json`.
+Jeder Schlüssel ist optional und hat einen sinnvollen Standardwert,
+also ist ein leeres `{}` eine gültige Konfiguration. Die vollständige
+Referenz, inklusive Typen, Standardwerten und Stabilität pro
+Schlüssel, liegt auf der [Schema-Seite](/docs/configuration/schema).
+
+## Wo liegt `paneflow.json`?
+
+| OS | Pfad |
+| --- | --- |
+| Linux | `~/.config/paneflow/paneflow.json` (oder `$XDG_CONFIG_HOME/paneflow/paneflow.json`) |
+| macOS | `~/Library/Application Support/paneflow/paneflow.json` |
+
+Wenn die Datei beim ersten Start nicht existiert, bootet Paneflow mit
+allen Standards. Lege die Datei am Pfad oben an, um mit dem Anpassen
+zu beginnen.
+
+## Editor-Autovervollständigung mit JSON-Schema
+
+Pinne eine `$schema`-Referenz, um sofortige Autovervollständigung und
+Typprüfung in VS Code, JetBrains, Zed, Helix oder jedem Editor mit
+einem JSON-Schema-Sprachserver zu bekommen:
+
+```json
+{
+  "$schema": "https://github.com/ArthurDEV44/paneflow/raw/main/schemas/paneflow.schema.json",
+  "theme": "One Dark"
+}
+```
+
+Das Schema wird mit jedem Release veröffentlicht und folgt exakt
+dem Schlüssel-Set, das der laufende Build akzeptiert.
+
+## Wie geht Paneflow mit unbekannten Schlüsseln um?
+
+Paneflow ist **zur Laufzeit nachsichtig**: unbekannte Top-Level-
+Schlüssel werden stillschweigend ignoriert, und fehlende Schlüssel
+lösen sich zu ihren Standardwerten auf. Das hält deine Konfiguration
+zukunftskompatibel über Releases hinweg - einen Schlüssel aus einem
+neueren Build hineinzuwerfen, bricht nie eine ältere
+Paneflow-Binärdatei.
+
+Das JSON-Schema lehnt unbekannte Schlüssel zusätzlich zur Editierzeit
+ab (`additionalProperties: false`), sodass dein Editor Tippfehler
+markiert, bevor du speicherst. Die Laufzeit bleibt absichtlich
+permissiv.
+
+## Wie geht es weiter?
+
+- Vollständige Schema-Referenz mit jedem Schlüssel: [Schema](/docs/configuration/schema).
+- Anpassung der Tastenkürzel: [Tastenkürzel](/docs/keybindings).

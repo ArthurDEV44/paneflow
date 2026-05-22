@@ -1,0 +1,154 @@
+---
+title: Installer Paneflow sur Linux
+description: Installe Paneflow sur Ubuntu, Debian, Fedora, Arch ou n'importe quel Linux moderne via .deb, AppImage ou archive tar.
+dateModified: 2026-05-22
+howto: true
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Trois chemins d'installation existent pour Linux : un paquet `.deb`,
+un AppImage et une archive tar brute. Prends celui qui correspond à
+ta distribution et à ta tolérance aux paquets gérés par le système.
+L'AppImage est le défaut universel et ne nécessite pas de droits root.
+
+<Callout type="tip">
+Le build Linux a besoin de Vulkan. Sur Wayland, installe le chargeur
+Vulkan de ta distribution (`libvulkan1` sur la famille Debian,
+`vulkan-loader` sur Fedora, `vulkan-icd-loader` sur Arch). Le paquet
+`.deb` déclare cette dépendance et les autres prérequis GUI à ta
+place ; l'AppImage et l'archive tar s'attendent à ce qu'elles soient
+déjà présentes.
+</Callout>
+
+## Comment installer Paneflow sur Ubuntu ou Debian ?
+
+Télécharge le `.deb` pour ton architecture depuis la [dernière version](https://github.com/ArthurDEV44/paneflow/releases/latest)
+et installe-le avec `apt`. Le paquet déclare ses dépendances système
+(`libvulkan1`, `libxcb1`, `libxkbcommon0`, `libfontconfig1` et
+quelques autres), donc `apt` récupère tout ce qu'il te manque.
+
+```bash
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-x86_64.deb
+sudo apt install ./paneflow-0.2.16-x86_64.deb
+```
+
+Pour ARM64 (Raspberry Pi 5, Ampere, AWS Graviton), remplace `x86_64`
+par `aarch64` :
+
+```bash
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-aarch64.deb
+sudo apt install ./paneflow-0.2.16-aarch64.deb
+```
+
+Le binaire atterrit dans `/usr/bin/paneflow`. Désinstalle plus tard
+avec `sudo apt remove paneflow`.
+
+## Comment installer Paneflow en AppImage ?
+
+L'AppImage est un exécutable unique qui tourne sur tout Linux moderne.
+Pas de root, pas de gestionnaire de paquets, pas d'étape
+d'installation.
+
+```bash
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-x86_64.AppImage
+chmod +x paneflow-0.2.16-x86_64.AppImage
+./paneflow-0.2.16-x86_64.AppImage
+```
+
+<Callout type="warn">
+Ubuntu 24.04 et d'autres distributions récentes ne livrent plus FUSE 2
+par défaut et refuseront de monter l'AppImage. Si tu vois
+`dlopen(): error loading libfuse.so.2`, lance avec le repli
+extract-and-run :
+
+```bash
+./paneflow-0.2.16-x86_64.AppImage --appimage-extract-and-run
+```
+
+Ou installe FUSE 2 une seule fois avec `sudo apt install libfuse2t64`.
+</Callout>
+
+Pour lancer depuis n'importe où, déplace l'AppImage dans `~/.local/bin`
+et renomme-le :
+
+```bash
+mkdir -p ~/.local/bin
+mv paneflow-0.2.16-x86_64.AppImage ~/.local/bin/paneflow
+chmod +x ~/.local/bin/paneflow
+```
+
+## Comment installer Paneflow depuis une archive tar ?
+
+Utilise l'archive tar quand tu veux un contrôle total sur l'endroit
+où vit le binaire ou quand tu scriptes une installation
+non-interactive.
+
+```bash
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-x86_64.tar.gz
+tar -xzf paneflow-0.2.16-x86_64.tar.gz
+mkdir -p ~/.local/bin
+mv paneflow ~/.local/bin/
+chmod +x ~/.local/bin/paneflow
+```
+
+L'archive tar extrait un unique binaire `paneflow`. Dépose-le où tu
+veux sur ton `PATH`. Si `~/.local/bin` n'est pas encore dans ton
+`PATH`, consulte la [section dépannage](#what-if-paneflow-is-not-found-in-my-path)
+plus bas.
+
+## Comment vérifier l'installation ?
+
+Lance `paneflow --version`. La sortie attendue :
+
+```text
+paneflow 0.2.x
+```
+
+Si tu vois la version s'afficher, le binaire est sur ton `PATH` et
+les dépendances GPU se sont résolues. Lance l'éditeur avec :
+
+```bash
+paneflow
+```
+
+Le premier lancement ouvre un espace de travail vide avec un seul
+volet shell. Appuie sur `Ctrl+Shift+D` pour diviser horizontalement
+ou `Ctrl+Shift+E` pour diviser verticalement.
+
+## Que faire si `paneflow` est introuvable dans mon PATH ?
+
+Si `paneflow --version` retourne `command not found`, le binaire
+n'est pas sur le `PATH` de ton shell. Presque toujours, cela signifie
+que tu as utilisé le chemin AppImage ou archive tar et déposé le
+binaire dans `~/.local/bin`, que certaines distributions n'incluent
+pas dans le `PATH` par défaut.
+
+Ajoute-le une fois par shell :
+
+**bash** (`~/.bashrc`) :
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**zsh** (`~/.zshrc`) :
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+**fish** (`~/.config/fish/config.fish`) :
+
+```fish
+fish_add_path ~/.local/bin
+```
+
+`fish_add_path` persiste dans la variable universelle
+`fish_user_paths`, donc le changement survit aux redémarrages. Ouvre
+un nouveau terminal pour qu'il prenne effet dans la session courante.
+
+Relance ensuite `paneflow --version`. Si ça échoue toujours, vérifie
+que le binaire est exécutable (`ls -l ~/.local/bin/paneflow` doit
+montrer `-rwxr-xr-x`) et que tu as copié le binaire, pas le `.tar.gz`.

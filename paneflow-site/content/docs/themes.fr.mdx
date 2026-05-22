@@ -1,0 +1,115 @@
+---
+title: Thèmes
+description: Bascule entre les thèmes inclus de Paneflow - One Dark et PaneFlow Light - avec rechargement à chaud, aucun redémarrage nécessaire.
+dateModified: 2026-05-22
+lastSyncedFrom: 613718f658f2f3cf485844423794753d42abecd6
+---
+
+Paneflow embarque aujourd'hui deux thèmes inclus : un thème sombre
+par défaut (`One Dark`) et une alternative claire (`PaneFlow Light`).
+Les thèmes pilotent chaque couleur de surface terminal - palette
+ANSI, curseur, sélection, surlignages dans le tampon de défilement,
+correspondances de recherche. La barre latérale et la barre de titre
+restent sur la palette d'habillage de l'application Paneflow et ne
+sont pas pilotées par le thème.
+
+<Callout type="info">
+**TL;DR.** Mets `"theme": "PaneFlow Light"` dans `paneflow.json`
+pour basculer vers le thème clair. Sauvegarde le fichier ; la fenêtre
+en cours d'exécution capte les nouvelles couleurs en ~300 ms sans
+redémarrage.
+</Callout>
+
+## Comment changer le thème actif ?
+
+Définis la clé `theme` dans `paneflow.json` :
+
+```json
+{
+  "theme": "PaneFlow Light"
+}
+```
+
+La valeur doit correspondre exactement à l'un des noms de thèmes
+inclus, y compris la capitalisation. Les noms inconnus retombent
+sur `One Dark` et émettent un avertissement dans les logs la
+prochaine fois que le fichier est parsé.
+
+Le fichier de configuration vit à :
+
+| OS | Chemin |
+| --- | --- |
+| Linux | `~/.config/paneflow/paneflow.json` |
+| macOS | `~/Library/Application Support/paneflow/paneflow.json` |
+
+## Quels thèmes sont livrés avec Paneflow aujourd'hui ?
+
+<VersionBadge stability="stable" />
+
+| Nom | Description |
+| --- | --- |
+| `"One Dark"` | Thème sombre, par défaut. Inspiré de la palette One Dark d'Atom. |
+| `"PaneFlow Light"` | Thème clair. Palette à plus fort contraste réglée pour les postes de travail en plein jour. |
+
+Les deux thèmes embarquent tous les 16 emplacements de couleurs ANSI,
+les couleurs premier-plan / arrière-plan, le curseur, la sélection
+et les couleurs de surlignage de recherche pré-réglées pour atteindre
+le contraste WCAG AA sur les prompts standards.
+
+<Callout type="warn">
+Les plans antérieurs du projet mentionnaient six thèmes inclus. La
+réalité en v0.2.x est de deux. Des thèmes additionnels (Solarized,
+Gruvbox, et une variante haut contraste) figurent sur la feuille de
+route ; suis les [GitHub releases](https://github.com/ArthurDEV44/paneflow/releases)
+pour l'annonce.
+</Callout>
+
+## Comment fonctionne le rechargement à chaud des thèmes ?
+
+Quand tu sauvegardes `paneflow.json`, Paneflow re-résout le thème à
+la volée - pas de redémarrage, pas de rechargement de fenêtre.
+
+Deux mécanismes pilotent le rechargement :
+
+- **Piloté par évènement (préféré).** Un watcher `notify` installé
+  sur le dossier de configuration se déclenche en quelques
+  millisecondes après une sauvegarde. Les évènements sont débouncés
+  à 300 ms pour que les rafales de sauvegarde d'éditeur (write ->
+  fsync -> atomic-rename) ne déclenchent qu'un seul rechargement.
+- **Repli par sondage.** Les systèmes de fichiers qui ne prennent
+  pas en charge inotify / FSEvents / ReadDirectoryChangesW (partages
+  NFS, sandboxes verrouillées, certains chemins WSL) retombent sur
+  un sondage `mtime` à 500 ms. Le repli ne tourne que quand le
+  watcher d'évènements échoue à démarrer.
+
+Tu verras la nouvelle palette prendre effet à la prochaine frame de
+rendu après le déclenchement du watcher - typiquement en ~300 ms
+après la sauvegarde.
+
+<Callout type="tip">
+Le rechargement à chaud couvre chaque champ lié au thème dans
+`paneflow.json`, y compris les clés de typographie (`font_family`,
+`font_size`, `line_height`). La clé `window_decorations` est le seul
+champ de configuration qui est lu une seule fois au démarrage -
+changer celle-ci demande de redémarrer Paneflow.
+</Callout>
+
+## Comment créer un thème personnalisé ?
+
+Les thèmes personnalisés fournis par l'utilisateur sont sur la
+feuille de route pour une version post-v0.3.0. La v0.2.x ne reconnaît
+que les noms de thèmes inclus listés ci-dessus ; il n'y a pas encore
+de format `theme.json` ou de palette personnalisée.
+
+Si tu veux une palette spécifique en attendant, le chemin le plus
+direct est d'ouvrir une [issue GitHub](https://github.com/ArthurDEV44/paneflow/issues)
+avec la palette que tu veux. Les thèmes inclus sont réglés dans
+`src-app/src/theme/builtin.rs` et embarqués à chaque release - les
+nouvelles palettes sont accélérées quand elles ont un cas d'usage
+clair.
+
+L'emplacement au niveau du schéma pour une future clé de thème
+personnalisé n'est délibérément pas encore défini, donc en ajouter
+une à `paneflow.json` aujourd'hui n'a aucun effet - elle est
+silencieusement ignorée par le runtime permissif, conformément à
+la [vue d'ensemble de la configuration](/docs/configuration#how-does-paneflow-handle-unknown-keys).
