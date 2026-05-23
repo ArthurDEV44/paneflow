@@ -54,11 +54,12 @@ export function Navbar() {
             className="flex items-center gap-2 text-sm font-semibold tracking-tight shrink-0"
           >
             <Image
-              src="/logos/paneflow-web-300.png"
+              src="/logos/paneflow-web-64.png"
               alt={t("logoAlt")}
               width={28}
               height={28}
               sizes="28px"
+              quality={95}
               priority
               className="h-7 w-7"
             />

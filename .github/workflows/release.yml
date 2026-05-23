@@ -170,7 +170,19 @@ jobs:
             dpkg-sig \
             rpm \
             gnupg \
-            appstream
+            appstream \
+            imagemagick \
+            icnsutils
+
+      # ImageMagick is preinstalled on windows-2022 and the macos-14 GHA images
+      # ship sips (Apple's built-in resizer) + iconutil out of the box, but
+      # neither ships ImageMagick. scripts/build-icons.sh prefers `magick` for
+      # multi-resolution .ico assembly, so install it here on the macOS leg only
+      # — the Linux leg picks up `imagemagick` via the apt-get block above and
+      # the Windows leg uses the preinstalled copy.
+      - name: Install ImageMagick (macOS)
+        if: runner.os == 'macOS'
+        run: brew install --quiet imagemagick
 
       # US-002 AC3 — validate the AppStream metainfo XML before any packaging
       # step touches it. Invalid metainfo would (a) make `.deb`/`.rpm` install
@@ -230,6 +242,20 @@ jobs:
         # consistent with `cargo build --release --target ...` below and
         # future-proofs against anyone introducing a `cross`-based leg.
         run: cargo test --workspace --target ${{ matrix.target }}
+
+      # Regenerate every icon asset (.png hicolor set, .icns, .ico,
+      # rust-embed runtime icon) from the master PNGs under
+      # `assets/icons/master/`. Script is a no-op when no master is present,
+      # so this step is safe to land before the masters are committed.
+      # Placement rationale: runs AFTER the Rust quality gates (fmt/clippy/
+      # test surface failures fast) but BEFORE `Build release binary` and
+      # all packaging steps, so cargo-deb / cargo-generate-rpm / bundle-
+      # macos.sh / cargo-wix all see fresh icons from this same checkout.
+      # `shell: bash` because the script is bash; on the Windows runner this
+      # invokes Git Bash and consumes the preinstalled `magick` binary.
+      - name: Regenerate icons from master
+        shell: bash
+        run: bash scripts/build-icons.sh
 
       # --- Release build ---
       # `POSTHOG_API_KEY` is resolved by `option_env!` at compile time
