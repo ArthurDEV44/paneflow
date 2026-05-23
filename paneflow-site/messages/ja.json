@@ -282,7 +282,7 @@
       "licenseHeading": "ライセンス & データ姿勢",
       "coreHeading": "コアターミナルの同等性",
       "agentHeading": "エージェント & チーム機能",
-      "footnote": "<strong>バージョン:</strong> Paneflow v0.2.16 (2026年5月)、初コミット2026-04-01。Warpクライアントオープンソース化2026-04-28 (Denver Technologies, Inc.、Copyright 2020-2026)。<strong>価格:</strong> PaneflowはMIT無料。Warp Free 75クレジット/月 (最初の2ヶ月は150) + Build $20/月 + Business $50/ユーザー/月 + Enterprise (カスタム)。"
+      "footnote": "<strong>バージョン:</strong> Paneflow v0.2.17 (2026年5月)、初コミット2026-04-01。Warpクライアントオープンソース化2026-04-28 (Denver Technologies, Inc.、Copyright 2020-2026)。<strong>価格:</strong> PaneflowはMIT無料。Warp Free 75クレジット/月 (最初の2ヶ月は150) + Build $20/月 + Business $50/ユーザー/月 + Enterprise (カスタム)。"
     },
     "decision": {
       "title": "あなたに合うのはどちら?",
@@ -408,7 +408,7 @@
       "portabilityHeading": "移植性 & エージェント機能",
       "coreHeading": "コアターミナルの同等性",
       "macosHeading": "macOSネイティブのポリッシュ",
-      "footnote": "<strong>バージョン:</strong> Paneflow v0.2.16 (2026年5月)、初コミット2026-04-01。iTerm2 v3.7.0beta1リリース2026-04-20 (コミット <code>2b7b5bff</code>)、v3.6.10 (2026-04-20) と v3.5.15 (2025-08-13) を旧安定ラインに。iTerm2自身のリリースノートにClaude Code統合は「3.7.0beta1時点で進行中」と明記。<strong>価格:</strong> 両者無料。PaneflowはMIT、iTerm2はGPL-2.0で寄付ベース。"
+      "footnote": "<strong>バージョン:</strong> Paneflow v0.2.17 (2026年5月)、初コミット2026-04-01。iTerm2 v3.7.0beta1リリース2026-04-20 (コミット <code>2b7b5bff</code>)、v3.6.10 (2026-04-20) と v3.5.15 (2025-08-13) を旧安定ラインに。iTerm2自身のリリースノートにClaude Code統合は「3.7.0beta1時点で進行中」と明記。<strong>価格:</strong> 両者無料。PaneflowはMIT、iTerm2はGPL-2.0で寄付ベース。"
     },
     "decision": {
       "title": "あなたに合うのはどちら?",
@@ -535,7 +535,7 @@
       "perfHeading": "パフォーマンス & エージェント機能",
       "coreHeading": "コアターミナルの同等性",
       "configHeading": "設定 & エコシステム",
-      "footnote": "<strong>バージョン:</strong> Paneflow v0.2.16 (2026年5月)、初コミット2026-04-01、v0.1.0タグ2026-04-16。WezTerm最新安定版20240203-110809-5046fc22 (2024年2月)、初コミット2017-12-07 (c53ca64c)。WezTermのmainブランチは活発 (最終プッシュ2026-05-01) ですが、2024年2月以降安定リリースは切られていません。<strong>価格:</strong> 両者無料。両者MIT。"
+      "footnote": "<strong>バージョン:</strong> Paneflow v0.2.17 (2026年5月)、初コミット2026-04-01、v0.1.0タグ2026-04-16。WezTerm最新安定版20240203-110809-5046fc22 (2024年2月)、初コミット2017-12-07 (c53ca64c)。WezTermのmainブランチは活発 (最終プッシュ2026-05-01) ですが、2024年2月以降安定リリースは切られていません。<strong>価格:</strong> 両者無料。両者MIT。"
     },
     "decision": {
       "title": "あなたに合うのはどちら?",
@@ -660,7 +660,7 @@
       "perfHeading": "パフォーマンス & アーキテクチャ",
       "coreHeading": "コアエージェントワークスペース",
       "toolkitHeading": "隣接ツールキット",
-      "footnote": "<strong>バージョン:</strong> Paneflow v0.2.16 (2026年5月)、初リリース2026年4月 (v0.1.0)。cmux v0.64.7 (2026年5月19日、v1.38.1ともタグ付け)、初リリース2026年1月 (v0.2.0)。<strong>価格:</strong> 両者無料。PaneflowはMIT、cmuxはGPL-3.0-or-laterで別個の商用ライセンスが利用可能。"
+      "footnote": "<strong>バージョン:</strong> Paneflow v0.2.17 (2026年5月)、初リリース2026年4月 (v0.1.0)。cmux v0.64.7 (2026年5月19日、v1.38.1ともタグ付け)、初リリース2026年1月 (v0.2.0)。<strong>価格:</strong> 両者無料。PaneflowはMIT、cmuxはGPL-3.0-or-laterで別個の商用ライセンスが利用可能。"
     },
     "decision": {
       "title": "あなたに合うのはどちら?",

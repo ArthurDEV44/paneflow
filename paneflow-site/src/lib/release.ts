@@ -7,7 +7,7 @@
 // `components/download/download-view.tsx` (VERSIONS array) — this
 // module only tracks "latest".
 
-export const LATEST_VERSION = "0.2.16";
+export const LATEST_VERSION = "0.2.17";
 
 export type LinuxArch = "x86_64" | "aarch64";
 
