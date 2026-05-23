@@ -109,7 +109,7 @@ export default async function CompareWeztermPage({
             ["Dev-server port detection", "Yes", "n/a"],
             [
               "Latest stable release",
-              "v0.2.16 (May 2026, active weekly)",
+              "v0.2.17 (May 2026, active weekly)",
               "20240203-110809 (Feb 2024, 15+ month gap; main is active)",
             ],
             [

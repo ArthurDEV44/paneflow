@@ -282,7 +282,7 @@
       "licenseHeading": "协议与数据姿态",
       "coreHeading": "核心终端对等性",
       "agentHeading": "智能体与团队能力",
-      "footnote": "<strong>版本：</strong>Paneflow v0.2.16（2026 年 5 月），首次提交于 2026-04-01。Warp 客户端于 2026-04-28 开源（Denver Technologies, Inc.，版权 2020-2026）。<strong>定价：</strong>Paneflow 免费 MIT。Warp 免费档 75 积分/月（前两个月为 150） + Build $20/月 + Business $50/用户/月 + Enterprise 定制。"
+      "footnote": "<strong>版本：</strong>Paneflow v0.2.17（2026 年 5 月），首次提交于 2026-04-01。Warp 客户端于 2026-04-28 开源（Denver Technologies, Inc.，版权 2020-2026）。<strong>定价：</strong>Paneflow 免费 MIT。Warp 免费档 75 积分/月（前两个月为 150） + Build $20/月 + Business $50/用户/月 + Enterprise 定制。"
     },
     "decision": {
       "title": "哪一个适合您？",
@@ -408,7 +408,7 @@
       "portabilityHeading": "可移植性与智能体能力面",
       "coreHeading": "核心终端对等性",
       "macosHeading": "macOS 原生打磨度",
-      "footnote": "<strong>版本：</strong>Paneflow v0.2.16（2026 年 5 月），首次提交 2026-04-01。iTerm2 v3.7.0beta1 于 2026-04-20 发布（提交 <code>2b7b5bff</code>），v3.6.10（2026-04-20）和 v3.5.15（2025-08-13）为更早的稳定线。iTerm2 自身的版本说明把 Claude Code 集成标注为「still a work in progress as of 3.7.0beta1.」<strong>定价：</strong>两者均免费。Paneflow MIT；iTerm2 GPL-2.0 接受捐赠支持。"
+      "footnote": "<strong>版本：</strong>Paneflow v0.2.17（2026 年 5 月），首次提交 2026-04-01。iTerm2 v3.7.0beta1 于 2026-04-20 发布（提交 <code>2b7b5bff</code>），v3.6.10（2026-04-20）和 v3.5.15（2025-08-13）为更早的稳定线。iTerm2 自身的版本说明把 Claude Code 集成标注为「still a work in progress as of 3.7.0beta1.」<strong>定价：</strong>两者均免费。Paneflow MIT；iTerm2 GPL-2.0 接受捐赠支持。"
     },
     "decision": {
       "title": "哪一个适合您？",
@@ -535,7 +535,7 @@
       "perfHeading": "性能与智能体能力面",
       "coreHeading": "核心终端对等性",
       "configHeading": "配置与生态",
-      "footnote": "<strong>版本：</strong>Paneflow v0.2.16（2026 年 5 月），首次提交 2026-04-01，v0.1.0 于 2026-04-16 打标签。WezTerm 最新稳定版 20240203-110809-5046fc22（2024 年 2 月），首次提交 2017-12-07（c53ca64c）。WezTerm 的 main 分支仍活跃（最近一次推送 2026-05-01），但自 2024 年 2 月以来未发布稳定版。<strong>定价：</strong>两者均免费。两者均 MIT。"
+      "footnote": "<strong>版本：</strong>Paneflow v0.2.17（2026 年 5 月），首次提交 2026-04-01，v0.1.0 于 2026-04-16 打标签。WezTerm 最新稳定版 20240203-110809-5046fc22（2024 年 2 月），首次提交 2017-12-07（c53ca64c）。WezTerm 的 main 分支仍活跃（最近一次推送 2026-05-01），但自 2024 年 2 月以来未发布稳定版。<strong>定价：</strong>两者均免费。两者均 MIT。"
     },
     "decision": {
       "title": "哪一个适合您？",
@@ -660,7 +660,7 @@
       "perfHeading": "性能与架构",
       "coreHeading": "核心智能体工作区",
       "toolkitHeading": "相邻工具箱",
-      "footnote": "<strong>版本：</strong>Paneflow v0.2.16（2026 年 5 月），首次发布 2026 年 4 月（v0.1.0）。cmux v0.64.7（2026 年 5 月 19 日，也打标签 v1.38.1），首次发布 2026 年 1 月（v0.2.0）。<strong>定价：</strong>两者均免费。Paneflow MIT；cmux GPL-3.0-或更新版本，可单独获取商业协议。"
+      "footnote": "<strong>版本：</strong>Paneflow v0.2.17（2026 年 5 月），首次发布 2026 年 4 月（v0.1.0）。cmux v0.64.7（2026 年 5 月 19 日，也打标签 v1.38.1），首次发布 2026 年 1 月（v0.2.0）。<strong>定价：</strong>两者均免费。Paneflow MIT；cmux GPL-3.0-或更新版本，可单独获取商业协议。"
     },
     "decision": {
       "title": "哪一个适合您？",

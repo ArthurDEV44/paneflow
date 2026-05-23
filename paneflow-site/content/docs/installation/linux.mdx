@@ -26,16 +26,16 @@ and install it with `apt`. The package declares its system dependencies
 more), so `apt` pulls anything you are missing.
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-x86_64.deb
-sudo apt install ./paneflow-0.2.16-x86_64.deb
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.17/paneflow-0.2.17-x86_64.deb
+sudo apt install ./paneflow-0.2.17-x86_64.deb
 ```
 
 For ARM64 (Raspberry Pi 5, Ampere, AWS Graviton), swap `x86_64` for
 `aarch64`:
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-aarch64.deb
-sudo apt install ./paneflow-0.2.16-aarch64.deb
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.17/paneflow-0.2.17-aarch64.deb
+sudo apt install ./paneflow-0.2.17-aarch64.deb
 ```
 
 The binary lands at `/usr/bin/paneflow`. Uninstall later with
@@ -47,9 +47,9 @@ The AppImage is a single executable that runs on any modern Linux. No
 root, no package manager, no install step.
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-x86_64.AppImage
-chmod +x paneflow-0.2.16-x86_64.AppImage
-./paneflow-0.2.16-x86_64.AppImage
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.17/paneflow-0.2.17-x86_64.AppImage
+chmod +x paneflow-0.2.17-x86_64.AppImage
+./paneflow-0.2.17-x86_64.AppImage
 ```
 
 <Callout type="warn">
@@ -58,7 +58,7 @@ will refuse to mount the AppImage. If you see `dlopen(): error loading libfuse.s
 run with the extract-and-run fallback:
 
 ```bash
-./paneflow-0.2.16-x86_64.AppImage --appimage-extract-and-run
+./paneflow-0.2.17-x86_64.AppImage --appimage-extract-and-run
 ```
 
 Or install FUSE 2 once with `sudo apt install libfuse2t64`.
@@ -69,7 +69,7 @@ rename it:
 
 ```bash
 mkdir -p ~/.local/bin
-mv paneflow-0.2.16-x86_64.AppImage ~/.local/bin/paneflow
+mv paneflow-0.2.17-x86_64.AppImage ~/.local/bin/paneflow
 chmod +x ~/.local/bin/paneflow
 ```
 
@@ -79,8 +79,8 @@ Use the tarball when you want full control over where the binary lives
 or when you are scripting a non-interactive install.
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-x86_64.tar.gz
-tar -xzf paneflow-0.2.16-x86_64.tar.gz
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.17/paneflow-0.2.17-x86_64.tar.gz
+tar -xzf paneflow-0.2.17-x86_64.tar.gz
 mkdir -p ~/.local/bin
 mv paneflow ~/.local/bin/
 chmod +x ~/.local/bin/paneflow

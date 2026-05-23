@@ -28,16 +28,16 @@ et installe-le avec `apt`. Le paquet déclare ses dépendances système
 quelques autres), donc `apt` récupère tout ce qu'il te manque.
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-x86_64.deb
-sudo apt install ./paneflow-0.2.16-x86_64.deb
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.17/paneflow-0.2.17-x86_64.deb
+sudo apt install ./paneflow-0.2.17-x86_64.deb
 ```
 
 Pour ARM64 (Raspberry Pi 5, Ampere, AWS Graviton), remplace `x86_64`
 par `aarch64` :
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-aarch64.deb
-sudo apt install ./paneflow-0.2.16-aarch64.deb
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.17/paneflow-0.2.17-aarch64.deb
+sudo apt install ./paneflow-0.2.17-aarch64.deb
 ```
 
 Le binaire atterrit dans `/usr/bin/paneflow`. Désinstalle plus tard
@@ -50,9 +50,9 @@ Pas de root, pas de gestionnaire de paquets, pas d'étape
 d'installation.
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-x86_64.AppImage
-chmod +x paneflow-0.2.16-x86_64.AppImage
-./paneflow-0.2.16-x86_64.AppImage
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.17/paneflow-0.2.17-x86_64.AppImage
+chmod +x paneflow-0.2.17-x86_64.AppImage
+./paneflow-0.2.17-x86_64.AppImage
 ```
 
 <Callout type="warn">
@@ -62,7 +62,7 @@ par défaut et refuseront de monter l'AppImage. Si tu vois
 extract-and-run :
 
 ```bash
-./paneflow-0.2.16-x86_64.AppImage --appimage-extract-and-run
+./paneflow-0.2.17-x86_64.AppImage --appimage-extract-and-run
 ```
 
 Ou installe FUSE 2 une seule fois avec `sudo apt install libfuse2t64`.
@@ -73,7 +73,7 @@ et renomme-le :
 
 ```bash
 mkdir -p ~/.local/bin
-mv paneflow-0.2.16-x86_64.AppImage ~/.local/bin/paneflow
+mv paneflow-0.2.17-x86_64.AppImage ~/.local/bin/paneflow
 chmod +x ~/.local/bin/paneflow
 ```
 
@@ -84,8 +84,8 @@ où vit le binaire ou quand tu scriptes une installation
 non-interactive.
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-x86_64.tar.gz
-tar -xzf paneflow-0.2.16-x86_64.tar.gz
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.17/paneflow-0.2.17-x86_64.tar.gz
+tar -xzf paneflow-0.2.17-x86_64.tar.gz
 mkdir -p ~/.local/bin
 mv paneflow ~/.local/bin/
 chmod +x ~/.local/bin/paneflow

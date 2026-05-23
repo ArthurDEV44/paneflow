@@ -282,7 +282,7 @@
       "licenseHeading": "Licence et posture sur les données",
       "coreHeading": "Parité terminal de base",
       "agentHeading": "Surface agent et équipe",
-      "footnote": "<strong>Versions : </strong> Paneflow v0.2.16 (mai 2026), premier commit le 01/04/2026. Client Warp passé open source le 28/04/2026 (Denver Technologies, Inc., copyright 2020-2026). <strong>Tarification : </strong> Paneflow gratuit, MIT. Warp Free 75 crédits/mois (150 les deux premiers mois) + Build à 20 $/mois + Business à 50 $/utilisateur/mois + Enterprise sur devis."
+      "footnote": "<strong>Versions : </strong> Paneflow v0.2.17 (mai 2026), premier commit le 01/04/2026. Client Warp passé open source le 28/04/2026 (Denver Technologies, Inc., copyright 2020-2026). <strong>Tarification : </strong> Paneflow gratuit, MIT. Warp Free 75 crédits/mois (150 les deux premiers mois) + Build à 20 $/mois + Business à 50 $/utilisateur/mois + Enterprise sur devis."
     },
     "decision": {
       "title": "Lequel est fait pour vous : ",
@@ -408,7 +408,7 @@
       "portabilityHeading": "Portabilité et surface agent",
       "coreHeading": "Parité terminal de base",
       "macosHeading": "Finition macOS native",
-      "footnote": "<strong>Versions : </strong> Paneflow v0.2.16 (mai 2026), premier commit le 01/04/2026. iTerm2 v3.7.0beta1 sortie le 20/04/2026 (commit <code>2b7b5bff</code>), avec v3.6.10 (20/04/2026) et v3.5.15 (13/08/2025) comme lignes stables plus anciennes. Les notes de version d'iTerm2 marquent l'intégration Claude Code comme « still a work in progress as of 3.7.0beta1 ». <strong>Tarification : </strong> les deux sont gratuits. Paneflow MIT : iTerm2 GPL-2.0 avec soutien par dons."
+      "footnote": "<strong>Versions : </strong> Paneflow v0.2.17 (mai 2026), premier commit le 01/04/2026. iTerm2 v3.7.0beta1 sortie le 20/04/2026 (commit <code>2b7b5bff</code>), avec v3.6.10 (20/04/2026) et v3.5.15 (13/08/2025) comme lignes stables plus anciennes. Les notes de version d'iTerm2 marquent l'intégration Claude Code comme « still a work in progress as of 3.7.0beta1 ». <strong>Tarification : </strong> les deux sont gratuits. Paneflow MIT : iTerm2 GPL-2.0 avec soutien par dons."
     },
     "decision": {
       "title": "Lequel est fait pour vous : ",
@@ -535,7 +535,7 @@
       "perfHeading": "Performance et surface agent",
       "coreHeading": "Parité terminal de base",
       "configHeading": "Configuration et écosystème",
-      "footnote": "<strong>Versions : </strong> Paneflow v0.2.16 (mai 2026), premier commit le 01/04/2026, v0.1.0 taguée le 16/04/2026. WezTerm dernière stable 20240203-110809-5046fc22 (février 2024), premier commit le 07/12/2017 (c53ca64c). La branche main de WezTerm est active (dernier push le 01/05/2026) mais aucune version stable n'a été coupée depuis février 2024. <strong>Tarification : </strong> les deux sont gratuits. Les deux MIT."
+      "footnote": "<strong>Versions : </strong> Paneflow v0.2.17 (mai 2026), premier commit le 01/04/2026, v0.1.0 taguée le 16/04/2026. WezTerm dernière stable 20240203-110809-5046fc22 (février 2024), premier commit le 07/12/2017 (c53ca64c). La branche main de WezTerm est active (dernier push le 01/05/2026) mais aucune version stable n'a été coupée depuis février 2024. <strong>Tarification : </strong> les deux sont gratuits. Les deux MIT."
     },
     "decision": {
       "title": "Lequel est fait pour vous : ",
@@ -660,7 +660,7 @@
       "perfHeading": "Performance et architecture",
       "coreHeading": "Espace de travail d'agents de base",
       "toolkitHeading": "Boîte à outils adjacente",
-      "footnote": "<strong>Versions : </strong> Paneflow v0.2.16 (mai 2026), première version en avril 2026 (v0.1.0). cmux v0.64.7 (19 mai 2026, également tagué v1.38.1), première version en janvier 2026 (v0.2.0). <strong>Tarification : </strong> les deux sont gratuits. Paneflow MIT : cmux GPL-3.0-or-later avec une licence commerciale séparée disponible."
+      "footnote": "<strong>Versions : </strong> Paneflow v0.2.17 (mai 2026), première version en avril 2026 (v0.1.0). cmux v0.64.7 (19 mai 2026, également tagué v1.38.1), première version en janvier 2026 (v0.2.0). <strong>Tarification : </strong> les deux sont gratuits. Paneflow MIT : cmux GPL-3.0-or-later avec une licence commerciale séparée disponible."
     },
     "decision": {
       "title": "Lequel est fait pour vous : ",

@@ -282,7 +282,7 @@
       "licenseHeading": "License & data posture",
       "coreHeading": "Core terminal parity",
       "agentHeading": "Agent & team surface",
-      "footnote": "<strong>Versions:</strong> Paneflow v0.2.16 (May 2026), first commit 2026-04-01. Warp client open-sourced 2026-04-28 (Denver Technologies, Inc., copyright 2020-2026). <strong>Pricing:</strong> Paneflow free MIT. Warp Free 75 credits/month (150 for the first two months) + Build $20/month + Business $50/user/month + Enterprise custom."
+      "footnote": "<strong>Versions:</strong> Paneflow v0.2.17 (May 2026), first commit 2026-04-01. Warp client open-sourced 2026-04-28 (Denver Technologies, Inc., copyright 2020-2026). <strong>Pricing:</strong> Paneflow free MIT. Warp Free 75 credits/month (150 for the first two months) + Build $20/month + Business $50/user/month + Enterprise custom."
     },
     "decision": {
       "title": "Which one is right for you?",
@@ -408,7 +408,7 @@
       "portabilityHeading": "Portability & agent surface",
       "coreHeading": "Core terminal parity",
       "macosHeading": "macOS-native polish",
-      "footnote": "<strong>Versions:</strong> Paneflow v0.2.16 (May 2026), first commit 2026-04-01. iTerm2 v3.7.0beta1 released 2026-04-20 (commit <code>2b7b5bff</code>), with v3.6.10 (2026-04-20) and v3.5.15 (2025-08-13) as older stable lines. iTerm2's own release notes mark Claude Code integration as “still a work in progress as of 3.7.0beta1.” <strong>Pricing:</strong> both free. Paneflow MIT; iTerm2 GPL-2.0 with donation support."
+      "footnote": "<strong>Versions:</strong> Paneflow v0.2.17 (May 2026), first commit 2026-04-01. iTerm2 v3.7.0beta1 released 2026-04-20 (commit <code>2b7b5bff</code>), with v3.6.10 (2026-04-20) and v3.5.15 (2025-08-13) as older stable lines. iTerm2's own release notes mark Claude Code integration as “still a work in progress as of 3.7.0beta1.” <strong>Pricing:</strong> both free. Paneflow MIT; iTerm2 GPL-2.0 with donation support."
     },
     "decision": {
       "title": "Which one is right for you?",
@@ -535,7 +535,7 @@
       "perfHeading": "Performance & agent surface",
       "coreHeading": "Core terminal parity",
       "configHeading": "Configuration & ecosystem",
-      "footnote": "<strong>Versions:</strong> Paneflow v0.2.16 (May 2026), first commit 2026-04-01, v0.1.0 tagged 2026-04-16. WezTerm latest stable 20240203-110809-5046fc22 (Feb 2024), first commit 2017-12-07 (c53ca64c). WezTerm's main branch is active (last push 2026-05-01) but no stable release has been cut since February 2024. <strong>Pricing:</strong> both free. Both MIT."
+      "footnote": "<strong>Versions:</strong> Paneflow v0.2.17 (May 2026), first commit 2026-04-01, v0.1.0 tagged 2026-04-16. WezTerm latest stable 20240203-110809-5046fc22 (Feb 2024), first commit 2017-12-07 (c53ca64c). WezTerm's main branch is active (last push 2026-05-01) but no stable release has been cut since February 2024. <strong>Pricing:</strong> both free. Both MIT."
     },
     "decision": {
       "title": "Which one is right for you?",
@@ -660,7 +660,7 @@
       "perfHeading": "Performance & architecture",
       "coreHeading": "Core agent workspace",
       "toolkitHeading": "Adjacent toolkit",
-      "footnote": "<strong>Versions:</strong> Paneflow v0.2.16 (May 2026), first release April 2026 (v0.1.0). cmux v0.64.7 (May 19, 2026, also tagged v1.38.1), first release January 2026 (v0.2.0). <strong>Pricing:</strong> both free. Paneflow MIT; cmux GPL-3.0-or-later with a separate commercial license available."
+      "footnote": "<strong>Versions:</strong> Paneflow v0.2.17 (May 2026), first release April 2026 (v0.1.0). cmux v0.64.7 (May 19, 2026, also tagged v1.38.1), first release January 2026 (v0.2.0). <strong>Pricing:</strong> both free. Paneflow MIT; cmux GPL-3.0-or-later with a separate commercial license available."
     },
     "decision": {
       "title": "Which one is right for you?",

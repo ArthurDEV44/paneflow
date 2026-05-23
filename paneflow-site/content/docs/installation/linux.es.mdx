@@ -28,16 +28,16 @@ e instálalo con `apt`. El paquete declara sus dependencias de sistema
 más), así que `apt` trae todo lo que te falta.
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-x86_64.deb
-sudo apt install ./paneflow-0.2.16-x86_64.deb
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.17/paneflow-0.2.17-x86_64.deb
+sudo apt install ./paneflow-0.2.17-x86_64.deb
 ```
 
 Para ARM64 (Raspberry Pi 5, Ampere, AWS Graviton), cambia `x86_64`
 por `aarch64`:
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-aarch64.deb
-sudo apt install ./paneflow-0.2.16-aarch64.deb
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.17/paneflow-0.2.17-aarch64.deb
+sudo apt install ./paneflow-0.2.17-aarch64.deb
 ```
 
 El binario aterriza en `/usr/bin/paneflow`. Desinstala más tarde con
@@ -49,9 +49,9 @@ El AppImage es un único ejecutable que corre en cualquier Linux
 moderno. Sin root, sin gestor de paquetes, sin paso de instalación.
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-x86_64.AppImage
-chmod +x paneflow-0.2.16-x86_64.AppImage
-./paneflow-0.2.16-x86_64.AppImage
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.17/paneflow-0.2.17-x86_64.AppImage
+chmod +x paneflow-0.2.17-x86_64.AppImage
+./paneflow-0.2.17-x86_64.AppImage
 ```
 
 <Callout type="warn">
@@ -61,7 +61,7 @@ por defecto y rechazarán montar el AppImage. Si ves
 extract-and-run:
 
 ```bash
-./paneflow-0.2.16-x86_64.AppImage --appimage-extract-and-run
+./paneflow-0.2.17-x86_64.AppImage --appimage-extract-and-run
 ```
 
 O instala FUSE 2 una sola vez con `sudo apt install libfuse2t64`.
@@ -72,7 +72,7 @@ y renómbralo:
 
 ```bash
 mkdir -p ~/.local/bin
-mv paneflow-0.2.16-x86_64.AppImage ~/.local/bin/paneflow
+mv paneflow-0.2.17-x86_64.AppImage ~/.local/bin/paneflow
 chmod +x ~/.local/bin/paneflow
 ```
 
@@ -82,8 +82,8 @@ Usa el tarball cuando quieras control total sobre dónde vive el
 binario o cuando estés guionando una instalación no interactiva.
 
 ```bash
-curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.16/paneflow-0.2.16-x86_64.tar.gz
-tar -xzf paneflow-0.2.16-x86_64.tar.gz
+curl -LO https://github.com/ArthurDEV44/paneflow/releases/download/v0.2.17/paneflow-0.2.17-x86_64.tar.gz
+tar -xzf paneflow-0.2.17-x86_64.tar.gz
 mkdir -p ~/.local/bin
 mv paneflow ~/.local/bin/
 chmod +x ~/.local/bin/paneflow
