@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, ClickEvent, Context, Decorations, EventEmitter,
-    IntoElement, MouseButton, Pixels, Point, Render, Styled, Transformation, Window,
-    WindowControlArea, div, percentage, prelude::*, px, svg,
+    FontWeight, IntoElement, MouseButton, Pixels, Render, Styled, Transformation, Window,
+    WindowControlArea, div, percentage, prelude::*, px, rgb, svg,
 };
 
 use super::csd::default_button_layout;
@@ -14,6 +14,17 @@ pub struct TitleBar {
     pub sidebar_width: Pixels,
     /// Set by PaneFlowApp when a newer version is detected.
     pub update_available: Option<UpdateInfo>,
+    /// US-009 (prd-agents-view.md): the current top-level UI mode,
+    /// pushed every render by [`crate::PaneFlowApp::render`]. Drives
+    /// the title-bar toggle icon and (indirectly, via the
+    /// `sidebar_width` field above) the sidebar slot width.
+    pub mode: paneflow_config::schema::AppMode,
+    /// US-009 (prd-agents-view.md): human-readable shortcut for the
+    /// `OpenAgentsView` action (e.g. `"Ctrl+Shift+A"` on Linux,
+    /// `"Cmd+Shift+A"` on macOS). Resolved by PaneFlowApp from the
+    /// live keybinding registry and pushed every render so the
+    /// tooltip stays in sync if the user remaps the binding.
+    pub agents_view_shortcut: Option<String>,
 }
 
 #[derive(Clone)]
@@ -78,14 +89,23 @@ impl TitleBar {
             workspace_name: None,
             sidebar_width: px(220.),
             update_available: None,
+            // US-009 (prd-agents-view.md): defaults that PaneFlowApp
+            // overwrites on every render. Defaulting here means the
+            // title bar still renders sensibly if a future caller
+            // forgets to push the field.
+            mode: paneflow_config::schema::AppMode::Cli,
+            agents_view_shortcut: None,
         }
     }
 }
 
 pub enum TitleBarEvent {
-    ToggleMenu(Point<Pixels>),
-    ToggleProfile(Point<Pixels>),
     CloseRequested,
+    /// US-009 (prd-agents-view.md): user clicked the agents-view
+    /// toggle icon. PaneFlowApp's subscriber dispatches the
+    /// `OpenAgentsView` action so the existing US-008 handler runs
+    /// (no duplication of focus-restore / lazy-mount logic).
+    ToggleAgentsView,
 }
 
 impl EventEmitter<TitleBarEvent> for TitleBar {}
@@ -132,24 +152,6 @@ impl Render for TitleBar {
 
         let right_controls = if is_csd {
             super::csd::render_button_group("r", &layout.right, is_maximized, &supported, on_close)
-        } else {
-            None
-        };
-
-        let menu_button_side = if right_controls.is_some() || left_controls.is_none() {
-            "r"
-        } else {
-            "l"
-        };
-
-        let left_menu_button = if is_csd && menu_button_side == "l" {
-            Some(render_window_menu_button("l", cx))
-        } else {
-            None
-        };
-
-        let right_menu_button = if is_csd && menu_button_side == "r" {
-            Some(render_window_menu_button("r", cx))
         } else {
             None
         };
@@ -326,10 +328,13 @@ impl Render for TitleBar {
                 .flex()
                 .flex_row()
                 .items_center()
+                .justify_center()
                 .gap(px(5.))
                 .px(px(8.))
-                .py(px(3.))
-                .rounded(px(5.))
+                // Match the CLI/Agents toggle pill outer height
+                // (1 border + 2 py + 18 segment + 2 py + 1 border = 24 px).
+                .h(px(24.))
+                .rounded(px(6.))
                 .border_1()
                 .border_color(ui.border)
                 .bg(ui.subtle)
@@ -483,13 +488,13 @@ impl Render for TitleBar {
                 })
             })
             .children(left_controls)
-            .children(left_menu_button)
             .child(brand)
             .child(content)
             .children(update_pill)
-            .child(render_profile_button(cx))
+            // Agents-view toggle sits where the profile button used to;
+            // the profile affordance has been removed.
+            .child(render_agents_toggle_button(self, cx))
             .children(right_controls)
-            .children(right_menu_button)
             .child(
                 div()
                     .absolute()
@@ -502,80 +507,109 @@ impl Render for TitleBar {
     }
 }
 
-/// Render a title bar menu trigger that matches the window control buttons.
-fn render_window_menu_button(side: &'static str, cx: &mut Context<TitleBar>) -> AnyElement {
-    let element_id = format!("wc-menu-{side}");
+/// US-009 (prd-agents-view.md): toggle icon for the Agents view.
+/// Shows the *destination* of the click: a chat-style sessions icon
+/// when in CLI mode (click = go to Agents), a terminal icon when
+/// already in Agents mode (click = go back to CLI). The tooltip
+/// resolves the active binding via the `agents_view_shortcut` field
+/// PaneFlowApp pushes every render -- a user-remapped binding shows
+/// the user's chosen key, not the hardcoded default.
+fn render_agents_toggle_button(title_bar: &TitleBar, cx: &mut Context<TitleBar>) -> AnyElement {
+    use paneflow_config::schema::AppMode;
+    let ui = crate::theme::ui_colors();
+    let in_agents = matches!(title_bar.mode, AppMode::Agents);
+    let shortcut_suffix = title_bar
+        .agents_view_shortcut
+        .as_deref()
+        .map(|s| format!(" ({s})"))
+        .unwrap_or_default();
+    let tooltip_text = format!("Toggle Agents view{shortcut_suffix}");
+
+    let segment = |label: &'static str, is_active: bool, id: &'static str| {
+        let mut seg = div()
+            .id(id)
+            .px(px(8.))
+            .py(px(0.))
+            .h(px(18.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.))
+            .text_size(px(10.))
+            .font_weight(FontWeight::MEDIUM);
+        if is_active {
+            // Active segment: subtle dark grey (`#3a3a3a`) — one step
+            // lighter than the outer pill's `ui.surface`, so the
+            // active mode reads through quiet contrast rather than a
+            // loud chip. Same segmented-control language as Linear /
+            // Vercel / Cursor. White text for max legibility.
+            seg = seg.bg(rgb(0x3a3a3a)).text_color(ui.text);
+        } else {
+            seg = seg
+                .text_color(ui.muted)
+                .cursor_pointer()
+                .hover(|s| {
+                    let ui = crate::theme::ui_colors();
+                    s.text_color(ui.text)
+                })
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|_, _: &ClickEvent, _window, cx| {
+                    cx.stop_propagation();
+                    cx.emit(TitleBarEvent::ToggleAgentsView);
+                }));
+        }
+        seg.child(label).into_any_element()
+    };
 
     div()
-        .id(gpui::SharedString::from(element_id))
+        .id("title-bar-mode-toggle")
         .flex()
+        .flex_row()
         .items_center()
-        .justify_center()
-        .w(px(28.))
-        .h(px(22.))
-        .ml(px(6.))
-        .rounded_sm()
-        .cursor_pointer()
-        .hover(|s| {
-            let ui = crate::theme::ui_colors();
-            s.bg(ui.subtle)
-        })
-        .active(|s| {
-            let ui = crate::theme::ui_colors();
-            s.bg(ui.subtle)
-        })
+        .gap(px(2.))
+        .ml(px(8.))
+        .px(px(2.))
+        .py(px(2.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(ui.border)
+        .bg(ui.surface)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .on_click(cx.listener(|_, event: &ClickEvent, _window, cx| {
-            cx.stop_propagation();
-            cx.emit(TitleBarEvent::ToggleMenu(event.position()));
-        }))
-        .child({
-            let ui = crate::theme::ui_colors();
-            svg()
-                .size(px(16.))
-                .flex_none()
-                .path("icons/menu_2.svg")
-                .text_color(ui.text)
+        .tooltip(move |_window, cx| {
+            cx.new(|_| AgentsTooltip {
+                text: tooltip_text.clone(),
+            })
+            .into()
         })
+        .child(segment("CLI", !in_agents, "title-bar-mode-cli"))
+        .child(segment("Agents", in_agents, "title-bar-mode-agents"))
         .into_any_element()
 }
 
-/// Profile button on the far right of the title bar. Opens a user menu via
-/// `TitleBarEvent::ToggleProfile`; the menu body is rendered by
-/// `PaneFlowApp` (see `app/profile_menu.rs`). Content is a placeholder until
-/// the auth system lands.
-fn render_profile_button(cx: &mut Context<TitleBar>) -> AnyElement {
-    let ui = crate::theme::ui_colors();
-    div()
-        .id("title-bar-profile")
-        .flex()
-        .items_center()
-        .justify_center()
-        .w(px(24.))
-        .h(px(24.))
-        .ml(px(8.))
-        .rounded_full()
-        .border_1()
-        .border_color(ui.border)
-        .bg(ui.subtle)
-        .cursor_pointer()
-        .hover(|s| {
-            let ui = crate::theme::ui_colors();
-            s.bg(ui.surface).border_color(ui.muted)
-        })
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .on_click(cx.listener(|_, event: &ClickEvent, _window, cx| {
-            cx.stop_propagation();
-            cx.emit(TitleBarEvent::ToggleProfile(event.position()));
-        }))
-        .child(
-            svg()
-                .size(px(13.))
-                .flex_none()
-                .path("icons/user.svg")
-                .text_color(ui.muted),
-        )
-        .into_any_element()
+/// US-009 (prd-agents-view.md): minimal styled tooltip card. GPUI's
+/// `.tooltip()` builder returns an [`gpui::AnyView`], so we need
+/// *some* Entity to render the hover text -- Paneflow has no shared
+/// tooltip widget yet (Zed's `ui::Tooltip` lives in a crate we don't
+/// pull in). This struct is intentionally trivial; if a project-wide
+/// tooltip primitive emerges, swap callers to it and delete.
+struct AgentsTooltip {
+    text: String,
+}
+
+impl Render for AgentsTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = crate::theme::active_theme();
+        let ui = crate::theme::ui_colors();
+        div()
+            .px(px(8.))
+            .py(px(4.))
+            .rounded(px(6.))
+            .bg(theme.title_bar_background)
+            .border_1()
+            .border_color(ui.border)
+            .text_color(ui.text)
+            .text_size(px(11.))
+            .child(self.text.clone())
+    }
 }

@@ -52,9 +52,7 @@ impl PaneFlowApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.notif_menu_open = None;
         self.workspace_menu_open = None;
-        self.title_bar_menu_open = None;
         self.profile_menu_open = None;
         if idx < self.workspaces.len() && idx != self.active_idx {
             self.active_idx = idx;
@@ -469,11 +467,38 @@ impl PaneFlowApp {
         cx.notify();
     }
 
+    /// Public entry point wired to the "Close all workspaces" menu
+    /// item. Opens the confirm dialog instead of clearing immediately
+    /// -- a misclick on this item used to wipe a session in one go.
+    /// The actual clear runs in [`Self::execute_close_all_workspaces`]
+    /// after the user clicks Confirm.
     pub(crate) fn close_all_workspaces(&mut self, cx: &mut Context<Self>) {
         if self.workspaces.is_empty() {
             return;
         }
         self.workspace_menu_open = None;
+        self.confirm_close_all_workspaces = true;
+        cx.notify();
+    }
+
+    /// Dismiss the "Close all workspaces" confirm dialog without
+    /// touching state. Idempotent.
+    pub(crate) fn cancel_close_all_workspaces(&mut self, cx: &mut Context<Self>) {
+        if self.confirm_close_all_workspaces {
+            self.confirm_close_all_workspaces = false;
+            cx.notify();
+        }
+    }
+
+    /// Apply the close-all after the user confirms. Same logic as the
+    /// old single-step `close_all_workspaces`: unwatch git dirs, clear
+    /// the Vec, reset selection, persist the session, surface a toast.
+    pub(crate) fn execute_close_all_workspaces(&mut self, cx: &mut Context<Self>) {
+        self.confirm_close_all_workspaces = false;
+        if self.workspaces.is_empty() {
+            cx.notify();
+            return;
+        }
         let count = self.workspaces.len();
         let git_dirs: Vec<_> = self
             .workspaces
@@ -681,7 +706,7 @@ impl PaneFlowApp {
 /// shape: Linux `ErrorKind::NotFound` surfaces the "install xdg-utils"
 /// hint per the unhappy-path AC.
 #[allow(clippy::needless_return)]
-fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+pub(crate) fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         let result = std::process::Command::new("xdg-open").arg(path).spawn();
@@ -741,7 +766,7 @@ fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
 /// search with a small set of well-known per-OS fallbacks, then fall back to
 /// the bare command so `spawn()` still produces a clean `NotFound` error
 /// (now surfaced via toast in `open_workspace_in_editor`).
-fn resolve_editor_binary(command: &str) -> std::path::PathBuf {
+pub(crate) fn resolve_editor_binary(command: &str) -> std::path::PathBuf {
     resolve_editor_binary_in(command, &editor_search_paths())
 }
 

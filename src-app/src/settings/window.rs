@@ -8,34 +8,28 @@
 //! Extracted from `settings_window.rs` per US-021 of the src-app refactor PRD.
 
 use gpui::{
-    App, Bounds, Context, CursorStyle, Decorations, FocusHandle, Focusable, HitboxBehavior,
+    App, Bounds, Context, CursorStyle, Decorations, FocusHandle, Focusable, HitboxBehavior, Hsla,
     InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
     Pixels, Point, Render, ResizeEdge, Styled, Window, WindowControlArea, canvas, div, point,
-    prelude::*, px, rgb, transparent_black,
+    prelude::*, px, transparent_black,
 };
 
 use crate::keybindings;
 use crate::window_chrome::csd::{default_button_layout, resize_edge};
 
-pub(crate) const SETTINGS_SIDEBAR_WIDTH: Pixels = px(180.);
+pub(crate) const SETTINGS_SIDEBAR_WIDTH: Pixels = px(220.);
 pub(crate) const SETTINGS_RESIZE_BORDER: Pixels = px(10.);
 
-pub(crate) fn settings_sidebar_bg() -> gpui::Rgba {
-    let theme = crate::theme::active_theme();
-    if theme.background.l > 0.5 {
-        rgb(0xe8e8e8)
-    } else {
-        rgb(0x141414)
-    }
+/// Sidebar background — same token as the agents sidebar so the two
+/// surfaces feel like one app chrome.
+pub(crate) fn settings_sidebar_bg() -> Hsla {
+    crate::theme::active_theme().title_bar_background
 }
 
-pub(crate) fn settings_content_bg() -> gpui::Rgba {
-    let theme = crate::theme::active_theme();
-    if theme.background.l > 0.5 {
-        rgb(0xefefef)
-    } else {
-        rgb(0x1a1a1a)
-    }
+/// Content area background — same as the sidebar to read as a single
+/// panel (agents view also flattens chrome/content into one color).
+pub(crate) fn settings_content_bg() -> Hsla {
+    crate::theme::active_theme().title_bar_background
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -113,10 +107,11 @@ impl SettingsWindow {
             .child(
                 div()
                     .w_full()
-                    .max_w(px(720.))
-                    .px(px(28.))
-                    .pt(px(24.))
-                    .pb(px(16.))
+                    .max_w(px(640.))
+                    .mx_auto()
+                    .px(px(20.))
+                    .pt(px(20.))
+                    .pb(px(20.))
                     .child(content),
             );
 
@@ -261,7 +256,7 @@ impl Render for SettingsWindow {
                         .text_color(ui.text)
                         .text_sm()
                         .font_weight(gpui::FontWeight::BOLD)
-                        .child("PaneFlow"),
+                        .child("Paneflow"),
                 );
 
             let title = div()

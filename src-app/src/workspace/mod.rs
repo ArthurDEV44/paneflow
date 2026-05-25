@@ -12,7 +12,7 @@ mod git;
 mod ports;
 
 pub use git::{GitDiffStats, detect_branch, find_git_dir, find_workdir};
-pub use ports::detect_ports;
+pub use ports::{detect_ai_processes, detect_ports};
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -67,6 +67,14 @@ pub struct Workspace {
     /// Registered AI agent PIDs, keyed by tool name ("claude", "codex").
     /// Used by the stale PID sweep to detect crashed processes.
     pub agent_pids: std::collections::HashMap<String, u32>,
+    /// AI agent process basenames detected by walking the workspace's
+    /// PTY descendants (Linux `/proc/<pid>/comm`, macOS `libproc::name`).
+    /// Independent of the optional IPC hook handshake -- this is what
+    /// the sidebar pastille reads so the "session active" signal works
+    /// even when Claude Code is launched without the Paneflow shim.
+    /// Refreshed by `detect_ai_processes` from the same scan path that
+    /// already walks descendants for port detection.
+    pub detected_agents: std::collections::HashSet<String>,
     /// Name of the Claude tool currently being used (e.g., "Edit", "Bash").
     /// Set by `ai.tool_use`, cleared on state transitions. For future verbose display.
     pub active_tool_name: Option<String>,
@@ -103,6 +111,7 @@ impl Workspace {
             ai_state: AiToolState::Inactive,
             loader_angle: Rc::new(Cell::new(0.0)),
             agent_pids: std::collections::HashMap::new(),
+            detected_agents: std::collections::HashSet::new(),
             active_tool_name: None,
             custom_buttons: Vec::new(),
         }
@@ -138,6 +147,7 @@ impl Workspace {
             ai_state: AiToolState::Inactive,
             loader_angle: Rc::new(Cell::new(0.0)),
             agent_pids: std::collections::HashMap::new(),
+            detected_agents: std::collections::HashSet::new(),
             active_tool_name: None,
             custom_buttons: Vec::new(),
         }
@@ -173,6 +183,7 @@ impl Workspace {
             ai_state: AiToolState::Inactive,
             loader_angle: Rc::new(Cell::new(0.0)),
             agent_pids: std::collections::HashMap::new(),
+            detected_agents: std::collections::HashSet::new(),
             active_tool_name: None,
             custom_buttons: Vec::new(),
         }
@@ -184,20 +195,6 @@ impl Workspace {
 
     pub fn pane_count(&self) -> usize {
         self.root.as_ref().map_or(0, |r| r.leaf_count())
-    }
-
-    /// Total number of terminal tabs across every pane in the layout.
-    /// A pane holds 1..N mixed tabs (terminals + markdown viewers); this
-    /// counter only reflects terminals, since the sidebar badge advertises
-    /// terminal sessions specifically.
-    pub fn terminal_count(&self, cx: &App) -> usize {
-        let Some(root) = self.root.as_ref() else {
-            return 0;
-        };
-        root.collect_leaves()
-            .iter()
-            .map(|pane| pane.read(cx).terminals().count())
-            .sum()
     }
 
     pub fn focus_first(&self, window: &mut Window, cx: &mut App) {

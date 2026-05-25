@@ -67,6 +67,20 @@ impl PaneFlowApp {
                     custom_buttons: ws.custom_buttons.clone(),
                 })
                 .collect(),
+            // US-007 (prd-agents-view.md): persist project + thread
+            // snapshots and the active project index. US-009 will
+            // additionally persist the actual `AppMode` once
+            // `PaneFlowApp` carries it.
+            projects: self
+                .projects
+                .iter()
+                .map(crate::project::project_to_session)
+                .collect(),
+            active_project: self.active_project_idx,
+            // US-008 (prd-agents-view.md): persist the live UI mode
+            // so US-009's restore branch can reopen Paneflow in the
+            // same screen the user left.
+            mode: self.mode,
         };
         let Some(path) = paneflow_config::loader::session_path() else {
             return;

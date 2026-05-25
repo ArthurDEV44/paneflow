@@ -34,6 +34,24 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "c8f002686780fdfcd
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "c8f002686780fdfcdb9301bf234d0c4bf4563800", features = ["font-kit"] }
 collections = { git = "https://github.com/zed-industries/zed", rev = "c8f002686780fdfcdb9301bf234d0c4bf4563800" }
 
+# Zed markdown rendering pipeline + design-system primitives. Pinned at the
+# same rev as gpui so the workspace graph resolves consistently. Pulls ~51
+# Zed workspace crates transitively (language/theme/ui/lsp/...) — accepted
+# trade-off for visual parity with Zed's agent panel.
+markdown = { git = "https://github.com/zed-industries/zed", rev = "c8f002686780fdfcdb9301bf234d0c4bf4563800" }
+# Bootstraps Zed's `GlobalTheme` at startup. `MarkdownElement::paint` reads
+# `cx.theme().colors()` unconditionally for secondary chrome (borders, panel
+# backgrounds, etc.) regardless of the `MarkdownStyle` we pass in, so the
+# global must exist. `theme::init(LoadThemes::JustBase, cx)` is the minimal
+# bootstrap — no JSON theme bundles, no `theme_settings` integration.
+theme = { git = "https://github.com/zed-industries/zed", rev = "c8f002686780fdfcdb9301bf234d0c4bf4563800" }
+# Zed's design-system primitives (Icon + IconName, Disclosure, Label, ...).
+# Pinned at the same rev as gpui/markdown/theme. Required so the agent-panel
+# thinking + tool-call rows match Zed's exact rendering (`Icon::new(IconName::
+# ToolSearch).size(IconSize::Small).color(Color::Muted)` etc.) instead of
+# hand-rolled svg() paths.
+ui = { git = "https://github.com/zed-industries/zed", rev = "c8f002686780fdfcdb9301bf234d0c4bf4563800" }
+
 # Alacritty terminal emulation (upstream crates.io — migrated from Zed fork in US-005)
 alacritty_terminal = "0.26"
 
@@ -42,6 +60,14 @@ portable-pty = "0.8"
 
 # Internal crates
 paneflow-config = { path = "../crates/paneflow-config" }
+# US-001..US-005 of tasks/prd-agents-view.md: ACP wrappers + discovery +
+# auth-required parsing live in their own crate so the heavy
+# agent-client-protocol dep does not bleed into every src-app module.
+paneflow-acp = { path = "../crates/paneflow-acp" }
+# US-006 + US-011 of tasks/prd-agents-view.md: durable thread persistence
+# (SQLite + zstd). Bundles rusqlite — kept in its own crate so the
+# protocol layer (paneflow-acp) compile feedback loop stays lean.
+paneflow-threads = { path = "../crates/paneflow-threads" }
 # US-003: telemetry plumbing extracted to its own workspace crate so future
 # `paneflow-trust` member can emit events without pulling the desktop binary
 # into its dep graph.
@@ -50,9 +76,26 @@ paneflow-telemetry = { workspace = true }
 # File system watcher (OS-native: inotify/FSEvents/ReadDirectoryChanges)
 notify = "7"
 
+# TOML reader/writer for the Codex CLI's `~/.codex/config.toml`. Used by the
+# composer to mirror the model + reasoning-effort fields into the live pill
+# selectors (same bridge pattern as the JSON one for Claude Code's
+# `~/.claude/settings.json`).
+toml = "0.8"
+
 # Standard deps
 anyhow = "1.0.86"
 futures = "0.3"
+# US-016 (prd-agents-view.md): the ACP SDK (paneflow-acp) is tokio-
+# native. The agents runtime spawns a dedicated current-thread tokio
+# runtime on a background OS thread so it never blocks GPUI's smol
+# event loop. `rt` + `macros` are enough for the runtime + the
+# `agent-client-protocol` futures the SDK relies on.
+tokio = { version = "1", features = ["rt", "macros", "io-util", "sync", "time"] }
+# US-016 needs to construct `InitializeRequest`, `PromptRequest`,
+# `CancelNotification`, etc. directly. The feature mirrors the one
+# in `paneflow-acp` so Cargo unifies on the same compiled artifact.
+agent-client-protocol = { version = "0.12", features = ["unstable_session_model"] }
+tracing = "0.1"
 log = { version = "0.4.16", features = ["kv_unstable_serde", "serde"] }
 env_logger = "0.11"
 serde = { version = "1.0.221", features = ["derive"] }
@@ -75,6 +118,11 @@ rfd = "0.17"
 # + strikethrough + footnotes via the event API (we walk events directly into
 # a GPUI element tree rather than rendering HTML).
 pulldown-cmark = { version = "0.10", default-features = false }
+# US-014 of tasks/prd-agents-view.md: syntax highlighting for fenced
+# code blocks in chat messages. `default-fancy` ships the bundled
+# syntax + theme sets plus the FancyRegex engine (~3 MB binary cost,
+# acceptable per the PRD's Technical Considerations section).
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 ureq = { version = "3", features = ["json"] }
 semver = "1"
 # `uuid` removed as a direct src-app dep in US-003 — only the telemetry id
@@ -111,6 +159,31 @@ interprocess = "2"
 # (widgets/text_input.rs). Already a transitive dep via GPUI, so Cargo
 # deduplicates — the direct declaration is only needed to `use` the trait.
 unicode-segmentation = "1"
+
+# US-019 (prd-agents-view.md) — composer extensions.
+#
+# `ignore` is the gitignore-respecting walker used by ripgrep. Powers the
+# `@`-mention file completion popup (AC: "recursive, gitignore-respecting,
+# debounced 200ms"). Pulled in directly so the agents composer does not have
+# to reimplement .gitignore / .ignore / hidden-file filtering by hand.
+#
+# `base64` encodes image attachments into the ACP `ImageContent.data` field
+# (base64 string with a `mime_type` companion). Already a transitive dep
+# (rusqlite, ureq, ...), so the explicit declaration only adds the public
+# surface, not a new compile unit.
+ignore = "0.4"
+base64 = "0.22"
+
+# US-116 (prd-agent-ui-refactor-2026-Q3.md): cross-platform desktop
+# notifications fired by the agents runtime when a turn ends, refuses,
+# or errors out while the panel is not visible+focused. `notify-rust`
+# 4.x default feature (`z`/zbus) is pure-Rust on Linux and routes
+# through the freedesktop DBus daemon (Wayland + X11). macOS uses the
+# Cocoa `NSUserNotificationCenter` (notarized .app required per
+# `project_macos_signing`). Windows uses the toast API (Win10/11).
+# Keeping the default features avoids the `libdbus-1-dev` system
+# build dep that the legacy `d` feature pulls in.
+notify-rust = "4"
 
 # Linux: enable Wayland + X11 display backends for gpui_platform
 [target.'cfg(target_os = "linux")'.dependencies]

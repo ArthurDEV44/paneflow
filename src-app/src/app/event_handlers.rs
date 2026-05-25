@@ -84,28 +84,6 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) {
         match event {
-            title_bar::TitleBarEvent::ToggleMenu(position) => {
-                self.workspace_menu_open = None;
-                self.notif_menu_open = None;
-                self.profile_menu_open = None;
-                self.title_bar_menu_open = if self.title_bar_menu_open.is_some() {
-                    None
-                } else {
-                    Some(*position)
-                };
-                cx.notify();
-            }
-            title_bar::TitleBarEvent::ToggleProfile(position) => {
-                self.workspace_menu_open = None;
-                self.notif_menu_open = None;
-                self.title_bar_menu_open = None;
-                self.profile_menu_open = if self.profile_menu_open.is_some() {
-                    None
-                } else {
-                    Some(*position)
-                };
-                cx.notify();
-            }
             title_bar::TitleBarEvent::CloseRequested => {
                 self.save_session(cx);
                 // US-013 AC #2 — flush `app_exited` before the process is
@@ -113,6 +91,23 @@ impl PaneFlowApp {
                 // unreachable the worker detaches and quit still proceeds.
                 self.emit_app_exited_and_flush();
                 cx.quit();
+            }
+            title_bar::TitleBarEvent::ToggleAgentsView => {
+                // Direct toggle: dispatching `OpenAgentsView` via the
+                // focus chain is unreliable when a child entity (e.g.
+                // the composer's focused TextArea) intercepts the
+                // action before it reaches the root `on_action`
+                // listener. The two underlying helpers both take only
+                // `&mut Context<Self>` so we can call them straight
+                // from here; the Window-only branch of `handle_open_agents_view`
+                // (`exit_agents_mode` focus restore) is replaced by
+                // `close_agents_view`, which does the same teardown
+                // minus the explicit focus call -- the next mouse /
+                // key event in the CLI tree resolves focus naturally.
+                match self.mode {
+                    paneflow_config::schema::AppMode::Agents => self.close_agents_view(cx),
+                    paneflow_config::schema::AppMode::Cli => self.enter_agents_mode(cx),
+                }
             }
         }
     }
@@ -188,9 +183,7 @@ impl PaneFlowApp {
                 // Mutually exclusive with the other dropdowns; matches the
                 // title-bar / profile / notif menu pattern.
                 self.workspace_menu_open = None;
-                self.title_bar_menu_open = None;
                 self.profile_menu_open = None;
-                self.notif_menu_open = None;
 
                 self.claude_sessions_menu_open = Some(*position);
                 self.claude_sessions_cwd = cwd_str.clone();
@@ -608,18 +601,38 @@ impl PaneFlowApp {
 
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let ports = smol::unblock(move || crate::workspace::detect_ports(&pids)).await;
+                // One descendant walk feeds two consumers: the port
+                // table and the AI-process detector. Doing both in the
+                // same `smol::unblock` keeps the walk single-shot per
+                // scan even though the two scans are logically
+                // independent.
+                let pids_for_scan = pids.clone();
+                let (ports, detected_agents) = smol::unblock(move || {
+                    (
+                        crate::workspace::detect_ports(&pids_for_scan),
+                        crate::workspace::detect_ai_processes(&pids_for_scan),
+                    )
+                })
+                .await;
                 let _ = cx.update(|cx| {
                     this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
                         if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.id == ws_id)
                             && ws.port_scan_generation == generation
-                            && ws.active_ports != ports
                         {
-                            ws.active_ports = ports;
-                            // Clean up service labels for ports that are no longer active
-                            ws.service_labels
-                                .retain(|port, _| ws.active_ports.contains(port));
-                            cx.notify();
+                            let mut changed = false;
+                            if ws.active_ports != ports {
+                                ws.active_ports = ports;
+                                ws.service_labels
+                                    .retain(|port, _| ws.active_ports.contains(port));
+                                changed = true;
+                            }
+                            if ws.detected_agents != detected_agents {
+                                ws.detected_agents = detected_agents;
+                                changed = true;
+                            }
+                            if changed {
+                                cx.notify();
+                            }
                         }
                     })
                 });

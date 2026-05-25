@@ -1,5 +1,5 @@
-//! "Privacy" settings tab — Zed-style telemetry consent toggle plus a
-//! link to the public privacy page (US-014).
+//! "Privacy" settings tab — telemetry consent toggle plus a link to the
+//! public privacy page (US-014).
 //!
 //! The persisted state is tri-state at the schema level
 //! (`Some(true) | Some(false) | None`); in this UI it is rendered as a
@@ -23,7 +23,9 @@ use gpui::{
 };
 
 use crate::config_writer;
-use crate::settings::components::{hairline, section_header, setting_text, toggle_pill};
+use crate::settings::components::{
+    hairline, section_header, setting_card, setting_text, toggle_pill,
+};
 
 use super::super::window::SettingsWindow;
 
@@ -37,19 +39,21 @@ impl SettingsWindow {
         let on = current == Some(true);
         let target_value = !on;
 
-        let row = div()
+        let telemetry_row = div()
             .id("row-telemetry")
             .flex()
             .flex_row()
             .items_center()
             .gap(px(16.))
-            .py(px(12.))
+            .px(px(12.))
+            .py(px(10.))
             .cursor(CursorStyle::PointingHand)
+            .hover(|s| s.bg(ui.subtle))
             .child(setting_text(
                 ui,
                 "Anonymous telemetry",
                 "Send anonymous events (startup, shutdown, updates) to help us \
-                 understand how PaneFlow is used. No paths, no terminal content, \
+                 understand how Paneflow is used. No paths, no terminal content, \
                  and no personal information are transmitted.",
             ))
             .child(toggle_pill(on, ui))
@@ -72,9 +76,10 @@ impl SettingsWindow {
             .flex_row()
             .items_center()
             .gap(px(16.))
-            .py(px(12.))
+            .px(px(12.))
+            .py(px(10.))
             .cursor(CursorStyle::PointingHand)
-            .hover(|s| s.text_color(ui.text))
+            .hover(|s| s.bg(ui.subtle))
             .child(setting_text(
                 ui,
                 "Privacy policy",
@@ -93,12 +98,15 @@ impl SettingsWindow {
                 }
             });
 
+        let card = setting_card(ui)
+            .child(telemetry_row)
+            .child(hairline(ui))
+            .child(privacy_link_row);
+
         div()
             .flex()
             .flex_col()
-            .child(section_header(ui, "TELEMETRY"))
-            .child(row)
-            .child(hairline(ui))
-            .child(privacy_link_row)
+            .child(section_header(ui, "Telemetry"))
+            .child(card)
     }
 }
