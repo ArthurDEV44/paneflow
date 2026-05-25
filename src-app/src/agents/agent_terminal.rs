@@ -43,7 +43,9 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 use agent_client_protocol::schema::{CreateTerminalRequest, TerminalExitStatus, TerminalId};
 use paneflow_acp::{
