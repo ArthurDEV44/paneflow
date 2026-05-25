@@ -36,6 +36,7 @@ pub struct PaneFlowConfig {
     /// 2. The Agents view auto-approves every ACP `RequestPermission`
     ///    for both Claude Code and Codex sessions (any tool kind:
     ///    Read / Edit / Delete / Move / Execute / Search / Fetch).
+    ///
     /// `Some(false)` re-enables the per-tool confirmation prompts.
     /// Per Anthropic's docs bypass mode offers no protection against
     /// prompt injection — opt out (toggle off in Settings -> AI Agent)
