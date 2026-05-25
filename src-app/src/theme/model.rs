@@ -134,6 +134,12 @@ pub struct UiColors {
     pub text: Hsla,       // primary text
     pub accent: Hsla,     // active indicator, highlighted items
     pub preview_bg: Hsla, // preview box background
+    /// Distinct background for the `WaitingForConfirmation` tool-card
+    /// header (US-110 AC #2 of `tasks/prd-agent-ui-refactor-2026-Q3.md`).
+    /// Mirrors Zed's `tool_card_header_bg` -- an accent-tinted variant
+    /// of the card surface that signals "this row is actionable" at a
+    /// glance without redrawing the whole card.
+    pub tool_card_header_bg: Hsla,
 }
 
 /// Derive UI colors from the active terminal theme.
@@ -153,6 +159,11 @@ pub fn ui_colors() -> UiColors {
             text: h(0x27272a),
             accent: h(0x4078f2),
             preview_bg: h(0xfafafa),
+            // Light theme: a slightly warmer surface with a faint
+            // accent tint so the awaiting-confirmation row stands
+            // out from neutral card surfaces without overwhelming
+            // the chat stream.
+            tool_card_header_bg: h(0xe8effb),
         }
     } else {
         UiColors {
@@ -165,6 +176,10 @@ pub fn ui_colors() -> UiColors {
             text: h(0xffffff),
             accent: h(0x89b4fa),
             preview_bg: h(0x141414),
+            // Dark theme: a touch lighter and bluer than the card
+            // surface (`0x212121`) so the accent character of the
+            // awaiting row reads even at a glance.
+            tool_card_header_bg: h(0x2a2e3a),
         }
     };
 

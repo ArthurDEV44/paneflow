@@ -12,7 +12,7 @@ mod pty_session;
 mod scanners;
 mod search;
 mod service_detector;
-mod shell;
+pub mod shell;
 pub mod types;
 pub mod view;
 

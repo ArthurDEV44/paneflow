@@ -1,6 +1,6 @@
-//! "Appearance" settings tab — Zed-style setting row for the font family
-//! selector with an inline-expanding dropdown, plus a live preview pane
-//! and a "Reset to defaults" action button in the section header.
+//! "Appearance" settings tab — font family selector with an inline-
+//! expanding dropdown, plus a live preview pane. "Reset to defaults"
+//! sits inline in the section header.
 //!
 //! Font list enumeration comes from `crate::fonts::load_mono_fonts()`.
 //! Theme selection lives in the title bar menu (`main.rs`).
@@ -11,7 +11,9 @@ use gpui::{
 };
 
 use crate::config_writer;
-use crate::settings::components::{hairline, secondary_button, setting_text};
+use crate::settings::components::{
+    secondary_button, section_header, section_header_with_action, setting_card, setting_text,
+};
 
 use super::super::window::SettingsWindow;
 
@@ -22,44 +24,21 @@ impl SettingsWindow {
         let current_font =
             crate::terminal::element::resolve_font_family(config.font_family.as_deref());
 
-        // Section header with inline "Reset to defaults" action on the right.
-        let header = div()
-            .flex()
-            .flex_col()
-            .gap(px(6.))
-            .mb(px(4.))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(12.))
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(ui.muted)
-                            .child("APPEARANCE"),
-                    )
-                    .child(secondary_button(
-                        "reset-appearance",
-                        "Reset to defaults",
-                        ui,
-                        cx.listener(|this, _: &ClickEvent, _w, cx| {
-                            config_writer::save_config_value(
-                                "font_family",
-                                serde_json::Value::Null,
-                            );
-                            config_writer::save_config_value("theme", serde_json::Value::Null);
-                            crate::theme::invalidate_theme_cache();
-                            this.font_dropdown_open = false;
-                            this.font_search.clear();
-                            cx.notify();
-                        }),
-                    )),
-            )
-            .child(div().h(px(1.)).w_full().bg(ui.border));
+        let reset_btn = secondary_button(
+            "reset-appearance",
+            "Reset to defaults",
+            ui,
+            cx.listener(|this, _: &ClickEvent, _w, cx| {
+                config_writer::save_config_value("font_family", serde_json::Value::Null);
+                config_writer::save_config_value("theme", serde_json::Value::Null);
+                crate::theme::invalidate_theme_cache();
+                this.font_dropdown_open = false;
+                this.font_search.clear();
+                cx.notify();
+            }),
+        );
+
+        let header = section_header_with_action(ui, "Appearance", reset_btn);
 
         // Setting row: font family label/description on the left,
         // compact dropdown trigger on the right.
@@ -93,7 +72,7 @@ impl SettingsWindow {
             .rounded(px(6.))
             .border_1()
             .border_color(ui.border)
-            .bg(ui.surface)
+            .bg(ui.base)
             .cursor(CursorStyle::PointingHand)
             .hover(|s| s.border_color(ui.muted))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -225,7 +204,8 @@ impl SettingsWindow {
             .flex_row()
             .items_center()
             .gap(px(16.))
-            .py(px(12.))
+            .px(px(12.))
+            .py(px(10.))
             .child(setting_text(
                 ui,
                 "Font family",
@@ -234,38 +214,33 @@ impl SettingsWindow {
             ))
             .child(div().flex_shrink_0().child(font_trigger));
 
-        let sections = div().flex().flex_col().child(header).child(font_row);
+        let font_card = setting_card(ui).child(font_row);
 
-        let preview = div()
-            .mt(px(12.))
-            .pt(px(12.))
-            .child(hairline(ui))
-            .child(
-                div()
-                    .mt(px(12.))
-                    .text_size(px(11.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(ui.muted)
-                    .pb(px(8.))
-                    .child("PREVIEW"),
-            )
-            .child(
-                div()
-                    .px(px(16.))
-                    .py(px(12.))
-                    .rounded(px(8.))
-                    .bg(ui.preview_bg)
-                    .border_1()
-                    .border_color(ui.border)
-                    .font_family(current_font.clone())
-                    .text_size(px(13.))
-                    .text_color(ui.text)
-                    .child(
-                        "The quick brown fox jumps over the lazy dog\n\
-                         ABCDEFGHIJKLM 0123456789 {}[]()",
-                    ),
-            );
+        let preview_card = setting_card(ui).child(
+            div()
+                .px(px(16.))
+                .py(px(12.))
+                .font_family(current_font.clone())
+                .text_size(px(13.))
+                .text_color(ui.text)
+                .child(
+                    "The quick brown fox jumps over the lazy dog\n\
+                     ABCDEFGHIJKLM 0123456789 {}[]()",
+                ),
+        );
 
-        sections.child(preview)
+        let preview_section = div()
+            .mt(px(24.))
+            .flex()
+            .flex_col()
+            .child(section_header(ui, "Preview"))
+            .child(preview_card);
+
+        div()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(font_card)
+            .child(preview_section)
     }
 }

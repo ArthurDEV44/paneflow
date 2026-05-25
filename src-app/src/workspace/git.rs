@@ -6,7 +6,7 @@
 //! Extracted from `workspace.rs` per US-030 of the src-app refactor PRD.
 
 /// Git diff statistics for a workspace directory.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitDiffStats {
     pub insertions: usize,
     pub deletions: usize,

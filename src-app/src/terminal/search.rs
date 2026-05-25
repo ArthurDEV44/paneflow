@@ -26,7 +26,10 @@ impl TerminalView {
     }
 
     pub(super) fn reset_terminal(&mut self, cx: &mut Context<Self>) {
-        self.terminal.write_to_pty(b"\x1bc".as_ref());
+        // Explicit `&[u8]` cast: pulling `markdown` adds `palette` to the
+        // dep graph, whose blanket `AsRef` impls on byte arrays make a bare
+        // `b"...".as_ref()` ambiguous.
+        self.terminal.write_to_pty(b"\x1bc".as_slice());
         cx.notify();
     }
 

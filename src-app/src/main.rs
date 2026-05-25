@@ -18,6 +18,8 @@
 //! App shell with sidebar workspace list + main content area.
 
 mod agent_sessions;
+mod agents;
+mod agents_view;
 mod ai_hooks;
 mod ai_types;
 mod app;
@@ -34,6 +36,7 @@ mod markdown;
 mod mouse;
 mod opencode_sessions;
 mod pane;
+mod project;
 mod pty;
 mod runtime_paths;
 mod search;
@@ -49,10 +52,10 @@ mod workspace;
 use crate::window_chrome::title_bar;
 
 use gpui::{
-    App, Bounds, ClickEvent, Context, CursorStyle, Decorations, Entity, FocusHandle,
-    HitboxBehavior, InteractiveElement, IntoElement, MouseButton, Pixels, Point, Render,
-    ResizeEdge, Styled, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, deferred,
-    div, point, prelude::*, px, rgb, size, transparent_black,
+    App, Bounds, Context, CursorStyle, Decorations, Entity, FocusHandle, HitboxBehavior,
+    InteractiveElement, IntoElement, MouseButton, Pixels, Point, Render, ResizeEdge, Styled,
+    Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, point, prelude::*, px,
+    rgb, size, transparent_black,
 };
 use gpui_platform::application;
 use notify::Watcher;
@@ -65,8 +68,8 @@ use crate::workspace::Workspace;
 // references in sibling modules keep compiling without a crate-wide import churn.
 pub use app::actions::*;
 // US-002: items extracted out of `main.rs` are re-exported at crate root
-// so callers like `crate::Notification` / `crate::TOAST_HOLD_MS` keep
-// resolving without an import-rewrite churn across the workspace.
+// so callers like `crate::TOAST_HOLD_MS` keep resolving without an
+// import-rewrite churn across the workspace.
 pub(crate) use app::constants::{
     CLAUDE_SPINNER_FRAMES, CODEX_SPINNER_FRAMES, MAX_CLOSED_PANES, RESIZE_BORDER, SIDEBAR_WIDTH,
     TOAST_HOLD_MS,
@@ -74,7 +77,7 @@ pub(crate) use app::constants::{
 // `TOAST_ENTER_MS` and `TOAST_EXIT_MS` are used only by the toast
 // renderer inside `app::notifications`; not re-exported at crate root.
 pub(crate) use app::drag::{WorkspaceDrag, WorkspaceDragPreview};
-pub(crate) use app::notifications::{Notification, Toast, ToastAction};
+pub(crate) use app::notifications::{Toast, ToastAction};
 // Free helpers extracted to bootstrap.rs but still callable as
 // `crate::system_package_update_command` etc. from sibling modules.
 #[cfg(target_os = "macos")]
@@ -134,8 +137,11 @@ struct PaneFlowApp {
     /// Cached HOME directory for sidebar display (avoids per-render syscall).
     home_dir: String,
     /// Scroll state for the persistent sidebar workspace list.
+    /// Driven by GPUI's `overflow_y_scroll + track_scroll`; the
+    /// visible scroll bar has been removed but the handle is still
+    /// useful so the list keeps a stable wheel-scroll offset across
+    /// re-renders.
     sidebar_scroll: gpui::ScrollHandle,
-    sidebar_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
     /// Effective keybindings (defaults merged with user overrides) for settings display.
     effective_shortcuts: Vec<keybindings::ShortcutEntry>,
     /// Index of the shortcut row currently being recorded (`None` = not recording).
@@ -148,21 +154,8 @@ struct PaneFlowApp {
     font_dropdown_open: bool,
     /// Filter text for the font dropdown.
     font_search: String,
-    /// Notifications from Claude Code state changes (bell menu).
-    notifications: Vec<Notification>,
-    /// Notification bell dropdown anchor (click position). `None` = closed.
-    /// Uses the same `Option<Point<Pixels>>` pattern as `profile_menu_open` /
-    /// `title_bar_menu_open` so every dropdown is rendered via `deferred()`
-    /// and clamped to the window bounds.
-    notif_menu_open: Option<Point<Pixels>>,
-    /// Scroll state for the notification dropdown's list. Re-created on
-    /// each open so a fresh popover starts at offset 0.
-    notif_scroll: gpui::ScrollHandle,
-    notif_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
     /// Workflow action menu currently open in the sidebar (`None` = closed).
     workspace_menu_open: Option<WorkspaceContextMenu>,
-    /// Burger menu currently open in the title bar (`None` = closed).
-    title_bar_menu_open: Option<Point<Pixels>>,
     /// Profile menu currently open at the right of the title bar.
     /// Stores the click position so the menu can anchor near the profile
     /// button. `None` = closed.
@@ -276,6 +269,102 @@ struct PaneFlowApp {
     /// calls `cx.notify()` so the next render picks up the new theme.
     /// `Arc<AtomicBool>` — Send + Sync, lock-free.
     theme_changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// US-005 (prd-agents-view.md): lazily-created Agents view shell
+    /// hosting the auth card + missing-agents empty state + embedded
+    /// login terminal. `Some` while the Agents view is mounted; cleared
+    /// on toggle-back to CLI. US-008 made [`Self::mode`] the source of
+    /// truth for which screen renders; this field is just the entity
+    /// lifecycle holder so subscriptions stay alive.
+    agents_view: Option<gpui::Entity<crate::agents_view::AgentsView>>,
+    /// US-008 (prd-agents-view.md): top-level UI mode. `Cli` = the
+    /// traditional terminal multiplexer; `Agents` = the projects +
+    /// threads sidebar and chat thread view. Toggled by the
+    /// `OpenAgentsView` action (Ctrl/Cmd+Shift+A) and by the title-bar
+    /// icon (US-009). Persisted to / restored from `session.json`
+    /// (US-009 wires the restore branch).
+    pub(crate) mode: paneflow_config::schema::AppMode,
+    /// US-007 (prd-agents-view.md): in-memory list of Agents-view
+    /// projects, persisted to `session.json` via [`save_session`].
+    /// Empty until the user creates their first project (US-011).
+    pub(crate) projects: Vec<crate::project::Project>,
+    /// US-007 (prd-agents-view.md): index into [`Self::projects`] of
+    /// the currently active project. `0` when no projects exist
+    /// (the sidebar reads `projects.is_empty()` to decide whether
+    /// to render anything).
+    pub(crate) active_project_idx: usize,
+    /// US-007 (prd-agents-view.md): index into the active project's
+    /// thread list. `None` when no thread is selected (e.g. the
+    /// user just opened the project and hasn't picked a thread yet).
+    pub(crate) active_thread_idx: Option<usize>,
+    /// US-006 + US-011 (prd-agents-view.md): durable thread store.
+    /// `None` when opening the SQLite file failed at boot (rare; the
+    /// store still recovers from corruption internally) -- the UI
+    /// degrades gracefully: thread metadata stays in `self.projects`
+    /// and lives only for the session.
+    pub(crate) thread_store: Option<paneflow_threads::ThreadStore>,
+    /// US-011 (prd-agents-view.md): which sidebar row is currently in
+    /// inline-rename mode (mirrors [`Self::renaming_idx`] but for the
+    /// Agents domain). `None` when no rename is active.
+    pub(crate) agents_renaming: Option<crate::app::agents_sidebar::AgentsRenameTarget>,
+    /// US-011: the in-progress rename text. Empty when not renaming.
+    pub(crate) agents_rename_text: String,
+    /// US-011: open right-click context menu (project header or
+    /// thread row). `None` when no menu is open.
+    pub(crate) agents_menu_open: Option<crate::app::agents_sidebar::AgentsContextMenu>,
+    /// US-011: pending delete confirmation. The actual mutation
+    /// happens only after the user confirms in the dialog.
+    pub(crate) agents_confirm_delete: Option<crate::app::agents_sidebar::AgentsDeleteTarget>,
+    /// "Close all workspaces" guard. `true` while the confirmation
+    /// dialog is up; flipped back to `false` on cancel/confirm. Cheap
+    /// `bool` instead of `Option<()>` because the action is global --
+    /// there's only ever one pending confirm at a time.
+    pub(crate) confirm_close_all_workspaces: bool,
+    /// US-012 (prd-agents-view.md): live search/filter query for the
+    /// Agents sidebar. Empty string == "no filter, show full list".
+    /// Case-insensitive substring match is applied at render time.
+    pub(crate) agents_filter: String,
+    /// US-012: focus handle for the sidebar search input. Held on
+    /// `PaneFlowApp` so the input's key handler can route Backspace /
+    /// Escape / Down without competing with the global app key chain.
+    pub(crate) agents_filter_focus: FocusHandle,
+    /// `true` while the Agents-view sidebar's "Skills" affordance is
+    /// active. Takes precedence over the thread / welcome views in
+    /// `render_agents_main_body`. Cleared by `show_agents_welcome`,
+    /// `select_thread`, and anywhere else that intends to navigate
+    /// away from the skills page.
+    pub(crate) agents_skills_visible: bool,
+    /// Active tab on the Skills page. Persists across re-opens of
+    /// the Skills view within the session; resets on app restart.
+    pub(crate) agents_skills_tab: crate::agents_view::SkillsTab,
+    /// Name of the skill whose Copy button was just clicked. The
+    /// card flips its label to "Copied" while this matches; a 2 s
+    /// timer reverts the slot. Single-slot — only one "Copied"
+    /// indicator visible at a time, which is fine for a click-driven
+    /// affordance.
+    pub(crate) agents_skills_copied: Option<String>,
+    /// True while the bottom-of-sidebar "Settings" popover is open.
+    /// Shared between CLI and Agents sidebars — only one popover is
+    /// ever visible because only one sidebar is rendered at a time.
+    pub(crate) sidebar_actions_menu_open: bool,
+    /// US-013: lazily-mounted [`agents::thread_view::ThreadView`] for
+    /// the currently selected thread. Pulled from
+    /// [`Self::agents_thread_view_cache`] on switch; cleared (just
+    /// the pointer, not the cache entry) when no thread is selected.
+    pub(crate) agents_thread_view: Option<gpui::Entity<crate::agents::thread_view::ThreadView>>,
+    /// US-013: which `(project_idx, thread_idx)` the current
+    /// [`Self::agents_thread_view`] is displayed for. Used to detect
+    /// "user picked a different thread" and re-bind the pointer.
+    pub(crate) agents_thread_view_for: Option<(usize, usize)>,
+    /// Cache of every ThreadView we have mounted in this session,
+    /// keyed by [`crate::project::Thread::id`] (process-local u64).
+    /// Mirrors Zed's `retained_threads`
+    /// (`agent_ui/src/agent_panel.rs:889`) — thread switches reuse
+    /// the existing entity so the in-memory timeline (including
+    /// reasoning cards and live streaming pumps) survives the
+    /// round trip. Persistence handles cross-restart survival; the
+    /// cache only addresses within-session continuity.
+    pub(crate) agents_thread_view_cache:
+        std::collections::HashMap<u64, gpui::Entity<crate::agents::thread_view::ThreadView>>,
 }
 
 /// Global flag for swap mode, checked by TerminalView to intercept Escape.
@@ -367,7 +456,14 @@ use crate::window_chrome::csd::resize_edge;
 impl Render for PaneFlowApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
-        let main_content = if self.settings_section.is_some() {
+        let main_content = if matches!(self.mode, paneflow_config::schema::AppMode::Agents) {
+            // US-008 (prd-agents-view.md): mode is the source of
+            // truth for which screen renders. The AgentsView entity
+            // is lazily mounted in `handle_open_agents_view` and
+            // released on toggle-back, so `render_agents_main` only
+            // ever sees a real entity here.
+            self.render_agents_main(cx)
+        } else if self.settings_section.is_some() {
             self.render_settings_page(cx).into_any_element()
         } else if let Some(ws) = self.active_workspace() {
             if let Some(root) = &ws.root {
@@ -490,10 +586,28 @@ impl Render for PaneFlowApp {
             }
             _ => None,
         };
+        // US-009 (prd-agents-view.md): push the live mode + the
+        // matching sidebar width (220 px CLI / 280 px Agents) + the
+        // resolved shortcut for the title-bar toggle's tooltip. The
+        // shortcut lookup goes through the keybinding registry so a
+        // user-remapped binding shows the user's chosen key, not the
+        // hardcoded default.
+        let agents_view_shortcut = self
+            .shortcut_for_description("Toggle Agents view")
+            .map(str::to_string);
+        let mode = self.mode;
+        let sidebar_px = match mode {
+            paneflow_config::schema::AppMode::Agents => {
+                crate::app::agents_view_actions::AGENTS_SIDEBAR_WIDTH
+            }
+            paneflow_config::schema::AppMode::Cli => SIDEBAR_WIDTH,
+        };
         self.title_bar.update(cx, |tb, _| {
             tb.workspace_name = ws_name;
-            tb.sidebar_width = px(SIDEBAR_WIDTH);
+            tb.sidebar_width = px(sidebar_px);
             tb.update_available = update_info;
+            tb.mode = mode;
+            tb.agents_view_shortcut = agents_view_shortcut;
         });
 
         // --- CSD resize backdrop ---
@@ -504,14 +618,13 @@ impl Render for PaneFlowApp {
             Decorations::Server => window.set_client_inset(px(0.0)),
         }
 
-        // The inner app content (title bar + sidebar + main)
-        let ui_font = crate::terminal::element::resolve_font_family(
-            paneflow_config::loader::load_config()
-                .font_family
-                .as_deref(),
-        );
+        // The inner app content (title bar + sidebar + main). UI tree
+        // uses IBM Plex Sans (bundled, registered at boot via
+        // `Assets::load_fonts`). TerminalElement resolves its own
+        // monospace family from `paneflow.json#font_family`, so the
+        // terminal output is unaffected.
         let mut app_content = div()
-            .font_family(ui_font)
+            .font_family("IBM Plex Sans")
             .relative()
             .flex()
             .flex_col()
@@ -592,17 +705,28 @@ impl Render for PaneFlowApp {
             }))
             .on_action(cx.listener(Self::handle_start_self_update))
             .on_action(cx.listener(Self::handle_dismiss_update))
+            .on_action(cx.listener(Self::handle_open_agents_view))
             .on_mouse_move(|_e, _, cx| cx.stop_propagation())
             // Title bar (Entity with drag-to-move support)
             .child(self.title_bar.clone())
-            // Sidebar + main content area
+            // Sidebar + main content area. US-008: branch on the
+            // top-level UI mode so the CLI sidebar (workspace list)
+            // and the Agents sidebar (projects + threads, US-010)
+            // swap atomically with the main content.
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .flex_1()
                     .overflow_hidden()
-                    .child(self.render_sidebar(cx))
+                    .child(match self.mode {
+                        paneflow_config::schema::AppMode::Agents => {
+                            self.render_agents_sidebar(window, cx)
+                        }
+                        paneflow_config::schema::AppMode::Cli => {
+                            self.render_sidebar(cx).into_any_element()
+                        }
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -617,74 +741,8 @@ impl Render for PaneFlowApp {
             app_content = app_content.child(self.render_toast(toast, ui));
         }
 
-        if let Some(position) = self.title_bar_menu_open {
-            app_content = app_content.child(
-                deferred(
-                    div()
-                        .id("title-bar-menu")
-                        .occlude()
-                        .absolute()
-                        .left(position.x)
-                        .top(position.y)
-                        .w(px(180.))
-                        .bg(ui.overlay)
-                        .border_1()
-                        .border_color(ui.border)
-                        .rounded(px(8.))
-                        .shadow_lg()
-                        .flex()
-                        .flex_col()
-                        .p(px(4.))
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.title_bar_menu_open = None;
-                            cx.notify();
-                        }))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                        .child(self.render_context_menu_item(
-                            "title-bar-menu-about".into(),
-                            "About PaneFlow",
-                            None,
-                            ui,
-                            cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.title_bar_menu_open = None;
-                                this.show_about_dialog = true;
-                                cx.notify();
-                                cx.stop_propagation();
-                            }),
-                        ))
-                        .child(self.render_context_menu_item(
-                            "title-bar-menu-settings".into(),
-                            "Settings",
-                            None,
-                            ui,
-                            cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.open_settings_window(window, cx);
-                                cx.stop_propagation();
-                            }),
-                        ))
-                        .child(self.render_context_menu_item(
-                            "title-bar-menu-themes".into(),
-                            "Themes…",
-                            None,
-                            ui,
-                            cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.title_bar_menu_open = None;
-                                this.open_theme_picker(window, cx);
-                                cx.stop_propagation();
-                            }),
-                        )),
-                )
-                .priority(3),
-            );
-        }
-
         if let Some(anchor) = self.profile_menu_open {
             app_content = app_content.child(self.render_profile_menu(anchor, window, cx));
-        }
-
-        if let Some(anchor) = self.notif_menu_open {
-            app_content = app_content.child(self.render_notif_menu(anchor, window, cx));
         }
 
         if let Some(anchor) = self.claude_sessions_menu_open {
@@ -708,6 +766,24 @@ impl Render for PaneFlowApp {
         {
             app_content =
                 app_content.child(self.render_workspace_context_menu(menu, ui, window, cx));
+        }
+
+        // US-011 (prd-agents-view.md): Agents-mode right-click context
+        // menu (project header or thread row) + delete-confirmation
+        // dialog. Both render only when the corresponding state field
+        // is `Some`; the dispatcher fns guard against stale indices.
+        if let Some(menu) = self.agents_menu_open
+            && let Some(el) =
+                crate::app::agents_sidebar::render_open_agents_menu(self, menu, ui, window, cx)
+        {
+            app_content = app_content.child(el);
+        }
+        if let Some(target) = self.agents_confirm_delete {
+            app_content =
+                app_content.child(self.render_agents_confirm_delete_dialog(target, ui, cx));
+        }
+        if self.confirm_close_all_workspaces {
+            app_content = app_content.child(self.render_close_all_confirm_dialog(ui, cx));
         }
 
         // Outer backdrop div — provides the invisible resize border zone for CSD
@@ -960,6 +1036,8 @@ fn main() {
             let config = paneflow_config::loader::load_config();
             keybindings::apply_keybindings(cx, &config.shortcuts);
             widgets::text_input::register_keybindings(cx);
+            // US-016: agents-view composer textarea bindings.
+            widgets::text_area::register_keybindings(cx);
 
             // Register every embedded `.ttf` under `assets/fonts/` BEFORE
             // any window opens, so GPUI's text system can resolve the
@@ -985,6 +1063,93 @@ fn main() {
                     "Assets::load_fonts failed: {e}; text rendering may fail on \
                      systems without a system monospace font"
                 );
+            }
+
+            // Bootstrap Zed's `GlobalTheme` so the `markdown` crate's
+            // paint pass can resolve `cx.theme().colors()` (borders,
+            // panel backgrounds, etc.). Without this call, opening a
+            // thread panics with `no state of type theme::GlobalTheme
+            // exists`. `LoadThemes::JustBase` skips the JSON theme
+            // bundles and `theme_settings` integration — Paneflow's own
+            // `crate::theme` module remains the source of truth for
+            // application chrome; this global only feeds the markdown
+            // renderer's secondary decorations. The `::theme` (root)
+            // path disambiguates against this crate's local
+            // `crate::theme` module.
+            ::theme::init(::theme::LoadThemes::JustBase, cx);
+
+            // Register a minimal `ThemeSettingsProvider`. The `markdown`
+            // crate re-uses Zed's `ui` components (`Label`, `CopyButton`,
+            // `Checkbox`, `Tooltip`, etc.) in its paint pass; those
+            // components call `theme::theme_settings(cx)` which expects
+            // `GlobalThemeSettingsProvider` to be registered. Without
+            // this call, rendering any markdown body that contains a
+            // code block or task-list checkbox panics with `no state of
+            // type GlobalThemeSettingsProvider exists`.
+            //
+            // We don't pull the heavy `theme_settings` crate (which
+            // would drag in `settings`, `language`, etc.); instead we
+            // implement the trait directly with fixed values that match
+            // Paneflow's UI (IBM Plex Sans / Lilex, 13 px). The
+            // markdown renderer only reads font_family and font size
+            // for its embedded ui components — anything else flows
+            // through the `MarkdownStyle` we pass to `MarkdownElement`.
+            struct PaneflowThemeSettingsProvider {
+                ui_font: gpui::Font,
+                buffer_font: gpui::Font,
+            }
+            impl ::theme::ThemeSettingsProvider for PaneflowThemeSettingsProvider {
+                fn ui_font<'a>(&'a self, _: &'a gpui::App) -> &'a gpui::Font {
+                    &self.ui_font
+                }
+                fn buffer_font<'a>(&'a self, _: &'a gpui::App) -> &'a gpui::Font {
+                    &self.buffer_font
+                }
+                fn ui_font_size(&self, _: &gpui::App) -> gpui::Pixels {
+                    gpui::px(13.)
+                }
+                fn buffer_font_size(&self, _: &gpui::App) -> gpui::Pixels {
+                    gpui::px(13.)
+                }
+                fn ui_density(&self, _: &gpui::App) -> ::theme::UiDensity {
+                    ::theme::UiDensity::Default
+                }
+            }
+            ::theme::set_theme_settings_provider(
+                Box::new(PaneflowThemeSettingsProvider {
+                    ui_font: gpui::Font {
+                        family: "IBM Plex Sans".into(),
+                        features: Default::default(),
+                        fallbacks: None,
+                        weight: Default::default(),
+                        style: Default::default(),
+                    },
+                    buffer_font: gpui::Font {
+                        family: "Lilex".into(),
+                        features: Default::default(),
+                        fallbacks: None,
+                        weight: Default::default(),
+                        style: Default::default(),
+                    },
+                }),
+                cx,
+            );
+
+            // Override the table-cell colors the `markdown` crate reads
+            // from the global theme. Its table renderer paints header
+            // rows with `cx.theme().colors().title_bar_background` and
+            // alternating body rows with `panel_background` — Zed's
+            // defaults are blue-tinted (One Dark). We replace both
+            // with neutral greys so tables render monochrome and blend
+            // with Paneflow's terminal-mode palette.
+            {
+                use ::theme::ActiveTheme as _;
+                let mut new_theme = (**cx.theme()).clone();
+                new_theme.styles.colors.title_bar_background = gpui::rgb(0x1f1f1f).into();
+                new_theme.styles.colors.panel_background = gpui::rgb(0x1c1c1c).into();
+                new_theme.styles.colors.border = gpui::rgb(0x2f2f2f).into();
+                new_theme.styles.colors.border_variant = gpui::rgb(0x2a2a2a).into();
+                ::theme::GlobalTheme::update_theme(cx, std::sync::Arc::new(new_theme));
             }
 
             // US-012: macOS native menu bar. On Linux/Windows the call is
@@ -1047,6 +1212,33 @@ fn main() {
                             false
                         }
                     });
+                    // US-116 (prd-agent-ui-refactor-2026-Q3.md): track
+                    // window-activation state in a process-wide
+                    // AtomicBool the agents notifications module reads
+                    // when deciding whether to fire an OS toast. The
+                    // observer keeps a Subscription alive that drops
+                    // with the entity, so no manual teardown is needed.
+                    view.update(cx, |_, cx| {
+                        let subscription = cx.observe_window_activation(
+                            window,
+                            |_, window, _cx| {
+                                crate::agents::notifications::set_window_active(
+                                    window.is_window_active(),
+                                );
+                            },
+                        );
+                        // Detach: the closure side-effect is what we
+                        // want, and we never need to manually drop
+                        // this subscription -- the entity outlives
+                        // every render that could care.
+                        subscription.detach();
+                    });
+                    // Prime the gate with the current state in case the
+                    // first activation tick is delayed past the first
+                    // runtime event (e.g. a tool the user launched
+                    // before app focus stabilises).
+                    crate::agents::notifications::set_window_active(window.is_window_active());
+
                     view.update(cx, |app, cx| {
                         if !app.workspaces.is_empty() {
                             app.workspaces[0].focus_first(window, cx);

@@ -83,6 +83,19 @@ actions!(
         MarkdownFindNext,
         MarkdownFindPrev,
         MarkdownFindDismiss,
-        MarkdownCopy
+        MarkdownCopy,
+        // US-005 of tasks/prd-agents-view.md — toggles the lightweight
+        // Agents-view shell that hosts the auth-required card and the
+        // missing-agents empty state. US-008 will repurpose the same
+        // action as the full AppMode toggle.
+        OpenAgentsView,
+        // Zed-parity (2026-05-25): review actions for AI-applied file
+        // edits. KeepEdits accepts every unreviewed change in the
+        // current thread; RejectEdits reverts each one on disk
+        // (fs::write old_text, or fs::remove_file when old_text is
+        // None). Bound to Shift+Alt+Y / Shift+Alt+Z to match Zed's
+        // default keymap so muscle memory transfers.
+        KeepEdits,
+        RejectEdits
     ]
 );

@@ -283,3 +283,94 @@ pub fn detect_ports(pids: &[u32]) -> Vec<u16> {
 pub fn detect_ports(_pids: &[u32]) -> Vec<u16> {
     vec![]
 }
+
+/// Names of AI agent processes Paneflow surfaces in the sidebar. The
+/// match is exact against the process basename (Linux `/proc/<pid>/comm`,
+/// macOS `libproc::name`), so `claude-code-cli` or a wrapper script do
+/// not falsely trigger. Add a new entry here when adding a new agent
+/// kind (e.g. `aider`, `cursor-agent`) -- the sidebar pastille + tooltip
+/// pick it up automatically.
+const AI_PROCESS_NAMES: &[&str] = &["claude", "codex", "opencode"];
+
+/// Walk the descendants of each PID and return the set of recognised AI
+/// agent process names currently running. The set drives the workspace
+/// card's "session active" pastille without depending on the optional
+/// IPC hook handshake (which only fires if Claude Code's installed
+/// hook config points at our shim).
+///
+/// Cross-platform contract: an empty set means "no live AI session
+/// detected", same on every OS. On Windows the function always returns
+/// an empty set (we do not walk descendants there yet) -- the pastille
+/// degrades to "off" rather than misfiring.
+#[cfg(target_os = "linux")]
+pub fn detect_ai_processes(pids: &[u32]) -> std::collections::HashSet<String> {
+    let mut found = std::collections::HashSet::new();
+    if pids.is_empty() {
+        return found;
+    }
+    let mut visited = std::collections::HashSet::new();
+    for &root in pids {
+        for descendant in collect_descendant_pids(root) {
+            if !visited.insert(descendant) {
+                continue;
+            }
+            // `/proc/<pid>/comm` is the process's argv[0] basename
+            // (kernel-truncated to TASK_COMM_LEN = 16). Both `claude`
+            // and `codex` fit comfortably so the truncation never bites.
+            let path = format!("/proc/{descendant}/comm");
+            let Ok(name) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let trimmed = name.trim();
+            if let Some(matched) = AI_PROCESS_NAMES.iter().find(|n| **n == trimmed) {
+                found.insert((*matched).to_string());
+                if found.len() == AI_PROCESS_NAMES.len() {
+                    return found;
+                }
+            }
+        }
+    }
+    found
+}
+
+#[cfg(target_os = "macos")]
+pub fn detect_ai_processes(pids: &[u32]) -> std::collections::HashSet<String> {
+    use libproc::libproc::proc_pid::name;
+
+    let mut found = std::collections::HashSet::new();
+    if pids.is_empty() {
+        return found;
+    }
+    let mut visited = std::collections::HashSet::new();
+    for &root in pids {
+        for descendant in collect_descendant_pids_macos(root) {
+            if !visited.insert(descendant) {
+                continue;
+            }
+            // `libproc::name` returns the kernel's `p_comm` field on
+            // macOS — same semantics as Linux's `/proc/<pid>/comm` and
+            // also length-limited (`MAXCOMLEN` = 16). The lookup
+            // silently skips PIDs the caller has no entitlement for
+            // (sandbox / SIP) rather than panicking on EPERM.
+            let Ok(proc_name) = name(descendant as i32) else {
+                continue;
+            };
+            let trimmed = proc_name.trim();
+            if let Some(matched) = AI_PROCESS_NAMES.iter().find(|n| **n == trimmed) {
+                found.insert((*matched).to_string());
+                if found.len() == AI_PROCESS_NAMES.len() {
+                    return found;
+                }
+            }
+        }
+    }
+    found
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn detect_ai_processes(_pids: &[u32]) -> std::collections::HashSet<String> {
+    // Windows / other: no descendant-walk implementation yet. The
+    // sidebar pastille stays off rather than reporting a false negative
+    // disguised as a true negative. Tracked in the Windows port PRD.
+    std::collections::HashSet::new()
+}

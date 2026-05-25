@@ -285,6 +285,29 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "markdown_find_dismiss",
         context: Some("MarkdownSearch"),
     },
+    // US-005 (prd-agents-view.md): `secondary-shift-a` is Ctrl+Shift+A
+    // on Linux/Windows and Cmd+Shift+A on macOS. US-008 will reuse the
+    // same binding when it lands the full AppMode toggle.
+    DefaultBinding {
+        key: "secondary-shift-a",
+        action_name: "open_agents_view",
+        context: None,
+    },
+    // Zed-parity: review of AI-applied edits. Shift+Alt+Y keeps every
+    // unreviewed edit, Shift+Alt+Z reverts them on disk. Mirrors Zed's
+    // `agent::KeepAll` / `agent::RejectAll` in
+    // `assets/keymaps/default.json:208-210`. Global context so the chord
+    // fires from anywhere in the Agents view.
+    DefaultBinding {
+        key: "shift-alt-y",
+        action_name: "keep_edits",
+        context: None,
+    },
+    DefaultBinding {
+        key: "shift-alt-z",
+        action_name: "reject_edits",
+        context: None,
+    },
 ];
 
 /// Platform-specific default bindings layered on top of [`DEFAULTS`].

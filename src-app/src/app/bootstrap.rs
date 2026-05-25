@@ -122,11 +122,48 @@ impl PaneFlowApp {
         // runs too early in bootstrap to call `self.telemetry`.
         let (saved_session, session_corruption) = Self::load_session();
 
+        // US-009 (prd-agents-view.md): pull the Agents-view bits out of
+        // the saved session BEFORE the workspaces match consumes it.
+        // The mode + project list are applied to the struct literal
+        // below; a no-agents-installed fallback runs afterwards so the
+        // UI never opens onto a blank Agents view if discovery returns
+        // empty (e.g. user uninstalled `bunx` between launches).
+        let restored_mode = saved_session.as_ref().map(|s| s.mode).unwrap_or_default();
+        let restored_projects: Vec<crate::project::Project> = saved_session
+            .as_ref()
+            .map(|s| {
+                s.projects
+                    .iter()
+                    .map(crate::project::project_from_session)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Bump the in-memory ID counters past anything the session
+        // restored so a freshly-created project/thread can never
+        // collide with a restored ID (US-007's `bump_id_counters_to`
+        // is idempotent and a no-op when the counters already lead).
+        crate::project::bump_id_counters_to(&restored_projects);
+        let restored_active_project = saved_session
+            .as_ref()
+            .map(|s| {
+                // Clamp to a valid index: a session.json hand-edit (or
+                // a future migration that drops projects) shouldn't
+                // leave `active_project_idx` pointing past the end.
+                if restored_projects.is_empty() {
+                    0
+                } else {
+                    s.active_project.min(restored_projects.len() - 1)
+                }
+            })
+            .unwrap_or(0);
+
         let (workspaces, active_idx) = match saved_session {
             Some(session) => {
                 log::info!(
-                    "restoring session: {} workspace(s)",
-                    session.workspaces.len()
+                    "restoring session: {} workspace(s), {} project(s), mode={:?}",
+                    session.workspaces.len(),
+                    session.projects.len(),
+                    session.mode
                 );
                 Self::restore_workspaces(&session, cx)
             }
@@ -278,6 +315,15 @@ impl PaneFlowApp {
                                             changed = true;
                                         }
                                     }
+                                    for p in &mut app.projects {
+                                        if p.cwd != *cwd {
+                                            continue;
+                                        }
+                                        if p.git_stats != *stats {
+                                            p.git_stats = stats.clone();
+                                            changed = true;
+                                        }
+                                    }
                                 }
                                 if changed {
                                     cx.notify();
@@ -324,13 +370,25 @@ impl PaneFlowApp {
                 loop {
                     smol::Timer::after(std::time::Duration::from_secs(30)).await;
 
-                    // Phase 1: collect CWDs (cheap, main thread)
+                    // Phase 1: collect CWDs from workspaces + agents
+                    // projects (cheap, main thread). Dedup so a cwd
+                    // shared by a workspace and a project only fires
+                    // one subprocess per tick.
                     let cwds = cx.update(|cx| {
                         this.update(cx, |app: &mut Self, _cx: &mut Context<Self>| {
-                            app.workspaces
-                                .iter()
-                                .map(|ws| ws.cwd.clone())
-                                .collect::<Vec<String>>()
+                            let mut seen = std::collections::HashSet::new();
+                            let mut out = Vec::new();
+                            for ws in &app.workspaces {
+                                if seen.insert(ws.cwd.clone()) {
+                                    out.push(ws.cwd.clone());
+                                }
+                            }
+                            for p in &app.projects {
+                                if seen.insert(p.cwd.clone()) {
+                                    out.push(p.cwd.clone());
+                                }
+                            }
+                            out
                         })
                     });
                     let cwds = match cwds {
@@ -366,6 +424,15 @@ impl PaneFlowApp {
                                     }
                                     if ws.git_stats != *stats {
                                         ws.git_stats = stats.clone();
+                                        changed = true;
+                                    }
+                                }
+                                for p in &mut app.projects {
+                                    if p.cwd != *cwd {
+                                        continue;
+                                    }
+                                    if p.git_stats != *stats {
+                                        p.git_stats = stats.clone();
                                         changed = true;
                                     }
                                 }
@@ -432,6 +499,29 @@ impl PaneFlowApp {
         let posthog_api_key = option_env!("POSTHOG_API_KEY").unwrap_or("");
         let posthog_host = option_env!("POSTHOG_HOST").unwrap_or("https://eu.i.posthog.com");
         let telemetry_config_snapshot = paneflow_config::loader::load_config();
+        // US-103: seed the agent-panel config slot from the initial
+        // load so the first render of the Agents view honors the
+        // user's `max_content_width` without waiting for a watcher
+        // event. Subsequent reloads route through
+        // `apply_pending_config` in `app/ipc_handler.rs`.
+        crate::agents::panel_config::install_agent_panel_config(
+            telemetry_config_snapshot
+                .agent_panel
+                .clone()
+                .unwrap_or_default(),
+        );
+        // US-111: seed the tool-permissions slot + the default-shell
+        // cache so the first Agents-view render auto-resolves any
+        // patterns the user already persisted and the permission row
+        // can hide "Allow Always" for non-POSIX shells without a
+        // disk read per render. Subsequent reloads route through the
+        // same path in `apply_pending_config`.
+        crate::agents::panel_config::install_tool_permissions(
+            telemetry_config_snapshot.tool_permissions.clone(),
+        );
+        crate::agents::panel_config::install_default_shell(
+            telemetry_config_snapshot.default_shell.clone(),
+        );
         let telemetry_enabled_last = telemetry_config_snapshot
             .telemetry
             .as_ref()
@@ -524,7 +614,7 @@ impl PaneFlowApp {
             }
         }
 
-        let app = Self {
+        let mut app = Self {
             workspaces,
             active_idx,
             renaming_idx: None,
@@ -540,7 +630,6 @@ impl PaneFlowApp {
             settings_drag: None,
             home_dir: std::env::var("HOME").unwrap_or_default(),
             sidebar_scroll: gpui::ScrollHandle::new(),
-            sidebar_drag: None,
             effective_shortcuts: keybindings::effective_shortcuts(
                 &paneflow_config::loader::load_config().shortcuts,
             ),
@@ -549,12 +638,7 @@ impl PaneFlowApp {
             mono_font_names: Vec::new(),
             font_dropdown_open: false,
             font_search: String::new(),
-            notifications: Vec::new(),
-            notif_menu_open: None,
-            notif_scroll: gpui::ScrollHandle::new(),
-            notif_drag: None,
             workspace_menu_open: None,
-            title_bar_menu_open: None,
             profile_menu_open: None,
             claude_sessions_menu_open: None,
             claude_sessions: Vec::new(),
@@ -590,7 +674,92 @@ impl PaneFlowApp {
             // US-006: shared signal flipped by the theme watcher's debounce
             // thread; drained by the 50 ms IPC loop to schedule a repaint.
             theme_changed,
+            // US-005 (prd-agents-view.md): closed by default; created
+            // lazily when the user dispatches `OpenAgentsView`.
+            agents_view: None,
+            // US-008 + US-009 (prd-agents-view.md): start in the
+            // mode the user left on quit. A no-agents fallback below
+            // can flip this back to `Cli` if discovery comes up empty.
+            mode: restored_mode,
+            // US-007 + US-009 (prd-agents-view.md): rehydrate project
+            // metadata from session.json. Empty for users on first
+            // launch and for legacy session.json (the `#[serde(default)]`
+            // annotations make missing fields resolve to empty).
+            projects: restored_projects,
+            active_project_idx: restored_active_project,
+            active_thread_idx: None,
+            // US-006 + US-011 (prd-agents-view.md): open the durable
+            // thread store. Failure is non-fatal -- the UI degrades
+            // to "in-memory only for this session". Corruption is
+            // handled inside `ThreadStore::open_default` (it renames
+            // the bad file aside and starts fresh).
+            thread_store: match paneflow_threads::ThreadStore::open_default() {
+                Ok((store, outcome)) => {
+                    if matches!(
+                        outcome,
+                        paneflow_threads::OpenOutcome::RecoveredFromCorruption { .. }
+                    ) {
+                        // Surface the corruption recovery to the user
+                        // via toast once the app is up (deferred to
+                        // post-construction so `show_toast` is callable).
+                        log::warn!("paneflow-threads: recovered from corrupted threads.db");
+                    }
+                    Some(store)
+                }
+                Err(err) => {
+                    log::warn!("paneflow-threads: could not open store: {err}");
+                    None
+                }
+            },
+            // US-011: rename / context-menu / confirm-delete state.
+            // All start empty; the affordance handlers set them in
+            // response to user actions.
+            agents_renaming: None,
+            agents_rename_text: String::new(),
+            agents_menu_open: None,
+            agents_confirm_delete: None,
+            confirm_close_all_workspaces: false,
+            // US-012: sidebar search/filter. Empty filter == show
+            // everything; the focus handle is held here so the input
+            // captures Backspace/Escape/Down without conflicting with
+            // the global app key chain.
+            agents_filter: String::new(),
+            agents_filter_focus: cx.focus_handle(),
+            agents_skills_visible: false,
+            agents_skills_tab: crate::agents_view::SkillsTab::default(),
+            agents_skills_copied: None,
+            sidebar_actions_menu_open: false,
+            // US-013: thread view entity. Lazily mounted when the user
+            // selects a thread in the sidebar; pulled from the cache
+            // on switch so the in-memory timeline (reasoning cards,
+            // streaming pumps) survives the round-trip.
+            agents_thread_view: None,
+            agents_thread_view_for: None,
+            agents_thread_view_cache: std::collections::HashMap::new(),
         };
+
+        // US-009 (prd-agents-view.md): no-agents fallback. If the
+        // user quit in Agents mode but no ACP agents are installed
+        // anymore (e.g. they uninstalled `bunx` or claude-code-acp),
+        // flip back to CLI mode and queue a one-shot toast so the
+        // window doesn't open onto a blank Agents view.
+        if matches!(app.mode, paneflow_config::schema::AppMode::Agents)
+            && paneflow_acp::AgentDiscovery::new().list().is_empty()
+        {
+            log::info!("agents-view restore: no ACP agents on PATH; falling back to CLI mode");
+            app.mode = paneflow_config::schema::AppMode::Cli;
+            app.show_toast("No AI agents detected, opening terminal view", cx);
+        }
+
+        // US-116 (prd-agent-ui-refactor-2026-Q3.md): seed the panel-
+        // visibility gate from the restored mode. Without this seed,
+        // a session that quit in Agents mode reopens with the gate's
+        // default `false`, so the first turn-end notification would
+        // fire even though the panel is on-screen.
+        crate::agents::notifications::set_agents_panel_visible(matches!(
+            app.mode,
+            paneflow_config::schema::AppMode::Agents
+        ));
 
         // US-013 AC #1 — fire `app_started` once per launch. `Null` clients
         // (opt-out / unanswered consent / env kill-switch) no-op; only a

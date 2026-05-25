@@ -96,19 +96,22 @@ impl PaneFlowApp {
         div()
             .flex()
             .flex_col()
-            .px(px(12.))
-            .py(px(8.))
-            .gap(px(2.))
+            .px(px(14.))
+            .pt(px(10.))
+            .pb(px(8.))
+            .gap(px(3.))
+            .border_b_1()
+            .border_color(ui.border)
             .child(
                 div()
-                    .text_size(px(12.))
+                    .text_size(px(13.))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(ui.text)
                     .child("AI agent sessions"),
             )
             .child(
                 div()
-                    .text_size(px(10.))
+                    .text_size(px(11.))
                     .text_color(ui.muted)
                     .overflow_x_hidden()
                     .whitespace_nowrap()
@@ -130,7 +133,7 @@ impl PaneFlowApp {
             .items_center()
             .gap(px(4.))
             .px(px(8.))
-            .pb(px(8.))
+            .py(px(8.))
             .border_b_1()
             .border_color(ui.border);
 
@@ -188,13 +191,15 @@ impl PaneFlowApp {
             .py(px(4.))
             .rounded(px(6.))
             .cursor_pointer()
-            .text_size(px(11.))
-            .when(is_active, |d| d.bg(ui.subtle).text_color(ui.text))
+            .text_size(px(12.))
+            .font_weight(gpui::FontWeight::NORMAL)
+            .when(is_active, |d| d.bg(ui.surface).text_color(ui.text))
             .when(!is_active, |d| {
                 d.text_color(ui.muted).hover(|s| s.bg(ui.subtle))
             })
             .on_click(on_click);
 
+        let badge_bg = if is_active { ui.subtle } else { ui.surface };
         pill.child(div().child(label))
             .child(
                 div()
@@ -203,7 +208,7 @@ impl PaneFlowApp {
                     .rounded(px(4.))
                     .text_size(px(10.))
                     .text_color(ui.muted)
-                    .bg(ui.overlay)
+                    .bg(badge_bg)
                     .child(count_label),
             )
             .into_any_element()
@@ -250,12 +255,12 @@ impl PaneFlowApp {
                 .flex()
                 .flex_col()
                 .p(px(8.))
-                .gap(px(4.))
+                .gap(px(6.))
                 .child(
                     div()
                         .px(px(8.))
-                        .py(px(10.))
-                        .text_size(px(11.))
+                        .py(px(12.))
+                        .text_size(px(12.))
                         .text_color(ui.muted)
                         .text_align(gpui::TextAlign::Center)
                         .child(empty_message(self.claude_sessions_cwd.is_some(), agent)),
@@ -268,11 +273,10 @@ impl PaneFlowApp {
             .id("claude-sessions-list")
             .flex()
             .flex_col()
-            .pl(px(4.))
             .pr(SCROLLBAR_GUTTER + px(2.))
-            .py(px(4.))
+            .py(px(6.))
             .gap(px(2.))
-            .max_h(ROW_HEIGHT * (MAX_VISIBLE_ROWS as f32) + px(8.))
+            .max_h(ROW_HEIGHT * (MAX_VISIBLE_ROWS as f32) + px(12.))
             .overflow_y_scroll()
             .track_scroll(&self.claude_sessions_scroll);
 
@@ -327,7 +331,7 @@ impl PaneFlowApp {
                 div()
                     .flex()
                     .flex_col()
-                    .p(px(4.))
+                    .p(px(6.))
                     .child(self.sessions_menu_start_row(agent, ui, cx)),
             )
             .into_any_element()
@@ -393,10 +397,11 @@ impl PaneFlowApp {
             .flex()
             .flex_col()
             .h(ROW_HEIGHT)
+            .mx(px(6.))
             .px(px(8.))
             .py(px(6.))
             .gap(px(2.))
-            .rounded(px(4.))
+            .rounded(px(6.))
             .cursor_pointer()
             .hover(|s| {
                 let ui = crate::theme::ui_colors();
@@ -411,6 +416,7 @@ impl PaneFlowApp {
             .child(
                 div()
                     .text_size(px(12.))
+                    .font_weight(gpui::FontWeight::NORMAL)
                     .text_color(ui.text)
                     .overflow_x_hidden()
                     .whitespace_nowrap()
@@ -432,11 +438,6 @@ impl PaneFlowApp {
             SessionAgent::Codex => "Start a new Codex session",
             SessionAgent::OpenCode => "Start a new OpenCode session",
         };
-        let cmd = match agent {
-            SessionAgent::Claude => "claude",
-            SessionAgent::Codex => "codex",
-            SessionAgent::OpenCode => "opencode",
-        };
         div()
             .id(SharedString::from(format!(
                 "{}-sessions-start",
@@ -446,19 +447,21 @@ impl PaneFlowApp {
             .flex_row()
             .items_center()
             .justify_center()
-            .h(px(28.))
-            .px(px(8.))
-            .rounded(px(4.))
+            .h(px(30.))
+            .px(px(10.))
+            .rounded(px(6.))
             .cursor_pointer()
-            .text_size(px(11.))
+            .text_size(px(12.))
+            .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(ui.text)
             .bg(ui.subtle)
             .hover(|s| {
                 let ui = crate::theme::ui_colors();
-                s.bg(ui.surface)
+                s.bg(ui.border)
             })
             .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                this.send_command_to_sessions_pane(cmd, cx);
+                let cmd = fresh_session_command(agent);
+                this.send_command_to_sessions_pane(&cmd, cx);
                 this.close_claude_sessions_menu(cx);
                 cx.stop_propagation();
             }))
@@ -533,10 +536,46 @@ fn agent_id_prefix(agent: SessionAgent) -> &'static str {
     }
 }
 
+/// True when Settings -> AI Agent has `claude_code_bypass_permissions`
+/// toggled on. Read at click time so a flip in Settings while the
+/// popover is open takes effect on the next click without a restart.
+fn claude_bypass_enabled() -> bool {
+    paneflow_config::loader::load_config()
+        .claude_code_bypass_permissions
+        .unwrap_or(true)
+}
+
+/// Build the command sent to the originating terminal when a session row
+/// is clicked. For Claude, honor `claude_code_bypass_permissions` so
+/// resumed sessions get the same `--permission-mode bypassPermissions`
+/// treatment as a fresh launch from the tab-bar button (`pane.rs:685`).
 fn resume_command(agent: SessionAgent, session_id: &str) -> String {
     match agent {
-        SessionAgent::Claude => format!("claude --resume {session_id}"),
+        SessionAgent::Claude => {
+            if claude_bypass_enabled() {
+                format!("claude --resume {session_id} --permission-mode bypassPermissions")
+            } else {
+                format!("claude --resume {session_id}")
+            }
+        }
         SessionAgent::Codex => format!("codex resume {session_id}"),
         SessionAgent::OpenCode => format!("opencode --session {session_id}"),
+    }
+}
+
+/// Build the command sent when the user clicks "Start a new <agent>
+/// session" in the popover footer. Mirrors `resume_command` for the
+/// Claude bypass flag.
+fn fresh_session_command(agent: SessionAgent) -> String {
+    match agent {
+        SessionAgent::Claude => {
+            if claude_bypass_enabled() {
+                "claude --permission-mode bypassPermissions".to_string()
+            } else {
+                "claude".to_string()
+            }
+        }
+        SessionAgent::Codex => "codex".to_string(),
+        SessionAgent::OpenCode => "opencode".to_string(),
     }
 }

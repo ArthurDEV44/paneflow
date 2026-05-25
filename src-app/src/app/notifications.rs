@@ -1,7 +1,6 @@
-//! Notification + toast types, helpers and rendering.
+//! Toast types, helpers and rendering.
 //!
-//! Extracted from `main.rs` per US-002. Owns:
-//! - `Notification`: bell-menu entries pushed by AI hook lifecycle methods.
+//! Owns:
 //! - `Toast`: ephemeral bottom-right confirmation/error pop-ups.
 //! - `ToastAction`: optional buttons inside a toast (retry/open-releases).
 //! - `show_toast` / `show_update_error_toast` / `push_toast`: convenience
@@ -16,19 +15,7 @@ use gpui::{
 
 use crate::app::constants::{TOAST_ENTER_MS, TOAST_EXIT_MS, TOAST_HOLD_MS};
 use crate::theme::UiColors;
-use crate::{PaneFlowApp, StartSelfUpdate, ai_types, update};
-
-/// A notification from Claude Code state changes, displayed in the bell menu.
-#[derive(Clone)]
-#[allow(dead_code)]
-pub(crate) struct Notification {
-    pub(crate) workspace_id: u64,
-    pub(crate) workspace_title: String,
-    pub(crate) message: String,
-    pub(crate) kind: ai_types::AiToolState,
-    pub(crate) timestamp: std::time::Instant,
-    pub(crate) read: bool,
-}
+use crate::{PaneFlowApp, StartSelfUpdate, update};
 
 pub(crate) struct Toast {
     pub(crate) message: String,

@@ -1,6 +1,6 @@
-//! Left-side navigation for the settings window — one row per tab
-//! (`Shortcuts`, `Appearance`), highlighting the active section and
-//! resetting per-tab editing state on switch.
+//! Left-side navigation for the settings window — one row per tab,
+//! styled to match the agents sidebar (same row geometry, same hover/
+//! active states, no decorative pip indicator).
 //!
 //! Extracted from `settings_window.rs` per US-021 of the src-app refactor PRD.
 
@@ -36,38 +36,21 @@ impl SettingsWindow {
             .border_r_1()
             .border_color(ui.border)
             .bg(settings_sidebar_bg())
-            .pt(px(10.))
-            .px(px(8.));
+            .py_2();
 
         for (label, section) in sections {
             let is_active = section == active;
             nav = nav.child(
                 div()
                     .id(SharedString::from(format!("nav-{label}")))
-                    .relative()
-                    .pl(px(12.))
-                    .pr(px(10.))
-                    .py(px(7.))
+                    .mx(px(6.))
+                    .px(px(8.))
+                    .py(px(6.))
                     .rounded(px(6.))
-                    .text_size(px(13.))
-                    .font_weight(if is_active {
-                        gpui::FontWeight::MEDIUM
-                    } else {
-                        gpui::FontWeight::NORMAL
-                    })
+                    .text_size(px(12.))
+                    .font_weight(gpui::FontWeight::NORMAL)
                     .cursor(CursorStyle::PointingHand)
-                    .when(is_active, |d| {
-                        d.bg(ui.overlay).text_color(ui.text).child(
-                            div()
-                                .absolute()
-                                .left(px(3.))
-                                .top(px(7.))
-                                .bottom(px(7.))
-                                .w(px(2.))
-                                .rounded(px(1.))
-                                .bg(ui.text),
-                        )
-                    })
+                    .when(is_active, |d| d.bg(ui.surface).text_color(ui.text))
                     .when(!is_active, |d| {
                         d.text_color(ui.muted)
                             .hover(|s| s.bg(ui.subtle).text_color(ui.text))

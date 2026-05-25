@@ -20,7 +20,7 @@ use crate::layout::LayoutTree;
 use crate::layout::SplitDirection;
 use crate::terminal::TerminalView;
 use crate::workspace::{Workspace, next_workspace_id};
-use crate::{Notification, PaneFlowApp, ai_types, keybindings, update};
+use crate::{PaneFlowApp, ai_types, keybindings, update};
 
 // ---------------------------------------------------------------------------
 // Terminal-routing helpers used by the IPC `surface.*` handlers (US-002:
@@ -123,6 +123,25 @@ impl PaneFlowApp {
             keybindings::apply_keybindings(cx, &config.shortcuts);
             self.effective_shortcuts = keybindings::effective_shortcuts(&config.shortcuts);
             crate::theme::invalidate_theme_cache();
+            // US-103: refresh the agent-panel config slot so the next
+            // ThreadView render picks up a changed `max_content_width`
+            // without an app restart. AC #4 — the watcher's 300ms
+            // debounce already meets the ≤500ms target.
+            crate::agents::panel_config::install_agent_panel_config(
+                config.agent_panel.clone().unwrap_or_default(),
+            );
+            // US-111 AC #7: an edit to `tool_permissions` while a
+            // tool is mid-await must auto-resolve the pending call.
+            // The runtime-side check fires from the broker callback
+            // BEFORE event-tx -- but the awaiting call already has
+            // its oneshot in flight; for v1 we settle the simpler
+            // contract: the live cache is refreshed now, and the
+            // NEXT call (after the watcher debounce) auto-resolves.
+            // The currently-awaiting call still needs an explicit
+            // user click. Future cut: drive the broker via the
+            // watcher to also resolve the in-flight oneshot.
+            crate::agents::panel_config::install_tool_permissions(config.tool_permissions.clone());
+            crate::agents::panel_config::install_default_shell(config.default_shell.clone());
             // US-014: reconcile the telemetry consent state. On any change,
             // rebuild the `TelemetryClient` handle (Null ↔ Active) so future
             // emissions reflect the new choice; show a confirmation toast;
@@ -531,9 +550,6 @@ impl PaneFlowApp {
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     ws.ai_state = ai_types::AiToolState::Thinking(tool);
-                    // Clear pending notifications for this workspace
-                    self.notifications
-                        .retain(|n| n.workspace_id != workspace_id);
                     cx.notify();
                     if !self.loader_anim_running {
                         self.start_loader_animation(cx);
@@ -595,15 +611,6 @@ impl PaneFlowApp {
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     ws.ai_state = ai_types::AiToolState::WaitingForInput(tool);
                     ws.active_tool_name = None;
-                    let title = ws.title.clone();
-                    self.notifications.push(Notification {
-                        workspace_id,
-                        workspace_title: title,
-                        message: message.clone(),
-                        kind: ai_types::AiToolState::WaitingForInput(tool),
-                        timestamp: std::time::Instant::now(),
-                        read: false,
-                    });
                     cx.notify();
                     let _ = message;
                     serde_json::json!({"status": "waiting"})
@@ -626,15 +633,6 @@ impl PaneFlowApp {
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     ws.ai_state = ai_types::AiToolState::Finished(tool);
                     ws.active_tool_name = None;
-                    let title = ws.title.clone();
-                    self.notifications.push(Notification {
-                        workspace_id,
-                        workspace_title: title,
-                        message: format!("{} finished", tool.label()),
-                        kind: ai_types::AiToolState::Finished(tool),
-                        timestamp: std::time::Instant::now(),
-                        read: false,
-                    });
                     cx.notify();
 
                     // Auto-reset to Inactive after 5 seconds
@@ -684,8 +682,6 @@ impl PaneFlowApp {
                     ws.ai_state = ai_types::AiToolState::Inactive;
                     ws.active_tool_name = None;
                     ws.agent_pids.remove(tool_str);
-                    self.notifications
-                        .retain(|n| n.workspace_id != workspace_id);
                     cx.notify();
                     let _ = tool_str;
                     serde_json::json!({"cleared": true})
