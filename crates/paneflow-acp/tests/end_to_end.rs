@@ -117,7 +117,17 @@ impl TerminalSpawner for UnusedSpawner {
 }
 
 fn mock_agent_command(mode: &str) -> String {
-    format!("{} {mode}", env!("CARGO_BIN_EXE_mock_acp_agent"))
+    // On Windows, `CARGO_BIN_EXE_mock_acp_agent` returns a path with
+    // backslashes (e.g. `C:\Users\...\mock_acp_agent.exe`). The
+    // agent-client-protocol SDK parses the command string with POSIX
+    // shell semantics, which interprets `\X` as an escape sequence and
+    // strips the backslash, mangling the path into `C:Users...`. We
+    // swap to forward slashes -- Windows accepts both -- so the spawn
+    // sees the real binary.
+    let raw = env!("CARGO_BIN_EXE_mock_acp_agent");
+    #[cfg(windows)]
+    let raw = raw.replace('\\', "/");
+    format!("{raw} {mode}")
 }
 
 fn make_config(
