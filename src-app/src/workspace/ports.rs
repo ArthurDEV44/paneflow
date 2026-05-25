@@ -290,6 +290,7 @@ pub fn detect_ports(_pids: &[u32]) -> Vec<u16> {
 /// not falsely trigger. Add a new entry here when adding a new agent
 /// kind (e.g. `aider`, `cursor-agent`) -- the sidebar pastille + tooltip
 /// pick it up automatically.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const AI_PROCESS_NAMES: &[&str] = &["claude", "codex", "opencode"];
 
 /// Walk the descendants of each PID and return the set of recognised AI
