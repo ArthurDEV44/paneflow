@@ -1,0 +1,36 @@
+[package]
+name = "paneflow-acp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ACP (Agent Client Protocol) wrappers for Paneflow's Agents view: centralized spawn helper, pre-wired client handlers, and a mock agent harness."
+
+[dependencies]
+# US-016 needs `session.models` from the `session/new` response (the
+# model picker pill). It is gated behind `unstable_session_model`.
+# US-120 / US-121 need the `UsageUpdate` variant for token-count badges
+# in the composer + activity bar; gated behind `unstable_session_usage`.
+# Enabling these is forward-compatible: stable getters keep working and
+# we treat the new payloads as hints, not hard schema.
+agent-client-protocol = { version = "0.12", features = [
+    "unstable_session_model",
+    "unstable_session_usage",
+] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+which = "6"
+anyhow = "1"
+dirs = "6"
+
+[dev-dependencies]
+tempfile = "3"
+
+# Bin: a stdio ACP "agent" that drives integration tests without
+# spawning real Claude Code or bunx. Used by tests/end_to_end.rs.
+# See US-003 of tasks/prd-agents-view.md.
+[[bin]]
+name = "mock_acp_agent"
+path = "src/bin/mock_acp_agent.rs"
+
+[lints]
+workspace = true
