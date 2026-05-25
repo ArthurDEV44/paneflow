@@ -678,6 +678,8 @@ mod tests {
             opencode_button_visible: None,
             telemetry: None,
             terminal: None,
+            agent_panel: None,
+            tool_permissions: HashMap::new(),
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
@@ -875,6 +877,9 @@ mod tests {
                 }),
                 custom_buttons: vec![],
             }],
+            projects: Vec::new(),
+            active_project: 0,
+            mode: AppMode::default(),
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         let restored: SessionState = serde_json::from_str(&json).unwrap();
@@ -910,6 +915,9 @@ mod tests {
                     custom_buttons: vec![],
                 },
             ],
+            projects: Vec::new(),
+            active_project: 0,
+            mode: AppMode::default(),
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         let restored: SessionState = serde_json::from_str(&json).unwrap();
@@ -951,6 +959,9 @@ mod tests {
                     ],
                 }),
             }],
+            projects: Vec::new(),
+            active_project: 0,
+            mode: AppMode::default(),
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         let restored: SessionState = serde_json::from_str(&json).unwrap();
@@ -980,6 +991,9 @@ mod tests {
                     }],
                 }),
             }],
+            projects: Vec::new(),
+            active_project: 0,
+            mode: AppMode::default(),
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         let restored: SessionState = serde_json::from_str(&json).unwrap();
@@ -1138,5 +1152,96 @@ mod tests {
         // tests below.
         let config = parse_and_validate(r#"{"terminal": {"ligatures": "yes"}}"#);
         assert_eq!(config, PaneFlowConfig::default());
+    }
+
+    // US-007 (prd-agents-view.md): SessionState gained `projects`,
+    // `active_project`, `mode`. The three tests below cover the AC
+    // explicitly: round-trip with mixed state, backward-compat with a
+    // pre-US-007 session.json, and AppMode enum serialisation.
+
+    #[test]
+    fn test_session_roundtrip_mixed_workspaces_and_projects() {
+        let state = SessionState {
+            version: 1,
+            active_workspace: 0,
+            workspaces: vec![WorkspaceSession {
+                title: "main".to_string(),
+                cwd: "/home/user".to_string(),
+                layout: Some(LayoutNode::Pane {
+                    surfaces: vec![make_surface("/home/user")],
+                }),
+                custom_buttons: vec![],
+            }],
+            projects: vec![ProjectSession {
+                id: 42,
+                title: "Paneflow".to_string(),
+                cwd: "/home/user/dev/paneflow".to_string(),
+                is_expanded: true,
+                threads: vec![ThreadSession {
+                    id: 100,
+                    title: "Wire up the agents view".to_string(),
+                    agent: "claude_code".to_string(),
+                    cwd: "/home/user/dev/paneflow".to_string(),
+                    created_at: 1_716_336_000_000,
+                    model: Some("sonnet".to_string()),
+                    mode: Some("default".to_string()),
+                    store_id: Some("uuid-abc-123".to_string()),
+                }],
+            }],
+            active_project: 0,
+            mode: AppMode::Agents,
+        };
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let restored: SessionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, restored);
+        assert_eq!(restored.projects[0].threads[0].agent, "claude_code");
+        assert_eq!(restored.mode, AppMode::Agents);
+    }
+
+    #[test]
+    fn test_session_backward_compat_pre_us007() {
+        // A literal pre-US-007 session.json: no `projects`, no
+        // `active_project`, no `mode` keys. Must deserialise to an
+        // empty project list and the default `AppMode::Cli`.
+        let legacy = r#"{
+            "version": 1,
+            "active_workspace": 0,
+            "workspaces": [
+                { "title": "main", "cwd": "/tmp", "layout": null }
+            ]
+        }"#;
+        let restored: SessionState = serde_json::from_str(legacy).unwrap();
+        assert_eq!(restored.workspaces.len(), 1);
+        assert!(restored.projects.is_empty(), "projects must default to []");
+        assert_eq!(restored.active_project, 0);
+        assert_eq!(
+            restored.mode,
+            AppMode::Cli,
+            "legacy session.json must restore in CLI mode"
+        );
+    }
+
+    #[test]
+    fn test_app_mode_serializes_snake_case() {
+        assert_eq!(serde_json::to_string(&AppMode::Cli).unwrap(), "\"cli\"");
+        assert_eq!(
+            serde_json::to_string(&AppMode::Agents).unwrap(),
+            "\"agents\""
+        );
+    }
+
+    #[test]
+    fn test_project_session_is_expanded_defaults_true_when_absent() {
+        // A ProjectSession written before `is_expanded` existed (or with
+        // the key stripped) must restore expanded -- otherwise the
+        // sidebar would silently hide threads on first relaunch.
+        let json = r#"{
+            "id": 7,
+            "title": "Proj",
+            "cwd": "/tmp",
+            "threads": []
+        }"#;
+        let restored: ProjectSession = serde_json::from_str(json).unwrap();
+        assert!(restored.is_expanded);
     }
 }
