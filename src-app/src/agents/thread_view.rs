@@ -177,12 +177,36 @@ impl EventEmitter<ForkRequested> for ThreadView {}
 #[derive(Debug, Clone)]
 pub struct TitleSuggested {
     pub title: String,
-    /// True when this suggestion is a client-side auto-derive (first
-    /// user prompt). The app's handler only applies it if the current
-    /// title is still the default "New thread" -- never overwriting a
-    /// user rename or an agent-pushed title. ACP-sourced suggestions
-    /// set this to false (agent knows best).
-    pub only_if_default: bool,
+    /// Tri-state replace gate. See [`TitleReplacePolicy`] for the
+    /// rationale -- the background summarizer is the reason this
+    /// can't be a single boolean any more (it needs the "still equal
+    /// to a captured snapshot" form to lose races with user renames).
+    pub policy: TitleReplacePolicy,
+}
+
+/// How aggressively a new title suggestion should override the
+/// current sidebar row title. Modelled after Zed's `Thread::title`
+/// replacement guards (`agent/src/thread.rs` around `set_title` and
+/// `generate_title`): an ACP push wins unconditionally, an auto-
+/// derive only fills the default, and the async summarizer must not
+/// clobber a rename that landed while it was waiting on the agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TitleReplacePolicy {
+    /// Replace regardless of the current value. Used by ACP-pushed
+    /// `SessionInfoUpdate.title` (the agent's authoritative summary).
+    Always,
+    /// Replace only when the current title is still the literal
+    /// `"New thread"` sentinel. Used by the client-side auto-derive
+    /// on the first user prompt so a user rename or an agent push
+    /// already in flight is never clobbered.
+    OnlyIfDefault,
+    /// Replace only when the current title still matches a captured
+    /// snapshot. Used by the background title summarizer (Zed
+    /// `Thread::generate_title` parity): the summarizer captures the
+    /// title at trigger time, awaits a transient session round-trip
+    /// (~1-3 s), and only applies the result if no user rename or
+    /// agent push happened in the meantime.
+    OnlyIfStillEqualTo(String),
 }
 
 impl EventEmitter<TitleSuggested> for ThreadView {}
@@ -1401,6 +1425,51 @@ impl ThreadView {
     /// thread" and trigger the client-side title auto-derive.
     pub fn items_is_empty(&self) -> bool {
         self.items.is_empty()
+    }
+
+    /// Text of the first user message in the timeline, or `None` when
+    /// no user message exists yet. Used by the background title
+    /// summarizer ([`crate::agents::title_summarizer`]) to build the
+    /// conversation context it ships to the transient agent session.
+    pub fn first_user_text(&self) -> Option<String> {
+        self.items.iter().find_map(|it| match it {
+            ThreadItem::UserMessage(um) if um.msg.role == MessageRole::User => {
+                let text = join_text_blocks(&um.msg.content);
+                if text.is_empty() { None } else { Some(text) }
+            }
+            _ => None,
+        })
+    }
+
+    /// Concatenated text of the first assistant turn in the timeline,
+    /// or `None` when the assistant hasn't responded yet. Thought
+    /// chunks are skipped (the summarizer should see the final answer,
+    /// not the reasoning trace). Capped to a reasonable length so the
+    /// transient session prompt stays small.
+    pub fn first_assistant_text(&self) -> Option<String> {
+        const MAX_ASSISTANT_TEXT: usize = 2000;
+        let am = self.items.iter().find_map(|it| match it {
+            ThreadItem::AssistantMessage(am) => Some(am),
+            _ => None,
+        })?;
+        let mut out = String::new();
+        for chunk in &am.chunks {
+            if let AssistantMessageChunk::Text { text, .. } = chunk {
+                out.push_str(text);
+                if out.len() >= MAX_ASSISTANT_TEXT {
+                    break;
+                }
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            if out.len() > MAX_ASSISTANT_TEXT {
+                out.truncate(MAX_ASSISTANT_TEXT);
+                out.push_str("...");
+            }
+            Some(out)
+        }
     }
 
     pub fn clear_local_display(&mut self, cx: &mut Context<Self>) {

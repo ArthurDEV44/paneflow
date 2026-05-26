@@ -326,7 +326,7 @@ impl PaneFlowApp {
         cx.subscribe(
             &view,
             |this, _src, event: &crate::agents::thread_view::TitleSuggested, cx| {
-                this.handle_thread_title_suggested(event.title.clone(), event.only_if_default, cx);
+                this.handle_thread_title_suggested(event.title.clone(), event.policy.clone(), cx);
             },
         )
         .detach();
@@ -343,10 +343,18 @@ impl PaneFlowApp {
     pub(crate) fn handle_thread_title_suggested(
         &mut self,
         title: String,
-        only_if_default: bool,
+        policy: crate::agents::thread_view::TitleReplacePolicy,
         cx: &mut Context<Self>,
     ) {
         let Some((project_idx, thread_idx)) = self.agents_thread_view_for else {
+            return;
+        };
+        // Strip the leading status-glyph decoration (Claude Code's
+        // `✻`, Codex's braille spinner, generic `●`/`•`) that some CLI
+        // wrappers prepend to the session title -- without this, the
+        // sidebar row literally renders the dot in front of the label
+        // and reads as a stalled spinner.
+        let Some(title) = crate::project::clean_sidebar_title(&title) else {
             return;
         };
         let store_id = match self
@@ -358,11 +366,17 @@ impl PaneFlowApp {
                 if thread.title == title {
                     return;
                 }
-                // Client-side auto-derive must never clobber a title
-                // the user has already changed (rename) or that an
-                // agent push has set. Only apply when the row still
-                // carries the literal default.
-                if only_if_default && thread.title != "New thread" {
+                // Replace policy gate. See `TitleReplacePolicy` for the
+                // three call sites that produce a suggestion (agent
+                // push, client auto-derive, background summarizer) and
+                // what each one needs to preserve.
+                use crate::agents::thread_view::TitleReplacePolicy;
+                let allowed = match &policy {
+                    TitleReplacePolicy::Always => true,
+                    TitleReplacePolicy::OnlyIfDefault => thread.title == "New thread",
+                    TitleReplacePolicy::OnlyIfStillEqualTo(snapshot) => &thread.title == snapshot,
+                };
+                if !allowed {
                     return;
                 }
                 thread.title = title.clone();
