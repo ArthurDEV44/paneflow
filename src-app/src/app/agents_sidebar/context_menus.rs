@@ -42,8 +42,8 @@ impl PaneFlowApp {
                 "Open in Windsurf",
             ),
         ];
-        // ~8 items, ~25px tall, 2 separators ~7px, 8px padding => ~228px
-        let menu_height = px(232.);
+        // ~9 items, ~25px tall, 2 separators ~7px, 8px padding => ~257px
+        let menu_height = px(260.);
         let win_h = window.window_bounds().get_bounds().size.height;
         let menu_y = if position.y + menu_height > win_h {
             (position.y - menu_height).max(px(0.))
@@ -85,16 +85,33 @@ impl PaneFlowApp {
             }),
         ));
 
+        // New terminal thread (mirrors Zed's `NewTerminalThread` action:
+        // opens a PTY surface in the main area instead of a chat, so
+        // the user can run any CLI agent or long-running process as a
+        // first-class sidebar entry).
+        menu = menu.child(self.render_context_menu_item(
+            "agents-project-new-terminal-thread".into(),
+            "New terminal thread",
+            None,
+            ui,
+            cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                this.close_agents_menu(cx);
+                this.create_terminal_thread_in(project_idx, cx);
+                cx.stop_propagation();
+            }),
+        ));
+
         // Rename
         menu = menu.child(self.render_context_menu_item(
             "agents-project-rename".into(),
             "Rename project",
             None,
             ui,
-            cx.listener(move |this, _: &ClickEvent, _w, cx| {
+            cx.listener(move |this, _: &ClickEvent, w, cx| {
                 this.close_agents_menu(cx);
                 this.begin_agents_rename(
                     super::state::AgentsRenameTarget::Project { project_idx },
+                    w,
                     cx,
                 );
                 cx.stop_propagation();
@@ -172,8 +189,8 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // 3 items (Rename, Duplicate, Delete) + 1 separator + 8px
-        // padding => ~100px.
-        let menu_height = px(112.);
+        // padding => ~130px.
+        let menu_height = px(140.);
         let win_h = window.window_bounds().get_bounds().size.height;
         let menu_y = if position.y + menu_height > win_h {
             (position.y - menu_height).max(px(0.))
@@ -201,6 +218,25 @@ impl PaneFlowApp {
             }))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
+
+        menu = menu.child(self.render_context_menu_item(
+            "agents-thread-rename".into(),
+            "Rename thread",
+            None,
+            ui,
+            cx.listener(move |this, _: &ClickEvent, w, cx| {
+                this.close_agents_menu(cx);
+                this.begin_agents_rename(
+                    super::state::AgentsRenameTarget::Thread {
+                        project_idx,
+                        thread_idx,
+                    },
+                    w,
+                    cx,
+                );
+                cx.stop_propagation();
+            }),
+        ));
 
         menu = menu.child(self.render_context_menu_item(
             "agents-thread-duplicate".into(),

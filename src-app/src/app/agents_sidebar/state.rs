@@ -9,11 +9,19 @@
 use gpui::{Pixels, Point};
 
 /// Identifies a sidebar row that is currently in inline-rename mode.
-/// Threads are intentionally not renameable — only projects expose
-/// the rename affordance.
+/// Both projects and threads are renameable -- threads were originally
+/// not (rely on agent-pushed `SessionInfoUpdate.title` / client auto-
+/// derive) but Codex doesn't push titles and the background summarizer
+/// is best-effort, so the user gets the always-works escape hatch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AgentsRenameTarget {
-    Project { project_idx: usize },
+    Project {
+        project_idx: usize,
+    },
+    Thread {
+        project_idx: usize,
+        thread_idx: usize,
+    },
 }
 
 /// Open right-click context menu, with the anchor position so the

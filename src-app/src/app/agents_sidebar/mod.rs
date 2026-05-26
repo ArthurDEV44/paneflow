@@ -42,7 +42,6 @@ use gpui::{
 };
 
 use crate::PaneFlowApp;
-use paneflow_acp::AgentKind;
 
 use super::agents_view_actions::AGENTS_SIDEBAR_WIDTH;
 
@@ -121,7 +120,7 @@ impl PaneFlowApp {
         let active_project_idx = self.active_project_idx;
         let active_thread_idx = self.active_thread_idx;
         let renaming = self.agents_renaming;
-        let rename_text = self.agents_rename_text.clone();
+        let rename_input = self.agents_rename_input.clone();
 
         let projects_len = self.projects.len();
         let filtering = !query.is_empty();
@@ -148,8 +147,11 @@ impl PaneFlowApp {
                     project_id,
                     title,
                     is_expanded,
-                    is_renaming: is_renaming_project,
-                    rename_text: rename_text.clone(),
+                    rename_input: if is_renaming_project {
+                        rename_input.clone()
+                    } else {
+                        None
+                    },
                     git_stats,
                     ui,
                 },
@@ -178,13 +180,22 @@ impl PaneFlowApp {
                 } else {
                     None
                 };
+                let is_renaming_thread = matches!(
+                    renaming,
+                    Some(AgentsRenameTarget::Thread { project_idx: rp, thread_idx: rt })
+                        if rp == project_idx && rt == thread_idx
+                );
                 list = list.child(self.thread_row(
                     ThreadRowArgs {
                         project_idx,
                         thread_idx,
                         thread_id: thread.id,
                         title: thread.title.clone(),
-                        agent: thread.agent,
+                        rename_input: if is_renaming_thread {
+                            rename_input.clone()
+                        } else {
+                            None
+                        },
                         created_at_ms: thread.created_at,
                         is_active,
                         now_ms,
@@ -423,8 +434,7 @@ impl PaneFlowApp {
             project_id,
             title,
             is_expanded,
-            is_renaming,
-            rename_text,
+            rename_input,
             git_stats,
             ui,
         } = args;
@@ -435,20 +445,19 @@ impl PaneFlowApp {
         };
 
         // Title element switches between read-only and inline-input
-        // mode. Mirrors the workspace pattern at `sidebar/mod.rs:307-358`
-        // (PRD AC #3 -- "Double-click on a project header enters
-        // inline rename mode").
-        let title_el = if is_renaming {
+        // mode. The input is a full [`TextArea`] entity (cursor,
+        // selection, IME, clipboard, click-to-position, double-click
+        // word select) -- same widget the chat composer uses, so the
+        // editing experience is consistent across the app.
+        let title_el: gpui::AnyElement = if let Some(input) = rename_input {
             div()
                 .flex_1()
                 .min_w_0()
-                .text_color(ui.text)
-                .text_size(px(12.))
-                .font_weight(FontWeight::NORMAL)
                 .bg(ui.overlay)
                 .px_1()
                 .rounded_sm()
-                .child(format!("{rename_text}|"))
+                .child(input)
+                .into_any_element()
         } else {
             div()
                 .flex_1()
@@ -458,6 +467,7 @@ impl PaneFlowApp {
                 .font_weight(FontWeight::NORMAL)
                 .truncate()
                 .child(title)
+                .into_any_element()
         };
 
         div()
@@ -475,12 +485,12 @@ impl PaneFlowApp {
                 let ui = crate::theme::ui_colors();
                 s.bg(ui.subtle)
             })
-            .on_click(cx.listener(move |this, e: &ClickEvent, _w, cx| {
+            .on_click(cx.listener(move |this, e: &ClickEvent, w, cx| {
                 this.close_agents_menu(cx);
                 let is_double = matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2);
                 if is_double {
                     // PRD AC #3: double-click -> inline rename mode.
-                    this.begin_agents_rename(AgentsRenameTarget::Project { project_idx }, cx);
+                    this.begin_agents_rename(AgentsRenameTarget::Project { project_idx }, w, cx);
                 } else {
                     // Single click toggles collapse. If a rename is in
                     // progress on this row, commit it first so the
@@ -500,15 +510,6 @@ impl PaneFlowApp {
                     this.open_agents_project_menu(project_idx, position, cx);
                     cx.stop_propagation();
                 }
-            }))
-            .on_key_down(cx.listener(move |this, e: &KeyDownEvent, _w, cx| {
-                if !matches!(
-                    this.agents_renaming,
-                    Some(AgentsRenameTarget::Project { project_idx: r }) if r == project_idx
-                ) {
-                    return;
-                }
-                handle_rename_key(this, e, cx);
             }))
             .child(
                 svg()
@@ -553,27 +554,38 @@ impl PaneFlowApp {
             thread_idx,
             thread_id,
             title,
-            agent,
+            rename_input,
             created_at_ms,
             is_active,
             now_ms,
             match_pos,
             ui,
         } = args;
-        let agent_icon_path = match agent {
-            AgentKind::ClaudeCode => "icons/claude-color.svg",
-            AgentKind::Codex => "icons/codex-color.svg",
-        };
         let timestamp = format_relative_ts(now_ms, created_at_ms);
         let title_color = ui.text;
         let title_weight = FontWeight::NORMAL;
+        let is_renaming = rename_input.is_some();
 
         // US-023: shared group name so the hover-only action cluster
         // can listen for hover on the row container without listening
         // on itself. Mirrors `pane.rs:401-464`.
         let row_group: SharedString = format!("agents-thread-row-{thread_id}").into();
 
-        let title_el: gpui::AnyElement = if let Some((m_start, m_end)) = match_pos {
+        let title_el: gpui::AnyElement = if let Some(input) = rename_input {
+            // Inline rename input -- full TextArea entity (same
+            // widget the composer uses) so the user gets real cursor,
+            // selection, IME, copy/paste, click-to-position, double-
+            // click word select. Background pill matches the project
+            // header rename styling.
+            div()
+                .flex_1()
+                .min_w_0()
+                .bg(ui.overlay)
+                .px_1()
+                .rounded_sm()
+                .child(input)
+                .into_any_element()
+        } else if let Some((m_start, m_end)) = match_pos {
             // US-021: paint a single highlight run on the matched
             // substring (Zed `highlight_positions` slot on ThreadItem).
             // Surrounding text keeps `title_color`; the match gets
@@ -599,20 +611,31 @@ impl PaneFlowApp {
                 .into_any_element()
         };
 
+        // Match the project_header_row's layout exactly: same `mx`,
+        // same `px` (instead of split `pl`/`pr`), same `gap`. The only
+        // difference is the leading child -- project rows render a
+        // folder icon, thread rows render an invisible 14px spacer
+        // (mirrors Zed's `ThreadItem` pattern at
+        // `crates/ui/src/components/ai/thread_item.rs:264-270` where
+        // the icon container is always rendered with `.size_4()` and
+        // toggled to `.invisible()` to keep layout space). Padding
+        // numbers were identical before the icon was removed but the
+        // titles read as shifted because removing the child also
+        // removed the `gap` slot. Reserving an invisible placeholder
+        // restores pixel-for-pixel alignment with the project title.
         let mut row = div()
             .id(SharedString::from(format!("agents-thread-{thread_id}")))
             .group(row_group.clone())
             .relative()
             .mx(px(6.))
-            .pl(px(22.))
-            .pr(px(8.))
+            .px(px(8.))
             .py(px(6.))
             .rounded(px(6.))
             .cursor_pointer()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(8.));
+            .gap(px(6.));
 
         if is_active {
             row = row.bg(ui.surface);
@@ -626,6 +649,14 @@ impl PaneFlowApp {
         row = row
             .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                 this.close_agents_menu(cx);
+                // While the row is in rename mode we let the click
+                // pass through to the embedded TextArea (which then
+                // positions the caret / extends the selection). The
+                // row's own select_thread is skipped so an in-place
+                // mouse click on the input doesn't navigate away.
+                if is_renaming {
+                    return;
+                }
                 this.commit_agents_rename(cx);
                 let _ = this.select_thread(project_idx, thread_idx, cx);
             }))
@@ -638,7 +669,11 @@ impl PaneFlowApp {
                     cx.stop_propagation();
                 }
             }))
-            .child(svg().size(px(14.)).flex_none().path(agent_icon_path))
+            // Invisible 14px placeholder where the project row's
+            // folder icon sits. Keeps the title's X-position aligned
+            // with the project title's X-position one row up. Mirrors
+            // Zed's `icon_container().when(!icon_visible, |this| this.invisible())`.
+            .child(div().size(px(14.)).flex_none())
             .child(title_el)
             .child(
                 // Right slot reserves a fixed 48px so the title always
@@ -825,8 +860,10 @@ struct ProjectHeaderArgs {
     project_id: u64,
     title: String,
     is_expanded: bool,
-    is_renaming: bool,
-    rename_text: String,
+    /// `Some` when this row is the current inline-rename target; the
+    /// entity is rendered in place of the static title and owns its
+    /// own keyboard / mouse handling (cursor, selection, IME, ...).
+    rename_input: Option<gpui::Entity<crate::widgets::text_area::TextArea>>,
     git_stats: crate::workspace::GitDiffStats,
     ui: crate::theme::UiColors,
 }
@@ -836,7 +873,10 @@ struct ThreadRowArgs {
     thread_idx: usize,
     thread_id: u64,
     title: String,
-    agent: AgentKind,
+    /// `Some` when this row is the current inline-rename target; the
+    /// entity is rendered in place of the static title and owns its
+    /// own keyboard / mouse handling (cursor, selection, IME, ...).
+    rename_input: Option<gpui::Entity<crate::widgets::text_area::TextArea>>,
     created_at_ms: u64,
     is_active: bool,
     now_ms: u64,
@@ -888,35 +928,6 @@ fn handle_filter_key(this: &mut PaneFlowApp, e: &KeyDownEvent, cx: &mut Context<
             {
                 this.agents_filter.push_str(ch);
                 cx.notify();
-            }
-        }
-    }
-}
-
-/// Shared key handler for inline rename rows. Implements Enter
-/// (commit), Escape (cancel), Backspace (pop), printable char (push)
-/// -- mirrors the workspace rename pattern, deduplicated so both
-/// project + thread renames behave identically.
-fn handle_rename_key(this: &mut PaneFlowApp, e: &KeyDownEvent, cx: &mut Context<PaneFlowApp>) {
-    let key = e.keystroke.key.as_str();
-    match key {
-        "enter" => {
-            this.commit_agents_rename(cx);
-            cx.notify();
-        }
-        "escape" => {
-            this.cancel_agents_rename(cx);
-        }
-        "backspace" => {
-            this.pop_agents_rename_char(cx);
-        }
-        _ => {
-            if let Some(ch) = &e.keystroke.key_char
-                && !ch.is_empty()
-                && !e.keystroke.modifiers.control
-                && !e.keystroke.modifiers.platform
-            {
-                this.push_agents_rename_char(ch, cx);
             }
         }
     }

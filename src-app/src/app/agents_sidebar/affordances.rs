@@ -9,12 +9,15 @@
 //! been written to `threads.db` -- cascades the SQL DELETE so the
 //! durable store does not accumulate orphan rows (AC #9).
 
-use gpui::{App, ClickEvent, Context, MouseButton, PathPromptOptions, Pixels, Point};
+use gpui::{
+    AppContext, ClickEvent, Context, MouseButton, PathPromptOptions, Pixels, Point, Window,
+};
 use paneflow_acp::AgentKind;
 
 use super::state::{AgentsContextMenu, AgentsDeleteTarget, AgentsRenameTarget};
 use crate::PaneFlowApp;
 use crate::app::workspace_ops::{resolve_editor_binary, reveal_in_file_manager};
+use crate::widgets::text_area::TextArea;
 
 impl PaneFlowApp {
     // ------------------------------------------------------------------
@@ -83,62 +86,174 @@ impl PaneFlowApp {
     // Rename machinery
     // ------------------------------------------------------------------
 
-    /// Enter inline-rename mode for `target`. Cancels any prior rename
-    /// before starting -- only one row can be renaming at a time.
+    /// Enter inline-rename mode for `target`. Creates a fresh
+    /// [`TextArea`] entity (real editable input -- cursor / selection
+    /// / IME / clipboard, mirrors what the chat composer uses) and
+    /// focuses it so the next keystroke lands in the field.
+    ///
+    /// Cancels any prior rename before starting -- only one row can
+    /// be renaming at a time.
     pub(crate) fn begin_agents_rename(
         &mut self,
         target: AgentsRenameTarget,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.commit_agents_rename(cx);
-        let AgentsRenameTarget::Project { project_idx } = target;
-        let current = self
-            .projects
-            .get(project_idx)
-            .map(|p| p.title.clone())
-            .unwrap_or_default();
-        self.agents_rename_text = current;
+        let current = match target {
+            AgentsRenameTarget::Project { project_idx } => self
+                .projects
+                .get(project_idx)
+                .map(|p| p.title.clone())
+                .unwrap_or_default(),
+            AgentsRenameTarget::Thread {
+                project_idx,
+                thread_idx,
+            } => self
+                .projects
+                .get(project_idx)
+                .and_then(|p| p.threads.get(thread_idx))
+                .map(|t| t.title.clone())
+                .unwrap_or_default(),
+        };
+        let app_weak = cx.weak_entity();
+        let textarea = cx.new(|cx| {
+            let mut ta = TextArea::new("New name", cx);
+            ta.set_value(current, cx);
+            // on_submit fires from INSIDE the TextArea's update, so
+            // any re-read of the entity (`ta.read(cx)`) from the
+            // callback panics with "cannot read while it is already
+            // being updated". Pass the text the callback already
+            // hands us straight through to `apply_agents_rename`,
+            // which never touches the entity.
+            let weak_submit = app_weak.clone();
+            ta.on_submit(move |text, _w, app| {
+                let _ = weak_submit
+                    .clone()
+                    .update(app, |this, cx| this.apply_agents_rename(text, cx));
+            });
+            let weak_escape = app_weak;
+            ta.on_escape(move |_w, app| {
+                let _ = weak_escape
+                    .clone()
+                    .update(app, |this, cx| this.cancel_agents_rename(cx));
+            });
+            ta
+        });
+        let focus = textarea.read(cx).focus_handle.clone();
+        window.focus(&focus, cx);
         self.agents_renaming = Some(target);
+        self.agents_rename_input = Some(textarea);
+        // `agents_rename_text` is kept only as a legacy bridge for
+        // call sites that haven't been migrated to read from the
+        // TextArea entity yet; left empty on purpose.
+        self.agents_rename_text.clear();
         cx.notify();
     }
 
-    /// Apply the in-progress rename if any, then exit rename mode.
-    /// An empty rename text is treated as "user gave up" and rolls
-    /// back to the previous title.
-    pub(crate) fn commit_agents_rename(&mut self, cx: &App) {
+    /// Apply the in-progress rename, reading the latest value from
+    /// the TextArea entity itself. Called from non-callback paths
+    /// (e.g. click-outside, context-menu open) where the entity is
+    /// NOT currently in an `update()` call and can safely be read.
+    ///
+    /// Code coming from the TextArea's `on_submit` callback must use
+    /// [`Self::apply_agents_rename`] instead (it receives the text
+    /// via the callback parameter and avoids re-entering the entity).
+    pub(crate) fn commit_agents_rename(&mut self, cx: &mut Context<Self>) {
+        if self.agents_renaming.is_none() {
+            return;
+        }
+        let text = self
+            .agents_rename_input
+            .as_ref()
+            .map(|ta| ta.read(cx).value())
+            .unwrap_or_default();
+        self.apply_agents_rename(text, cx);
+    }
+
+    /// Apply `text` as the new title for whatever row is currently
+    /// in rename mode, then exit rename mode. Empty / whitespace-only
+    /// text is treated as "user gave up" and rolls back without
+    /// touching the title.
+    ///
+    /// Safe to call from inside the TextArea entity's `update` (the
+    /// `on_submit` callback path): the text is taken as a parameter
+    /// instead of read from the entity, and the entity is dropped on
+    /// the next event-loop tick via `cx.defer` so we never re-enter
+    /// the in-flight update.
+    pub(crate) fn apply_agents_rename(&mut self, text: String, cx: &mut Context<Self>) {
         let Some(target) = self.agents_renaming.take() else {
             return;
         };
-        let text = std::mem::take(&mut self.agents_rename_text);
+        // Drop the TextArea entity on the next tick to avoid any
+        // re-entrancy when this is invoked from on_submit (where we
+        // are still inside the entity's update).
+        let weak = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = weak.update(cx, |app, cx| {
+                app.agents_rename_input = None;
+                app.agents_rename_text.clear();
+                cx.notify();
+            });
+        });
+        let text = text.trim().to_string();
         if text.is_empty() {
+            cx.notify();
             return;
         }
-        let AgentsRenameTarget::Project { project_idx } = target;
-        if let Some(project) = self.projects.get_mut(project_idx) {
-            project.title = text;
-            self.save_session(cx);
+        match target {
+            AgentsRenameTarget::Project { project_idx } => {
+                if let Some(project) = self.projects.get_mut(project_idx) {
+                    project.title = text;
+                    self.save_session(cx);
+                }
+            }
+            AgentsRenameTarget::Thread {
+                project_idx,
+                thread_idx,
+            } => {
+                let store_id = self
+                    .projects
+                    .get_mut(project_idx)
+                    .and_then(|p| p.threads.get_mut(thread_idx))
+                    .map(|thread| {
+                        thread.title = text.clone();
+                        thread.store_id.clone()
+                    });
+                // Mirror the rename into threads.db so the new title
+                // survives a restart even if session.json is wiped.
+                // Best-effort -- a stale row left over from a pre-
+                // store_id thread, or a DB unavailable transiently,
+                // just doesn't get the sync; the in-memory + session
+                // restore path is authoritative.
+                if let (Some(Some(id)), Some(store)) = (store_id, &self.thread_store) {
+                    let typed = paneflow_threads::store::ThreadId::from_string(id);
+                    if let Err(err) = store.set_summary(&typed, &text) {
+                        log::warn!("agents-sidebar: thread rename DB sync failed: {err}");
+                    }
+                }
+                self.save_session(cx);
+            }
         }
+        cx.notify();
     }
 
     /// Drop the in-progress rename without applying. Used when the
     /// user presses Escape, opens a context menu, or clicks elsewhere.
+    /// Defers the entity drop to the next tick so a call from the
+    /// TextArea's `on_escape` callback never re-enters the in-flight
+    /// entity update.
     pub(crate) fn cancel_agents_rename(&mut self, cx: &mut Context<Self>) {
         if self.agents_renaming.take().is_some() {
-            self.agents_rename_text.clear();
-            cx.notify();
+            let weak = cx.weak_entity();
+            cx.defer(move |cx| {
+                let _ = weak.update(cx, |app, cx| {
+                    app.agents_rename_input = None;
+                    app.agents_rename_text.clear();
+                    cx.notify();
+                });
+            });
         }
-    }
-
-    /// Append a single character to the in-progress rename. Public so
-    /// the sidebar's `on_key_down` listener stays compact.
-    pub(crate) fn push_agents_rename_char(&mut self, ch: &str, cx: &mut Context<Self>) {
-        self.agents_rename_text.push_str(ch);
-        cx.notify();
-    }
-
-    pub(crate) fn pop_agents_rename_char(&mut self, cx: &mut Context<Self>) {
-        self.agents_rename_text.pop();
-        cx.notify();
     }
 
     // ------------------------------------------------------------------
@@ -241,6 +356,27 @@ impl PaneFlowApp {
 
         // Select the just-created thread so the main area opens onto
         // it (US-013's ThreadView will pick it up once landed).
+        if let Some(project) = self.projects.get(project_idx)
+            && let Some(thread_idx) = project.threads.iter().position(|t| t.id == new_thread_id)
+        {
+            let _ = self.select_thread(project_idx, thread_idx, cx);
+        }
+        self.save_session(cx);
+    }
+
+    /// Create a fresh Terminal Thread in `project_idx`. Mirrors
+    /// [`Self::create_agents_thread_in`] but stamps
+    /// [`crate::project::ThreadKind::Terminal`], skips the SQLite store
+    /// insert (no chat history to persist), and selects the new row so
+    /// the main area immediately flips to the PTY surface.
+    pub(crate) fn create_terminal_thread_in(&mut self, project_idx: usize, cx: &mut Context<Self>) {
+        let new_thread_id = match self.add_terminal_thread(project_idx, "Terminal", cx) {
+            Ok(id) => id,
+            Err(err) => {
+                self.show_toast(format!("Could not create terminal thread: {err:?}"), cx);
+                return;
+            }
+        };
         if let Some(project) = self.projects.get(project_idx)
             && let Some(thread_idx) = project.threads.iter().position(|t| t.id == new_thread_id)
         {

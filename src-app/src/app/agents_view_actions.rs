@@ -199,11 +199,33 @@ impl PaneFlowApp {
                 cx,
             );
         }
-        // US-013: per-thread ThreadView.
+        // US-013 + Terminal Thread surface: per-thread main area.
         if let Some(target) = self.current_thread_view_target() {
-            self.ensure_thread_view_mounted(target, cx);
-            if let Some(view) = self.agents_thread_view.clone() {
-                return view.into_any_element();
+            let (p_idx, t_idx) = target;
+            let kind = self
+                .projects
+                .get(p_idx)
+                .and_then(|p| p.threads.get(t_idx))
+                .map(|t| t.kind)
+                .unwrap_or(crate::project::ThreadKind::Agent);
+            match kind {
+                crate::project::ThreadKind::Agent => {
+                    self.ensure_thread_view_mounted(target, cx);
+                    if let Some(view) = self.agents_thread_view.clone() {
+                        return view.into_any_element();
+                    }
+                }
+                crate::project::ThreadKind::Terminal => {
+                    // Drop any stale ThreadView pointer so its
+                    // subscriptions don't race against the PTY surface.
+                    self.agents_thread_view = None;
+                    self.agents_thread_view_for = None;
+                    if let Some(view) = self.ensure_terminal_view_mounted(target, cx) {
+                        return crate::app::agents_view_actions::render_terminal_thread_surface(
+                            view,
+                        );
+                    }
+                }
             }
         } else if self.agents_thread_view.is_some() {
             // The user deselected (e.g. deleted the active thread).
@@ -382,7 +404,120 @@ impl PaneFlowApp {
         }
     }
 
+    /// Mount (or reuse from cache) the [`TerminalView`] entity that
+    /// backs a Terminal Thread at `target`. Returns the entity ready
+    /// to be wrapped by [`render_terminal_thread_surface`].
+    ///
+    /// Mirrors [`Self::ensure_thread_view_mounted`] for the PTY path:
+    /// cache hit re-binds the existing entity so the running shell
+    /// process survives sidebar navigation; cache miss spawns a fresh
+    /// PTY in the thread's cwd via [`TerminalView::with_cwd`].
+    ///
+    /// `workspace_id` for the new view defaults to the thread's own
+    /// `id` so PTY tracking (signal routing, kill-on-quit) keys off a
+    /// stable per-thread identifier rather than the CLI-mode workspace
+    /// slot (which has no meaning in the Agents view).
+    fn ensure_terminal_view_mounted(
+        &mut self,
+        target: (usize, usize),
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Entity<crate::terminal::view::TerminalView>> {
+        let (p_idx, t_idx) = target;
+        let thread = self
+            .projects
+            .get(p_idx)
+            .and_then(|p| p.threads.get(t_idx))?;
+        let thread_id = thread.id;
+        if let Some(cached) = self.agents_terminal_view_cache.get(&thread_id) {
+            return Some(cached.clone());
+        }
+        let cwd = std::path::PathBuf::from(&thread.cwd);
+        let view = cx.new(|cx| {
+            crate::terminal::view::TerminalView::with_cwd(thread_id, Some(cwd), None, cx)
+        });
+        // Mirror Zed's `AgentTerminal::refresh_terminal_metadata`
+        // (agent_panel.rs around `TerminalEvent::TitleChanged`): every
+        // OSC 0/2 title update from the running process is reflected
+        // into the sidebar row label. That's what lets a `claude`
+        // session inside a Terminal Thread surface its auto-summary
+        // ("Refactor auth middleware") in the sidebar instead of the
+        // generic "Terminal" placeholder. The subscription is detached
+        // -- the entity owns its lifecycle and the listener drops with
+        // it when the cache evicts the entry.
+        cx.subscribe(
+            &view,
+            move |this, src, event: &crate::terminal::view::TerminalEvent, cx| {
+                if matches!(event, crate::terminal::view::TerminalEvent::TitleChanged) {
+                    let new_title = src.read(cx).terminal.title.clone();
+                    this.handle_terminal_thread_title_changed(thread_id, new_title, cx);
+                }
+            },
+        )
+        .detach();
+        self.agents_terminal_view_cache
+            .insert(thread_id, view.clone());
+        Some(view)
+    }
+
+    /// React to an OSC-driven title update from the PTY backing a
+    /// Terminal Thread. Updates the matching sidebar row's title and
+    /// persists the session so the new label survives a restart.
+    ///
+    /// Skips two cases on purpose:
+    /// 1. Empty / whitespace-only titles -- some shells emit a stray
+    ///    blank `ESC]0;\x07` on startup before the real prompt loads.
+    /// 2. The literal `"Terminal"` fallback alacritty stamps after a
+    ///    `ResetTitle` OSC, so a child shell exiting (e.g. `claude`
+    ///    completing a session) does not wipe the meaningful
+    ///    process-reported title with a generic placeholder.
+    pub(crate) fn handle_terminal_thread_title_changed(
+        &mut self,
+        thread_id: u64,
+        new_title: String,
+        cx: &mut Context<Self>,
+    ) {
+        // Strips whitespace + leading spinner/bullet glyphs (Codex
+        // braille, Claude Code pinwheel, generic `●`/`•`). Returns
+        // `None` if nothing meaningful is left.
+        let Some(normalized) = crate::project::clean_sidebar_title(&new_title) else {
+            return;
+        };
+        if normalized == "Terminal" {
+            // Don't let alacritty's `ResetTitle` fallback wipe a
+            // meaningful process-reported title once a child shell
+            // exits and the title resets to the default.
+            return;
+        }
+        for project in self.projects.iter_mut() {
+            if let Some(thread) = project.threads.iter_mut().find(|t| t.id == thread_id) {
+                if thread.title == normalized {
+                    return;
+                }
+                thread.title = normalized;
+                self.save_session(cx);
+                cx.notify();
+                return;
+            }
+        }
+    }
+
     // Sidebar render branch for [`AppMode::Agents`] now lives in
     // [`crate::app::agents_sidebar`] -- US-010 replaced the
     // placeholder shipped here in US-008.
+}
+
+/// Wrap a [`TerminalView`] entity into the Agents main area surface.
+/// Pulled into a free function so the dispatch branch in
+/// [`PaneFlowApp::render_agents_main_body`] stays one line and so the
+/// PTY background/padding policy (match the CLI pane shell) lives in a
+/// single named spot.
+pub(crate) fn render_terminal_thread_surface(
+    view: gpui::Entity<crate::terminal::view::TerminalView>,
+) -> gpui::AnyElement {
+    let ui = crate::theme::ui_colors();
+    div()
+        .size_full()
+        .bg(ui.base)
+        .child(view.into_any_element())
+        .into_any_element()
 }
