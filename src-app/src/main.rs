@@ -306,6 +306,14 @@ struct PaneFlowApp {
     /// inline-rename mode (mirrors [`Self::renaming_idx`] but for the
     /// Agents domain). `None` when no rename is active.
     pub(crate) agents_renaming: Option<crate::app::agents_sidebar::AgentsRenameTarget>,
+    /// Inline rename input. `Some` only while a rename is in flight;
+    /// dropped on commit / cancel. Mirrors the Composer's TextArea
+    /// pattern so users get a real text input (cursor, selection,
+    /// IME, copy/paste, click-to-position, double-click word select)
+    /// instead of a fake `{text}|` shimmer. One entity is enough
+    /// because [`Self::agents_renaming`] enforces a single in-flight
+    /// rename at a time.
+    pub(crate) agents_rename_input: Option<gpui::Entity<crate::widgets::text_area::TextArea>>,
     /// US-011: the in-progress rename text. Empty when not renaming.
     pub(crate) agents_rename_text: String,
     /// US-011: open right-click context menu (project header or
@@ -365,6 +373,16 @@ struct PaneFlowApp {
     /// cache only addresses within-session continuity.
     pub(crate) agents_thread_view_cache:
         std::collections::HashMap<u64, gpui::Entity<crate::agents::thread_view::ThreadView>>,
+    /// Cache of every Terminal Thread surface mounted this session,
+    /// keyed by [`crate::project::Thread::id`]. Same role as
+    /// [`Self::agents_thread_view_cache`] for the PTY path: switching
+    /// between Terminal Threads must reuse the existing
+    /// [`crate::terminal::view::TerminalView`] entity so the shell
+    /// process, scrollback, and I/O threads survive the round trip.
+    /// Drop happens on thread deletion (via `remove_thread`'s cache
+    /// cleanup) or on app shutdown.
+    pub(crate) agents_terminal_view_cache:
+        std::collections::HashMap<u64, gpui::Entity<crate::terminal::view::TerminalView>>,
 }
 
 /// Global flag for swap mode, checked by TerminalView to intercept Escape.

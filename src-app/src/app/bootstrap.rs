@@ -716,6 +716,7 @@ impl PaneFlowApp {
             // response to user actions.
             agents_renaming: None,
             agents_rename_text: String::new(),
+            agents_rename_input: None,
             agents_menu_open: None,
             agents_confirm_delete: None,
             confirm_close_all_workspaces: false,
@@ -736,6 +737,7 @@ impl PaneFlowApp {
             agents_thread_view: None,
             agents_thread_view_for: None,
             agents_thread_view_cache: std::collections::HashMap::new(),
+            agents_terminal_view_cache: std::collections::HashMap::new(),
         };
 
         // US-009 (prd-agents-view.md): no-agents fallback. If the
