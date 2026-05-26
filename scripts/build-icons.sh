@@ -87,12 +87,42 @@ fi
 # (matches Apple's documented icon mask ratio).
 MASK_RADIUS_PCT=2237
 
+# Run a `magick` (or `convert`) invocation with up to 3 attempts.
+# ImageMagick 7.1.2-23 (the current Homebrew bottle on macos-14-arm64,
+# and what ships preinstalled on windows-2022) has an intermittent
+# SIGABRT (exit 134) during coder-module loading -- the same script, on
+# the same runner image, with the same master PNG, will succeed one run
+# and crash the next. The Linux apt copy on ubuntu-22.04 is older and
+# doesn't hit this, but a cheap retry is worth the safety on every leg.
+#
+# The first arg picks the IM binary (`magick` for IM7, `convert` for
+# IM6); remaining args are passed verbatim. Caller is responsible for
+# the if/elif branch; this helper only adds the retry. `if run_magick`
+# is set-e-safe because failure inside an `if` test is suppressed.
+run_magick() {
+    local bin="$1"; shift
+    local attempt=0
+    local max=3
+    while : ; do
+        if "$bin" "$@"; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge "$max" ]; then
+            warn "$bin failed after $max attempts"
+            return 1
+        fi
+        warn "$bin transient failure (attempt $attempt/$max); retrying in 1s"
+        sleep 1
+    done
+}
+
 resize_png() {
     local src="$1" dst="$2" size="$3"
     if command -v magick >/dev/null 2>&1; then
-        magick "$src" -filter Lanczos -resize "${size}x${size}" -strip "$dst"
+        run_magick magick "$src" -filter Lanczos -resize "${size}x${size}" -strip "$dst"
     elif command -v convert >/dev/null 2>&1; then
-        convert "$src" -filter Lanczos -resize "${size}x${size}" -strip "$dst"
+        run_magick convert "$src" -filter Lanczos -resize "${size}x${size}" -strip "$dst"
     elif command -v sips >/dev/null 2>&1; then
         sips -Z "$size" "$src" --out "$dst" >/dev/null
     else
@@ -122,14 +152,14 @@ resize_and_mask_png() {
         #      may opportunistically downgrade to palette PNG when the alpha
         #      channel has only 2 distinct values (fully opaque + fully
         #      transparent), which strips the alpha back out.
-        magick \
+        run_magick magick \
             \( "$src" -filter Lanczos -resize "${size}x${size}" -alpha On \) \
             \( -size "${size}x${size}" xc:none -fill white \
                 -draw "roundrectangle 0,0 ${edge},${edge} ${radius},${radius}" \) \
             -compose DstIn -composite \
             -strip "PNG32:$dst"
     elif command -v convert >/dev/null 2>&1; then
-        convert \
+        run_magick convert \
             \( "$src" -filter Lanczos -resize "${size}x${size}" -alpha On \) \
             \( -size "${size}x${size}" xc:none -fill white \
                 -draw "roundrectangle 0,0 ${edge},${edge} ${radius},${radius}" \) \
@@ -210,9 +240,9 @@ done
 # automatically PNG-compresses the 256px frame inside the .ico envelope (the
 # rest stay BMP) for Vista+ ProgramsAndFeatures compatibility.
 if command -v magick >/dev/null 2>&1; then
-    magick "$TMP_ICO"/{16,24,32,48,64,128,256}.png "$OUT_ICO"
+    run_magick magick "$TMP_ICO"/{16,24,32,48,64,128,256}.png "$OUT_ICO"
 elif command -v convert >/dev/null 2>&1; then
-    convert "$TMP_ICO"/{16,24,32,48,64,128,256}.png "$OUT_ICO"
+    run_magick convert "$TMP_ICO"/{16,24,32,48,64,128,256}.png "$OUT_ICO"
 else
     die "need ImageMagick to assemble $OUT_ICO"
 fi
