@@ -687,6 +687,26 @@ pub struct Composer {
     /// Cleared when `is_streaming` flips back to `false` so the row
     /// collapses cleanly (AC #5).
     turn_started_at: Option<std::time::Instant>,
+
+    /// One-shot guard for the background title summarizer (Zed
+    /// `Thread::generate_title` parity). `false` until the first
+    /// clean `TurnEnded` for this thread fires the summarizer;
+    /// `true` afterwards so subsequent turn-ends never re-trigger.
+    /// Mirrors Zed's `pending_title_generation.is_none()` gate at
+    /// `crates/agent/src/thread.rs:2734`. Survives a runtime crash
+    /// / restart (we never reset it) -- the auto-title is best
+    /// generated from the very first exchange, not from a recovered
+    /// mid-conversation state.
+    title_summarization_done: bool,
+
+    /// Title in the sidebar at the moment the first user prompt was
+    /// sent. The background summarizer ships this back via
+    /// `TitleReplacePolicy::OnlyIfStillEqualTo(snapshot)` so a user
+    /// rename that lands during the (~1-3 s) transient session round
+    /// trip is preserved. `Some` only between first `send_prompt`
+    /// and first `TurnEnded`; `None` afterwards (taken by the
+    /// summarizer trigger).
+    title_snapshot_for_summary: Option<String>,
 }
 
 impl Composer {
@@ -776,6 +796,8 @@ impl Composer {
             current_turn_tool_count: 0,
             last_usage: None,
             turn_started_at: None,
+            title_summarization_done: false,
+            title_snapshot_for_summary: None,
         };
         composer.install_submit_callback(cx);
         composer.install_submit_immediate_callback(cx);
@@ -1124,6 +1146,36 @@ impl Composer {
                         tv.sweep_pending_tools_at_turn_end(reason, cx);
                     });
                 }
+                // Background title summarizer (Zed parity --
+                // `Thread::generate_title` at thread.rs:2808). Fire
+                // once on the first clean turn end, only for ACP
+                // agents that don't push their own
+                // `SessionInfoUpdate.title` (Codex). Best-effort: if
+                // the transient session fails, the auto-derived
+                // title stays.
+                if !self.title_summarization_done
+                    && matches!(reason, StopReasonKind::EndTurn)
+                    && let Some(snapshot) = self.title_snapshot_for_summary.take()
+                    && let Some(view) = self.thread_view.upgrade()
+                {
+                    self.title_summarization_done = true;
+                    let (user_text, assistant_text) = {
+                        let tv = view.read(cx);
+                        (tv.first_user_text(), tv.first_assistant_text())
+                    };
+                    if let (Some(user), Some(assistant)) = (user_text, assistant_text) {
+                        let req = crate::agents::title_summarizer::SummarizeRequest {
+                            agent_kind: self.agent_kind,
+                            cwd: self.cwd.clone(),
+                            discovery: Arc::clone(&self.discovery),
+                            user_prompt: user,
+                            assistant_response: assistant,
+                            title_snapshot: snapshot,
+                            thread_view: view.downgrade(),
+                        };
+                        crate::agents::title_summarizer::spawn_thread_title_summarization(req, cx);
+                    }
+                }
                 self.is_streaming = false;
                 // US-121 AC #5: clear the stopwatch so the activity-bar
                 // row collapses cleanly when the spinner disappears.
@@ -1245,7 +1297,7 @@ impl Composer {
                     view.update(cx, |_tv, cx| {
                         cx.emit(crate::agents::thread_view::TitleSuggested {
                             title: title.clone(),
-                            only_if_default: false,
+                            policy: crate::agents::thread_view::TitleReplacePolicy::Always,
                         });
                     });
                 }
@@ -1422,21 +1474,36 @@ impl Composer {
             // Client-side title auto-derive: if this is the very first
             // user prompt of the thread (no items yet), peel a short
             // label from the prompt text and emit `TitleSuggested`
-            // with `only_if_default = true` so the sidebar row renames
+            // with `OnlyIfDefault` so the sidebar row renames
             // immediately without waiting for an ACP `SessionInfoUpdate`
             // (Claude Code 0.16 / Codex 0.14 don't emit those).
-            let auto_title = if view.read(cx).items_is_empty() {
+            let is_first_prompt = view.read(cx).items_is_empty();
+            let auto_title = if is_first_prompt {
                 derive_title_from_prompt(&text)
             } else {
                 None
             };
+            // Snapshot the title we just steered the sidebar to (or
+            // the literal default if derive returned None). The
+            // background title summarizer (kicked off at first
+            // `TurnEnded`) ships this back via
+            // `TitleReplacePolicy::OnlyIfStillEqualTo` so a user
+            // rename during the transient session round-trip is
+            // preserved.
+            if is_first_prompt {
+                self.title_snapshot_for_summary = Some(
+                    auto_title
+                        .clone()
+                        .unwrap_or_else(|| "New thread".to_string()),
+                );
+            }
             view.update(cx, |tv, cx| {
                 tv.send_user_message_blocks(blocks_for_view, cx);
                 tv.begin_assistant_stream(cx);
                 if let Some(title) = auto_title {
                     cx.emit(crate::agents::thread_view::TitleSuggested {
                         title,
-                        only_if_default: true,
+                        policy: crate::agents::thread_view::TitleReplacePolicy::OnlyIfDefault,
                     });
                 }
             });
@@ -1500,21 +1567,36 @@ impl Composer {
             // Client-side title auto-derive: if this is the very first
             // user prompt of the thread (no items yet), peel a short
             // label from the prompt text and emit `TitleSuggested`
-            // with `only_if_default = true` so the sidebar row renames
+            // with `OnlyIfDefault` so the sidebar row renames
             // immediately without waiting for an ACP `SessionInfoUpdate`
             // (Claude Code 0.16 / Codex 0.14 don't emit those).
-            let auto_title = if view.read(cx).items_is_empty() {
+            let is_first_prompt = view.read(cx).items_is_empty();
+            let auto_title = if is_first_prompt {
                 derive_title_from_prompt(&text)
             } else {
                 None
             };
+            // Snapshot the title we just steered the sidebar to (or
+            // the literal default if derive returned None). The
+            // background title summarizer (kicked off at first
+            // `TurnEnded`) ships this back via
+            // `TitleReplacePolicy::OnlyIfStillEqualTo` so a user
+            // rename during the transient session round-trip is
+            // preserved.
+            if is_first_prompt {
+                self.title_snapshot_for_summary = Some(
+                    auto_title
+                        .clone()
+                        .unwrap_or_else(|| "New thread".to_string()),
+                );
+            }
             view.update(cx, |tv, cx| {
                 tv.send_user_message_blocks(blocks_for_view, cx);
                 tv.begin_assistant_stream(cx);
                 if let Some(title) = auto_title {
                     cx.emit(crate::agents::thread_view::TitleSuggested {
                         title,
-                        only_if_default: true,
+                        policy: crate::agents::thread_view::TitleReplacePolicy::OnlyIfDefault,
                     });
                 }
             });
