@@ -1013,6 +1013,14 @@ fn main() {
     ))
     .init();
 
+    // Patch PATH BEFORE GPUI starts so `which::which("bunx")` in
+    // `paneflow_acp::discovery` finds binaries installed under `~/.bun/bin`
+    // when Paneflow is launched from a `.desktop` file / Finder / Start Menu
+    // (those inherit a minimal systemd-user / launchd / Explorer PATH that
+    // does not source the user's shell rc). Must run before any other
+    // thread spawns — see safety note on `augment_path_for_gui_launch`.
+    runtime_paths::augment_path_for_gui_launch();
+
     // US-005: synchronous update flow for the e2e harness. Runs the same
     // checker + per-format installer the GUI calls, but without ever
     // initializing GPUI — exits with status 0 on a successful swap, 2 on

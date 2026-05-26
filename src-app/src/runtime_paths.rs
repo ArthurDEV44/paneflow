@@ -95,6 +95,91 @@ pub(crate) fn socket_path() -> Option<PathBuf> {
     }))
 }
 
+/// Prepend the common per-user `bin/` directories to the process `PATH`
+/// so PATH-based lookups (notably `which::which` in `paneflow_acp::discovery`)
+/// see binaries installed under the user's home — `~/.bun/bin`,
+/// `~/.cargo/bin`, `~/.local/bin`, plus `/opt/homebrew/bin` on macOS.
+///
+/// Why: when Paneflow is launched from a `.desktop` file, Finder, or the
+/// Windows Start Menu, it inherits the systemd-user / launchd / Explorer
+/// PATH, which does NOT include `~/.bun/bin`. The agent-discovery code
+/// gates on `which::which("bunx")` first; if `bunx` is invisible, the UI
+/// shows the "No AI agents detected" empty state even though both Claude
+/// Code and Codex are installed. Zed, VS Code, and most GUI dev tools all
+/// patch their own PATH at startup for the same reason.
+///
+/// Dirs are prepended (not appended), so user installs always win over any
+/// system-shadowed name. Existing entries in PATH are skipped — no
+/// duplicates. Idempotent: safe to call multiple times.
+///
+/// Safety: mutates a process-global env var. Must be called from `main`
+/// before any other thread is spawned (i.e. before GPUI initialises),
+/// otherwise concurrent readers may observe a torn PATH. Rust 2024 marks
+/// `set_var` as `unsafe` for this exact reason.
+pub fn augment_path_for_gui_launch() {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".bun").join("bin"));
+        candidates.push(home.join(".cargo").join("bin"));
+        candidates.push(home.join(".local").join("bin"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        candidates.push(PathBuf::from("/opt/homebrew/bin"));
+        candidates.push(PathBuf::from("/usr/local/bin"));
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".bun").join("bin"));
+    }
+
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let existing: Vec<PathBuf> = std::env::split_paths(&current).collect();
+
+    let mut to_prepend: Vec<PathBuf> = Vec::new();
+    for cand in candidates {
+        if !cand.is_dir() {
+            continue;
+        }
+        if existing.iter().any(|p| p == &cand) {
+            continue;
+        }
+        if to_prepend.contains(&cand) {
+            continue;
+        }
+        to_prepend.push(cand);
+    }
+
+    if to_prepend.is_empty() {
+        return;
+    }
+
+    let mut merged: Vec<PathBuf> = to_prepend.clone();
+    merged.extend(existing);
+
+    match std::env::join_paths(&merged) {
+        Ok(joined) => {
+            log::info!(
+                "paneflow: augmented PATH with user bin dirs: {}",
+                to_prepend
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            // SAFETY: called from `main` before GPUI / IPC / PTY threads start,
+            // so no other thread is reading PATH concurrently.
+            unsafe { std::env::set_var("PATH", joined) };
+        }
+        Err(e) => {
+            log::warn!("paneflow: failed to join augmented PATH ({e}); leaving PATH unchanged");
+        }
+    }
+}
+
 /// Resolve the PaneFlow per-user data directory (cross-platform).
 ///
 /// - Linux: `$XDG_DATA_HOME/paneflow` (typically `~/.local/share/paneflow`)
