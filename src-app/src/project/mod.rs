@@ -91,14 +91,39 @@ pub enum ThreadStatus {
     Failed,
 }
 
-/// One persistent chat conversation. Body lives in
-/// `paneflow-threads`'s SQLite DB (US-006); this struct holds only
-/// the in-memory sidebar metadata.
+/// What kind of surface a thread row drives in the main area. `Agent`
+/// is the historical chat-with-ACP-backend path (Claude Code / Codex
+/// served via the inline ThreadView). `Terminal` is the v1.x "Terminal
+/// Thread" surface (mirrors Zed's `AgentPanelEntryKind::Terminal`): the
+/// thread row spawns a raw PTY surface instead of a chat, so the user
+/// can run any CLI agent (Claude Code, Codex, Amp, OpenCode, Pi) or any
+/// long-running process and have it persist as a first-class sidebar
+/// entry next to the agent threads.
+///
+/// The variant is stored on [`Thread`] itself rather than wrapped into
+/// a `kind: ThreadKind { Agent(AgentKind), Terminal }` enum so the
+/// existing `agent: AgentKind` field keeps its meaning for the Agent
+/// path and every existing read site continues to compile unchanged.
+/// Terminal threads carry a dummy `agent` value (`ClaudeCode`) that is
+/// never read — the [`ThreadKind::Terminal`] branch short-circuits the
+/// dispatch in `render_agents_main_body` before any agent lookup runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThreadKind {
+    #[default]
+    Agent,
+    Terminal,
+}
+
+/// One persistent thread row in the Agents sidebar. Either an agent
+/// chat (body in `paneflow-threads` SQLite, US-006) or a Terminal
+/// Thread (no SQL row — the PTY is the source of truth and only the
+/// sidebar metadata round-trips through session.json).
 #[derive(Debug, Clone)]
 pub struct Thread {
     pub id: u64,
     pub title: String,
     pub agent: AgentKind,
+    pub kind: ThreadKind,
     pub status: ThreadStatus,
     pub cwd: String,
     pub created_at: u64,
@@ -108,7 +133,7 @@ pub struct Thread {
     /// `None` until US-011 wires the create-thread side-effect that
     /// inserts the row; older threads loaded from a pre-US-011 session
     /// also restore as `None` (the lookup gracefully degrades to "no
-    /// row to delete" on cascade).
+    /// row to delete" on cascade). Always `None` for Terminal threads.
     pub store_id: Option<String>,
 }
 
@@ -120,6 +145,25 @@ impl Thread {
             id: next_thread_id(),
             title: title.into(),
             agent,
+            kind: ThreadKind::Agent,
+            status: ThreadStatus::Idle,
+            cwd: cwd.into(),
+            created_at: now_unix_millis(),
+            model: None,
+            mode: None,
+            store_id: None,
+        }
+    }
+
+    /// Create a fresh Terminal Thread. The `agent` slot is filled with
+    /// a placeholder (`ClaudeCode`) that the Terminal dispatch never
+    /// consults — see [`ThreadKind`] for the rationale.
+    pub fn new_terminal(title: impl Into<String>, cwd: impl Into<String>) -> Self {
+        Self {
+            id: next_thread_id(),
+            title: title.into(),
+            agent: AgentKind::ClaudeCode,
+            kind: ThreadKind::Terminal,
             status: ThreadStatus::Idle,
             cwd: cwd.into(),
             created_at: now_unix_millis(),
@@ -189,6 +233,12 @@ pub fn thread_to_session(t: &Thread) -> ThreadSession {
         // from session without a `store_id` is legal -- the cascade
         // delete checks for `Some` before calling the store.
         store_id: t.store_id.clone(),
+        // None for the legacy Agent kind so pre-Terminal-Thread
+        // session.json files round-trip byte-identically.
+        kind: match t.kind {
+            ThreadKind::Agent => None,
+            ThreadKind::Terminal => Some(THREAD_KIND_TAG_TERMINAL.to_string()),
+        },
     }
 }
 
@@ -209,12 +259,31 @@ pub fn project_from_session(s: &ProjectSession) -> Project {
 
 /// Inverse of [`thread_to_session`]. Returns `None` on unknown agent
 /// tag (forward-compat for a future v1.x where OpenCode lands).
+/// Terminal-kind rows ignore the `agent` field entirely (it carries a
+/// placeholder on disk for forward-compat with pre-Terminal-Thread
+/// readers, see `THREAD_KIND_TAG_TERMINAL`).
 pub fn thread_from_session(s: &ThreadSession) -> Option<Thread> {
-    let agent = agent_kind_from_str(&s.agent)?;
+    let kind = match s.kind.as_deref() {
+        Some(THREAD_KIND_TAG_TERMINAL) => ThreadKind::Terminal,
+        Some(_) | None => ThreadKind::Agent,
+    };
+    let agent = match kind {
+        ThreadKind::Agent => agent_kind_from_str(&s.agent)?,
+        // Terminal threads never dispatch through the agent path; the
+        // placeholder keeps the struct shape uniform.
+        ThreadKind::Terminal => AgentKind::ClaudeCode,
+    };
+    // Strip leading spinner/bullet decoration that CLI agents may
+    // have baked into the title when it was last persisted (Claude
+    // Code's `✻`, Codex's braille spinner, generic `●`). Falls back
+    // to the raw title if cleaning yields nothing meaningful so the
+    // row never restores empty.
+    let title = clean_sidebar_title(&s.title).unwrap_or_else(|| s.title.clone());
     Some(Thread {
         id: s.id,
-        title: s.title.clone(),
+        title,
         agent,
+        kind,
         status: ThreadStatus::default(),
         cwd: s.cwd.clone(),
         created_at: s.created_at,
@@ -222,6 +291,71 @@ pub fn thread_from_session(s: &ThreadSession) -> Option<Thread> {
         mode: s.mode.clone(),
         store_id: s.store_id.clone(),
     })
+}
+
+/// On-disk discriminant for [`ThreadKind::Terminal`] in
+/// `ThreadSession::kind`. Lives in its own constant so the round-trip
+/// helpers and the affordance handlers agree on the literal.
+pub const THREAD_KIND_TAG_TERMINAL: &str = "terminal";
+
+/// Strip leading decoration glyphs and invisible characters that CLI
+/// agents (Claude Code, Codex, OpenCode, Pi, Amp) bake into their
+/// session / OSC titles to indicate status. Without this:
+/// - During response: "● Project overview" sits in the sidebar with
+///   a literal dot in front of the label.
+/// - After response: a completion glyph (`✓`, `⚡`, …) or a
+///   zero-width character (`U+200B`, `U+FEFF`, …) takes its place
+///   and shows as a phantom margin -- `trim()` doesn't strip these
+///   because they aren't whitespace per the Unicode standard, yet
+///   most fonts render them with non-zero advance width.
+///
+/// Implementation strategy: whitelist what *can* legitimately lead a
+/// human-written title (letters, digits, common opening punctuation)
+/// and strip everything else from the front in one pass. That covers
+/// the entire CLI-status-decoration family in a future-proof way --
+/// new spinner glyphs or completion icons get caught without code
+/// changes. Trailing whitespace is also normalized.
+///
+/// Returns `None` when nothing meaningful remains after stripping
+/// (the caller treats that the same as an empty title -- the row
+/// keeps its previous label rather than flashing blank).
+pub fn clean_sidebar_title(raw: &str) -> Option<String> {
+    let cleaned = raw
+        .trim_start_matches(|c: char| !is_title_meaningful_lead(c))
+        .trim();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned.to_string())
+    }
+}
+
+/// Whitelist of characters that can legitimately *start* a sidebar
+/// thread title written by a human. Everything else (CLI status
+/// glyphs, emoji, zero-width characters, format/control codepoints)
+/// is treated as decoration and stripped by [`clean_sidebar_title`].
+fn is_title_meaningful_lead(c: char) -> bool {
+    c.is_alphanumeric()
+        || matches!(
+            c,
+            // Quotes -- ASCII + Unicode opening forms
+            '"' | '\'' | '`'
+            | '\u{201C}' | '\u{201D}'  // "" curly double
+            | '\u{2018}' | '\u{2019}'  // '' curly single
+            | '\u{00AB}' | '\u{00BB}'  // « » guillemets
+            // Opening brackets / parens
+            | '(' | '[' | '{'
+            // Common title leads (hashtag, mention, code identifier)
+            | '#' | '@' | '_'
+            // Path / namespace separators
+            | '/' | '\\' | '~' | '.'
+            // Math / numeric leads
+            | '-' | '+' | '=' | '$'
+            | '\u{2013}' | '\u{2014}'  // – —
+            | '\u{2212}'               // − minus sign
+            // Currency
+            | '\u{00A3}' | '\u{00A5}' | '\u{20AC}' // £ ¥ €
+        )
 }
 
 /// Canonical string tag for an [`AgentKind`]. Stable on-disk format
@@ -360,6 +494,7 @@ mod tests {
                 model: None,
                 mode: None,
                 store_id: None,
+                kind: None,
             }],
         };
         let restored = project_from_session(&session);

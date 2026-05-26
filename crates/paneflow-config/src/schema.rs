@@ -568,6 +568,19 @@ pub struct ThreadSession {
     /// this on first `append_message`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store_id: Option<String>,
+    /// Runtime kind discriminant for the v1.x "Terminal Thread" surface
+    /// (mirrors Zed's `AgentPanelEntryKind`). `None` (the default for
+    /// every pre-Terminal-Thread session.json) restores as the legacy
+    /// `Agent` kind. `Some("terminal")` restores as a Terminal Thread
+    /// (PTY surface in the main area instead of a chat). Unknown
+    /// strings fall back to `Agent` so a forward-rolled session from a
+    /// future build does not ghost the row.
+    ///
+    /// Stored as a `String` rather than a typed enum so this crate
+    /// stays free of the runtime `ThreadKind` enum (which lives in
+    /// `src-app` to keep `paneflow-config` a leaf crate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 fn default_true() -> bool {

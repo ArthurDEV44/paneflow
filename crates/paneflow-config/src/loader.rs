@@ -1186,6 +1186,7 @@ mod tests {
                     model: Some("sonnet".to_string()),
                     mode: Some("default".to_string()),
                     store_id: Some("uuid-abc-123".to_string()),
+                    kind: None,
                 }],
             }],
             active_project: 0,
