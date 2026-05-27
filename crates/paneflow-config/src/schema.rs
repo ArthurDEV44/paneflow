@@ -29,6 +29,22 @@ pub struct PaneFlowConfig {
     /// Treat Alt key as Meta (send ESC prefix). Default: true on Linux.
     /// Set to false for future macOS where Option produces Unicode characters.
     pub option_as_meta: Option<bool>,
+    /// External editor used to open markdown links (file paths shipped
+    /// by the agent as `[foo](src/foo.rs)` or `[foo](src/foo.rs:42)`).
+    ///
+    /// Accepted values:
+    /// - `"auto"` (default when absent): detect the first CLI present
+    ///   on PATH from the preferred order `zed`, `cursor`, `windsurf`,
+    ///   `code`. Falls back to the system opener (xdg-open / open /
+    ///   start) when none are installed.
+    /// - `"system"`: always defer to the OS-level opener.
+    /// - `"zed"` | `"cursor"` | `"windsurf"` | `"code"`: force the
+    ///   named CLI even if other editors are also installed.
+    ///
+    /// The chosen CLI is spawned with `<editor> <abs_path>[:line[:col]]`;
+    /// all four support that suffix natively to jump to the target
+    /// position.
+    pub external_editor: Option<String>,
     /// When `Some(true)` *or* `None` (the default), every permission
     /// gate is disabled:
     /// 1. The "Claude Code" tab-bar terminal launcher adds
@@ -126,6 +142,44 @@ pub struct TerminalConfig {
     /// `Some(true)`. `None` and `Some(false)` both keep the historical
     /// behavior of disabling ligatures via GPUI's `FontFeatures`.
     pub ligatures: Option<bool>,
+    /// Maximum scrollback history in lines (Zed parity:
+    /// `max_scroll_history_lines`). `None` resolves to
+    /// [`TerminalConfig::DEFAULT_SCROLLBACK_LINES`]; values are clamped
+    /// to `[100, 100_000]` to keep a runaway log from eating RAM.
+    /// Read once at PTY spawn time; changing this value takes effect on
+    /// the next new terminal.
+    pub scrollback_lines: Option<usize>,
+}
+
+impl TerminalConfig {
+    /// Default scrollback length matching Zed's `DEFAULT_SCROLL_HISTORY_LINES`.
+    pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
+    /// Lower bound: below 100 lines the buffer is too small to be useful.
+    pub const MIN_SCROLLBACK_LINES: usize = 100;
+    /// Upper bound: 100K lines × ~80 cols × cell ≈ 1 GiB ceiling.
+    pub const MAX_SCROLLBACK_LINES: usize = 100_000;
+
+    /// Resolve the configured `scrollback_lines` to a usable value,
+    /// applying default + clamp. Out-of-range values are clamped (a
+    /// `warn!` is emitted on the first read so the user notices their
+    /// config did not take effect verbatim).
+    pub fn resolved_scrollback_lines(&self) -> usize {
+        let raw = self
+            .scrollback_lines
+            .unwrap_or(Self::DEFAULT_SCROLLBACK_LINES);
+        let clamped = raw.clamp(Self::MIN_SCROLLBACK_LINES, Self::MAX_SCROLLBACK_LINES);
+        if clamped != raw {
+            tracing::warn!(
+                target: "paneflow_config::terminal",
+                requested = raw,
+                clamped,
+                "terminal.scrollback_lines out of range [{min}, {max}], clamped",
+                min = Self::MIN_SCROLLBACK_LINES,
+                max = Self::MAX_SCROLLBACK_LINES,
+            );
+        }
+        clamped
+    }
 }
 
 /// Agents-view-scoped configuration block (US-103).
