@@ -1069,7 +1069,17 @@ impl SessionRuntime {
     /// list (text + image + resource link). Non-blocking; success is
     /// signalled via a `Chunk` / `TurnEnded` event sequence.
     pub fn send_prompt_blocks(&self, blocks: Vec<ContentBlock>) {
-        let _ = self.cmd_tx.send(Command::SendPrompt(blocks));
+        // US-019 (audit P2-9): a closed channel here is symptomatic
+        // of the runtime thread having exited (panic, fatal init
+        // error, or Drop racing the caller). Logging at warn surfaces
+        // the dropped prompt in any bug report instead of silently
+        // swallowing user input.
+        if let Err(err) = self.cmd_tx.send(Command::SendPrompt(blocks)) {
+            log::warn!(
+                target: "paneflow_app::agents::runtime",
+                "cmd_tx.send(SendPrompt) failed (runtime shut down? prompt lost): {err}"
+            );
+        }
     }
 
     /// Send a `session/cancel` notification. AC #3 / #8: the
@@ -1369,19 +1379,49 @@ fn run_blocking(
                     // runtime; the JSON-RPC reactor and any spawned
                     // prompt task get polled in the meantime.
                     let cmd_rx_handle = cmd_rx.clone();
-                    let cmd_result = tokio::task::spawn_blocking(move || {
-                        cmd_rx_handle
-                            .lock()
-                            .map_err(|_| ())
-                            .and_then(|rx| rx.recv().map_err(|_| ()))
+                    // US-019 (audit P2-7): distinguish PoisonError vs
+                    // RecvError so a stuck UI (spinner that never
+                    // stops) has a corresponding log trail. A poison
+                    // means a previous blocking-thread panic left the
+                    // Mutex in a corrupted state; RecvError is the
+                    // clean shutdown (sender dropped).
+                    enum RecvOutcome {
+                        Cmd(Command),
+                        Poisoned,
+                        SenderClosed,
+                    }
+                    let cmd_result = tokio::task::spawn_blocking(move || match cmd_rx_handle.lock()
+                    {
+                        Ok(rx) => match rx.recv() {
+                            Ok(c) => RecvOutcome::Cmd(c),
+                            Err(_) => RecvOutcome::SenderClosed,
+                        },
+                        Err(_) => RecvOutcome::Poisoned,
                     })
                     .await;
                     let cmd = match cmd_result {
-                        Ok(Ok(c)) => c,
-                        // Sender dropped (ThreadView gone), lock
-                        // poisoned, or the blocking task failed --
-                        // either way the runtime should shut down.
-                        _ => return Ok(()),
+                        Ok(RecvOutcome::Cmd(c)) => c,
+                        Ok(RecvOutcome::SenderClosed) => {
+                            log::info!(
+                                target: "paneflow_app::agents::runtime",
+                                "ACP cmd_rx sender closed -- runtime loop exiting cleanly"
+                            );
+                            return Ok(());
+                        }
+                        Ok(RecvOutcome::Poisoned) => {
+                            log::error!(
+                                target: "paneflow_app::agents::runtime",
+                                "ACP cmd_rx mutex poisoned (prior blocking-thread panic); runtime loop exiting -- the UI may show a stuck spinner until the user restarts the thread"
+                            );
+                            return Ok(());
+                        }
+                        Err(join_err) => {
+                            log::error!(
+                                target: "paneflow_app::agents::runtime",
+                                "ACP cmd_rx spawn_blocking join failed: {join_err}; runtime loop exiting"
+                            );
+                            return Ok(());
+                        }
                     };
 
                     match cmd {

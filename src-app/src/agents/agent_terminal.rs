@@ -357,10 +357,7 @@ impl AgentTerminalSession {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
-                            let mut guard = match buf_handle.buffer.lock() {
-                                Ok(g) => g,
-                                Err(p) => p.into_inner(),
-                            };
+                            let mut guard = lock_with_poison_log(&buf_handle.buffer, "buffer");
                             guard.append(&buf[..n]);
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -385,14 +382,9 @@ impl TerminalSession for AgentTerminalSession {
         let shared = Arc::clone(&self.shared);
         Box::pin(async move {
             // Check if the child has exited (non-blocking poll).
-            let exit_status = match shared.child.lock() {
-                Ok(mut guard) => poll_child_exit(&mut guard),
-                Err(p) => poll_child_exit(&mut p.into_inner()),
-            };
-            let (output, truncated) = match shared.buffer.lock() {
-                Ok(g) => g.snapshot(),
-                Err(p) => p.into_inner().snapshot(),
-            };
+            let exit_status =
+                poll_child_exit(&mut lock_with_poison_log(&shared.child, "child"));
+            let (output, truncated) = lock_with_poison_log(&shared.buffer, "buffer").snapshot();
             Ok(TerminalOutputSnapshot {
                 output,
                 truncated,
@@ -410,13 +402,7 @@ impl TerminalSession for AgentTerminalSession {
             // tolerate this since `wait_for_exit` is a one-shot.
             tokio::task::spawn_blocking(move || {
                 loop {
-                    let exit = {
-                        let mut guard = match shared.child.lock() {
-                            Ok(g) => g,
-                            Err(p) => p.into_inner(),
-                        };
-                        poll_child_exit(&mut guard)
-                    };
+                    let exit = poll_child_exit(&mut lock_with_poison_log(&shared.child, "child"));
                     if let Some(es) = exit {
                         return Ok(es);
                     }
@@ -439,10 +425,7 @@ impl TerminalSession for AgentTerminalSession {
             // period and goes straight to TerminateProcess.
             tokio::task::spawn_blocking(move || {
                 let pid_opt = {
-                    let guard = match shared.child.lock() {
-                        Ok(g) => g,
-                        Err(p) => p.into_inner(),
-                    };
+                    let guard = lock_with_poison_log(&shared.child, "child");
                     match &*guard {
                         ChildState::Running(c) => c.process_id(),
                         _ => None,
@@ -469,13 +452,11 @@ impl TerminalSession for AgentTerminalSession {
                     let deadline = Instant::now() + Duration::from_secs(2);
                     while Instant::now() < deadline {
                         std::thread::sleep(Duration::from_millis(50));
-                        let exited = {
-                            let mut guard = match shared.child.lock() {
-                                Ok(g) => g,
-                                Err(p) => p.into_inner(),
-                            };
-                            poll_child_exit(&mut guard).is_some()
-                        };
+                        let exited = poll_child_exit(&mut lock_with_poison_log(
+                            &shared.child,
+                            "child",
+                        ))
+                        .is_some();
                         if exited {
                             return Ok(());
                         }
@@ -493,10 +474,7 @@ impl TerminalSession for AgentTerminalSession {
                 // Fallback: portable-pty's ChildKiller (SIGHUP on Unix,
                 // TerminateProcess on Windows). On Unix this is now belt-and-
                 // suspenders — the SIGKILL above already reaped the group.
-                let mut guard = match shared.child.lock() {
-                    Ok(g) => g,
-                    Err(p) => p.into_inner(),
-                };
+                let mut guard = lock_with_poison_log(&shared.child, "child");
                 if let ChildState::Running(c) = &mut *guard {
                     let _ = c.kill();
                     // Drive the poll to reap zombies.
@@ -518,6 +496,27 @@ impl TerminalSession for AgentTerminalSession {
     }
 }
 
+/// US-019 (audit P2-8): lock a `Mutex<T>` with a log line on poison
+/// recovery. `into_inner()` keeps Paneflow running with the recovered
+/// state (preferred over re-panicking) but a poisoned mutex means a
+/// prior thread panicked mid-write -- the recovered state may be
+/// inconsistent. Logging at warn surfaces that risk in any bug report
+/// instead of swallowing it silently. `site` is the field name (e.g.
+/// `"buffer"`, `"child"`, `"master"`) so the log narrows down the
+/// affected lock.
+fn lock_with_poison_log<'a, T>(m: &'a Mutex<T>, site: &str) -> std::sync::MutexGuard<'a, T> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(p) => {
+            log::warn!(
+                target: "paneflow_app::agents::agent_terminal",
+                "{site} mutex poisoned; recovering state -- inner state may be inconsistent: {p}"
+            );
+            p.into_inner()
+        }
+    }
+}
+
 /// Synchronous body of [`AgentTerminalSession::release`]. Closes the
 /// master fd (drives the reader thread to EOF) and signals the child
 /// if it is still running. Idempotent: the `Option::take`-style
@@ -527,17 +526,11 @@ impl TerminalSession for AgentTerminalSession {
 /// impl below (panic / unexpected-shutdown path).
 fn release_sync(shared: &SessionShared) {
     {
-        let mut guard = match shared.master.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
+        let mut guard = lock_with_poison_log(&shared.master, "master");
         *guard = None;
     }
     {
-        let mut guard = match shared.child.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
+        let mut guard = lock_with_poison_log(&shared.child, "child");
         if let ChildState::Running(c) = &mut *guard {
             let _ = c.kill();
         }
