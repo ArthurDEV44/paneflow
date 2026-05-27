@@ -154,6 +154,12 @@ pub struct ThreadView {
     list_state: ListState,
     should_be_following: Rc<Cell<bool>>,
     streaming_buffer: StreamingBuffer,
+    /// Paced reveal for thinking chunks. Parallel to
+    /// [`Self::streaming_buffer`] (text). Thinking bursts often arrive
+    /// as 100+ rapid tokens; routing them through a buffer prevents
+    /// the same per-token `cx.notify()` + `Markdown::append` storm
+    /// that hits the text path on long responses (audit P1-2).
+    thinking_buffer: StreamingBuffer,
     /// Index in `items` of the currently-open assistant message, or
     /// `None` when no streaming turn is active. The currently-open
     /// assistant message is the only one new `Text` / `Thought` chunks
@@ -468,6 +474,7 @@ impl ThreadView {
             list_state,
             should_be_following,
             streaming_buffer: StreamingBuffer::new(PacingConfig::default()),
+            thinking_buffer: StreamingBuffer::new(PacingConfig::default()),
             streaming_message_idx: None,
             _streaming_task: None,
             composer,
@@ -670,39 +677,38 @@ impl ThreadView {
         // order inside the same assistant turn.
         self.drain_streaming_buffer_into_open(cx);
         let idx = self.ensure_open_assistant_message(cx);
-        let owned = chunk.to_string();
-        // Merge with the trailing chunk when it is also a Thought, so
-        // a single thinking burst sent in N pieces renders as one
-        // collapsible block.
+        // Make sure there is an open Thought chunk for the streaming
+        // task to append into. The actual chars are queued in
+        // `thinking_buffer` and revealed by the streaming tick -- this
+        // path only handles the chunk-creation bookkeeping (audit
+        // P1-2: avoid the per-push `markdown.append` + `cx.notify`
+        // storm on rapid thinking bursts).
         if let Some(ThreadItem::AssistantMessage(am)) = self.items.get_mut(idx) {
-            match am.chunks.last_mut() {
-                Some(AssistantMessageChunk::Thought { text, markdown, .. }) => {
-                    text.push_str(&owned);
-                    markdown.update(cx, |m, cx| m.append(&owned, cx));
-                }
-                _ => {
-                    let md = Self::make_markdown(&owned, cx);
-                    let chunk_idx = am.chunks.len();
-                    am.chunks.push(AssistantMessageChunk::Thought {
-                        text: owned,
-                        markdown: md,
-                        signature: None,
-                    });
-                    // Track this thought as the current "auto-expandable"
-                    // burst so `finalize_thinking` can auto-collapse it
-                    // when the burst ends — unless the user has
-                    // explicitly touched it in the meantime.
-                    self.streaming_thinking_key = Some((idx, chunk_idx));
-                }
+            let needs_new_thought = !matches!(
+                am.chunks.last(),
+                Some(AssistantMessageChunk::Thought { .. }),
+            );
+            if needs_new_thought {
+                let md = Self::make_markdown("", cx);
+                let chunk_idx = am.chunks.len();
+                am.chunks.push(AssistantMessageChunk::Thought {
+                    text: String::new(),
+                    markdown: md,
+                    signature: None,
+                });
+                // Track this thought as the current "auto-expandable"
+                // burst so `finalize_thinking` can auto-collapse it
+                // when the burst ends -- unless the user has
+                // explicitly touched it in the meantime.
+                self.streaming_thinking_key = Some((idx, chunk_idx));
             }
         }
-        if self.should_be_following.get() {
-            self.list_state.scroll_to_end();
-        }
-        // Throttled persist (streaming hot path) — thinking bursts emit
-        // many small chunks. Final flush happens at turn end.
+        self.thinking_buffer.push(chunk);
+        // Throttled persist (streaming hot path) -- thinking bursts emit
+        // many small chunks. Final flush happens at turn end. No
+        // `cx.notify` here: the streaming task tick coalesces reveals
+        // and notifies once per frame budget.
         self.schedule_persist();
-        cx.notify();
     }
 
     /// Close the currently-open assistant turn. After this returns,
@@ -1983,6 +1989,15 @@ impl ThreadView {
                             if !revealed.is_empty() {
                                 view.append_to_streaming_text(&revealed, cx);
                             }
+                            // US-008: same paced reveal for thinking
+                            // chunks. Routing through the buffer
+                            // coalesces the per-token `cx.notify` storm
+                            // a Sonnet thinking burst would otherwise
+                            // produce.
+                            let revealed_thought = view.thinking_buffer.tick();
+                            if !revealed_thought.is_empty() {
+                                view.append_to_streaming_thought(&revealed_thought, cx);
+                            }
                             // Adapt the next sleep to the open message
                             // size: past ~4 KB drop to 20 Hz, past
                             // ~16 KB drop to ~7 Hz. Keeps the cumulative
@@ -2057,6 +2072,17 @@ impl ThreadView {
             self.streaming_message_idx,
             self.streaming_buffer.pending_chars(),
         );
+        // Drain any thinking still queued in the paced buffer BEFORE
+        // dropping the open-message handle. Otherwise a fast turn end
+        // that arrives between two ticks would strand the trailing
+        // thought characters in the buffer until `clear_local_display`
+        // wipes them. Symmetric with the text-side flush below.
+        if !self.thinking_buffer.is_idle() {
+            let remaining_thought = self.thinking_buffer.flush();
+            if !remaining_thought.is_empty() {
+                self.append_to_streaming_thought(&remaining_thought, cx);
+            }
+        }
         let Some(idx) = self.streaming_message_idx.take() else {
             return;
         };
@@ -2097,6 +2123,30 @@ impl ThreadView {
             return;
         };
         self.append_to_streaming_text_at(idx, chunk, cx);
+    }
+
+    /// Apply a revealed thinking batch to the currently-open Thought
+    /// chunk. Mirrors [`Self::append_to_streaming_text`] but routes
+    /// to the trailing `Thought` instead of the trailing `Text`.
+    /// Idempotent when no streaming Thought is open.
+    fn append_to_streaming_thought(&mut self, chunk: &str, cx: &mut Context<Self>) {
+        let Some((am_idx, chunk_idx)) = self.streaming_thinking_key else {
+            return;
+        };
+        let Some(ThreadItem::AssistantMessage(am)) = self.items.get_mut(am_idx) else {
+            return;
+        };
+        let Some(AssistantMessageChunk::Thought { text, markdown, .. }) =
+            am.chunks.get_mut(chunk_idx)
+        else {
+            return;
+        };
+        text.push_str(chunk);
+        markdown.update(cx, |m, cx| m.append(chunk, cx));
+        if self.should_be_following.get() {
+            self.list_state.scroll_to_end();
+        }
+        cx.notify();
     }
 
     fn append_to_streaming_text_at(&mut self, idx: usize, chunk: &str, cx: &mut Context<Self>) {
@@ -2186,6 +2236,15 @@ impl ThreadView {
     /// No-op when `streaming_message_idx` is `None` (nothing to drain
     /// into) or when the buffer is empty.
     fn drain_streaming_buffer_into_open(&mut self, cx: &mut Context<Self>) {
+        // Drain the thinking buffer first so a Thought that arrived
+        // just before this drain (and is still queued) renders ahead
+        // of any text that follows.
+        if !self.thinking_buffer.is_idle() {
+            let remaining = self.thinking_buffer.flush();
+            if !remaining.is_empty() {
+                self.append_to_streaming_thought(&remaining, cx);
+            }
+        }
         let Some(idx) = self.streaming_message_idx else {
             return;
         };
