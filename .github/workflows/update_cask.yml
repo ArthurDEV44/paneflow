@@ -110,13 +110,14 @@ jobs:
           set -euo pipefail
           arm_dmg="dmg-staging/paneflow-${VERSION}-aarch64-apple-darwin.dmg"
           intel_dmg="dmg-staging/paneflow-${VERSION}-x86_64-apple-darwin.dmg"
-          # Apple Silicon is P0 (required). x86_64 is best-effort (release.yml
-          # marks the Intel matrix leg `continue-on-error: true`, so a broken
-          # macos-13 runner must not block the cask update for ARM users).
-          # When Intel is missing we reuse the ARM SHA as a placeholder — users
-          # on Intel get a 404 on the `.dmg` URL rather than a checksum error,
-          # which is a cleaner failure mode and self-heals the moment a later
-          # release ships both arches.
+          # Apple Silicon is P0 (required). x86_64 is currently absent —
+          # the Intel Mac matrix leg in release.yml is a CLOSED target
+          # (removed entirely until Apple Dev secret provisioning +
+          # macos-13 queue SLA improvement, see release.yml comment).
+          # The fallback below stays in place so the moment Intel is
+          # re-added the cask updates pick it up automatically; until
+          # then Intel users get a 404 on the .dmg URL rather than a
+          # checksum error, which is a cleaner failure mode.
           if [ ! -f "$arm_dmg" ]; then
             echo "::error::missing aarch64 .dmg — Apple Silicon is a P0 artifact and must be present for a cask update"
             ls -la dmg-staging/ >&2

@@ -39,8 +39,17 @@ name: update_winget
 # still allowing `workflow_dispatch` overrides for operator recovery.
 
 on:
-  release:
-    types: [published]
+  # DISABLED — the `release: published` auto-trigger is intentionally
+  # commented out until Azure Trusted Signing is provisioned. winget
+  # rejects unsigned installer submissions (the InstallerSignatureSha256
+  # field is required for auto-update to work), and release.yml's
+  # Windows matrix leg is currently CLOSED for the same reason. Even if
+  # the trigger fired, the workflow would 404 on the .msi asset (no
+  # Windows leg = no MSI in the release) and create noise in the
+  # Actions UI on every release. Re-enable by uncommenting the
+  # `release:` block below the day the signed MSI starts shipping.
+  # release:
+  #   types: [published]
   workflow_dispatch:
     inputs:
       tag:

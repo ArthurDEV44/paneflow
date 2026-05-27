@@ -75,10 +75,12 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runs-on }}
-    # US-019 AC5: legs without `continue-on-error: true` in their matrix
-    # entry default to `false` and block the release on failure. The Intel
-    # macOS leg sets `continue-on-error: true` in its matrix include, which
-    # lifts through this expression to the per-leg behaviour.
+    # Every leg is hard-required as of 2026-05-27. The lifted expression
+    # used to allow best-effort legs (Intel Mac, Windows x64) to fail
+    # without blocking the release; both legs are now CLOSED targets
+    # entirely, so no matrix entry sets continue-on-error and this
+    # expression always resolves to `false`. Kept as a one-line lever
+    # in case a future best-effort leg needs reintroducing.
     continue-on-error: ${{ matrix.continue-on-error == true }}
     strategy:
       # fail-fast: true keeps the cross-arch Linux matrix atomic — a broken
@@ -106,21 +108,16 @@ jobs:
           # strips the leading `v` before feeding it to Info.plist
           # (CFBundleShortVersionString requires bare semver).
           #
-          # Deferred-posture for BOTH macOS legs (US-008, v0.2.1): this
-          # Apple Silicon leg is kept IN-matrix as `continue-on-error:
-          # true` because macos-14 queue times are acceptable (<10 min)
-          # and the leg catches Rust-level cross-compile regressions
-          # even without signing. The x86_64-apple-darwin (Intel Mac)
-          # entry was dropped entirely (see closed-target note below).
-          # Flip this back to hard-required on the commit that lands
-          # the first signed macOS release (v0.3.0), simultaneously
-          # with the Apple Dev secrets provisioning documented in
-          # docs/release-runbook.md §"Supported release targets" and
-          # the tasks/prd-macos-port.md release cut.
+          # Hard-required since 2026-05-27 — signing has been live since
+          # v0.2.9-rc.4 (see memory/project_macos_signing.md) and the
+          # last 3 stable cuts (v0.3.1/v0.3.2/v0.3.3) all shipped this
+          # leg green. The previous `continue-on-error: true` posture
+          # was hiding signal: a notarization-staple regression would
+          # have silently produced an unsigned .dmg and the workflow
+          # would still report success.
           - target: aarch64-apple-darwin
             arch: aarch64
             runs-on: macos-14
-            continue-on-error: true
           # CLOSED TARGET — x86_64-apple-darwin (Intel Mac / macos-13)
           # Decision: 2026-04-21 (US-008, v0.2.1). Removed from the
           # matrix entirely until v0.3.0's macOS release cut. Two
@@ -139,25 +136,37 @@ jobs:
           # refactor of the `Publish` job's `needs:` to not block on
           # best-effort legs. See docs/release-runbook.md §"Supported
           # release targets" for the authoritative status list.
-          # US-017: Windows x86_64. Best-effort (continue-on-error: true)
-          # for the same reasons as Intel Mac — an Azure Artifact Signing
-          # outage, cargo-wix regression, or transient windows-2022
-          # image issue should not block Linux + macOS from publishing.
-          # US-016 added the Windows-gated MSI produce + sign + stage
-          # steps (activated via `if: runner.os == 'Windows'`); this
-          # matrix entry is what turns them on. When the leg succeeds,
-          # the signed MSI + SHA-256 sidecar are uploaded as
-          # `release-assets-x86_64-Windows` and picked up by the
-          # `release` job's `release-assets-*` glob. The existing
-          # unconditional steps (cargo fmt/clippy/test/build) also run
-          # on this leg; EP-W2/EP-W3 (US-004..US-009) cfg-guarded all
-          # POSIX-locked code so they compile, and continue-on-error
-          # absorbs any residual clippy noise until US-018's stricter
-          # windows-check CI gate catches regressions pre-merge.
-          - target: x86_64-pc-windows-msvc
-            arch: x86_64
-            runs-on: windows-2022
-            continue-on-error: true
+          # CLOSED TARGET — x86_64-pc-windows-msvc (Windows x64)
+          # Decision: 2026-05-27. Removed from the matrix entirely
+          # until Azure Trusted Signing is provisioned for the
+          # Strivex subscription ($9.99/mo Basic — see
+          # memory/project_windows_signing.md for the rotation +
+          # secret-list and the post-onboarding restoration runbook).
+          # Without a Code Signing Certificate the MSI built by this
+          # leg would publish as unsigned, which (a) trips Microsoft
+          # Defender SmartScreen "Windows protected your PC" prompts
+          # on first install and (b) makes the winget submission
+          # validator reject the manifest (winget requires either a
+          # signed installer or an explicit InstallerSignatureSha256
+          # null, which downstream auto-update tooling cannot honor).
+          # The historical entry was:
+          #     - target: x86_64-pc-windows-msvc
+          #       arch: x86_64
+          #       runs-on: windows-2022
+          #       continue-on-error: true
+          # Restoration steps once Trusted Signing is live:
+          #   1. Add the 6 GH Secrets listed in
+          #      memory/project_windows_signing.md to the repo's
+          #      Actions secrets.
+          #   2. Restore the matrix entry above.
+          #   3. Flip `windows_check` / `windows_render_smoke` /
+          #      `windows_aarch64_check` `if: false` → original
+          #      expression in run_tests.yml.
+          #   4. Restore the `release: published` trigger in
+          #      update_winget.yml.
+          # The downstream `release` job already drops Windows
+          # assets from its `release-assets-*` glob whenever this
+          # leg is absent, so no other change is required.
 
     steps:
       - uses: actions/checkout@v5
