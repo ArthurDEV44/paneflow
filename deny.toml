@@ -28,6 +28,42 @@ yanked = "warn"
 # advisories. P30D is ISO 8601 duration syntax (30 days).
 maximum-db-staleness = "P30D"
 
+# Explicit advisory ignores. Each entry below MUST document:
+#   1. why the advisory does not apply to PaneFlow's threat model
+#   2. what triggers re-evaluation (upstream patch, code-path change)
+# Reviewed 2026-05-27.
+ignore = [
+    # RUSTSEC-2023-0071 — Marvin Attack on the `rsa` crate
+    # (timing side-channel during RSA private-key decryption).
+    #
+    # Why ignored:
+    #   * `rsa v0.9.x` is a transitive dep via
+    #     zed/markdown → zed/language → zed/rpc → rsa.
+    #     PaneFlow uses Zed's `markdown` crate purely for AST +
+    #     rendering — we never instantiate the `language` server
+    #     wiring, never connect to rpc.zed.dev, and the linker
+    #     keeps the RSA code only because cargo cannot prove it's
+    #     dead at link-time. `grep -rn 'rsa::' src-app/ crates/`
+    #     returns zero hits.
+    #   * The attack requires the victim to decrypt
+    #     attacker-controlled ciphertext and leak timing
+    #     differences. PaneFlow's binary never decrypts anything
+    #     from a network surface — there is no exploitable code
+    #     path.
+    #   * Upstream RustCrypto position (per the advisory itself):
+    #     "No safe upgrade is available!" — no fixed rsa version
+    #     exists as of 2026-05. The recommended migration is to a
+    #     different crate, which has to happen on the Zed side
+    #     (zed/rpc/Cargo.toml), not ours.
+    #
+    # Re-evaluation triggers:
+    #   * rsa publishes a 0.10+ with timing-safe RSA decryption,
+    #   * OR Zed migrates rpc off rsa (drops it from the dep tree),
+    #   * OR PaneFlow starts using zed/rpc directly (any
+    #     `use rpc::` in src-app/** would invalidate this ignore).
+    "RUSTSEC-2023-0071",
+]
+
 [licenses]
 # Permissive-license allow list. An unlisted license raises a warning
 # per the sources warn-posture below. Covers the full Rust ecosystem
