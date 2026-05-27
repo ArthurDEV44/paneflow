@@ -17,7 +17,7 @@ pub use crate::terminal::types::{HyperlinkSource, HyperlinkZone};
 /// Excludes C0/C1 control chars, whitespace, angle brackets, quotes, and other
 /// non-URL characters. Box-drawing chars (U+2500-U+257F) are not valid URL
 /// characters and won't match the allowed character class.
-pub(super) const URL_REGEX_PATTERN: &str = r#"(mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://)[^\x00-\x1f\x7f-\x9f<>"\s{}\^⟨⟩`']+"#;
+pub(super) const URL_REGEX_PATTERN: &str = r#"(mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://|ipfs:|ipns:|magnet:)[^\x00-\x1f\x7f-\x9f<>"\s{}\^⟨⟩`']+"#;
 
 /// Lazily compiled URL regex (compiled once, reused across all calls).
 pub(super) fn url_regex() -> &'static regex::Regex {
@@ -56,15 +56,34 @@ pub fn detect_urls_on_line_mapped(
                 ),
                 is_openable,
                 source: HyperlinkSource::Regex,
+                line: None,
+                col: None,
             })
         })
         .collect()
 }
 
 /// Check if a URL scheme is in the allowlist for opening.
-/// Allowed: http, https, mailto, file (with localhost/empty host validation).
+///
+/// Mirrors the regex above: all schemes captured by `URL_REGEX_PATTERN` are
+/// considered openable, since `open::that` ultimately defers to the OS handler
+/// (`xdg-open` / `open` / `start`) which knows whether a scheme is registered.
+/// `file://` is still gated on localhost / empty host to keep the click handler
+/// from chasing remote file URIs.
 pub fn is_url_scheme_openable(uri: &str) -> bool {
-    if uri.starts_with("http://") || uri.starts_with("https://") || uri.starts_with("mailto:") {
+    if uri.starts_with("http://")
+        || uri.starts_with("https://")
+        || uri.starts_with("mailto:")
+        || uri.starts_with("gemini://")
+        || uri.starts_with("gopher://")
+        || uri.starts_with("news:")
+        || uri.starts_with("git://")
+        || uri.starts_with("ssh:")
+        || uri.starts_with("ftp://")
+        || uri.starts_with("ipfs:")
+        || uri.starts_with("ipns:")
+        || uri.starts_with("magnet:")
+    {
         return true;
     }
     if let Some(rest) = uri.strip_prefix("file://") {
@@ -267,6 +286,201 @@ pub fn detect_file_paths_on_line_mapped(
                 ),
                 is_openable: true,
                 source: HyperlinkSource::FilePath,
+                line: None,
+                col: None,
+            })
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Code-file scanner (file:line:col)
+// ---------------------------------------------------------------------------
+
+/// Regex matching source-code file paths with optional `:line[:col]` suffix.
+///
+/// Extensions explicitly enumerated rather than `\w+\.` so that arbitrary
+/// dotted basenames (`.tar.gz`, `.eslintrc.json` — already covered as
+/// `json`) don't drag in non-code matches. `.md` / `.markdown` are
+/// deliberately absent: the existing `FilePath` scanner routes those to
+/// the in-pane markdown viewer.
+///
+/// `:` is allowed inside the character class so that Windows-drive paths
+/// (`C:\foo\bar.rs:42`) match as a single regex hit. The `:line[:col]`
+/// suffix is then peeled off in `split_path_and_location` by walking up
+/// to two pure-digit segments from the right.
+const CODE_PATH_REGEX_PATTERN: &str = r#"(?i)[A-Za-z0-9_:./\\\-]+\.(?:rs|ts|tsx|js|jsx|mjs|cjs|py|go|rb|java|kt|swift|c|cpp|cc|cxx|h|hpp|cs|php|sh|bash|zsh|fish|lua|sql|toml|yaml|yml|json|jsonc|html|htm|css|scss|sass|vue|svelte|dart|scala|clj|cljs|hs|ml|ex|exs|erl|nim|zig|sol|xml|gradle|vim|conf|ini|env)(?::\d+(?::\d+)?)?\b"#;
+
+fn code_path_regex() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(CODE_PATH_REGEX_PATTERN).expect("code-path regex compilation failed")
+    })
+}
+
+/// Peel `:line[:col]` off the right of `matched`, returning
+/// `(path, line, col)`. Walks at most two `:`-separated pure-digit
+/// suffixes; stops at the first non-digit segment so Windows drive
+/// letters (`C:`) and path segments containing colons stay intact.
+fn split_path_and_location(matched: &str) -> (&str, Option<u32>, Option<u32>) {
+    let mut end = matched.len();
+    let mut nums: Vec<u32> = Vec::with_capacity(2);
+    while nums.len() < 2 {
+        let Some(colon_pos) = matched[..end].rfind(':') else {
+            break;
+        };
+        let suffix = &matched[colon_pos + 1..end];
+        if let Ok(n) = suffix.parse::<u32>() {
+            nums.push(n);
+            end = colon_pos;
+        } else {
+            break;
+        }
+    }
+    let path = &matched[..end];
+    match nums.as_slice() {
+        [] => (path, None, None),
+        [line] => (path, Some(*line), None),
+        // `nums` collected right-to-left: [col, line]
+        [col, line] => (path, Some(*line), Some(*col)),
+        _ => (path, None, None),
+    }
+}
+
+/// Returns true if the canonicalised path's extension is a recognised
+/// code extension. Defence-in-depth against symlinks (`good.rs ->
+/// /usr/bin/sudo`) — without this, a malicious link in terminal output
+/// could route a system binary through the editor open path.
+fn canonical_has_code_extension(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let lower = ext.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "rs" | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "mjs"
+            | "cjs"
+            | "py"
+            | "go"
+            | "rb"
+            | "java"
+            | "kt"
+            | "swift"
+            | "c"
+            | "cpp"
+            | "cc"
+            | "cxx"
+            | "h"
+            | "hpp"
+            | "cs"
+            | "php"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "lua"
+            | "sql"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "json"
+            | "jsonc"
+            | "html"
+            | "htm"
+            | "css"
+            | "scss"
+            | "sass"
+            | "vue"
+            | "svelte"
+            | "dart"
+            | "scala"
+            | "clj"
+            | "cljs"
+            | "hs"
+            | "ml"
+            | "ex"
+            | "exs"
+            | "erl"
+            | "nim"
+            | "zig"
+            | "sol"
+            | "xml"
+            | "gradle"
+            | "vim"
+            | "conf"
+            | "ini"
+            | "env"
+    )
+}
+
+/// Detect source-code file paths with optional `:line[:col]` on a single
+/// terminal line. Mirrors `detect_file_paths_on_line_mapped`'s anti-false-
+/// positive rules (left boundary, control chars, URL-scheme reject,
+/// bare-stem minimum length, canonical resolve + extension recheck) and
+/// adds the path/location split.
+///
+/// Returned zones have `source = HyperlinkSource::CodePath`,
+/// `is_openable = true`, and `line`/`col` populated when the matched
+/// text carried a `:N(:M)?` suffix. `uri` is the canonical absolute
+/// path (location stripped); the editor open path adds it back via
+/// argv when invoking the editor.
+pub fn detect_code_paths_on_line_mapped(
+    line_text: &str,
+    line: alacritty_terminal::index::Line,
+    char_to_col: &[usize],
+    cwd: Option<&Path>,
+) -> Vec<HyperlinkZone> {
+    let re = code_path_regex();
+    re.find_iter(line_text)
+        .filter_map(|m| {
+            if !left_boundary_ok(line_text, m.start()) {
+                return None;
+            }
+            let matched = m.as_str();
+            if contains_control_char(matched) {
+                return None;
+            }
+            // URL schemes (http://, file://, ssh:) must not reach the open
+            // path. Windows drive letters (`C:`) are single-letter and
+            // explicitly accepted by `has_url_scheme_prefix`.
+            if has_url_scheme_prefix(matched) && !is_windows_absolute(matched) {
+                return None;
+            }
+            let (path_str, line_no, col_no) = split_path_and_location(matched);
+            let has_separator = path_str.contains('/') || path_str.contains('\\');
+            if !has_separator && stem_len(path_str) < MIN_BARE_STEM_LEN {
+                return None;
+            }
+            let resolved = resolve_path(path_str, cwd)?;
+            if !canonical_has_code_extension(&resolved) {
+                return None;
+            }
+            let absolute = resolved.to_string_lossy().into_owned();
+
+            let char_start = line_text[..m.start()].chars().count();
+            let char_end = line_text[..m.end()].chars().count().saturating_sub(1);
+            let col_start = char_to_col.get(char_start)?;
+            let col_end = char_to_col.get(char_end)?;
+
+            Some(HyperlinkZone {
+                uri: absolute,
+                id: String::new(),
+                start: alacritty_terminal::index::Point::new(
+                    line,
+                    alacritty_terminal::index::Column(*col_start),
+                ),
+                end: alacritty_terminal::index::Point::new(
+                    line,
+                    alacritty_terminal::index::Column(*col_end),
+                ),
+                is_openable: true,
+                source: HyperlinkSource::CodePath,
+                line: line_no,
+                col: col_no,
             })
         })
         .collect()
@@ -578,5 +792,130 @@ mod tests {
             elapsed,
             budget_ms
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Code-path scanner — split_path_and_location + scanner end-to-end
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn split_location_bare_path_no_location() {
+        let (p, l, c) = split_path_and_location("foo.rs");
+        assert_eq!(p, "foo.rs");
+        assert_eq!(l, None);
+        assert_eq!(c, None);
+    }
+
+    #[test]
+    fn split_location_with_line() {
+        let (p, l, c) = split_path_and_location("foo.rs:42");
+        assert_eq!(p, "foo.rs");
+        assert_eq!(l, Some(42));
+        assert_eq!(c, None);
+    }
+
+    #[test]
+    fn split_location_with_line_and_col() {
+        let (p, l, c) = split_path_and_location("src/foo.rs:42:7");
+        assert_eq!(p, "src/foo.rs");
+        assert_eq!(l, Some(42));
+        assert_eq!(c, Some(7));
+    }
+
+    #[test]
+    fn split_location_preserves_windows_drive_letter() {
+        // C:\foo\bar.rs — the `C:` must NOT be peeled off as a location.
+        let (p, l, c) = split_path_and_location(r"C:\foo\bar.rs");
+        assert_eq!(p, r"C:\foo\bar.rs");
+        assert_eq!(l, None);
+        assert_eq!(c, None);
+    }
+
+    #[test]
+    fn split_location_windows_drive_with_line_col() {
+        let (p, l, c) = split_path_and_location(r"C:\foo\bar.rs:42:7");
+        assert_eq!(p, r"C:\foo\bar.rs");
+        assert_eq!(l, Some(42));
+        assert_eq!(c, Some(7));
+    }
+
+    #[test]
+    fn split_location_stops_at_non_digit_segment() {
+        // `path.rs:42:notnum:7` — peels off `7` only, leaves the rest as path.
+        // The downstream canonicalize check rejects the bogus path.
+        let (p, l, c) = split_path_and_location("path.rs:42:notnum:7");
+        assert_eq!(p, "path.rs:42:notnum");
+        assert_eq!(l, Some(7));
+        assert_eq!(c, None);
+    }
+
+    #[test]
+    fn code_path_scanner_matches_rust_at_line_col() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_md(tmp.path(), "lib.rs"); // re-use the .md writer for any file
+        let line_text = format!("error at {}/lib.rs:42:7", tmp.path().to_string_lossy());
+        let map = ascii_map(&line_text);
+        let zones = detect_code_paths_on_line_mapped(&line_text, line0(), &map, None);
+        assert_eq!(zones.len(), 1);
+        assert_eq!(zones[0].source, HyperlinkSource::CodePath);
+        assert_eq!(zones[0].line, Some(42));
+        assert_eq!(zones[0].col, Some(7));
+        assert!(zones[0].uri.ends_with("lib.rs"));
+    }
+
+    #[test]
+    fn code_path_scanner_matches_python_no_location() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_md(tmp.path(), "main.py");
+        let line_text = format!("traceback: {}/main.py", tmp.path().to_string_lossy());
+        let map = ascii_map(&line_text);
+        let zones = detect_code_paths_on_line_mapped(&line_text, line0(), &map, None);
+        assert_eq!(zones.len(), 1);
+        assert_eq!(zones[0].source, HyperlinkSource::CodePath);
+        assert_eq!(zones[0].line, None);
+        assert_eq!(zones[0].col, None);
+    }
+
+    #[test]
+    fn code_path_scanner_skips_markdown() {
+        // .md files belong to the FilePath scanner (markdown viewer route).
+        // The code-path scanner must NOT emit a zone for them.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_md(tmp.path(), "README.md");
+        let line_text = format!("see {}/README.md", tmp.path().to_string_lossy());
+        let map = ascii_map(&line_text);
+        let zones = detect_code_paths_on_line_mapped(&line_text, line0(), &map, None);
+        assert!(
+            zones.is_empty(),
+            "markdown must not match code-path scanner"
+        );
+    }
+
+    #[test]
+    fn code_path_scanner_relative_resolves_against_cwd() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_md(tmp.path(), "config.toml");
+        let line_text = "see ./config.toml:5";
+        let map = ascii_map(line_text);
+        let zones = detect_code_paths_on_line_mapped(line_text, line0(), &map, Some(tmp.path()));
+        assert_eq!(zones.len(), 1);
+        assert_eq!(zones[0].line, Some(5));
+    }
+
+    #[test]
+    fn code_path_scanner_rejects_missing_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let line_text = format!("error at {}/nope.rs:42:7", tmp.path().to_string_lossy());
+        let map = ascii_map(&line_text);
+        let zones = detect_code_paths_on_line_mapped(&line_text, line0(), &map, None);
+        assert!(zones.is_empty());
+    }
+
+    #[test]
+    fn code_path_scanner_url_scheme_rejected() {
+        let line_text = "open file:///tmp/x.rs:42";
+        let map = ascii_map(line_text);
+        let zones = detect_code_paths_on_line_mapped(line_text, line0(), &map, None);
+        assert!(zones.is_empty());
     }
 }

@@ -1,0 +1,340 @@
+//! Cross-platform "open this source file at line:col" — invoked when the
+//! user Cmd/Ctrl-clicks a `path:42:7` style reference in a terminal pane.
+//!
+//! Strategy (in order):
+//! 1. `$VISUAL` then `$EDITOR` env. The string is parsed as a shell command
+//!    (binary + flags) so users running `EDITOR="code --wait"` get their
+//!    pre-set flags carried over. If the binary is one of the well-known
+//!    editors with a documented line:col syntax (code/zed/subl/cursor/
+//!    nvim/vim/helix/emacs), the right argv is appended.
+//! 2. Probed fallback chain — `code`, `cursor`, `zed`, `subl`, `nvim`,
+//!    `vim`, `hx`, `emacs` (in that order). First binary found on `PATH`
+//!    wins.
+//! 3. Last-resort: `open::that(path)` so the OS launcher (`xdg-open` /
+//!    `open` / `start`) hands the file to its registered handler. Loses
+//!    the line/col target but always does something useful.
+//!
+//! Platform notes:
+//! - Linux/macOS: editor names are looked up via `which` on `$PATH`.
+//! - Windows: same. `code.cmd` is the common shim under `%LocalAppData%
+//!   \Programs\Microsoft VS Code\bin`, which `which` resolves correctly
+//!   when that dir is on `Path`.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Family of recognised editor binaries, each with a distinct argv shape
+/// for "open at line and column".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EditorKind {
+    /// VS Code / Cursor / Codium clones — `code -g path:line:col`
+    VsCodeLike,
+    /// Zed — `zed path:line:col` (no flag needed; the colon syntax is
+    /// recognised since 0.130).
+    Zed,
+    /// Sublime Text — `subl path:line:col`
+    Sublime,
+    /// Neovim / Vim — `nvim +line path` (col not natively supported as
+    /// argv; we drop it). Could be extended with `+call cursor(L, C)`
+    /// but that gets messy across remote/server modes.
+    VimFamily,
+    /// Helix — `hx path:line:col`
+    Helix,
+    /// Emacs — `emacs +line:col path` (line and optional col separated
+    /// by `:`)
+    Emacs,
+    /// Unknown binary — invoke with bare `path` only (no location).
+    Unknown,
+}
+
+impl EditorKind {
+    fn from_binary_name(name: &str) -> Self {
+        // Strip the directory portion and any `.exe` / `.cmd` suffix so the
+        // matcher is OS-agnostic — `which code.cmd` on Windows still maps
+        // to `VsCodeLike`.
+        let base = Path::new(name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(name)
+            .to_ascii_lowercase();
+        match base.as_str() {
+            "code" | "code-insiders" | "codium" | "cursor" | "windsurf" => Self::VsCodeLike,
+            "zed" | "zed-preview" | "zed-nightly" => Self::Zed,
+            "subl" | "sublime_text" => Self::Sublime,
+            "nvim" | "vim" | "vi" | "nvim-qt" | "gvim" | "mvim" => Self::VimFamily,
+            "hx" | "helix" => Self::Helix,
+            "emacs" | "emacsclient" => Self::Emacs,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Build the argv tail that opens `path` at `line` / `col` for this
+    /// editor family. Caller prepends the editor binary itself.
+    fn argv_for(self, path: &Path, line: Option<u32>, col: Option<u32>) -> Vec<String> {
+        let path_str = path.to_string_lossy().into_owned();
+        match self {
+            Self::VsCodeLike => {
+                let mut args = vec!["-g".to_string()];
+                args.push(format_path_line_col(&path_str, line, col));
+                args
+            }
+            Self::Zed | Self::Sublime | Self::Helix => {
+                // Bare positional, colon syntax recognised by the editor.
+                vec![format_path_line_col(&path_str, line, col)]
+            }
+            Self::VimFamily => {
+                let mut args = Vec::new();
+                if let Some(l) = line {
+                    args.push(format!("+{l}"));
+                }
+                args.push(path_str);
+                args
+            }
+            Self::Emacs => {
+                let mut args = Vec::new();
+                if let Some(l) = line {
+                    let token = match col {
+                        Some(c) => format!("+{l}:{c}"),
+                        None => format!("+{l}"),
+                    };
+                    args.push(token);
+                }
+                args.push(path_str);
+                args
+            }
+            Self::Unknown => vec![path_str],
+        }
+    }
+}
+
+fn format_path_line_col(path: &str, line: Option<u32>, col: Option<u32>) -> String {
+    match (line, col) {
+        (Some(l), Some(c)) => format!("{path}:{l}:{c}"),
+        (Some(l), None) => format!("{path}:{l}"),
+        (None, _) => path.to_string(),
+    }
+}
+
+/// Parse a shell-style env value into (binary, leading-flags). Splits on
+/// ASCII whitespace; the first token is the binary, the rest are extra
+/// flags the user pre-configured (e.g. `EDITOR="code --wait"`). Returns
+/// `None` when the value is empty after trim.
+fn parse_env_editor(value: &str) -> Option<(String, Vec<String>)> {
+    let mut iter = value.split_whitespace().map(str::to_owned);
+    let bin = iter.next()?;
+    if bin.is_empty() {
+        return None;
+    }
+    Some((bin, iter.collect()))
+}
+
+/// Best-effort `which`-style PATH probe. Walks `PATH` from left to right,
+/// returns the first existing executable matching `name`. On Windows also
+/// tries `{name}.exe` and `{name}.cmd` extensions. No dependency on the
+/// `which` crate to keep this module self-contained.
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let path_env = std::env::var_os("PATH")?;
+    let candidates_exts: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
+    for dir in std::env::split_paths(&path_env) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        for ext in candidates_exts {
+            let mut candidate = dir.join(name);
+            if !ext.is_empty() {
+                candidate.set_extension(ext.trim_start_matches('.'));
+            }
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Ordered probe list for the fallback chain when no `$VISUAL`/`$EDITOR`
+/// is set. Order matters: GUI editors first (more likely the user's
+/// daily driver), then terminal editors.
+const FALLBACK_PROBES: &[&str] = &[
+    "code",
+    "cursor",
+    "zed",
+    "subl",
+    "code-insiders",
+    "windsurf",
+    "hx",
+    "nvim",
+    "vim",
+    "emacs",
+];
+
+/// Open `path` in the user's preferred editor at the given location.
+/// Spawns the editor process detached — does not wait for it to exit.
+///
+/// Errors are logged at `warn` level and swallowed so a misconfigured
+/// editor never panics the renderer. The boolean return signals only
+/// whether something was actually spawned (useful for tests).
+pub fn open_at_location(path: &Path, line: Option<u32>, col: Option<u32>) -> bool {
+    // 1. $VISUAL → $EDITOR
+    for var in &["VISUAL", "EDITOR"] {
+        if let Ok(value) = std::env::var(var)
+            && let Some((bin, extra_args)) = parse_env_editor(&value)
+        {
+            let kind = EditorKind::from_binary_name(&bin);
+            let mut args = extra_args;
+            args.extend(kind.argv_for(path, line, col));
+            if try_spawn(&bin, &args) {
+                return true;
+            }
+            log::warn!("editor: ${var}={value:?} failed to spawn — falling through");
+        }
+    }
+
+    // 2. Fallback probe
+    for probe in FALLBACK_PROBES {
+        if let Some(found) = find_on_path(probe) {
+            let kind = EditorKind::from_binary_name(probe);
+            let args = kind.argv_for(path, line, col);
+            if try_spawn(&found.to_string_lossy(), &args) {
+                return true;
+            }
+        }
+    }
+
+    // 3. Last-resort: OS handler (loses line/col).
+    log::warn!(
+        "editor: no $VISUAL/$EDITOR and none of {:?} on PATH — falling back to OS handler",
+        FALLBACK_PROBES
+    );
+    open::that(path).is_ok()
+}
+
+fn try_spawn(bin: &str, args: &[String]) -> bool {
+    match Command::new(bin).args(args).spawn() {
+        Ok(_) => {
+            log::info!("editor: spawned {bin} {args:?}");
+            true
+        }
+        Err(e) => {
+            log::warn!("editor: spawn {bin} {args:?} failed: {e}");
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn p(s: &str) -> &Path {
+        Path::new(s)
+    }
+
+    #[test]
+    fn editor_kind_recognises_vscode_family() {
+        assert_eq!(EditorKind::from_binary_name("code"), EditorKind::VsCodeLike);
+        assert_eq!(
+            EditorKind::from_binary_name("cursor"),
+            EditorKind::VsCodeLike
+        );
+        assert_eq!(
+            EditorKind::from_binary_name("/usr/bin/code"),
+            EditorKind::VsCodeLike
+        );
+        assert_eq!(
+            EditorKind::from_binary_name("code.cmd"),
+            EditorKind::VsCodeLike
+        );
+    }
+
+    #[test]
+    fn editor_kind_recognises_zed_vim_helix_emacs() {
+        assert_eq!(EditorKind::from_binary_name("zed"), EditorKind::Zed);
+        assert_eq!(EditorKind::from_binary_name("nvim"), EditorKind::VimFamily);
+        assert_eq!(EditorKind::from_binary_name("vim"), EditorKind::VimFamily);
+        assert_eq!(EditorKind::from_binary_name("hx"), EditorKind::Helix);
+        assert_eq!(EditorKind::from_binary_name("emacs"), EditorKind::Emacs);
+        assert_eq!(
+            EditorKind::from_binary_name("emacsclient"),
+            EditorKind::Emacs
+        );
+    }
+
+    #[test]
+    fn editor_kind_unknown_falls_back() {
+        assert_eq!(
+            EditorKind::from_binary_name("my-weird-editor"),
+            EditorKind::Unknown
+        );
+        assert_eq!(EditorKind::from_binary_name(""), EditorKind::Unknown);
+    }
+
+    #[test]
+    fn argv_vscode_uses_g_flag() {
+        let args = EditorKind::VsCodeLike.argv_for(p("/tmp/x.rs"), Some(42), Some(7));
+        assert_eq!(args, vec!["-g".to_string(), "/tmp/x.rs:42:7".to_string()]);
+    }
+
+    #[test]
+    fn argv_vim_uses_plus_line_no_col() {
+        let args = EditorKind::VimFamily.argv_for(p("/tmp/x.rs"), Some(42), Some(7));
+        assert_eq!(args, vec!["+42".to_string(), "/tmp/x.rs".to_string()]);
+    }
+
+    #[test]
+    fn argv_emacs_uses_plus_line_col() {
+        let args = EditorKind::Emacs.argv_for(p("/tmp/x.rs"), Some(42), Some(7));
+        assert_eq!(args, vec!["+42:7".to_string(), "/tmp/x.rs".to_string()]);
+    }
+
+    #[test]
+    fn argv_zed_bare_path_colon_line() {
+        let args = EditorKind::Zed.argv_for(p("/tmp/x.rs"), Some(42), None);
+        assert_eq!(args, vec!["/tmp/x.rs:42".to_string()]);
+    }
+
+    #[test]
+    fn argv_unknown_drops_location() {
+        let args = EditorKind::Unknown.argv_for(p("/tmp/x.rs"), Some(42), Some(7));
+        assert_eq!(args, vec!["/tmp/x.rs".to_string()]);
+    }
+
+    #[test]
+    fn argv_no_line_no_col_just_path() {
+        let args = EditorKind::VsCodeLike.argv_for(p("/tmp/x.rs"), None, None);
+        assert_eq!(args, vec!["-g".to_string(), "/tmp/x.rs".to_string()]);
+    }
+
+    #[test]
+    fn parse_env_editor_splits_binary_and_flags() {
+        let (bin, args) = parse_env_editor("code --wait").unwrap();
+        assert_eq!(bin, "code");
+        assert_eq!(args, vec!["--wait".to_string()]);
+    }
+
+    #[test]
+    fn parse_env_editor_empty_is_none() {
+        assert!(parse_env_editor("").is_none());
+        assert!(parse_env_editor("   ").is_none());
+    }
+
+    #[test]
+    fn parse_env_editor_only_binary() {
+        let (bin, args) = parse_env_editor("nvim").unwrap();
+        assert_eq!(bin, "nvim");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn format_path_line_col_combinations() {
+        assert_eq!(format_path_line_col("x.rs", None, None), "x.rs");
+        assert_eq!(format_path_line_col("x.rs", Some(1), None), "x.rs:1");
+        assert_eq!(format_path_line_col("x.rs", Some(1), Some(2)), "x.rs:1:2");
+        // No line + col is invalid: col is dropped silently.
+        assert_eq!(format_path_line_col("x.rs", None, Some(7)), "x.rs");
+    }
+}

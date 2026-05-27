@@ -193,7 +193,8 @@ impl Pane {
                 | TerminalEvent::CancelSwapMode
                 | TerminalEvent::SelectionCopied
                 | TerminalEvent::Bell
-                | TerminalEvent::OpenMarkdownPath(_) => {}
+                | TerminalEvent::OpenMarkdownPath(_)
+                | TerminalEvent::OpenCodePath { .. } => {}
             }
         })
         .detach();

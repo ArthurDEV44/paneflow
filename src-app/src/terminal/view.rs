@@ -559,6 +559,47 @@ impl TerminalView {
             .map(std::path::Path::new);
         crate::terminal::element::detect_file_paths_on_line_mapped(trimmed, line, map, cwd)
     }
+
+    /// Detect source-code file paths with optional `:line[:col]` on the
+    /// hovered line. Mirrors `detect_file_path_at_hover`'s extraction; the
+    /// returned zones carry `line`/`col` populated from `path:42` or
+    /// `path:42:7` style references so the click handler can pass the
+    /// location through to the editor.
+    pub(super) fn detect_code_path_at_hover(&self) -> Vec<HyperlinkZone> {
+        let point = match self.hovered_cell {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let term = self.terminal.term.lock_unfair();
+        let grid = term.grid();
+        let line = point.line;
+
+        let cols = term.columns();
+        let mut line_text = String::with_capacity(cols);
+        let mut char_to_col: Vec<usize> = Vec::with_capacity(cols);
+        for col in 0..cols {
+            let cell = &grid[line][alacritty_terminal::index::Column(col)];
+            if cell
+                .flags
+                .contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            char_to_col.push(col);
+            line_text.push(cell.c);
+        }
+        drop(term);
+
+        let trimmed = line_text.trim_end();
+        let trimmed_chars = trimmed.chars().count();
+        let map = &char_to_col[..trimmed_chars];
+        let cwd = self
+            .terminal
+            .current_cwd
+            .as_deref()
+            .map(std::path::Path::new);
+        crate::terminal::element::detect_code_paths_on_line_mapped(trimmed, line, map, cwd)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -594,6 +635,17 @@ pub enum TerminalEvent {
     /// new half. The path is the canonical absolute path produced by
     /// `terminal::element::detect_file_paths_on_line_mapped`.
     OpenMarkdownPath(std::path::PathBuf),
+    /// Cmd/Ctrl-click on a source-code path with optional `:line[:col]`
+    /// suffix (`error[E0382]: ... at src/lib.rs:42:7`). The receiver
+    /// (PaneFlowApp) resolves the user's preferred editor via the
+    /// `$VISUAL`/`$EDITOR` env chain plus a probed fallback list and
+    /// invokes it with the right argv for the detected editor family
+    /// (`code -g path:L:C`, `nvim +L path`, `emacs +L:C path`, etc.).
+    OpenCodePath {
+        path: std::path::PathBuf,
+        line: Option<u32>,
+        col: Option<u32>,
+    },
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
