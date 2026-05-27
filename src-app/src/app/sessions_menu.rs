@@ -542,7 +542,7 @@ fn agent_id_prefix(agent: SessionAgent) -> &'static str {
 fn claude_bypass_enabled() -> bool {
     paneflow_config::loader::load_config()
         .claude_code_bypass_permissions
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 /// Build the command sent to the originating terminal when a session row

@@ -903,7 +903,7 @@ impl PermissionCallback for BrokerCallback {
         // takes effect on the very next request without restart.
         if paneflow_config::loader::load_config()
             .claude_code_bypass_permissions
-            .unwrap_or(true)
+            .unwrap_or(false)
         {
             return Box::pin(async { PermissionDecision::AllowOnce });
         }
