@@ -27,6 +27,12 @@ yanked = "warn"
 # days — guards against a stale CI runner silently missing recent
 # advisories. P30D is ISO 8601 duration syntax (30 days).
 maximum-db-staleness = "P30D"
+# Surface stale `ignore` entries — when a dep tree change drops the
+# vulnerable crate, the corresponding ignore becomes inert noise.
+# Warn (don't fail) so a routine GPUI bump doesn't suddenly block a
+# tag cut; the warning bubbles up to the CI log and gets cleaned in
+# the next deny.toml maintenance pass. Mirrors Bevy's pattern.
+unused-ignored-advisory = "warn"
 
 # Explicit advisory ignores. Each entry below MUST document:
 #   1. why the advisory does not apply to PaneFlow's threat model
