@@ -1,4 +1,4 @@
-name: CI
+name: run_tests
 
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
   # job gates on it.
   #
   # Filter scope (AC1): Rust sources and their manifests, plus this very
-  # workflow file — because a PR that edits ci.yml to tune the macOS gate
+  # workflow file — because a PR that edits run_tests.yml to tune the macOS gate
   # MUST also exercise the gate it's tuning, otherwise "fix the CI" PRs
   # self-skip and ship broken.
   changes:
@@ -37,7 +37,7 @@ jobs:
               - 'crates/**/*.rs'
               - '**/Cargo.toml'
               - 'Cargo.lock'
-              - '.github/workflows/ci.yml'
+              - '.github/workflows/run_tests.yml'
 
   check:
     name: Check, Lint & Test
@@ -518,7 +518,7 @@ jobs:
     name: Windows x86_64 smoke check
     # US-003 AC1 + matches macos-check behavior: skip on docs-only PRs so
     # Windows minutes aren't burned on README tweaks. The filter in the
-    # `changes` job already includes .github/workflows/ci.yml, so any
+    # `changes` job already includes .github/workflows/run_tests.yml, so any
     # edit to this file retriggers the gate.
     needs: changes
     if: needs.changes.outputs.rust == 'true'

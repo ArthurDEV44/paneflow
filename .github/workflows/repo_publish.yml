@@ -1,4 +1,4 @@
-name: Publish APT + RPM repositories
+name: repo_publish
 
 # Runs automatically after release.yml completes (US-003). The chain uses
 # GitHub Actions' `workflow_run` trigger rather than `release: types:
@@ -8,7 +8,7 @@ name: Publish APT + RPM repositories
 # after every tag push. `workflow_run` bypasses the anti-loop because
 # it keys off the parent workflow's completion, not the release event.
 # Can also be dispatched manually via the UI or
-# `gh workflow run repo-publish.yml -f tag=vX.Y.Z` to re-publish a
+# `gh workflow run repo_publish.yml -f tag=vX.Y.Z` to re-publish a
 # previous release (e.g., after fixing a bucket issue).
 #
 # Output: pkg.paneflow.dev/apt + pkg.paneflow.dev/rpm, both GPG-signed.
@@ -23,13 +23,13 @@ name: Publish APT + RPM repositories
 # ---------------------------------------------------------------------------
 
 on:
-  # US-003 auto-chain. `workflows: ["Release"]` MUST match the parent
+  # US-003 auto-chain. `workflows: ["release"]` MUST match the parent
   # workflow's `name:` field VERBATIM — not the filename. GitHub pairs
   # `workflow_run` events by the declared name, so a typo here produces
   # a silent no-fire (the parent succeeds, this workflow never starts,
   # and there is no error surface). Cross-ref: release.yml line 1.
   workflow_run:
-    workflows: ["Release"]
+    workflows: ["release"]
     types: [completed]
   # Manual fallback for re-publishing a previous tag after fixing a
   # bucket issue, or for operator-driven re-publishes from the UI.

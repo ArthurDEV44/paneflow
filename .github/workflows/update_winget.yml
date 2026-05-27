@@ -1,4 +1,4 @@
-name: Update Winget Manifests
+name: update_winget
 
 # US-019 AC-3. Triggered whenever a GitHub Release is *published*: grabs
 # the signed MSI asset from the release (produced by US-016's Windows
@@ -28,7 +28,7 @@ name: Update Winget Manifests
 #      first winget PR will be rejected.
 #
 # Why `release: published` and not `push: tags` (same rationale as
-# update-cask.yml): the release workflow must finish (produce + sign
+# update_cask.yml): the release workflow must finish (produce + sign
 # + upload the MSI) before this one can compute the SHA. `release:
 # published` fires after all assets are attached.
 #
@@ -174,7 +174,7 @@ jobs:
             exit 1
           fi
 
-          # Inline credential helper pattern (mirrors update-cask.yml).
+          # Inline credential helper pattern (mirrors update_cask.yml).
           # What IS in argv: the helper string itself (below), passed via
           # `git -c credential.helper=...`. What is NOT in argv: the PAT
           # VALUE. The string contains the literal text `$WINGET_PAT`;
@@ -233,7 +233,7 @@ jobs:
 
           # Idempotency: if a PR for this branch already exists (e.g. a
           # manual workflow_dispatch retry), skip creation. AC-6 parity
-          # with update-cask.yml's "already up-to-date" path.
+          # with update_cask.yml's "already up-to-date" path.
           existing_pr="$(gh pr list \
             --repo microsoft/winget-pkgs \
             --head "ArthurDEV44:${branch}" \
