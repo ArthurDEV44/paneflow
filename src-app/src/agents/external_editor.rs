@@ -93,6 +93,21 @@ pub fn open(href: &str, cwd: Option<&Path>) -> bool {
     let Some(editor) = resolve_active() else {
         return false;
     };
+    // Workspace scoping: refuse paths outside the active cwd so an
+    // agent-controlled markdown link cannot trick the user into opening
+    // /etc/passwd or ~/.ssh/id_rsa in their configured editor (where
+    // editor plugins, history, or sync could then exfiltrate the
+    // content). The `:line[:col]` suffix is excluded from the check
+    // and re-attached on the happy path.
+    let (path_part, _) = split_line_col_suffix(href);
+    if !is_inside_workspace(Path::new(path_part), cwd) {
+        log::warn!(
+            "external_editor: blocked open of {} -- target is outside the active workspace cwd ({:?})",
+            path_part,
+            cwd,
+        );
+        return false;
+    }
     let target = absolute_target(href, cwd);
     match Command::new(editor.bin_name()).arg(&target).spawn() {
         Ok(_child) => {
@@ -107,6 +122,43 @@ pub fn open(href: &str, cwd: Option<&Path>) -> bool {
             false
         }
     }
+}
+
+/// Decide whether `target` is safe to hand to an editor CLI. Resolves
+/// the target against `cwd` and rejects anything that does not live
+/// under the canonicalised workspace root. Returns `false` when no
+/// `cwd` is supplied -- we cannot prove the link is safe without an
+/// anchor, so the guard fails closed.
+///
+/// `canonicalize` is preferred (it resolves symlinks and collapses
+/// `..` segments) so a symlinked escape under the workspace cannot
+/// slip through a string-prefix check. When the target does not yet
+/// exist (rare but possible -- an agent may link to a file it has
+/// just claimed to create), the lexical absolute path is used so the
+/// `starts_with` comparison still has meaning. Windows uses the same
+/// path; `canonicalize` returns the verbatim-prefixed `\\?\C:\...`
+/// form which preserves drive-letter casing for both sides of the
+/// comparison.
+fn is_inside_workspace(target: &Path, cwd: Option<&Path>) -> bool {
+    let Some(cwd) = cwd else {
+        return false;
+    };
+    let abs_target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        cwd.join(target)
+    };
+    let Ok(cwd_canon) = cwd.canonicalize() else {
+        return false;
+    };
+    let target_resolved = match abs_target.canonicalize() {
+        Ok(p) => p,
+        Err(_) => match std::path::absolute(&abs_target) {
+            Ok(p) => p,
+            Err(_) => return false,
+        },
+    };
+    target_resolved.starts_with(&cwd_canon)
 }
 
 /// Resolve a (possibly relative) link target into an absolute
@@ -244,5 +296,59 @@ mod tests {
         assert_eq!(EditorCli::from_setting("nvim"), None);
         assert_eq!(EditorCli::from_setting("system"), None);
         assert_eq!(EditorCli::from_setting(""), None);
+    }
+
+    /// US-011: a relative path under the workspace cwd is allowed.
+    #[test]
+    fn is_inside_workspace_inside() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("src").join("foo.rs");
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&file, "fn main() {}").expect("write");
+        assert!(is_inside_workspace(
+            Path::new("src/foo.rs"),
+            Some(dir.path())
+        ));
+    }
+
+    /// US-011: an absolute path that lives outside the workspace cwd
+    /// is rejected -- the canonicalised target does not share the
+    /// workspace prefix.
+    #[cfg(unix)]
+    #[test]
+    fn is_inside_workspace_outside_absolute() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // /etc exists on every Unix and is guaranteed outside any
+        // tempdir-rooted workspace.
+        assert!(!is_inside_workspace(
+            Path::new("/etc/hostname"),
+            Some(dir.path())
+        ));
+    }
+
+    /// US-011: a `..` traversal that escapes the workspace cwd is
+    /// rejected even when the underlying file exists. Canonicalize
+    /// collapses the segments before the prefix check.
+    #[cfg(unix)]
+    #[test]
+    fn is_inside_workspace_outside_via_traversal() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let workspace = parent.path().join("workspace");
+        let sibling = parent.path().join("sibling");
+        std::fs::create_dir_all(&workspace).expect("mkdir workspace");
+        std::fs::create_dir_all(&sibling).expect("mkdir sibling");
+        let escape_target = sibling.join("secret.txt");
+        std::fs::write(&escape_target, "secret").expect("write");
+        // From the workspace, `../sibling/secret.txt` escapes the cwd.
+        assert!(!is_inside_workspace(
+            Path::new("../sibling/secret.txt"),
+            Some(&workspace),
+        ));
+    }
+
+    /// US-011: with no cwd anchor the guard fails closed.
+    #[test]
+    fn is_inside_workspace_no_cwd() {
+        assert!(!is_inside_workspace(Path::new("anything.rs"), None));
     }
 }
