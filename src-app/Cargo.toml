@@ -76,6 +76,13 @@ paneflow-telemetry = { workspace = true }
 # File system watcher (OS-native: inotify/FSEvents/ReadDirectoryChanges)
 notify = "7"
 
+# Hot-path Mutex / RwLock without poisoning, ~2x faster than std under
+# contention. Used for the theme cache that's hit several times per
+# render frame; std::sync::Mutex was the dominant lock in the agents
+# UI hot path under streaming output. Already a transitive dep via
+# gpui/tokio; making it explicit lets us reference it directly.
+parking_lot = "0.12"
+
 # TOML reader/writer for the Codex CLI's `~/.codex/config.toml`. Used by the
 # composer to mirror the model + reasoning-effort fields into the live pill
 # selectors (same bridge pattern as the JSON one for Claude Code's

@@ -18,11 +18,13 @@
 //! `theme: <name>` field on that file, not a separate per-theme JSON.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
+
+use parking_lot::Mutex;
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -73,8 +75,7 @@ fn resolve_theme() -> TerminalTheme {
 
 /// Invalidate the theme cache so the next `active_theme()` call re-reads from disk.
 pub fn invalidate_theme_cache() {
-    let mut cache = THEME_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    *cache = None;
+    *THEME_CACHE.lock() = None;
 }
 
 /// Get the config file modification time for change detection.
@@ -97,7 +98,10 @@ pub fn config_mtime() -> Option<SystemTime> {
 /// If the config is corrupted or missing, the resolver falls back to
 /// the built-in One Dark theme.
 pub fn active_theme() -> TerminalTheme {
-    let mut cache = THEME_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    // parking_lot::Mutex: ~2x faster than std::sync::Mutex under
+    // contention, no poisoning. Called several times per render frame
+    // from the agents UI; std lock dominates that path under streaming.
+    let mut cache = THEME_CACHE.lock();
 
     if let Some(cached) = cache.as_ref() {
         if WATCHER_ACTIVE.load(Ordering::Acquire) {
