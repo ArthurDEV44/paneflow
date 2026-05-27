@@ -62,17 +62,20 @@ pub(crate) fn render_message_body(
     ui: crate::theme::UiColors,
     cwd: Option<std::path::PathBuf>,
 ) -> AnyElement {
-    let body_text = join_text_blocks(content);
+    // US-016 (audit P2-3): lazy `join_text_blocks` -- the markdown-
+    // entity path never reads `body_text`, so the alloc was wasted on
+    // every visible message per frame. Build it only when we fall
+    // through to the in-house renderer.
     match role {
         MessageRole::User => match markdown_entity {
             Some(md) => render_user_bubble_md(md, ui, cwd).into_any_element(),
-            None => render_user_bubble(&body_text, ui).into_any_element(),
+            None => render_user_bubble(&join_text_blocks(content), ui).into_any_element(),
         },
         MessageRole::Assistant => match markdown_entity {
             Some(md) => render_assistant_body_md(md, ui, cwd).into_any_element(),
-            None => render_assistant_body(&body_text, ui).into_any_element(),
+            None => render_assistant_body(&join_text_blocks(content), ui).into_any_element(),
         },
-        MessageRole::System => render_system_note(&body_text, ui).into_any_element(),
+        MessageRole::System => render_system_note(&join_text_blocks(content), ui).into_any_element(),
     }
 }
 

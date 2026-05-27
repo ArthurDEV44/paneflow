@@ -272,6 +272,12 @@ pub struct ThreadView {
     /// UI palette snapshot captured at the top of `render`, derived
     /// from `_theme_snapshot`. Same rationale: reused by `render_item`.
     _ui_snapshot: Option<crate::theme::UiColors>,
+    /// Composer cwd snapshot captured at the top of `render`; cleared
+    /// on next render. `render_item` (driven by the virtualized List)
+    /// reads this instead of doing
+    /// `composer.read(cx).cwd().to_path_buf()` per visible message --
+    /// the cwd does not change inside a single render pass (audit P2-4).
+    _cwd_snapshot: Option<std::path::PathBuf>,
 }
 
 /// US-020: inline edit-in-progress on a user message.
@@ -493,6 +499,7 @@ impl ThreadView {
             title_generation_failed: false,
             _theme_snapshot: None,
             _ui_snapshot: None,
+            _cwd_snapshot: None,
         }
     }
 
@@ -2639,10 +2646,7 @@ impl ThreadView {
                 }
                 let role = um.msg.role;
                 let md_entity = um.markdown.clone();
-                let cwd = self
-                    .composer
-                    .as_ref()
-                    .map(|c| c.read(cx).cwd().to_path_buf());
+                let cwd = self._cwd_snapshot.clone();
                 let bubble = super::message_render::render_message_body(
                     role,
                     &um.msg.content,
@@ -2804,14 +2808,10 @@ impl ThreadView {
         if is_blank {
             return div().into_any_element();
         }
-        // Snapshot the composer's cwd so each Text chunk's markdown
-        // link handler can resolve relative paths (`[foo](src/foo.rs)`)
-        // against the agent's working directory and re-prefix them
-        // with `file://` before `cx.open_url`.
-        let cwd = self
-            .composer
-            .as_ref()
-            .map(|c| c.read(cx).cwd().to_path_buf());
+        // Use the per-render cwd snapshot (US-016) so this hot path
+        // does not pay a per-chunk PathBuf clone for a value that is
+        // constant across the render pass.
+        let cwd = self._cwd_snapshot.clone();
         // Inter-chunk gap: Zed uses `gap_3` (12px) at
         // `crates/agent_ui/src/conversation_view/thread_view.rs:5066-5068`
         // between Text/Thought chunks of one turn -- but the markdown
@@ -3043,6 +3043,15 @@ impl Render for ThreadView {
         let ui = crate::theme::ui_colors_with(&theme);
         self._theme_snapshot = Some(theme);
         self._ui_snapshot = Some(ui);
+        // US-016 (audit P2-4): snapshot the composer cwd once per
+        // render. Previously `render_item` cloned it as a PathBuf per
+        // visible message; on a viewport with ~20 visible items that
+        // was 20 PathBuf allocs per frame for no semantic value (cwd
+        // does not change mid-render).
+        self._cwd_snapshot = self
+            .composer
+            .as_ref()
+            .map(|c| c.read(cx).cwd().to_path_buf());
         let list_body: AnyElement = if self.items.is_empty() {
             empty_state()
         } else {
