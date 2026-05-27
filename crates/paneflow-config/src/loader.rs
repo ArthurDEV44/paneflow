@@ -699,6 +699,7 @@ mod tests {
             telemetry: None,
             terminal: None,
             agent_panel: None,
+            external_editor: None,
             tool_permissions: HashMap::new(),
         };
 
@@ -1130,9 +1131,18 @@ mod tests {
         let from_null = parse_and_validate(r#"{"terminal": {"ligatures": null}}"#);
         assert_eq!(
             from_empty.terminal,
-            Some(TerminalConfig { ligatures: None })
+            Some(TerminalConfig {
+                ligatures: None,
+                scrollback_lines: None,
+            })
         );
-        assert_eq!(from_null.terminal, Some(TerminalConfig { ligatures: None }));
+        assert_eq!(
+            from_null.terminal,
+            Some(TerminalConfig {
+                ligatures: None,
+                scrollback_lines: None,
+            })
+        );
     }
 
     #[test]
@@ -1141,7 +1151,8 @@ mod tests {
         assert_eq!(
             config.terminal,
             Some(TerminalConfig {
-                ligatures: Some(true)
+                ligatures: Some(true),
+                scrollback_lines: None,
             })
         );
 
@@ -1158,8 +1169,39 @@ mod tests {
         assert_eq!(
             config.terminal,
             Some(TerminalConfig {
-                ligatures: Some(false)
+                ligatures: Some(false),
+                scrollback_lines: None,
             })
+        );
+    }
+
+    #[test]
+    fn test_terminal_scrollback_lines_resolves_to_default_when_absent() {
+        let config = parse_and_validate(r#"{"terminal": {}}"#);
+        let tc = config.terminal.expect("terminal block present");
+        assert_eq!(
+            tc.resolved_scrollback_lines(),
+            TerminalConfig::DEFAULT_SCROLLBACK_LINES
+        );
+    }
+
+    #[test]
+    fn test_terminal_scrollback_lines_clamps_out_of_range() {
+        let tc = TerminalConfig {
+            ligatures: None,
+            scrollback_lines: Some(50), // below MIN_SCROLLBACK_LINES
+        };
+        assert_eq!(
+            tc.resolved_scrollback_lines(),
+            TerminalConfig::MIN_SCROLLBACK_LINES
+        );
+        let tc = TerminalConfig {
+            ligatures: None,
+            scrollback_lines: Some(10_000_000), // way above MAX
+        };
+        assert_eq!(
+            tc.resolved_scrollback_lines(),
+            TerminalConfig::MAX_SCROLLBACK_LINES
         );
     }
 
