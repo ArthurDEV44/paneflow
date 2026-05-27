@@ -99,6 +99,38 @@ pub struct IpcRequest {
 pub fn start_server() -> mpsc::Receiver<IpcRequest> {
     let (tx, rx) = mpsc::channel();
 
+    // Singleton guard: probe the socket BEFORE the IPC thread spawns and
+    // before `bind_socket` blindly `remove_file`s any existing socket. If
+    // another live Paneflow instance is already listening, two parallel
+    // processes will otherwise enter an endless mutual clobber loop —
+    // each detects the other's rebind at the next 5 s health check, drops
+    // its listener, and re-creates the file, perpetuating the cycle.
+    // During every micro-window between drop and re-create, the AI shim's
+    // `connect()` fails, an IPC message is silently lost, and a session's
+    // `Thinking` / `Done` / `session_start` status stays stale forever.
+    //
+    // Escape hatch: `PANEFLOW_ALLOW_MULTIPLE=1` skips the guard for the
+    // rare case of intentional side-by-side debug instances. Tests do
+    // not call `start_server`, so they are unaffected.
+    if std::env::var_os("PANEFLOW_ALLOW_MULTIPLE").is_none()
+        && let Some(path) = socket_path()
+        && let Some(info) = detect_existing_instance(&path)
+    {
+        eprintln!(
+            "paneflow: another Paneflow instance is already running on {}.\n\
+             Existing instance: {}\n\
+             Close the open window first, or set PANEFLOW_ALLOW_MULTIPLE=1 to override.",
+            path.display(),
+            info
+        );
+        log::error!(
+            "singleton guard: refusing to start; existing instance on {} ({})",
+            path.display(),
+            info
+        );
+        std::process::exit(1);
+    }
+
     std::thread::Builder::new()
         .name("paneflow-ipc".into())
         .spawn(move || {
@@ -247,6 +279,92 @@ fn bind_socket(socket_path: &std::path::Path) -> Option<Listener> {
 fn socket_inode(path: &std::path::Path) -> Option<u64> {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata(path).ok().map(|m| m.ino())
+}
+
+/// Probe `socket_path` to determine whether another live Paneflow instance
+/// is already serving on it.
+///
+/// Returns `Some(identity_string)` if a `system.identify` round-trip
+/// succeeds and the response advertises `"PaneFlow"` — the caller must
+/// refuse to start. Returns `None` for any other outcome (missing file,
+/// stale socket from a SIGKILL'd prior run, non-Paneflow listener, parse
+/// failure, timeout) — the caller can safely proceed to `bind_socket`'s
+/// existing remove-then-rebind path.
+///
+/// Resilient to the rebind race window: the legacy `bind_socket` recreates
+/// the socket on every 5 s clobber-detection tick, and during the few-ms
+/// window between `drop(listener)` and `create_sync()` a `connect()` would
+/// spuriously return `ECONNREFUSED`. We retry up to 3 times with a short
+/// inter-attempt sleep to cross that window deterministically.
+///
+/// Once this guard is universally deployed, the rebind loop never starts
+/// (the second instance exits before bind), so the multi-attempt is
+/// belt-and-braces for the transition period and for SIGKILL recovery
+/// races where the OS hasn't yet released the file.
+fn detect_existing_instance(socket_path: &std::path::Path) -> Option<String> {
+    // Fast bail-out: no socket file at all = definitely no instance.
+    // Avoids the connect overhead in the common cold-start case.
+    #[cfg(unix)]
+    if !socket_path.exists() {
+        return None;
+    }
+
+    let name = socket_path.to_fs_name::<GenericFilePath>().ok()?;
+
+    for attempt in 0..3 {
+        if attempt > 0 {
+            // Cross the legacy rebind window. The bind_socket recreate
+            // path is bounded by `remove_file` + `create_sync` + chmod —
+            // typically well under 10 ms; 70 ms is a comfortable margin.
+            std::thread::sleep(Duration::from_millis(70));
+        }
+
+        let Ok(mut stream) = Stream::connect(name.clone()) else {
+            continue;
+        };
+
+        // Stateless ping handled directly on the peer's socket thread
+        // (see `handle_connection`), so a live instance responds in
+        // microseconds without any GPUI round-trip.
+        if stream
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system.identify\"}\n")
+            .is_err()
+        {
+            continue;
+        }
+        let _ = stream.flush();
+
+        // `interprocess::Stream` does not expose a uniform cross-platform
+        // read timeout, so we read on a scratch thread and bound the
+        // wait with `recv_timeout`. 300 ms is generous for a stateless
+        // socket-thread handler; a live but unresponsive process within
+        // that budget is functionally indistinguishable from "no peer"
+        // and we proceed to bind (a hung peer that resumes after we've
+        // bound will detect the clobber on its next tick — the original
+        // failure mode, but now bounded to one stuck-instance edge case
+        // rather than recurring every 5 s by design).
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line);
+            let _ = tx.send(line);
+        });
+
+        let Ok(line) = rx.recv_timeout(Duration::from_millis(300)) else {
+            continue;
+        };
+
+        // The `system.identify` result includes `"name":"PaneFlow"` (see
+        // `handle_connection`). Match on the literal so a non-Paneflow
+        // listener squatting on the same path doesn't pin us to exit —
+        // we'd rather clobber an unknown squatter than refuse to start.
+        if line.contains("\"PaneFlow\"") {
+            return Some(line.trim().to_string());
+        }
+    }
+
+    None
 }
 
 fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
