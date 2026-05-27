@@ -36,7 +36,7 @@ const DEFAULT_LINE_HEIGHT: f32 = 1.3;
 /// empty-raster — so the system primary "renders" zero glyphs and
 /// nothing falls through. With Lilex as primary, GPUI's text system
 /// owns the font tables end-to-end and rasterization always works.
-pub(crate) const EMBEDDED_MONO_FAMILY: &str = "Lilex";
+pub(crate) const EMBEDDED_MONO_FAMILY: &str = "IBM Plex Mono";
 
 /// Embedded UI/sans family. Files:
 /// `assets/fonts/IBMPlexSans-{Regular,SemiBold,Italic,SemiBoldItalic}.ttf`.
@@ -166,7 +166,13 @@ pub fn resolve_font_family(configured: Option<&str>) -> String {
     // registers them directly with GPUI's text system at boot,
     // bypassing the OS font enumeration registry. Short-circuit before
     // the INSTALLED_MONO_FONTS lookup, which only sees system fonts.
-    if candidate == EMBEDDED_MONO_FAMILY || candidate == EMBEDDED_SANS_FAMILY {
+    // "Lilex" is also embedded (alternate mono kept available for
+    // users who prefer ligatures); recognised here even though it is
+    // no longer the default.
+    if candidate == EMBEDDED_MONO_FAMILY
+        || candidate == EMBEDDED_SANS_FAMILY
+        || candidate == "Lilex"
+    {
         return candidate.to_string();
     }
 
@@ -455,7 +461,7 @@ mod tests {
     #[test]
     fn expand_paneflow_alias_resolves_mono_alias() {
         assert_eq!(expand_paneflow_alias(".PaneflowMono"), EMBEDDED_MONO_FAMILY);
-        assert_eq!(expand_paneflow_alias(".PaneflowMono"), "Lilex");
+        assert_eq!(expand_paneflow_alias(".PaneflowMono"), "IBM Plex Mono");
     }
 
     #[test]
@@ -493,7 +499,7 @@ mod tests {
         // Both aliases must resolve through to their embedded targets
         // — the value GPUI's `text_system().resolve_font` will look
         // up against the registered TTFs.
-        assert_eq!(resolve_font_family(Some(".PaneflowMono")), "Lilex");
+        assert_eq!(resolve_font_family(Some(".PaneflowMono")), "IBM Plex Mono");
         assert_eq!(resolve_font_family(Some(".PaneflowSans")), "IBM Plex Sans");
     }
 
@@ -515,6 +521,6 @@ mod tests {
         // a per-OS chain (Menlo / Cascadia / DejaVu), this test
         // surfaces it loudly at the PR gate.
         assert_eq!(default_font_family(), EMBEDDED_MONO_FAMILY);
-        assert_eq!(default_font_family(), "Lilex");
+        assert_eq!(default_font_family(), "IBM Plex Mono");
     }
 }
