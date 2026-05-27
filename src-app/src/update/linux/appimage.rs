@@ -170,7 +170,7 @@ fn cache_path_for(arch: &str) -> Result<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
         .context("neither XDG_CACHE_HOME nor HOME is set")?;
-    let dir = base.join("paneflow");
+    let dir = base.join(crate::runtime_paths::APP_SUBDIR);
     std::fs::create_dir_all(&dir).with_context(|| format!("create cache dir {}", dir.display()))?;
     Ok(dir.join(format!("appimageupdatetool-{arch}.AppImage")))
 }

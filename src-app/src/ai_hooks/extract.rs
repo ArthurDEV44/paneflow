@@ -99,7 +99,10 @@ pub(crate) struct Entry<'a> {
 pub fn ensure_binaries_extracted() -> Result<PathBuf> {
     let cache_root = dirs::cache_dir()
         .ok_or_else(|| anyhow!("US-008: dirs::cache_dir() returned None; cannot extract"))?;
-    let target_dir = cache_root.join("paneflow").join("bin").join(VERSION);
+    let target_dir = cache_root
+        .join(crate::runtime_paths::APP_SUBDIR)
+        .join("bin")
+        .join(VERSION);
 
     let suffix = exe_suffix();
     let mut buffers: Vec<(String, std::borrow::Cow<'static, [u8]>)> =
