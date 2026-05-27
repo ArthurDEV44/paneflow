@@ -1005,7 +1005,7 @@ impl SessionRuntime {
         // `paneflow-acp` reactor never blocks GPUI's smol-driven
         // event loop.
         let broker_for_loop = Arc::clone(&broker_for_runtime);
-        let join = std::thread::Builder::new()
+        let join = match std::thread::Builder::new()
             .name("paneflow-acp-runtime".to_string())
             .spawn({
                 let event_tx_clone = event_tx.clone();
@@ -1021,14 +1021,28 @@ impl SessionRuntime {
                         resume_session_id,
                     );
                 }
-            })
-            .expect("paneflow-acp-runtime thread must spawn");
+            }) {
+            Ok(j) => Some(j),
+            Err(e) => {
+                // Thread spawn can fail on EAGAIN: containers with low
+                // `ulimit -u`, fork-bombed dev hosts, or systems where
+                // RLIMIT_NPROC is exhausted. Surface as a Fatal event
+                // instead of panicking the GPUI main thread -- the
+                // Composer's RuntimeEvent::Fatal handler shows a clean
+                // error in the thread view and tears down the runtime.
+                let _ = event_tx.unbounded_send(RuntimeEvent::Fatal(format!(
+                    "Could not spawn ACP runtime thread: {e}. \
+                     Check `ulimit -u` / container thread limits."
+                )));
+                None
+            }
+        };
 
         Self {
             cmd_tx,
             event_rx: Some(event_rx),
             broker: broker_for_handle,
-            join: Some(join),
+            join,
         }
     }
 
