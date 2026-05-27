@@ -120,7 +120,11 @@ impl TerminalView {
         let surface_id = cx.entity_id().as_u64();
         let backend = PortablePtyBackend;
         let result = TerminalState::new(&backend, cwd, workspace_id, surface_id, initial_size);
-        let terminal = Self::expect_terminal(result);
+        let mut terminal = Self::expect_terminal(result);
+        // Route the Drop-time force-kill timer through GPUI's background
+        // executor instead of a detached OS thread (Zed parity, prevents
+        // a thread leak per closed pane under heavy use).
+        terminal.set_background_executor(cx.background_executor().clone());
         Self::from_terminal_state(workspace_id, terminal, cx)
     }
 
@@ -137,14 +141,23 @@ impl TerminalView {
                      \x20 - Permission denied on /dev/ptmx\n\n\
                      Underlying error: {e:#}"
                 );
-                // PTY creation is load-bearing for this TerminalView's
-                // constructor — there's no meaningful "degraded" state
-                // for a terminal with no PTY. Aborting with a clear
-                // message beats silently returning an unusable view.
-                #[allow(clippy::panic)]
-                {
-                    panic!("PTY creation failed: {e:#}");
-                }
+                // Fall back to a display-only terminal that surfaces the
+                // error in the pane instead of crashing the entire app.
+                // The user keeps every other terminal/agent session and
+                // can read why this one failed.
+                let placeholder = TerminalState::new_display_only(24, 80);
+                let message = format!(
+                    "\x1b[1;31mError\x1b[0m: failed to start shell.\r\n\
+                     \r\n\
+                     Common causes:\r\n\
+                     \x20 \x20- PTY pool exhausted\r\n\
+                     \x20 \x20- Shell binary not found ($SHELL / default_shell)\r\n\
+                     \x20 \x20- Permission denied on /dev/ptmx\r\n\
+                     \r\n\
+                     \x1b[2m{e:#}\x1b[0m\r\n",
+                );
+                placeholder.write_output(message.as_bytes());
+                placeholder
             }
         }
     }
@@ -217,10 +230,25 @@ impl TerminalView {
                                         cx.write_to_clipboard(ClipboardItem::new_string(text));
                                     }
                                     ClipboardOp::Load(format_fn) => {
-                                        let text = cx
+                                        // Match the OSC 52 Store cap (100 KiB) on
+                                        // Load responses too — without this, a
+                                        // very large clipboard (multi-MB) would
+                                        // be base64-encoded and streamed into
+                                        // the PTY in one shot.
+                                        const MAX_OSC52_BYTES: usize = 100 * 1024;
+                                        let mut text = cx
                                             .read_from_clipboard()
                                             .and_then(|c| c.text())
                                             .unwrap_or_default();
+                                        if text.len() > MAX_OSC52_BYTES {
+                                            // Truncate on a UTF-8 boundary so
+                                            // the response remains valid text.
+                                            let mut cut = MAX_OSC52_BYTES;
+                                            while cut > 0 && !text.is_char_boundary(cut) {
+                                                cut -= 1;
+                                            }
+                                            text.truncate(cut);
+                                        }
                                         // Strip ESC and C1 control chars to prevent injection
                                         let sanitized: String = text
                                             .chars()
@@ -243,10 +271,19 @@ impl TerminalView {
                             // OpenAI Codex CLI, which then dropped its
                             // input-bar background tint silently.
 
-                            // Execute deferred text area size responses
-                            view.terminal.pending_size_ops.truncate(8);
+                            // Cap pending TextAreaSize replies to keep a runaway TUI
+                            // from accumulating thousands of pending responders.
+                            // Keep the most recent entries — older replies would
+                            // race the writer that requested them and are
+                            // effectively stale by the time we'd answer.
+                            if view.terminal.pending_size_ops.len() > 8 {
+                                let drop_count = view.terminal.pending_size_ops.len() - 8;
+                                view.terminal.pending_size_ops.drain(..drop_count);
+                            }
                             for format_fn in view.terminal.pending_size_ops.drain(..) {
-                                let term = view.terminal.term.lock();
+                                // Read-only snapshot; lock_unfair avoids queueing
+                                // behind the PTY reader thread on the main path.
+                                let term = view.terminal.term.lock_unfair();
                                 let size = alacritty_terminal::event::WindowSize {
                                     num_cols: term.columns() as u16,
                                     num_lines: term.screen_lines() as u16,
@@ -303,11 +340,18 @@ impl TerminalView {
                                     SUPPRESS_REPAINTS.load(std::sync::atomic::Ordering::Relaxed);
 
                                 if !suppress {
-                                    view.terminal.output_scan_ticks += 1;
-                                    let should_scan = view.terminal.output_scan_ticks <= 10
-                                        || view.terminal.output_scan_ticks >= 50;
-                                    if should_scan {
-                                        view.terminal.output_scan_ticks = 0;
+                                    view.terminal.output_scan_ticks =
+                                        view.terminal.output_scan_ticks.wrapping_add(1);
+                                    // Scan every Nth dirty tick. A service that
+                                    // boots between ticks is picked up at the
+                                    // next multiple instead of being missed by
+                                    // the previous "1..=10 then 50+" heuristic.
+                                    const SCAN_INTERVAL: u32 = 10;
+                                    if view
+                                        .terminal
+                                        .output_scan_ticks
+                                        .is_multiple_of(SCAN_INTERVAL)
+                                    {
                                         for service in view.terminal.scan_output() {
                                             cx.emit(TerminalEvent::ServiceDetected(service));
                                         }
@@ -455,7 +499,7 @@ impl TerminalView {
     /// Returns Ok(()) on success, Err(message) if the keystroke string is invalid.
     pub fn send_keystroke(&self, keystroke_str: &str) -> Result<(), String> {
         let keystroke = gpui::Keystroke::parse(keystroke_str).map_err(|e| format!("{e}"))?;
-        let mode = *self.terminal.term.lock().mode();
+        let mode = *self.terminal.term.lock_unfair().mode();
         if let Some(seq) = crate::keys::to_esc_str(&keystroke, &mode, self.option_as_meta) {
             self.terminal.write_to_pty(seq.as_bytes().to_vec());
         } else if let Some(ref key_char) = keystroke.key_char {
@@ -488,7 +532,9 @@ impl TerminalView {
             Some(p) => p,
             None => return Vec::new(),
         };
-        let term = self.terminal.term.lock();
+        // Read-only grid scan for URL regex; unfair lock keeps the
+        // mouse-move hot path off the PTY reader's fair queue.
+        let term = self.terminal.term.lock_unfair();
         let grid = term.grid();
         let line = point.line;
 
@@ -523,7 +569,8 @@ impl TerminalView {
             Some(p) => p,
             None => return Vec::new(),
         };
-        let term = self.terminal.term.lock();
+        // Same as detect_url_at_hover: read-only scan on mouse-move.
+        let term = self.terminal.term.lock_unfair();
         let grid = term.grid();
         let line = point.line;
 
@@ -660,7 +707,7 @@ impl TerminalView {
     /// Build a rich key context from the terminal's current mode flags.
     /// Enables keybindings scoped to terminal state (e.g. `"Terminal && screen == alt"`).
     fn dispatch_context(&self) -> KeyContext {
-        let mode = *self.terminal.term.lock().mode();
+        let mode = *self.terminal.term.lock_unfair().mode();
         let mut ctx = KeyContext::default();
         ctx.add("Terminal");
 
@@ -828,7 +875,7 @@ impl Render for TerminalView {
 
         // DEC 1004: send focus in/out events on focus transitions
         if focused != self.was_focused {
-            let mode = { *self.terminal.term.lock().mode() };
+            let mode = { *self.terminal.term.lock_unfair().mode() };
             if mode.contains(TermMode::FOCUS_IN_OUT) {
                 if focused {
                     self.terminal.write_to_pty(b"\x1b[I".to_vec());
@@ -867,7 +914,7 @@ impl Render for TerminalView {
         // a distinct tmux-style marker.
         let copy_cursor_state = if self.copy_mode_active {
             let (anchor_grid_line, anchor_col) = {
-                let term = self.terminal.term.lock();
+                let term = self.terminal.term.lock_unfair();
                 term.selection
                     .as_ref()
                     .and_then(|sel| sel.to_range(&term))
@@ -889,9 +936,20 @@ impl Render for TerminalView {
             || self
                 .terminal
                 .term
-                .lock()
+                .lock_unfair()
                 .mode()
                 .contains(TermMode::ALT_SCREEN);
+
+        // Snapshot prompt mark line positions (OSC 133 `A` marks only — the
+        // shell-prompt boundary, not output/command bookends). The element
+        // paints them as ticks in the scrollbar gutter.
+        let prompt_mark_lines: Vec<i32> = self
+            .terminal
+            .prompt_marks
+            .iter()
+            .filter(|m| m.kind == crate::terminal::PromptMarkKind::PromptStart)
+            .map(|m| m.line)
+            .collect();
 
         let terminal_element = TerminalElement::new(
             self.terminal.term.clone(),
@@ -912,6 +970,7 @@ impl Render for TerminalView {
             self.focus_handle.clone(),
             cx.entity().clone(),
             self.needs_initial_clear.clone(),
+            prompt_mark_lines,
             #[cfg(debug_assertions)]
             keystroke_at,
         );

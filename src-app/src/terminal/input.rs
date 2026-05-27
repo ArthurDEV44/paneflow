@@ -145,6 +145,9 @@ impl TerminalView {
                 term.scroll_display(AlacScroll::Bottom);
                 self.terminal.dirty = true;
                 drop(term);
+                // Reset accumulated sub-line scroll so the next wheel tick
+                // does not "snap back" by the leftover fraction.
+                self.scroll_remainder = 0.0;
                 cx.notify();
                 return;
             }
@@ -161,6 +164,17 @@ impl TerminalView {
         // both normal and alt screens. Writing them here as well caused
         // character doubling in ALT_SCREEN mode (e.g. Claude Code fullscreen TUI).
         if let Some(seq) = crate::keys::to_esc_str(keystroke, &mode, self.option_as_meta) {
+            // Snap to bottom on input. Matches Zed `terminal.rs:input()` — if
+            // the user is scrolled back in the history and types, the shell's
+            // echo would otherwise be invisible.
+            {
+                let mut term = self.terminal.term.lock();
+                if term.grid().display_offset() > 0 {
+                    term.scroll_display(AlacScroll::Bottom);
+                    self.terminal.dirty = true;
+                    self.scroll_remainder = 0.0;
+                }
+            }
             match seq {
                 Cow::Borrowed(s) => {
                     self.terminal.write_to_pty(Cow::Borrowed(s.as_bytes()));
@@ -188,7 +202,12 @@ impl TerminalView {
     // --- Pixel → grid coordinate conversion ---
 
     pub(super) fn pixel_to_grid(&self, pos: gpui::Point<gpui::Pixels>) -> (AlacPoint, Side) {
-        let origin = *self.element_origin.lock().unwrap();
+        // Poison-safe: if a panic happened inside paint() while holding the
+        // lock, the inner Point is still a valid value — recover and continue.
+        let origin = *self
+            .element_origin
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let relative_x = (pos.x - origin.x).max(gpui::px(0.0));
         let relative_y = (pos.y - origin.y).max(gpui::px(0.0));
 
@@ -220,7 +239,10 @@ impl TerminalView {
     /// Unlike `pixel_to_grid`, this returns 0-based viewport coordinates without
     /// the scrollback display_offset subtraction.
     pub(super) fn pixel_to_viewport(&self, pos: gpui::Point<gpui::Pixels>) -> AlacPoint {
-        let origin = *self.element_origin.lock().unwrap();
+        let origin = *self
+            .element_origin
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let relative_x = (pos.x - origin.x).max(gpui::px(0.0));
         let relative_y = (pos.y - origin.y).max(gpui::px(0.0));
         let col_f = relative_x / self.cell_width;
@@ -283,6 +305,19 @@ impl TerminalView {
                         let path = std::path::PathBuf::from(&link.uri);
                         cx.emit(TerminalEvent::OpenMarkdownPath(path));
                     }
+                    HyperlinkSource::CodePath => {
+                        // Source-code path with optional `:line[:col]`.
+                        // Delegate the actual open to the app-level handler
+                        // so the editor-chain resolution (VISUAL/EDITOR env
+                        // → probed fallback) stays in one place and is
+                        // testable without a TerminalView context.
+                        let path = std::path::PathBuf::from(&link.uri);
+                        cx.emit(TerminalEvent::OpenCodePath {
+                            path,
+                            line: link.line,
+                            col: link.col,
+                        });
+                    }
                     HyperlinkSource::Osc8 | HyperlinkSource::Regex => {
                         let _ = open::that(&link.uri);
                     }
@@ -296,9 +331,12 @@ impl TerminalView {
         // Forward to PTY when mouse reporting is active.
         // Shift overrides mouse mode for text selection (standard terminal convention).
         if mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift {
-            let point = self.pixel_to_viewport(event.position);
-            let button = mouse::mouse_button_code(event.button, event.modifiers);
-            self.write_mouse_report(point, button, true, mode);
+            // Side/Navigate mouse buttons have no terminal report encoding;
+            // skip them instead of injecting a phantom Left click.
+            if let Some(button) = mouse::mouse_button_code(event.button, event.modifiers) {
+                let point = self.pixel_to_viewport(event.position);
+                self.write_mouse_report(point, button, true, mode);
+            }
             return;
         }
 
@@ -339,25 +377,42 @@ impl TerminalView {
             && (mode.contains(TermMode::MOUSE_MOTION)
                 || (mode.contains(TermMode::MOUSE_DRAG) && event.pressed_button.is_some()))
         {
-            let point = self.pixel_to_viewport(event.position);
+            // Skip motion reports for side/Navigate buttons — they have no
+            // terminal mouse-report encoding.
             let button_base = match event.pressed_button {
-                Some(btn) => mouse::mouse_button_code(btn, event.modifiers),
+                Some(btn) => match mouse::mouse_button_code(btn, event.modifiers) {
+                    Some(b) => b,
+                    None => return,
+                },
                 None => 3, // no button held = release code in motion reports
             };
+            let point = self.pixel_to_viewport(event.position);
             // Motion events add +32 to the button code per protocol spec
             let button = button_base + 32;
             self.write_mouse_report(point, button, true, mode);
             return;
         }
 
-        // Track hovered cell for URL regex detection (US-015)
+        // Track hovered cell for URL regex detection (US-015).
+        // Save the prior cell so we can throttle the per-frame rescan below.
         let (hover_point, _) = self.pixel_to_grid(event.position);
+        let prev_hovered_cell = self.hovered_cell;
         self.hovered_cell = Some(hover_point);
 
         // Cmd/Ctrl+hover: detect link under cursor for hyperlink rendering
         // (US-016 + US-019). OSC 8 takes priority over regex URL detection,
         // which takes priority over file-path detection.
         if open_link_modifier_held(&event.modifiers) {
+            // Throttle: only re-scan the line when the hovered cell changed
+            // OR we don't have a current hovered link to render. Without this,
+            // 60 fps of MouseMove with the modifier held = 60 regex scans / s
+            // and a Term lock per frame. Matches Zed's intent of
+            // FIND_HYPERLINK_THROTTLE_PX.
+            let hovered_cell_changed = prev_hovered_cell != Some(hover_point);
+            if !hovered_cell_changed && self.ctrl_hovered_link.is_some() {
+                return;
+            }
+
             // Check OSC 8 hyperlink on the hovered cell first
             let osc8_link = {
                 let term = self.terminal.term.lock();
@@ -371,6 +426,8 @@ impl TerminalView {
                         end: hover_point, // Single cell — hover underline will cover it
                         is_openable: is_url_scheme_openable(hl.uri()),
                         source: HyperlinkSource::Osc8,
+                        line: None,
+                        col: None,
                     }
                 })
             };
@@ -386,6 +443,17 @@ impl TerminalView {
                 .or_else(|| {
                     // US-019: fall back to .md/.markdown file-path detection.
                     let zones = self.detect_file_path_at_hover();
+                    zones.into_iter().find(|z| {
+                        hover_point.line == z.start.line
+                            && hover_point.column >= z.start.column
+                            && hover_point.column <= z.end.column
+                    })
+                })
+                .or_else(|| {
+                    // Source-code path with optional :line[:col]. Last in the
+                    // chain so that an OSC 8 / URL / markdown match always
+                    // wins on the same cell (single hover affordance).
+                    let zones = self.detect_code_path_at_hover();
                     zones.into_iter().find(|z| {
                         hover_point.line == z.start.line
                             && hover_point.column >= z.start.column
@@ -409,7 +477,20 @@ impl TerminalView {
         if let Some(ref mut selection) = term.selection {
             selection.update(point, side);
         }
+        // On Linux/freebsd, mirror the in-progress selection into the X11/Wayland
+        // PRIMARY buffer so middle-click paste during drag uses the *current*
+        // selection (not the previous mouse-up snapshot). Zed: `UpdateSelection`
+        // handler writes primary on every change.
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        let primary_text = term.selection_to_string();
         drop(term);
+
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Some(text) = primary_text
+            && !text.is_empty()
+        {
+            cx.write_to_primary(ClipboardItem::new_string(text));
+        }
 
         cx.notify();
     }
@@ -425,9 +506,10 @@ impl TerminalView {
         // Forward release to PTY when mouse reporting is active.
         // Shift overrides mouse mode for text selection.
         if mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift {
-            let point = self.pixel_to_viewport(event.position);
-            let button = mouse::mouse_button_code(event.button, event.modifiers);
-            self.write_mouse_report(point, button, false, mode);
+            if let Some(button) = mouse::mouse_button_code(event.button, event.modifiers) {
+                let point = self.pixel_to_viewport(event.position);
+                self.write_mouse_report(point, button, false, mode);
+            }
             return;
         }
 

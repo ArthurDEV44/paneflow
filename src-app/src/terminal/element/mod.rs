@@ -24,7 +24,7 @@ use gpui::{
 use crate::terminal::types::{CopyModeCursorState, SearchHighlight};
 use crate::terminal::{PtyNotifier, SpikeTermSize, ZedListener};
 
-mod color;
+pub(super) mod color;
 mod font;
 mod geometry;
 mod hyperlink;
@@ -37,7 +37,8 @@ use font::{base_font, font_size};
 pub use font::{measure_cell, resolve_font_family};
 use geometry::CellGeometry;
 pub use hyperlink::{
-    detect_file_paths_on_line_mapped, detect_urls_on_line_mapped, is_url_scheme_openable,
+    detect_code_paths_on_line_mapped, detect_file_paths_on_line_mapped, detect_urls_on_line_mapped,
+    is_url_scheme_openable,
 };
 
 // US-007: re-export APCA primitives so theme code (and theme tests) can
@@ -324,6 +325,11 @@ pub struct LayoutState {
     link_text_color: Hsla,
     /// Cursor position bounds for IME popup positioning (pixel coordinates).
     ime_cursor_bounds: Option<Bounds<Pixels>>,
+    /// Grid-coordinate line numbers of every OSC 133 prompt-start marker,
+    /// snapshot at layout time. Scrollback rows are negative, viewport rows
+    /// non-negative. Used by `paint::scrollbar::paint_scrollbar` to draw
+    /// position ticks in the scrollbar gutter for quick prompt navigation.
+    pub(crate) prompt_mark_lines: Vec<i32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +376,10 @@ pub struct TerminalElement {
     terminal_view: gpui::Entity<crate::terminal::TerminalView>,
     /// Gate for clearing pre-resize shell startup content on first render.
     needs_initial_clear: Arc<std::sync::atomic::AtomicBool>,
+    /// Snapshot of OSC 133 PromptStart line positions (grid coordinates),
+    /// rendered as ticks in the scrollbar gutter so the user can skim
+    /// the scrollback by command boundary.
+    prompt_mark_lines: Vec<i32>,
     /// Timestamp of the keystroke that triggered this render, for latency measurement.
     #[cfg(debug_assertions)]
     last_keystroke_at: Option<std::time::Instant>,
@@ -393,6 +403,7 @@ impl TerminalElement {
         focus_handle: gpui::FocusHandle,
         terminal_view: gpui::Entity<crate::terminal::TerminalView>,
         needs_initial_clear: Arc<std::sync::atomic::AtomicBool>,
+        prompt_mark_lines: Vec<i32>,
         #[cfg(debug_assertions)] last_keystroke_at: Option<std::time::Instant>,
     ) -> Self {
         Self {
@@ -411,6 +422,7 @@ impl TerminalElement {
             focus_handle,
             terminal_view,
             needs_initial_clear,
+            prompt_mark_lines,
             #[cfg(debug_assertions)]
             last_keystroke_at,
         }
@@ -430,8 +442,16 @@ impl TerminalElement {
         // Compute desired terminal grid size from pixel bounds (accounting for left gutter)
         let gutter = dims.cell_width;
         let available_width = (bounds.size.width - gutter).max(px(0.0));
-        let desired_cols = (available_width / dims.cell_width).floor().max(1.0) as usize;
-        let desired_rows = (bounds.size.height / dims.line_height).floor() as usize;
+        // `next_up().floor()` guards against f32 rounding error: when pixel
+        // bounds are an exact multiple of the cell metric (24 lines × 16 px),
+        // direct `.floor()` can drop one cell because the division yields
+        // `23.99999…` instead of `24.0`. Stepping to the next representable
+        // float before flooring matches Zed's `TerminalBounds::num_lines`.
+        let desired_cols = (available_width / dims.cell_width)
+            .next_up()
+            .floor()
+            .max(1.0) as usize;
+        let desired_rows = (bounds.size.height / dims.line_height).next_up().floor() as usize;
 
         // Snapshot the grid, cursor, and selection under lock to minimize FairMutex hold time.
         let cursor_color = theme.cursor;
@@ -670,7 +690,7 @@ impl TerminalElement {
             .ceil()
             .max(0.0) as i32;
 
-        for (point, c, cell_fg, cell_bg, flags, zw, _) in &cells {
+        for (point, c, cell_fg, cell_bg, flags, zw, hyperlink) in &cells {
             let point = *point;
             let flags = *flags;
 
@@ -710,8 +730,18 @@ impl TerminalElement {
                 fg.a *= 0.7;
             }
 
-            // Enforce minimum foreground/background contrast (skip decorative chars)
-            if !is_decorative_character(*c) {
+            // Enforce minimum foreground/background contrast.
+            // Skip when:
+            //  - the character is decorative (box-drawing, Powerline, blocks),
+            //    where APCA adjustment would destroy the intended visual shape.
+            //  - the app explicitly chose the fg color via truecolor SGR
+            //    (`AnsiColor::Spec`) or the xterm-256 palette
+            //    (`AnsiColor::Indexed`). Apps that pick a specific RGB (bat,
+            //    delta, lazygit, Neovim themes) expect the color to render
+            //    exactly; APCA washing the foreground breaks their palettes.
+            //    Mirrors Zed `terminal_element.rs::is_app_chosen_exact_color`.
+            let skip_contrast = matches!(raw_fg, AnsiColor::Spec(_) | AnsiColor::Indexed(_));
+            if !is_decorative_character(*c) && !skip_contrast {
                 fg = ensure_minimum_contrast(fg, bg, MIN_APCA_CONTRAST);
             }
 
@@ -812,11 +842,17 @@ impl TerminalElement {
 
             // Build cell style for batching comparison
             let mut font = base_font();
+            // OSC 8 hyperlinks must render with an underline even when the cell
+            // flags don't carry `UNDERLINE` — alacritty 0.26 does not auto-set
+            // the flag on OSC 8 cells, so without this we'd lose the visual
+            // affordance until Ctrl/Cmd is held. Matches Zed
+            // `terminal_element.rs:580`.
             let is_underline = flags.contains(CellFlags::UNDERLINE)
                 || flags.contains(CellFlags::DOUBLE_UNDERLINE)
                 || flags.contains(CellFlags::UNDERCURL)
                 || flags.contains(CellFlags::DOTTED_UNDERLINE)
-                || flags.contains(CellFlags::DASHED_UNDERLINE);
+                || flags.contains(CellFlags::DASHED_UNDERLINE)
+                || hyperlink.is_some();
             let is_undercurl = flags.contains(CellFlags::UNDERCURL);
             let is_strikethrough = flags.contains(CellFlags::STRIKEOUT);
 
@@ -1024,6 +1060,7 @@ impl TerminalElement {
             desired_rows,
             link_text_color: theme.link_text,
             ime_cursor_bounds,
+            prompt_mark_lines: self.prompt_mark_lines.clone(),
         }
     }
 }
@@ -1072,10 +1109,14 @@ impl BatchAccumulator {
     }
 
     fn append_zerowidth(&mut self, chars: &[char]) {
-        debug_assert!(
-            !self.text.is_empty(),
-            "zero-width chars require a base character"
-        );
+        // If alacritty hands us combining marks before any base char has been
+        // appended (rare, but the grid layout could change in future versions),
+        // silently drop them rather than panicking in debug. The previous
+        // `debug_assert!` could trip during legitimate render flows that the
+        // user has no control over.
+        if self.text.is_empty() {
+            return;
+        }
         for &c in chars {
             self.text.push(c);
         }
@@ -1209,7 +1250,12 @@ impl Element for TerminalElement {
             y: bounds.origin.y,
         };
         // Store gutter-adjusted origin for mouse → grid coordinate conversion
-        *self.element_origin.lock().unwrap() = origin;
+        // Poison-safe: a prior panic inside paint() could have poisoned the
+        // Mutex. The inner Point is still a valid value; recover and continue.
+        *self
+            .element_origin
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = origin;
         let line_height = layout.dimensions.line_height;
         let font_size = font_size();
 

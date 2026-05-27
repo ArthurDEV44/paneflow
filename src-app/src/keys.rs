@@ -191,9 +191,10 @@ pub fn to_esc_str(
             return Some(Cow::Owned(format!("\x1b[1;{m}{b}")));
         }
 
-        // Modifier+F5-F12/Insert/PageUp/PageDown → \x1b[{num};{m}~
+        // Modifier+Delete/F5-F12/Insert/PageUp/PageDown → \x1b[{num};{m}~
         let num = match key {
             "insert" => Some(2),
+            "delete" => Some(3),
             "pageup" => Some(5),
             "pagedown" => Some(6),
             "f5" => Some(15),

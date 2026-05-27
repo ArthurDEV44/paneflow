@@ -38,14 +38,21 @@ pub enum ScrollDirection {
 ///
 /// Button codes: left=0, middle=1, right=2.
 /// Modifier bits: shift=+4, alt=+8, ctrl=+16.
-pub fn mouse_button_code(button: MouseButton, modifiers: Modifiers) -> u8 {
+///
+/// Returns `None` for buttons that have no terminal mouse-report encoding
+/// (currently the navigation/side buttons emitted by some mice as
+/// `MouseButton::Navigate`). Callers should skip the report.
+pub fn mouse_button_code(button: MouseButton, modifiers: Modifiers) -> Option<u8> {
     let base = match button {
         MouseButton::Left => 0,
         MouseButton::Middle => 1,
         MouseButton::Right => 2,
-        MouseButton::Navigate(_) => 0,
+        // Side / "back" / "forward" buttons. The X10/SGR mouse report has no
+        // canonical encoding for them — encoding them as `Left` would inject
+        // a phantom primary click into TUI apps with mouse mode active.
+        MouseButton::Navigate(_) => return None,
     };
-    base + modifier_bits(modifiers)
+    Some(base + modifier_bits(modifiers))
 }
 
 /// Map a scroll direction + modifier keys to the terminal scroll button byte.
@@ -137,7 +144,7 @@ mod tests {
     fn button_left() {
         assert_eq!(
             mouse_button_code(MouseButton::Left, Modifiers::default()),
-            0
+            Some(0)
         );
     }
 
@@ -145,7 +152,7 @@ mod tests {
     fn button_middle() {
         assert_eq!(
             mouse_button_code(MouseButton::Middle, Modifiers::default()),
-            1
+            Some(1)
         );
     }
 
@@ -153,7 +160,28 @@ mod tests {
     fn button_right() {
         assert_eq!(
             mouse_button_code(MouseButton::Right, Modifiers::default()),
-            2
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn button_navigate_returns_none() {
+        // Side / back / forward buttons have no terminal mouse-report
+        // encoding; the helper signals this with `None` so callers skip
+        // the report instead of emitting a phantom Left click.
+        assert_eq!(
+            mouse_button_code(
+                MouseButton::Navigate(gpui::NavigationDirection::Back),
+                Modifiers::default()
+            ),
+            None
+        );
+        assert_eq!(
+            mouse_button_code(
+                MouseButton::Navigate(gpui::NavigationDirection::Forward),
+                Modifiers::default()
+            ),
+            None
         );
     }
 
@@ -163,7 +191,7 @@ mod tests {
             shift: true,
             ..Default::default()
         };
-        assert_eq!(mouse_button_code(MouseButton::Left, mods), 4);
+        assert_eq!(mouse_button_code(MouseButton::Left, mods), Some(4));
     }
 
     #[test]
@@ -172,7 +200,7 @@ mod tests {
             alt: true,
             ..Default::default()
         };
-        assert_eq!(mouse_button_code(MouseButton::Left, mods), 8);
+        assert_eq!(mouse_button_code(MouseButton::Left, mods), Some(8));
     }
 
     #[test]
@@ -181,7 +209,7 @@ mod tests {
             control: true,
             ..Default::default()
         };
-        assert_eq!(mouse_button_code(MouseButton::Left, mods), 16);
+        assert_eq!(mouse_button_code(MouseButton::Left, mods), Some(16));
     }
 
     #[test]
@@ -192,7 +220,7 @@ mod tests {
             control: true,
             ..Default::default()
         };
-        assert_eq!(mouse_button_code(MouseButton::Left, mods), 28);
+        assert_eq!(mouse_button_code(MouseButton::Left, mods), Some(28));
     }
 
     // --- scroll code tests ---

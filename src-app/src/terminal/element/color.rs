@@ -212,10 +212,19 @@ fn adjust_lightness_for_apca(fg: Hsla, bg: Hsla, min_lc: f32) -> Hsla {
 pub(super) fn convert_color(color: AnsiColor, theme: &TerminalTheme) -> Hsla {
     match color {
         AnsiColor::Named(name) => named_color(name, theme),
-        AnsiColor::Spec(rgb) if rgb.r == 0 && rgb.g == 0 && rgb.b == 0 => theme.black,
+        // Truecolor RGB values are kept as-is. A previous special case mapped
+        // `Spec(0,0,0)` to `theme.black`, but that silently hijacked apps that
+        // chose a literal `#000000` (intentional pure black) and replaced it
+        // with the slightly-lighter ANSI "black" slot from the theme.
         AnsiColor::Spec(rgb) => rgb_to_hsla(rgb.r, rgb.g, rgb.b),
         AnsiColor::Indexed(i) => indexed_color(i, theme),
     }
+}
+
+/// Resolve the alacritty palette index `i` (0..=255) into themed `Hsla`.
+/// Exposed for OSC 4 (color-query) responses in `pty_session::process_event`.
+pub(crate) fn palette_color_at(i: u8, theme: &TerminalTheme) -> Hsla {
+    indexed_color(i, theme)
 }
 
 fn named_color(name: NamedColor, theme: &TerminalTheme) -> Hsla {

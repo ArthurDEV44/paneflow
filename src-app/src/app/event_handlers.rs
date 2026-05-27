@@ -395,6 +395,21 @@ impl PaneFlowApp {
             terminal::TerminalEvent::OpenMarkdownPath(path) => {
                 self.open_markdown_in_pane(&terminal, path.clone(), cx);
             }
+            terminal::TerminalEvent::OpenCodePath { path, line, col } => {
+                // Spawn the editor on the GPUI background executor so a
+                // slow editor launch (cold VS Code, remote SSH editor)
+                // never blocks the main thread. `open_at_location`
+                // already log-swallows failures, so we don't need to
+                // surface the result here.
+                let path = path.clone();
+                let line = *line;
+                let col = *col;
+                cx.background_executor()
+                    .spawn(async move {
+                        crate::editor::open_at_location(&path, line, col);
+                    })
+                    .detach();
+            }
             // ChildExited + TitleChanged are handled by Pane's subscription
             _ => {}
         }
@@ -506,7 +521,11 @@ impl PaneFlowApp {
                             // 0.9s per revolution ≈ 0.1164 rad/frame at 60fps
                             let delta = std::f32::consts::TAU / (0.9 * 60.0);
                             for ws in &app.workspaces {
-                                if matches!(ws.ai_state, ai_types::AiToolState::Thinking(_)) {
+                                if ws
+                                    .agent_sessions
+                                    .values()
+                                    .any(|s| s.state == ai_types::AgentState::Thinking)
+                                {
                                     let angle = ws.loader_angle.get() + delta;
                                     ws.loader_angle.set(angle % std::f32::consts::TAU);
                                 }
