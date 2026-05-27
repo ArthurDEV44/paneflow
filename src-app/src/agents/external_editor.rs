@@ -190,6 +190,7 @@ mod tests {
         assert_eq!(suffix, "");
     }
 
+    #[cfg(unix)]
     #[test]
     fn absolute_target_resolves_against_cwd() {
         let cwd = Path::new("/home/arthur/dev/proj");
@@ -197,10 +198,38 @@ mod tests {
         assert_eq!(target, "/home/arthur/dev/proj/src/foo.rs:42");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn absolute_target_resolves_against_cwd() {
+        // Windows: `Path::join` uses `\`, so the absolute prefix and
+        // separators differ from Unix. Verify shape (suffix preserved
+        // + cwd-prefixed) rather than a hardcoded forward-slash string.
+        let cwd = Path::new(r"C:\Users\arthur\proj");
+        let target = absolute_target("src/foo.rs:42", Some(cwd));
+        assert!(
+            target.starts_with(r"C:\Users\arthur\proj"),
+            "absolute_target output {target:?} should start with cwd",
+        );
+        assert!(
+            target.ends_with(":42"),
+            "absolute_target output {target:?} should preserve :42 suffix",
+        );
+    }
+
+    #[cfg(unix)]
     #[test]
     fn absolute_target_passes_absolute_path_through() {
         let target = absolute_target("/etc/hostname:3", Some(Path::new("/tmp")));
         assert_eq!(target, "/etc/hostname:3");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn absolute_target_passes_absolute_path_through() {
+        // Windows absolute path = drive-letter + backslash. Pick a path
+        // that's guaranteed-absolute on every Windows machine.
+        let target = absolute_target(r"C:\Windows\notepad.exe:3", Some(Path::new(r"C:\tmp")));
+        assert_eq!(target, r"C:\Windows\notepad.exe:3");
     }
 
     #[test]
