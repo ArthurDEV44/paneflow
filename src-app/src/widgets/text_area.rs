@@ -472,6 +472,15 @@ impl TextArea {
         self.fire_change(cx);
     }
 
+    /// Select the full content. Used by callers (inline-rename flows) that
+    /// open a TextArea pre-populated with a value the user is expected to
+    /// replace — selecting it up front avoids a Ctrl+A round-trip.
+    pub fn select_all_text(&mut self, cx: &mut Context<Self>) {
+        self.selected_range = 0..self.content.len();
+        self.selection_reversed = false;
+        cx.notify();
+    }
+
     fn cursor(&self) -> usize {
         if self.selection_reversed {
             self.selected_range.start

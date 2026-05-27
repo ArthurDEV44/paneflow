@@ -34,6 +34,17 @@ use base64::Engine as _;
 /// attachment is not added to the prompt".
 pub const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 
+/// Hard cap on the number of attachments accepted on a single prompt.
+/// At ~10 MB per image (the per-attachment limit above), 20 already
+/// represents up to 200 MB of base64-encoded payload — past the point
+/// where Claude/GPT-4V will accept the prompt anyway.
+pub const MAX_ATTACHMENTS: usize = 20;
+
+/// Stable, localizable message for the attachment-count cap.
+pub fn attachment_limit_message() -> String {
+    format!("Attachment limit reached ({MAX_ATTACHMENTS}). Remove a chip before adding more.",)
+}
+
 /// Cap the file walk so a huge monorepo cwd does not block the pump
 /// thread. The popup only displays the top results anyway.
 pub const MAX_FILE_RESULTS: usize = 50;

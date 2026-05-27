@@ -120,6 +120,10 @@ impl PaneFlowApp {
         let textarea = cx.new(|cx| {
             let mut ta = TextArea::new("New name", cx);
             ta.set_value(current, cx);
+            // Pre-select the whole text so the user can just start typing
+            // to replace the existing name — saves a manual Ctrl+A and
+            // matches the inline-rename UX in mainstream editors.
+            ta.select_all_text(cx);
             // on_submit fires from INSIDE the TextArea's update, so
             // any re-read of the entity (`ta.read(cx)`) from the
             // callback panics with "cannot read while it is already
@@ -163,6 +167,18 @@ impl PaneFlowApp {
         if self.agents_renaming.is_none() {
             return;
         }
+        // Re-entrancy guardrail: `commit_agents_rename` reads the
+        // TextArea entity, which panics if called from inside the
+        // TextArea's own `on_submit` / `on_change` callback. Callers
+        // coming from a TextArea callback must route through
+        // `apply_agents_rename(text, cx)` (it accepts the value as a
+        // parameter and never touches the entity). Document the
+        // contract in debug builds so a future caller misuse trips
+        // here loudly rather than corrupting GPUI's RefCell state.
+        debug_assert!(
+            self.agents_rename_input.is_some(),
+            "commit_agents_rename invariant: rename input must exist when renaming is active",
+        );
         let text = self
             .agents_rename_input
             .as_ref()

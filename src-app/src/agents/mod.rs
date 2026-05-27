@@ -10,6 +10,7 @@ pub(crate) mod composer;
 pub(crate) mod composer_ext;
 pub(crate) mod continuous_spinner;
 pub(crate) mod edit_tool_block;
+pub(crate) mod external_editor;
 pub(crate) mod inline_thinking;
 pub(crate) mod inline_tool_call;
 pub(crate) mod markdown_style;
