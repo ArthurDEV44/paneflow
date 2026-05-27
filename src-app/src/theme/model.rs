@@ -144,10 +144,23 @@ pub struct UiColors {
 
 /// Derive UI colors from the active terminal theme.
 ///
-/// Light themes get light UI; dark themes get dark UI.
+/// Light themes get light UI; dark themes get dark UI. Calls
+/// [`ui_colors_with`] under the hood after a single theme lookup --
+/// render paths that already have a `TerminalTheme` in hand should
+/// call [`ui_colors_with`] directly to avoid re-locking the theme
+/// cache (Composer / ThreadView render do this).
 pub fn ui_colors() -> UiColors {
     let theme = super::watcher::active_theme();
-    let is_light = is_light_theme(&theme);
+    ui_colors_with(&theme)
+}
+
+/// Derive UI colors from an already-resolved terminal theme. Identical
+/// output to [`ui_colors`] but skips the global theme-cache lock --
+/// the agents UI calls `ui_colors` once per render entry and again
+/// for every visible item, so passing the cached theme through saves
+/// O(visible_items) mutex acquisitions per frame.
+pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
+    let is_light = is_light_theme(theme);
     let colors = if is_light {
         UiColors {
             base: h(0xefefef),

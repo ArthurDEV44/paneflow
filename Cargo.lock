@@ -5299,6 +5299,7 @@ dependencies = [
  "paneflow-config",
  "paneflow-telemetry",
  "paneflow-threads",
+ "parking_lot",
  "portable-pty",
  "pulldown-cmark 0.10.3",
  "regex",
