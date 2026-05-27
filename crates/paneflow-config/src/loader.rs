@@ -5,6 +5,18 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::warn;
 
+/// Application directory namespace. Switches to `paneflow-dev` in debug
+/// builds so a `cargo run` instance (typical dev workflow) never reads
+/// or writes the same config / session file as the user's installed
+/// `/usr/bin/paneflow`. Mirrors `paneflow_app::runtime_paths::APP_SUBDIR`
+/// so per-build isolation is consistent across every persistence
+/// surface (config, session, threads, sockets, caches).
+pub const APP_SUBDIR: &str = if cfg!(debug_assertions) {
+    "paneflow-dev"
+} else {
+    "paneflow"
+};
+
 /// Hard cap on the size of any config file we will read into memory.
 /// Real configs are kilobytes; this guards against a runaway or hostile
 /// file on disk causing the GPUI main thread to stall while
@@ -27,7 +39,7 @@ pub enum ConfigError {
 /// - macOS: `~/Library/Application Support/paneflow/paneflow.json`
 /// - Windows: `%APPDATA%\paneflow\paneflow.json`
 pub fn config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("paneflow").join("paneflow.json"))
+    dirs::config_dir().map(|dir| dir.join(APP_SUBDIR).join("paneflow.json"))
 }
 
 /// Returns the platform-appropriate session file path.
@@ -44,7 +56,7 @@ pub fn session_path() -> Option<PathBuf> {
     } else {
         "session.json"
     };
-    dirs::cache_dir().map(|dir| dir.join("paneflow").join(filename))
+    dirs::cache_dir().map(|dir| dir.join(APP_SUBDIR).join(filename))
 }
 
 /// Load the PaneFlow configuration from the default platform path.
@@ -278,11 +290,19 @@ mod tests {
 
     #[test]
     fn test_config_path_is_some() {
-        // On most systems dirs::config_dir() succeeds.
+        // On most systems dirs::config_dir() succeeds. The subdir varies
+        // by build profile (`paneflow` in release, `paneflow-dev` in
+        // debug -- see `APP_SUBDIR`) so tests assert against the const,
+        // not a hardcoded `paneflow` literal.
         let path = config_path();
         assert!(path.is_some());
         let p = path.unwrap();
-        assert!(p.ends_with("paneflow/paneflow.json") || p.ends_with("paneflow\\paneflow.json"));
+        let suffix_unix = format!("{APP_SUBDIR}/paneflow.json");
+        let suffix_win = format!("{APP_SUBDIR}\\paneflow.json");
+        assert!(
+            p.ends_with(&suffix_unix) || p.ends_with(&suffix_win),
+            "config path {p:?} does not end with {suffix_unix}"
+        );
     }
 
     #[test]

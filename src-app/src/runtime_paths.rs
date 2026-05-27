@@ -30,8 +30,24 @@ use std::path::PathBuf;
 #[cfg(unix)]
 pub(crate) const MAX_SOCKET_PATH_BYTES: usize = 104;
 
+/// Application directory namespace. Switches to `paneflow-dev` in debug
+/// builds so `cargo run`-launched instances stop colliding with the
+/// release-installed `/usr/bin/paneflow` on the same machine: distinct
+/// data dir (no shared `threads.db` / `session.json` lock), distinct
+/// config dir, distinct cache dir, distinct shell helper dir, distinct
+/// IPC socket dir. The user can run an installed Paneflow and a
+/// from-source build side by side and each holds its own state. Same
+/// rule applies cross-crate -- see `paneflow_config::APP_SUBDIR` and
+/// `paneflow_threads::APP_SUBDIR` which mirror this const so per-build
+/// isolation reaches every persistence surface.
+pub const APP_SUBDIR: &str = if cfg!(debug_assertions) {
+    "paneflow-dev"
+} else {
+    "paneflow"
+};
+
 #[cfg(unix)]
-const PANEFLOW_SUBDIR: &str = "paneflow";
+const PANEFLOW_SUBDIR: &str = APP_SUBDIR;
 /// Socket filename, namespaced per build profile so a `cargo run` debug
 /// instance and an installed release instance can coexist on the same host
 /// without one silently stealing the other's socket. Each instance binds
@@ -194,7 +210,7 @@ pub fn augment_path_for_gui_launch() {
 /// Callers should fall back to an ephemeral in-memory UUID in that case
 /// (see `telemetry::id::telemetry_id`).
 pub fn data_dir() -> Option<PathBuf> {
-    let dir = dirs::data_local_dir()?.join("paneflow");
+    let dir = dirs::data_local_dir()?.join(APP_SUBDIR);
     if let Err(e) = std::fs::create_dir_all(&dir) {
         log::debug!(
             "paneflow: data_dir {} is unwritable ({e}); callers will use ephemeral state",
@@ -283,9 +299,9 @@ mod tests {
         let p = socket_path().expect("runtime dir must resolve");
         assert_eq!(
             p,
-            PathBuf::from(format!("/run/user/1000/paneflow/{SOCKET_FILE}")),
+            PathBuf::from(format!("/run/user/1000/{APP_SUBDIR}/{SOCKET_FILE}")),
             "AC5: Linux with XDG_RUNTIME_DIR must resolve to the XDG path \
-             (filename varies by build profile via SOCKET_FILE const)"
+             (subdir + filename vary by build profile via APP_SUBDIR / SOCKET_FILE)"
         );
     }
 
@@ -300,7 +316,7 @@ mod tests {
             // On Linux, dirs::runtime_dir() may still return Some before we
             // reach the TMPDIR branch — accept either but prove the path is
             // well-formed.
-            assert!(p.ends_with(format!("paneflow/{SOCKET_FILE}")));
+            assert!(p.ends_with(format!("{APP_SUBDIR}/{SOCKET_FILE}")));
         }
     }
 

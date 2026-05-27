@@ -257,7 +257,9 @@ pub(super) fn setup_shell_integration(
     shell: &str,
     env: &mut HashMap<String, String>,
 ) -> Vec<String> {
-    let Some(base) = dirs::data_dir().map(|d| d.join("paneflow").join("shell")) else {
+    let Some(base) =
+        dirs::data_dir().map(|d| d.join(crate::runtime_paths::APP_SUBDIR).join("shell"))
+    else {
         return vec![];
     };
 

@@ -98,13 +98,18 @@ pub fn save_offset_for(path: &Path, offset_y: f32) -> std::io::Result<()> {
 /// Resolve the on-disk JSON path. Returns `None` when `dirs::cache_dir`
 /// can't determine a cache directory (extremely rare; e.g. exotic targets).
 /// Debug builds use a `-dev` suffix so dev/release runs don't share state.
+/// The subdir itself is also `-dev`-suffixed via
+/// [`crate::runtime_paths::APP_SUBDIR`] so dev runs never write into the
+/// installed Paneflow's cache namespace -- belt + suspenders, the file
+/// suffix alone is kept for backward compatibility with already-deployed
+/// release caches.
 pub fn state_file_path() -> Option<PathBuf> {
     let filename = if cfg!(debug_assertions) {
         "markdown_state-dev.json"
     } else {
         "markdown_state.json"
     };
-    dirs::cache_dir().map(|dir| dir.join("paneflow").join(filename))
+    dirs::cache_dir().map(|dir| dir.join(crate::runtime_paths::APP_SUBDIR).join(filename))
 }
 
 /// Load the state file from disk. A missing or corrupt file returns the
