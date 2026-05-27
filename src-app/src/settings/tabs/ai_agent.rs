@@ -31,7 +31,7 @@ impl SettingsWindow {
         let claude_visible = config.claude_code_button_visible.unwrap_or(true);
         let codex_visible = config.codex_button_visible.unwrap_or(true);
         let opencode_visible = config.opencode_button_visible.unwrap_or(true);
-        let bypass = config.claude_code_bypass_permissions.unwrap_or(true);
+        let bypass = config.claude_code_bypass_permissions.unwrap_or(false);
 
         let buttons_card = setting_card(ui)
             .child(setting_row(

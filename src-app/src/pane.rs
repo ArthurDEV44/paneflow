@@ -685,7 +685,7 @@ impl Pane {
                             };
                             let bypass = paneflow_config::loader::load_config()
                                 .claude_code_bypass_permissions
-                                .unwrap_or(true);
+                                .unwrap_or(false);
                             let cmd = if bypass {
                                 "clear && claude --permission-mode bypassPermissions"
                             } else {
