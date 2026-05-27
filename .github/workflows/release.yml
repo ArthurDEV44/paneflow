@@ -33,6 +33,24 @@ on:
 permissions:
   contents: write
 
+# Serialize releases by ref. A tag-push race (or a dry-run launched on
+# top of a real tag) shouldn't double-publish or interrupt a half-baked
+# upload — `cancel-in-progress: false` lets the first run finish
+# atomically. Grouped by `ref_name` so different tags don't block each
+# other. Mirrors Zed's release.yml pattern.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+# Apply Zed's run_tests.yml shell convention to every implicit-bash step:
+# -e fail-on-error, -u error-on-unset, -x trace each command (CI logs
+# stay greppable), -o pipefail propagate pipe failures. Per-step
+# `shell: pwsh` overrides this default; the Windows-conditional steps
+# in this file already declare pwsh explicitly so they're unaffected.
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
 env:
   CARGO_TERM_COLOR: always
   # US-003: synthesize the canonical TAG every downstream packaging

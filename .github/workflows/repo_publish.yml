@@ -50,6 +50,11 @@ concurrency:
   group: repo-publish
   cancel-in-progress: false
 
+# -euxo pipefail on every bash step. See release.yml comment.
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
 jobs:
   publish:
     runs-on: ubuntu-22.04

@@ -33,6 +33,20 @@ on:
 permissions:
   contents: read
 
+# Serialize cask updates. Two concurrent runs would race-write
+# `Casks/paneflow.rb` in the homebrew tap and one would lose. We never
+# want to interrupt a half-written formula either — `cancel-in-progress:
+# false`. Group by workflow (not tag) so back-to-back tag publishes
+# queue rather than overlap.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# -euxo pipefail on every bash step. See release.yml comment.
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
 jobs:
   update-cask:
     runs-on: ubuntu-22.04

@@ -6,6 +6,31 @@ on:
   pull_request:
     branches: [main]
 
+# Match Zed's pattern (run_tests.yml): on PR branches, collapse runs on the
+# same ref so a new push cancels any in-flight CI for that branch. On main,
+# every commit gets its own group (keyed by SHA) so we never cancel a real
+# post-merge run. Without this, fast successive pushes on a feature branch
+# pile up 30-min-cancelled runs in the history.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.ref_name == 'main' && github.sha || 'anysha' }}
+  cancel-in-progress: true
+
+# Least-privilege default for GITHUB_TOKEN. Every job in this workflow
+# only reads the repo (checkout + cargo + cache). If a future job ever
+# needs write (push a tag, post a PR comment), it must elevate
+# explicitly via `permissions: contents: write` at the job level —
+# making the escalation visible in code review rather than implicit.
+permissions:
+  contents: read
+
+# Match Zed's run_tests.yml: -e fail-on-error, -u error-on-unset, -x
+# trace each command (CI logs stay greppable), -o pipefail propagate
+# pipe failures. Per-step `shell: pwsh` overrides this default — the
+# Windows steps below already declare pwsh explicitly.
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
