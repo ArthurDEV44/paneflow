@@ -76,6 +76,15 @@ pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
     let Some(project_dir) = project_dir_for_cwd(cwd) else {
         return Vec::new();
     };
+    // US-017: mtime-keyed cache. The directory layout
+    // `~/.claude/projects/<slug>/*.jsonl` is flat, so adding or
+    // removing a session file reliably bumps `project_dir`'s mtime
+    // and the cache invalidates on the next call.
+    if let Some(cached) =
+        crate::agent_sessions::cache::lookup(SessionAgent::Claude, cwd, &project_dir)
+    {
+        return cached;
+    }
     let Ok(entries) = fs::read_dir(&project_dir) else {
         return Vec::new();
     };
@@ -92,6 +101,7 @@ pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
         .collect();
 
     sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    crate::agent_sessions::cache::store_result(SessionAgent::Claude, cwd, &project_dir, &sessions);
     sessions
 }
 
@@ -416,5 +426,54 @@ mod tests {
         .expect("write fixture");
         let meta = read_session_meta(&path).expect("legitimate UUID must pass the guard");
         assert_eq!(meta.session_id, "550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    /// US-017 (audit P2-5): a second read_session_meta call against
+    /// the same path returns the same content, and the
+    /// cache::lookup/store cycle round-trips a fixture vector. This
+    /// test exercises the cache primitives directly (the
+    /// `read_sessions_for_cwd` path hits real `~/.claude/projects/`
+    /// which we cannot reliably set up in unit tests).
+    #[test]
+    fn session_cache_round_trips_and_invalidates_on_mtime_change() {
+        use crate::agent_sessions::cache;
+        cache::clear();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = "/some/cwd";
+        let project_dir = dir.path();
+
+        // Empty cache: lookup returns None.
+        assert!(
+            cache::lookup(SessionAgent::Claude, cwd, project_dir).is_none(),
+            "freshly-cleared cache must miss"
+        );
+
+        let fixture = vec![SessionMeta {
+            agent: SessionAgent::Claude,
+            session_id: "abc".into(),
+            timestamp: "2026-04-26T13:00:00Z".into(),
+            cwd: cwd.into(),
+            git_branch: String::new(),
+            summary: None,
+        }];
+        cache::store_result(SessionAgent::Claude, cwd, project_dir, &fixture);
+
+        let hit = cache::lookup(SessionAgent::Claude, cwd, project_dir)
+            .expect("post-store lookup must hit");
+        assert_eq!(hit.len(), 1);
+        assert_eq!(hit[0].session_id, "abc");
+
+        // Touch the directory to bump its mtime; sleep just enough to
+        // cross a filesystem mtime granularity boundary (some filesystems
+        // only track seconds). 1100 ms is empirically safe across
+        // ext4/apfs/ntfs.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(project_dir.join("touch.tmp"), b"x").expect("touch");
+
+        assert!(
+            cache::lookup(SessionAgent::Claude, cwd, project_dir).is_none(),
+            "mtime bump must invalidate the cached entry"
+        );
     }
 }
