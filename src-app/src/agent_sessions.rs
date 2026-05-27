@@ -10,11 +10,105 @@
 
 /// Which AI agent created the session. Drives the row icon, the
 /// `--resume` command shape, and the popover tab the row sits under.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SessionAgent {
     Claude,
     Codex,
     OpenCode,
+}
+
+/// US-017 (audit P2-5): module-level mtime-keyed cache for the
+/// session readers. The popover scan currently re-walks the on-disk
+/// JSONL store on every workspace switch -- a 100-session project
+/// pays the parse cost each time. The cache stores the last
+/// successful scan keyed by `(agent, cwd)` plus the directory mtime
+/// observed at scan time. A subsequent scan with an unchanged mtime
+/// returns the cached vector directly.
+///
+/// Only the Claude reader uses this in v1 because its on-disk layout
+/// (`~/.claude/projects/<slug>/*.jsonl`) is flat -- adding or
+/// removing a session file changes the parent directory mtime
+/// reliably. Codex stores sessions under a `YYYY/MM/DD/` partitioned
+/// tree where the root mtime does NOT reflect leaf-file changes;
+/// caching Codex correctly needs per-leaf-dir mtimes (deferred).
+/// OpenCode runs an external CLI (`opencode session list`) and
+/// cannot be invalidated via filesystem mtime at all.
+pub mod cache {
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::SystemTime;
+
+    use super::{SessionAgent, SessionMeta};
+
+    struct Entry {
+        mtime: SystemTime,
+        sessions: Vec<SessionMeta>,
+    }
+
+    fn store() -> &'static Mutex<HashMap<(SessionAgent, String), Entry>> {
+        static CACHE: OnceLock<Mutex<HashMap<(SessionAgent, String), Entry>>> = OnceLock::new();
+        CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    /// Read the directory mtime, returning `None` when the path does
+    /// not exist or its metadata is unreadable. Both cases skip the
+    /// cache (caller falls through to the scan and does not store the
+    /// result).
+    fn dir_mtime(dir: &Path) -> Option<SystemTime> {
+        std::fs::metadata(dir).ok().and_then(|m| m.modified().ok())
+    }
+
+    /// Try to read a fresh `Vec<SessionMeta>` from the cache. Returns
+    /// `Some` only when the dir's mtime matches the cached snapshot.
+    pub fn lookup(agent: SessionAgent, cwd: &str, project_dir: &Path) -> Option<Vec<SessionMeta>> {
+        let observed = dir_mtime(project_dir)?;
+        let guard = match store().lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let entry = guard.get(&(agent, cwd.to_string()))?;
+        if entry.mtime == observed {
+            Some(entry.sessions.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Store the result of a fresh scan. The mtime is captured AFTER
+    /// the scan to avoid the race where a write lands between the
+    /// pre-scan mtime read and the post-scan write -- using the
+    /// post-scan mtime means a follow-up write also invalidates the
+    /// entry.
+    pub fn store_result(
+        agent: SessionAgent,
+        cwd: &str,
+        project_dir: &Path,
+        sessions: &[SessionMeta],
+    ) {
+        let Some(mtime) = dir_mtime(project_dir) else {
+            return;
+        };
+        let mut guard = match store().lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        guard.insert(
+            (agent, cwd.to_string()),
+            Entry {
+                mtime,
+                sessions: sessions.to_vec(),
+            },
+        );
+    }
+
+    /// Drop everything; used by tests to reset state between cases.
+    #[cfg(test)]
+    pub fn clear() {
+        if let Ok(mut g) = store().lock() {
+            g.clear();
+        }
+    }
 }
 
 /// Read user config and return the agents whose tab-bar button is currently
