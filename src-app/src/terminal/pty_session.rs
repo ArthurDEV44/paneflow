@@ -24,10 +24,29 @@ use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 
 use crate::pty::PtyBackend;
 
+use super::element::color::palette_color_at;
 use super::listener::{SpikeTermSize, ZedListener};
 use super::pty_loops::{pty_message_loop, pty_reader_loop};
 use super::service_detector::{ServiceInfo, detect_framework, parse_service_line};
 use super::shell::{resolve_default_shell, setup_shell_integration};
+
+/// Default scrollback history length, in lines. Matches Zed's
+/// `DEFAULT_SCROLL_HISTORY_LINES`. `TermConfig::default()` is `0`, which
+/// disables scrollback entirely. Overridable via
+/// `terminal.scrollback_lines` in `paneflow.json` — see
+/// [`paneflow_config::TerminalConfig::resolved_scrollback_lines`].
+const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
+
+/// Read the user's configured scrollback length, clamped to the
+/// [`paneflow_config::TerminalConfig`] allowed range. Falls back to
+/// [`DEFAULT_SCROLLBACK_LINES`] when no `terminal` block exists.
+fn resolved_scrollback_lines() -> usize {
+    paneflow_config::loader::load_config()
+        .terminal
+        .as_ref()
+        .map(|t| t.resolved_scrollback_lines())
+        .unwrap_or(DEFAULT_SCROLLBACK_LINES)
+}
 
 // ---------------------------------------------------------------------------
 // PTY notifier — replaces alacritty's Notifier (US-007, portable-pty)
@@ -150,6 +169,15 @@ pub struct TerminalState {
     /// Note: on rapid keystrokes before a render frame, earlier timestamps are overwritten.
     #[cfg(debug_assertions)]
     pub(crate) last_keystroke_at: Option<std::time::Instant>,
+    /// GPUI background executor used by `Drop` to schedule the
+    /// grace-period force-kill task. Wired by `TerminalView::with_cwd`
+    /// immediately after construction. `None` only on display-only /
+    /// test paths, where `Drop` falls back to a detached OS thread.
+    /// Mirrors Zed `crates/terminal/src/terminal.rs:2451-2457` which
+    /// uses `background_executor.spawn(...).detach()` to keep the
+    /// kill timer under the GPUI scheduler instead of leaking an
+    /// orphan OS thread per closed pane.
+    background_executor: Option<gpui::BackgroundExecutor>,
 }
 
 impl TerminalState {
@@ -210,7 +238,13 @@ impl TerminalState {
 
         let (cols, rows) = initial_size.unwrap_or((120, 40));
 
-        let config = TermConfig::default();
+        // `TermConfig::default()` ships with `scrolling_history: 0` which
+        // disables scrollback entirely. Match Zed's default of 10_000 lines so
+        // Shift+PageUp / mouse wheel scrollback actually return content.
+        let config = TermConfig {
+            scrolling_history: resolved_scrollback_lines(),
+            ..TermConfig::default()
+        };
         let dimensions = SpikeTermSize {
             columns: cols,
             screen_lines: rows,
@@ -242,6 +276,14 @@ impl TerminalState {
             env!("CARGO_PKG_VERSION").into(),
         );
         env.insert("COLORTERM".into(), "truecolor".into());
+
+        // Drop SHLVL so the child shell initializes it from scratch. Without
+        // this, the spawned shell inherits Paneflow's own SHLVL (typically
+        // >= 2 when Paneflow itself was launched from a terminal), which
+        // breaks prompts that detect nested shells (oh-my-zsh's "you are in a
+        // subshell" banner, fish's $SHLVL gating). Matches Zed's
+        // `terminal.rs:459`.
+        env.remove("SHLVL");
 
         // US-009 — cross-platform AI-hook PATH-prepend. Extracts the
         // embedded `paneflow-shim` (as `claude` + `codex`) and
@@ -303,7 +345,17 @@ impl TerminalState {
             reported_ports: Vec::new(),
             #[cfg(debug_assertions)]
             last_keystroke_at: None,
+            background_executor: None,
         })
+    }
+
+    /// Wire a GPUI background executor for the grace-period force-kill
+    /// task spawned in `Drop`. Without this, the kill timer runs on a
+    /// detached OS thread (works, but leaks one thread per closed pane
+    /// on intensive use). Called by `TerminalView::with_cwd` so the
+    /// production path always goes through GPUI's scheduler.
+    pub fn set_background_executor(&mut self, executor: gpui::BackgroundExecutor) {
+        self.background_executor = Some(executor);
     }
 
     /// Create a display-only terminal with no PTY, no reader thread, no message loop.
@@ -318,7 +370,10 @@ impl TerminalState {
         let (_prompt_tx, prompt_rx) = unbounded::<PromptMark>();
         let listener = ZedListener(events_tx);
 
-        let config = TermConfig::default();
+        let config = TermConfig {
+            scrolling_history: resolved_scrollback_lines(),
+            ..TermConfig::default()
+        };
         let dimensions = SpikeTermSize {
             columns: cols,
             screen_lines: rows,
@@ -350,6 +405,7 @@ impl TerminalState {
             reported_ports: Vec::new(),
             #[cfg(debug_assertions)]
             last_keystroke_at: None,
+            background_executor: None,
         }
     }
 
@@ -406,7 +462,13 @@ impl TerminalState {
     /// Called on child exit before marking the terminal as exited.
     /// Only resets modes that are actually active (clean exits won't trigger).
     fn reset_active_modes(&mut self) {
-        let mode = *self.term.lock().mode();
+        // Guard against double-reset: if we've already recorded the exit
+        // status, the PTY writer is already closed and the next notify()
+        // would log a swallowed EPIPE.
+        if self.exited.is_some() {
+            return;
+        }
+        let mode = *self.term.lock_unfair().mode();
         if mode.contains(TermMode::BRACKETED_PASTE) {
             self.notifier.notify(b"\x1b[?2004l" as &[u8]);
         }
@@ -477,10 +539,9 @@ impl TerminalState {
                 // discriminant, NOT the OSC code itself: the VTE parser at
                 // `vte-0.15/src/ansi.rs:1431` translates OSC 10/11/12 to
                 // `NamedColor::Foreground (256) + (osc_code - 10)`. So the
-                // match arms below MUST use 256/257/258, not 10/11/12. The
-                // earlier 10/11/12 arms silently fell into the catch-all and
-                // never replied — which is precisely why `default_bg()` in
-                // Codex stayed `None` and the input-bar bg never appeared.
+                // 256/257/258 arms below match OSC 10/11/12; indices 0..=255
+                // cover OSC 4 (`OSC 4 ; n ; ?` color-palette queries) which
+                // some apps (vim, neovim, python-rich) use to detect themes.
                 let theme = crate::theme::active_theme();
                 use alacritty_terminal::vte::ansi::NamedColor;
                 let color = if index == NamedColor::Foreground as usize {
@@ -489,8 +550,10 @@ impl TerminalState {
                     Some(theme.ansi_background)
                 } else if index == NamedColor::Cursor as usize {
                     Some(theme.cursor)
+                } else if index < 256 {
+                    Some(palette_color_at(index as u8, &theme))
                 } else {
-                    None // OSC 4 (palette indices 0..256) — not currently handled
+                    None
                 };
                 if let Some(hsla) = color {
                     let rgb = hsla_to_alac_rgb(hsla);
@@ -502,7 +565,7 @@ impl TerminalState {
                 self.bell_active = true;
             }
             AlacEvent::CursorBlinkingChange => {
-                let term = self.term.lock();
+                let term = self.term.lock_unfair();
                 self.cursor_blinking = term.cursor_style().blinking;
             }
             AlacEvent::TextAreaSizeRequest(format_fn) => {
@@ -588,7 +651,9 @@ impl TerminalState {
     /// Lock on `self.term` is held only for text extraction, then released before parsing.
     pub fn scan_output(&mut self) -> Vec<ServiceInfo> {
         let lines: Vec<String> = {
-            let term = self.term.lock();
+            // Read-only grid scan; unfair lock avoids queueing behind the
+            // PTY reader thread on the periodic service-detection sweep.
+            let term = self.term.lock_unfair();
             let bottom = term.bottommost_line();
             let top_limit = term.topmost_line();
             let cols = term.last_column();
@@ -642,7 +707,8 @@ impl TerminalState {
         const MAX_LINES: usize = 4000;
         const MAX_CHARS: usize = 400_000;
 
-        let term = self.term.lock();
+        // Read-only scrollback drain for session persistence.
+        let term = self.term.lock_unfair();
         let top = term.topmost_line();
         let bottom = term.bottommost_line();
         let cols = term.last_column();
@@ -868,19 +934,53 @@ impl Drop for TerminalState {
         // Grace period + force-kill: if the child process ignores the PTY
         // master close signal (SIGHUP on Unix, ClosePseudoConsole on Windows),
         // force-kill it after 100ms.
+        //
+        // Scheduling: prefer the GPUI `background_executor` (Zed parity:
+        // `crates/terminal/src/terminal.rs:2451-2457`) so the kill timer
+        // lives under the GPUI runtime and gets cleanly torn down with
+        // the app. Tests / display-only paths have no executor wired and
+        // fall back to a detached OS thread (safe but un-trackable).
+        let executor = self.background_executor.clone();
+
         #[cfg(unix)]
         {
             let pid = self.child_pid as i32;
             if pid > 0 {
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    // Check if process is still alive before sending SIGKILL
+                let kill = move || {
+                    // Target the entire process group (`-pid`) so any
+                    // sub-process the shell forked (cargo build, npm dev,
+                    // long-running scripts) dies with the shell instead of
+                    // becoming an orphan reparented to PID 1. portable-pty
+                    // calls `setsid()` on the child (unix.rs:220), so
+                    // `child_pid` is both the PID and the PGID of the
+                    // session leader — `kill(-pgid, sig)` is the canonical
+                    // POSIX idiom to signal every process in that group.
+                    //
+                    // SAFETY: libc::kill(-pid, 0) is a no-op signal probe;
+                    // libc::kill(-pid, SIGKILL) signals every member of the
+                    // process group. Both calls are FFI-safe with a validated
+                    // pid > 0 captured by value into this closure.
                     unsafe {
-                        if libc::kill(pid, 0) == 0 {
-                            libc::kill(pid, libc::SIGKILL);
+                        if libc::kill(-pid, 0) == 0 {
+                            libc::kill(-pid, libc::SIGKILL);
                         }
                     }
-                });
+                };
+                match executor {
+                    Some(bg) => {
+                        bg.spawn(async move {
+                            smol::Timer::after(std::time::Duration::from_millis(100)).await;
+                            kill();
+                        })
+                        .detach();
+                    }
+                    None => {
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            kill();
+                        });
+                    }
+                }
             }
         }
 
@@ -898,8 +998,9 @@ impl Drop for TerminalState {
 
             let pid = self.child_pid;
             if pid != 0 {
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                let terminate = move || {
+                    // SAFETY: Win32 handles are owned within this closure;
+                    // we always CloseHandle before returning each branch.
                     unsafe {
                         let handle = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid);
                         if handle.is_null() {
@@ -921,7 +1022,22 @@ impl Drop for TerminalState {
                         }
                         let _ = CloseHandle(handle);
                     }
-                });
+                };
+                match executor {
+                    Some(bg) => {
+                        bg.spawn(async move {
+                            smol::Timer::after(std::time::Duration::from_millis(100)).await;
+                            terminate();
+                        })
+                        .detach();
+                    }
+                    None => {
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            terminate();
+                        });
+                    }
+                }
             }
         }
     }

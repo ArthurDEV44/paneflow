@@ -125,8 +125,10 @@ impl Osc7Scanner {
                     }
                 }
                 4 => {
-                    // Collecting payload until BEL or ST
-                    if byte == 0x07 {
+                    // Collecting payload until BEL, ST (\x1b\\), or C1 ST (\x9c).
+                    // Some shells (fish on certain locales) terminate OSC with
+                    // the 8-bit C1 ST byte instead of the 7-bit ESC-\ form.
+                    if byte == 0x07 || byte == 0x9c {
                         self.emit_cwd(cwd_tx);
                         self.state = 0;
                     } else if byte == 0x1b {
@@ -254,8 +256,8 @@ impl Osc133Scanner {
                     if let Some(k) = kind {
                         self.emit_mark(k, term, prompt_tx);
                     }
-                    // Skip remaining params until terminator
-                    if byte == 0x07 {
+                    // Skip remaining params until terminator (BEL, ST, or C1 ST)
+                    if byte == 0x07 || byte == 0x9c {
                         self.state = 0;
                     } else if byte == 0x1b {
                         self.state = 8; // Possible ST
@@ -264,8 +266,8 @@ impl Osc133Scanner {
                     }
                 }
                 7 => {
-                    // Skipping optional parameters until BEL or ST
-                    if byte == 0x07 {
+                    // Skipping optional parameters until BEL, ST, or C1 ST.
+                    if byte == 0x07 || byte == 0x9c {
                         self.state = 0;
                     } else if byte == 0x1b {
                         self.state = 8;

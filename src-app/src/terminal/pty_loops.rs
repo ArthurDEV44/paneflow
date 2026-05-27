@@ -89,26 +89,63 @@ pub(super) fn pty_reader_loop(
 }
 
 /// Message handler thread: receives Msg from Notifier channel, writes to PTY or resizes.
+///
+/// Resize coalescing (Zed parity: `crates/terminal/src/terminal.rs:1463-1466`):
+/// drag-to-resize and HiDPI scale changes spam many `Msg::Resize` per frame.
+/// Only the latest dimension is meaningful — applying every intermediate
+/// resize triggers a SIGWINCH storm to the child shell, which retypes its
+/// prompt N times and looks like terminal flicker. We drain any backlog
+/// non-blockingly between blocking recvs and keep only the most recent
+/// `Resize`, while still flushing intervening `Input` bytes in order so
+/// keystrokes never get reordered behind a resize.
 pub(super) fn pty_message_loop(
     rx: std::sync::mpsc::Receiver<Msg>,
     mut writer: Box<dyn Write + Send>,
     master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
 ) {
+    let apply_resize =
+        |size: alacritty_terminal::event::WindowSize,
+         master: &Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>| {
+            let pty_size = PtySize {
+                rows: size.num_lines,
+                cols: size.num_cols,
+                pixel_width: size.num_cols * size.cell_width,
+                pixel_height: size.num_lines * size.cell_height,
+            };
+            if let Ok(master) = master.lock() {
+                let _ = master.resize(pty_size);
+            }
+        };
+
     while let Ok(msg) = rx.recv() {
         match msg {
             Msg::Input(bytes) => {
                 let _ = writer.write_all(&bytes);
                 let _ = writer.flush();
             }
-            Msg::Resize(size) => {
-                let pty_size = PtySize {
-                    rows: size.num_lines,
-                    cols: size.num_cols,
-                    pixel_width: size.num_cols * size.cell_width,
-                    pixel_height: size.num_lines * size.cell_height,
-                };
-                if let Ok(master) = master.lock() {
-                    let _ = master.resize(pty_size);
+            Msg::Resize(mut size) => {
+                // Drain backlog non-blockingly: collapse successive Resize
+                // messages, flush Input in order, honour Shutdown if seen.
+                let mut shutdown_requested = false;
+                loop {
+                    match rx.try_recv() {
+                        Ok(Msg::Resize(latest)) => {
+                            size = latest;
+                        }
+                        Ok(Msg::Input(bytes)) => {
+                            let _ = writer.write_all(&bytes);
+                            let _ = writer.flush();
+                        }
+                        Ok(Msg::Shutdown) => {
+                            shutdown_requested = true;
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                apply_resize(size, &master);
+                if shutdown_requested {
+                    break;
                 }
             }
             Msg::Shutdown => break,
