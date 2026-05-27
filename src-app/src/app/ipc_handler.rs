@@ -511,26 +511,30 @@ impl PaneFlowApp {
                 };
                 // Tool name: check top-level "tool" param, then hook_payload.tool, default "claude"
                 let hook = params.get("hook_payload");
-                let tool = params
+                let tool_str = params
                     .get("tool")
                     .and_then(|v| v.as_str())
                     .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
                     .unwrap_or("claude");
                 // Validate tool name: alphanumeric + hyphens, max 64 chars
-                if tool.len() > 64 || !tool.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                if tool_str.len() > 64
+                    || !tool_str
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
                 {
                     return serde_json::json!({"error": "Invalid tool name"});
                 }
-                let tool = tool.to_string();
+                let tool = ai_types::AiTool::from_name(tool_str);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
-                    // Cap agent PIDs to prevent unbounded HashMap growth from
-                    // malicious or buggy IPC clients (CWE-400).
-                    const MAX_AGENT_PIDS: usize = 16;
-                    if ws.agent_pids.len() >= MAX_AGENT_PIDS && !ws.agent_pids.contains_key(&tool) {
-                        return serde_json::json!({"error": "Agent PID limit reached"});
-                    }
-                    ws.agent_pids.insert(tool, pid);
+                    // session_start is a no-op on `agent_sessions`: a
+                    // freshly-spawned shell with no prompt in flight
+                    // should NOT show any badge in the sidebar. The
+                    // first `ai.prompt_submit` / `ai.tool_use` will
+                    // create the row with `AgentState::Thinking`.
+                    // Stale-PID sweep covers session cleanup if the
+                    // process dies before its first prompt.
+                    let _ = (pid, tool, ws);
                     serde_json::json!({"registered": true})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
@@ -540,16 +544,11 @@ impl PaneFlowApp {
                 let Some(workspace_id) = params.get("workspace_id").and_then(|v| v.as_u64()) else {
                     return serde_json::json!({"error": "Missing workspace_id"});
                 };
-                let hook = params.get("hook_payload");
-                let tool_name = params
-                    .get("tool")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
-                    .unwrap_or("claude");
-                let tool = ai_types::AiTool::from_name(tool_name);
+                let pid = read_session_pid(params);
+                let tool = read_tool(params);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
-                    ws.ai_state = ai_types::AiToolState::Thinking(tool);
+                    upsert_session_state(ws, pid, tool, ai_types::AgentState::Thinking, None);
                     cx.notify();
                     if !self.loader_anim_running {
                         self.start_loader_animation(cx);
@@ -564,25 +563,29 @@ impl PaneFlowApp {
                     return serde_json::json!({"error": "Missing workspace_id"});
                 };
                 let hook = params.get("hook_payload");
-                let tool_name = hook
+                let active_tool_name = hook
                     .and_then(|h| h.get("tool_name"))
                     .and_then(|v| v.as_str())
-                    .or_else(|| params.get("tool_name").and_then(|v| v.as_str()));
-                let tool_str = params
-                    .get("tool")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
-                    .unwrap_or("claude");
-                let tool = ai_types::AiTool::from_name(tool_str);
+                    .or_else(|| params.get("tool_name").and_then(|v| v.as_str()))
+                    .map(|s| s.chars().take(128).collect::<String>());
+                let pid = read_session_pid(params);
+                let tool = read_tool(params);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
-                    // Keep Thinking state (no transition if already Thinking)
-                    if !matches!(ws.ai_state, ai_types::AiToolState::Thinking(_)) {
-                        ws.ai_state = ai_types::AiToolState::Thinking(tool);
-                    }
-                    ws.active_tool_name =
-                        tool_name.map(|s| s.chars().take(128).collect::<String>());
+                    // tool_use implies the session is actively thinking —
+                    // promote it (or keep it) even if the prior state was
+                    // Finished from a stale prompt-end.
+                    upsert_session_state(
+                        ws,
+                        pid,
+                        tool,
+                        ai_types::AgentState::Thinking,
+                        active_tool_name,
+                    );
                     cx.notify();
+                    if !self.loader_anim_running {
+                        self.start_loader_animation(cx);
+                    }
                     serde_json::json!({"status": "running"})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
@@ -593,12 +596,8 @@ impl PaneFlowApp {
                     return serde_json::json!({"error": "Missing workspace_id"});
                 };
                 let hook = params.get("hook_payload");
-                let tool_str = params
-                    .get("tool")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
-                    .unwrap_or("claude");
-                let tool = ai_types::AiTool::from_name(tool_str);
+                let pid = read_session_pid(params);
+                let tool = read_tool(params);
                 let message: String = hook
                     .and_then(|h| h.get("message"))
                     .and_then(|v| v.as_str())
@@ -609,8 +608,13 @@ impl PaneFlowApp {
                     .collect();
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
-                    ws.ai_state = ai_types::AiToolState::WaitingForInput(tool);
-                    ws.active_tool_name = None;
+                    upsert_session_state(
+                        ws,
+                        pid,
+                        tool,
+                        ai_types::AgentState::WaitingForInput,
+                        None,
+                    );
                     cx.notify();
                     let _ = message;
                     serde_json::json!({"status": "waiting"})
@@ -622,21 +626,19 @@ impl PaneFlowApp {
                 let Some(workspace_id) = params.get("workspace_id").and_then(|v| v.as_u64()) else {
                     return serde_json::json!({"error": "Missing workspace_id"});
                 };
-                let hook = params.get("hook_payload");
-                let tool_str = params
-                    .get("tool")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
-                    .unwrap_or("claude");
-                let tool = ai_types::AiTool::from_name(tool_str);
+                let pid = read_session_pid(params);
+                let tool = read_tool(params);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
-                    ws.ai_state = ai_types::AiToolState::Finished(tool);
-                    ws.active_tool_name = None;
+                    upsert_session_state(ws, pid, tool, ai_types::AgentState::Finished, None);
                     cx.notify();
 
-                    // Auto-reset to Inactive after 5 seconds
+                    // Auto-clear the session 5 s after stop unless something
+                    // else (new prompt_submit, tool_use) bumps it back to
+                    // Thinking. Targets the exact (workspace_id, pid) so
+                    // sibling sessions in the same workspace are untouched.
                     let ws_id = workspace_id;
+                    let target_pid = pid;
                     cx.spawn(
                         async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                             smol::Timer::after(std::time::Duration::from_secs(5)).await;
@@ -644,9 +646,13 @@ impl PaneFlowApp {
                                 let _ = this.update(cx, |app, cx| {
                                     if let Some(ws) =
                                         app.workspaces.iter_mut().find(|ws| ws.id == ws_id)
-                                        && matches!(ws.ai_state, ai_types::AiToolState::Finished(_))
+                                        && let Some(pid_key) = target_pid
+                                        && matches!(
+                                            ws.agent_sessions.get(&pid_key).map(|s| &s.state),
+                                            Some(ai_types::AgentState::Finished)
+                                        )
                                     {
-                                        ws.ai_state = ai_types::AiToolState::Inactive;
+                                        ws.agent_sessions.remove(&pid_key);
                                         cx.notify();
                                     }
                                 });
@@ -677,14 +683,36 @@ impl PaneFlowApp {
                 {
                     return serde_json::json!({"error": "Invalid tool name"});
                 }
+                let pid = read_session_pid(params);
+                let tool = ai_types::AiTool::from_name(tool_str);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
-                    ws.ai_state = ai_types::AiToolState::Inactive;
-                    ws.active_tool_name = None;
-                    ws.agent_pids.remove(tool_str);
-                    cx.notify();
-                    let _ = tool_str;
-                    serde_json::json!({"cleared": true})
+                    // Prefer exact PID removal; fall back to removing one
+                    // session matching the tool name (back-compat for older
+                    // shims that didn't carry `pid` on session_end). Last
+                    // resort keeps `agent_sessions` consistent with the
+                    // pre-refactor "one session per tool" assumption.
+                    let removed = if let Some(p) = pid
+                        && ws.agent_sessions.remove(&p).is_some()
+                    {
+                        true
+                    } else {
+                        let pid_to_remove = ws
+                            .agent_sessions
+                            .iter()
+                            .find(|(_, s)| s.tool == tool)
+                            .map(|(k, _)| *k);
+                        if let Some(k) = pid_to_remove {
+                            ws.agent_sessions.remove(&k);
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if removed {
+                        cx.notify();
+                    }
+                    serde_json::json!({"cleared": removed})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
                 }
@@ -694,6 +722,85 @@ impl PaneFlowApp {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// AI session helpers (multi-session refactor)
+// ---------------------------------------------------------------------------
+
+/// Read the session PID from an `ai.*` IPC param object. Returns `None`
+/// when the field is missing or zero — older shims (pre multi-session
+/// refactor) don't include `pid` on every lifecycle frame, so the
+/// caller must tolerate `None` and degrade to tool-name-based matching.
+fn read_session_pid(params: &serde_json::Value) -> Option<u32> {
+    params
+        .get("pid")
+        .and_then(|v| v.as_u64())
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|&p| p > 0)
+}
+
+/// Read the `tool` field from an `ai.*` IPC param object, falling back
+/// to `hook_payload.tool`, defaulting to Claude (matches the server's
+/// historical behavior for legacy shims that don't stamp the field).
+fn read_tool(params: &serde_json::Value) -> ai_types::AiTool {
+    let hook = params.get("hook_payload");
+    let tool_str = params
+        .get("tool")
+        .and_then(|v| v.as_str())
+        .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
+        .unwrap_or("claude");
+    ai_types::AiTool::from_name(tool_str)
+}
+
+/// Insert or update a session in `ws.agent_sessions`. When `pid` is
+/// known, the session is keyed by PID (the desired path — supports
+/// many concurrent sessions of the same tool). When `pid` is `None`
+/// (older shim), falls back to matching any existing session of the
+/// same tool and updating it in place; if none exists, a synthetic
+/// PID slot is allocated from the negative u32 space so the row is
+/// still tracked. This keeps the UI consistent during a rolling shim
+/// upgrade where some frames carry `pid` and others don't.
+fn upsert_session_state(
+    ws: &mut crate::workspace::Workspace,
+    pid: Option<u32>,
+    tool: ai_types::AiTool,
+    state: ai_types::AgentState,
+    active_tool_name: Option<String>,
+) {
+    let key = match pid {
+        Some(p) => p,
+        None => {
+            if let Some((existing_pid, _)) = ws.agent_sessions.iter().find(|(_, s)| s.tool == tool)
+            {
+                *existing_pid
+            } else {
+                // Synthesize a fake PID for back-compat tracking. Uses
+                // the high half of u32 to avoid collision with real
+                // OS-assigned PIDs (Linux default pid_max = 4194304;
+                // macOS = 99999; Windows = 2^31). A value above 2^31
+                // is safe on every supported platform.
+                let mut k: u32 = u32::MAX;
+                while ws.agent_sessions.contains_key(&k) {
+                    k = k.saturating_sub(1);
+                }
+                k
+            }
+        }
+    };
+
+    ws.agent_sessions
+        .entry(key)
+        .and_modify(|s| {
+            s.tool = tool;
+            s.state = state.clone();
+            s.active_tool_name = active_tool_name.clone();
+        })
+        .or_insert_with(|| {
+            let mut session = ai_types::AgentSession::new(tool, state);
+            session.active_tool_name = active_tool_name;
+            session
+        });
 }
 
 // ---------------------------------------------------------------------------

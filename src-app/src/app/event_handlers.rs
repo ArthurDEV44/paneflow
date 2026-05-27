@@ -461,18 +461,21 @@ impl PaneFlowApp {
     pub(crate) fn sweep_stale_pids(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
         for ws in &mut self.workspaces {
-            if ws.agent_pids.is_empty() {
+            if ws.agent_sessions.is_empty() {
                 continue;
             }
-            let before = ws.agent_pids.len();
-            ws.agent_pids.retain(|_tool, &mut pid| pid_is_alive(pid));
-            if ws.agent_pids.len() < before {
+            let before = ws.agent_sessions.len();
+            // Synthetic PIDs (from the upsert fallback for legacy shims
+            // without `pid` on every frame) are stored in the high half
+            // of u32 — outside the OS-assignable range on all supported
+            // platforms — so probing them with `kill(pid, 0)` would
+            // always say "dead" and immediately drop a live legacy
+            // session. Keep them around: they'll be cleared by
+            // `ai.session_end` or by the next state transition.
+            ws.agent_sessions
+                .retain(|&pid, _session| pid > i32::MAX as u32 || pid_is_alive(pid));
+            if ws.agent_sessions.len() < before {
                 changed = true;
-                // If all agent PIDs were cleared and state is still active, reset to Inactive
-                if ws.agent_pids.is_empty() && ws.ai_state != ai_types::AiToolState::Inactive {
-                    ws.ai_state = ai_types::AiToolState::Inactive;
-                    ws.active_tool_name = None;
-                }
             }
         }
         if changed {
@@ -492,7 +495,9 @@ impl PaneFlowApp {
                     let result = cx.update(|cx| {
                         this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
                             let any_thinking = app.workspaces.iter().any(|ws| {
-                                matches!(ws.ai_state, ai_types::AiToolState::Thinking(_))
+                                ws.agent_sessions
+                                    .values()
+                                    .any(|s| s.state == ai_types::AgentState::Thinking)
                             });
                             if !any_thinking {
                                 app.loader_anim_running = false;
