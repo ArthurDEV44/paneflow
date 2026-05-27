@@ -889,7 +889,7 @@ impl ThreadView {
         _w: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        let mut changed = false;
+        let mut to_purge: Vec<String> = Vec::new();
         for item in &self.items {
             if let ThreadItem::ToolCall(snap) = item
                 && matches!(snap.status, super::runtime::ToolCallStatusKind::Completed)
@@ -897,10 +897,16 @@ impl ThreadView {
                 && !self.reviewed_edits.contains(&snap.id)
                 && self.reviewed_edits.insert(snap.id.clone())
             {
-                changed = true;
+                to_purge.push(snap.id.clone());
             }
         }
-        if changed {
+        if !to_purge.is_empty() {
+            // US-015: drop the per-tool-call header markdown + scroll
+            // handle now that the card is final. Reduces long-session
+            // GPUI entity bookkeeping.
+            for id in &to_purge {
+                self.purge_reviewed_tool_ui_state(id);
+            }
             self.persist_snapshot_now(cx);
             cx.notify();
         }
@@ -932,10 +938,28 @@ impl ThreadView {
             for diff in &diffs {
                 revert_one_diff(diff);
             }
-            self.reviewed_edits.insert(id);
+            self.reviewed_edits.insert(id.clone());
+            self.purge_reviewed_tool_ui_state(&id);
         }
         self.persist_snapshot_now(cx);
         cx.notify();
+    }
+
+    /// US-015 (audit P2-2): drop per-tool-call UI state once the user
+    /// has reviewed the edit. The header `Markdown` entity and the
+    /// diff-body `ScrollHandle` only matter while the card is
+    /// actionable -- post-review the card stays visible but its
+    /// header is a frozen string and the diff body is collapsed by
+    /// default. Both entries are recreated lazily on demand if the
+    /// user re-expands or the timeline truncates back over the
+    /// reviewed point. Note: `DiffSnapshot.old_text` is NOT freed
+    /// here -- the diff body still reads it when the user expands a
+    /// reviewed card (see edit_tool_block.rs:345). Freeing
+    /// `old_text` requires a follow-up that also collapses the diff
+    /// body for reviewed cards into a static summary.
+    fn purge_reviewed_tool_ui_state(&mut self, id: &str) {
+        self.tool_label_markdown.remove(id);
+        self.diff_scroll_handles.remove(id);
     }
 
     /// US-124: toggle the inline pattern-picker popover for one tool
