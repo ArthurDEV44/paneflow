@@ -143,20 +143,29 @@ fn build_frame(
         params.insert("surface_id".into(), serde_json::Value::from(sid));
     }
 
+    // Multi-session refactor: stamp the emitting AI binary's PID on EVERY
+    // lifecycle frame, not just SessionStart. The server keys
+    // `Workspace::agent_sessions` by PID, so without this stamp two
+    // concurrent Claude Codes (or any pair of agents) in the same
+    // workspace collapse into one row. Falls back to
+    // `hook_payload.pid` for non-shim invocations.
+    let session_pid = pid.or_else(|| {
+        hook_payload
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|&p| p > 0)
+    });
+    if let Some(p) = session_pid {
+        params.insert("pid".into(), serde_json::Value::from(p));
+    }
+
     let method = match event {
         "SessionStart" => {
-            // Resolve the session PID: env-first (via `pid` parameter), fall
-            // back to `hook_payload.pid` so the hook still fires when invoked
-            // outside the US-004 shim (e.g., via a Codex native hook config
-            // that carries `pid` in the hook JSON itself).
-            let session_pid = pid.or_else(|| {
-                hook_payload
-                    .get("pid")
-                    .and_then(|v| v.as_u64())
-                    .and_then(|n| u32::try_from(n).ok())
-                    .filter(|&p| p > 0)
-            })?;
-            params.insert("pid".into(), serde_json::Value::from(session_pid));
+            // SessionStart REQUIRES a PID (the server validates it at
+            // ipc_handler.rs:351-358). The shared stamp above is
+            // optional; here we hard-require it and bail if missing.
+            session_pid?;
             if let Some(sid) = hook_payload.get("session_id").and_then(|v| v.as_str()) {
                 params.insert(
                     "session_id".into(),
