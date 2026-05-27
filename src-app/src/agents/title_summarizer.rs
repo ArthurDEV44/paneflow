@@ -40,6 +40,17 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
+use smol::lock::Semaphore;
+
+/// US-018: cap concurrent title summarizers at two in flight. Each
+/// in-flight summarizer holds one of smol's blocking-pool threads
+/// for up to [`SUMMARIZE_TIMEOUT`]; uncapped, a rapid burst of
+/// [`crate::agents::runtime::RuntimeEvent::TurnEnded`] events would
+/// saturate the pool and starve unrelated `smol::unblock` work
+/// (session readers, log writers). Const-initialized so it works
+/// inside a `static`.
+static SUMMARIZER_GATE: Semaphore = Semaphore::new(2);
+
 use gpui::{Context, Task, WeakEntity};
 use paneflow_acp::{AgentDiscovery, AgentKind};
 
@@ -134,6 +145,15 @@ pub fn summarize_thread_title_task(
         assistant = assistant_response.trim(),
     );
     let task = cx.spawn(async move |_weak_view, cx_async| {
+        // US-018 (audit P2-6): bound concurrent summarizers to two
+        // in flight. Each summarizer reserves a smol::unblock
+        // blocking thread for up to SUMMARIZE_TIMEOUT (60s). With no
+        // gate, three TurnEnded events arriving back-to-back during
+        // a rapid multi-agent session would saturate smol's blocking
+        // pool and stall unrelated `smol::unblock` calls (file I/O,
+        // session readers). The permit is held across the unblock
+        // future so the cap is real, not just on spawn admission.
+        let _permit = SUMMARIZER_GATE.acquire().await;
         let title =
             match smol::unblock(move || run_claude_summary(&claude_path, &cwd, &prompt_body)).await
             {
