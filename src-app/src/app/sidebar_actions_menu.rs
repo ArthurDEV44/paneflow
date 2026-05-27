@@ -8,8 +8,8 @@
 //! swaps the whole sidebar tree).
 
 use gpui::{
-    AnyElement, ClickEvent, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    SharedString, Styled, div, prelude::*, px, svg,
+    AnyElement, ClickEvent, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, SharedString, Styled, div, prelude::*, px, svg,
 };
 
 use crate::PaneFlowApp;
@@ -114,6 +114,77 @@ impl PaneFlowApp {
             footer = footer.child(popover);
         }
         footer.child(trigger).into_any_element()
+    }
+
+    /// CLI / Agents segmented toggle, rendered at the very bottom of
+    /// each sidebar (below the Settings footer). Migrated from the
+    /// title bar — the title bar no longer carries any mode chrome.
+    /// Visual language matches the old title-bar pill so the affordance
+    /// stays recognisable across the move.
+    pub(crate) fn render_mode_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
+        use paneflow_config::schema::AppMode;
+        let ui = crate::theme::ui_colors();
+        let in_agents = matches!(self.mode, AppMode::Agents);
+
+        // Monochrome translucent palette — Linear / Cursor / Vercel
+        // segmented-control language. Layering uses `ui.text` alpha so
+        // the chip adapts to both dark and light themes without
+        // hardcoded hex values. No borders anywhere — separation comes
+        // purely from fill contrast.
+        let active_bg = ui.text.opacity(0.08);
+        let inactive_text = ui.text.opacity(0.45);
+        let inactive_hover_text = ui.text.opacity(0.85);
+
+        let segment = |label: &'static str, is_active: bool, id: &'static str| {
+            let mut seg = div()
+                .id(id)
+                .flex_1()
+                .px(px(8.))
+                .py(px(0.))
+                .h(px(22.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .text_size(px(11.));
+            if is_active {
+                seg = seg
+                    .bg(active_bg)
+                    .text_color(ui.text)
+                    .font_weight(FontWeight::SEMIBOLD);
+            } else {
+                seg = seg
+                    .text_color(inactive_text)
+                    .font_weight(FontWeight::MEDIUM)
+                    .cursor_pointer()
+                    .hover(move |s| s.text_color(inactive_hover_text))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                        cx.stop_propagation();
+                        match this.mode {
+                            AppMode::Agents => this.close_agents_view(cx),
+                            AppMode::Cli => this.enter_agents_mode(cx),
+                        }
+                    }));
+            }
+            seg.child(label).into_any_element()
+        };
+
+        div()
+            .id("sidebar-mode-toggle")
+            .mx(px(6.))
+            .mb(px(6.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(2.))
+            .px(px(2.))
+            .py(px(2.))
+            .rounded(px(6.))
+            .bg(ui.surface)
+            .child(segment("CLI", !in_agents, "sidebar-mode-cli"))
+            .child(segment("Agents", in_agents, "sidebar-mode-agents"))
+            .into_any_element()
     }
 }
 

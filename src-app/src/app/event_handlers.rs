@@ -92,23 +92,6 @@ impl PaneFlowApp {
                 self.emit_app_exited_and_flush();
                 cx.quit();
             }
-            title_bar::TitleBarEvent::ToggleAgentsView => {
-                // Direct toggle: dispatching `OpenAgentsView` via the
-                // focus chain is unreliable when a child entity (e.g.
-                // the composer's focused TextArea) intercepts the
-                // action before it reaches the root `on_action`
-                // listener. The two underlying helpers both take only
-                // `&mut Context<Self>` so we can call them straight
-                // from here; the Window-only branch of `handle_open_agents_view`
-                // (`exit_agents_mode` focus restore) is replaced by
-                // `close_agents_view`, which does the same teardown
-                // minus the explicit focus call -- the next mouse /
-                // key event in the CLI tree resolves focus naturally.
-                match self.mode {
-                    paneflow_config::schema::AppMode::Agents => self.close_agents_view(cx),
-                    paneflow_config::schema::AppMode::Cli => self.enter_agents_mode(cx),
-                }
-            }
         }
     }
 
