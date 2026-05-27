@@ -146,6 +146,7 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
             && let Ok(parsed) = serde_json::from_value::<FirstLineEnvelope>(value.clone())
             && !parsed.session_id.is_empty()
             && !parsed.cwd.is_empty()
+            && !parsed.session_id.chars().any(|c| c.is_control())
         {
             envelope = Some(parsed);
         }
@@ -378,5 +379,42 @@ mod tests {
         )
         .expect("write fixture");
         assert!(read_session_meta(&path).is_none());
+    }
+
+    #[test]
+    fn session_id_control_char_guard() {
+        // sessionId carries CR+LF + an injected shell command. Without
+        // the guard, this id would flow into `claude --resume <id>` and
+        // submit `rm -rf ~` as a separate PTY command.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("malicious.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"parentUuid":null,"type":"user","message":{"role":"user","content":"hi"},"uuid":"u","timestamp":"2026-04-26T13:38:41.095Z","cwd":"/tmp/proj","sessionId":"abc\r\nrm -rf ~","version":"2.1.119","gitBranch":"main"}"#,
+                "\n",
+            ),
+        )
+        .expect("write fixture");
+        assert!(
+            read_session_meta(&path).is_none(),
+            "session with control chars in sessionId must be dropped"
+        );
+    }
+
+    #[test]
+    fn session_id_legitimate_uuid_passes_guard() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ok.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"parentUuid":null,"type":"user","message":{"role":"user","content":"hi"},"uuid":"u","timestamp":"2026-04-26T13:38:41.095Z","cwd":"/tmp/proj","sessionId":"550e8400-e29b-41d4-a716-446655440000","version":"2.1.119","gitBranch":"main"}"#,
+                "\n",
+            ),
+        )
+        .expect("write fixture");
+        let meta = read_session_meta(&path).expect("legitimate UUID must pass the guard");
+        assert_eq!(meta.session_id, "550e8400-e29b-41d4-a716-446655440000");
     }
 }
