@@ -471,94 +471,107 @@ impl PaneFlowApp {
                 card = card.child(ports_row);
             }
 
-            // ── Row 4: AI tool status (only when not Inactive). Per-tool
-            // branding on Thinking, amber pill for WaitingForInput, mint
-            // check for Finished. Compact text so the row reads as a
-            // secondary affordance, not chrome.
-            match ws.ai_state {
-                ai_types::AiToolState::Thinking(tool) => {
-                    let frames: &[char] = match tool {
-                        ai_types::AiTool::Claude => &CLAUDE_SPINNER_FRAMES,
-                        ai_types::AiTool::Codex => &CODEX_SPINNER_FRAMES,
-                    };
-                    let thinking_color = match tool {
-                        ai_types::AiTool::Claude => rgb(0xE89271), // Anthropic salmon
-                        ai_types::AiTool::Codex => rgb(0x5B6CFF),  // Codex indigo
-                    };
-                    let angle = ws.loader_angle.get();
-                    let idx = ((angle / std::f32::consts::TAU) * frames.len() as f32) as usize
-                        % frames.len();
-                    let spinner = frames[idx];
-                    card = card.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(6.))
-                            .text_xs()
-                            .text_color(thinking_color)
-                            .child(
-                                div()
-                                    .w(px(11.))
-                                    .h(px(11.))
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(format!("{spinner}")),
-                            )
-                            .child(div().child(format!("{} thinking…", tool.label()))),
-                    );
+            // ── Row 4: AI tool status (one row per active tool). Aggregate
+            // the per-PID sessions stored on the workspace into one
+            // ToolAggregate per AiTool (Claude > Codex), pick the most
+            // salient state per tool (Waiting > Thinking > Finished),
+            // and render the matching badge. The "+N" suffix appears
+            // whenever a tool has more than one concurrent session.
+            let rows = ai_types::aggregate_by_tool(ws.agent_sessions.values());
+            for agg in rows {
+                let extra = agg.extra_suffix();
+                match agg.dominant {
+                    ai_types::AgentState::Thinking => {
+                        let frames: &[char] = match agg.tool {
+                            ai_types::AiTool::Claude => &CLAUDE_SPINNER_FRAMES,
+                            ai_types::AiTool::Codex => &CODEX_SPINNER_FRAMES,
+                        };
+                        let thinking_color = match agg.tool {
+                            ai_types::AiTool::Claude => rgb(0xE89271), // Anthropic salmon
+                            ai_types::AiTool::Codex => rgb(0x5B6CFF),  // Codex indigo
+                        };
+                        let angle = ws.loader_angle.get();
+                        let idx = ((angle / std::f32::consts::TAU) * frames.len() as f32) as usize
+                            % frames.len();
+                        let spinner = frames[idx];
+                        card = card.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.))
+                                .text_xs()
+                                .text_color(thinking_color)
+                                .child(
+                                    div()
+                                        .w(px(11.))
+                                        .h(px(11.))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(format!("{spinner}")),
+                                )
+                                .child(div().child(format!(
+                                    "{} thinking…{}",
+                                    agg.tool.label(),
+                                    extra
+                                ))),
+                        );
+                    }
+                    ai_types::AgentState::WaitingForInput => {
+                        card = card.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.))
+                                .self_start()
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded(px(4.))
+                                .bg(rgb(0xFBBF24)) // amber warning
+                                .child(
+                                    svg()
+                                        .size(px(11.))
+                                        .flex_none()
+                                        .path("icons/bell.svg")
+                                        .text_color(ui.base),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(ui.base)
+                                        .child(format!(
+                                            "{} needs input{}",
+                                            agg.tool.label(),
+                                            extra
+                                        )),
+                                ),
+                        );
+                    }
+                    ai_types::AgentState::Finished => {
+                        let done_color = rgb(0x00E08A); // neon mint
+                        card = card.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.))
+                                .text_xs()
+                                .text_color(done_color)
+                                .child(
+                                    svg()
+                                        .size(px(11.))
+                                        .flex_none()
+                                        .path("icons/check.svg")
+                                        .text_color(done_color),
+                                )
+                                .child(div().child(format!("{} done{}", agg.tool.label(), extra))),
+                        );
+                    }
                 }
-                ai_types::AiToolState::WaitingForInput(tool) => {
-                    card = card.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(6.))
-                            .self_start()
-                            .px(px(6.))
-                            .py(px(1.))
-                            .rounded(px(4.))
-                            .bg(rgb(0xFBBF24)) // amber warning
-                            .child(
-                                svg()
-                                    .size(px(11.))
-                                    .flex_none()
-                                    .path("icons/bell.svg")
-                                    .text_color(ui.base),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(ui.base)
-                                    .child(format!("{} needs input", tool.label())),
-                            ),
-                    );
-                }
-                ai_types::AiToolState::Finished(tool) => {
-                    let done_color = rgb(0x00E08A); // neon mint
-                    card = card.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(6.))
-                            .text_xs()
-                            .text_color(done_color)
-                            .child(
-                                svg()
-                                    .size(px(11.))
-                                    .flex_none()
-                                    .path("icons/check.svg")
-                                    .text_color(done_color),
-                            )
-                            .child(div().child(format!("{} done", tool.label()))),
-                    );
-                }
-                ai_types::AiToolState::Inactive => {}
             }
 
             // Working directory moves into a hover tooltip so the card

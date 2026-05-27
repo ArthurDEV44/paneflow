@@ -20,7 +20,7 @@ use std::rc::Rc;
 use gpui::{App, Entity, Window};
 use paneflow_config::schema::{ButtonCommand, LayoutNode};
 
-use crate::ai_types::AiToolState;
+use crate::ai_types::AgentSession;
 use crate::layout::LayoutTree;
 use crate::pane::Pane;
 
@@ -60,13 +60,16 @@ pub struct Workspace {
     /// Service metadata detected from PTY output (enrichment for `active_ports`).
     /// Keyed by port number; cleaned up when ports are removed from `active_ports`.
     pub service_labels: std::collections::HashMap<u16, crate::terminal::ServiceInfo>,
-    /// AI tool detection state for this workspace's terminals (Claude Code / Codex).
-    pub ai_state: AiToolState,
-    /// Animation angle for the Claude thinking spinner (radians, 0..TAU).
+    /// Registered AI agent sessions for this workspace, keyed by PID. A
+    /// workspace can hold many concurrent sessions (e.g., two Claude
+    /// Codes + one Codex) — the sidebar aggregates them per tool with
+    /// `ai_types::aggregate_by_tool`. Cleaned up by the stale-PID sweep
+    /// in `event_handlers::sweep_stale_pids`.
+    pub agent_sessions: std::collections::HashMap<u32, AgentSession>,
+    /// Animation angle for the agent thinking spinner (radians, 0..TAU).
+    /// Single angle shared by all `Thinking` sessions in the workspace —
+    /// the sidebar driver advances it in `start_loader_animation`.
     pub loader_angle: Rc<Cell<f32>>,
-    /// Registered AI agent PIDs, keyed by tool name ("claude", "codex").
-    /// Used by the stale PID sweep to detect crashed processes.
-    pub agent_pids: std::collections::HashMap<String, u32>,
     /// AI agent process basenames detected by walking the workspace's
     /// PTY descendants (Linux `/proc/<pid>/comm`, macOS `libproc::name`).
     /// Independent of the optional IPC hook handshake -- this is what
@@ -75,9 +78,6 @@ pub struct Workspace {
     /// Refreshed by `detect_ai_processes` from the same scan path that
     /// already walks descendants for port detection.
     pub detected_agents: std::collections::HashSet<String>,
-    /// Name of the Claude tool currently being used (e.g., "Edit", "Bash").
-    /// Set by `ai.tool_use`, cleared on state transitions. For future verbose display.
-    pub active_tool_name: Option<String>,
     /// User-defined tab-bar buttons for this workspace.
     /// Rendered after the 2 built-in defaults (Claude / Codex).
     pub custom_buttons: Vec<ButtonCommand>,
@@ -108,11 +108,9 @@ impl Workspace {
             active_ports: vec![],
             port_scan_generation: 0,
             service_labels: std::collections::HashMap::new(),
-            ai_state: AiToolState::Inactive,
+            agent_sessions: std::collections::HashMap::new(),
             loader_angle: Rc::new(Cell::new(0.0)),
-            agent_pids: std::collections::HashMap::new(),
             detected_agents: std::collections::HashSet::new(),
-            active_tool_name: None,
             custom_buttons: Vec::new(),
         }
     }
@@ -144,11 +142,9 @@ impl Workspace {
             active_ports: vec![],
             port_scan_generation: 0,
             service_labels: std::collections::HashMap::new(),
-            ai_state: AiToolState::Inactive,
+            agent_sessions: std::collections::HashMap::new(),
             loader_angle: Rc::new(Cell::new(0.0)),
-            agent_pids: std::collections::HashMap::new(),
             detected_agents: std::collections::HashSet::new(),
-            active_tool_name: None,
             custom_buttons: Vec::new(),
         }
     }
@@ -180,11 +176,9 @@ impl Workspace {
             active_ports: vec![],
             port_scan_generation: 0,
             service_labels: std::collections::HashMap::new(),
-            ai_state: AiToolState::Inactive,
+            agent_sessions: std::collections::HashMap::new(),
             loader_angle: Rc::new(Cell::new(0.0)),
-            agent_pids: std::collections::HashMap::new(),
             detected_agents: std::collections::HashSet::new(),
-            active_tool_name: None,
             custom_buttons: Vec::new(),
         }
     }
