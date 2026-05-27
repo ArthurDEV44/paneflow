@@ -21,9 +21,16 @@ pub enum HyperlinkSource {
     Osc8,
     /// Regex pattern match on terminal output.
     Regex,
-    /// File path detected by the file-path scanner (US-019).
-    /// `uri` holds the resolved absolute path on disk.
+    /// Markdown file path (`.md` / `.markdown`) — opens in the in-pane
+    /// markdown viewer via `TerminalEvent::OpenMarkdownPath`.
     FilePath,
+    /// Source-code file path (`.rs`, `.ts`, `.py`, ...) optionally followed
+    /// by `:line[:col]`. Opens in the user's `$VISUAL`/`$EDITOR` (or a probed
+    /// fallback) via `TerminalEvent::OpenCodePath`. `uri` holds the resolved
+    /// absolute path; `line` / `col` carry the optional location captured
+    /// from `path:42` or `path:42:7` style references that compilers, test
+    /// runners, and linters emit.
+    CodePath,
 }
 
 /// A detected OSC 8 hyperlink zone spanning one or more cells.
@@ -38,6 +45,13 @@ pub struct HyperlinkZone {
     pub is_openable: bool,
     /// How this hyperlink was detected (OSC 8 takes priority over regex).
     pub source: HyperlinkSource,
+    /// 1-based line number for `CodePath` matches (`file.rs:42` → `Some(42)`).
+    /// `None` for `Osc8`, `Regex`, `FilePath`, and `CodePath` with no `:line`
+    /// suffix in the matched text.
+    pub line: Option<u32>,
+    /// 1-based column number for `CodePath` matches (`file.rs:42:7` →
+    /// `Some(7)`). Always `None` when `line` is `None`.
+    pub col: Option<u32>,
 }
 
 /// Copy mode cursor state for rendering.

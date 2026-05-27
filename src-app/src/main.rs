@@ -27,6 +27,7 @@ mod assets;
 mod claude_sessions;
 mod codex_sessions;
 mod config_writer;
+mod editor;
 mod fonts;
 mod ipc;
 mod keybindings;
