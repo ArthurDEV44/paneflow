@@ -1,4 +1,4 @@
-name: Update Homebrew Cask
+name: update_cask
 
 # US-017 AC4. Triggered whenever a GitHub Release is *published* (not just
 # a tag push): grabs the freshly-attached .dmg assets, computes their

@@ -1,4 +1,4 @@
-name: Release
+name: release
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
   #   - no Homebrew Cask / Winget update (their triggers are
   #     `release: published`, which never fires when the release job
   #     is skipped)
-  #   - no APT/RPM repo publish (repo-publish.yml gates on
+  #   - no APT/RPM repo publish (repo_publish.yml gates on
   #     `workflow_run.event == 'push'`; a workflow_dispatch run
   #     surfaces as `workflow_dispatch` and is filtered out)
   # Use case: validate the signing + packaging chain on a branch
@@ -599,7 +599,7 @@ jobs:
         run: bash scripts/bundle-appimage.sh "${TAG#v}"
 
       # ─── US-019 macOS .app assembly ──────────────────────────────────
-      # Mirrors the ci.yml Xcode preflight (kept intentionally duplicated
+      # Mirrors the run_tests.yml Xcode preflight (kept intentionally duplicated
       # — a drift here, e.g. an old runner image missing the Metal
       # toolchain, surfaces as a labelled preflight failure rather than a
       # cryptic mid-compile error).
@@ -1297,11 +1297,11 @@ jobs:
   release:
     name: Publish GitHub Release
     # US-003: skip the entire publish chain in dry-run mode. The
-    # downstream `update-cask.yml` and `update-winget.yml` workflows
+    # downstream `update_cask.yml` and `update_winget.yml` workflows
     # are triggered by `release: published`, so skipping this job
-    # transitively skips them. `repo-publish.yml` is triggered by
+    # transitively skips them. `repo_publish.yml` is triggered by
     # `workflow_run` of this workflow but already filters on
-    # `workflow_run.event == 'push'` (line ~94 of repo-publish.yml),
+    # `workflow_run.event == 'push'` (line ~94 of repo_publish.yml),
     # so a workflow_dispatch run never touches pkg.paneflow.dev.
     # NOTE: GitHub Actions does NOT expose the `env` context in job-level
     # `if:` expressions (only in step-level `if:`, in `with:`/`env:` of
@@ -1882,7 +1882,7 @@ jobs:
   #
   # Sits in `release.needs` so a tag cut never ships a binary that
   # can't actually self-update from the previous release. A separate
-  # nightly `auto-update-e2e.yml` runs the same script on a cron so
+  # nightly `auto_update_e2e.yml` runs the same script on a cron so
   # weekday-only regressions surface before the next tag.
   auto-update-e2e:
     name: Auto-update e2e (Linux x86_64)
