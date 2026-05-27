@@ -37,6 +37,16 @@ WORK_DIR="${WORK_DIR:-/tmp/paneflow-e2e}"
 HTTP_PORT="${HTTP_PORT:-0}"      # 0 = pick an ephemeral port
 SCENARIO="${SCENARIO:-all}"      # all|happy|hash_mismatch|feed_unreachable
 
+# Optional fast-path inputs (CI). When set, the harness skips the
+# `cargo build` in phases 1+2 and uses the provided prebuilt tarballs
+# directly. Each must be the bundle-tarball.sh layout
+# (paneflow.app/bin/paneflow). Used in release.yml (artifact reuse from
+# the matrix `build` job for NEW; gh release download of the previous
+# stable tag for OLD). When unset, the harness falls back to the
+# from-source build for local dev.
+E2E_NEW_TARBALL="${E2E_NEW_TARBALL:-}"
+E2E_OLD_TARBALL="${E2E_OLD_TARBALL:-}"
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 NEW_VERSION="$(awk -F'"' '/^version = / { print $2; exit }' "$REPO_ROOT/Cargo.toml")"
 
@@ -84,56 +94,91 @@ export HOME="${WORK_DIR}/home"
 mkdir -p "${HOME}/.local"
 
 # -----------------------------------------------------------------------------
-# Phase 1 — build NEW paneflow + bundle into tar.gz fixture.
+# Phase 1 — stage NEW tar.gz into the fixture dir.
+#
+# Fast path (CI): E2E_NEW_TARBALL points at a prebuilt tarball (produced
+# by release.yml's matrix `build` job or downloaded from a GitHub
+# release in the nightly workflow). The script just copies it.
+#
+# Source-build fallback (local dev): cargo build + bundle-tarball.sh.
 # -----------------------------------------------------------------------------
-log "phase 1: building NEW paneflow at v${NEW_VERSION}"
-( cd "${REPO_ROOT}" && cargo build --release -p paneflow-app --quiet )
-log "phase 1: bundling tar.gz with bundle-tarball.sh"
-( cd "${REPO_ROOT}" && ARCH=x86_64 bash scripts/bundle-tarball.sh "${NEW_VERSION}" >/dev/null )
-NEW_TARBALL="${REPO_ROOT}/target/bundle/paneflow-${NEW_VERSION}-x86_64.tar.gz"
-[ -s "${NEW_TARBALL}" ] || fail "expected tarball not produced: ${NEW_TARBALL}"
+NEW_TARBALL_DEST="${WORK_DIR}/fixture/paneflow-${NEW_VERSION}-x86_64.tar.gz"
+if [ -n "${E2E_NEW_TARBALL}" ]; then
+    log "phase 1: using prebuilt NEW tarball from ${E2E_NEW_TARBALL}"
+    [ -s "${E2E_NEW_TARBALL}" ] || fail "E2E_NEW_TARBALL points at missing/empty file: ${E2E_NEW_TARBALL}"
+    cp "${E2E_NEW_TARBALL}" "${NEW_TARBALL_DEST}"
+else
+    log "phase 1: building NEW paneflow at v${NEW_VERSION}"
+    ( cd "${REPO_ROOT}" && cargo build --release -p paneflow-app --quiet )
+    log "phase 1: bundling tar.gz with bundle-tarball.sh"
+    ( cd "${REPO_ROOT}" && ARCH=x86_64 bash scripts/bundle-tarball.sh "${NEW_VERSION}" >/dev/null )
+    cp "${REPO_ROOT}/target/bundle/paneflow-${NEW_VERSION}-x86_64.tar.gz" "${NEW_TARBALL_DEST}"
+fi
+[ -s "${NEW_TARBALL_DEST}" ] || fail "NEW tarball not staged at ${NEW_TARBALL_DEST}"
+NEW_TARBALL="${NEW_TARBALL_DEST}"
 
-# Copy into fixture dir and emit the .sha256 sidecar `download_with_verification`
-# fetches before downloading the tarball body.
-cp "${NEW_TARBALL}" "${WORK_DIR}/fixture/"
+# Emit the .sha256 sidecar `download_with_verification` fetches before
+# downloading the tarball body.
 ( cd "${WORK_DIR}/fixture" && sha256sum "paneflow-${NEW_VERSION}-x86_64.tar.gz" \
       > "paneflow-${NEW_VERSION}-x86_64.tar.gz.sha256" )
 
 # -----------------------------------------------------------------------------
-# Phase 2 — build OLD paneflow in a git worktree.
-# -----------------------------------------------------------------------------
-WORKTREE_PATH="${WORK_DIR}/old-src"
-log "phase 2: checking out ${OLD_TAG} into ${WORKTREE_PATH}"
-git -C "${REPO_ROOT}" worktree add --detach "${WORKTREE_PATH}" "${OLD_TAG}"
-# `rust-toolchain.toml` was introduced in commit 1884237 (post-v0.2.11),
-# so the OLD worktree at v0.2.10 / v0.2.11 has no toolchain pin. In CI
-# the dtolnay/rust-toolchain action installs 1.95 but does NOT set a
-# rustup default — running plain `cargo` in a directory without a
-# toolchain file fails with "rustup could not choose a version of cargo
-# to run, because one wasn't specified explicitly".
+# Phase 2 — stage OLD paneflow binary.
 #
-# Read the channel from main's toolchain file and pass it as
-# RUSTUP_TOOLCHAIN to the OLD build. This is more idiomatic than
-# copying the file (rust-lang.github.io/rustup/overrides.html lists
-# RUSTUP_TOOLCHAIN env above directory-file overrides), avoids
-# polluting the OLD worktree's git state, and surfaces the chosen
-# toolchain in CI logs. Future-proof: when main bumps the pin, the
-# e2e auto-follows without a script edit.
-OLD_BUILD_TOOLCHAIN=""
-if [ -f "${REPO_ROOT}/rust-toolchain.toml" ]; then
-    OLD_BUILD_TOOLCHAIN="$(awk -F'"' '/^channel/ { print $2; exit }' "${REPO_ROOT}/rust-toolchain.toml")"
-fi
-log "phase 2: building OLD paneflow at v${OLD_VERSION} (toolchain=${OLD_BUILD_TOOLCHAIN:-system default}, slow step)"
-(
-    cd "${WORKTREE_PATH}"
-    if [ -n "${OLD_BUILD_TOOLCHAIN}" ]; then
-        RUSTUP_TOOLCHAIN="${OLD_BUILD_TOOLCHAIN}" cargo build --release -p paneflow-app --quiet
-    else
-        cargo build --release -p paneflow-app --quiet
+# Fast path (CI): E2E_OLD_TARBALL points at a previously published
+# tar.gz (downloaded by the workflow via `gh release download
+# v${OLD_VERSION}`). The harness extracts it and uses the binary inside
+# the bundle. This is also strictly more faithful than rebuilding: we
+# test the exact byte sequence real users have on disk, not a
+# byte-different build of the same source.
+#
+# Source-build fallback (local dev): git worktree + cargo build. Slow
+# (~10 min cold cache) but works without network.
+# -----------------------------------------------------------------------------
+WORKTREE_PATH=""
+if [ -n "${E2E_OLD_TARBALL}" ]; then
+    log "phase 2: using prebuilt OLD tarball from ${E2E_OLD_TARBALL}"
+    [ -s "${E2E_OLD_TARBALL}" ] || fail "E2E_OLD_TARBALL points at missing/empty file: ${E2E_OLD_TARBALL}"
+    OLD_EXTRACT_DIR="${WORK_DIR}/old-extract"
+    mkdir -p "${OLD_EXTRACT_DIR}"
+    tar xzf "${E2E_OLD_TARBALL}" -C "${OLD_EXTRACT_DIR}"
+    OLD_BIN_SRC="${OLD_EXTRACT_DIR}/paneflow.app/bin/paneflow"
+    [ -x "${OLD_BIN_SRC}" ] \
+        || fail "OLD binary not found at expected layout ${OLD_BIN_SRC} (bundle-tarball.sh layout is paneflow.app/bin/paneflow)"
+else
+    WORKTREE_PATH="${WORK_DIR}/old-src"
+    log "phase 2: checking out ${OLD_TAG} into ${WORKTREE_PATH}"
+    git -C "${REPO_ROOT}" worktree add --detach "${WORKTREE_PATH}" "${OLD_TAG}"
+    # `rust-toolchain.toml` was introduced in commit 1884237 (post-v0.2.11),
+    # so the OLD worktree at v0.2.10 / v0.2.11 has no toolchain pin. In CI
+    # the dtolnay/rust-toolchain action installs 1.95 but does NOT set a
+    # rustup default — running plain `cargo` in a directory without a
+    # toolchain file fails with "rustup could not choose a version of cargo
+    # to run, because one wasn't specified explicitly".
+    #
+    # Read the channel from main's toolchain file and pass it as
+    # RUSTUP_TOOLCHAIN to the OLD build. This is more idiomatic than
+    # copying the file (rust-lang.github.io/rustup/overrides.html lists
+    # RUSTUP_TOOLCHAIN env above directory-file overrides), avoids
+    # polluting the OLD worktree's git state, and surfaces the chosen
+    # toolchain in CI logs. Future-proof: when main bumps the pin, the
+    # e2e auto-follows without a script edit.
+    OLD_BUILD_TOOLCHAIN=""
+    if [ -f "${REPO_ROOT}/rust-toolchain.toml" ]; then
+        OLD_BUILD_TOOLCHAIN="$(awk -F'"' '/^channel/ { print $2; exit }' "${REPO_ROOT}/rust-toolchain.toml")"
     fi
-)
-OLD_BIN_SRC="${WORKTREE_PATH}/target/release/paneflow"
-[ -x "${OLD_BIN_SRC}" ] || fail "OLD binary not built at ${OLD_BIN_SRC}"
+    log "phase 2: building OLD paneflow at v${OLD_VERSION} (toolchain=${OLD_BUILD_TOOLCHAIN:-system default}, slow step)"
+    (
+        cd "${WORKTREE_PATH}"
+        if [ -n "${OLD_BUILD_TOOLCHAIN}" ]; then
+            RUSTUP_TOOLCHAIN="${OLD_BUILD_TOOLCHAIN}" cargo build --release -p paneflow-app --quiet
+        else
+            cargo build --release -p paneflow-app --quiet
+        fi
+    )
+    OLD_BIN_SRC="${WORKTREE_PATH}/target/release/paneflow"
+    [ -x "${OLD_BIN_SRC}" ] || fail "OLD binary not built at ${OLD_BIN_SRC}"
+fi
 
 # Stage OLD into the canonical TarGz install layout
 # ($HOME/.local/paneflow.app/bin/paneflow).
