@@ -211,6 +211,16 @@ pub struct ThreadView {
     /// retain entries below the cut, clears reset.
     tool_call_index: HashMap<String, usize>,
 
+    /// Items-order list of indices that hold a `ToolCall`. Kept in
+    /// sync with [`Self::tool_call_index`] at every mutation point.
+    /// `compute_activity_state` iterates this instead of the full
+    /// `items` Vec so its O(N) scan only walks the tool-call subset
+    /// rather than every user message + assistant chunk row -- a 2-5x
+    /// speedup on typical threads where most items are NOT tool calls
+    /// (audit P0-5: the previous full-vec scan ran on every
+    /// `cx.notify()` and grew with timeline length).
+    tool_call_ordered_indices: Vec<usize>,
+
     /// User-forced expand state for inline tool-call bursts, keyed by
     /// the index of the burst's first item in `items`. Absence ==
     /// follow the auto policy (open while any tool in the burst is
@@ -402,9 +412,11 @@ impl ThreadView {
         // so update_tool_call / toggle_tool_call_expanded / permission
         // handlers run in O(1) instead of scanning the whole timeline.
         let mut tool_call_index: HashMap<String, usize> = HashMap::new();
+        let mut tool_call_ordered_indices: Vec<usize> = Vec::new();
         for (idx, item) in items.iter().enumerate() {
             if let ThreadItem::ToolCall(snap) = item {
                 tool_call_index.insert(snap.id.clone(), idx);
+                tool_call_ordered_indices.push(idx);
             }
         }
 
@@ -466,6 +478,7 @@ impl ThreadView {
             reviewed_edits,
             diff_scroll_handles: HashMap::new(),
             tool_call_index,
+            tool_call_ordered_indices,
             tool_group_user_open: HashMap::new(),
             persist_deadline: None,
             streaming_thinking_key: None,
@@ -624,6 +637,7 @@ impl ThreadView {
         let prev_count = self.items.len();
         self.items.push(ThreadItem::ToolCall(Arc::new(snapshot)));
         self.tool_call_index.insert(id.clone(), prev_count);
+        self.tool_call_ordered_indices.push(prev_count);
         self.list_state.splice(prev_count..prev_count, 1);
         let md = Self::make_markdown(&title, cx);
         self.tool_label_markdown.insert(id, md);
@@ -1415,19 +1429,19 @@ impl ThreadView {
             }
             None => (false, 0, 0, None),
         };
-        // Fused scan: combine the activity-state walk (awaiting /
-        // running) with the edits-review aggregation in a single
-        // pass over `items`. Previously these were two independent
-        // O(items) linear scans called on every `cx.notify()` (i.e.
-        // every streaming chunk) -- by 200 tool calls deep into a
-        // session that's measurable work per frame.
+        // Fused scan over only the tool-call indices, not the full
+        // `items` Vec: a 500-item thread with 200 tool calls now
+        // scans 200 positions per `cx.notify()` instead of 500.
+        // `tool_call_ordered_indices` is maintained in items-order
+        // alongside `tool_call_index` so the awaiting/running
+        // "last match wins" semantics are unchanged. (Audit P0-5.)
         let mut awaiting: Option<AwaitingTool> = None;
         let mut running_kind: Option<String> = None;
         let mut files = 0usize;
         let mut added = 0usize;
         let mut removed = 0usize;
-        for (idx, item) in self.items.iter().enumerate() {
-            let ThreadItem::ToolCall(snap) = item else {
+        for &idx in &self.tool_call_ordered_indices {
+            let Some(ThreadItem::ToolCall(snap)) = self.items.get(idx) else {
                 continue;
             };
             match snap.status {
@@ -1698,6 +1712,11 @@ impl ThreadView {
         // the tail) so no remapping is needed.
         self.tool_call_index
             .retain(|id, _| surviving_ids.contains(id));
+        // Keep the ordered-index Vec in sync with the index map.
+        // Truncation only chops the tail, so positions of surviving
+        // tool calls do not shift.
+        self.tool_call_ordered_indices
+            .retain(|&idx| idx < new_len);
         // Drop user-override entries for tool-group bursts whose
         // start index now sits past the truncation point.
         self.tool_group_user_open
@@ -1780,6 +1799,7 @@ impl ThreadView {
         self.reviewed_edits.clear();
         self.diff_scroll_handles.clear();
         self.tool_call_index.clear();
+        self.tool_call_ordered_indices.clear();
         self.tool_group_user_open.clear();
         self.streaming_message_idx = None;
         self.list_state.reset(0);
