@@ -41,11 +41,47 @@ use std::time::Duration;
 use super::composer::Composer;
 use super::runtime::{ToolCallSnapshot, ToolCallUpdate, ToolKindKind};
 
-/// Tick cadence for the streaming pipeline.
-const STREAMING_TICK: Duration = Duration::from_millis(16);
+/// Default tick cadence for the streaming pipeline (60 Hz). Used
+/// while the open assistant message body is below
+/// [`STREAMING_ADAPT_MEDIUM`].
+const STREAMING_TICK_FAST: Duration = Duration::from_millis(16);
+/// Tick cadence once the open message crosses [`STREAMING_ADAPT_MEDIUM`].
+/// `markdown::Markdown::append` reconstructs the full source string
+/// on every call (concat into a new SharedString); past ~4 KB the per-
+/// call cost starts to matter at 60 Hz. Dropping to ~20 Hz keeps
+/// streaming visibly smooth (text reading is paragraph-paced, not
+/// char-by-char) while quartering the append CPU.
+const STREAMING_TICK_MEDIUM: Duration = Duration::from_millis(50);
+/// Tick cadence once the open message crosses [`STREAMING_ADAPT_LONG`].
+/// At ~16 KB+ the append cost dominates the main thread budget; ~7 Hz
+/// keeps the integral over a long response bounded without a visible
+/// "frozen" period.
+const STREAMING_TICK_SLOW: Duration = Duration::from_millis(150);
+/// Char-count threshold at which the streaming tick transitions
+/// from FAST to MEDIUM. Picked from the audit profile: below this,
+/// 60 Hz is cheap enough to keep.
+const STREAMING_ADAPT_MEDIUM: usize = 4_096;
+/// Char-count threshold at which the streaming tick transitions
+/// from MEDIUM to SLOW.
+const STREAMING_ADAPT_LONG: usize = 16_384;
 /// Throttle window for streaming-hot persist writes. Keeps SQLite I/O
 /// off the GPUI main thread's 16 ms budget by batching chunks.
 const PERSIST_THROTTLE: Duration = Duration::from_millis(500);
+
+/// Pick the streaming tick cadence appropriate for the current open
+/// assistant message length. Reduces `markdown::Markdown::append`
+/// frequency as the source string grows so the cumulative O(n^2)
+/// concat cost stays bounded. Returning a `Duration` (not a multiplier)
+/// keeps the constants readable side-by-side at the top of the module.
+fn adaptive_streaming_tick(open_message_chars: usize) -> Duration {
+    if open_message_chars >= STREAMING_ADAPT_LONG {
+        STREAMING_TICK_SLOW
+    } else if open_message_chars >= STREAMING_ADAPT_MEDIUM {
+        STREAMING_TICK_MEDIUM
+    } else {
+        STREAMING_TICK_FAST
+    }
+}
 
 /// One row in the thread's scrollable timeline. Mirrors Zed's
 /// `AgentThreadEntry` (acp_thread.rs:178): user messages, assistant
@@ -1903,10 +1939,18 @@ impl ThreadView {
         }
         cx.notify();
 
+        // Adaptive streaming cadence: a Cell shared between the loop
+        // and the per-tick update so the next sleep can shrink/grow
+        // based on the open message's current size. Reduces
+        // `markdown::Markdown::append` calls on long responses without
+        // changing perceived smoothness for short ones. Default starts
+        // at FAST -- short prefixes stay snappy.
+        let next_tick: Rc<Cell<Duration>> = Rc::new(Cell::new(STREAMING_TICK_FAST));
+        let next_tick_for_loop = Rc::clone(&next_tick);
         self._streaming_task = Some(cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
                 loop {
-                    smol::Timer::after(STREAMING_TICK).await;
+                    smol::Timer::after(next_tick_for_loop.get()).await;
                     let outcome = cx.update(|cx| {
                         this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
                             // Drain any scheduled throttled persist
@@ -1919,6 +1963,13 @@ impl ThreadView {
                             if !revealed.is_empty() {
                                 view.append_to_streaming_text(&revealed, cx);
                             }
+                            // Adapt the next sleep to the open message
+                            // size: past ~4 KB drop to 20 Hz, past
+                            // ~16 KB drop to ~7 Hz. Keeps the cumulative
+                            // O(n^2) markdown.append cost bounded over
+                            // a long response without freezing the UI.
+                            next_tick
+                                .set(adaptive_streaming_tick(view.open_assistant_message_chars()));
                             true
                         })
                     });
@@ -1929,6 +1980,27 @@ impl ThreadView {
                 }
             },
         ));
+    }
+
+    /// Total character count across the currently-open assistant
+    /// message's text + thought chunks. Used by the streaming task to
+    /// decide its next tick cadence ([`adaptive_streaming_tick`]).
+    /// `None`-indexed `streaming_message_idx` returns 0.
+    fn open_assistant_message_chars(&self) -> usize {
+        let Some(idx) = self.streaming_message_idx else {
+            return 0;
+        };
+        match self.items.get(idx) {
+            Some(ThreadItem::AssistantMessage(am)) => am
+                .chunks
+                .iter()
+                .map(|c| match c {
+                    AssistantMessageChunk::Text { text, .. } => text.len(),
+                    AssistantMessageChunk::Thought { text, .. } => text.len(),
+                })
+                .sum(),
+            _ => 0,
+        }
     }
 
     pub fn push_streaming_chunk(&mut self, chunk: &str, _cx: &mut Context<Self>) {
@@ -3444,5 +3516,40 @@ mod tests {
         assert_eq!(humanize_token_count(1_000_000), "1.0M");
         assert_eq!(humanize_token_count(1_234_567), "1.2M");
         assert_eq!(humanize_token_count(12_345_678), "12M");
+    }
+
+    /// US-004: short messages stay at the 60 Hz FAST cadence.
+    #[test]
+    fn adaptive_streaming_tick_short_message_uses_fast_cadence() {
+        assert_eq!(adaptive_streaming_tick(0), STREAMING_TICK_FAST);
+        assert_eq!(adaptive_streaming_tick(100), STREAMING_TICK_FAST);
+        assert_eq!(
+            adaptive_streaming_tick(STREAMING_ADAPT_MEDIUM - 1),
+            STREAMING_TICK_FAST,
+        );
+    }
+
+    /// US-004: past the medium threshold the tick drops to ~20 Hz.
+    #[test]
+    fn adaptive_streaming_tick_medium_message_uses_medium_cadence() {
+        assert_eq!(
+            adaptive_streaming_tick(STREAMING_ADAPT_MEDIUM),
+            STREAMING_TICK_MEDIUM,
+        );
+        assert_eq!(
+            adaptive_streaming_tick(STREAMING_ADAPT_LONG - 1),
+            STREAMING_TICK_MEDIUM,
+        );
+    }
+
+    /// US-004: past the long threshold the tick drops to ~7 Hz so
+    /// the cumulative O(n^2) markdown.append cost stays bounded.
+    #[test]
+    fn adaptive_streaming_tick_long_message_uses_slow_cadence() {
+        assert_eq!(
+            adaptive_streaming_tick(STREAMING_ADAPT_LONG),
+            STREAMING_TICK_SLOW,
+        );
+        assert_eq!(adaptive_streaming_tick(100_000), STREAMING_TICK_SLOW);
     }
 }
