@@ -595,6 +595,7 @@ impl PaneFlowApp {
         // leaves the 6px-wide thumb.
         sidebar = sidebar.child(self.sidebar_list_wrapper(list, cx));
         sidebar = sidebar.child(self.render_sidebar_settings_footer(self.cli_menu_items(), cx));
+        sidebar = sidebar.child(self.render_mode_toggle(cx));
         sidebar
     }
 

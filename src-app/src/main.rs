@@ -605,17 +605,10 @@ impl Render for PaneFlowApp {
             }
             _ => None,
         };
-        // US-009 (prd-agents-view.md): push the live mode + the
-        // matching sidebar width (220 px CLI / 280 px Agents) + the
-        // resolved shortcut for the title-bar toggle's tooltip. The
-        // shortcut lookup goes through the keybinding registry so a
-        // user-remapped binding shows the user's chosen key, not the
-        // hardcoded default.
-        let agents_view_shortcut = self
-            .shortcut_for_description("Toggle Agents view")
-            .map(str::to_string);
-        let mode = self.mode;
-        let sidebar_px = match mode {
+        // Push the matching sidebar width (220 px CLI / 280 px Agents)
+        // so the title bar's brand slot stays aligned with the sidebar
+        // edge across mode swaps.
+        let sidebar_px = match self.mode {
             paneflow_config::schema::AppMode::Agents => {
                 crate::app::agents_view_actions::AGENTS_SIDEBAR_WIDTH
             }
@@ -625,8 +618,6 @@ impl Render for PaneFlowApp {
             tb.workspace_name = ws_name;
             tb.sidebar_width = px(sidebar_px);
             tb.update_available = update_info;
-            tb.mode = mode;
-            tb.agents_view_shortcut = agents_view_shortcut;
         });
 
         // --- CSD resize backdrop ---
