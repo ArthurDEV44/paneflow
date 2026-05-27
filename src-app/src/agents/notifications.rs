@@ -123,7 +123,10 @@ pub fn on_turn_ended(reason: StopReasonKind, ran_tools: bool, model_label: Optio
             }
         }
         StopReasonKind::Refusal => {
-            let model = model_label.unwrap_or("Agent");
+            let model_owned = model_label
+                .map(sanitize_model_label)
+                .filter(|s| !s.is_empty());
+            let model = model_owned.as_deref().unwrap_or("Agent");
             format!("{model} refused to respond to this request")
         }
         // MaxTokens / MaxTurnRequests: surface the truncation reason
@@ -146,6 +149,58 @@ pub fn on_fatal() {
         return;
     }
     fire("Paneflow", "Agent stopped due to an error");
+}
+
+/// Maximum number of characters preserved from an agent-supplied model
+/// id before [`sanitize_model_label`] truncates with an ellipsis.
+/// Legitimate model ids ("claude-sonnet-4-5", "gpt-5", "codex-1") fit
+/// in well under this cap; anything longer is either malformed or
+/// agent-attacker-crafted phishing.
+const MODEL_LABEL_MAX_CHARS: usize = 32;
+
+/// Neutralise an agent-supplied `model_label` before it lands in the
+/// notification body. Strips Pango / HTML tags (`<...>`) and entities
+/// (`&...;`) and caps the result at [`MODEL_LABEL_MAX_CHARS`]. The
+/// GNOME/libnotify notification daemon renders Pango markup by
+/// default, so without this an attacker-controlled `current_model_id`
+/// could forge a fake "system" message in the desktop toast.
+fn sanitize_model_label(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut in_tag = false;
+    let mut in_entity = false;
+    let mut entity_len = 0usize;
+    for ch in raw.chars() {
+        if in_tag {
+            if ch == '>' {
+                in_tag = false;
+            }
+            continue;
+        }
+        if in_entity {
+            // Cap entity scan at 12 chars to avoid swallowing the rest
+            // of the string on a malformed `&` without a closing `;`.
+            entity_len += 1;
+            if ch == ';' || entity_len > 12 {
+                in_entity = false;
+                entity_len = 0;
+            }
+            continue;
+        }
+        match ch {
+            '<' => in_tag = true,
+            '&' => {
+                in_entity = true;
+                entity_len = 0;
+            }
+            _ => out.push(ch),
+        }
+    }
+    if out.chars().count() <= MODEL_LABEL_MAX_CHARS {
+        return out;
+    }
+    let mut capped: String = out.chars().take(MODEL_LABEL_MAX_CHARS).collect();
+    capped.push('…');
+    capped
 }
 
 /// Send the notification through `notify-rust`. Per AC #8, failure is
@@ -243,5 +298,61 @@ mod tests {
         );
         // Other = no notification body at all.
         assert!(body_for(StopReasonKind::Other, true, None).is_none());
+    }
+
+    /// US-007 AC #1: HTML/Pango tags supplied by the agent must be
+    /// stripped so a phishing notification body cannot impersonate the
+    /// system or render bold/italic styling.
+    #[test]
+    fn sanitize_model_label_strips_tags() {
+        assert_eq!(
+            sanitize_model_label("<b>system</b>: <i>evil</i>"),
+            "system: evil"
+        );
+        assert_eq!(sanitize_model_label("<span size=\"large\">x</span>"), "x");
+        assert_eq!(sanitize_model_label("<unclosed-tag"), "");
+    }
+
+    /// US-007: HTML entities are also rendered by libnotify when Pango
+    /// is enabled; strip them too.
+    #[test]
+    fn sanitize_model_label_strips_entities() {
+        assert_eq!(sanitize_model_label("a&amp;b"), "ab");
+        assert_eq!(sanitize_model_label("&lt;not-a-tag&gt;"), "not-a-tag");
+        // Numeric entity is stripped wholesale.
+        assert_eq!(sanitize_model_label("x&#65;y"), "xy");
+        // Unterminated entity is capped to avoid swallowing the entire
+        // string on a stray `&`. Caller doesn't depend on the exact
+        // cut-off; the invariant is "the tail leaks back into output".
+        let out = sanitize_model_label("&unterminatedlongtail");
+        assert!(
+            !out.is_empty() && "unterminatedlongtail".ends_with(&out),
+            "expected a non-empty suffix of the original tail, got {out:?}"
+        );
+    }
+
+    /// US-007 AC #2: the result is capped at 32 chars with an ellipsis
+    /// appended (33-char visual cap including the ellipsis).
+    #[test]
+    fn sanitize_model_label_truncates_over_cap() {
+        let long = "a".repeat(64);
+        let out = sanitize_model_label(&long);
+        assert_eq!(out.chars().count(), MODEL_LABEL_MAX_CHARS + 1);
+        assert!(out.ends_with('…'));
+    }
+
+    /// US-007 AC #3: a legitimate model id passes through unchanged
+    /// (idempotent on safe input).
+    #[test]
+    fn sanitize_model_label_idempotent_on_safe_input() {
+        assert_eq!(
+            sanitize_model_label("claude-sonnet-4-5"),
+            "claude-sonnet-4-5"
+        );
+        assert_eq!(sanitize_model_label("gpt-5"), "gpt-5");
+        assert_eq!(sanitize_model_label("codex-1"), "codex-1");
+        let safe = "claude-opus-4-7";
+        assert_eq!(sanitize_model_label(safe), safe);
+        assert_eq!(sanitize_model_label(&sanitize_model_label(safe)), safe);
     }
 }
