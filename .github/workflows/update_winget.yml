@@ -50,6 +50,19 @@ on:
 permissions:
   contents: read
 
+# Serialize winget submissions. Two concurrent runs would push to the
+# same branch on the ArthurDEV44/winget-pkgs fork and the second would
+# clobber the first. `cancel-in-progress: false` so a half-submitted
+# PR is never interrupted.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# -euxo pipefail on every bash step. See release.yml comment.
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
 jobs:
   update-winget:
     name: Render + submit winget manifests
