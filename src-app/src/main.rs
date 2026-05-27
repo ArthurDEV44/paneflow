@@ -1023,6 +1023,16 @@ fn main() {
     ))
     .init();
 
+    // US-003: install the process-wide kill-on-parent-death guard
+    // BEFORE any agent CLI or ConPTY spawns so children inherit the
+    // Job Object (Windows). On Linux + macOS this is a no-op shim
+    // pending upstream pre_exec exposure in paneflow-acp / portable-pty.
+    if let Err(err) = agents::parent_guard::install_process_job() {
+        log::warn!(
+            "parent_guard: failed to install Job Object -- kill -9 of Paneflow may orphan agent CLIs ({err})"
+        );
+    }
+
     // Patch PATH BEFORE GPUI starts so `which::which("bunx")` in
     // `paneflow_acp::discovery` finds binaries installed under `~/.bun/bin`
     // when Paneflow is launched from a `.desktop` file / Finder / Start Menu

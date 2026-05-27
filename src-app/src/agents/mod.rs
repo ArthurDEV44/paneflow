@@ -17,6 +17,7 @@ pub(crate) mod markdown_style;
 pub(crate) mod message_render;
 pub mod notifications;
 pub mod panel_config;
+pub mod parent_guard;
 pub mod runtime;
 pub mod thread_view;
 pub(crate) mod title_summarizer;
