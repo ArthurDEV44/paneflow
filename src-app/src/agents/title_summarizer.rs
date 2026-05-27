@@ -218,6 +218,28 @@ fn resolve_claude_binary(discovery: &Arc<AgentDiscovery>) -> Option<PathBuf> {
     which::which("claude").ok()
 }
 
+/// Build a [`Command`] that can spawn `claude` -- handling the Windows
+/// case where `which::which("claude")` resolves to a `claude.cmd` /
+/// `claude.bat` shim (npm / scoop install pattern). `Command::new` on
+/// `.cmd` / `.bat` returns `ERROR_BAD_EXE_FORMAT` because Windows does
+/// not treat them as native executables; they must be invoked through
+/// `cmd.exe /C`. Linux + macOS pass through unchanged (US-014).
+fn build_claude_command(claude_path: &Path) -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        let is_shim = claude_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"));
+        if is_shim {
+            let mut cmd = Command::new("cmd.exe");
+            cmd.arg("/C").arg(claude_path);
+            return cmd;
+        }
+    }
+    Command::new(claude_path)
+}
+
 /// Blocking call: run `claude -p --dangerously-skip-permissions`
 /// with the prompt piped to stdin, return stdout as the title.
 /// Lives in its own function so the async wrapper can fence it
@@ -226,7 +248,7 @@ fn resolve_claude_binary(discovery: &Arc<AgentDiscovery>) -> Option<PathBuf> {
 fn run_claude_summary(claude_path: &Path, cwd: &Path, prompt_body: &str) -> anyhow::Result<String> {
     use std::time::Instant;
 
-    let mut child = Command::new(claude_path)
+    let mut child = build_claude_command(claude_path)
         // Non-interactive mode: prompt in, completion out, exit.
         .arg("-p")
         // Bypass permission prompts -- the summarizer does not need
