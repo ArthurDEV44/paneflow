@@ -228,7 +228,18 @@ pub fn merge_and_filter_slash_commands(
 /// trigger char and `query` is `content[anchor + 1 .. cursor]`.
 /// Returns `None` when no active token is being edited.
 pub fn token_before_cursor(content: &str, cursor: usize, trigger: char) -> Option<(usize, String)> {
+    // US-013: byte-offset slice safety. Callers (TextArea) supply
+    // cursor positions in UTF-8 byte offsets, but on user input ending
+    // with an emoji or CJK character a transient slice can land
+    // mid-codepoint -- panicking the GPUI render path. Round the
+    // cursor DOWN to the nearest char boundary so the slice always
+    // lands on a valid UTF-8 boundary. clamp first so we never look
+    // past the buffer end.
     let cursor = cursor.min(content.len());
+    let cursor = (0..=cursor)
+        .rev()
+        .find(|&i| content.is_char_boundary(i))
+        .unwrap_or(0);
     let head = &content[..cursor];
     let mut anchor: Option<usize> = None;
     for (idx, ch) in head.char_indices().rev() {
@@ -510,6 +521,32 @@ mod tests {
         assert_eq!(&text[anchor..anchor + 1], "/");
     }
 
+    /// US-013: cursor placed in the middle of a 4-byte emoji must not
+    /// panic. Before the fix, `&content[..cursor]` would assert at the
+    /// codepoint boundary; after the fix the cursor rounds down to
+    /// the nearest valid char boundary.
+    #[test]
+    fn token_before_cursor_emoji_cursor_mid_codepoint() {
+        let text = "hello @\u{1F389}world"; // "hello @🎉world"
+        let emoji_start = text.find('\u{1F389}').expect("emoji present");
+        // Cursor 2 bytes into the 4-byte emoji.
+        let mid = emoji_start + 2;
+        // Must not panic.
+        let _ = token_before_cursor(text, mid, '@');
+    }
+
+    /// US-013: CJK characters are 3 bytes each in UTF-8. Cursor
+    /// landing inside one must also be safe.
+    #[test]
+    fn token_before_cursor_cjk_cursor_mid_codepoint() {
+        let text = "@\u{4F60}\u{597D}"; // "@你好"
+                                        // After the '@' (1 byte) the next char `你` occupies bytes
+                                        // [1, 4). Cursor at byte 2 is mid-codepoint.
+        let _ = token_before_cursor(text, 2, '@');
+        // Cursor at byte 3 is also mid-codepoint.
+        let _ = token_before_cursor(text, 3, '@');
+    }
+
     #[test]
     fn image_block_from_bytes_caps_at_10mb() {
         // 10MB + 1 byte over the cap.
@@ -590,11 +627,9 @@ mod tests {
         let merged = merge_and_filter_slash_commands(&built_ins, &[], "");
         let names: Vec<&str> = merged.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["clear", "export"]);
-        assert!(
-            merged
-                .iter()
-                .all(|c| matches!(c.source, SlashCommandSource::BuiltIn))
-        );
+        assert!(merged
+            .iter()
+            .all(|c| matches!(c.source, SlashCommandSource::BuiltIn)));
     }
 
     /// US-112 AC #1: agent commands are merged with built-ins and
@@ -643,11 +678,9 @@ mod tests {
             "agent's /clear must win over the built-in"
         );
         // The built-in /export must still be present (no collision).
-        assert!(
-            merged
-                .iter()
-                .any(|c| c.name == "export" && matches!(c.source, SlashCommandSource::BuiltIn))
-        );
+        assert!(merged
+            .iter()
+            .any(|c| c.name == "export" && matches!(c.source, SlashCommandSource::BuiltIn)));
     }
 
     /// US-112 AC #1: substring filter is case-insensitive and matches
