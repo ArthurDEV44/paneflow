@@ -29,6 +29,7 @@ Thumbs.db
 
 # Logs
 *.log
+LOG_*.text
 
 # Local development artifacts
 .codex
