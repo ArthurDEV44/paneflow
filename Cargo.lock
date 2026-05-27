@@ -5249,7 +5249,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-acp"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -5262,7 +5262,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-ai-hook"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "interprocess",
  "serde",
@@ -5272,7 +5272,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-app"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "agent-client-protocol",
  "alacritty_terminal",
@@ -5326,7 +5326,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-config"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "dirs 6.0.0",
  "notify 7.0.0",
@@ -5339,7 +5339,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-shim"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "libc",
  "serde_json",
@@ -5348,7 +5348,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-telemetry"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "log",
  "paneflow-config",
@@ -5361,7 +5361,7 @@ dependencies = [
 
 [[package]]
 name = "paneflow-threads"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "agent-client-protocol",
  "dirs 6.0.0",
