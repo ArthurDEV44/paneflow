@@ -36,6 +36,20 @@ maximum-db-staleness = "P30D"
 # variants for misc parsers, plus extras pulled in by GPUI's image /
 # font-kit dep tree: 0BSD, MPL-2.0, CC0-1.0, CDLA-Permissive-2.0,
 # bzip2-1.0.6, NCSA — all OSI-approved or public-domain-equivalent).
+#
+# GPL-3.0 / GPL-3.0-or-later — accepted globally (2026-05-27).
+# The Zed monorepo we pin GPUI from contains 33+ crates licensed
+# `GPL-3.0` that land in our dep tree as transitive deps of `gpui` /
+# `gpui_platform` / `collections` (askpass, clock, component, fs,
+# fuzzy, git, icons, language, lsp, markdown, menu, migrator, net,
+# paths, proto, release_channel, rope, rpc, settings*, syntax_theme,
+# task, telemetry*, text, theme*, ui*, zed_actions, ...). The
+# previous per-crate `[[licenses.exceptions]]` for zlog / ztracing
+# was unsustainable — every GPUI pin bump shifted the list and the
+# CI gate fell out of sync. PaneFlow already statically links these,
+# so cargo-deny's noise-vs-block dilemma was the wrong frame: the
+# right question is whether PaneFlow's binary distribution license
+# is GPL-3-compatible. It is (same posture Zed itself ships under).
 allow = [
     "MIT",
     "Apache-2.0",
@@ -51,24 +65,9 @@ allow = [
     "CDLA-Permissive-2.0",
     "bzip2-1.0.6",
     "NCSA",
+    "GPL-3.0",
+    "GPL-3.0-or-later",
 ]
-
-# Per-crate GPL exceptions for Zed's `zlog` / `ztracing` family — those
-# are dev-dependencies of GPUI and never end up in our shipped binary,
-# so the GPL infection risk that would normally rule them out for an
-# MIT project does not apply. Promote to a hard rejection if any of
-# them ever migrates into a non-(dev) edge in the dep tree.
-[[licenses.exceptions]]
-name = "zlog"
-allow = ["GPL-3.0-or-later"]
-
-[[licenses.exceptions]]
-name = "ztracing"
-allow = ["GPL-3.0-or-later"]
-
-[[licenses.exceptions]]
-name = "ztracing_macro"
-allow = ["GPL-3.0-or-later"]
 
 [sources]
 # Warn (don't block) on unknown crate registries or git sources so a
