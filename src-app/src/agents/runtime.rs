@@ -48,6 +48,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded as futures_unbounded};
+
 use agent_client_protocol::schema::{
     AvailableCommand, ContentBlock, ContentChunk, ModelId,
     PermissionOptionKind as AcpPermissionOptionKind, RequestPermissionRequest, SessionId,
@@ -781,7 +783,12 @@ enum Command {
 /// old runtime and constructing a new one).
 pub struct SessionRuntime {
     cmd_tx: Sender<Command>,
-    event_rx: Arc<Mutex<Receiver<RuntimeEvent>>>,
+    /// Push-based event stream from the tokio side. `take_event_receiver`
+    /// hands it to the Composer's `cx.spawn` task exactly once; from
+    /// then on the Composer awaits chunks directly without polling.
+    /// Replaces the previous `Arc<Mutex<std::sync::mpsc::Receiver>>` so
+    /// the GPUI side never holds a Mutex on the hot streaming path.
+    event_rx: Option<UnboundedReceiver<RuntimeEvent>>,
     /// US-018: shared with the tokio side's [`BrokerCallback`].
     /// `Some` whenever the runtime is using the interactive
     /// permission flow; `None` when the caller supplied their own
@@ -828,11 +835,11 @@ pub struct SpawnOptions {
 /// resolves it via [`SessionRuntime::resolve_permission`].
 pub struct PermissionBroker {
     pending: Mutex<HashMap<String, tokio::sync::oneshot::Sender<PermissionDecision>>>,
-    event_tx: Sender<RuntimeEvent>,
+    event_tx: UnboundedSender<RuntimeEvent>,
 }
 
 impl PermissionBroker {
-    fn new(event_tx: Sender<RuntimeEvent>) -> Arc<Self> {
+    fn new(event_tx: UnboundedSender<RuntimeEvent>) -> Arc<Self> {
         Arc::new(Self {
             pending: Mutex::new(HashMap::new()),
             event_tx,
@@ -943,10 +950,12 @@ impl PermissionCallback for BrokerCallback {
                 };
                 map.insert(tool_call_id.clone(), tx);
             }
-            let _ = broker.event_tx.send(RuntimeEvent::PermissionRequest {
-                tool_call_id,
-                options,
-            });
+            let _ = broker
+                .event_tx
+                .unbounded_send(RuntimeEvent::PermissionRequest {
+                    tool_call_id,
+                    options,
+                });
             // If the receiver is dropped (composer + runtime tore
             // down) we default to Reject so the agent does not stall.
             rx.await.unwrap_or(PermissionDecision::Reject)
@@ -962,7 +971,7 @@ impl SessionRuntime {
     /// pickers can hydrate.
     pub fn spawn(opts: SpawnOptions) -> Self {
         let (cmd_tx, cmd_rx) = channel::<Command>();
-        let (event_tx, event_rx) = channel::<RuntimeEvent>();
+        let (event_tx, event_rx) = futures_unbounded::<RuntimeEvent>();
 
         let SpawnOptions {
             spawn_command,
@@ -1017,10 +1026,21 @@ impl SessionRuntime {
 
         Self {
             cmd_tx,
-            event_rx: Arc::new(Mutex::new(event_rx)),
+            event_rx: Some(event_rx),
             broker: broker_for_handle,
             join: Some(join),
         }
+    }
+
+    /// Hand the event stream to the Composer's `cx.spawn` task.
+    /// Returns `None` on subsequent calls — the receiver lives in
+    /// exactly one consumer. Push-based design replaces the previous
+    /// 16 ms poll loop: the Composer awaits chunks directly so the
+    /// pipeline hops drop from two-stage 16 ms polling to single-stage
+    /// notification, matching Zed's terminal event loop semantics
+    /// (`crates/terminal/src/terminal.rs:701`).
+    pub fn take_event_receiver(&mut self) -> Option<UnboundedReceiver<RuntimeEvent>> {
+        self.event_rx.take()
     }
 
     /// Send a `session/prompt` with a plain text body. Convenience
@@ -1066,25 +1086,6 @@ impl SessionRuntime {
             .cmd_tx
             .send(Command::ResolvePermission(tool_call_id, decision));
     }
-
-    /// Drain any pending events. The GPUI side calls this from a
-    /// `cx.spawn` poll loop (every ~16 ms) and routes each event to
-    /// the active ThreadView's streaming pipeline. Returns an empty
-    /// vec when the runtime is idle.
-    pub fn poll(&self) -> Vec<RuntimeEvent> {
-        let mut out = Vec::new();
-        let Ok(rx) = self.event_rx.lock() else {
-            return out;
-        };
-        // `try_recv` Err covers both `Empty` and `Disconnected`;
-        // the Composer treats them identically -- on disconnect
-        // the next pump sees an empty vec and keeps polling until
-        // the Composer's own Drop tears down the pump task.
-        while let Ok(ev) = rx.try_recv() {
-            out.push(ev);
-        }
-        out
-    }
 }
 
 impl Drop for SessionRuntime {
@@ -1115,7 +1116,7 @@ impl Drop for SessionRuntime {
 /// translate the verbose `SessionNotification` into the smaller
 /// [`RuntimeEvent`] surface and forward.
 struct ChannelSink {
-    tx: Sender<RuntimeEvent>,
+    tx: UnboundedSender<RuntimeEvent>,
 }
 
 impl NotificationSink for ChannelSink {
@@ -1125,7 +1126,7 @@ impl NotificationSink for ChannelSink {
                 content: ContentBlock::Text(TextContent { text, .. }),
                 ..
             }) => {
-                let _ = self.tx.send(RuntimeEvent::Chunk(text));
+                let _ = self.tx.unbounded_send(RuntimeEvent::Chunk(text));
             }
             // Non-text chunks (images, audio, resource links) on
             // either message or thought streams are out of scope
@@ -1136,7 +1137,7 @@ impl NotificationSink for ChannelSink {
                 content: ContentBlock::Text(TextContent { text, .. }),
                 ..
             }) => {
-                let _ = self.tx.send(RuntimeEvent::Thought(text));
+                let _ = self.tx.unbounded_send(RuntimeEvent::Thought(text));
             }
             SessionUpdate::AgentThoughtChunk(_) => {}
             // US-017: forward the two tool-call notifications to
@@ -1145,14 +1146,12 @@ impl NotificationSink for ChannelSink {
             SessionUpdate::ToolCall(tc) => {
                 let _ = self
                     .tx
-                    .send(RuntimeEvent::ToolCall(snapshot_from_tool_call(tc)));
+                    .unbounded_send(RuntimeEvent::ToolCall(snapshot_from_tool_call(tc)));
             }
             SessionUpdate::ToolCallUpdate(u) => {
-                let _ = self
-                    .tx
-                    .send(RuntimeEvent::ToolCallUpdate(update_from_tool_call_update(
-                        u,
-                    )));
+                let _ = self.tx.unbounded_send(RuntimeEvent::ToolCallUpdate(
+                    update_from_tool_call_update(u),
+                ));
             }
             // US-112: forward the agent's advertised slash commands so
             // the composer can merge them with built-ins. An empty vec
@@ -1160,7 +1159,7 @@ impl NotificationSink for ChannelSink {
             SessionUpdate::AvailableCommandsUpdate(u) => {
                 let _ = self
                     .tx
-                    .send(RuntimeEvent::AvailableCommandsUpdate(u.available_commands));
+                    .unbounded_send(RuntimeEvent::AvailableCommandsUpdate(u.available_commands));
             }
             // US-120 / US-121: forward the cumulative token-usage update
             // (unstable ACP feature) to the composer. Today no shipping
@@ -1169,7 +1168,7 @@ impl NotificationSink for ChannelSink {
             // the badge + throughput suffix light up with no further
             // plumbing change.
             SessionUpdate::UsageUpdate(u) => {
-                let _ = self.tx.send(RuntimeEvent::UsageUpdate {
+                let _ = self.tx.unbounded_send(RuntimeEvent::UsageUpdate {
                     used: u.used,
                     size: u.size,
                 });
@@ -1186,7 +1185,7 @@ impl NotificationSink for ChannelSink {
                     if !trimmed.is_empty() {
                         let _ = self
                             .tx
-                            .send(RuntimeEvent::SessionTitle(trimmed.to_string()));
+                            .unbounded_send(RuntimeEvent::SessionTitle(trimmed.to_string()));
                     }
                 }
             }
@@ -1209,7 +1208,7 @@ fn run_blocking(
     terminal_spawner_override: Option<Arc<dyn TerminalSpawner>>,
     broker: Arc<PermissionBroker>,
     cmd_rx: Receiver<Command>,
-    event_tx: Sender<RuntimeEvent>,
+    event_tx: UnboundedSender<RuntimeEvent>,
     resume_session_id: Option<SessionId>,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -1218,7 +1217,7 @@ fn run_blocking(
     {
         Ok(rt) => rt,
         Err(err) => {
-            let _ = event_tx.send(RuntimeEvent::Fatal(format!(
+            let _ = event_tx.unbounded_send(RuntimeEvent::Fatal(format!(
                 "failed to build tokio runtime: {err}"
             )));
             return;
@@ -1233,7 +1232,7 @@ fn run_blocking(
         let agent = match spawn_acp_agent(&spawn_command).await {
             Ok(a) => a,
             Err(err) => {
-                let _ = event_tx.send(RuntimeEvent::Fatal(format!(
+                let _ = event_tx.unbounded_send(RuntimeEvent::Fatal(format!(
                     "spawn_acp_agent failed: {err}"
                 )));
                 return;
@@ -1282,7 +1281,7 @@ fn run_blocking(
                 // Init handshake.
                 if let Err(err) = conn.initialize().await {
                     let _ = event_tx_for_main
-                        .send(RuntimeEvent::Fatal(format!("initialize failed: {err}")));
+                        .unbounded_send(RuntimeEvent::Fatal(format!("initialize failed: {err}")));
                     return Ok(());
                 }
 
@@ -1309,9 +1308,9 @@ fn run_blocking(
                                 // the message stream area so the user
                                 // can tell why the resume failed and
                                 // start a new thread.
-                                let _ = event_tx_for_main.send(RuntimeEvent::Fatal(format!(
-                                    "Failed to resume agent -- start a new thread ({err})"
-                                )));
+                                let _ = event_tx_for_main.unbounded_send(RuntimeEvent::Fatal(
+                                    format!("Failed to resume agent -- start a new thread ({err})"),
+                                ));
                                 return Ok(());
                             }
                         }
@@ -1320,9 +1319,9 @@ fn run_blocking(
                         let response = match conn.new_session(cwd_for_registry.clone()).await {
                             Ok(s) => s,
                             Err(err) => {
-                                let _ = event_tx_for_main.send(RuntimeEvent::Fatal(format!(
-                                    "new_session failed: {err}"
-                                )));
+                                let _ = event_tx_for_main.unbounded_send(RuntimeEvent::Fatal(
+                                    format!("new_session failed: {err}"),
+                                ));
                                 return Ok(());
                             }
                         };
@@ -1332,7 +1331,7 @@ fn run_blocking(
 
                 sessions.register(session.session_id.clone(), cwd_for_registry);
 
-                let _ = event_tx_for_main.send(RuntimeEvent::SessionReady {
+                let _ = event_tx_for_main.unbounded_send(RuntimeEvent::SessionReady {
                     modes: session.modes.clone(),
                     current_mode_id: session.current_mode_id.clone(),
                     models: session.models.clone(),
@@ -1401,13 +1400,14 @@ fn run_blocking(
                             tokio::task::spawn_local(async move {
                                 match conn_for_prompt.prompt(session_id, blocks).await {
                                     Ok(resp) => {
-                                        let _ = event_tx_for_prompt
-                                            .send(RuntimeEvent::TurnEnded(resp.stop_reason.into()));
+                                        let _ = event_tx_for_prompt.unbounded_send(
+                                            RuntimeEvent::TurnEnded(resp.stop_reason.into()),
+                                        );
                                     }
                                     Err(err) => {
-                                        let _ = event_tx_for_prompt.send(RuntimeEvent::Fatal(
-                                            format!("prompt failed: {err}"),
-                                        ));
+                                        let _ = event_tx_for_prompt.unbounded_send(
+                                            RuntimeEvent::Fatal(format!("prompt failed: {err}")),
+                                        );
                                     }
                                 }
                             });
@@ -1452,7 +1452,8 @@ fn run_blocking(
             .await;
 
         if let Err(err) = connect_result {
-            let _ = event_tx.send(RuntimeEvent::Fatal(format!("ACP connection error: {err}")));
+            let _ = event_tx
+                .unbounded_send(RuntimeEvent::Fatal(format!("ACP connection error: {err}")));
         }
     });
 }

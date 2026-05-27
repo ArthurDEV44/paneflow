@@ -45,11 +45,11 @@ use paneflow_acp::{AgentDiscovery, AgentKind};
 use paneflow_threads::{ContentBlock as ThreadsContentBlock, ThreadId, ThreadStore};
 
 use super::composer_ext::{
-    AttachmentKind, DropClassification, MENTION_DEBOUNCE, MentionState, PendingAttachment,
-    SlashCommand, SlashCommandSource, SlashState, agent_slash_command_from_acp,
-    built_in_slash_commands, classify_dropped_path, combine_prompt, detect_image_mime,
-    image_block_from_bytes, image_too_large_message, merge_and_filter_slash_commands,
-    resource_block_for_path, scan_files, token_before_cursor,
+    AttachmentKind, DropClassification, MAX_ATTACHMENTS, MENTION_DEBOUNCE, MentionState,
+    PendingAttachment, SlashCommand, SlashCommandSource, SlashState, agent_slash_command_from_acp,
+    attachment_limit_message, built_in_slash_commands, classify_dropped_path, combine_prompt,
+    detect_image_mime, image_block_from_bytes, image_too_large_message,
+    merge_and_filter_slash_commands, resource_block_for_path, scan_files, token_before_cursor,
 };
 use super::runtime::{ModelChoice, RuntimeEvent, SessionRuntime, SpawnOptions, StopReasonKind};
 // US-017: tool-call events surface to the ThreadView's timeline.
@@ -643,9 +643,23 @@ pub struct Composer {
     /// US-115: focus handle for the save-as text input.
     profile_save_focus: FocusHandle,
 
-    /// 16 ms pump task. Dropping cancels it -- ensures no
-    /// dangling poll loop after the composer goes out of scope.
+    /// Timer-driven housekeeping pump: debounced `@`-mention scan,
+    /// debounced draft flush, and the SessionReady timeout. Runs at
+    /// `PUMP_TICK` (16 ms). Events from the ACP runtime flow through
+    /// the separate push-based [`Self::_event_task`] -- they do NOT
+    /// wait for this tick anymore. Dropping cancels the task so no
+    /// dangling loop survives the composer.
     _pump_task: Option<Task<()>>,
+
+    /// Push-based ACP event task. Awaits on a
+    /// [`futures::channel::mpsc::UnboundedReceiver`] handed over by
+    /// [`SessionRuntime::take_event_receiver`] and drains every queued
+    /// event in one entity update per wake. Replaces the previous
+    /// 16 ms poll path so first-token latency drops from "up to one
+    /// pump tick" to "as soon as GPUI schedules the task". Mirrors
+    /// Zed's terminal event loop (`crates/terminal/src/terminal.rs:701`).
+    /// `None` until [`Self::ensure_runtime`] hands the receiver over.
+    _event_task: Option<Task<()>>,
 
     /// US-116 AC #3: tools invoked since the last prompt was sent.
     /// The OS-notification helper reads this to choose between
@@ -707,6 +721,47 @@ pub struct Composer {
     /// and first `TurnEnded`; `None` afterwards (taken by the
     /// summarizer trigger).
     title_snapshot_for_summary: Option<String>,
+
+    /// Tally of consecutive `RuntimeEvent::Fatal` since the last clean
+    /// `SessionReady`. Used to compute an exponential backoff before
+    /// re-spawning a broken agent so a permanently-failing CLI does
+    /// not spin in a tight spawn/crash loop.
+    consecutive_fatal_count: u8,
+
+    /// Earliest instant at which the next `ensure_runtime` may spawn
+    /// the agent. Bumped on Fatal, cleared on SessionReady. Acts as
+    /// the backoff fence; an attempt before this instant is no-op and
+    /// surfaces a transient `fatal_error`.
+    runtime_respawn_after: Option<std::time::Instant>,
+
+    /// Deadline after which a freshly-spawned agent that hasn't sent
+    /// `SessionReady` is treated as hung. Set on spawn, cleared on
+    /// SessionReady or Fatal. The pump synthesizes a `Fatal` if the
+    /// deadline elapses while `runtime.is_some()` but no SessionReady
+    /// has arrived.
+    session_ready_deadline: Option<std::time::Instant>,
+
+    /// Cached `all_profiles()` snapshot. Populated lazily so the
+    /// profile picker render path doesn't touch the disk every frame
+    /// (60 fps × disk read while the popover is open). Invalidated
+    /// on every profile mutation (save / delete / apply / agent
+    /// switch).
+    cached_profiles: Option<Vec<ProfileSummary>>,
+
+    /// Cached Codex model list parsed from the per-user config file.
+    /// Populated on first `models()` read and invalidated on
+    /// `SessionReady` (a different agent or different config).
+    /// Avoids parsing the JSON on every frame the model picker is
+    /// open.
+    cached_codex_models: Option<Vec<ModelChoice>>,
+
+    /// Cached "is the composer non-empty?" flag. Updated in
+    /// `on_text_change` (text edits) and on every push/pop of
+    /// `attachments`, so `render_send_button` doesn't re-read the
+    /// text area entity from inside the render pass. Mirrors Zed's
+    /// MessageEditor pattern of pushing button state through events
+    /// instead of pulling from the editor entity at render time.
+    has_content_cached: bool,
 }
 
 impl Composer {
@@ -789,6 +844,7 @@ impl Composer {
             profile_save_text: None,
             profile_save_focus: cx.focus_handle(),
             _pump_task: None,
+            _event_task: None,
             draft_thread_id,
             draft_store,
             draft_flush_deadline: None,
@@ -798,6 +854,12 @@ impl Composer {
             turn_started_at: None,
             title_summarization_done: false,
             title_snapshot_for_summary: None,
+            consecutive_fatal_count: 0,
+            runtime_respawn_after: None,
+            session_ready_deadline: None,
+            cached_profiles: None,
+            cached_codex_models: None,
+            has_content_cached: false,
         };
         composer.install_submit_callback(cx);
         composer.install_submit_immediate_callback(cx);
@@ -812,7 +874,35 @@ impl Composer {
         // and failure is captured in `fatal_error` so the UI surfaces
         // a "not on PATH" message instead of silently no-op'ing.
         let _ = composer.ensure_runtime(cx);
+        composer.install_release_hook(cx);
         composer
+    }
+
+    /// Wire a GPUI `on_release` so that when the `Composer` entity is
+    /// dropped (sidebar switch, app shutdown) any in-flight stream is
+    /// flushed and persisted. Without this, chunks accumulated since
+    /// the last throttled persist would be silently lost on close.
+    fn install_release_hook(&mut self, cx: &mut Context<Self>) {
+        let view_weak = self.thread_view.clone();
+        cx.on_release(move |_composer, app| {
+            if let Some(view) = view_weak.upgrade() {
+                view.update(app, |tv, cx| {
+                    // Order matters: `flush_streaming` MUST run before
+                    // `finalize_thinking`. `finalize_thinking` calls
+                    // `close_open_assistant_message` which sets
+                    // `streaming_message_idx = None`; if it runs first,
+                    // `flush_streaming` then sees `idx=None`, bails
+                    // early, and any chars still pacing through
+                    // `streaming_buffer` are silently dropped. Symptom
+                    // pre-fix: Codex turns appeared truncated at the
+                    // last 20–30 chars because the trailing burst sat
+                    // in the buffer when the turn ended.
+                    tv.flush_streaming(cx);
+                    tv.finalize_thinking(cx);
+                });
+            }
+        })
+        .detach();
     }
 
     /// Connect the TextArea's Enter -> submit signal to
@@ -891,6 +981,11 @@ impl Composer {
         // Reset attachment errors on edit -- the user is moving on.
         self.attach_error = None;
 
+        // Track non-empty composer state without re-reading the TextArea
+        // entity from inside the render pass — Zed parity for
+        // MessageEditor's button-state pattern.
+        self.has_content_cached = !content.trim().is_empty() || !self.attachments.is_empty();
+
         // US-102 AC #4: arm the 300 ms debounce deadline on every
         // edit. The pump tick checks the deadline and writes when
         // elapsed -- so continuous typing produces at most one disk
@@ -938,14 +1033,38 @@ impl Composer {
         cx.notify();
     }
 
+    /// Recompute the `has_content_cached` flag by reading the current
+    /// TextArea content + attachment count. Call this from any code
+    /// path that mutates `self.attachments`. Cheap (one borrow + one
+    /// `is_empty` call) and avoids the render-time re-entrancy risk
+    /// of reading the TextArea from `render_send_button`.
+    fn refresh_has_content_cache(&mut self, cx: &Context<Self>) {
+        let text_non_empty = !self.text_area.read(cx).is_empty();
+        self.has_content_cached = text_non_empty || !self.attachments.is_empty();
+    }
+
     /// US-019: close every popup. Used by Escape and by any path
     /// that takes a definitive action (send, cancel, pick an option).
     pub fn dismiss_popups(&mut self, cx: &mut Context<Self>) {
-        let was_open =
-            self.show_attach_menu || self.mention_state.is_some() || self.slash_state.is_some();
+        let was_open = self.show_attach_menu
+            || self.mention_state.is_some()
+            || self.slash_state.is_some()
+            || self.show_agent_picker
+            || self.show_model_picker
+            || self.show_mode_picker
+            || self.show_effort_picker
+            || self.show_profile_picker;
         self.show_attach_menu = false;
         self.mention_state = None;
         self.slash_state = None;
+        // Picker pills (agent/model/mode/effort/profile) are not real
+        // PopoverMenus, so they don't close themselves on outside-click;
+        // bundle them here so any "definitive action" path clears them.
+        self.show_agent_picker = false;
+        self.show_model_picker = false;
+        self.show_mode_picker = false;
+        self.show_effort_picker = false;
+        self.show_profile_picker = false;
         if was_open {
             cx.notify();
         }
@@ -960,8 +1079,14 @@ impl Composer {
         merge_and_filter_slash_commands(&built_ins, &self.agent_slash_commands, query)
     }
 
-    /// Spawn the 16 ms pump that drains the runtime's event queue
-    /// and routes chunks/turn-ended/errors to ThreadView and self.
+    /// Spawn the timer-driven housekeeping pump. After the runtime
+    /// migration to push-based events (see [`Self::start_event_task`]),
+    /// this loop ONLY handles debounced work: mention-scan flush,
+    /// draft-flush, and the SessionReady timeout. ACP chunks /
+    /// tool-call updates no longer pass through here -- they take the
+    /// direct path from runtime -> event task -> handle_runtime_event,
+    /// matching Zed's no-poll terminal flow (`crates/terminal/src/
+    /// terminal.rs:701`).
     fn start_pump(&mut self, cx: &mut Context<Self>) {
         let weak_self: WeakEntity<Self> = cx.weak_entity();
         self._pump_task = Some(cx.spawn(async move |_, cx: &mut AsyncApp| {
@@ -980,6 +1105,39 @@ impl Composer {
         }));
     }
 
+    /// Start the push-based ACP event drain. Awaits on the runtime's
+    /// futures::mpsc receiver and drains every queued event in one
+    /// entity update per wake. The first event arrives "immediately"
+    /// (no 16 ms polling delay); a burst of N chunks coalesces into
+    /// one render. Replaces the previous `runtime.poll()` call that
+    /// sat behind the pump tick.
+    fn start_event_task(
+        &mut self,
+        mut rx: futures::channel::mpsc::UnboundedReceiver<RuntimeEvent>,
+        cx: &mut Context<Self>,
+    ) {
+        let weak_self: WeakEntity<Self> = cx.weak_entity();
+        self._event_task = Some(cx.spawn(async move |_, cx: &mut AsyncApp| {
+            use futures::stream::StreamExt;
+            while let Some(first) = rx.next().await {
+                let outcome = cx.update(|cx| {
+                    weak_self.update(cx, |composer, cx| {
+                        composer.handle_runtime_event(first, cx);
+                        // Coalesce burst: drain everything else already
+                        // queued before yielding back to GPUI. One
+                        // notify per batch instead of one per chunk.
+                        while let Ok(ev) = rx.try_recv() {
+                            composer.handle_runtime_event(ev, cx);
+                        }
+                    })
+                });
+                if outcome.is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
     /// Drain the runtime queue. Returns false when the pump should
     /// stop (no live runtime).
     fn pump_runtime(&mut self, cx: &mut Context<Self>) -> bool {
@@ -992,16 +1150,26 @@ impl Composer {
         // US-102: flush the draft when the 300 ms debounce elapses.
         self.maybe_flush_draft(cx);
 
-        let Some(runtime) = self.runtime.as_ref() else {
-            return true; // no runtime yet, keep polling for a future spawn
-        };
-        let events = runtime.poll();
-        if events.is_empty() {
-            return true;
+        // SessionReady timeout: if a runtime spawn has not produced a
+        // SessionReady within the deadline, synthesize a Fatal so the
+        // UI surfaces "the agent isn't responding" instead of leaving
+        // the pickers stuck on placeholder labels.
+        if let Some(deadline) = self.session_ready_deadline
+            && self.runtime.is_some()
+            && std::time::Instant::now() >= deadline
+        {
+            self.session_ready_deadline = None;
+            self.handle_runtime_event(
+                RuntimeEvent::Fatal(format!(
+                    "{} spawned but did not respond to session/new within 30s.",
+                    self.agent_kind.display_name()
+                )),
+                cx,
+            );
         }
-        for ev in events {
-            self.handle_runtime_event(ev, cx);
-        }
+
+        // ACP chunks / tool-call updates land via the push-based
+        // `_event_task` -- no polling here.
         true
     }
 
@@ -1030,20 +1198,33 @@ impl Composer {
         if blocks == self.draft_last_persisted {
             return;
         }
+        // The actual SQLite write happens on a background executor so a
+        // slow `write_draft` does not stall this 16 ms pump tick (the
+        // call lands in the GPUI main thread). The eager
+        // `draft_last_persisted` update keeps the in-memory dedup
+        // contract correct even if the write itself fails later.
+        let store = store.clone();
+        let id = id.clone();
         if blocks.is_empty() {
             // The composer is now empty (cleared via backspace or
             // /clear). Treat that as "remove the draft" so the next
             // open doesn't replay a stale empty payload as text.
-            if let Err(err) = store.delete_draft(id) {
-                log::warn!("Composer: delete_draft (on empty) failed: {err}");
-            }
+            cx.background_spawn(async move {
+                if let Err(err) = store.delete_draft(&id) {
+                    log::warn!("Composer: delete_draft (on empty) failed: {err}");
+                }
+            })
+            .detach();
             self.draft_last_persisted.clear();
             return;
         }
-        if let Err(err) = store.write_draft(id, &blocks) {
-            log::warn!("Composer: write_draft failed: {err}");
-            return;
-        }
+        let blocks_to_persist = blocks.clone();
+        cx.background_spawn(async move {
+            if let Err(err) = store.write_draft(&id, &blocks_to_persist) {
+                log::warn!("Composer: write_draft failed: {err}");
+            }
+        })
+        .detach();
         self.draft_last_persisted = blocks;
     }
 
@@ -1051,16 +1232,24 @@ impl Composer {
     /// thread. Called from both send paths so a successful prompt
     /// always clears the row -- otherwise the next open would
     /// replay the just-sent text.
-    fn delete_draft_now(&mut self) {
+    fn delete_draft_now(&mut self, cx: &mut Context<Self>) {
         self.draft_flush_deadline = None;
         self.draft_last_persisted.clear();
         let (Some(id), Some(store)) = (self.draft_thread_id.as_ref(), self.draft_store.as_ref())
         else {
             return;
         };
-        if let Err(err) = store.delete_draft(id) {
-            log::warn!("Composer: delete_draft failed: {err}");
-        }
+        // Push the delete to the background executor so a slow SQLite
+        // commit doesn't stall the click handler that triggered this
+        // call (typically the Send button).
+        let store = store.clone();
+        let id = id.clone();
+        cx.background_spawn(async move {
+            if let Err(err) = store.delete_draft(&id) {
+                log::warn!("Composer: delete_draft failed: {err}");
+            }
+        })
+        .detach();
     }
 
     /// US-019: if a mention query has been pending for at least
@@ -1077,12 +1266,31 @@ impl Composer {
         if state.query_started_at.elapsed() < MENTION_DEBOUNCE {
             return;
         }
+        // Walking a large cwd (huge monorepo, unfiltered node_modules)
+        // can exceed the 16 ms pump tick and drop a frame. Push the
+        // walk to the background executor and post results back into
+        // `mention_state` only if the query string still matches —
+        // otherwise the user has typed a different query and the
+        // stale results would clobber the active picker.
+        state.scanned = true;
         let cwd = self.cwd.clone();
         let query = state.query.clone();
-        let results = scan_files(&cwd, &query);
-        state.results = results;
-        state.scanned = true;
-        cx.notify();
+        let weak = cx.weak_entity();
+        cx.spawn(async move |_, cx_async: &mut AsyncApp| {
+            let query_back = query.clone();
+            let results = smol::unblock(move || scan_files(&cwd, &query)).await;
+            cx_async.update(|cx| {
+                let _ = weak.update(cx, |composer, cx| {
+                    if let Some(state) = composer.mention_state.as_mut()
+                        && state.query == query_back
+                    {
+                        state.results = results;
+                        cx.notify();
+                    }
+                });
+            });
+        })
+        .detach();
     }
 
     fn handle_runtime_event(&mut self, ev: RuntimeEvent, cx: &mut Context<Self>) {
@@ -1102,6 +1310,23 @@ impl Composer {
                 // UsageUpdate. Reset here so a thread-switch never
                 // surfaces a stale count from the previous session.
                 self.last_usage = None;
+                // Only clear `fatal_error` once we know the respawn
+                // actually reached SessionReady. Clearing it earlier (in
+                // `ensure_runtime`) would mask a silent failure where
+                // the new process spawned but never replied — the user
+                // would see the old error vanish with no replacement.
+                self.fatal_error = None;
+                self.stop_status = None;
+                // Clear the backoff state — the respawn made it. The
+                // SessionReady-timeout deadline is also released so the
+                // pump stops watching for a hung process.
+                self.consecutive_fatal_count = 0;
+                self.runtime_respawn_after = None;
+                self.session_ready_deadline = None;
+                // Invalidate the codex-model cache: a SessionReady can
+                // carry a different model set (different agent or new
+                // config on disk).
+                self.cached_codex_models = None;
                 cx.notify();
             }
             RuntimeEvent::Chunk(text) => {
@@ -1116,7 +1341,7 @@ impl Composer {
                         if !tv.is_streaming() {
                             tv.begin_assistant_stream(cx);
                         }
-                        tv.push_streaming_chunk(&text);
+                        tv.push_streaming_chunk(&text, cx);
                     });
                 }
             }
@@ -1132,8 +1357,17 @@ impl Composer {
             RuntimeEvent::TurnEnded(reason) => {
                 if let Some(view) = self.thread_view.upgrade() {
                     view.update(cx, |tv, cx| {
-                        tv.finalize_thinking(cx);
+                        // `flush_streaming` first -- it must drain the
+                        // pacing buffer into the visible text BEFORE
+                        // `finalize_thinking` closes the assistant
+                        // message (which nulls `streaming_message_idx`
+                        // and would make `flush_streaming` a no-op).
+                        // Without this ordering the last 20–30 chars
+                        // of a Codex/Claude-Code turn went missing --
+                        // see the trace at `flush_streaming: no active
+                        // stream (idx=None)` confirmed in LOG_CODEX.txt.
                         tv.flush_streaming(cx);
+                        tv.finalize_thinking(cx);
                         // Defensive sweep: some ACP backends (observed
                         // with Claude Code + Codex) end the turn
                         // without emitting a final `Completed` status
@@ -1153,27 +1387,51 @@ impl Composer {
                 // `SessionInfoUpdate.title` (Codex). Best-effort: if
                 // the transient session fails, the auto-derived
                 // title stays.
+                //
+                // Robust against MaxTokens-first turns: we ONLY commit
+                // `title_summarization_done = true` if the spawn
+                // actually happens (we got both user + assistant text
+                // and the view is still alive). When the first
+                // EndTurn happens without an assistant body (e.g.
+                // MaxTokens cut the response before any chunk),
+                // `title_snapshot_for_summary` is re-armed so the
+                // next clean turn can try again.
                 if !self.title_summarization_done
                     && matches!(reason, StopReasonKind::EndTurn)
                     && let Some(snapshot) = self.title_snapshot_for_summary.take()
-                    && let Some(view) = self.thread_view.upgrade()
                 {
-                    self.title_summarization_done = true;
-                    let (user_text, assistant_text) = {
-                        let tv = view.read(cx);
-                        (tv.first_user_text(), tv.first_assistant_text())
-                    };
-                    if let (Some(user), Some(assistant)) = (user_text, assistant_text) {
-                        let req = crate::agents::title_summarizer::SummarizeRequest {
-                            agent_kind: self.agent_kind,
-                            cwd: self.cwd.clone(),
-                            discovery: Arc::clone(&self.discovery),
-                            user_prompt: user,
-                            assistant_response: assistant,
-                            title_snapshot: snapshot,
-                            thread_view: view.downgrade(),
+                    let mut consumed_snapshot = false;
+                    if let Some(view) = self.thread_view.upgrade() {
+                        let (user_text, assistant_text) = {
+                            let tv = view.read(cx);
+                            (tv.first_user_text(), tv.first_assistant_text())
                         };
-                        crate::agents::title_summarizer::spawn_thread_title_summarization(req, cx);
+                        if let (Some(user), Some(assistant)) = (user_text, assistant_text) {
+                            let req = crate::agents::title_summarizer::SummarizeRequest {
+                                agent_kind: self.agent_kind,
+                                cwd: self.cwd.clone(),
+                                discovery: Arc::clone(&self.discovery),
+                                user_prompt: user,
+                                assistant_response: assistant,
+                                title_snapshot: snapshot.clone(),
+                                thread_view: view.downgrade(),
+                            };
+                            // Route through ThreadView so the new Task<()>
+                            // replaces any in-flight summarizer (Zed parity:
+                            // `pending_title_generation` guard at
+                            // `crates/agent/src/thread.rs:962`). Without
+                            // this, two close TurnEnded events would race
+                            // two `claude -p` children.
+                            view.update(cx, |tv, cx| {
+                                tv.start_title_summarization(req, cx);
+                            });
+                            self.title_summarization_done = true;
+                            consumed_snapshot = true;
+                        }
+                    }
+                    if !consumed_snapshot {
+                        // Keep the snapshot so a future clean turn can fire.
+                        self.title_snapshot_for_summary = Some(snapshot);
                     }
                 }
                 self.is_streaming = false;
@@ -1217,8 +1475,12 @@ impl Composer {
                 tracing::warn!(target: "paneflow_app::agents::composer", "runtime fatal: {msg}");
                 if let Some(view) = self.thread_view.upgrade() {
                     view.update(cx, |tv, cx| {
-                        tv.finalize_thinking(cx);
+                        // Drain streaming buffer BEFORE closing the
+                        // assistant message. See the matching
+                        // `RuntimeEvent::TurnEnded` arm above for the
+                        // rationale.
                         tv.flush_streaming(cx);
+                        tv.finalize_thinking(cx);
                         // Agent process crashed / pipe broke -- we
                         // can't ask the agent whether the in-flight
                         // tool calls actually finished, so mark them
@@ -1229,6 +1491,57 @@ impl Composer {
                 self.is_streaming = false;
                 self.fatal_error = Some(msg);
                 self.runtime = None; // drop the runtime so the next prompt re-spawns
+                // Stop draining the (now-disconnected) event channel
+                // so a fresh task gets installed on the next runtime
+                // spawn instead of stacking on a closed receiver.
+                self._event_task = None;
+                // Stale mode/model labels from the crashed session must
+                // not survive — the pickers would otherwise show entries
+                // that no longer correspond to any running agent until
+                // `SessionReady` of the respawn replaces them.
+                self.modes.clear();
+                self.current_mode_id = None;
+                self.models.clear();
+                // Pending prompts queued behind the crashed turn will
+                // never see a `TurnEnded`, so they would silently stay
+                // in the queue forever. Drop them so the user can re-send
+                // explicitly; we log how many were dropped for diagnosis.
+                if !self.pending_prompts.is_empty() {
+                    tracing::warn!(
+                        target: "paneflow_app::agents::composer",
+                        dropped = self.pending_prompts.len(),
+                        "dropping queued prompts after runtime Fatal — re-send manually",
+                    );
+                    self.pending_prompts.clear();
+                }
+                // If the title summarizer is still armed from a turn that
+                // never reached EndTurn, releasing the snapshot lets a
+                // future clean turn fire its own summarization. Without
+                // this reset, `title_summarization_done == false` AND
+                // `title_snapshot_for_summary == None` would silently
+                // disable summarization forever.
+                if !self.title_summarization_done {
+                    self.title_snapshot_for_summary = None;
+                }
+                // Exponential backoff for repeated Fatal events: capped
+                // at 30 s. A permanently-failing CLI (binary missing,
+                // auth broken, port already taken) would otherwise spin
+                // in a spawn/crash loop while the user is trying to
+                // unjam it manually. Backoff resets to zero on a clean
+                // `SessionReady`.
+                self.consecutive_fatal_count = self.consecutive_fatal_count.saturating_add(1);
+                if self.consecutive_fatal_count >= 2 {
+                    let delay_secs: u64 = match self.consecutive_fatal_count {
+                        2 => 2,
+                        3 => 5,
+                        4 => 10,
+                        _ => 30,
+                    };
+                    self.runtime_respawn_after = Some(
+                        std::time::Instant::now() + std::time::Duration::from_secs(delay_secs),
+                    );
+                }
+                self.session_ready_deadline = None;
                 // US-116 AC #5: error-stop fires a warning notification
                 // when the panel is not focused.
                 super::notifications::on_fatal();
@@ -1335,6 +1648,20 @@ impl Composer {
         if self.runtime.is_some() {
             return true;
         }
+        // Backoff fence: after repeated Fatals we hold off spawning so
+        // a broken CLI does not eat the user's CPU in a tight loop.
+        if let Some(deadline) = self.runtime_respawn_after
+            && std::time::Instant::now() < deadline
+        {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            self.fatal_error = Some(format!(
+                "{} kept crashing — waiting {}s before retrying.",
+                self.agent_kind.display_name(),
+                remaining.as_secs().max(1),
+            ));
+            cx.notify();
+            return false;
+        }
         let agents = self.discovery.list();
         let Some(discovered) = agents.iter().find(|a| a.kind == self.agent_kind) else {
             self.fatal_error = Some(format!(
@@ -1363,12 +1690,29 @@ impl Composer {
             // the `supports_load_session` capability.
             resume_session_id: None,
         };
-        self.runtime = Some(SessionRuntime::spawn(opts));
-        self.fatal_error = None;
-        // Clear any stale "Response truncated" / "Cancelled" banner
-        // from the previous turn so the new prompt starts on a clean
-        // status row.
-        self.stop_status = None;
+        let mut runtime = SessionRuntime::spawn(opts);
+        // Push-based event flow: hand the receiver to a `cx.spawn`
+        // task that awaits on it. The task wakes the moment the ACP
+        // side sends a chunk -- no 16 ms poll wait. Mirrors Zed's
+        // `terminal.rs:701` pattern. The task drains every queued
+        // event in one entity update per wake so a burst of 50+ chunks
+        // collapses into a single repaint instead of 50 notifies.
+        if let Some(event_rx) = runtime.take_event_receiver() {
+            self.start_event_task(event_rx, cx);
+        }
+        self.runtime = Some(runtime);
+        // Arm a SessionReady deadline: if the CLI binds + spawns but
+        // never replies to `session/new` (interactive auth prompt,
+        // hung child, network stall), the pump will synthesize a
+        // `Fatal` once 30 s elapse, surfacing the failure instead of
+        // leaving the picker pills stuck on placeholders forever.
+        self.session_ready_deadline =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+        // NOTE: `fatal_error` and `stop_status` are cleared in the
+        // `SessionReady` handler instead of here. If the spawned
+        // process is alive but never replies, clearing them on spawn
+        // would hide the previous error before the new failure
+        // surfaces.
         true
     }
 
@@ -1394,32 +1738,54 @@ impl Composer {
         if !self.ensure_runtime(cx) {
             return;
         }
-        let runtime = self
-            .runtime
-            .as_ref()
-            .expect("ensure_runtime returned true so runtime is Some");
+        // Defensive: `ensure_runtime(cx) == true` implies `self.runtime.is_some()`,
+        // but a future refactor could break the invariant without surfacing
+        // here. Early-return is safer than `.expect()` which would panic in
+        // release builds. Same guard applied at every other call site below.
+        let Some(runtime) = self.runtime.as_ref() else {
+            return;
+        };
         if let Some(view) = self.thread_view.upgrade() {
+            // Mirror `send_prompt`: if this is the very first prompt of
+            // the (forked) thread, arm the background title summarizer
+            // with the current sidebar title snapshot. Without this,
+            // a fork that produces the first clean TurnEnded would
+            // have `title_summarization_done = false` AND
+            // `title_snapshot_for_summary = None`, silently disabling
+            // the LLM-generated title forever for that fork.
+            let is_first_prompt = view.read(cx).items_is_empty();
+            if is_first_prompt && self.title_snapshot_for_summary.is_none() {
+                self.title_snapshot_for_summary = Some("New thread".to_string());
+            }
             view.update(cx, |tv, cx| {
                 tv.begin_assistant_stream(cx);
             });
         }
         runtime.send_prompt_blocks(blocks);
+        self.post_send_cleanup(cx);
+    }
+
+    /// Shared post-send state mutation block. Used by `send_prompt`,
+    /// `send_prompt_immediate` and `send_prompt_no_echo` so the three
+    /// paths can't silently drift out of sync (turn-start stamp,
+    /// status row clears, popup dismiss, draft deletion, deferred
+    /// TextArea clear, repaint).
+    fn post_send_cleanup(&mut self, cx: &mut Context<Self>) {
         self.is_streaming = true;
         // US-121 AC #1: stamp the turn-start instant so the activity
         // bar can compute elapsed time without polling a clock.
         self.turn_started_at = Some(std::time::Instant::now());
         self.fatal_error = None;
-        // Clear any stale "Response truncated" / "Cancelled" banner
-        // from the previous turn so the new prompt starts on a clean
-        // status row.
         self.stop_status = None;
         self.attach_error = None;
         self.attachments.clear();
         self.dismiss_popups(cx);
         // US-102 AC #5: the prompt has left -- drop the persisted
         // draft so the next open of this thread doesn't replay it.
-        self.delete_draft_now();
-        // Same re-entrancy guard as `send_prompt` (see comment there).
+        self.delete_draft_now(cx);
+        // Defer the TextArea clear so its `on_change` callback can
+        // run without re-entering the Composer's current `update()`
+        // frame.
         let text_area = self.text_area.clone();
         cx.defer(move |cx| {
             text_area.update(cx, |ta, cx| ta.clear(cx));
@@ -1454,7 +1820,7 @@ impl Composer {
             // user's point of view, even though it sits in the queue.
             // Drop the on-disk row so an app restart does not double-
             // queue.
-            self.delete_draft_now();
+            self.delete_draft_now(cx);
             let text_area = self.text_area.clone();
             cx.defer(move |cx| {
                 text_area.update(cx, |ta, cx| ta.clear(cx));
@@ -1465,10 +1831,9 @@ impl Composer {
         if !self.ensure_runtime(cx) {
             return;
         }
-        let runtime = self
-            .runtime
-            .as_ref()
-            .expect("ensure_runtime returned true so runtime is Some");
+        let Some(runtime) = self.runtime.as_ref() else {
+            return;
+        };
         if let Some(view) = self.thread_view.upgrade() {
             let blocks_for_view = blocks.clone();
             // Client-side title auto-derive: if this is the very first
@@ -1509,31 +1874,7 @@ impl Composer {
             });
         }
         runtime.send_prompt_blocks(blocks);
-        self.is_streaming = true;
-        // US-121 AC #1: stamp the turn-start instant so the activity
-        // bar can compute elapsed time without polling a clock.
-        self.turn_started_at = Some(std::time::Instant::now());
-        self.fatal_error = None;
-        // Clear any stale "Response truncated" / "Cancelled" banner
-        // from the previous turn so the new prompt starts on a clean
-        // status row.
-        self.stop_status = None;
-        self.attach_error = None;
-        self.attachments.clear();
-        self.dismiss_popups(cx);
-        // US-102 AC #5: clear the persisted draft so the next thread
-        // open doesn't repopulate the textarea with text that has
-        // already been sent.
-        self.delete_draft_now();
-        // Defer the text_area clear: `clear` synchronously fires the
-        // on_change callback registered in `install_change_callback`,
-        // which re-enters `composer.update` and panics because the
-        // current Send handler is already holding that borrow.
-        let text_area = self.text_area.clone();
-        cx.defer(move |cx| {
-            text_area.update(cx, |ta, cx| ta.clear(cx));
-        });
-        cx.notify();
+        self.post_send_cleanup(cx);
     }
 
     /// US-106 AC #8: bypass the queue and send `text` immediately.
@@ -1558,10 +1899,9 @@ impl Composer {
         if !self.ensure_runtime(cx) {
             return;
         }
-        let runtime = self
-            .runtime
-            .as_ref()
-            .expect("ensure_runtime returned true so runtime is Some");
+        let Some(runtime) = self.runtime.as_ref() else {
+            return;
+        };
         if let Some(view) = self.thread_view.upgrade() {
             let blocks_for_view = blocks.clone();
             // Client-side title auto-derive: if this is the very first
@@ -1602,24 +1942,7 @@ impl Composer {
             });
         }
         runtime.send_prompt_blocks(blocks);
-        self.is_streaming = true;
-        // US-121 AC #1: stamp the turn-start instant so the activity
-        // bar can compute elapsed time without polling a clock.
-        self.turn_started_at = Some(std::time::Instant::now());
-        self.fatal_error = None;
-        // Clear any stale "Response truncated" / "Cancelled" banner
-        // from the previous turn so the new prompt starts on a clean
-        // status row.
-        self.stop_status = None;
-        self.attach_error = None;
-        self.attachments.clear();
-        self.dismiss_popups(cx);
-        self.delete_draft_now();
-        let text_area = self.text_area.clone();
-        cx.defer(move |cx| {
-            text_area.update(cx, |ta, cx| ta.clear(cx));
-        });
-        cx.notify();
+        self.post_send_cleanup(cx);
     }
 
     /// US-106 AC #6: pop the next queued prompt and dispatch it. Called
@@ -1641,17 +1964,39 @@ impl Composer {
             self.pending_prompts.push_front(prompt);
             return remaining + 1;
         }
-        let runtime = self
-            .runtime
-            .as_ref()
-            .expect("ensure_runtime returned true so runtime is Some");
-        if let Some(view) = self.thread_view.upgrade() {
-            let blocks_for_view = prompt.blocks.clone();
-            view.update(cx, |tv, cx| {
-                tv.send_user_message_blocks(blocks_for_view, cx);
-                tv.begin_assistant_stream(cx);
-            });
-        }
+        // Without a live ThreadView the prompt would stream a reply that
+        // the user can never see. Re-enqueue so a re-mount picks it up,
+        // and surface a fatal_error so we don't get stuck "streaming".
+        let Some(view) = self.thread_view.upgrade() else {
+            self.pending_prompts.push_front(prompt);
+            self.is_streaming = false;
+            self.fatal_error = Some(
+                "Thread view unavailable while dequeuing prompts — open the thread to retry."
+                    .to_string(),
+            );
+            tracing::warn!(
+                target: "paneflow_app::agents::composer",
+                "dequeue_next_prompt: thread_view dropped — re-queued prompt",
+            );
+            return remaining + 1;
+        };
+        // Same defensive guard as the other call sites: re-enqueue the
+        // prompt and bail with a logged warning if the runtime disappeared
+        // between `ensure_runtime` and here. Better to retry on the next
+        // tick than to panic the main thread mid-stream.
+        let Some(runtime) = self.runtime.as_ref() else {
+            self.pending_prompts.push_front(prompt);
+            tracing::warn!(
+                target: "paneflow_app::agents::composer",
+                "dequeue_next_prompt: runtime missing after ensure_runtime — re-queued prompt",
+            );
+            return remaining + 1;
+        };
+        let blocks_for_view = prompt.blocks.clone();
+        view.update(cx, |tv, cx| {
+            tv.send_user_message_blocks(blocks_for_view, cx);
+            tv.begin_assistant_stream(cx);
+        });
         runtime.send_prompt_blocks(prompt.blocks);
         self.is_streaming = true;
         // US-121 AC #1: stamp the turn-start instant so the activity
@@ -1669,6 +2014,14 @@ impl Composer {
     /// Read by the activity bar so it can render "N prompts queued".
     pub fn pending_prompts_len(&self) -> usize {
         self.pending_prompts.len()
+    }
+
+    /// Working directory used to spawn the underlying ACP agent. Used
+    /// by the message renderer to resolve relative markdown link paths
+    /// (`[foo](src/foo.rs)`) into absolute file URIs that
+    /// `cx.open_url` can pass to `xdg-open`.
+    pub fn cwd(&self) -> &std::path::Path {
+        &self.cwd
     }
 
     /// US-107: read-only access for the activity bar's "tool running"
@@ -1713,9 +2066,18 @@ impl Composer {
             return;
         };
         runtime.cancel();
-        if let Some(view) = self.thread_view.upgrade() {
-            view.update(cx, |tv, cx| tv.flush_streaming(cx));
-        }
+        // Defer the `flush_streaming` to the next tick. `flush_streaming`
+        // runs a synchronous SQLite write via `persist_snapshot_now` —
+        // running it inside this `Composer::update` would chain a disk
+        // I/O onto the click handler's frame and contend with any
+        // chunk that arrives on the same pump tick. Letting GPUI hand
+        // the lock back first keeps the click handler short.
+        let view = self.thread_view.clone();
+        cx.defer(move |cx| {
+            if let Some(view) = view.upgrade() {
+                view.update(cx, |tv, cx| tv.flush_streaming(cx));
+            }
+        });
         // We leave `is_streaming = true` until TurnEnded confirms;
         // the agent still owes a stop_reason notification, so the
         // Stop button stays visible to absorb a double-click.
@@ -1729,11 +2091,18 @@ impl Composer {
             cx.notify();
             return;
         }
+        // Drop the Codex-models cache: the new agent has a different
+        // model list (or no list, in Claude's case).
+        self.cached_codex_models = None;
         self.agent_kind = new_kind;
         // Drop the existing runtime so the new agent gets a fresh
         // ACP session. Clear everything that's CLI-specific so the
         // pills don't show stale labels during the spawn window.
         self.runtime = None;
+        // Tear down the event drain task tied to the old receiver --
+        // ensure_runtime on the new agent will start a fresh task
+        // bound to the new SessionRuntime's receiver.
+        self._event_task = None;
         self.modes.clear();
         self.current_mode_id = None;
         self.models.clear();
@@ -1743,7 +2112,10 @@ impl Composer {
         // from the previous turn so the new prompt starts on a clean
         // status row.
         self.stop_status = None;
-        self.show_agent_picker = false;
+        // Close *every* open popup, not just the agent picker — slash
+        // menu, attach menu, mention list and the sibling pills would
+        // otherwise dangle over a freshly-swapped agent surface.
+        self.dismiss_popups(cx);
         // US-112 AC #4: the agent picker mid-thread swap means the
         // old agent's slash commands are no longer authoritative.
         // Drop the cache so the next `/` keystroke shows only
@@ -1871,6 +2243,9 @@ impl Composer {
         // Persist as the next-open default so a restart re-applies
         // the same profile (AC #8).
         super::panel_config::save_default_profile_to_disk(Some(profile.name));
+        // Profile state may have changed (e.g. a built-in override
+        // was newly applied); invalidate the picker cache.
+        self.cached_profiles = None;
         cx.notify();
     }
 
@@ -1913,6 +2288,7 @@ impl Composer {
         self.current_profile_name = Some(trimmed.clone());
         super::panel_config::save_default_profile_to_disk(Some(trimmed));
         self.show_profile_picker = false;
+        self.cached_profiles = None;
         cx.notify();
     }
 
@@ -1957,6 +2333,7 @@ impl Composer {
             self.current_profile_name = None;
             super::panel_config::save_default_profile_to_disk(None);
         }
+        self.cached_profiles = None;
         cx.notify();
     }
 
@@ -2007,30 +2384,36 @@ impl Composer {
                 return;
             };
             let path = handle.path().to_path_buf();
+            // Read the image off-thread — a 10 MB file on a slow disk
+            // would otherwise stall the GPUI main thread for the full
+            // duration of the read.
+            let read_path = path.clone();
+            let read_result = smol::unblock(move || std::fs::read(&read_path)).await;
             let Some(this) = weak.upgrade() else {
                 return;
             };
             cx_async.update(|cx| {
-                this.update(cx, |composer, cx| {
-                    composer.complete_image_attach(path, cx);
-                })
+                this.update(cx, |composer, cx| match read_result {
+                    Ok(bytes) => composer.complete_image_attach(path, bytes, cx),
+                    Err(err) => {
+                        composer.attach_error = Some(format!("Couldn't read image: {err}"));
+                        cx.notify();
+                    }
+                });
             });
         })
         .detach();
     }
 
-    /// Read the picked image off disk, encode, and stash a chip. The
-    /// rfd dialog returned synchronously; this method completes the
-    /// flow with bounds checking + mime detection.
-    fn complete_image_attach(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(err) => {
-                self.attach_error = Some(format!("Couldn't read image: {err}"));
-                cx.notify();
-                return;
-            }
-        };
+    /// Encode the already-read image bytes and stash a chip. Called
+    /// from the async picker / drop pipelines so the disk read never
+    /// runs on the GPUI main thread.
+    fn complete_image_attach(&mut self, path: PathBuf, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        if self.attachments.len() >= MAX_ATTACHMENTS {
+            self.attach_error = Some(attachment_limit_message());
+            cx.notify();
+            return;
+        }
         if bytes.len() as u64 > super::composer_ext::MAX_IMAGE_BYTES {
             self.attach_error = Some(image_too_large_message());
             cx.notify();
@@ -2053,6 +2436,7 @@ impl Composer {
             block,
         });
         self.attach_error = None;
+        self.refresh_has_content_cache(cx);
         cx.notify();
     }
 
@@ -2084,6 +2468,11 @@ impl Composer {
     }
 
     fn complete_file_attach(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.attachments.len() >= MAX_ATTACHMENTS {
+            self.attach_error = Some(attachment_limit_message());
+            cx.notify();
+            return;
+        }
         let block = resource_block_for_path(&path);
         let label = label_for_path(&path, &self.cwd);
         self.attachments.push(PendingAttachment {
@@ -2092,6 +2481,7 @@ impl Composer {
             block,
         });
         self.attach_error = None;
+        self.refresh_has_content_cache(cx);
         cx.notify();
     }
 
@@ -2114,9 +2504,20 @@ impl Composer {
         if paths.is_empty() {
             return;
         }
+        // Phase 1 (sync, main thread): classify each path and apply
+        // anything that doesn't need I/O — folders, file resource
+        // links, classification failures. Image paths are collected
+        // for the async read below.
         let mut errors: Vec<String> = Vec::new();
         let mut folder_count = 0_usize;
+        let mut skipped_for_limit = 0_usize;
+        let mut images_to_read: Vec<(PathBuf, &'static str)> = Vec::new();
+        let cwd_snapshot = self.cwd.clone();
         for path in paths {
+            if self.attachments.len() + images_to_read.len() >= MAX_ATTACHMENTS {
+                skipped_for_limit += 1;
+                continue;
+            }
             match classify_dropped_path(&path) {
                 DropClassification::DirectoryRejected => {
                     folder_count += 1;
@@ -2130,46 +2531,11 @@ impl Composer {
                     ));
                 }
                 DropClassification::Image { mime } => {
-                    let bytes = match std::fs::read(&path) {
-                        Ok(b) => b,
-                        Err(err) => {
-                            errors.push(format!(
-                                "Couldn't read image {}: {err}",
-                                label_for_path(&path, &self.cwd)
-                            ));
-                            continue;
-                        }
-                    };
-                    if bytes.len() as u64 > super::composer_ext::MAX_IMAGE_BYTES {
-                        errors.push(format!(
-                            "{}: {}",
-                            label_for_path(&path, &self.cwd),
-                            image_too_large_message(),
-                        ));
-                        continue;
-                    }
-                    let Some(block) = image_block_from_bytes(&bytes, mime) else {
-                        errors.push(format!(
-                            "{}: {}",
-                            label_for_path(&path, &self.cwd),
-                            image_too_large_message(),
-                        ));
-                        continue;
-                    };
-                    let label = path
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| path.display().to_string());
-                    self.attachments.push(PendingAttachment {
-                        label,
-                        kind: AttachmentKind::Image,
-                        block,
-                    });
+                    images_to_read.push((path, mime));
                 }
                 DropClassification::File => {
                     let block = resource_block_for_path(&path);
-                    let label = label_for_path(&path, &self.cwd);
+                    let label = label_for_path(&path, &cwd_snapshot);
                     self.attachments.push(PendingAttachment {
                         label,
                         kind: AttachmentKind::File,
@@ -2185,12 +2551,106 @@ impl Composer {
                 format!("{folder_count} folders skipped (folders are not supported as attachments)")
             });
         }
+        if skipped_for_limit > 0 {
+            errors.push(format!(
+                "{skipped_for_limit} attachment(s) skipped — limit of {MAX_ATTACHMENTS} reached",
+            ));
+        }
+        // Surface the synchronous-phase errors first so the user sees
+        // folder/limit feedback immediately. Image-read errors will be
+        // merged in once the async reads complete.
         self.attach_error = if errors.is_empty() {
             None
         } else {
             Some(errors.join(" · "))
         };
+        self.refresh_has_content_cache(cx);
         cx.notify();
+
+        // Phase 2 (async, background): read all dropped images off
+        // the GPUI main thread. A 9 MB drop on a slow disk would
+        // otherwise jank the textarea for the duration of the read.
+        if images_to_read.is_empty() {
+            return;
+        }
+        let weak = cx.weak_entity();
+        cx.spawn(async move |_, cx_async: &mut AsyncApp| {
+            let cwd_for_async = cwd_snapshot.clone();
+            // Read every image off-thread and pair with its mime.
+            let results = smol::unblock(move || {
+                images_to_read
+                    .into_iter()
+                    .map(|(path, mime)| {
+                        let bytes = std::fs::read(&path);
+                        (path, mime, bytes)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await;
+            cx_async.update(|cx| {
+                let _ = weak.update(cx, |composer, cx| {
+                    let mut extra_errors: Vec<String> = Vec::new();
+                    for (path, mime, read) in results {
+                        if composer.attachments.len() >= MAX_ATTACHMENTS {
+                            extra_errors.push(format!(
+                                "{}: attachment limit reached",
+                                label_for_path(&path, &cwd_for_async)
+                            ));
+                            continue;
+                        }
+                        let bytes = match read {
+                            Ok(b) => b,
+                            Err(err) => {
+                                extra_errors.push(format!(
+                                    "Couldn't read image {}: {err}",
+                                    label_for_path(&path, &cwd_for_async)
+                                ));
+                                continue;
+                            }
+                        };
+                        if bytes.len() as u64 > super::composer_ext::MAX_IMAGE_BYTES {
+                            extra_errors.push(format!(
+                                "{}: {}",
+                                label_for_path(&path, &cwd_for_async),
+                                image_too_large_message(),
+                            ));
+                            continue;
+                        }
+                        let Some(block) = image_block_from_bytes(&bytes, mime) else {
+                            extra_errors.push(format!(
+                                "{}: {}",
+                                label_for_path(&path, &cwd_for_async),
+                                image_too_large_message(),
+                            ));
+                            continue;
+                        };
+                        let label = path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| path.display().to_string());
+                        composer.attachments.push(PendingAttachment {
+                            label,
+                            kind: AttachmentKind::Image,
+                            block,
+                        });
+                    }
+                    if !extra_errors.is_empty() {
+                        let prefix = composer
+                            .attach_error
+                            .clone()
+                            .filter(|s| !s.is_empty())
+                            .map(|s| format!("{s} · "))
+                            .unwrap_or_default();
+                        composer.attach_error =
+                            Some(format!("{prefix}{}", extra_errors.join(" · ")));
+                    }
+                    composer.refresh_has_content_cache(cx);
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
     }
 
     /// AC: "Insert file from current project tree" -- opens the file
@@ -2259,6 +2719,7 @@ impl Composer {
     pub fn remove_attachment(&mut self, idx: usize, cx: &mut Context<Self>) {
         if idx < self.attachments.len() {
             self.attachments.remove(idx);
+            self.refresh_has_content_cache(cx);
             cx.notify();
         }
     }
@@ -2524,7 +2985,12 @@ impl Composer {
     ///   enqueues. `Ctrl+Shift+Enter` (handled by the TextArea) bypasses
     ///   the queue and sends immediately.
     fn render_send_button(&self, ui: crate::theme::UiColors, cx: &mut Context<Self>) -> AnyElement {
-        let has_content = !self.text_area.read(cx).is_empty() || !self.attachments.is_empty();
+        // Use the cached flag instead of re-reading the TextArea entity
+        // from the render pass. The cache is kept in sync by
+        // `on_text_change` (text edits) and by `refresh_has_content_cache`
+        // at every attachment mutation point.
+        let _ = cx; // cx no longer needed for has_content; kept for symmetry.
+        let has_content = self.has_content_cached;
         let state = send_button_state(self.is_streaming, has_content);
 
         // All four states share the same ghost look (no bg fill,
@@ -2935,11 +3401,17 @@ impl Composer {
     /// Custom rows carry a trailing "×" delete button per AC #7;
     /// built-ins do not.
     fn render_profile_picker(
-        &self,
+        &mut self,
         ui: crate::theme::UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let all = all_profiles();
+        // Hydrate the cache on first open. Hot path (60 fps while the
+        // popover is visible) becomes a no-op after the initial fill;
+        // invalidations happen on commit/delete/apply/agent-switch.
+        if self.cached_profiles.is_none() {
+            self.cached_profiles = Some(all_profiles());
+        }
+        let all = self.cached_profiles.clone().unwrap_or_else(all_profiles);
         let mut col = div()
             .id("composer-profile-panel")
             .flex()
@@ -3518,7 +3990,12 @@ impl Composer {
 
 impl Render for Composer {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui = crate::theme::ui_colors();
+        // Snapshot theme once for this render. The composer's many
+        // sub-render helpers each used to call `ui_colors()` (which
+        // re-locks the global theme cache); now they receive `ui` as
+        // a parameter. Cuts ~5+ mutex acquisitions per frame.
+        let theme = crate::theme::active_theme();
+        let ui = crate::theme::ui_colors_with(&theme);
         let model_label = self
             .current_model_id
             .as_ref()
@@ -3581,7 +4058,20 @@ impl Render for Composer {
             // disk cache) working through the original ACP path.
             let options: Vec<(String, String)> = match self.agent_kind {
                 AgentKind::Codex => {
-                    let cached = read_codex_models();
+                    // Codex: read the deduplicated base-model list from
+                    // `~/.codex/models_cache.json` once per SessionReady
+                    // and reuse it for every subsequent picker frame.
+                    // Without the in-memory cache, the model popover
+                    // would re-parse the JSON file 60× / second.
+                    if self.cached_codex_models.is_none() {
+                        let raw = read_codex_models();
+                        let parsed: Vec<ModelChoice> = raw
+                            .into_iter()
+                            .map(|(id, name)| ModelChoice { id, name })
+                            .collect();
+                        self.cached_codex_models = Some(parsed);
+                    }
+                    let cached = self.cached_codex_models.as_ref().unwrap();
                     if cached.is_empty() {
                         self.models
                             .iter()
@@ -3589,6 +4079,9 @@ impl Render for Composer {
                             .collect()
                     } else {
                         cached
+                            .iter()
+                            .map(|m| (m.id.clone(), m.name.clone()))
+                            .collect()
                     }
                 }
                 _ => self
@@ -3632,11 +4125,52 @@ impl Render for Composer {
 
         let status_row: Option<AnyElement> = self.fatal_error.as_ref().map(|err| {
             div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
                 .text_size(px(11.))
                 .text_color(rgb(0xff8080))
                 .px(px(2.))
                 .py(px(2.))
-                .child(err.clone())
+                .child(div().flex_1().child(err.clone()))
+                .child(
+                    div()
+                        .id("composer-fatal-retry")
+                        .px(px(6.))
+                        .py(px(2.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .border_1()
+                        .border_color(rgb(0xff8080))
+                        .text_color(rgb(0xff8080))
+                        .child("Retry")
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                            // Wipe the message so the next state transition
+                            // can render cleanly; ensure_runtime sets a new
+                            // fatal_error if the respawn itself fails.
+                            this.fatal_error = None;
+                            let _ = this.ensure_runtime(cx);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .id("composer-fatal-dismiss")
+                        .w(px(18.))
+                        .h(px(18.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_color(rgb(0xff8080))
+                        .child("×")
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                            this.fatal_error = None;
+                            cx.notify();
+                        })),
+                )
                 .into_any_element()
         });
 
@@ -3663,11 +4197,32 @@ impl Render for Composer {
         // drop. Cleared on the next prompt submission.
         let stop_status_row: Option<AnyElement> = self.stop_status.map(|msg| {
             div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
                 .text_size(px(11.))
                 .text_color(ui.muted)
                 .px(px(2.))
                 .py(px(2.))
-                .child(msg)
+                .child(div().flex_1().child(msg))
+                .child(
+                    div()
+                        .id("composer-stop-status-dismiss")
+                        .w(px(18.))
+                        .h(px(18.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_color(ui.muted)
+                        .child("×")
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                            this.stop_status = None;
+                            cx.notify();
+                        })),
+                )
                 .into_any_element()
         });
 

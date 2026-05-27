@@ -40,10 +40,9 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{Context, WeakEntity};
+use gpui::{Context, Task, WeakEntity};
 use paneflow_acp::{AgentDiscovery, AgentKind};
 
-use crate::agents::composer::Composer;
 use crate::agents::thread_view::{ThreadView, TitleReplacePolicy, TitleSuggested};
 
 /// Verbatim from Zed's `summarize_thread_prompt.txt`
@@ -61,7 +60,7 @@ const SUMMARIZE_TIMEOUT: Duration = Duration::from_secs(60);
 /// truncate at the first newline / hard limit before storing.
 const MAX_TITLE_CHARS: usize = 80;
 
-/// Inputs for [`spawn_thread_title_summarization`]. Grouped so the
+/// Inputs for [`summarize_thread_title_task`]. Grouped so the
 /// trigger call site at the composer's `TurnEnded` handler stays
 /// readable and so clippy's `too_many_arguments` lint doesn't fire.
 pub struct SummarizeRequest {
@@ -81,20 +80,24 @@ pub struct SummarizeRequest {
     pub thread_view: WeakEntity<ThreadView>,
 }
 
-/// Spawn a background task that summarizes the conversation and
+/// Build a background task that summarizes the conversation and
 /// emits the resulting title through `thread_view` once available.
 ///
-/// No-op for agents that already push titles via ACP
-/// `SessionInfoUpdate.title` (today: Claude Code). Codex and any
-/// future agent that doesn't natively summarize falls into this
-/// path.
+/// Returns the [`Task<()>`] so [`ThreadView`] can park it in
+/// `pending_title_generation` and cancel a previous in-flight task
+/// before spawning a new one. Cancellation is what Zed's
+/// `pending_title_generation` guard at `crates/agent/src/thread.rs:962`
+/// gives for free — dropping the `Task` aborts the polling so two
+/// concurrent `claude -p` subprocesses can't pile up on a fast retry.
 ///
-/// The task is tied to the Composer's lifecycle via `cx.spawn` -- if
-/// the user closes the thread while the subprocess is in flight,
-/// the task is dropped and the child `claude` process is left to
-/// the OS reaper (it'll finish or be killed when Paneflow exits;
-/// the title work is best-effort and nothing else depends on it).
-pub fn spawn_thread_title_summarization(req: SummarizeRequest, cx: &mut Context<Composer>) {
+/// Returns `None` for agents that already push titles via ACP
+/// `SessionInfoUpdate.title` (today: Claude Code) or when the
+/// `claude` CLI is missing — caller should treat the missing task as
+/// "nothing to do, leave the auto-derived title in place".
+pub fn summarize_thread_title_task(
+    req: SummarizeRequest,
+    cx: &mut Context<ThreadView>,
+) -> Option<Task<()>> {
     let SummarizeRequest {
         agent_kind,
         cwd,
@@ -108,7 +111,7 @@ pub fn spawn_thread_title_summarization(req: SummarizeRequest, cx: &mut Context<
     // re-running summarization on top of it would burn tokens for
     // a strictly worse result.
     if matches!(agent_kind, AgentKind::ClaudeCode) {
-        return;
+        return None;
     }
     // We require the `claude` CLI to be on PATH (Claude Code
     // install). Most Paneflow users running Codex also have Claude
@@ -122,7 +125,7 @@ pub fn spawn_thread_title_summarization(req: SummarizeRequest, cx: &mut Context<
                 target: "paneflow_app::agents::title_summarizer",
                 "claude CLI not on PATH; skipping background title summarization for {agent_kind:?} thread"
             );
-            return;
+            return None;
         }
     };
     let prompt_body = format!(
@@ -130,7 +133,7 @@ pub fn spawn_thread_title_summarization(req: SummarizeRequest, cx: &mut Context<
         user = user_prompt.trim(),
         assistant = assistant_response.trim(),
     );
-    cx.spawn(async move |_weak_composer, cx_async| {
+    let task = cx.spawn(async move |_weak_view, cx_async| {
         let title =
             match smol::unblock(move || run_claude_summary(&claude_path, &cwd, &prompt_body)).await
             {
@@ -140,10 +143,22 @@ pub fn spawn_thread_title_summarization(req: SummarizeRequest, cx: &mut Context<
                         target: "paneflow_app::agents::title_summarizer",
                         "title summarization failed for {agent_kind:?}: {err:#}"
                     );
+                    // Surface the failure on the ThreadView so the UI / future
+                    // retry logic can react instead of silently swallowing.
+                    cx_async.update(|cx| {
+                        let _ = thread_view.update(cx, |tv, cx| {
+                            tv.note_title_generation_failed(cx);
+                        });
+                    });
                     return;
                 }
             };
         let Some(clean) = crate::project::clean_sidebar_title(&title) else {
+            cx_async.update(|cx| {
+                let _ = thread_view.update(cx, |tv, cx| {
+                    tv.note_title_generation_failed(cx);
+                });
+            });
             return;
         };
         // Cap at the first newline + hard length cap -- the prompt
@@ -163,6 +178,11 @@ pub fn spawn_thread_title_summarization(req: SummarizeRequest, cx: &mut Context<
             first_line
         };
         if bounded.is_empty() {
+            cx_async.update(|cx| {
+                let _ = thread_view.update(cx, |tv, cx| {
+                    tv.note_title_generation_failed(cx);
+                });
+            });
             return;
         }
         let suggested = TitleSuggested {
@@ -170,19 +190,31 @@ pub fn spawn_thread_title_summarization(req: SummarizeRequest, cx: &mut Context<
             policy: TitleReplacePolicy::OnlyIfStillEqualTo(title_snapshot),
         };
         cx_async.update(|cx| {
-            let _ = thread_view.update(cx, |_tv, cx| {
+            let _ = thread_view.update(cx, |tv, cx| {
+                tv.note_title_generation_succeeded();
                 cx.emit(suggested);
             });
         });
-    })
-    .detach();
+    });
+    Some(task)
 }
 
-/// Find the `claude` binary on PATH using the same `PathProbe`
-/// AgentDiscovery uses for the agents view. Returns `None` if
-/// Claude Code isn't installed -- the summarizer no-ops in that
-/// case rather than guessing at an alternate provider.
-fn resolve_claude_binary(_discovery: &Arc<AgentDiscovery>) -> Option<PathBuf> {
+/// Find the `claude` binary on PATH using the same `AgentDiscovery`
+/// the agents view uses. Falls back to a fresh `which::which`
+/// lookup if discovery hasn't populated yet — Paneflow's GUI launch
+/// (especially on macOS) augments PATH at startup, so going through
+/// the discovery cache picks up that PATH even when `which::which`
+/// from a bare `Command` wouldn't. Returns `None` if Claude Code
+/// isn't installed -- the summarizer no-ops in that case rather
+/// than guessing at an alternate provider.
+fn resolve_claude_binary(discovery: &Arc<AgentDiscovery>) -> Option<PathBuf> {
+    if let Some(agent) = discovery
+        .list()
+        .into_iter()
+        .find(|a| a.kind == AgentKind::ClaudeCode)
+    {
+        return Some(agent.binary_path);
+    }
     which::which("claude").ok()
 }
 
@@ -230,22 +262,29 @@ fn run_claude_summary(claude_path: &Path, cwd: &Path, prompt_body: &str) -> anyh
     // completion or the deadline. `wait_with_output` doesn't accept
     // a timeout natively and we'd rather kill an over-long call
     // than hold a zombie subprocess.
+    //
+    // Once `try_wait()` returns `Ok(Some(status))`, the child has been
+    // reaped — calling `child.wait_with_output()` after that performs
+    // a second `waitpid`, which on Linux returns `ECHILD` and silently
+    // produces empty stdout. Read stdout/stderr directly from the
+    // already-collected child handles instead.
     let deadline = Instant::now() + SUMMARIZE_TIMEOUT;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
+                use std::io::Read as _;
+                let mut stdout = String::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = out.read_to_string(&mut stdout);
+                }
                 if !status.success() {
                     let mut stderr = String::new();
                     if let Some(mut err) = child.stderr.take() {
-                        use std::io::Read as _;
                         let _ = err.read_to_string(&mut stderr);
                     }
                     anyhow::bail!("claude exited with status {status}: {}", stderr.trim());
                 }
-                let output = child
-                    .wait_with_output()
-                    .map_err(|e| anyhow::anyhow!("wait_with_output after success: {e}"))?;
-                return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+                return Ok(stdout);
             }
             Ok(None) => {
                 if Instant::now() >= deadline {
