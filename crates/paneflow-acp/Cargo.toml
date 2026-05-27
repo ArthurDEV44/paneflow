@@ -15,6 +15,20 @@ description = "ACP (Agent Client Protocol) wrappers for Paneflow's Agents view: 
 agent-client-protocol = { version = "0.12", features = [
     "unstable_session_model",
     "unstable_session_usage",
+    # Needed to declare `AuthCapabilities` in `InitializeRequest` --
+    # matches Zed's initialize at `crates/agent_servers/src/acp.rs:888`.
+    # CLI agents (Codex, Claude Code) gate the richness of their
+    # streaming on what the client advertises; without these
+    # capabilities Codex skips `AgentThoughtChunk` reasoning streams
+    # entirely (so we never render "Thinking" blocks) and falls back
+    # to a more minimal response style.
+    "unstable_auth_methods",
+    # Zed sends `.additional_directories(...)` on every NewSessionRequest
+    # (see `crates/agent_servers/src/acp.rs:1311`). The field signals
+    # "I support multi-root workspaces"; the ACP wrappers (codex-acp,
+    # claude-code-acp) interpret its absence as a stripped-down host
+    # and adopt a terser response style.
+    "unstable_session_additional_directories",
 ] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"

@@ -101,7 +101,13 @@ tokio = { version = "1", features = ["rt", "macros", "io-util", "sync", "time"] 
 # US-016 needs to construct `InitializeRequest`, `PromptRequest`,
 # `CancelNotification`, etc. directly. The feature mirrors the one
 # in `paneflow-acp` so Cargo unifies on the same compiled artifact.
-agent-client-protocol = { version = "0.12", features = ["unstable_session_model"] }
+agent-client-protocol = { version = "0.12", features = [
+    "unstable_session_model",
+    # See paneflow-acp/Cargo.toml -- needed for the auth capability
+    # in `InitializeRequest` so Codex / Claude Code stream rich
+    # responses (incl. reasoning chunks).
+    "unstable_auth_methods",
+] }
 tracing = "0.1"
 log = { version = "0.4.16", features = ["kv_unstable_serde", "serde"] }
 env_logger = "0.11"

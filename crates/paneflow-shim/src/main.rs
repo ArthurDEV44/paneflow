@@ -163,7 +163,18 @@ fn run_real(tool: &str, path: &Path, args: &[OsString]) -> ExitCode {
     let mut cmd = std::process::Command::new(path);
     cmd.args(args)
         .envs(env::vars_os())
-        .env("PANEFLOW_AI_TOOL", tool);
+        .env("PANEFLOW_AI_TOOL", tool)
+        // PANEFLOW_AI_PID — stable session identity propagated to every
+        // `paneflow-ai-hook` invocation fired by claude/codex during this
+        // session. Without it, the server's `Workspace::agent_sessions`
+        // (keyed by PID) collapses every Claude Code into one entry, so
+        // the sidebar shows `Claude thinking` for two concurrent sessions
+        // instead of `Claude thinking +1`. We use the shim's own PID
+        // (process::id()) rather than the child's because (a) the child
+        // PID isn't known until after spawn — too late for an env var on
+        // Command — and (b) the shim outlives the child via `waitpid`,
+        // so the PID stays reachable for the stale-PID sweep.
+        .env("PANEFLOW_AI_PID", std::process::id().to_string());
 
     // Unix only: reset signal disposition + unblock SIGINT in the child.
     //
@@ -323,6 +334,7 @@ fn send_interrupt_stop(hook_path: &Path, tool: &str) {
     let Ok(mut child) = std::process::Command::new(hook_path)
         .arg("Stop")
         .env("PANEFLOW_AI_TOOL", tool)
+        .env("PANEFLOW_AI_PID", std::process::id().to_string())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1260,6 +1272,7 @@ fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> ExitCode {
         .args(args)
         .envs(env::vars_os())
         .env("PANEFLOW_AI_TOOL", "codex")
+        .env("PANEFLOW_AI_PID", std::process::id().to_string())
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -1448,6 +1461,7 @@ fn notify_session_end(tool: &str) {
     let _ = std::process::Command::new(&hook_path)
         .arg("SessionEnd")
         .env("PANEFLOW_AI_TOOL", tool)
+        .env("PANEFLOW_AI_PID", std::process::id().to_string())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

@@ -23,8 +23,9 @@ use std::pin::Pin;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use agent_client_protocol::schema::{
-    AuthenticateRequest, AvailableCommand, CancelNotification, ContentBlock, InitializeRequest,
-    InitializeResponse, LoadSessionRequest, LoadSessionResponse, ModelId, NewSessionRequest,
+    AuthCapabilities, AuthenticateRequest, AvailableCommand, CancelNotification,
+    ClientCapabilities, ContentBlock, FileSystemCapabilities, Implementation, InitializeRequest,
+    InitializeResponse, LoadSessionRequest, LoadSessionResponse, Meta, ModelId, NewSessionRequest,
     NewSessionResponse, PromptRequest, PromptResponse, SessionId, SessionMode, SessionModeId,
     SetSessionModeRequest, SetSessionModelRequest,
 };
@@ -197,10 +198,34 @@ impl AcpConnection {
 impl AgentConnection for AcpConnection {
     fn initialize(&self) -> BoxFuture<'_, anyhow::Result<InitializeResponse>> {
         Box::pin(async move {
+            // Rich client capabilities declaration -- mirrors Zed's
+            // `crates/agent_servers/src/acp.rs:888-904` verbatim so
+            // Codex / Claude Code stream the same level of detail to
+            // Paneflow as they do to Zed. Empirically observed: a bare
+            // `InitializeRequest::new(V1)` (no caps) makes Codex skip
+            // `AgentThoughtChunk` reasoning streams entirely and pick
+            // a terser response style. Declaring fs + terminal + auth
+            // + the `terminal_output` / `terminal-auth` meta flags
+            // unlocks the same behavior the user sees in Zed.
+            let client_caps = ClientCapabilities::new()
+                .fs(FileSystemCapabilities::new()
+                    .read_text_file(true)
+                    .write_text_file(true))
+                .terminal(true)
+                .auth(AuthCapabilities::new().terminal(true))
+                .meta(Meta::from_iter([
+                    ("terminal_output".into(), true.into()),
+                    ("terminal-auth".into(), true.into()),
+                ]));
+            let client_info =
+                Implementation::new("paneflow", env!("CARGO_PKG_VERSION").to_string())
+                    .title("Paneflow".to_string());
             self.connection
-                .send_request(InitializeRequest::new(
-                    agent_client_protocol::schema::ProtocolVersion::V1,
-                ))
+                .send_request(
+                    InitializeRequest::new(agent_client_protocol::schema::ProtocolVersion::V1)
+                        .client_capabilities(client_caps)
+                        .client_info(client_info),
+                )
                 .block_task()
                 .await
                 .map_err(|err| anyhow::anyhow!("initialize failed: {err}"))
@@ -209,9 +234,23 @@ impl AgentConnection for AcpConnection {
 
     fn new_session(&self, cwd: PathBuf) -> BoxFuture<'_, anyhow::Result<NewSessionResponse>> {
         Box::pin(async move {
+            // Explicitly send empty `mcp_servers` + `additional_directories`
+            // even when Paneflow has nothing to put in them. Mirrors Zed's
+            // `into_new_session_request` (`crates/agent_servers/src/acp.rs:
+            // 1311`). Why this matters: when these fields are missing from
+            // the JSON payload, the ACP wrappers (codex-acp, claude-code-
+            // acp) treat the client as a stripped-down host and pick a
+            // terser response style -- the user sees the LLM end its turn
+            // prematurely with much less reasoning. Sending the keys as
+            // empty arrays signals "I implement these surfaces, just
+            // nothing configured right now," which unlocks the same
+            // response richness Zed gets.
+            let request = NewSessionRequest::new(cwd)
+                .additional_directories(Vec::new())
+                .mcp_servers(Vec::new());
             let response = self
                 .connection
-                .send_request(NewSessionRequest::new(cwd))
+                .send_request(request)
                 .block_task()
                 .await
                 .map_err(|err| anyhow::anyhow!("new_session failed: {err}"))?;

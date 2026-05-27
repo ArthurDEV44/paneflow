@@ -32,9 +32,17 @@ impl Default for PacingConfig {
 
 /// Accumulates incoming chunks and drains them in even slices, one per
 /// [`tick`][StreamingBuffer::tick] call.
+///
+/// `pending_chars` mirrors `pending.chars().count()` and is maintained
+/// incrementally on every push / tick / flush. The previous design
+/// called `chars().count()` on every tick, which is O(n) over the
+/// pending buffer; under sustained streaming bursts that becomes the
+/// hottest allocation-adjacent path in the agents UI. Keeping the
+/// count in sync drops that cost to O(1) per tick.
 #[derive(Debug)]
 pub struct StreamingBuffer {
     pending: String,
+    pending_chars: usize,
     pacing: PacingConfig,
     current_tick: u64,
     completion_tick: Option<u64>,
@@ -44,6 +52,7 @@ impl StreamingBuffer {
     pub fn new(pacing: PacingConfig) -> Self {
         Self {
             pending: String::new(),
+            pending_chars: 0,
             pacing,
             current_tick: 0,
             completion_tick: None,
@@ -63,6 +72,7 @@ impl StreamingBuffer {
         }
         let was_idle = self.pending.is_empty();
         self.pending.push_str(chunk);
+        self.pending_chars += chunk.chars().count();
         let new_deadline = self.current_tick.saturating_add(self.target_ticks());
         self.completion_tick = Some(if was_idle {
             new_deadline
@@ -88,7 +98,7 @@ impl StreamingBuffer {
         }
         let deadline = self.completion_tick.unwrap_or(self.current_tick);
         let ticks_left = deadline.saturating_sub(self.current_tick).max(1) as usize;
-        let total = self.pending.chars().count();
+        let total = self.pending_chars;
         let per_tick = total.div_ceil(ticks_left).clamp(1, total);
         let split = self
             .pending
@@ -97,8 +107,11 @@ impl StreamingBuffer {
             .map(|(i, _)| i)
             .unwrap_or(self.pending.len());
         let revealed = self.pending[..split].to_string();
+        let revealed_chars = revealed.chars().count();
         self.pending.drain(..split);
+        self.pending_chars = self.pending_chars.saturating_sub(revealed_chars);
         if self.pending.is_empty() {
+            self.pending_chars = 0;
             self.completion_tick = None;
         }
         revealed
@@ -109,6 +122,7 @@ impl StreamingBuffer {
     /// orphaning content in the buffer.
     pub fn flush(&mut self) -> String {
         self.completion_tick = None;
+        self.pending_chars = 0;
         std::mem::take(&mut self.pending)
     }
 
@@ -117,7 +131,7 @@ impl StreamingBuffer {
     }
 
     pub fn pending_chars(&self) -> usize {
-        self.pending.chars().count()
+        self.pending_chars
     }
 
     fn target_ticks(&self) -> u64 {
