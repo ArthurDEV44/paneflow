@@ -512,28 +512,47 @@ impl TerminalSession for AgentTerminalSession {
     fn release(&self) -> BoxFuture<'_, Result<(), TerminalError>> {
         let shared = Arc::clone(&self.shared);
         Box::pin(async move {
-            // Drop the master fd to close the PTY; the reader thread
-            // will see EOF and exit cleanly.
-            {
-                let mut guard = match shared.master.lock() {
-                    Ok(g) => g,
-                    Err(p) => p.into_inner(),
-                };
-                *guard = None;
-            }
-            // If the child has not exited yet, kill it.
-            {
-                let mut guard = match shared.child.lock() {
-                    Ok(g) => g,
-                    Err(p) => p.into_inner(),
-                };
-                if let ChildState::Running(c) = &mut *guard {
-                    let _ = c.kill();
-                }
-                *guard = ChildState::Released;
-            }
+            release_sync(&shared);
             Ok(())
         })
+    }
+}
+
+/// Synchronous body of [`AgentTerminalSession::release`]. Closes the
+/// master fd (drives the reader thread to EOF) and signals the child
+/// if it is still running. Idempotent: the `Option::take`-style
+/// discipline on `master` and the `ChildState::Released` terminal
+/// state make repeat calls cheap no-ops. Used both by the async
+/// `TerminalSession::release` (ACP-driven path) and by the `Drop`
+/// impl below (panic / unexpected-shutdown path).
+fn release_sync(shared: &SessionShared) {
+    {
+        let mut guard = match shared.master.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        *guard = None;
+    }
+    {
+        let mut guard = match shared.child.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let ChildState::Running(c) = &mut *guard {
+            let _ = c.kill();
+        }
+        *guard = ChildState::Released;
+    }
+}
+
+impl Drop for AgentTerminalSession {
+    fn drop(&mut self) {
+        // If the ACP-driven `release()` already ran, this is a cheap
+        // no-op (Option::take leaves None, ChildState::Released stays).
+        // If the runtime task panicked before getting a chance to call
+        // release, this is the last guard against a leaked master fd
+        // and a reader thread blocked on read().
+        release_sync(&self.shared);
     }
 }
 
@@ -666,5 +685,84 @@ mod strip_ansi_tests {
             out,
             "   Compiling paneflow v0.3.2\n    Finished `dev` profile"
         );
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+    use portable_pty::{PtySize, native_pty_system};
+
+    /// US-009: dropping an `AgentTerminalSession` without first calling
+    /// `release()` must still close the master fd and mark the child
+    /// state as terminal. Verified by state observation -- the master
+    /// `Option` flips to `None` (its `Box<dyn MasterPty>` is dropped,
+    /// closing the underlying fd) and the child mutex holds `Released`.
+    #[test]
+    fn agent_terminal_drop_releases_master_fd() {
+        let pty = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+        let shared = Arc::new(SessionShared {
+            buffer: Mutex::new(OutputBuffer::with_limit(1024)),
+            // No child spawned -- the master-close half is what this
+            // test guards. The Running -> Released transition is
+            // already exercised by the production release() path.
+            child: Mutex::new(ChildState::Released),
+            master: Mutex::new(Some(pty.master)),
+        });
+        let inspect = Arc::clone(&shared);
+
+        // Pre-drop sanity: master is Some.
+        assert!(
+            inspect.master.lock().expect("master lock").is_some(),
+            "fixture should start with a live master fd",
+        );
+
+        let session = AgentTerminalSession {
+            id: TerminalId::from("test-agent-term-drop".to_string()),
+            shared,
+        };
+        drop(session);
+
+        assert!(
+            inspect.master.lock().expect("master lock").is_none(),
+            "Drop must close the master fd via Option::take",
+        );
+        assert!(
+            matches!(
+                &*inspect.child.lock().expect("child lock"),
+                ChildState::Released
+            ),
+            "Drop must mark child state Released",
+        );
+    }
+
+    /// US-009: calling `release_sync` after `Drop` has already run is a
+    /// safe no-op -- the `Option::take` discipline on `master` and the
+    /// `ChildState::Released` terminal state make a second call cheap.
+    #[test]
+    fn release_sync_is_idempotent() {
+        let pty = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+        let shared = Arc::new(SessionShared {
+            buffer: Mutex::new(OutputBuffer::with_limit(1024)),
+            child: Mutex::new(ChildState::Released),
+            master: Mutex::new(Some(pty.master)),
+        });
+        release_sync(&shared);
+        release_sync(&shared); // must not panic, must not double-close
+        assert!(shared.master.lock().expect("master lock").is_none());
     }
 }
