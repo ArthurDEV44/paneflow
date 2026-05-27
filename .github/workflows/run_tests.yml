@@ -36,22 +36,48 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  # US-018 AC1 + AC5: compute whether this event touches Rust-relevant code
-  # so the (expensive) macos-14 runner only spins up when it would actually
-  # catch a regression. Exports `rust=true|false`; downstream macos-check
-  # job gates on it.
+  # Mirrors Zed's `orchestrate` job pattern (run_tests.yml in
+  # zed-industries/zed): a cheap ubuntu-latest filter that gates every
+  # expensive downstream leg on what the PR actually touched.
   #
-  # Filter scope (AC1): Rust sources and their manifests, plus this very
-  # workflow file — because a PR that edits run_tests.yml to tune the macOS gate
-  # MUST also exercise the gate it's tuning, otherwise "fix the CI" PRs
-  # self-skip and ship broken.
-  changes:
+  # Outputs:
+  #   - rust:             any Rust source or manifest changed
+  #   - rendering:        the GPUI paint / font / theme paths the visual
+  #                       smoke jobs are designed to protect
+  #   - changed_packages: space-separated cargo workspace member names
+  #                       whose source tree changed. Empty string means
+  #                       "workspace-wide change OR cannot compute" —
+  #                       downstream consumers must treat empty as
+  #                       "everything changed" (fail-safe). Computed
+  #                       dynamically via `cargo metadata --no-deps`
+  #                       so adding new workspace members requires no
+  #                       workflow update.
+  #
+  # Gating posture (US-018 AC5 etc.): the macos-14 / windows-2022
+  # runners are 14× / 2× pricier than ubuntu-latest and contribute
+  # most of CI wall-clock. The path filter short-circuits them on
+  # docs-only / non-workflow .github/** PRs.
+  #
+  # Filter scope: the workflow file itself is included in `rust` and
+  # `rendering` — a PR that edits run_tests.yml to tune a gate MUST
+  # also exercise that gate, otherwise "fix the CI" PRs self-skip and
+  # ship broken.
+  orchestrate:
     name: Detect changed paths
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      rendering: ${{ steps.filter.outputs.rendering }}
+      changed_packages: ${{ steps.detect_packages.outputs.changed_packages }}
     steps:
+      # fetch-depth tuned for the `detect_packages` git diff below: on a
+      # PR we need enough history to reach the merge-base with the base
+      # branch (~350 commits matches Zed's pattern, comfortably covers
+      # long-running feature branches); on a push to main HEAD~1 is
+      # enough.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 350 || 2 }}
 
       - uses: dorny/paths-filter@v4
         id: filter
@@ -63,15 +89,129 @@ jobs:
               - '**/Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/run_tests.yml'
+            rendering:
+              # GPUI Element + paint pipeline (where c3e2331 lived)
+              - 'src-app/src/terminal/element/**'
+              - 'src-app/src/terminal/view.rs'
+              # Font resolution + embedded fallback wiring
+              - 'src-app/src/fonts.rs'
+              - 'src-app/src/terminal/element/font.rs'
+              # Theme model + active_theme() (affects glyph colors,
+              # contrast, and the resolved family chain on macOS Core
+              # Text + Windows DirectWrite).
+              - 'src-app/src/theme/**'
+              # Window chrome / CSD — affects content rect + DPR on both
+              # macOS (NSWindow) and Windows (HWND).
+              - 'src-app/src/window_chrome/**'
+              # Pane / layout — emits the GPUI flex tree that hosts the
+              # terminal element; a regression here can produce 0-sized
+              # frames that no-op the paint pass without crashing.
+              - 'src-app/src/pane.rs'
+              - 'src-app/src/layout/render.rs'
+              # The workflow itself — a PR editing the smoke jobs must
+              # exercise them.
+              - '.github/workflows/run_tests.yml'
 
-  check:
-    name: Check, Lint & Test
-    # US-004 (prd-v0.2.0-release-hardening): pinned to ubuntu-22.04 to match
-    # release.yml's Linux matrix legs (runs-on: ubuntu-22.04 / ubuntu-22.04-arm)
-    # so a green PR check guarantees the release build environment — same
-    # glibc (2.35), same system library set. Do NOT revert to ubuntu-latest;
-    # GitHub began rolling that label to 24.04 in early 2025 and the drift
-    # would silently diverge CI from release.
+      # Per-package detector. Adapted from Zed's orchestrate step. The
+      # output isn't consumed yet (PaneFlow has 2 crates and `cargo
+      # test --workspace` already runs cheap), but exposing it now lets
+      # future jobs gate per-crate (e.g. when crate count grows or
+      # nextest is adopted). Empty `changed_packages` means "treat as
+      # full rebuild" — fail-safe default.
+      #
+      # cargo + jq are preinstalled on ubuntu-latest. cargo metadata's
+      # output is JSON; jq extracts the member-name × directory map.
+      - id: detect_packages
+        name: Detect changed Cargo packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GITHUB_BASE_REF:-}" ]; then
+            echo "Push event — comparing against HEAD~1"
+            COMPARE_REV="$(git rev-parse HEAD~1 2>/dev/null || true)"
+          else
+            echo "PR event — comparing against merge-base with ${GITHUB_BASE_REF}"
+            git fetch origin "$GITHUB_BASE_REF" --depth=350 || true
+            COMPARE_REV="$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD 2>/dev/null || true)"
+          fi
+
+          if [ -z "$COMPARE_REV" ]; then
+            echo "Cannot determine compare base — treating as full rebuild"
+            echo "changed_packages=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED_FILES="$(git diff --name-only "$COMPARE_REV" "$GITHUB_SHA" || true)"
+          echo "$CHANGED_FILES" | head -20
+
+          # Workspace-wide change → bypass per-package detection. Matches
+          # Zed's pattern: any edit to the toolchain pin, cargo config,
+          # root manifest/lockfile, or workflow files forces a full
+          # rebuild because the change can affect every crate.
+          if echo "$CHANGED_FILES" | grep -qE '^(rust-toolchain\.toml|\.cargo/|Cargo\.lock$|Cargo\.toml$|\.github/workflows/)'; then
+            echo "Workspace-wide change detected — emitting empty changed_packages (treat as full rebuild)"
+            echo "changed_packages=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Build dir→pkg map dynamically from cargo metadata so new
+          # workspace members are auto-detected. manifest_path looks
+          # like `/.../src-app/Cargo.toml` or
+          # `/.../crates/paneflow-config/Cargo.toml`; capture the leaf
+          # directory.
+          DIR_TO_PKG="$(cargo metadata --format-version=1 --no-deps 2>/dev/null \
+            | jq -r '
+                .packages[]
+                | select(.manifest_path | test("/(src-app|crates/[^/]+)/Cargo\\.toml$"))
+                | (.manifest_path | capture("/(?<dir>src-app|crates/[^/]+)/Cargo\\.toml$") | .dir)
+                  + "=" + .name
+              ' || true)"
+          echo "Workspace member map:"
+          echo "$DIR_TO_PKG"
+
+          if [ -z "$DIR_TO_PKG" ]; then
+            echo "cargo metadata returned no members — treating as full rebuild"
+            echo "changed_packages=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # For each member dir, check whether any file under it changed.
+          CHANGED_PKGS=""
+          while IFS='=' read -r dir pkg; do
+            [ -n "$dir" ] || continue
+            if echo "$CHANGED_FILES" | grep -qE "^${dir}/"; then
+              CHANGED_PKGS="${CHANGED_PKGS}${pkg} "
+            fi
+          done <<< "$DIR_TO_PKG"
+
+          CHANGED_PKGS="$(echo "$CHANGED_PKGS" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+          echo "Changed packages: '${CHANGED_PKGS}'"
+          echo "changed_packages=${CHANGED_PKGS}" >> "$GITHUB_OUTPUT"
+
+  # Linux quality gates are split into 3 parallel jobs so the wall-clock
+  # time of the CI run is max(jobs) instead of sum(steps). Previously a
+  # single `check` job ran fmt → clippy → test → release-build → size
+  # budget in series on one runner (~22 min). Splitting into 3 jobs
+  # parallels the work over 3 runners (~max 10-12 min wall-clock on
+  # cold cache). The downside is a marginal cost increase in runner
+  # minutes (each job re-restores the cargo cache); the upside is
+  # faster PR feedback, which is the right tradeoff here.
+  #
+  # Each job pins ubuntu-22.04 (matches release.yml matrix legs, same
+  # glibc 2.35 + system library set — see US-004 in
+  # prd-v0.2.0-release-hardening). Do NOT revert to ubuntu-latest;
+  # GitHub began rolling that label to 24.04 in early 2025 and the
+  # drift would silently diverge CI from release.
+  #
+  # rust-cache keys per job so they don't fight over the same cache
+  # slot. Cold cache → all three populate independently; warm cache
+  # → they read in parallel.
+
+  check_style:
+    name: Style (fmt + clippy)
+    needs: orchestrate
+    if: needs.orchestrate.outputs.rust == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -100,6 +240,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: "v1-rust"
+          key: check_style
 
       - name: Format check
         run: cargo fmt --check
@@ -107,8 +248,74 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
+  run_tests_linux:
+    name: Tests (Linux x86_64)
+    needs: orchestrate
+    if: needs.orchestrate.outputs.rust == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: run_tests_linux
+
       - name: Test
         run: cargo test --workspace
+
+  release_build_linux:
+    name: Release build + binary-size budget (Linux x86_64)
+    needs: orchestrate
+    if: needs.orchestrate.outputs.rust == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: release_build_linux
 
       # US-012 (prd-ai-hooks-cross-platform.md) — the 6-triple matrix
       # requires each job to run `cargo build --workspace --release`.
@@ -199,13 +406,13 @@ jobs:
   # by flipping to `false` and elevating license severity to `deny` in
   # v0.2.2 once the lockfile is audit-clean.
   #
-  # Gate on `changes.rust` for consistency with the `check` job above —
+  # Gate on `orchestrate.rust` for consistency with the `check_*` jobs above —
   # Cargo.toml/Cargo.lock edits are in that filter, so any change that
   # could affect the advisory result triggers the scan.
-  security-audit:
+  security_audit:
     name: Security Audit (cargo-deny)
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: orchestrate
+    if: needs.orchestrate.outputs.rust == 'true'
     runs-on: ubuntu-22.04
     continue-on-error: true
     steps:
@@ -260,14 +467,14 @@ jobs:
   # Fallback: if a PR consistently exceeds 20 min wall time on macos-14,
   # swap to `macos-14-xlarge` (6 vCPU, paid tier) and note the rationale
   # in the PR description per US-001 AC5.
-  macos-check:
+  macos_check:
     name: macOS aarch64 smoke build
-    # US-018 AC5: only run when Rust-relevant files change. `needs: changes`
+    # US-018 AC5: only run when Rust-relevant files change. `needs: orchestrate`
     # waits for the cheap filter job (runs on ubuntu-latest, ~seconds) and
     # short-circuits the 14× pricier macos-14 runner on docs-only /
     # non-workflow .github/** PRs.
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: orchestrate
+    if: needs.orchestrate.outputs.rust == 'true'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
@@ -388,7 +595,7 @@ jobs:
   # compile/sign/notarize, none was visual. This job closes that hole at
   # the PR gate so the regression cannot reach `main`.
   #
-  # Pipeline: download the binary built by `macos-check` → wrap it in
+  # Pipeline: download the binary built by `macos_check` → wrap it in
   # the same `.app` skeleton `release.yml` ships → launch the binary
   # inside the bundle (so Core Text sees the bundle context, exactly
   # like an end-user install) → screencapture → soft OCR sanity check.
@@ -407,10 +614,16 @@ jobs:
   # access — GUI apps launch and render normally, exactly the pattern
   # used by Electron / Flutter / native-Cocoa CI setups.
   # ───────────────────────────────────────────────────────────────────────
-  macos-render-smoke:
+  macos_render_smoke:
     name: macOS aarch64 render smoke (visual)
-    needs: [changes, macos-check]
-    if: needs.changes.outputs.rust == 'true'
+    needs: [orchestrate, macos_check]
+    # Gate on the `rendering` sub-filter (not the broad `rust` filter):
+    # the c3e2331-class regression this job exists to catch can only
+    # ride in on edits to the rendering paths declared by the `changes`
+    # job. A pure config-file or non-render Rust PR cannot regress
+    # macOS Core Text empty-text rendering, so spending 10-15 min on a
+    # macos-14 runner on every such PR is wasted spend.
+    if: needs.orchestrate.outputs.rendering == 'true'
     runs-on: macos-14
     timeout-minutes: 15
     steps:
@@ -514,7 +727,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: macos-render-smoke
+          name: macos_render_smoke
           path: |
             screenshot.png
             paneflow.log
@@ -539,14 +752,14 @@ jobs:
   # cargo's share (keyed on `x86_64-pc-windows-msvc` so Linux/macOS cache
   # slots don't collide); actions/cache covers WiX's ~10 MB global tool
   # install. `timeout-minutes: 30` is a runaway guard, not the SLA.
-  windows-check:
+  windows_check:
     name: Windows x86_64 smoke check
-    # US-003 AC1 + matches macos-check behavior: skip on docs-only PRs so
+    # US-003 AC1 + matches macos_check behavior: skip on docs-only PRs so
     # Windows minutes aren't burned on README tweaks. The filter in the
     # `changes` job already includes .github/workflows/run_tests.yml, so any
     # edit to this file retriggers the gate.
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: orchestrate
+    if: needs.orchestrate.outputs.rust == 'true'
     runs-on: windows-2022
     timeout-minutes: 30
     env:
@@ -677,9 +890,9 @@ jobs:
       - name: cargo build --workspace --release
         run: cargo build --workspace --release --target x86_64-pc-windows-msvc
 
-      # Mirror of the macos-check `Upload aarch64 binary artifact` step:
+      # Mirror of the macos_check `Upload aarch64 binary artifact` step:
       # exposes the just-built `paneflow.exe` as a workflow artifact so
-      # the downstream `windows-render-smoke` job can pull it without
+      # the downstream `windows_render_smoke` job can pull it without
       # paying a second `cargo build` (the cache hit path on subsequent
       # PRs is fast, but the from-scratch path on cold runs is ~5 min).
       - name: Upload x86_64 binary artifact
@@ -694,7 +907,7 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────
   # Visual rendering smoke test — Windows x86_64.
   #
-  # Mirrors `macos-render-smoke` for the Windows GPUI rendering stack
+  # Mirrors `macos_render_smoke` for the Windows GPUI rendering stack
   # (Direct2D / DirectWrite, DX11 backend GA Oct 2025). Catches the
   # same class of regression: a build that compiles + signs cleanly
   # but renders no glyphs because DirectWrite font enumeration silently
@@ -714,10 +927,14 @@ jobs:
   # apps launch and render normally, exactly the pattern used by
   # WPF / WinUI / Electron CI setups.
   # ───────────────────────────────────────────────────────────────────────
-  windows-render-smoke:
+  windows_render_smoke:
     name: Windows x86_64 render smoke (visual)
-    needs: [changes, windows-check]
-    if: needs.changes.outputs.rust == 'true'
+    needs: [orchestrate, windows_check]
+    # Same gating as macos_render_smoke — the rendering sub-filter scopes
+    # this expensive visual leg to PRs that actually touch the GPUI
+    # paint / font / theme paths. See the comment on macos_render_smoke
+    # for the full rationale.
+    if: needs.orchestrate.outputs.rendering == 'true'
     runs-on: windows-2022
     timeout-minutes: 15
     steps:
@@ -800,7 +1017,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-render-smoke
+          name: windows_render_smoke
           path: |
             screenshot.png
             paneflow.log
@@ -811,22 +1028,22 @@ jobs:
   # US-012 (prd-ai-hooks-cross-platform.md) — matrix completion.
   # Existing jobs cover:
   #   * check         — x86_64-unknown-linux-gnu   (Linux x64 full gate)
-  #   * macos-check   — aarch64-apple-darwin       (Apple Silicon full gate)
-  #   * windows-check — x86_64-pc-windows-msvc     (Windows x64 full gate)
+  #   * macos_check   — aarch64-apple-darwin       (Apple Silicon full gate)
+  #   * windows_check — x86_64-pc-windows-msvc     (Windows x64 full gate)
   # The three jobs below close the remaining triples:
-  #   * linux-aarch64-check   — aarch64-unknown-linux-gnu
-  #   * macos-x86_64-check    — x86_64-apple-darwin
-  #   * windows-aarch64-check — aarch64-pc-windows-msvc (check-only; no
+  #   * linux_aarch64_check   — aarch64-unknown-linux-gnu
+  #   * macos_x86_64_check    — x86_64-apple-darwin
+  #   * windows_aarch64_check — aarch64-pc-windows-msvc (check-only; no
   #                              native Windows-arm64 hosted runner as of
   #                              2026-04. Deferred per US-012 AC.)
-  # All three are gated on `needs.changes.outputs.rust == 'true'` so
+  # All three are gated on `needs.orchestrate.outputs.rust == 'true'` so
   # docs-only PRs don't burn minutes on the extended matrix.
   # ───────────────────────────────────────────────────────────────────────
 
-  linux-aarch64-check:
+  linux_aarch64_check:
     name: Linux aarch64 (aarch64-unknown-linux-gnu)
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: orchestrate
+    if: needs.orchestrate.outputs.rust == 'true'
     # Native ARM runner (GitHub public preview since late 2024, used
     # by release.yml on the same pattern — see the comment at
     # release.yml:34-37). Same image basis as ubuntu-22.04 so the
@@ -884,9 +1101,9 @@ jobs:
       - name: cargo build --workspace --release (aarch64-unknown-linux-gnu)
         run: cargo build --workspace --release --target aarch64-unknown-linux-gnu
 
-  macos-x86_64-check:
+  macos_x86_64_check:
     name: macOS x86_64 (x86_64-apple-darwin)
-    needs: changes
+    needs: orchestrate
     # DISABLED until v0.3.0 — `release.yml` already marks this leg CLOSED
     # (queue-time volatility + Apple Dev secrets not provisioned). Even
     # with `continue-on-error: true` the queued job kept the overall run
@@ -929,10 +1146,10 @@ jobs:
       - name: cargo build --workspace --release (x86_64-apple-darwin)
         run: cargo build --workspace --release --target x86_64-apple-darwin
 
-  windows-aarch64-check:
+  windows_aarch64_check:
     name: Windows aarch64 (aarch64-pc-windows-msvc, check-only)
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: orchestrate
+    if: needs.orchestrate.outputs.rust == 'true'
     # US-012 AC explicitly defers integration tests on Windows aarch64
     # because no native Windows-arm64 hosted runner is available on
     # GitHub-hosted Actions as of 2026-04. This leg cross-compiles from
@@ -945,7 +1162,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 30
     env:
-      # Same Node 24 forcing as windows-check above — ilammy/msvc-dev-cmd
+      # Same Node 24 forcing as windows_check above — ilammy/msvc-dev-cmd
       # hasn't shipped a node24-native tag yet.
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
@@ -981,3 +1198,80 @@ jobs:
 
       - name: cargo check --target aarch64-pc-windows-msvc
         run: cargo check --workspace --target aarch64-pc-windows-msvc
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Single aggregator job — mirrors Zed's run_tests.yml `tests_pass`
+  # pattern. Every upstream job is listed here; the step body iterates
+  # over each result and fails the aggregator if any non-skipped job
+  # came back as anything other than "success".
+  #
+  # Why this exists (vs. listing every job individually in branch
+  # protection): when CI grows or shrinks, only this `needs:` list and
+  # the `check_result` block below need editing. The required-status
+  # check in branch protection stays pointed at `tests_pass` forever,
+  # so PRs don't get stuck on stale required-check names after a
+  # workflow refactor. `if: always()` ensures the aggregator still
+  # reports even when upstream jobs fail, so the merge gate can see
+  # the red.
+  #
+  # Note on `security_audit`: deliberately EXCLUDED from the gate.
+  # It runs with `continue-on-error: true` per US-006 (warn-only
+  # posture for the audit feed-forward, see the comment above the
+  # `security_audit` job). Including it here would re-introduce the
+  # exact block-on-cargo-deny behavior that the warn-only posture
+  # was designed to avoid. Re-include it once the lockfile is
+  # audit-clean and the job's `continue-on-error` is flipped to false.
+  tests_pass:
+    name: tests_pass
+    needs:
+      - orchestrate
+      - check_style
+      - run_tests_linux
+      - release_build_linux
+      - macos_check
+      - macos_render_smoke
+      - windows_check
+      - windows_render_smoke
+      - linux_aarch64_check
+      - macos_x86_64_check
+      - windows_aarch64_check
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Aggregate upstream results
+        env:
+          RESULT_ORCHESTRATE: ${{ needs.orchestrate.result }}
+          RESULT_CHECK_STYLE: ${{ needs.check_style.result }}
+          RESULT_RUN_TESTS_LINUX: ${{ needs.run_tests_linux.result }}
+          RESULT_RELEASE_BUILD_LINUX: ${{ needs.release_build_linux.result }}
+          RESULT_MACOS_CHECK: ${{ needs.macos_check.result }}
+          RESULT_MACOS_RENDER_SMOKE: ${{ needs.macos_render_smoke.result }}
+          RESULT_WINDOWS_CHECK: ${{ needs.windows_check.result }}
+          RESULT_WINDOWS_RENDER_SMOKE: ${{ needs.windows_render_smoke.result }}
+          RESULT_LINUX_AARCH64_CHECK: ${{ needs.linux_aarch64_check.result }}
+          RESULT_MACOS_X86_64_CHECK: ${{ needs.macos_x86_64_check.result }}
+          RESULT_WINDOWS_AARCH64_CHECK: ${{ needs.windows_aarch64_check.result }}
+        run: |
+          set +x
+          EXIT_CODE=0
+
+          check_result() {
+            echo "* $1: $2"
+            if [[ "$2" != "skipped" && "$2" != "success" ]]; then
+              EXIT_CODE=1
+            fi
+          }
+
+          check_result "orchestrate"          "$RESULT_ORCHESTRATE"
+          check_result "check_style"          "$RESULT_CHECK_STYLE"
+          check_result "run_tests_linux"      "$RESULT_RUN_TESTS_LINUX"
+          check_result "release_build_linux"  "$RESULT_RELEASE_BUILD_LINUX"
+          check_result "macos_check"          "$RESULT_MACOS_CHECK"
+          check_result "macos_render_smoke"   "$RESULT_MACOS_RENDER_SMOKE"
+          check_result "windows_check"        "$RESULT_WINDOWS_CHECK"
+          check_result "windows_render_smoke" "$RESULT_WINDOWS_RENDER_SMOKE"
+          check_result "linux_aarch64_check"  "$RESULT_LINUX_AARCH64_CHECK"
+          check_result "macos_x86_64_check"   "$RESULT_MACOS_X86_64_CHECK"
+          check_result "windows_aarch64_check" "$RESULT_WINDOWS_AARCH64_CHECK"
+
+          exit $EXIT_CODE
