@@ -185,6 +185,19 @@ jobs:
             fi
           done <<< "$DIR_TO_PKG"
 
+          # Empty CHANGED_PKGS means the diff touched files outside every
+          # workspace member dir (e.g. root-level deny.toml, docs/, tasks/).
+          # Treat as a no-op for per-package gating — downstream consumers
+          # interpret empty changed_packages as "full rebuild" (fail-safe).
+          # The early-return avoids piping empty input into `grep -v '^$'`,
+          # which exits 1 on no-match and trips `set -euo pipefail` because
+          # bash propagates command-substitution exit status under `set -e`.
+          if [ -z "${CHANGED_PKGS// /}" ]; then
+            echo "No workspace member touched — emitting empty changed_packages"
+            echo "changed_packages=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           CHANGED_PKGS="$(echo "$CHANGED_PKGS" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')"
           echo "Changed packages: '${CHANGED_PKGS}'"
           echo "changed_packages=${CHANGED_PKGS}" >> "$GITHUB_OUTPUT"
