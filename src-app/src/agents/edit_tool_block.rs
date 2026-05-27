@@ -41,7 +41,7 @@ use crate::theme::UiColors;
 /// above the composer (see `render_activity_bar`) -- not in the card
 /// itself. The card stays focused on the file + diff preview.
 pub(crate) fn render_edit_tool_block(
-    snap: ToolCallSnapshot,
+    snap: &ToolCallSnapshot,
     ui: UiColors,
     on_toggle_expanded: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
     diff_scroll: gpui::ScrollHandle,
@@ -67,7 +67,7 @@ pub(crate) fn render_edit_tool_block(
     // disclosure + label + bg + cursor on one h_flex (no wrapping div).
     // Monochrome DA: `ui.subtle` instead of `ui.tool_card_header_bg`
     // (which is bluish) keeps the card neutral.
-    let header_row = render_header(&snap, &primary_path, added, removed, ui, on_toggle_expanded);
+    let header_row = render_header(snap, &primary_path, added, removed, ui, on_toggle_expanded);
 
     // US-110 AC #1: Failed/Rejected tool cards swap their solid
     // border for a dashed one. The pattern reads as "this didn't
@@ -78,11 +78,19 @@ pub(crate) fn render_edit_tool_block(
     // `border.opacity(0.8)` and the outer container clips its body via
     // `overflow_hidden()` so the diff doesn't bleed past the rounded
     // corners.
+    // Horizontal margin matches the AssistantMessage outer wrapper
+    // (`px(20.)` in `thread_view.rs::render_assistant_message`) so the
+    // tool card sits on the same column as the prose text above and
+    // below it. Zed pattern: `mx_5() + my_1p5()` -- the tight 6px
+    // vertical margin is what makes "text -> tool -> text" read as
+    // one continuous turn rather than three separate bubbles. The old
+    // `mx(16)` was a 4px shift left vs prose, and `my(8)` added extra
+    // air on top of AssistantMessage's own vertical padding.
     let mut col = div()
         .flex()
         .flex_col()
-        .mx(px(16.))
-        .my(px(8.))
+        .mx(px(20.))
+        .my(px(6.))
         .rounded(px(6.))
         .border_1()
         .when(is_failed, |d| d.border_dashed())

@@ -29,7 +29,7 @@ use crate::theme::UiColors;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_inline_tool_call(
     entry_ix: usize,
-    mut snap: ToolCallSnapshot,
+    snap: &ToolCallSnapshot,
     mut label_markdown: Option<Entity<Markdown>>,
     ui: UiColors,
     window: &Window,
@@ -50,16 +50,23 @@ pub(crate) fn render_inline_tool_call(
     // about what's running. Wrapping in backticks turns it into a
     // markdown inline-code chip, matching the look of the path chip
     // we get on Read / Search rows. Drop the cached label_markdown
-    // so the renderer falls back to `snap.title` (the fresh command
+    // so the renderer falls back to the override (the fresh command
     // string); the stale "Bash" markdown built by `add_tool_call`
     // would otherwise win.
-    if matches!(snap.kind, ToolKindKind::Execute)
+    //
+    // The override is computed locally so the snapshot itself stays
+    // immutable -- the storage Arc in ThreadView never has to clone
+    // when this renderer runs.
+    let title_override: Option<String> = if matches!(snap.kind, ToolKindKind::Execute)
         && let Some(cmd) = extract_terminal_command(snap.raw_input_pretty.as_deref())
         && !cmd.trim().is_empty()
     {
-        snap.title = format!("`{cmd}`");
         label_markdown = None;
-    }
+        Some(format!("`{cmd}`"))
+    } else {
+        None
+    };
+    let title_for_display: &str = title_override.as_deref().unwrap_or(snap.title.as_str());
     let needs_confirmation = matches!(snap.status, ToolCallStatusKind::WaitingForConfirmation);
     let is_failed = matches!(
         snap.status,
@@ -108,8 +115,9 @@ pub(crate) fn render_inline_tool_call(
         .w_full()
         .justify_between()
         .child(render_tool_call_label(
-            &snap,
+            snap,
             label_markdown,
+            title_for_display,
             window,
             cx,
             ui,
@@ -149,7 +157,7 @@ pub(crate) fn render_inline_tool_call(
                 .border_l_1()
                 .when(is_failed, |d| d.border_dashed())
                 .border_color(cx.theme().colors().border.opacity(0.8))
-                .child(render_body(&snap, ui)),
+                .child(render_body(snap, ui)),
         );
     }
 
@@ -169,7 +177,7 @@ pub(crate) fn render_inline_tool_call(
                 .border_1()
                 .border_color(ui.border)
                 .child(render_permission_row(
-                    &snap,
+                    snap,
                     ui,
                     on_permission,
                     on_toggle_picker,
@@ -186,6 +194,7 @@ pub(crate) fn render_inline_tool_call(
 fn render_tool_call_label(
     snap: &ToolCallSnapshot,
     label_markdown: Option<Entity<Markdown>>,
+    title_for_display: &str,
     window: &Window,
     cx: &gpui::App,
     ui: UiColors,
@@ -259,7 +268,7 @@ fn render_tool_call_label(
                 .min_w_0()
                 .overflow_hidden()
                 .text_color(cx.theme().colors().text_muted)
-                .child(SharedString::from(snap.title.clone()))
+                .child(SharedString::from(title_for_display.to_string()))
                 .into_any_element()
         })
         .into_any_element()

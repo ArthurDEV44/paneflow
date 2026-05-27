@@ -76,22 +76,30 @@ pub(crate) fn paneflow_markdown_style_with_line_height(
     // List bullets render as plain `div().child("•")` / `div().child("1.")`
     // inside the markdown crate, with no per-bullet color override.
     // They inherit from the outer container's text style, while
-    // paragraph text overrides via `base_text_style`. So setting
-    // container_style.text.color colors the bullets without touching
-    // the body — Claude-brand warm salmon (`#cc7755`).
+    // paragraph text overrides via `base_text_style`. Matching the
+    // bullet / ordered-number colour to the body (`base_text_color`)
+    // keeps the list markers neutral; the earlier salmon `#cc7755`
+    // accent fought the off-white body and read as a competing brand
+    // tint inside long assistant turns.
     style.container_style = StyleRefinement::default();
     style.container_style.text = TextStyleRefinement {
-        color: Some(gpui::rgb(0xcc7755).into()),
+        color: Some(base_text_color),
         ..TextStyleRefinement::default()
     };
 
-    // Inline `code` — subtle background, Lilex mono (bundled) for
-    // proper width contrast vs the Plex sans body.
+    // Inline `code` — subtle background highlight, same font + size +
+    // color as the surrounding body. Earlier versions used Lilex mono
+    // at 0.95x and the salmon container colour bled through, giving
+    // every inline-code token a noticeably warm tint and a tighter
+    // glyph metric. Inheriting from the body restores typographic
+    // continuity so the highlight reads as a tint, not a code span.
+    // (The markdown crate's `inline_code` is `TextStyleRefinement`,
+    // so a per-token border radius is not exposed -- the background
+    // paints as a flat rectangle behind the glyphs. Rounding the
+    // pill would require patching the Zed markdown crate.)
     style.inline_code = TextStyleRefinement {
         background_color: Some(ui.subtle),
         color: Some(base_text_color),
-        font_family: Some("Lilex".into()),
-        font_size: Some(px(body_size_px * 0.95).into()),
         ..TextStyleRefinement::default()
     };
 

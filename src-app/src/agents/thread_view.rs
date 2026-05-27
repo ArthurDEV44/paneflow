@@ -43,6 +43,9 @@ use super::runtime::{ToolCallSnapshot, ToolCallUpdate, ToolKindKind};
 
 /// Tick cadence for the streaming pipeline.
 const STREAMING_TICK: Duration = Duration::from_millis(16);
+/// Throttle window for streaming-hot persist writes. Keeps SQLite I/O
+/// off the GPUI main thread's 16 ms budget by batching chunks.
+const PERSIST_THROTTLE: Duration = Duration::from_millis(500);
 
 /// One row in the thread's scrollable timeline. Mirrors Zed's
 /// `AgentThreadEntry` (acp_thread.rs:178): user messages, assistant
@@ -51,7 +54,13 @@ const STREAMING_TICK: Duration = Duration::from_millis(16);
 pub enum ThreadItem {
     UserMessage(UserMessage),
     AssistantMessage(AssistantMessage),
-    ToolCall(ToolCallSnapshot),
+    /// Tool calls are reference-counted so the render path can hand
+    /// a cheap pointer copy to downstream renderers instead of doing
+    /// a full struct + string + diff-vec clone per visible item per
+    /// frame. Mutations use `Arc::make_mut`, which clones only when
+    /// the Arc is shared -- inside `items` it is uniquely held so
+    /// `make_mut` is in-place for the common case.
+    ToolCall(Arc<ToolCallSnapshot>),
 }
 
 impl std::fmt::Debug for ThreadItem {
@@ -115,6 +124,12 @@ pub struct ThreadView {
     /// append to; user messages and tool calls close it.
     streaming_message_idx: Option<usize>,
     _streaming_task: Option<Task<()>>,
+    /// Deadline at which the next throttled persist should fire. Set by
+    /// `schedule_persist` (streaming-hot paths) and consumed by the
+    /// streaming task tick. `flush_streaming` (turn end) forces a final
+    /// persist and clears the deadline so a partially-armed deadline
+    /// can never miss the final snapshot.
+    persist_deadline: Option<std::time::Instant>,
     composer: Option<Entity<Composer>>,
     editing: Option<EditState>,
     /// Expand state for inline `Thought` chunks. Keyed by
@@ -151,6 +166,60 @@ pub struct ThreadView {
     /// thread scrolls in sync with the diff. Handles persist across
     /// renders so the scroll position is preserved.
     diff_scroll_handles: HashMap<String, gpui::ScrollHandle>,
+
+    /// Reverse-index: `tool_call_id -> position in self.items`. Hot path
+    /// optimisation so `update_tool_call`, `toggle_tool_call_expanded`
+    /// and permission handlers do not scan every item on each ACP patch
+    /// (Zed parity for the `tool_calls` HashMap on `AcpThread`). Kept in
+    /// sync at every items-mutation point: pushes append, truncates
+    /// retain entries below the cut, clears reset.
+    tool_call_index: HashMap<String, usize>,
+
+    /// User-forced expand state for inline tool-call bursts, keyed by
+    /// the index of the burst's first item in `items`. Absence ==
+    /// follow the auto policy (open while any tool in the burst is
+    /// non-terminal, closed once every tool is terminal). A
+    /// `WaitingForConfirmation` tool always wins regardless of the
+    /// override -- the user can't dismiss a permission prompt by
+    /// collapsing the group. Not persisted: reload always starts with
+    /// the auto policy so a re-opened thread doesn't inherit stale UI
+    /// state from the previous session.
+    tool_group_user_open: HashMap<usize, bool>,
+
+    /// Key of the in-progress streaming Thought chunk, if any. Set by
+    /// `push_thinking_chunk` when a new Thought is opened, cleared by
+    /// `finalize_thinking` (after auto-collapsing) or by the user
+    /// explicitly toggling. Used to auto-collapse the thinking block
+    /// at the end of the burst, but only when the user has not opened
+    /// it themselves — mirrors Zed
+    /// `agent_ui/src/conversation_view/thread_view.rs::auto_expand_streaming_thought`.
+    streaming_thinking_key: Option<(usize, usize)>,
+    /// Handle to the in-flight background title-summarization task.
+    /// Mirrors Zed `crates/agent/src/thread.rs:962`
+    /// (`pending_title_generation`) — storing the `Task<()>` here gives
+    /// us a cheap way to cancel a previous in-flight summarizer when a
+    /// fresh trigger arrives (the `Task` is dropped, the inner future
+    /// stops being polled, and the spawned `claude -p` subprocess gets
+    /// reaped by the OS). Without this guard two `TurnEnded` events
+    /// arriving rapidly (retry, reconnect) would race two `claude -p`
+    /// children whose last-write-wins outcome is undefined.
+    pending_title_generation: Option<Task<()>>,
+    /// Set when the last summarization run failed (subprocess error,
+    /// timeout, or empty output). Visible via
+    /// [`Self::title_generation_failed`] so future UI can offer a
+    /// retry button and tests can assert on the failure path instead
+    /// of relying on log scraping. Zed parity:
+    /// `crates/agent/src/thread.rs:963` `title_generation_failed`.
+    title_generation_failed: bool,
+
+    /// Theme snapshot captured at the top of `render`; cleared on next
+    /// render. `render_item` (driven by the virtualized List) reads
+    /// this instead of re-locking the global theme cache. Saves
+    /// O(visible_items) mutex acquisitions per frame.
+    _theme_snapshot: Option<crate::theme::TerminalTheme>,
+    /// UI palette snapshot captured at the top of `render`, derived
+    /// from `_theme_snapshot`. Same rationale: reused by `render_item`.
+    _ui_snapshot: Option<crate::theme::UiColors>,
 }
 
 /// US-020: inline edit-in-progress on a user message.
@@ -286,8 +355,20 @@ impl ThreadView {
                     if p.reviewed {
                         reviewed_edits.insert(p.id.clone());
                     }
-                    items.push(ThreadItem::ToolCall(ToolCallSnapshot::from_persisted(p)));
+                    items.push(ThreadItem::ToolCall(Arc::new(
+                        ToolCallSnapshot::from_persisted(p),
+                    )));
                 }
+            }
+        }
+
+        // Reverse-index of every tool-call id → its position in `items`
+        // so update_tool_call / toggle_tool_call_expanded / permission
+        // handlers run in O(1) instead of scanning the whole timeline.
+        let mut tool_call_index: HashMap<String, usize> = HashMap::new();
+        for (idx, item) in items.iter().enumerate() {
+            if let ThreadItem::ToolCall(snap) = item {
+                tool_call_index.insert(snap.id.clone(), idx);
             }
         }
 
@@ -296,6 +377,14 @@ impl ThreadView {
         let should_be_following = Rc::new(Cell::new(true));
         {
             let flag = Rc::clone(&should_be_following);
+            // Re-entrancy guard: this closure fires inside `ListState`'s
+            // internal scroll dispatch. Calling back into the same
+            // `list_state` (e.g. `logical_scroll_top()`, `splice()`,
+            // `scroll_to_end()`) double-borrows the inner RefCell and
+            // panics — Zed documents the same hazard at
+            // `crates/agent_ui/src/conversation_view/thread_view.rs:926`.
+            // Keep the body restricted to data carried by the event; for
+            // any list_state mutation defer via `cx.defer`.
             list_state.set_scroll_handler(move |event: &ListScrollEvent, _w, _app| {
                 let at_bottom = is_at_bottom(event);
                 if !at_bottom {
@@ -340,7 +429,94 @@ impl ThreadView {
             generating_indicator_active: false,
             reviewed_edits,
             diff_scroll_handles: HashMap::new(),
+            tool_call_index,
+            tool_group_user_open: HashMap::new(),
+            persist_deadline: None,
+            streaming_thinking_key: None,
+            pending_title_generation: None,
+            title_generation_failed: false,
+            _theme_snapshot: None,
+            _ui_snapshot: None,
         }
+    }
+
+    /// Spawn a background title summarizer for this thread, replacing
+    /// any in-flight one. The previous `Task` is dropped before the
+    /// new spawn so two `claude -p` subprocesses never coexist for
+    /// the same thread (Zed parity guard at `thread.rs:962`).
+    ///
+    /// Returns `true` when a new task was armed, `false` when the
+    /// summarizer chose to no-op (e.g. ACP agent that pushes its own
+    /// title, or `claude` CLI missing).
+    pub fn start_title_summarization(
+        &mut self,
+        req: super::title_summarizer::SummarizeRequest,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // Drop the previous task explicitly so cancellation order is
+        // deterministic (drop runs the `Task`'s destructor before the
+        // new one is moved into the slot).
+        self.pending_title_generation = None;
+        // A new run wipes the prior failure state; only the latest
+        // outcome should be user-visible.
+        self.title_generation_failed = false;
+        match super::title_summarizer::summarize_thread_title_task(req, cx) {
+            Some(task) => {
+                self.pending_title_generation = Some(task);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Called from the background summarizer when the run completes
+    /// successfully. Clears the pending-task slot so callers can use
+    /// [`Self::is_title_generation_pending`] as a "real" busy signal.
+    pub fn note_title_generation_succeeded(&mut self) {
+        self.pending_title_generation = None;
+        self.title_generation_failed = false;
+    }
+
+    /// Called from the background summarizer on any failure path.
+    /// Sets [`Self::title_generation_failed`] and notifies so any
+    /// retry-affordance UI can light up.
+    pub fn note_title_generation_failed(&mut self, cx: &mut Context<Self>) {
+        self.pending_title_generation = None;
+        self.title_generation_failed = true;
+        cx.notify();
+    }
+
+    /// Whether a background title summarizer is currently in flight.
+    pub fn is_title_generation_pending(&self) -> bool {
+        self.pending_title_generation.is_some()
+    }
+
+    /// Whether the most recent title summarization run ended in failure.
+    pub fn title_generation_failed(&self) -> bool {
+        self.title_generation_failed
+    }
+
+    /// Throttled persist. Arms a deadline so the next streaming-task
+    /// tick (every 16 ms) writes to SQLite at most every
+    /// [`PERSIST_THROTTLE`]. Mirrors Zed's `schedule_save` pattern at
+    /// `crates/agent_ui/src/conversation_view/thread_view.rs:945-958`.
+    fn schedule_persist(&mut self) {
+        if self.persist_deadline.is_none() {
+            self.persist_deadline = Some(std::time::Instant::now() + PERSIST_THROTTLE);
+        }
+    }
+
+    /// Fire the throttled persist if its deadline has elapsed. Called
+    /// from the streaming task tick.
+    fn tick_persist(&mut self, cx: &gpui::App) {
+        let Some(deadline) = self.persist_deadline else {
+            return;
+        };
+        if std::time::Instant::now() < deadline {
+            return;
+        }
+        self.persist_deadline = None;
+        self.persist_snapshot_now(cx);
     }
 
     fn make_markdown(text: &str, cx: &mut Context<Self>) -> Entity<Markdown> {
@@ -355,6 +531,12 @@ impl ThreadView {
     pub fn append_message(&mut self, msg: Message, cx: &mut Context<Self>) {
         match msg.role {
             MessageRole::User | MessageRole::System => {
+                // Drain any text-in-flight before closing the assistant
+                // turn — same ordering guarantee as `add_tool_call`. A
+                // user message interrupting an assistant stream is rare
+                // (typically the composer is locked) but the same data-
+                // loss path applies to it.
+                self.drain_streaming_buffer_into_open(cx);
                 self.close_open_assistant_message();
                 let text = join_text_blocks(&msg.content);
                 let markdown = Some(Self::make_markdown(&text, cx));
@@ -384,18 +566,38 @@ impl ThreadView {
     /// closes the currently-open assistant message so subsequent
     /// chunks open a fresh turn.
     pub fn add_tool_call(&mut self, snapshot: ToolCallSnapshot, cx: &mut Context<Self>) {
+        log::debug!(
+            target: "agents::stream",
+            "add_tool_call id={} pending_chars={} streaming_idx={:?}",
+            snapshot.id,
+            self.streaming_buffer.pending_chars(),
+            self.streaming_message_idx,
+        );
+        // CRITICAL: drain the paced streaming buffer into the still-open
+        // assistant message BEFORE closing it. Otherwise chars queued
+        // between the last 16 ms tick and this tool_call get stranded in
+        // the buffer; the streaming task observes `idx=None` and bails,
+        // and the next `begin_assistant_stream` reveals them into a
+        // *new* AssistantMessage AFTER the tool — producing the visible
+        // "Laiss" + tool_calls + "e-moi scanner..." split (Claude Code
+        // thread regression reported 2026-05-26).
+        self.drain_streaming_buffer_into_open(cx);
         self.close_open_assistant_message();
         let id = snapshot.id.clone();
         let title = snapshot.title.clone();
         let prev_count = self.items.len();
-        self.items.push(ThreadItem::ToolCall(snapshot));
+        self.items.push(ThreadItem::ToolCall(Arc::new(snapshot)));
+        self.tool_call_index.insert(id.clone(), prev_count);
         self.list_state.splice(prev_count..prev_count, 1);
         let md = Self::make_markdown(&title, cx);
         self.tool_label_markdown.insert(id, md);
         if self.should_be_following.get() {
             self.list_state.scroll_to_end();
         }
-        self.persist_snapshot_now(cx);
+        // Throttled persist (streaming hot path): a busy turn can emit
+        // dozens of tool calls in a second. The final state is forced
+        // to disk on `flush_streaming` / `sweep_*_tools_*`.
+        self.schedule_persist();
         cx.notify();
     }
 
@@ -405,6 +607,18 @@ impl ThreadView {
         if chunk.is_empty() {
             return;
         }
+        log::trace!(
+            target: "agents::stream",
+            "push_thinking_chunk len={} pending_chars={} streaming_idx={:?}",
+            chunk.len(),
+            self.streaming_buffer.pending_chars(),
+            self.streaming_message_idx,
+        );
+        // Same drain rationale as `add_tool_call`: a Thought arriving
+        // between two text ticks would otherwise let the queued chars
+        // reveal AFTER the Thought, producing a reversed Thought→Text
+        // order inside the same assistant turn.
+        self.drain_streaming_buffer_into_open(cx);
         let idx = self.ensure_open_assistant_message(cx);
         let owned = chunk.to_string();
         // Merge with the trailing chunk when it is also a Thought, so
@@ -418,18 +632,26 @@ impl ThreadView {
                 }
                 _ => {
                     let md = Self::make_markdown(&owned, cx);
+                    let chunk_idx = am.chunks.len();
                     am.chunks.push(AssistantMessageChunk::Thought {
                         text: owned,
                         markdown: md,
                         signature: None,
                     });
+                    // Track this thought as the current "auto-expandable"
+                    // burst so `finalize_thinking` can auto-collapse it
+                    // when the burst ends — unless the user has
+                    // explicitly touched it in the meantime.
+                    self.streaming_thinking_key = Some((idx, chunk_idx));
                 }
             }
         }
         if self.should_be_following.get() {
             self.list_state.scroll_to_end();
         }
-        self.persist_snapshot_now(cx);
+        // Throttled persist (streaming hot path) — thinking bursts emit
+        // many small chunks. Final flush happens at turn end.
+        self.schedule_persist();
         cx.notify();
     }
 
@@ -437,6 +659,13 @@ impl ThreadView {
     /// the next text / thought chunk opens a fresh turn. Idempotent.
     pub fn finalize_thinking(&mut self, cx: &mut Context<Self>) {
         self.close_open_assistant_message();
+        // Auto-collapse the streaming thinking burst at the end of the
+        // turn so the body stays readable. The user can still expand
+        // it via the disclosure chevron; their explicit toggle clears
+        // `streaming_thinking_key` so this branch is a no-op next time.
+        if let Some(key) = self.streaming_thinking_key.take() {
+            self.collapsed_thoughts.insert(key);
+        }
         self.persist_snapshot_now(cx);
     }
 
@@ -481,8 +710,14 @@ impl ThreadView {
             StopReasonKind::EndTurn
             | StopReasonKind::MaxTokens
             | StopReasonKind::MaxTurnRequests => ToolCallStatusKind::Completed,
-            StopReasonKind::Cancelled | StopReasonKind::Other => ToolCallStatusKind::Canceled,
-            StopReasonKind::Refusal => return false,
+            // A refusal is also a hard stop: the model declined to keep
+            // going, so any tool call still `Pending`/`InProgress` will
+            // never complete. Leaving them in that state would freeze
+            // the activity-bar spinner ("Reading file…") on reload.
+            // Treat as Cancelled, same as an explicit `Cancelled`.
+            StopReasonKind::Cancelled | StopReasonKind::Refusal | StopReasonKind::Other => {
+                ToolCallStatusKind::Canceled
+            }
         };
         let mut touched = false;
         for item in &mut self.items {
@@ -494,7 +729,14 @@ impl ThreadView {
                         | ToolCallStatusKind::WaitingForConfirmation
                 )
             {
+                let snap = Arc::make_mut(snap);
                 snap.status = target;
+                // The permission picker is bound to a live `pending`
+                // tool call; once we transition it to a terminal state
+                // the popover is no longer interactable. Clear so a
+                // reload of the thread does not re-open it from disk.
+                snap.permission_picker_open = false;
+                snap.permission_options.clear();
                 touched = true;
             }
         }
@@ -523,7 +765,10 @@ impl ThreadView {
                         | ToolCallStatusKind::WaitingForConfirmation
                 )
             {
+                let snap = Arc::make_mut(snap);
                 snap.status = ToolCallStatusKind::Failed;
+                snap.permission_picker_open = false;
+                snap.permission_options.clear();
                 touched = true;
             }
         }
@@ -539,33 +784,36 @@ impl ThreadView {
     /// already-finalised calls).
     pub fn update_tool_call(&mut self, patch: ToolCallUpdate, cx: &mut Context<Self>) {
         let new_title = patch.title.clone();
-        for item in &mut self.items {
-            if let ThreadItem::ToolCall(snap) = item
-                && snap.id == patch.id
-            {
-                let id = snap.id.clone();
-                apply_patch(snap, patch);
-                if let Some(title) = new_title {
-                    let md = Self::make_markdown(&title, cx);
-                    self.tool_label_markdown.insert(id, md);
-                }
-                self.persist_snapshot_now(cx);
-                cx.notify();
-                return;
+        // O(1) lookup via the reverse index. Guard against the index
+        // pointing at a removed/replaced slot (truncate_for_edit / a
+        // future swap) by validating the item is still the expected
+        // ToolCall with the matching id before applying.
+        if let Some(&idx) = self.tool_call_index.get(&patch.id)
+            && let Some(ThreadItem::ToolCall(snap)) = self.items.get_mut(idx)
+            && snap.id == patch.id
+        {
+            let id = snap.id.clone();
+            apply_patch(Arc::make_mut(snap), patch);
+            if let Some(title) = new_title {
+                let md = Self::make_markdown(&title, cx);
+                self.tool_label_markdown.insert(id, md);
             }
+            // Throttled — `update_tool_call` is the hottest path on a
+            // file-heavy turn (every diff chunk is a patch).
+            self.schedule_persist();
+            cx.notify();
         }
     }
 
     /// Toggle the expand/collapse state of one tool-call row.
     pub fn toggle_tool_call_expanded(&mut self, id: &str, cx: &mut Context<Self>) {
-        for item in &mut self.items {
-            if let ThreadItem::ToolCall(snap) = item
-                && snap.id == id
-            {
-                snap.expanded = !snap.expanded;
-                cx.notify();
-                return;
-            }
+        if let Some(&idx) = self.tool_call_index.get(id)
+            && let Some(ThreadItem::ToolCall(snap)) = self.items.get_mut(idx)
+            && snap.id == id
+        {
+            let snap = Arc::make_mut(snap);
+            snap.expanded = !snap.expanded;
+            cx.notify();
         }
     }
 
@@ -636,9 +884,10 @@ impl ThreadView {
         for item in &mut self.items {
             if let ThreadItem::ToolCall(snap) = item {
                 if snap.id == id {
+                    let snap = Arc::make_mut(snap);
                     snap.permission_picker_open = !snap.permission_picker_open;
                 } else if snap.permission_picker_open {
-                    snap.permission_picker_open = false;
+                    Arc::make_mut(snap).permission_picker_open = false;
                 }
             }
         }
@@ -654,7 +903,7 @@ impl ThreadView {
             if let ThreadItem::ToolCall(snap) = item
                 && snap.permission_picker_open
             {
-                snap.permission_picker_open = false;
+                Arc::make_mut(snap).permission_picker_open = false;
                 changed = true;
             }
         }
@@ -678,6 +927,12 @@ impl ThreadView {
         } else {
             self.collapsed_thoughts.insert(key);
         }
+        // User explicitly took control of this block; cancel any
+        // pending auto-collapse so a turn-end won't re-close what they
+        // chose to open.
+        if self.streaming_thinking_key == Some(key) {
+            self.streaming_thinking_key = None;
+        }
         cx.notify();
     }
 
@@ -688,16 +943,15 @@ impl ThreadView {
         options: Vec<super::runtime::PermissionOptionInfo>,
         cx: &mut Context<Self>,
     ) {
-        for item in &mut self.items {
-            if let ThreadItem::ToolCall(snap) = item
-                && snap.id == tool_call_id
-            {
-                snap.status = super::runtime::ToolCallStatusKind::WaitingForConfirmation;
-                snap.permission_options = options;
-                self.persist_snapshot_now(cx);
-                cx.notify();
-                return;
-            }
+        if let Some(&idx) = self.tool_call_index.get(tool_call_id)
+            && let Some(ThreadItem::ToolCall(snap)) = self.items.get_mut(idx)
+            && snap.id == tool_call_id
+        {
+            let snap = Arc::make_mut(snap);
+            snap.status = super::runtime::ToolCallStatusKind::WaitingForConfirmation;
+            snap.permission_options = options;
+            self.persist_snapshot_now(cx);
+            cx.notify();
         }
     }
 
@@ -709,24 +963,23 @@ impl ThreadView {
         decision: paneflow_acp::PermissionDecision,
         cx: &mut Context<Self>,
     ) {
-        for item in &mut self.items {
-            if let ThreadItem::ToolCall(snap) = item
-                && snap.id == tool_call_id
-            {
-                snap.permission_options.clear();
-                snap.status = match decision {
-                    paneflow_acp::PermissionDecision::AllowOnce
-                    | paneflow_acp::PermissionDecision::AllowAlways => {
-                        super::runtime::ToolCallStatusKind::InProgress
-                    }
-                    paneflow_acp::PermissionDecision::Reject => {
-                        super::runtime::ToolCallStatusKind::Rejected
-                    }
-                };
-                self.persist_snapshot_now(cx);
-                cx.notify();
-                return;
-            }
+        if let Some(&idx) = self.tool_call_index.get(tool_call_id)
+            && let Some(ThreadItem::ToolCall(snap)) = self.items.get_mut(idx)
+            && snap.id == tool_call_id
+        {
+            let snap = Arc::make_mut(snap);
+            snap.permission_options.clear();
+            snap.status = match decision {
+                paneflow_acp::PermissionDecision::AllowOnce
+                | paneflow_acp::PermissionDecision::AllowAlways => {
+                    super::runtime::ToolCallStatusKind::InProgress
+                }
+                paneflow_acp::PermissionDecision::Reject => {
+                    super::runtime::ToolCallStatusKind::Rejected
+                }
+            };
+            self.persist_snapshot_now(cx);
+            cx.notify();
         }
     }
 
@@ -789,6 +1042,11 @@ impl ThreadView {
             // px/h, so the section just matches gap_2 (8 px) for the
             // spinner→label spacing — that's the visual rhythm Zed gives
             // to the active turn indicator.
+            // Use the Zed `SpinnerLabel::dots()` Braille animation for
+            // consistency with the inline-pixel spinner — vector rotation
+            // on a `loader-circle.svg` can introduce sub-pixel artefacts
+            // on HiDPI Wayland, the Braille spinner is pixel-perfect.
+            use ui::{LabelCommon, LabelSize, SpinnerLabel};
             let section = div()
                 .flex()
                 .flex_row()
@@ -796,24 +1054,8 @@ impl ThreadView {
                 .gap(px(8.))
                 .px(px(8.))
                 .py(px(4.))
-                .child(
-                    gpui::svg()
-                        .size(px(13.))
-                        .flex_none()
-                        .path("icons/loader-circle.svg")
-                        .text_color(ui.text)
-                        .with_animation(
-                            "activity-bar-spinner",
-                            gpui::Animation::new(Duration::from_secs(1))
-                                .repeat()
-                                .with_easing(gpui::ease_in_out),
-                            |this, delta| {
-                                this.with_transformation(gpui::Transformation::rotate(
-                                    gpui::percentage(delta),
-                                ))
-                            },
-                        ),
-                )
+                .text_color(ui.text)
+                .child(SpinnerLabel::dots().size(LabelSize::Small))
                 .child(
                     div()
                         .text_color(ui.text)
@@ -1125,26 +1367,6 @@ impl ThreadView {
     }
 
     fn compute_activity_state(&self, cx: &gpui::App) -> Option<ActivityBarState> {
-        let mut awaiting: Option<AwaitingTool> = None;
-        let mut running_kind: Option<String> = None;
-        for (idx, item) in self.items.iter().enumerate() {
-            let ThreadItem::ToolCall(snap) = item else {
-                continue;
-            };
-            match snap.status {
-                super::runtime::ToolCallStatusKind::WaitingForConfirmation => {
-                    awaiting = Some(AwaitingTool {
-                        item_idx: idx,
-                        title: snap.title.clone(),
-                    });
-                }
-                super::runtime::ToolCallStatusKind::InProgress
-                | super::runtime::ToolCallStatusKind::Pending => {
-                    running_kind = Some(verbose_tool_kind_label(snap.kind).to_string());
-                }
-                _ => {}
-            }
-        }
         let (is_streaming, queued, elapsed, used_tokens) = match self.composer.as_ref() {
             Some(c) => {
                 let c = c.read(cx);
@@ -1156,6 +1378,59 @@ impl ThreadView {
                 (c.is_streaming(), c.pending_prompts_len(), elapsed, used)
             }
             None => (false, 0, 0, None),
+        };
+        // Fused scan: combine the activity-state walk (awaiting /
+        // running) with the edits-review aggregation in a single
+        // pass over `items`. Previously these were two independent
+        // O(items) linear scans called on every `cx.notify()` (i.e.
+        // every streaming chunk) -- by 200 tool calls deep into a
+        // session that's measurable work per frame.
+        let mut awaiting: Option<AwaitingTool> = None;
+        let mut running_kind: Option<String> = None;
+        let mut files = 0usize;
+        let mut added = 0usize;
+        let mut removed = 0usize;
+        for (idx, item) in self.items.iter().enumerate() {
+            let ThreadItem::ToolCall(snap) = item else {
+                continue;
+            };
+            match snap.status {
+                super::runtime::ToolCallStatusKind::WaitingForConfirmation => {
+                    awaiting = Some(AwaitingTool {
+                        item_idx: idx,
+                        title: snap.title.clone(),
+                    });
+                }
+                // `Pending`/`InProgress` snapshots survive a Fatal until
+                // `sweep_pending_tools_on_fatal` has had a chance to run.
+                // If the composer reports not-streaming, treat those as
+                // stale and skip them so the activity bar doesn't spin
+                // forever after a crash.
+                super::runtime::ToolCallStatusKind::InProgress
+                | super::runtime::ToolCallStatusKind::Pending
+                    if is_streaming =>
+                {
+                    running_kind = Some(verbose_tool_kind_label(snap.kind).to_string());
+                }
+                super::runtime::ToolCallStatusKind::Completed
+                    if !snap.diffs.is_empty() && !self.reviewed_edits.contains(&snap.id) =>
+                {
+                    files += snap.diffs.len();
+                    let (a, r) = super::edit_tool_block::diff_stats(&snap.diffs);
+                    added += a;
+                    removed += r;
+                }
+                _ => {}
+            }
+        }
+        let edits_summary = if files == 0 {
+            None
+        } else {
+            Some(EditsReviewSummary {
+                files,
+                added,
+                removed,
+            })
         };
         if running_kind.is_none() && is_streaming && awaiting.is_none() {
             running_kind = Some("Working".to_string());
@@ -1183,7 +1458,6 @@ impl ThreadView {
                 }
             }),
         });
-        let edits_summary = self.compute_edits_review_summary();
         if running.is_none() && awaiting.is_none() && queued == 0 && edits_summary.is_none() {
             return None;
         }
@@ -1193,43 +1467,6 @@ impl ThreadView {
             queued,
             edits_summary,
         })
-    }
-
-    /// Walk the thread for completed tool calls that still carry
-    /// unreviewed diffs and aggregate the file count + `+added` /
-    /// `-removed` line counts. Returns `None` when nothing is pending
-    /// review so the activity bar doesn't render an empty section.
-    fn compute_edits_review_summary(&self) -> Option<EditsReviewSummary> {
-        let mut files = 0usize;
-        let mut added = 0usize;
-        let mut removed = 0usize;
-        for item in &self.items {
-            let ThreadItem::ToolCall(snap) = item else {
-                continue;
-            };
-            if !matches!(snap.status, super::runtime::ToolCallStatusKind::Completed) {
-                continue;
-            }
-            if snap.diffs.is_empty() {
-                continue;
-            }
-            if self.reviewed_edits.contains(&snap.id) {
-                continue;
-            }
-            files += snap.diffs.len();
-            let (a, r) = super::edit_tool_block::diff_stats(&snap.diffs);
-            added += a;
-            removed += r;
-        }
-        if files == 0 {
-            None
-        } else {
-            Some(EditsReviewSummary {
-                files,
-                added,
-                removed,
-            })
-        }
     }
 
     pub fn scroll_to_item(&mut self, item_idx: usize, _cx: &mut Context<Self>) {
@@ -1398,13 +1635,37 @@ impl ThreadView {
         self.flush_streaming(cx);
         self.items.truncate(message_idx);
         self.streaming_message_idx = None;
+        let new_len = self.items.len();
         // Drop collapsed-thought state for items past the truncation
         // point so a future render doesn't index into removed slots.
-        // The tool-label markdown cache is keyed by tool call id (not
-        // by index), so it can stay — orphaned entries are harmless.
-        let new_len = self.items.len();
         self.collapsed_thoughts
             .retain(|(msg_idx, _)| *msg_idx < new_len);
+        // Reap tool-call-keyed caches for IDs that no longer exist.
+        // Orphans are not visible (nothing references them in the items
+        // list anymore) but they accumulate over long edit-heavy
+        // sessions and tie Markdown entities + ScrollHandles alive.
+        let surviving_ids: std::collections::HashSet<String> = self
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                ThreadItem::ToolCall(snap) => Some(snap.id.clone()),
+                _ => None,
+            })
+            .collect();
+        self.tool_label_markdown
+            .retain(|id, _| surviving_ids.contains(id));
+        self.diff_scroll_handles
+            .retain(|id, _| surviving_ids.contains(id));
+        self.reviewed_edits.retain(|id| surviving_ids.contains(id));
+        // Drop reverse-index entries for tool calls past the truncation
+        // point. Indices of surviving items don't shift (we only chop
+        // the tail) so no remapping is needed.
+        self.tool_call_index
+            .retain(|id, _| surviving_ids.contains(id));
+        // Drop user-override entries for tool-group bursts whose
+        // start index now sits past the truncation point.
+        self.tool_group_user_open
+            .retain(|&start_ix, _| start_ix < new_len);
         self.list_state.reset(new_len);
         self.persist_snapshot_now(cx);
         cx.notify();
@@ -1477,20 +1738,43 @@ impl ThreadView {
         self.items.clear();
         self.collapsed_thoughts.clear();
         self.tool_label_markdown.clear();
+        // Also clear edit-card state so a `/clear`-then-replay path
+        // doesn't render edit cards as "already reviewed" against ids
+        // from a previous timeline.
+        self.reviewed_edits.clear();
+        self.diff_scroll_handles.clear();
+        self.tool_call_index.clear();
+        self.tool_group_user_open.clear();
         self.streaming_message_idx = None;
         self.list_state.reset(0);
         cx.notify();
     }
 
     /// Persist the full timeline snapshot to `threads.db`.
+    ///
+    /// The actual SQLite write is dispatched to `cx.background_spawn`
+    /// so a slow disk (Snap-confined writes, fsync on NVMe under load,
+    /// WAL checkpoint) never stalls the GPUI main thread. The blob is
+    /// built synchronously on the main thread (cheap clones from the
+    /// in-memory `items` Vec) and then moved into the background task,
+    /// matching Zed's pattern at `thread_metadata_store.rs:989` where
+    /// every save goes through `cx.background_spawn`. Previously this
+    /// function held the `Arc<Mutex<Connection>>` for the duration of
+    /// the WAL write inside hot streaming-tick callers like
+    /// `flush_streaming` and `append_message`.
     pub fn persist_snapshot_now(&self, cx: &gpui::App) {
         let (Some(store), Some(id)) = (self.store.as_ref(), self.store_id.as_ref()) else {
             return;
         };
         let items = self.collect_persisted_items(cx);
-        if let Err(err) = store.save_items(id, &items) {
-            log::warn!("ThreadView: persist_snapshot_now failed: {err}");
-        }
+        let store = store.clone();
+        let id = id.clone();
+        cx.background_spawn(async move {
+            if let Err(err) = store.save_items(&id, &items) {
+                log::warn!("ThreadView: persist_snapshot_now failed: {err}");
+            }
+        })
+        .detach();
     }
 
     fn collect_persisted_items(&self, _cx: &gpui::App) -> Vec<PersistedThreadItem> {
@@ -1594,26 +1878,25 @@ impl ThreadView {
     /// loop. If a previous turn is still streaming, it is flushed
     /// first.
     pub fn begin_assistant_stream(&mut self, cx: &mut Context<Self>) {
+        log::debug!(
+            target: "agents::stream",
+            "begin_assistant_stream prev_idx={:?} pending_chars={} items_len={}",
+            self.streaming_message_idx,
+            self.streaming_buffer.pending_chars(),
+            self.items.len(),
+        );
         if self.streaming_message_idx.is_some() {
             self.flush_streaming(cx);
         }
         // Re-use the trailing assistant message if there is one
         // (e.g. a Thought chunk landed first and we want the text to
         // append into the same turn). Otherwise open a fresh one.
+        // We no longer seed an empty `Text` chunk here — if the first
+        // content for the turn is a tool call (or nothing at all), an
+        // empty seed would persist as a phantom row in the timeline
+        // and on disk. `append_to_streaming_text_at` already opens a
+        // fresh Text chunk on the first real append.
         let idx = self.ensure_open_assistant_message(cx);
-        if let Some(ThreadItem::AssistantMessage(am)) = self.items.get_mut(idx) {
-            // Only add an empty Text seed if the trailing chunk
-            // isn't already a Text chunk that the paced reveal can
-            // append into.
-            let needs_seed = !matches!(am.chunks.last(), Some(AssistantMessageChunk::Text { .. }));
-            if needs_seed {
-                let markdown = Self::make_markdown("", cx);
-                am.chunks.push(AssistantMessageChunk::Text {
-                    text: String::new(),
-                    markdown,
-                });
-            }
-        }
         self.streaming_message_idx = Some(idx);
         if self.should_be_following.get() {
             self.list_state.scroll_to_end();
@@ -1626,6 +1909,9 @@ impl ThreadView {
                     smol::Timer::after(STREAMING_TICK).await;
                     let outcome = cx.update(|cx| {
                         this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
+                            // Drain any scheduled throttled persist
+                            // (Zed parity: `schedule_save` batching).
+                            view.tick_persist(cx);
                             if view.streaming_message_idx.is_none() {
                                 return false;
                             }
@@ -1645,14 +1931,40 @@ impl ThreadView {
         ));
     }
 
-    pub fn push_streaming_chunk(&mut self, chunk: &str) {
+    pub fn push_streaming_chunk(&mut self, chunk: &str, _cx: &mut Context<Self>) {
         if chunk.is_empty() {
             return;
         }
+        log::trace!(
+            target: "agents::stream",
+            "push_streaming_chunk len={} pending_before={} streaming_idx={:?}",
+            chunk.len(),
+            self.streaming_buffer.pending_chars(),
+            self.streaming_message_idx,
+        );
         self.streaming_buffer.push(chunk);
+        // No immediate tick on push:
+        // `markdown::Markdown::append` rebuilds the full `SharedString`
+        // source on every call (Zed `crates/markdown/src/markdown.rs:588`
+        // -- `self.source = SharedString::new(self.source.to_string() +
+        // text)`). Calling that per arriving chunk turns a long
+        // response into O(n²) string allocations. The 16 ms streaming
+        // tick in `begin_assistant_stream` keeps reveals at frame
+        // cadence (at most 60 Hz of markdown.append calls), which is
+        // already the user-visible refresh ceiling -- pushing harder
+        // burns CPU without changing what the user can see. First-
+        // token latency is still one frame because the runtime event
+        // task wakes immediately via futures::mpsc and the streaming
+        // tick fires within at most 16 ms of the push.
     }
 
     pub fn flush_streaming(&mut self, cx: &mut Context<Self>) {
+        log::debug!(
+            target: "agents::stream",
+            "flush_streaming idx={:?} pending_chars={}",
+            self.streaming_message_idx,
+            self.streaming_buffer.pending_chars(),
+        );
         let Some(idx) = self.streaming_message_idx.take() else {
             return;
         };
@@ -1660,7 +1972,24 @@ impl ThreadView {
         if !remaining.is_empty() {
             self.append_to_streaming_text_at(idx, &remaining, cx);
         }
-        self.persist_snapshot_now(cx);
+        // Skip persisting if the assistant message at `idx` is still
+        // entirely empty (no text chunks beyond the seed, no tool calls
+        // attached). This happens when `begin_assistant_stream` seeded
+        // an empty Text chunk and the turn was cancelled before any
+        // content arrived — persisting the empty message would clutter
+        // the on-disk thread with phantom rows.
+        let assistant_is_empty = self.items.get(idx).is_some_and(|it| match it {
+            ThreadItem::AssistantMessage(am) => am.chunks.iter().all(|c| match c {
+                AssistantMessageChunk::Text { text, .. } => text.is_empty(),
+                AssistantMessageChunk::Thought { text, .. } => text.is_empty(),
+            }),
+            _ => false,
+        });
+        // The forced flush superseeds any pending throttled write.
+        self.persist_deadline = None;
+        if !assistant_is_empty {
+            self.persist_snapshot_now(cx);
+        }
         self._streaming_task = None;
     }
 
@@ -1744,7 +2073,389 @@ impl ThreadView {
     /// user message naturally interrupts the assistant turn, but the
     /// chunks already emitted remain visible).
     fn close_open_assistant_message(&mut self) {
+        if let Some(idx) = self.streaming_message_idx {
+            log::debug!(
+                target: "agents::stream",
+                "close_open_assistant_message idx={} pending_chars={}",
+                idx,
+                self.streaming_buffer.pending_chars(),
+            );
+        }
         self.streaming_message_idx = None;
+    }
+
+    /// Drain the paced streaming buffer into the currently-open
+    /// assistant message's trailing `Text` chunk, **without** closing
+    /// the pipeline. Called from every path that's about to interrupt
+    /// an ongoing text stream with a non-text item (tool call,
+    /// thinking burst, user message) so the pending chars are revealed
+    /// in chronological order inside the same assistant turn.
+    ///
+    /// No-op when `streaming_message_idx` is `None` (nothing to drain
+    /// into) or when the buffer is empty.
+    fn drain_streaming_buffer_into_open(&mut self, cx: &mut Context<Self>) {
+        let Some(idx) = self.streaming_message_idx else {
+            return;
+        };
+        if self.streaming_buffer.is_idle() {
+            return;
+        }
+        let remaining = self.streaming_buffer.flush();
+        if remaining.is_empty() {
+            return;
+        }
+        log::debug!(
+            target: "agents::stream",
+            "drain_streaming_buffer_into_open idx={} drained_bytes={}",
+            idx,
+            remaining.len(),
+        );
+        self.append_to_streaming_text_at(idx, &remaining, cx);
+    }
+
+    // -----------------------------------------------------------------
+    // Inline tool-call burst grouping
+    // -----------------------------------------------------------------
+
+    /// Return the indices of every consecutive inline burst tool
+    /// starting at `start_ix`. The burst extends to the right while
+    /// `is_burst_tool` holds. Empty when `start_ix` itself is not a
+    /// burst tool.
+    fn collect_burst_at(&self, start_ix: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut ix = start_ix;
+        while let Some(item) = self.items.get(ix) {
+            if !is_burst_tool(item) {
+                break;
+            }
+            out.push(ix);
+            ix += 1;
+        }
+        out
+    }
+
+    /// `true` when the item at `ix` is the first item of a burst
+    /// (i.e. an inline burst tool whose predecessor is NOT a burst
+    /// tool). The header row is rendered at the burst-start index;
+    /// subsequent items collapse to a zero-height row.
+    fn is_burst_start(&self, ix: usize) -> bool {
+        if !self.items.get(ix).is_some_and(is_burst_tool) {
+            return false;
+        }
+        ix == 0 || !self.items.get(ix - 1).is_some_and(is_burst_tool)
+    }
+
+    /// Effective expand state for the burst at `start_ix`. A
+    /// `WaitingForConfirmation` tool forces open regardless of the
+    /// user override; otherwise the explicit override (if any) wins,
+    /// falling back to `has_non_terminal` (open while a tool is still
+    /// running, closed once every tool reached a terminal state).
+    fn tool_group_is_expanded(
+        &self,
+        start_ix: usize,
+        has_non_terminal: bool,
+        has_awaiting: bool,
+    ) -> bool {
+        if has_awaiting {
+            return true;
+        }
+        if let Some(&user) = self.tool_group_user_open.get(&start_ix) {
+            return user;
+        }
+        has_non_terminal
+    }
+
+    /// Toggle the user-forced expand state for the burst that starts
+    /// at `start_ix`. Writes the inverse of the current effective
+    /// state so a click always flips what the user sees.
+    pub fn toggle_tool_group(&mut self, start_ix: usize, cx: &mut Context<Self>) {
+        let burst = self.collect_burst_at(start_ix);
+        let mut has_non_terminal = false;
+        let mut has_awaiting = false;
+        for &ix in &burst {
+            if let Some(ThreadItem::ToolCall(s)) = self.items.get(ix) {
+                match s.status {
+                    super::runtime::ToolCallStatusKind::WaitingForConfirmation => {
+                        has_awaiting = true;
+                        has_non_terminal = true;
+                    }
+                    super::runtime::ToolCallStatusKind::Pending
+                    | super::runtime::ToolCallStatusKind::InProgress => {
+                        has_non_terminal = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let current = self.tool_group_is_expanded(start_ix, has_non_terminal, has_awaiting);
+        // A WaitingForConfirmation burst stays force-open; flipping
+        // would be a no-op since the next render forces it back to
+        // true. Skip the write so we don't accumulate stale entries.
+        if has_awaiting {
+            return;
+        }
+        self.tool_group_user_open.insert(start_ix, !current);
+        cx.notify();
+    }
+
+    fn render_tool_call_group(
+        &mut self,
+        start_ix: usize,
+        ui: crate::theme::UiColors,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use super::runtime::ToolCallStatusKind;
+        use ui::{LabelCommon, LabelSize, SpinnerLabel};
+
+        let burst = self.collect_burst_at(start_ix);
+        if burst.is_empty() {
+            return div().into_any_element();
+        }
+        let snaps: Vec<Arc<ToolCallSnapshot>> = burst
+            .iter()
+            .filter_map(|&ix| match self.items.get(ix) {
+                Some(ThreadItem::ToolCall(s)) => Some(Arc::clone(s)),
+                _ => None,
+            })
+            .collect();
+        let count = snaps.len();
+
+        // State derivation. `active` is the last non-terminal tool in
+        // the burst (the one currently running, used as the header
+        // command). `awaiting` is the first WaitingForConfirmation
+        // (force-open + amber). `failed_count` triggers the red
+        // "N failed" suffix once every tool reached a terminal state.
+        let active = snaps.iter().rev().find(|s| {
+            matches!(
+                s.status,
+                ToolCallStatusKind::Pending | ToolCallStatusKind::InProgress
+            )
+        });
+        let awaiting = snaps
+            .iter()
+            .find(|s| matches!(s.status, ToolCallStatusKind::WaitingForConfirmation));
+        let failed_count = snaps
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.status,
+                    ToolCallStatusKind::Failed | ToolCallStatusKind::Canceled
+                )
+            })
+            .count();
+        let has_non_terminal = active.is_some() || awaiting.is_some();
+        let has_awaiting = awaiting.is_some();
+        let expanded = self.tool_group_is_expanded(start_ix, has_non_terminal, has_awaiting);
+
+        // Header text. Strip backticks from the active title so the
+        // path / command reads cleanly on a single line; markdown chip
+        // styling lives in the expanded body where each tool is
+        // rendered through `render_inline_tool_call`.
+        let header_text: String = if let Some(a) = awaiting {
+            format!("Awaiting Confirmation: {}", strip_backticks(&a.title))
+        } else if let Some(a) = active {
+            format!("Working · {}", strip_backticks(&a.title))
+        } else if failed_count > 0 {
+            if failed_count == count {
+                format!("Used {count} tools · all failed")
+            } else {
+                format!("Used {count} tools · {failed_count} failed")
+            }
+        } else {
+            let suffix = if count == 1 { "tool" } else { "tools" };
+            format!("Used {count} {suffix}")
+        };
+
+        let amber: gpui::Hsla = rgb(0xeab676).into();
+        // Dim terracotta -- reserved for the catastrophic case where
+        // every tool in the burst failed. A single failure inside an
+        // otherwise-completed burst stays muted with a discrete
+        // textual suffix so it doesn't dominate the row (1 fail out
+        // of 26 in red was visually disproportionate).
+        let red_dim: gpui::Hsla = rgb(0xc97c5e).into();
+        let all_failed = failed_count > 0 && failed_count == count;
+        let header_color: gpui::Hsla = if has_awaiting {
+            amber
+        } else if has_non_terminal {
+            ui.text
+        } else if all_failed {
+            red_dim
+        } else {
+            ui.muted
+        };
+
+        // Status glyph. Spinner while running, amber loader on
+        // permission prompts, terracotta dot only on a full-failure
+        // burst; partial failures keep the muted check and let the
+        // textual suffix carry the count.
+        let status_glyph: AnyElement = if has_awaiting {
+            gpui::svg()
+                .size(px(11.))
+                .flex_none()
+                .path("icons/loader-circle.svg")
+                .text_color(amber)
+                .into_any_element()
+        } else if has_non_terminal {
+            SpinnerLabel::dots()
+                .size(LabelSize::Small)
+                .into_any_element()
+        } else if all_failed {
+            div()
+                .w(px(8.))
+                .h(px(8.))
+                .rounded_full()
+                .bg(red_dim)
+                .into_any_element()
+        } else {
+            gpui::svg()
+                .size(px(11.))
+                .flex_none()
+                .path("icons/check.svg")
+                .text_color(ui.muted)
+                .into_any_element()
+        };
+
+        let chevron_path = if expanded {
+            "icons/chevron-down.svg"
+        } else {
+            "icons/chevron-right.svg"
+        };
+        let chevron = gpui::svg()
+            .size(px(11.))
+            .flex_none()
+            .path(chevron_path)
+            .text_color(ui.muted);
+
+        let count_chip: SharedString = format!("{count}").into();
+        let header_label: SharedString = header_text.into();
+        let header_id: SharedString = format!("tool-group-header-{start_ix}").into();
+
+        // Inset the hover surface from the panel edges via `mx` so
+        // the rounded pill reads as a tappable list item instead of
+        // an edge-to-edge stripe. Inner `px` keeps the chevron lined
+        // up with the assistant-message body (~20 px total).
+        let header = div()
+            .id(header_id)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .mx(px(12.))
+            .px(px(8.))
+            .py(px(4.))
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|s| s.bg(ui.subtle))
+            .on_click(cx.listener(move |this, _ev, _w, cx| {
+                this.toggle_tool_group(start_ix, cx);
+            }))
+            .child(chevron)
+            .child(status_glyph)
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .text_color(header_color)
+                    .text_size(px(12.))
+                    .child(header_label),
+            )
+            .child(
+                div()
+                    .text_color(ui.muted)
+                    .text_size(px(11.))
+                    .child(count_chip),
+            );
+
+        if !expanded {
+            return header.into_any_element();
+        }
+
+        // Expanded body: re-render each tool through the existing
+        // `render_inline_tool_call` helper. No left border or vertical
+        // rule -- the indented row alignment + the rounded header
+        // pill make the cluster cohesive without extra chrome.
+        // Callbacks duplicate the `render_item` wiring (toggle expand
+        // of the individual row, permission decisions, pattern picker).
+        let mut body = div().flex().flex_col().pl(px(28.)).pb(px(4.));
+
+        for &ix in &burst {
+            let snap = match self.items.get(ix) {
+                Some(ThreadItem::ToolCall(s)) => Arc::clone(s),
+                _ => continue,
+            };
+            let label_md = self.tool_label_markdown.get(&snap.id).cloned();
+            let entity_weak = cx.entity().downgrade();
+            let id_for_toggle = snap.id.clone();
+            let id_for_perm = snap.id.clone();
+            let id_for_picker = snap.id.clone();
+            let id_for_pattern = snap.id.clone();
+            let on_toggle = move |_ev: &ClickEvent, _w: &mut gpui::Window, cx: &mut gpui::App| {
+                if let Some(entity) = entity_weak.upgrade() {
+                    let id = id_for_toggle.clone();
+                    entity.update(cx, |this, cx| {
+                        this.toggle_tool_call_expanded(&id, cx);
+                    });
+                }
+            };
+            let entity_weak = cx.entity().downgrade();
+            let on_permission = {
+                let entity_weak = entity_weak.clone();
+                let id_for_perm = id_for_perm.clone();
+                move |d: paneflow_acp::PermissionDecision,
+                      _w: &mut gpui::Window,
+                      cx: &mut gpui::App| {
+                    if let Some(entity) = entity_weak.upgrade() {
+                        let id = id_for_perm.clone();
+                        entity.update(cx, |this, cx| {
+                            this.resolve_permission(id, d, cx);
+                        });
+                    }
+                }
+            };
+            let on_toggle_picker = {
+                let entity_weak = entity_weak.clone();
+                move |_w: &mut gpui::Window, cx: &mut gpui::App| {
+                    if let Some(entity) = entity_weak.upgrade() {
+                        let id = id_for_picker.clone();
+                        entity.update(cx, |this, cx| {
+                            this.toggle_permission_picker(&id, cx);
+                        });
+                    }
+                }
+            };
+            let on_apply_pattern = {
+                let entity_weak = entity_weak.clone();
+                move |pattern: Option<String>, _w: &mut gpui::Window, cx: &mut gpui::App| {
+                    if let Some(entity) = entity_weak.upgrade() {
+                        let id = id_for_pattern.clone();
+                        entity.update(cx, |this, cx| {
+                            this.resolve_permission_with_pattern(id, pattern, cx);
+                        });
+                    }
+                }
+            };
+            let elem = super::inline_tool_call::render_inline_tool_call(
+                ix,
+                &snap,
+                label_md,
+                ui,
+                w,
+                cx,
+                on_toggle,
+                on_permission,
+                on_toggle_picker,
+                on_apply_pattern,
+            );
+            body = body.child(elem);
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(body)
+            .into_any_element()
     }
 
     // -----------------------------------------------------------------
@@ -1752,7 +2463,11 @@ impl ThreadView {
     // -----------------------------------------------------------------
 
     fn render_item(&mut self, ix: usize, w: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let ui = crate::theme::ui_colors();
+        // Reuse the theme + ui snapshot captured in `render()` so this
+        // function — invoked once per visible item by GPUI's List
+        // virtualizer — does not re-lock the theme cache. Fallback to
+        // the lock path on the cold first call before `render` runs.
+        let ui = self._ui_snapshot.unwrap_or_else(crate::theme::ui_colors);
         // Virtual extra item: when the composer is streaming, the
         // list reserves a slot at index `items.len()` for the inline
         // pixel spinner. Mirrors Zed's `render_entries` branch at
@@ -1773,11 +2488,16 @@ impl ThreadView {
                 }
                 let role = um.msg.role;
                 let md_entity = um.markdown.clone();
+                let cwd = self
+                    .composer
+                    .as_ref()
+                    .map(|c| c.read(cx).cwd().to_path_buf());
                 let bubble = super::message_render::render_message_body(
                     role,
                     &um.msg.content,
                     md_entity,
                     ui,
+                    cwd,
                 );
                 if role == MessageRole::User {
                     let is_streaming = self.is_streaming();
@@ -1791,7 +2511,26 @@ impl ThreadView {
                 self.render_assistant_message(ix, am, is_last, ui, w, cx)
             }
             ThreadItem::ToolCall(snap) => {
-                let snap = snap.clone();
+                // Inline burst grouping: a Read / Search / Execute /
+                // Think / Fetch / Other tool call is rendered as part
+                // of a collapsible group with its contiguous neighbors
+                // of the same kind. The header is rendered at the
+                // burst start; subsequent items in the burst collapse
+                // to a zero-height row so the GPUI virtual list count
+                // stays consistent without painting duplicate chrome.
+                // Edit / Delete / Move (diff-bearing) tools keep their
+                // own card layout below.
+                if is_burst_tool_snap(snap) {
+                    return if self.is_burst_start(ix) {
+                        self.render_tool_call_group(ix, ui, w, cx)
+                    } else {
+                        div().h(px(0.)).into_any_element()
+                    };
+                }
+                // Cheap pointer copy of the Arc -- no struct + string
+                // clone. The actual ToolCallSnapshot is shared with
+                // `self.items` and never mutated by the render path.
+                let snap = Arc::clone(snap);
                 if snap.kind == ToolKindKind::Edit
                     || !snap.diffs.is_empty()
                     || snap.kind == ToolKindKind::Delete
@@ -1811,7 +2550,7 @@ impl ThreadView {
                         .or_default()
                         .clone();
                     super::edit_tool_block::render_edit_tool_block(
-                        snap,
+                        &snap,
                         ui,
                         on_toggle,
                         scroll_handle,
@@ -1875,7 +2614,7 @@ impl ThreadView {
                     };
                     super::inline_tool_call::render_inline_tool_call(
                         ix,
-                        snap,
+                        &snap,
                         label_md,
                         ui,
                         w,
@@ -1914,6 +2653,14 @@ impl ThreadView {
         if is_blank {
             return div().into_any_element();
         }
+        // Snapshot the composer's cwd so each Text chunk's markdown
+        // link handler can resolve relative paths (`[foo](src/foo.rs)`)
+        // against the agent's working directory and re-prefix them
+        // with `file://` before `cx.open_url`.
+        let cwd = self
+            .composer
+            .as_ref()
+            .map(|c| c.read(cx).cwd().to_path_buf());
         // Inter-chunk gap: Zed uses `gap_3` (12px) at
         // `crates/agent_ui/src/conversation_view/thread_view.rs:5066-5068`
         // between Text/Thought chunks of one turn -- but the markdown
@@ -1935,6 +2682,7 @@ impl ThreadView {
                     body = body.child(super::message_render::render_assistant_body_md(
                         markdown.clone(),
                         ui,
+                        cwd.clone(),
                     ));
                 }
                 AssistantMessageChunk::Thought { text, markdown, .. } => {
@@ -1975,19 +2723,24 @@ impl ThreadView {
         // Outer wrapper: Zed `py_1p5()` (6px) +
         // `pb_4()` on the last turn at
         // `crates/agent_ui/src/conversation_view/thread_view.rs:5113-5114`.
-        // Bumped to `py(10)` here so the turn boundary reads as a
-        // distinct vertical region in Paneflow's narrower panel
-        // widths. Last-turn bottom padding bumped to 24px so the
-        // composer doesn't crowd the final paragraph.
+        // The earlier `py(10)` bump made text-around-tool-calls read as
+        // visually disjoint bubbles -- two AssistantMessage entries
+        // surrounding a ToolCall stacked 10+10=20px of vertical space
+        // plus tool padding, which the eye reads as "new bubble" each
+        // time the assistant resumes after a tool. Zed's 6px keeps the
+        // text-tool-text sequence tight enough that the post-tool text
+        // looks like a continuation of the same turn (see the
+        // screenshot pattern: "...scanner v" -> [tools] -> "ite fait
+        // la structure"). Match Zed's value verbatim.
         let mut outer = div()
             .flex()
             .flex_col()
             .w_full()
             .px(px(20.))
-            .py(px(10.))
+            .py(px(6.))
             .text_size(px(14.));
         if is_last {
-            outer = outer.pb(px(24.));
+            outer = outer.pb(px(16.));
         }
         outer.child(body).into_any_element()
     }
@@ -2032,6 +2785,32 @@ struct RunningTool {
 struct AwaitingTool {
     item_idx: usize,
     title: String,
+}
+
+/// `true` when `item` is an inline tool call eligible for burst
+/// grouping: a Read / Search / Execute / Think / Fetch / Other /
+/// SwitchMode tool with no attached diffs. Diff-bearing or Edit /
+/// Delete / Move tools render through their own card layout and
+/// break the burst when they appear in the timeline.
+fn is_burst_tool(item: &ThreadItem) -> bool {
+    match item {
+        ThreadItem::ToolCall(snap) => is_burst_tool_snap(snap),
+        _ => false,
+    }
+}
+
+fn is_burst_tool_snap(snap: &ToolCallSnapshot) -> bool {
+    !matches!(
+        snap.kind,
+        ToolKindKind::Edit | ToolKindKind::Delete | ToolKindKind::Move,
+    ) && snap.diffs.is_empty()
+}
+
+/// Strip backticks from a tool title so it renders cleanly inline
+/// inside a single-line header. The markdown title is preserved in
+/// the expanded body where `Markdown` renders the chip styling.
+fn strip_backticks(title: &str) -> String {
+    title.replace('`', "")
 }
 
 fn verbose_tool_kind_label(kind: super::runtime::ToolKindKind) -> &'static str {
@@ -2101,7 +2880,18 @@ fn apply_patch(snap: &mut ToolCallSnapshot, patch: ToolCallUpdate) {
 
 impl Render for ThreadView {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui = crate::theme::ui_colors();
+        // Snapshot the theme once per render: every helper below derives
+        // its colors from this value rather than re-locking the global
+        // theme cache. `ui_colors` used to lock internally on every
+        // call, and the agents view called it from both the outer
+        // render and each visible item's render_item — under streaming
+        // that's O(visible_items + 1) lock acquisitions per frame. The
+        // `_theme_snapshot` lives on `self` so `render_item` (driven by
+        // the virtualized List) can read it without a second lock.
+        let theme = crate::theme::active_theme();
+        let ui = crate::theme::ui_colors_with(&theme);
+        self._theme_snapshot = Some(theme);
+        self._ui_snapshot = Some(ui);
         let list_body: AnyElement = if self.items.is_empty() {
             empty_state()
         } else {
@@ -2157,7 +2947,9 @@ impl Render for ThreadView {
             .compute_activity_state(cx)
             .map(|state| self.render_activity_bar(state, cx));
 
-        let theme = crate::theme::active_theme();
+        let theme = self
+            ._theme_snapshot
+            .unwrap_or_else(crate::theme::active_theme);
         let max_w_px = crate::agents::panel_config::active_max_content_width() as f32;
         let mut inner = div()
             .flex_1()

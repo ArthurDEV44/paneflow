@@ -60,15 +60,16 @@ pub(crate) fn render_message_body(
     content: &[ContentBlock],
     markdown_entity: Option<Entity<Markdown>>,
     ui: crate::theme::UiColors,
+    cwd: Option<std::path::PathBuf>,
 ) -> AnyElement {
     let body_text = join_text_blocks(content);
     match role {
         MessageRole::User => match markdown_entity {
-            Some(md) => render_user_bubble_md(md, ui).into_any_element(),
+            Some(md) => render_user_bubble_md(md, ui, cwd).into_any_element(),
             None => render_user_bubble(&body_text, ui).into_any_element(),
         },
         MessageRole::Assistant => match markdown_entity {
-            Some(md) => render_assistant_body_md(md, ui).into_any_element(),
+            Some(md) => render_assistant_body_md(md, ui, cwd).into_any_element(),
             None => render_assistant_body(&body_text, ui).into_any_element(),
         },
         MessageRole::System => render_system_note(&body_text, ui).into_any_element(),
@@ -86,6 +87,7 @@ pub(crate) fn render_message_body(
 pub(crate) fn render_assistant_body_md(
     md: Entity<Markdown>,
     ui: crate::theme::UiColors,
+    cwd: Option<std::path::PathBuf>,
 ) -> impl IntoElement {
     let body_color = gpui::rgb(0xc4c4c4).into();
     // Mirror Zed's `MarkdownStyle::themed(MarkdownFont::Agent, ...)`
@@ -101,7 +103,85 @@ pub(crate) fn render_assistant_body_md(
     // `render_assistant_message` wrapper handles `px_5 py_1p5 gap_3`.
     let style =
         super::markdown_style::paneflow_markdown_style_with_line_height(ui, body_color, 14.0, 1.75);
-    div().child(MarkdownElement::new(md, style))
+    div().child(MarkdownElement::new(md, style).on_url_click(make_link_handler(cwd)))
+}
+
+/// Two-stage cleanup before forwarding a markdown link to `cx.open_url`:
+///
+/// 1. `xdg-open` (and gio / gnome-open / kde-open / portals) refuses any
+///    path with a `:line[:col]` suffix -- a tooling convention (rustc /
+///    grep -n / IDE link format) the desktop opener does not parse. Up
+///    to two trailing numeric segments are stripped.
+/// 2. GPUI's `App::open_url` requires the URL to carry a scheme. LLM
+///    output frequently emits bare paths (`[foo](src/foo.rs)` -- no
+///    `file://`), so the handler resolves a path-shaped href against
+///    the thread's cwd and re-prefixes it as `file://<absolute>`.
+///
+/// Plain `http(s)://` or `file://` URLs flow through unchanged.
+/// (Logs reported the "URI must contain a scheme" failure on
+/// 2026-05-26.)
+fn make_link_handler(
+    cwd: Option<std::path::PathBuf>,
+) -> impl Fn(SharedString, &mut gpui::Window, &mut gpui::App) + 'static {
+    move |href, _w, cx| {
+        // First try the user's configured external editor (Zed / Cursor /
+        // Windsurf / VSCode). It receives the path with the `:line[:col]`
+        // suffix preserved so the editor jumps to the target position.
+        // On `false` (no editor configured, none detected, or spawn
+        // failure) we fall through to `cx.open_url` which defers to
+        // xdg-open / open / start.
+        if !href.contains("://") && super::external_editor::open(&href, cwd.as_deref()) {
+            return;
+        }
+        let target = resolve_link(&href, cwd.as_deref());
+        cx.open_url(&target);
+    }
+}
+
+fn resolve_link(href: &str, cwd: Option<&std::path::Path>) -> String {
+    let stripped = strip_line_col_suffix(href).unwrap_or_else(|| href.to_string());
+    // Already a URL with a scheme -- forward as-is.
+    if stripped.contains("://") {
+        return stripped;
+    }
+    // Bare path. Resolve relative components against the thread cwd
+    // (if available) so `xdg-open` can find the file; produce a
+    // `file://<absolute>` URI so GPUI's scheme check is satisfied.
+    let path = std::path::Path::new(&stripped);
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Some(cwd) = cwd {
+        cwd.join(path)
+    } else {
+        // No cwd to anchor against -- best effort: forward as-is so
+        // `cx.open_url` surfaces the scheme error rather than us
+        // silently opening the wrong file.
+        return stripped;
+    };
+    format!("file://{}", abs.display())
+}
+
+fn strip_line_col_suffix(href: &str) -> Option<String> {
+    // Keep the scheme prefix (`file://`, `https://`, ...) intact so the
+    // colon inside it is never mistaken for a `:line` separator.
+    let (scheme, path) = match href.find("://") {
+        Some(pos) => (&href[..pos + 3], &href[pos + 3..]),
+        None => ("", href),
+    };
+    let mut trim_at: Option<usize> = None;
+    let mut idx = path.len();
+    for _ in 0..2 {
+        let Some(prev_colon) = path[..idx].rfind(':') else {
+            break;
+        };
+        let tail = &path[prev_colon + 1..idx];
+        if tail.is_empty() || !tail.bytes().all(|b| b.is_ascii_digit()) {
+            break;
+        }
+        trim_at = Some(prev_colon);
+        idx = prev_colon;
+    }
+    trim_at.map(|p| format!("{scheme}{}", &path[..p]))
 }
 
 /// Zed-pipeline user bubble. Ported from
@@ -110,7 +190,11 @@ pub(crate) fn render_assistant_body_md(
 /// `pt_2/pb_3/px_2/gap_1p5`, inner bordered card with `editor_background`
 /// (mapped to `ui.base`), `shadow_md`, and a hover that nudges the
 /// border toward `focus_border` (mapped to `ui.accent`).
-fn render_user_bubble_md(md: Entity<Markdown>, ui: crate::theme::UiColors) -> impl IntoElement {
+fn render_user_bubble_md(
+    md: Entity<Markdown>,
+    ui: crate::theme::UiColors,
+    cwd: Option<std::path::PathBuf>,
+) -> impl IntoElement {
     let body_color = gpui::rgb(0xc4c4c4).into();
     let style = super::markdown_style::paneflow_markdown_style(ui, body_color, 12.0);
     div()
@@ -133,7 +217,7 @@ fn render_user_bubble_md(md: Entity<Markdown>, ui: crate::theme::UiColors) -> im
                 .hover(|s| s.border_color(ui.accent.alpha(0.8)))
                 .text_size(px(12.))
                 .text_color(body_color)
-                .child(MarkdownElement::new(md, style)),
+                .child(MarkdownElement::new(md, style).on_url_click(make_link_handler(cwd))),
         )
 }
 

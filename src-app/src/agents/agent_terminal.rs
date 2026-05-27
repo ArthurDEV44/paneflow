@@ -163,12 +163,106 @@ impl OutputBuffer {
     }
 
     fn snapshot(&self) -> (String, bool) {
-        // Lossy conversion: if the agent emits raw bytes that are
-        // not valid UTF-8 (unusual for typical shells), we return
-        // the best-effort decode instead of failing.
-        let s = String::from_utf8_lossy(&self.bytes).into_owned();
+        // Strip ANSI/VT control sequences (CSI, OSC, DCS, SOS, PM, APC,
+        // charset designators) plus C0/DEL controls except `\r \n \t \b`.
+        // The raw buffer keeps the unchanged bytes so a future debug path
+        // can re-expose them; only the snapshot the agent feeds to the LLM
+        // is sanitised. Without this, output from `cargo`, `git`, `npm`,
+        // `bat` and friends carries the SGR/cursor sequences verbatim into
+        // the model context, which both wastes tokens and confuses tool
+        // parsers that don't run `strip-ansi` themselves.
+        let s = strip_ansi_bytes(&self.bytes);
         (s, self.truncated)
     }
+}
+
+/// Strip ANSI/VT escape sequences and most C0 controls from `bytes`,
+/// returning a UTF-8 String (lossy decode for the rare non-UTF-8 byte).
+/// Preserves the line-feed family (`\r \n \t \b`) so output structure
+/// survives intact.
+///
+/// Designed for snapshot consumers (LLM context), not for live VT
+/// emulation — the parser is a forward state machine, not a full vte
+/// processor, and intentionally cheap.
+fn strip_ansi_bytes(bytes: &[u8]) -> String {
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            // ESC introducer — skip the whole sequence
+            0x1b => {
+                i += 1;
+                if i >= bytes.len() {
+                    break;
+                }
+                match bytes[i] {
+                    // CSI: ESC [ params... final(0x40..=0x7E)
+                    b'[' => {
+                        i += 1;
+                        while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                            i += 1;
+                        }
+                        if i < bytes.len() {
+                            i += 1; // consume the final byte
+                        }
+                    }
+                    // OSC: ESC ] params... terminated by BEL or ESC \
+                    b']' => {
+                        i += 1;
+                        while i < bytes.len() {
+                            if bytes[i] == 0x07 {
+                                i += 1;
+                                break;
+                            }
+                            if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                                i += 2;
+                                break;
+                            }
+                            i += 1;
+                        }
+                    }
+                    // DCS / SOS / PM / APC: ESC P|X|^|_ ... ST (ESC \)
+                    b'P' | b'X' | b'^' | b'_' => {
+                        i += 1;
+                        while i < bytes.len() {
+                            if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                                i += 2;
+                                break;
+                            }
+                            i += 1;
+                        }
+                    }
+                    // Charset designators: ESC ( ) * + then one byte
+                    b'(' | b')' | b'*' | b'+' => {
+                        i += 1;
+                        if i < bytes.len() {
+                            i += 1;
+                        }
+                    }
+                    // Other single-byte ESC sequences (SS2 N, SS3 O, c, =, >, 7, 8…)
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
+            // Preserve structural whitespace
+            b'\r' | b'\n' | b'\t' | 0x08 => {
+                out.push(b);
+                i += 1;
+            }
+            // Drop remaining C0 controls + DEL
+            0x00..=0x1f | 0x7f => {
+                i += 1;
+            }
+            // Printable + UTF-8 continuation bytes
+            _ => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Return the smallest UTF-8 character-boundary offset that is >=
@@ -204,10 +298,21 @@ impl AgentTerminalSession {
         output_limit: usize,
     ) -> Result<Self, TerminalError> {
         let pty_system = native_pty_system();
+        // ACP 0.12 has no `terminal/resize` request, so the dimensions chosen
+        // here are fixed for the session's lifetime. Picking 24×80 (the
+        // historical terminal default) forces tools that consult `$COLUMNS`
+        // — `ls --color`, `tree`, `cargo` colour output, `column`, anything
+        // routed through `tabulate` / `rich` — to wrap at 80 columns and
+        // truncate / re-flow output, which then lands in the LLM context as
+        // jumbled text. 120×500 keeps line widths wide enough for typical
+        // source-code listings and stack traces, and offers enough vertical
+        // room that a moderately long command run (a Rust build's warning
+        // wall, a `git log`, an `npm install` tree) does not trigger
+        // pagination logic in pagers that auto-detect a small screen.
         let pair = pty_system
             .openpty(PtySize {
-                rows: 24,
-                cols: 80,
+                rows: 500,
+                cols: 120,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -347,12 +452,19 @@ impl TerminalSession for AgentTerminalSession {
                 if let Some(pid) = pid_opt
                     && pid > 0
                 {
-                    // SIGTERM = 15.
-                    // SAFETY: libc::kill is FFI but inert with a
-                    // self-process pid; we pass an already-validated
-                    // child pid.
+                    // Send SIGTERM to the whole process group (`-pid`) so a
+                    // command that forked workers (npm script wrapping a
+                    // dev-server, make spawning compilers) gets every member
+                    // signalled. portable-pty calls `setsid()` on the spawned
+                    // child (unix.rs:220), so `pid` is both the PID and the
+                    // PGID — `kill(-pgid, SIGTERM)` is the canonical POSIX
+                    // group-signal idiom.
+                    //
+                    // SAFETY: libc::kill with a negative pid > 0 captured by
+                    // value targets the process group; the pid was validated
+                    // alive at the moment we read it from the child handle.
                     unsafe {
-                        libc::kill(pid as i32, libc::SIGTERM);
+                        libc::kill(-(pid as i32), libc::SIGTERM);
                     }
                     let deadline = Instant::now() + Duration::from_secs(2);
                     while Instant::now() < deadline {
@@ -368,9 +480,19 @@ impl TerminalSession for AgentTerminalSession {
                             return Ok(());
                         }
                     }
+                    // Grace period expired. Escalate to SIGKILL on the whole
+                    // group before the portable-pty fallback below (which
+                    // only signals the leader's PID via SIGHUP — too soft
+                    // for a hung process group).
+                    // SAFETY: same constraints as the SIGTERM above.
+                    unsafe {
+                        libc::kill(-(pid as i32), libc::SIGKILL);
+                    }
                 }
                 let _ = pid_opt; // suppress unused on Windows
-                // Fallback: SIGKILL via portable-pty.
+                // Fallback: portable-pty's ChildKiller (SIGHUP on Unix,
+                // TerminateProcess on Windows). On Unix this is now belt-and-
+                // suspenders — the SIGKILL above already reaped the group.
                 let mut guard = match shared.child.lock() {
                     Ok(g) => g,
                     Err(p) => p.into_inner(),
@@ -450,4 +572,99 @@ fn next_terminal_id() -> u64 {
 #[allow(dead_code)]
 fn _ensure_dep_graph_complete() -> HashMap<TerminalId, TerminalExitStatus> {
     HashMap::new()
+}
+
+#[cfg(test)]
+mod strip_ansi_tests {
+    use super::strip_ansi_bytes;
+
+    #[test]
+    fn plain_text_unchanged() {
+        assert_eq!(strip_ansi_bytes(b"hello world\n"), "hello world\n");
+    }
+
+    #[test]
+    fn csi_color_sequence_removed() {
+        // `cargo` colours errors with `\x1b[1;31m...\x1b[0m`.
+        let input = b"\x1b[1;31merror\x1b[0m: bad";
+        assert_eq!(strip_ansi_bytes(input), "error: bad");
+    }
+
+    #[test]
+    fn cursor_movement_csi_removed() {
+        // Progress bars (npm, tqdm) use `\x1b[2K\x1b[1A`.
+        let input = b"\x1b[2K\x1b[1AOK\n";
+        assert_eq!(strip_ansi_bytes(input), "OK\n");
+    }
+
+    #[test]
+    fn osc_title_bel_terminated() {
+        // Shell prompt setting window title: `\x1b]0;title\x07`.
+        let input = b"before\x1b]0;dir\x07after";
+        assert_eq!(strip_ansi_bytes(input), "beforeafter");
+    }
+
+    #[test]
+    fn osc_title_st_terminated() {
+        // Strict OSC termination uses ST (`\x1b\\`) instead of BEL.
+        let input = b"before\x1b]2;t\x1b\\after";
+        assert_eq!(strip_ansi_bytes(input), "beforeafter");
+    }
+
+    #[test]
+    fn dcs_sequence_removed() {
+        let input = b"x\x1bPdata\x1b\\y";
+        assert_eq!(strip_ansi_bytes(input), "xy");
+    }
+
+    #[test]
+    fn structural_whitespace_preserved() {
+        let input = b"a\tb\rc\nd\x08e";
+        assert_eq!(strip_ansi_bytes(input), "a\tb\rc\nd\x08e");
+    }
+
+    #[test]
+    fn bell_and_other_c0_dropped() {
+        // BEL (0x07) outside an OSC must be dropped, but a `\n` survives.
+        let input = b"hi\x07!\nthere";
+        assert_eq!(strip_ansi_bytes(input), "hi!\nthere");
+    }
+
+    #[test]
+    fn truncated_csi_does_not_panic() {
+        // Buffer truncated mid-CSI — must not panic, must not emit garbage.
+        let input = b"good\x1b[38;5;";
+        let out = strip_ansi_bytes(input);
+        assert_eq!(out, "good");
+    }
+
+    #[test]
+    fn lone_trailing_esc_dropped() {
+        assert_eq!(strip_ansi_bytes(b"x\x1b"), "x");
+    }
+
+    #[test]
+    fn utf8_continuation_bytes_kept() {
+        // `é` = 0xC3 0xA9 — neither byte is in the ASCII printable range
+        // but both must survive to keep UTF-8 decode valid.
+        let input = "café".as_bytes();
+        assert_eq!(strip_ansi_bytes(input), "café");
+    }
+
+    #[test]
+    fn charset_designator_removed() {
+        // VT100 charset switch: `\x1b(B` selects ASCII into G0.
+        let input = b"x\x1b(By";
+        assert_eq!(strip_ansi_bytes(input), "xy");
+    }
+
+    #[test]
+    fn realistic_cargo_output_cleaned() {
+        let input = b"\x1b[1m\x1b[32m   Compiling\x1b[0m paneflow v0.3.2\n\x1b[1m\x1b[32m    Finished\x1b[0m `dev` profile";
+        let out = strip_ansi_bytes(input);
+        assert_eq!(
+            out,
+            "   Compiling paneflow v0.3.2\n    Finished `dev` profile"
+        );
+    }
 }
