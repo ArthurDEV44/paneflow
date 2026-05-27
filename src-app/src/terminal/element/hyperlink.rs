@@ -852,8 +852,12 @@ mod tests {
     #[test]
     fn code_path_scanner_matches_rust_at_line_col() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        write_md(tmp.path(), "lib.rs"); // re-use the .md writer for any file
-        let line_text = format!("error at {}/lib.rs:42:7", tmp.path().to_string_lossy());
+        let rs_path = write_md(tmp.path(), "lib.rs"); // re-use the .md writer for any file
+        // Use `canonical_display` so Windows 8.3 short names and the
+        // `\\?\` UNC prefix don't leak into the test line — same
+        // workaround the file-path scanner tests use.
+        let display = canonical_display(&rs_path);
+        let line_text = format!("error at {display}:42:7");
         let map = ascii_map(&line_text);
         let zones = detect_code_paths_on_line_mapped(&line_text, line0(), &map, None);
         assert_eq!(zones.len(), 1);
@@ -866,8 +870,9 @@ mod tests {
     #[test]
     fn code_path_scanner_matches_python_no_location() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        write_md(tmp.path(), "main.py");
-        let line_text = format!("traceback: {}/main.py", tmp.path().to_string_lossy());
+        let py_path = write_md(tmp.path(), "main.py");
+        let display = canonical_display(&py_path);
+        let line_text = format!("traceback: {display}");
         let map = ascii_map(&line_text);
         let zones = detect_code_paths_on_line_mapped(&line_text, line0(), &map, None);
         assert_eq!(zones.len(), 1);
