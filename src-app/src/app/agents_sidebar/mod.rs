@@ -109,8 +109,17 @@ impl PaneFlowApp {
 
         // US-012: if a filter is active and matches nothing, swap the
         // entire list body for the AC #7 empty-state hint.
+        //
+        // US-010 (audit P1-4): lowercase the needle exactly once per
+        // render. The previous helpers lowered it inside every
+        // matches() / match_positions() call -- on a workspace with
+        // 100 threads x 10 projects that was 1000+ allocations per
+        // keystroke. `query` is kept around for the user-facing
+        // empty-state hint (case preserved); `query_lower` is fed
+        // into every matcher below.
         let query = self.agents_filter.clone();
-        if filter::nothing_matches(&self.projects, &query) {
+        let query_lower = query.to_lowercase();
+        if filter::nothing_matches(&self.projects, &query_lower) {
             list = list.child(no_matches_hint(&query, ui));
             sidebar = sidebar.child(self.sidebar_list_wrapper(list, cx));
             return sidebar.into_any_element();
@@ -128,7 +137,7 @@ impl PaneFlowApp {
             let project = &self.projects[project_idx];
             // US-012: skip projects that neither match the filter
             // themselves nor have any matching thread.
-            if filtering && !filter::project_visible(project, &query) {
+            if filtering && !filter::project_visible(project, &query_lower) {
                 continue;
             }
 
@@ -169,14 +178,15 @@ impl PaneFlowApp {
             let mut shown_threads = 0usize;
             for thread_idx in (0..thread_count_in_project).rev() {
                 let thread = &self.projects[project_idx].threads[thread_idx];
-                if filtering && !filter::thread_visible_in_project(thread, project, &query) {
+                if filtering && !filter::thread_visible_in_project(thread, project, &query_lower)
+                {
                     continue;
                 }
                 shown_threads += 1;
                 let is_active =
                     project_idx == active_project_idx && active_thread_idx == Some(thread_idx);
                 let match_pos = if filtering {
-                    filter::match_positions(&thread.title, &query)
+                    filter::match_positions(&thread.title, &query_lower)
                 } else {
                     None
                 };
@@ -912,8 +922,10 @@ fn handle_filter_key(this: &mut PaneFlowApp, e: &KeyDownEvent, cx: &mut Context<
             // currently visible representation of which thread is in
             // the spotlight. If the filter matches nothing, do not
             // mutate selection.
-            let query = this.agents_filter.clone();
-            if let Some((p_idx, t_idx)) = filter::first_matching_thread(&this.projects, &query) {
+            let query_lower = this.agents_filter.to_lowercase();
+            if let Some((p_idx, t_idx)) =
+                filter::first_matching_thread(&this.projects, &query_lower)
+            {
                 let _ = this.select_thread(p_idx, t_idx, cx);
             }
         }

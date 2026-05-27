@@ -9,30 +9,35 @@
 
 use crate::project::{Project, Thread};
 
-/// Case-insensitive substring match. Empty `query` matches everything
-/// (the caller short-circuits before this is even called, but the
-/// behaviour is documented anyway for symmetry).
+/// Case-insensitive substring match. `lowered_needle` MUST already be
+/// `to_lowercase()`-ed by the caller -- on a workspace with N projects
+/// and P threads/project the previous "lowercase inside" form burned
+/// N*P needle allocations per keystroke (audit P1-4). Empty needle
+/// matches everything; the caller short-circuits before this is
+/// called, but the behaviour is documented anyway for symmetry.
 #[inline]
-pub(crate) fn matches(haystack: &str, query: &str) -> bool {
-    if query.is_empty() {
+pub(crate) fn matches(haystack: &str, lowered_needle: &str) -> bool {
+    if lowered_needle.is_empty() {
         return true;
     }
-    let needle = query.to_lowercase();
-    haystack.to_lowercase().contains(&needle)
+    haystack.to_lowercase().contains(lowered_needle)
 }
 
 /// Should this project appear at all under the given filter?
 ///
 /// Rule per AC #2: "a project header is visible if any of its threads
 /// match OR if its own title matches". Empty filter -> always visible.
-pub(crate) fn project_visible(project: &Project, query: &str) -> bool {
-    if query.is_empty() {
+pub(crate) fn project_visible(project: &Project, lowered_needle: &str) -> bool {
+    if lowered_needle.is_empty() {
         return true;
     }
-    if matches(&project.title, query) {
+    if matches(&project.title, lowered_needle) {
         return true;
     }
-    project.threads.iter().any(|t| matches(&t.title, query))
+    project
+        .threads
+        .iter()
+        .any(|t| matches(&t.title, lowered_needle))
 }
 
 /// Should this thread row appear under the given filter?
@@ -42,27 +47,34 @@ pub(crate) fn project_visible(project: &Project, query: &str) -> bool {
 /// visible. When the project itself matches but no thread does, the
 /// caller still wants to render the children so the user can drill
 /// in; [`thread_visible_in_project`] folds both signals.
-pub(crate) fn thread_visible_in_project(thread: &Thread, project: &Project, query: &str) -> bool {
-    if query.is_empty() {
+pub(crate) fn thread_visible_in_project(
+    thread: &Thread,
+    project: &Project,
+    lowered_needle: &str,
+) -> bool {
+    if lowered_needle.is_empty() {
         return true;
     }
-    if matches(&thread.title, query) {
+    if matches(&thread.title, lowered_needle) {
         return true;
     }
     // Surface every thread when the project title is the match: the
     // user typed the project name, they want to see what is inside.
-    matches(&project.title, query)
+    matches(&project.title, lowered_needle)
 }
 
 /// First (project_idx, thread_idx) pair whose thread matches. Used by
 /// the Down-arrow key handler to jump straight to the first hit.
-pub(crate) fn first_matching_thread(projects: &[Project], query: &str) -> Option<(usize, usize)> {
-    if query.is_empty() {
+pub(crate) fn first_matching_thread(
+    projects: &[Project],
+    lowered_needle: &str,
+) -> Option<(usize, usize)> {
+    if lowered_needle.is_empty() {
         return None;
     }
     for (p_idx, project) in projects.iter().enumerate() {
         for (t_idx, thread) in project.threads.iter().enumerate() {
-            if thread_visible_in_project(thread, project, query) {
+            if thread_visible_in_project(thread, project, lowered_needle) {
                 return Some((p_idx, t_idx));
             }
         }
@@ -72,29 +84,30 @@ pub(crate) fn first_matching_thread(projects: &[Project], query: &str) -> Option
 
 /// Are there ZERO matching projects/threads? Used by the render path
 /// to swap the list for the empty-state row from AC #7.
-pub(crate) fn nothing_matches(projects: &[Project], query: &str) -> bool {
-    if query.is_empty() {
+pub(crate) fn nothing_matches(projects: &[Project], lowered_needle: &str) -> bool {
+    if lowered_needle.is_empty() {
         return false;
     }
-    !projects.iter().any(|p| project_visible(p, query))
+    !projects.iter().any(|p| project_visible(p, lowered_needle))
 }
 
 /// US-021: byte-range of the first case-insensitive substring hit of
-/// `query` inside `haystack`, suitable for splitting a string into
-/// `[before, match, after]` for highlight rendering. Returns `None`
-/// when query is empty, longer than haystack, or doesn't match.
+/// `lowered_needle` inside `haystack`, suitable for splitting a string
+/// into `[before, match, after]` for highlight rendering. Returns
+/// `None` when the needle is empty, longer than the haystack, or
+/// doesn't match.
 ///
+/// `lowered_needle` MUST already be `to_lowercase()`-ed by the caller.
 /// The match preserves the haystack's original byte boundaries so the
 /// caller can slice safely (`&haystack[..start]`, `&haystack[start..end]`,
 /// `&haystack[end..]`). The lowered haystack/needle are only used to
 /// locate the hit -- the slices returned point into the original.
-pub(crate) fn match_positions(haystack: &str, query: &str) -> Option<(usize, usize)> {
-    if query.is_empty() || query.len() > haystack.len() {
+pub(crate) fn match_positions(haystack: &str, lowered_needle: &str) -> Option<(usize, usize)> {
+    if lowered_needle.is_empty() || lowered_needle.len() > haystack.len() {
         return None;
     }
     let lower_haystack = haystack.to_lowercase();
-    let lower_needle = query.to_lowercase();
-    let start = lower_haystack.find(&lower_needle)?;
+    let start = lower_haystack.find(lowered_needle)?;
     // to_lowercase can change byte length for non-ASCII text. For ASCII
     // it is a no-op, so the byte index transfers directly. For
     // non-ASCII titles the start byte still maps because to_lowercase
@@ -104,7 +117,7 @@ pub(crate) fn match_positions(haystack: &str, query: &str) -> Option<(usize, usi
     if !haystack.is_char_boundary(start) {
         return None;
     }
-    let end = start + lower_needle.len();
+    let end = start + lowered_needle.len();
     if end > haystack.len() || !haystack.is_char_boundary(end) {
         return None;
     }
@@ -139,8 +152,10 @@ mod tests {
 
     #[test]
     fn matches_is_case_insensitive() {
+        // Callers must pre-lower the needle (US-010 contract): the
+        // haystack is lowered here, the needle is taken as-is.
         assert!(matches("Paneflow", "pane"));
-        assert!(matches("paneflow", "FLOW"));
+        assert!(matches("paneflow", "flow"));
         assert!(!matches("paneflow", "xyz"));
     }
 
@@ -177,14 +192,15 @@ mod tests {
     fn match_positions_finds_substring_byte_range() {
         // Simple ASCII match.
         assert_eq!(match_positions("Refactor sidebar", "side"), Some((9, 13)));
-        // Case-insensitive: query lowercased, haystack mixed.
-        assert_eq!(match_positions("Bug Fix", "BUG"), Some((0, 3)));
+        // Case-insensitive: needle is already lowered (US-010
+        // contract), haystack mixed.
+        assert_eq!(match_positions("Bug Fix", "bug"), Some((0, 3)));
         // No match returns None.
         assert_eq!(match_positions("anything", "xyz"), None);
-        // Empty query returns None (caller short-circuits but the
+        // Empty needle returns None (caller short-circuits but the
         // contract is "no highlight to render").
         assert_eq!(match_positions("anything", ""), None);
-        // Query longer than haystack: None.
+        // Needle longer than haystack: None.
         assert_eq!(match_positions("ab", "abcdef"), None);
     }
 
