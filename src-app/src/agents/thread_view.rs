@@ -819,6 +819,11 @@ impl ThreadView {
     pub fn sweep_pending_tools_on_fatal(&mut self, cx: &mut Context<Self>) -> bool {
         use super::runtime::ToolCallStatusKind;
         let mut touched = false;
+        // US-004 (cli-hardening-followup-2026-Q3): collect ids whose
+        // diff-empty payload is now terminal so we can drop their
+        // label / scroll bookkeeping AFTER the mutating pass
+        // releases the `&mut self.items` borrow.
+        let mut swept: Vec<(String, bool)> = Vec::new();
         for item in &mut self.items {
             if let ThreadItem::ToolCall(snap) = item
                 && matches!(
@@ -828,12 +833,24 @@ impl ThreadView {
                         | ToolCallStatusKind::WaitingForConfirmation
                 )
             {
+                let id = snap.id.clone();
+                let has_diffs = !snap.diffs.is_empty();
                 let snap = Arc::make_mut(snap);
                 snap.status = ToolCallStatusKind::Failed;
                 snap.permission_picker_open = false;
                 snap.permission_options.clear();
                 touched = true;
+                swept.push((id, has_diffs));
             }
+        }
+        for (id, has_diffs) in swept {
+            apply_terminal_tool_ui_prune(
+                &mut self.tool_label_markdown,
+                &mut self.diff_scroll_handles,
+                &id,
+                true,
+                has_diffs,
+            );
         }
         if touched {
             self.persist_snapshot_now(cx);
@@ -846,21 +863,59 @@ impl ThreadView {
     /// ids (defensive: ACP servers occasionally emit updates for
     /// already-finalised calls).
     pub fn update_tool_call(&mut self, patch: ToolCallUpdate, cx: &mut Context<Self>) {
+        use super::runtime::ToolCallStatusKind;
         let new_title = patch.title.clone();
         // O(1) lookup via the reverse index. Guard against the index
         // pointing at a removed/replaced slot (truncate_for_edit / a
         // future swap) by validating the item is still the expected
         // ToolCall with the matching id before applying.
-        if let Some(&idx) = self.tool_call_index.get(&patch.id)
+        let post = if let Some(&idx) = self.tool_call_index.get(&patch.id)
             && let Some(ThreadItem::ToolCall(snap)) = self.items.get_mut(idx)
             && snap.id == patch.id
         {
             let id = snap.id.clone();
             apply_patch(Arc::make_mut(snap), patch);
-            if let Some(title) = new_title {
+            // Capture the post-patch terminal/diffs state so we can
+            // release the inner borrow on `self.items` before
+            // touching `self.tool_label_markdown` /
+            // `self.diff_scroll_handles`.
+            let is_terminal = matches!(
+                snap.status,
+                ToolCallStatusKind::Completed | ToolCallStatusKind::Failed
+            );
+            let has_diffs = !snap.diffs.is_empty();
+            Some((id, is_terminal, has_diffs))
+        } else {
+            None
+        };
+        if let Some((id, is_terminal, has_diffs)) = post {
+            // US-004 (cli-hardening-followup-2026-Q3): drop UI
+            // bookkeeping once the call hits a terminal status.
+            // - non-edit calls (no diffs): drop both the label
+            //   markdown and the scroll handle. They never trigger
+            //   Keep All / Reject All so US-015's review-purge path
+            //   could never reach them; on a 200-tool-call session
+            //   that's 200 retained `Entity<Markdown>` entries.
+            // - edit calls (has diffs): keep the label markdown so
+            //   the header path stays styled on re-expansion; drop
+            //   the live scroll handle (it is recreated lazily by
+            //   the render pass).
+            // Re-inserting the title further down is skipped on
+            // non-edit terminals so we don't undo our own work.
+            let skip_title_insert = is_terminal && !has_diffs;
+            if let Some(title) = new_title
+                && !skip_title_insert
+            {
                 let md = Self::make_markdown(&title, cx);
-                self.tool_label_markdown.insert(id, md);
+                self.tool_label_markdown.insert(id.clone(), md);
             }
+            apply_terminal_tool_ui_prune(
+                &mut self.tool_label_markdown,
+                &mut self.diff_scroll_handles,
+                &id,
+                is_terminal,
+                has_diffs,
+            );
             // Throttled — `update_tool_call` is the hottest path on a
             // file-heavy turn (every diff chunk is a patch).
             self.schedule_persist();
@@ -3548,6 +3603,37 @@ fn empty_state() -> AnyElement {
         .into_any_element()
 }
 
+/// US-004 (cli-hardening-followup-2026-Q3): apply the
+/// terminal-status prune to the two per-tool-call UI maps. Decision
+/// table:
+///
+/// | terminal? | has_diffs | label removed | scroll removed |
+/// |-----------|-----------|---------------|----------------|
+/// | no        | -         | no            | no             |
+/// | yes       | yes       | no (kept for header on re-expand) | yes |
+/// | yes       | no        | yes           | yes            |
+///
+/// Extracted as a free function so the unit test below can exercise
+/// it without a `Context<ThreadView>`. Generic on the map value
+/// types so the test can pass cheap placeholders (`String` / `()`)
+/// instead of having to construct `Entity<Markdown>` and
+/// `gpui::ScrollHandle` from a test harness.
+fn apply_terminal_tool_ui_prune<L, S>(
+    label_map: &mut HashMap<String, L>,
+    scroll_map: &mut HashMap<String, S>,
+    id: &str,
+    is_terminal: bool,
+    has_diffs: bool,
+) {
+    if !is_terminal {
+        return;
+    }
+    scroll_map.remove(id);
+    if !has_diffs {
+        label_map.remove(id);
+    }
+}
+
 /// US-001 (cli-hardening-followup-2026-Q3): free `DiffSnapshot.old_text`
 /// on every diff of a reviewed snapshot and record the original
 /// line count in `cleared_diff_lines` so the renderer can show a
@@ -3715,6 +3801,59 @@ mod tests {
             STREAMING_TICK_SLOW,
         );
         assert_eq!(adaptive_streaming_tick(100_000), STREAMING_TICK_SLOW);
+    }
+
+    /// US-004 (cli-hardening-followup-2026-Q3): a non-edit
+    /// tool call that transitions to Completed must release BOTH
+    /// the label markdown entity and the scroll handle -- there is
+    /// no Keep All / Reject All path for it. Edit calls keep the
+    /// label (the header path is re-read on re-expansion) and only
+    /// drop the live scroll handle.
+    #[test]
+    fn non_edit_tool_pruned_on_completion() {
+        use super::apply_terminal_tool_ui_prune;
+        use std::collections::HashMap;
+        let mut labels: HashMap<String, &'static str> = HashMap::from([
+            ("non-edit".to_string(), "Read file Cargo.toml"),
+            ("edit".to_string(), "Edit src/main.rs"),
+        ]);
+        let mut scrolls: HashMap<String, ()> =
+            HashMap::from([("non-edit".to_string(), ()), ("edit".to_string(), ())]);
+
+        // Non-edit terminal: label + scroll both removed.
+        apply_terminal_tool_ui_prune(
+            &mut labels,
+            &mut scrolls,
+            "non-edit",
+            /*is_terminal=*/ true,
+            /*has_diffs=*/ false,
+        );
+        assert!(!labels.contains_key("non-edit"));
+        assert!(!scrolls.contains_key("non-edit"));
+
+        // Edit terminal: label kept, scroll removed.
+        apply_terminal_tool_ui_prune(
+            &mut labels,
+            &mut scrolls,
+            "edit",
+            /*is_terminal=*/ true,
+            /*has_diffs=*/ true,
+        );
+        assert!(labels.contains_key("edit"));
+        assert!(!scrolls.contains_key("edit"));
+
+        // Non-terminal: no-op regardless of has_diffs.
+        labels.insert("pending".to_string(), "Pending tool");
+        scrolls.insert("pending".to_string(), ());
+        apply_terminal_tool_ui_prune(
+            &mut labels,
+            &mut scrolls,
+            "pending",
+            /*is_terminal=*/ false,
+            /*has_diffs=*/ true,
+        );
+        assert!(labels.contains_key("pending"));
+        assert!(scrolls.contains_key("pending"));
     }
 
     /// US-001 (cli-hardening-followup-2026-Q3): a Keep / Reject
