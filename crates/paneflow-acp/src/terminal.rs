@@ -44,6 +44,18 @@ pub struct TerminalOutputSnapshot {
 #[derive(Debug)]
 pub enum TerminalError {
     UnknownTerminalId(TerminalId),
+    /// US-002 (cli-hardening-followup-2026-Q3): the operation
+    /// outlived its deadline. Emitted today by `wait_for_exit` when
+    /// `poll_child_exit` returns `None` for 30 s on a child that has
+    /// been SIGKILL-raced (the OS reaped the zombie before we could
+    /// observe it). Returning `Timeout` releases the dedicated
+    /// `tokio::spawn_blocking` thread instead of parking it forever.
+    /// Payload is the elapsed wait in seconds, for the consumer's
+    /// log line.
+    Timeout {
+        operation: &'static str,
+        elapsed_secs: u64,
+    },
     Other(anyhow::Error),
 }
 
@@ -51,6 +63,13 @@ impl fmt::Display for TerminalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownTerminalId(id) => write!(f, "unknown terminal_id `{id}`"),
+            Self::Timeout {
+                operation,
+                elapsed_secs,
+            } => write!(
+                f,
+                "{operation} timed out after {elapsed_secs}s (child did not exit)"
+            ),
             Self::Other(err) => write!(f, "{err}"),
         }
     }
