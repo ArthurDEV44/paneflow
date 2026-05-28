@@ -14,8 +14,10 @@
 #   3. Create a fine-grained GitHub PAT scoped to that repo with
 #      `contents: read-and-write`, add it to this repo's Actions secrets
 #      as `HOMEBREW_TAP_TOKEN`.
-#   4. The next `release: published` event on this repo will run
-#      update-cask.yml and populate the tap's `Casks/paneflow.rb`.
+#   4. The next release (update_cask.yml chains off the `release`
+#      workflow's completion via workflow_run) will render + push the
+#      tap's `Casks/paneflow.rb`. The tap was bootstrapped manually for
+#      v0.3.4 on 2026-05-28; the workflow keeps it current thereafter.
 
 cask "paneflow" do
   # `arch` maps Homebrew's Ruby-level `arch` helper (which already
