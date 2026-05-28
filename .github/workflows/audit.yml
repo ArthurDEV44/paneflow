@@ -1,0 +1,145 @@
+# US-027 (cli-hardening-followup-2026-Q3): daily cargo-deny scan
+# that opens a GitHub issue when the lockfile gains a new advisory
+# overnight. Complements the PR-gate `security_audit` job in
+# `run_tests.yml` (BLOCKING since 2026-05-27 per the precedent
+# `prd-agents-hardening-2026-Q3`); together they form the two-layer
+# defense the precedent PRD designed:
+#
+#   * `run_tests.yml::security_audit` — PR gate. Catches NEW
+#     advisories introduced by a Cargo.lock change.
+#   * `audit.yml` (this file) — daily cron. Catches NEW advisories
+#     against the SAME Cargo.lock when the RustSec database itself
+#     grows (a previously-clean dep is later flagged).
+#
+# Both share `deny.toml` so the per-advisory rationale list lives in
+# a single source of truth.
+#
+# Security: every `${{ }}` interpolation lives in an `env:` block
+# and is referenced via `$VAR` inside `run:` shell to avoid the
+# workflow-injection class flagged in
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/.
+# Even though `github.repository` / `github.run_id` are GitHub-
+# controlled (not user input), the env-indirection is enforced for
+# every interpolation for grep-friendly consistency.
+
+name: Daily Security Audit
+
+on:
+  schedule:
+    # 04:17 UTC daily. Slightly off the hour to spread CI load
+    # against other public OSS projects that converge on :00 / :30.
+    - cron: "17 4 * * *"
+  # Also run on workflow_dispatch so a maintainer can re-trigger
+  # after editing deny.toml without waiting for the next cron tick.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  cron_audit:
+    name: cargo-deny check (cron)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: cron-audit
+
+      # Pin cargo-deny to the same 0.19.x band the PR gate uses.
+      # See run_tests.yml::security_audit for the rationale on the
+      # 0.19 floor (workspace-scoped unmaintained + license
+      # exception syntax).
+      - name: Install cargo-deny (pinned 0.19.x)
+        run: cargo install cargo-deny --locked --version '^0.19'
+
+      - name: cargo deny check advisories
+        id: deny
+        # The cron job ONLY scans advisories -- license + sources
+        # gates already run on every PR via run_tests.yml. Scoping
+        # the cron to advisories keeps the cron's blast radius
+        # tight: license-allow-list churn does not auto-file an
+        # issue, only a real new CVE / unmaintained mark does.
+        run: |
+          set -euo pipefail
+          if ! cargo deny check advisories 2>&1 | tee deny-output.txt; then
+            echo "deny_failed=true" >> "$GITHUB_OUTPUT"
+            exit 0  # do not fail the job here; the issue-open step needs to run
+          fi
+          echo "deny_failed=false" >> "$GITHUB_OUTPUT"
+
+      - name: Open issue on new advisory
+        if: steps.deny.outputs.deny_failed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GitHub-controlled vars routed through env for the
+          # workflow-injection safety pattern (see header comment).
+          REPO_SLUG: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +"%Y-%m-%d")
+          NOW_UTC=$(date -u +"%H:%M UTC")
+          TITLE="Security: cargo-deny advisory hit on ${DATE}"
+          # Idempotency: only one open issue per day. If a previous
+          # cron tick already opened one, this re-run reuses it via
+          # a comment rather than spawning a duplicate. `--search`
+          # with `in:title` is GitHub-side string match; the title
+          # has no user-supplied content so this is injection-safe.
+          EXISTING=$(gh issue list \
+            --state open \
+            --search "in:title \"${TITLE}\"" \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ -z "${EXISTING}" ]; then
+            # Build the issue body in pure shell with no `$(...)`
+            # inside a single-quoted heredoc -- the previous attempt
+            # silently captured literal `$(cat ...)` because the
+            # delimiter suppressed substitution.
+            {
+              echo "Daily \`cargo-deny\` cron flagged a new advisory against \`Cargo.lock\`."
+              echo
+              echo "## Output"
+              echo
+              echo '```'
+              cat deny-output.txt
+              echo '```'
+              echo
+              echo "## Triage"
+              echo
+              echo "1. Check the linked advisory at https://rustsec.org/advisories/."
+              echo "2. If a fixed upgrade exists, bump the dep and verify locally."
+              echo "3. If no fixed upgrade exists but the code path is unreachable"
+              echo "   from PaneFlow, add the advisory ID to \`deny.toml\`'s"
+              echo "   \`[advisories].ignore\` list with a rationale matching the"
+              echo "   pattern of the existing \`RUSTSEC-2023-0071\` entry."
+              echo "4. The \`run_tests.yml::security_audit\` job will gate the next"
+              echo "   PR -- fix here unblocks every downstream PR."
+              echo
+              echo "## Workflow"
+              echo
+              echo "- File: \`.github/workflows/audit.yml\`"
+              echo "- Run: https://github.com/${REPO_SLUG}/actions/runs/${RUN_ID}"
+            } > issue-body.md
+            gh issue create \
+              --title "${TITLE}" \
+              --label "security,automated" \
+              --body-file issue-body.md
+          else
+            gh issue comment "${EXISTING}" \
+              --body "Re-fired by cron at ${NOW_UTC}. See run https://github.com/${REPO_SLUG}/actions/runs/${RUN_ID}."
+          fi
+
+      - name: Final status
+        if: steps.deny.outputs.deny_failed == 'true'
+        run: |
+          echo "::error::cargo-deny check failed -- see the auto-opened issue and Cargo.lock for the offending advisory."
+          exit 1
