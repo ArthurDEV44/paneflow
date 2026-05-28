@@ -45,6 +45,50 @@ use crate::PaneFlowApp;
 
 use super::agents_view_actions::AGENTS_SIDEBAR_WIDTH;
 
+/// US-010 (review follow-up): emit a `tracing::debug!` when
+/// [`PaneFlowApp::render_agents_sidebar`] exceeds the 16 ms frame
+/// budget. We intentionally do NOT debounce filter keystrokes (the
+/// lowercase-once fix moved per-keystroke cost well below the 16 ms
+/// frame budget; VSCode #6899 and Slack's Quick Switcher both
+/// document the same call). This guard is the early-warning if a
+/// future regression invalidates that assumption.
+///
+/// Threshold is 16 ms (the actual single-frame drop boundary at
+/// 60 Hz) instead of a safety-margin 12 ms: a 13-15 ms render
+/// still hits the frame and is uninteresting; only past 16 ms does
+/// the user see a dropped frame. Level is `debug!` instead of
+/// `warn!` so the line stays out of `paneflow-debug.log` at
+/// `info` level (which is the user-facing default per
+/// `main.rs::env_logger`) -- enable `RUST_LOG=paneflow_app::
+/// agents_sidebar=debug` to surface it on demand.
+struct RenderTimeCanary {
+    start: std::time::Instant,
+    project_count: usize,
+}
+
+impl RenderTimeCanary {
+    fn new(project_count: usize) -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            project_count,
+        }
+    }
+}
+
+impl Drop for RenderTimeCanary {
+    fn drop(&mut self) {
+        let elapsed = self.start.elapsed();
+        if elapsed > std::time::Duration::from_millis(16) {
+            tracing::debug!(
+                target: "paneflow_app::agents_sidebar",
+                "render_agents_sidebar exceeded 16ms frame budget: {:.2}ms across {} projects -- US-010 chose no-debounce on the bet that the work stays sub-frame. If this fires repeatedly, profile and consider a 50ms input debounce.",
+                elapsed.as_secs_f64() * 1000.0,
+                self.project_count,
+            );
+        }
+    }
+}
+
 impl PaneFlowApp {
     /// Render the Agents-mode sidebar: section header, project +
     /// thread list, empty state, scroll wrapper.
@@ -60,6 +104,18 @@ impl PaneFlowApp {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        // US-010 (review follow-up): render-time canary. The PRD AC
+        // proposed a 50ms keystroke debounce, but the lowercase-once
+        // fix moved per-keystroke cost well under the 16ms frame
+        // budget so debounce was skipped on VSCode/Slack precedent.
+        // This Drop-based guard emits a debug-level log if the
+        // 16 ms frame budget is ever exceeded -- an early-warning
+        // canary so a future regression (added complexity, larger
+        // thread count, slower filter impl) gets noticed under a
+        // targeted `RUST_LOG=...=debug` profiling session, without
+        // spamming `paneflow-debug.log` for every user on slower
+        // hardware.
+        let _render_canary = RenderTimeCanary::new(self.projects.len());
         let ui = crate::theme::ui_colors();
         let theme = crate::theme::active_theme();
 
@@ -178,8 +234,7 @@ impl PaneFlowApp {
             let mut shown_threads = 0usize;
             for thread_idx in (0..thread_count_in_project).rev() {
                 let thread = &self.projects[project_idx].threads[thread_idx];
-                if filtering && !filter::thread_visible_in_project(thread, project, &query_lower)
-                {
+                if filtering && !filter::thread_visible_in_project(thread, project, &query_lower) {
                     continue;
                 }
                 shown_threads += 1;

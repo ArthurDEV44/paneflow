@@ -165,19 +165,45 @@ pub fn summarize_thread_title_task(
                     );
                     // Surface the failure on the ThreadView so the UI / future
                     // retry logic can react instead of silently swallowing.
+                    // US-006 (cli-hardening-followup-2026-Q3): the
+                    // `WeakEntity::update` call returns `Err` when the
+                    // ThreadView has been dropped (window closed
+                    // during the background summarizer). Log the lost
+                    // failure-notify so a future user-facing retry
+                    // can attribute it.
                     cx_async.update(|cx| {
-                        let _ = thread_view.update(cx, |tv, cx| {
-                            tv.note_title_generation_failed(cx);
-                        });
+                        if thread_view
+                            .update(cx, |tv, cx| {
+                                tv.note_title_generation_failed(cx);
+                            })
+                            .is_err()
+                        {
+                            tracing::warn!(
+                                target: "paneflow_app::agents::title_summarizer",
+                                "title summarization: thread view released; \
+                                 failure-notify update dropped"
+                            );
+                        }
                     });
                     return;
                 }
             };
         let Some(clean) = crate::project::clean_sidebar_title(&title) else {
+            // US-006 (cli-hardening-followup-2026-Q3): log if the
+            // ThreadView is gone (window closed during summarizer).
             cx_async.update(|cx| {
-                let _ = thread_view.update(cx, |tv, cx| {
-                    tv.note_title_generation_failed(cx);
-                });
+                if thread_view
+                    .update(cx, |tv, cx| {
+                        tv.note_title_generation_failed(cx);
+                    })
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: "paneflow_app::agents::title_summarizer",
+                        "title summarization: thread view released; \
+                         clean-sidebar-failure update dropped"
+                    );
+                }
             });
             return;
         };
@@ -198,10 +224,21 @@ pub fn summarize_thread_title_task(
             first_line
         };
         if bounded.is_empty() {
+            // US-006 (cli-hardening-followup-2026-Q3): log if the
+            // ThreadView is gone (window closed during summarizer).
             cx_async.update(|cx| {
-                let _ = thread_view.update(cx, |tv, cx| {
-                    tv.note_title_generation_failed(cx);
-                });
+                if thread_view
+                    .update(cx, |tv, cx| {
+                        tv.note_title_generation_failed(cx);
+                    })
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: "paneflow_app::agents::title_summarizer",
+                        "title summarization: thread view released; \
+                         empty-bounded-failure update dropped"
+                    );
+                }
             });
             return;
         }
@@ -209,11 +246,21 @@ pub fn summarize_thread_title_task(
             title: bounded,
             policy: TitleReplacePolicy::OnlyIfStillEqualTo(title_snapshot),
         };
+        // US-006 (cli-hardening-followup-2026-Q3): log if the
+        // ThreadView is gone before the success update lands.
         cx_async.update(|cx| {
-            let _ = thread_view.update(cx, |tv, cx| {
-                tv.note_title_generation_succeeded();
-                cx.emit(suggested);
-            });
+            if thread_view
+                .update(cx, |tv, cx| {
+                    tv.note_title_generation_succeeded();
+                    cx.emit(suggested);
+                })
+                .is_err()
+            {
+                tracing::warn!(
+                    target: "paneflow_app::agents::title_summarizer",
+                    "title summarization: thread view released; success update dropped"
+                );
+            }
         });
     });
     Some(task)

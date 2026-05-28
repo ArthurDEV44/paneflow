@@ -45,11 +45,12 @@ use paneflow_acp::{AgentDiscovery, AgentKind};
 use paneflow_threads::{ContentBlock as ThreadsContentBlock, ThreadId, ThreadStore};
 
 use super::composer_ext::{
-    AttachmentKind, DropClassification, MAX_ATTACHMENTS, MENTION_DEBOUNCE, MentionState,
-    PendingAttachment, SlashCommand, SlashCommandSource, SlashState, agent_slash_command_from_acp,
-    attachment_limit_message, built_in_slash_commands, classify_dropped_path, combine_prompt,
-    detect_image_mime, image_block_from_bytes, image_too_large_message,
-    merge_and_filter_slash_commands, resource_block_for_path, scan_files, token_before_cursor,
+    AttachmentKind, DropClassification, MAX_ATTACHMENTS, MAX_PENDING_BYTES, MAX_PENDING_PROMPTS,
+    MENTION_DEBOUNCE, MentionState, PendingAttachment, SlashCommand, SlashCommandSource,
+    SlashState, agent_slash_command_from_acp, attachment_limit_message, built_in_slash_commands,
+    classify_dropped_path, combine_prompt, detect_image_mime, image_block_from_bytes,
+    image_too_large_message, merge_and_filter_slash_commands, pending_queue_full_message,
+    resource_block_for_path, scan_files, token_before_cursor,
 };
 use super::runtime::{ModelChoice, RuntimeEvent, SessionRuntime, SpawnOptions, StopReasonKind};
 // US-017: tool-call events surface to the ThreadView's timeline.
@@ -653,7 +654,8 @@ pub struct Composer {
 
     /// Push-based ACP event task. Awaits on a
     /// [`tokio::sync::mpsc::Receiver`] handed over by
-    /// [`SessionRuntime::take_event_receiver`] and drains every queued
+    /// [`SessionRuntime::take_event_receiver`] (bounded at 256 since
+    /// US-003 cli-hardening-followup-2026-Q3) and drains every queued
     /// event in one entity update per wake. Replaces the previous
     /// 16 ms poll path so first-token latency drops from "up to one
     /// pump tick" to "as soon as GPUI schedules the task". Mirrors
@@ -1114,14 +1116,15 @@ impl Composer {
     fn start_event_task(
         &mut self,
         mut rx: tokio::sync::mpsc::Receiver<RuntimeEvent>,
+        join_handle: Option<std::thread::JoinHandle<()>>,
         cx: &mut Context<Self>,
     ) {
         let weak_self: WeakEntity<Self> = cx.weak_entity();
         self._event_task = Some(cx.spawn(async move |_, cx: &mut AsyncApp| {
-            // US-003 (cli-hardening-followup-2026-Q3): the runtime->GPUI
-            // event channel is now `tokio::sync::mpsc::Receiver`. The
-            // burst-coalesce idiom is preserved: block on the first
-            // event, then drain everything already queued in one render.
+            // US-003 (cli-hardening-followup-2026-Q3): the channel is
+            // now `tokio::sync::mpsc::Receiver`. Stream-style
+            // `rx.next()` is gone; `rx.recv().await` returns
+            // `Option<RuntimeEvent>` with the same loop shape.
             while let Some(first) = rx.recv().await {
                 let outcome = cx.update(|cx| {
                     weak_self.update(cx, |composer, cx| {
@@ -1136,6 +1139,76 @@ impl Composer {
                 });
                 if outcome.is_err() {
                     break;
+                }
+            }
+            // US-007 (cli-hardening-followup-2026-Q3): the channel is
+            // closed -- the runtime thread sent its last event (either
+            // graceful exit after `Command::Shutdown` or an uncaught
+            // panic). Wait up to 5 s for the OS thread to finish,
+            // then join it only once `JoinHandle::is_finished()`
+            // guarantees the join is non-blocking. If it is still
+            // alive after the deadline, drop the handle to detach.
+            // On panic, the payload is extracted and surfaced as a
+            // synthetic Fatal so the US-019 streaming spinner stops
+            // within 5 s instead of staying frozen forever.
+            if let Some(join) = join_handle {
+                enum RuntimeJoinOutcome {
+                    Joined(std::thread::Result<()>),
+                    TimedOut,
+                }
+                let join_outcome = {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    loop {
+                        if join.is_finished() {
+                            break RuntimeJoinOutcome::Joined(join.join());
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            drop(join);
+                            break RuntimeJoinOutcome::TimedOut;
+                        }
+                        smol::Timer::after(std::time::Duration::from_millis(50)).await;
+                    }
+                };
+                let fatal_msg: Option<String> = match join_outcome {
+                    RuntimeJoinOutcome::Joined(Ok(())) => None,
+                    RuntimeJoinOutcome::Joined(Err(panic_payload)) => {
+                        // Best-effort panic payload extraction (mirrors
+                        // `std::panic::catch_unwind` recovery patterns).
+                        let msg = if let Some(s) = panic_payload.downcast_ref::<&'static str>() {
+                            (*s).to_string()
+                        } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "<non-string panic payload>".to_string()
+                        };
+                        Some(format!(
+                            "Agent runtime thread panicked: {msg}. \
+                             The session has stopped; reopen the thread to retry."
+                        ))
+                    }
+                    RuntimeJoinOutcome::TimedOut => {
+                        log::warn!(
+                            target: "paneflow_app::agents::composer",
+                            "runtime thread did not exit within 5 s after channel close; detaching"
+                        );
+                        None
+                    }
+                };
+                if let Some(msg) = fatal_msg {
+                    cx.update(|cx| {
+                        if weak_self
+                            .update(cx, |composer, cx| {
+                                composer.handle_runtime_event(RuntimeEvent::Fatal(msg), cx);
+                            })
+                            .is_err()
+                        {
+                            log::warn!(
+                                target: "paneflow_app::agents::composer",
+                                "runtime-thread join surfaced Fatal but composer was released; \
+                                 banner lost"
+                            );
+                        }
+                    });
                 }
             }
         }));
@@ -1282,15 +1355,28 @@ impl Composer {
         cx.spawn(async move |_, cx_async: &mut AsyncApp| {
             let query_back = query.clone();
             let results = smol::unblock(move || scan_files(&cwd, &query)).await;
+            // US-006 (cli-hardening-followup-2026-Q3): the
+            // `WeakEntity::update` call returns `Err` when the
+            // composer was dropped between the background scan and
+            // here (window closed). Log so the lost results update
+            // is attributable.
             cx_async.update(|cx| {
-                let _ = weak.update(cx, |composer, cx| {
-                    if let Some(state) = composer.mention_state.as_mut()
-                        && state.query == query_back
-                    {
-                        state.results = results;
-                        cx.notify();
-                    }
-                });
+                if weak
+                    .update(cx, |composer, cx| {
+                        if let Some(state) = composer.mention_state.as_mut()
+                            && state.query == query_back
+                        {
+                            state.results = results;
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: "paneflow_app::agents::composer",
+                        "@mention scan: composer released; results update dropped"
+                    );
+                }
             });
         })
         .detach();
@@ -1701,7 +1787,11 @@ impl Composer {
         // event in one entity update per wake so a burst of 50+ chunks
         // collapses into a single repaint instead of 50 notifies.
         if let Some(event_rx) = runtime.take_event_receiver() {
-            self.start_event_task(event_rx, cx);
+            // US-007 (cli-hardening-followup-2026-Q3): pass the OS
+            // join handle so the event task can `.join()` after the
+            // channel closes and surface any panic as Fatal.
+            let join_handle = runtime.take_join_handle();
+            self.start_event_task(event_rx, join_handle, cx);
         }
         self.runtime = Some(runtime);
         // Arm a SessionReady deadline: if the CLI binds + spawns but
@@ -1810,6 +1900,33 @@ impl Composer {
             return;
         }
         if self.is_streaming {
+            // US-024 (cli-hardening-followup-2026-Q3): gate the
+            // queue at both a hard-count cap and a byte budget so
+            // an attacker (or a fast-typing user with 10 image
+            // attachments) cannot drive composer RAM unboundedly.
+            // On a cap hit we surface `attach_error` and KEEP the
+            // textarea contents + attachments intact so the user
+            // can decide what to do; the queue is not mutated.
+            let new_bytes = estimate_prompt_bytes(&blocks);
+            let current_bytes: usize = self
+                .pending_prompts
+                .iter()
+                .map(|p| estimate_prompt_bytes(&p.blocks))
+                .sum();
+            if self.pending_prompts.len() >= MAX_PENDING_PROMPTS {
+                self.attach_error = Some(pending_queue_full_message());
+                cx.notify();
+                return;
+            }
+            if current_bytes.saturating_add(new_bytes) > MAX_PENDING_BYTES {
+                self.attach_error = Some(format!(
+                    "Prompt queue byte budget exceeded ({} MiB cap). \
+                     Wait for the running prompt to drain.",
+                    MAX_PENDING_BYTES / (1024 * 1024),
+                ));
+                cx.notify();
+                return;
+            }
             // US-106 AC #5: state 4 (streaming + content) enqueues
             // rather than dropping the prompt. The queued prompt
             // automatically dequeues on `RuntimeEvent::TurnEnded`.
@@ -2392,7 +2509,15 @@ impl Composer {
             // duration of the read.
             let read_path = path.clone();
             let read_result = smol::unblock(move || std::fs::read(&read_path)).await;
+            // US-006 (cli-hardening-followup-2026-Q3): if the
+            // composer was dropped between the background read
+            // dispatch and here, log so the lost attach completion
+            // is attributable.
             let Some(this) = weak.upgrade() else {
+                tracing::warn!(
+                    target: "paneflow_app::agents::composer",
+                    "image attach: composer released; complete_image_attach update dropped"
+                );
                 return;
             };
             cx_async.update(|cx| {
@@ -2458,7 +2583,14 @@ impl Composer {
                 return;
             };
             let path = handle.path().to_path_buf();
+            // US-006 (cli-hardening-followup-2026-Q3): log if the
+            // composer was dropped between the file picker resolving
+            // and here (window closed during pick).
             let Some(this) = weak.upgrade() else {
+                tracing::warn!(
+                    target: "paneflow_app::agents::composer",
+                    "file attach: composer released; complete_file_attach update dropped"
+                );
                 return;
             };
             cx_async.update(|cx| {
@@ -2590,8 +2722,13 @@ impl Composer {
                     .collect::<Vec<_>>()
             })
             .await;
+            // US-006 (cli-hardening-followup-2026-Q3): the
+            // `WeakEntity::update` call returns `Err` when the
+            // composer was dropped between the batched image read
+            // and here. Log so the lost drop-attach update is
+            // attributable.
             cx_async.update(|cx| {
-                let _ = weak.update(cx, |composer, cx| {
+                let drop_outcome = weak.update(cx, |composer, cx| {
                     let mut extra_errors: Vec<String> = Vec::new();
                     for (path, mime, read) in results {
                         if composer.attachments.len() >= MAX_ATTACHMENTS {
@@ -2651,6 +2788,12 @@ impl Composer {
                     composer.refresh_has_content_cache(cx);
                     cx.notify();
                 });
+                if drop_outcome.is_err() {
+                    tracing::warn!(
+                        target: "paneflow_app::agents::composer",
+                        "drop-image batch: composer released; attach completion update dropped"
+                    );
+                }
             });
         })
         .detach();
@@ -2672,7 +2815,14 @@ impl Composer {
                 return;
             };
             let path = handle.path().to_path_buf();
+            // US-006 (cli-hardening-followup-2026-Q3): log if the
+            // composer was dropped between the file picker resolving
+            // and here.
             let Some(this) = weak.upgrade() else {
+                tracing::warn!(
+                    target: "paneflow_app::agents::composer",
+                    "project file inserter: composer released; insert_text_at_cursor dropped"
+                );
                 return;
             };
             cx_async.update(|cx| {
@@ -2881,7 +3031,14 @@ impl Composer {
             };
             let path = handle.path().to_path_buf();
             let res = std::fs::write(&path, markdown.as_bytes());
+            // US-006 (cli-hardening-followup-2026-Q3): log if the
+            // composer was dropped between the export save_file
+            // dialog and here.
             let Some(this) = weak.upgrade() else {
+                tracing::warn!(
+                    target: "paneflow_app::agents::composer",
+                    "export thread: composer released; result update dropped"
+                );
                 return;
             };
             cx_async.update(|cx| {
@@ -4779,11 +4936,68 @@ fn handle_profile_name_key(
     }
 }
 
+/// US-024 (cli-hardening-followup-2026-Q3): rough byte estimator
+/// for a queued prompt. Sums the text payload, the (base64-encoded)
+/// image data, and the resource-link URIs. Does NOT include the
+/// ContentBlock enum/struct overhead or `Annotations` because those
+/// are fixed-size and not part of the unbounded-growth concern.
+fn estimate_prompt_bytes(blocks: &[agent_client_protocol::schema::ContentBlock]) -> usize {
+    use agent_client_protocol::schema::ContentBlock;
+    blocks
+        .iter()
+        .map(|b| match b {
+            ContentBlock::Text(t) => t.text.len(),
+            ContentBlock::Image(img) => img.data.len(),
+            ContentBlock::ResourceLink(link) => link.uri.len(),
+            _ => 0,
+        })
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use agent_client_protocol::schema::{ContentBlock, TextContent};
     use std::collections::VecDeque;
+
+    /// US-024 (cli-hardening-followup-2026-Q3): the byte estimator
+    /// must count text + image data + uri. The integration with the
+    /// queue cap is exercised by the live UI smoke (CLAUDE.md notes
+    /// the app crate has no GPUI test harness); pinning the estimator
+    /// here protects the byte-budget gate from a silent regression.
+    #[test]
+    fn estimate_prompt_bytes_counts_text_image_uri() {
+        use agent_client_protocol::schema::{
+            ContentBlock, ImageContent, ResourceLink, TextContent,
+        };
+        // `ResourceLink::new(name, uri)` -- the URI is the SECOND
+        // argument; `estimate_prompt_bytes` counts `link.uri.len()`.
+        let blocks = vec![
+            ContentBlock::Text(TextContent::new("hello world")), // 11 bytes
+            ContentBlock::Image(ImageContent::new("a".repeat(1000), "image/png")), // 1000 bytes data
+            ContentBlock::ResourceLink(ResourceLink::new("display-name", "file:///tmp/x")), // 13 bytes uri
+        ];
+        assert_eq!(estimate_prompt_bytes(&blocks), 11 + 1000 + 13);
+
+        // Empty input -> zero.
+        assert_eq!(estimate_prompt_bytes(&[]), 0);
+    }
+
+    /// US-024: the queue cap constants must NOT silently drift past
+    /// the documented contract. A future refactor changing the
+    /// constants must come through the cli-hardening status JSON.
+    /// `MAX_PENDING_BYTES` is derived from `MAX_PENDING_PROMPTS *
+    /// MAX_IMAGE_BYTES` so a queue full of max-size attachments
+    /// stays admissible -- assert the derivation to lock the
+    /// invariant in place.
+    #[test]
+    fn pending_prompts_caps_at_max_pending_prompts() {
+        assert_eq!(MAX_PENDING_PROMPTS, 8);
+        let expected_bytes =
+            (MAX_PENDING_PROMPTS as u64 * super::super::composer_ext::MAX_IMAGE_BYTES) as usize;
+        assert_eq!(MAX_PENDING_BYTES, expected_bytes);
+        assert_eq!(MAX_PENDING_BYTES, 80 * 1024 * 1024);
+    }
 
     /// US-106 AC #1-#4 + #9: the 4 state-transition matrix is pure and
     /// belongs to `send_button_state`. Render-layer tests would need a

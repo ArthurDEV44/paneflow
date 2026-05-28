@@ -14,7 +14,7 @@
 //! [`read_sessions_for_cwd`] from inside `smol::unblock`.
 
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use crate::agent_sessions::{SessionAgent, SessionMeta};
@@ -24,6 +24,14 @@ use crate::agent_sessions::{SessionAgent, SessionMeta};
 /// `session_meta` + `turn_context` + a few state events). The cap is
 /// generous so unusual prelude sequences still produce a label.
 const TITLE_SCAN_LIMIT: usize = 256;
+
+/// US-010 (cli-hardening-followup-2026-Q3): per-line byte cap for
+/// `read_line`. Same rationale and value as in
+/// `claude_sessions::MAX_LINE_BYTES` -- the Codex rollout store
+/// (`~/.codex/sessions/YYYY/MM/DD/`) is agent-writable, so a
+/// malicious 500 MB single-line JSONL would otherwise allocate
+/// fully before the outer scan-count guard fires.
+const MAX_LINE_BYTES: u64 = 64 * 1024;
 
 /// Cap rendered first-user-message labels at this character count.
 const LABEL_MAX_CHARS: usize = 80;
@@ -95,8 +103,24 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
 
     // Line 1 must be session_meta or we skip the file.
     buf.clear();
-    let n = reader.read_line(&mut buf).ok()?;
+    // US-010 (cli-hardening-followup-2026-Q3): cap line read at
+    // MAX_LINE_BYTES. Truncated line fails serde_json parse below
+    // and the file is skipped -- same outcome as a malformed line.
+    let n = reader
+        .by_ref()
+        .take(MAX_LINE_BYTES)
+        .read_line(&mut buf)
+        .ok()?;
     if n == 0 {
+        return None;
+    }
+    if n as u64 == MAX_LINE_BYTES && !buf.ends_with('\n') {
+        log::warn!(
+            target: "paneflow_app::codex_sessions",
+            "session JSONL line truncated at {} bytes for {} -- skipping file",
+            MAX_LINE_BYTES,
+            path.display(),
+        );
         return None;
     }
     let first_value: serde_json::Value = serde_json::from_str(buf.trim_end()).ok()?;
@@ -109,12 +133,17 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
     if session_id.is_empty() || cwd.is_empty() {
         return None;
     }
-    // Reject session ids carrying control characters. The id flows
-    // verbatim into `codex resume <id>` which the sessions popover
-    // hands off to the user's PTY; a `\r` or `\n` in the id would
-    // submit injected text as a separate shell command. Mirrors the
-    // guard in `opencode_sessions::record_to_session`.
-    if session_id.chars().any(|c| c.is_control()) {
+    // Reject any field that flows into a PTY command if it carries
+    // control characters. session_id lands verbatim in `codex resume
+    // <id>` -- a `\r` or `\n` would submit injected text as a separate
+    // shell command. cwd is display-only today but a future `cd <cwd>`
+    // prefix would inherit the gap; guard both at the gate. Mirrors
+    // (and extends) the guard in `opencode_sessions::record_to_session`.
+    if session_id.chars().any(|c| c.is_control()) || cwd.chars().any(|c| c.is_control()) {
+        log::warn!(
+            "codex_sessions: dropped {} -- payload carries control chars in id or cwd",
+            path.display(),
+        );
         return None;
     }
     // Inner timestamp is the session start; outer envelope timestamp is
@@ -145,11 +174,26 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
 /// Scan up to [`TITLE_SCAN_LIMIT`] lines looking for the first
 /// `event_msg.user_message`. Codex wraps user input as
 /// `{"type":"event_msg","payload":{"type":"user_message","message":"..."}}`.
-fn scan_first_user_message<R: BufRead>(reader: &mut R) -> Option<String> {
+///
+/// Signature is concrete on `BufReader<File>` rather than the
+/// generic `R: BufRead` it used to be: the `by_ref().take()`
+/// pattern needed by US-010 for the per-line byte cap fails to
+/// type-check against `&mut R` (the compiler auto-derefs to `R`
+/// and the move blocks the borrow). The only call site already
+/// passes a `BufReader<File>`, so the generic was vestigial.
+fn scan_first_user_message(reader: &mut BufReader<fs::File>) -> Option<String> {
     let mut buf = String::new();
     for _ in 0..TITLE_SCAN_LIMIT {
         buf.clear();
-        let n = reader.read_line(&mut buf).ok()?;
+        // US-010 (cli-hardening-followup-2026-Q3): cap each line read.
+        // Oversize lines fall through to `serde_json::from_str` which
+        // errors and the loop `continue`s -- the scan moves on to the
+        // next line without OOMing.
+        let n = reader
+            .by_ref()
+            .take(MAX_LINE_BYTES)
+            .read_line(&mut buf)
+            .ok()?;
         if n == 0 {
             return None;
         }
@@ -306,5 +350,26 @@ mod tests {
         .expect("write fixture");
         let meta = read_session_meta(&path).expect("legitimate UUID must pass the guard");
         assert_eq!(meta.session_id, "019dc9ea-38d7-7372-9cc4-253ce944d41b");
+    }
+
+    #[test]
+    fn cwd_control_char_guard() {
+        // Same class of injection as session_id, just one field over.
+        // cwd is display-only today but a future `cd <cwd>` prefix
+        // would inherit the gap without any git-blame signal.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("malicious-cwd.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"019dc9ea-38d7-7372-9cc4-253ce944d41b","cwd":"/tmp/proj\r\nrm -rf ~","timestamp":"2026-04-26T13:11:03.694Z"}}"#,
+                "\n",
+            ),
+        )
+        .expect("write fixture");
+        assert!(
+            read_session_meta(&path).is_none(),
+            "session with control chars in cwd must be dropped"
+        );
     }
 }

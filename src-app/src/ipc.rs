@@ -34,6 +34,35 @@
 //! meaningful gain on a local-only socket. If the IPC ever grows a
 //! network surface, that decision must be revisited.
 //!
+//! ## Per-method blast radius (US-012 cli-hardening-followup-2026-Q3)
+//!
+//! The trust model above gates *who* can connect (same-UID only). It
+//! does NOT gate *what* an authorised client can do. The methods
+//! below carry different blast radii once connected:
+//!
+//! - `system.*`: read-only health checks. Safe.
+//! - `workspace.list` / `workspace.current` / `workspace.select` /
+//!   `workspace.close`: navigation + workspace lifecycle. Visible
+//!   side effects on the UI; no file/system mutation.
+//! - `workspace.create`: spawns a PTY at `cwd`. `cwd` is
+//!   canonicalised (US-014) and rejected if not a directory.
+//! - `surface.split`: layout mutation, bounded by `MAX_PANES`.
+//! - **`surface.send_text` / `surface.send_keystroke`: same-UID RCE
+//!   primitive when enabled.** A connected client can inject
+//!   arbitrary bytes (including `\n`) into any visible PTY,
+//!   effectively running any shell command in the user's
+//!   privileges. These are gated behind the
+//!   `PANEFLOW_IPC_SCRIPTING=1` opt-in env var; when unset (the
+//!   default), the handlers return JSON-RPC error
+//!   `-32601 Method not enabled`. The intended consumer is the
+//!   trusted same-UID `paneflow-ai-hook` binary; the wrapper
+//!   installer can set the env var on the user's behalf with a
+//!   visible prompt. `surface.send_keystroke` additionally
+//!   rejects CRLF bytes regardless of the opt-in (CRLF injection
+//!   bypass guard).
+//! - `ai.*`: lifecycle telemetry from the AI hook. Read-only on
+//!   the host UI side; safe.
+//!
 //! ## Methods
 //!
 //! - `system.ping` / `system.capabilities` / `system.identify` — stateless
@@ -62,7 +91,11 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU8, Ordering},
+    mpsc,
+};
 use std::time::Duration;
 
 use interprocess::TryClone;
@@ -82,6 +115,43 @@ pub struct IpcRequest {
     pub response_tx: mpsc::Sender<Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IpcState {
+    Online,
+    Disabled,
+}
+
+const IPC_STATE_ONLINE: u8 = 0;
+const IPC_STATE_DISABLED: u8 = 1;
+
+#[derive(Debug, Clone)]
+pub(crate) struct IpcStatus {
+    state: Arc<AtomicU8>,
+}
+
+impl IpcStatus {
+    fn online() -> Self {
+        Self {
+            state: Arc::new(AtomicU8::new(IPC_STATE_ONLINE)),
+        }
+    }
+
+    pub(crate) fn state(&self) -> IpcState {
+        match self.state.load(Ordering::Acquire) {
+            IPC_STATE_DISABLED => IpcState::Disabled,
+            _ => IpcState::Online,
+        }
+    }
+
+    pub(crate) fn is_disabled(&self) -> bool {
+        self.state() == IpcState::Disabled
+    }
+
+    fn disable(&self) {
+        self.state.store(IPC_STATE_DISABLED, Ordering::Release);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Socket server
 // ---------------------------------------------------------------------------
@@ -96,8 +166,23 @@ pub struct IpcRequest {
 /// on Windows have different lifecycle semantics (the second process to
 /// claim the pipe name fails at creation, not silently), so the clobber
 /// detection is Unix-only.
-pub fn start_server() -> mpsc::Receiver<IpcRequest> {
+pub fn start_server() -> (mpsc::Receiver<IpcRequest>, IpcStatus) {
+    // US-012 (cli-hardening-followup-2026-Q3): one-time boot-time
+    // warn-log when scripting is enabled. The per-call gate in
+    // `surface.send_text` / `surface.send_keystroke` stays the
+    // enforcement boundary; this log surfaces the active-RCE-primitive
+    // posture in `paneflow-debug.log` so the operator notices when
+    // PANEFLOW_IPC_SCRIPTING was inherited from a launcher script or
+    // sourced .env file without their realising.
+    if std::env::var("PANEFLOW_IPC_SCRIPTING").as_deref() == Ok("1") {
+        tracing::warn!(
+            "ipc.scripting_enabled is ON; any same-UID process can inject keystrokes into agent panes"
+        );
+    }
+
     let (tx, rx) = mpsc::channel();
+    let status = IpcStatus::online();
+    let thread_status = status.clone();
 
     // Singleton guard: probe the socket BEFORE the IPC thread spawns and
     // before `bind_socket` blindly `remove_file`s any existing socket. If
@@ -131,10 +216,19 @@ pub fn start_server() -> mpsc::Receiver<IpcRequest> {
         std::process::exit(1);
     }
 
-    std::thread::Builder::new()
+    // US-005 (cli-hardening-followup-2026-Q3): the IPC thread spawn
+    // is fallible (RLIMIT_NPROC exhaustion on a low-ulimit container,
+    // EAGAIN on a fork-bombed host). The previous `.expect()` panicked
+    // the GPUI main thread on that error, killing every active agent.
+    // Mirror the runtime spawn pattern at `runtime.rs:1022-1034`:
+    // log + return the `rx` early with no live producer; the consumer
+    // is now responsible for tolerating a never-firing channel
+    // (it does -- the GPUI poll path checks `try_recv` non-blocking).
+    let spawn_result = std::thread::Builder::new()
         .name("paneflow-ipc".into())
         .spawn(move || {
             let Some(socket_path) = socket_path() else {
+                thread_status.disable();
                 log::warn!(
                     "paneflow: could not resolve a usable IPC socket path — IPC server disabled. \
                      See earlier runtime_paths warnings for the specific cause."
@@ -152,7 +246,10 @@ pub fn start_server() -> mpsc::Receiver<IpcRequest> {
 
             let listener = match bind_socket(&socket_path) {
                 Some(l) => l,
-                None => return,
+                None => {
+                    thread_status.disable();
+                    return;
+                }
             };
 
             #[cfg(unix)]
@@ -182,6 +279,7 @@ pub fn start_server() -> mpsc::Receiver<IpcRequest> {
                         std::thread::sleep(Duration::from_millis(10));
                     }
                     Err(e) => {
+                        thread_status.disable();
                         log::error!("IPC accept error: {e}");
                         break;
                     }
@@ -208,7 +306,10 @@ pub fn start_server() -> mpsc::Receiver<IpcRequest> {
                                 listener = l;
                                 our_ino = socket_inode(&socket_path).unwrap_or(0);
                             }
-                            None => return,
+                            None => {
+                                thread_status.disable();
+                                return;
+                            }
                         }
                     }
                 }
@@ -220,10 +321,25 @@ pub fn start_server() -> mpsc::Receiver<IpcRequest> {
             // (nothing to remove in the named-pipe namespace).
             #[cfg(unix)]
             let _ = std::fs::remove_file(&socket_path);
-        })
-        .expect("Failed to spawn IPC thread");
+        });
+    if let Err(e) = spawn_result {
+        status.disable();
+        tracing::error!(
+            "IPC disabled: paneflow-ipc thread spawn failed: {e}. \
+             Check `ulimit -u` / container thread limits. \
+             External clients (paneflow-ai-hook) will not connect."
+        );
+        // `tx` was moved into the closure regardless of spawn outcome,
+        // so on error the closure (and its captured `tx`) is dropped
+        // here. The receiver `rx` then sees `Err(Disconnected)` on
+        // every subsequent `try_recv`. The consumer at
+        // `app/ipc_handler.rs:109` uses
+        // `while let Ok(req) = self.ipc_rx.try_recv()` so both `Empty`
+        // and `Disconnected` resolve to "no IPC work this tick" -- the
+        // app runs normally, only external IPC clients can't reach it.
+    }
 
-    rx
+    (rx, status)
 }
 
 /// Bind a new listener at the given path/pipe name.
