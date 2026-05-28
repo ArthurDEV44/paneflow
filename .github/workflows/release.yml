@@ -1932,10 +1932,12 @@ jobs:
     # strictly more faithful than a from-source rebuild: we now test
     # the exact byte sequence real users have on disk.
     #
-    # Result: ~2-3 min job (no cargo build, no toolchain install, no
-    # system deps for Vulkan/Wayland — none of which the test
-    # actually needs since `--update-and-exit` never opens a GPUI
-    # window).
+    # Result: ~2-3 min job (no cargo build, no toolchain install). It does
+    # NOT need Vulkan/Wayland windowing deps since `--update-and-exit` never
+    # opens a GPUI window -- but it DOES need the binary's hard NEEDED shared
+    # libs (libxkbcommon.so.0 + libxkbcommon-x11.so.0, see `readelf -d`),
+    # which the dynamic linker resolves at exec, before main(), regardless of
+    # whether a window opens. See the explicit install step below.
     steps:
       - uses: actions/checkout@v5
         with:
@@ -1943,6 +1945,18 @@ jobs:
           # Shallow checkout is enough now that the harness no longer
           # does `git worktree add` for the OLD source.
           fetch-depth: 1
+
+      # The released binary links libxkbcommon-x11.so.0 + libxkbcommon.so.0
+      # as hard NEEDED entries, so the dynamic linker resolves them at exec
+      # even under `--update-and-exit`. The ubuntu-22.04 runner image stopped
+      # guaranteeing libxkbcommon-x11-0 (the SAME binary deps passed on
+      # 2026-05-27 for v0.3.3 and failed on 2026-05-28 for v0.3.4 with a bare
+      # "cannot open shared object file" exit 127). Install it explicitly so
+      # the job is hermetic against runner-image drift.
+      - name: Install runtime libs the binary links (resolved at exec)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-0
 
       # Pull the NEW tarball straight from the matrix `build` job's
       # x86_64 Linux artifact. The matrix uploads
