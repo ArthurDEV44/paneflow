@@ -952,14 +952,38 @@ impl ThreadView {
     /// header is a frozen string and the diff body is collapsed by
     /// default. Both entries are recreated lazily on demand if the
     /// user re-expands or the timeline truncates back over the
-    /// reviewed point. Note: `DiffSnapshot.old_text` is NOT freed
-    /// here -- the diff body still reads it when the user expands a
-    /// reviewed card (see edit_tool_block.rs:345). Freeing
-    /// `old_text` requires a follow-up that also collapses the diff
-    /// body for reviewed cards into a static summary.
+    /// reviewed point.
+    ///
+    /// US-001 (cli-hardening-followup-2026-Q3): on top of the
+    /// per-card UI state, this function now also frees
+    /// `DiffSnapshot.old_text` on every diff of the reviewed
+    /// snapshot. Heavy refactor sessions (500 turns x 50 KB files x
+    /// 20 edits each) retain 10-100 MB of pre-edit file content
+    /// otherwise -- the `Arc<ToolCallSnapshot>` keeps every byte
+    /// live for the full thread lifetime. The original line count is
+    /// recorded in `DiffSnapshot.cleared_diff_lines` so the renderer
+    /// at `edit_tool_block.rs::render_diff` can show
+    /// `[diff body cleared after review, ~N lines]` on re-expansion
+    /// instead of computing a `[]` vs `new_text` diff (which would
+    /// mark every line as added).
     fn purge_reviewed_tool_ui_state(&mut self, id: &str) {
         self.tool_label_markdown.remove(id);
         self.diff_scroll_handles.remove(id);
+        if let Some(&idx) = self.tool_call_index.get(id)
+            && let Some(ThreadItem::ToolCall(snap)) = self.items.get_mut(idx)
+        {
+            // Only mutate if at least one diff still holds
+            // `old_text` -- avoids an Arc clone when the snapshot was
+            // already cleared (idempotent call from
+            // `keep_all_edits` / `reject_all_edits`).
+            let needs_clear = snap
+                .diffs
+                .iter()
+                .any(|d| d.old_text.is_some() && d.cleared_diff_lines.is_none());
+            if needs_clear {
+                clear_reviewed_diff_bodies(Arc::make_mut(snap));
+            }
+        }
     }
 
     /// US-124: toggle the inline pattern-picker popover for one tool
@@ -3524,6 +3548,34 @@ fn empty_state() -> AnyElement {
         .into_any_element()
 }
 
+/// US-001 (cli-hardening-followup-2026-Q3): free `DiffSnapshot.old_text`
+/// on every diff of a reviewed snapshot and record the original
+/// line count in `cleared_diff_lines` so the renderer can show a
+/// `[diff body cleared after review, N lines]` placeholder instead
+/// of computing a `[]` vs `new_text` diff. Returns the number of
+/// diffs that were actually mutated (idempotent: already-cleared
+/// diffs are skipped).
+///
+/// Extracted as a free function (rather than a method) so the unit
+/// test in this module can exercise it without constructing a full
+/// `ThreadView` + GPUI `Context`.
+fn clear_reviewed_diff_bodies(snap: &mut ToolCallSnapshot) -> usize {
+    let mut cleared = 0usize;
+    for diff in snap.diffs.iter_mut() {
+        if diff.cleared_diff_lines.is_some() {
+            continue;
+        }
+        let count = super::edit_tool_block::diff_line_count(
+            diff.old_text.as_deref().unwrap_or(""),
+            &diff.new_text,
+        );
+        diff.cleared_diff_lines = Some(count as u32);
+        diff.old_text = None;
+        cleared += 1;
+    }
+    cleared
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3663,5 +3715,62 @@ mod tests {
             STREAMING_TICK_SLOW,
         );
         assert_eq!(adaptive_streaming_tick(100_000), STREAMING_TICK_SLOW);
+    }
+
+    /// US-001 (cli-hardening-followup-2026-Q3): a Keep / Reject
+    /// review must free `DiffSnapshot.old_text` on every diff and
+    /// record the original diff-line count in `cleared_diff_lines`
+    /// so the renderer can show a static placeholder instead of
+    /// re-diffing on re-expansion. Idempotent: a second call on the
+    /// same snapshot returns 0 cleared.
+    #[test]
+    fn purge_reviewed_diffs_clears_old_text() {
+        use super::super::runtime::{
+            DiffSnapshot, ToolCallSnapshot, ToolCallStatusKind, ToolKindKind,
+        };
+        use super::clear_reviewed_diff_bodies;
+
+        let mut snap = ToolCallSnapshot {
+            id: "tc-1".to_string(),
+            title: "Edit src/main.rs".to_string(),
+            kind: ToolKindKind::Edit,
+            status: ToolCallStatusKind::Completed,
+            raw_input_pretty: None,
+            raw_output_pretty: None,
+            content_text: String::new(),
+            diffs: vec![
+                DiffSnapshot {
+                    path: std::path::PathBuf::from("src/main.rs"),
+                    old_text: Some("a\nb\nc\n".to_string()),
+                    new_text: "a\nB\nc\n".to_string(),
+                    cleared_diff_lines: None,
+                },
+                DiffSnapshot {
+                    path: std::path::PathBuf::from("src/lib.rs"),
+                    old_text: Some("foo\n".to_string()),
+                    new_text: "foo\nbar\n".to_string(),
+                    cleared_diff_lines: None,
+                },
+            ],
+            expanded: false,
+            permission_options: Vec::new(),
+            permission_picker_open: false,
+            locations: Vec::new(),
+        };
+
+        let cleared = clear_reviewed_diff_bodies(&mut snap);
+        assert_eq!(cleared, 2);
+        for diff in &snap.diffs {
+            assert!(diff.old_text.is_none(), "old_text must be None post-clear");
+            assert!(
+                diff.cleared_diff_lines.is_some(),
+                "cleared_diff_lines must be set"
+            );
+            // The recorded count must be > 0 (each diff has at least
+            // one changed line).
+            assert!(diff.cleared_diff_lines.unwrap() > 0);
+        }
+        // Idempotence: a second pass mutates nothing.
+        assert_eq!(clear_reviewed_diff_bodies(&mut snap), 0);
     }
 }

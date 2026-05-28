@@ -342,6 +342,27 @@ fn render_diff(diff: &DiffSnapshot, ui: UiColors) -> AnyElement {
         );
     }
 
+    // US-001 (cli-hardening-followup-2026-Q3): a snapshot whose
+    // `cleared_diff_lines` is set has had its `old_text` freed by
+    // `ThreadView::purge_reviewed_tool_ui_state` after the user
+    // reviewed the edit. Render a static one-line placeholder
+    // citing the original diff size instead of computing
+    // `line_diff("", &new_text)` which would mark every line as
+    // added and re-allocate the full new file content for nothing.
+    if let Some(n) = diff.cleared_diff_lines {
+        return col
+            .child(
+                div()
+                    .px(px(12.))
+                    .py(px(8.))
+                    .text_size(px(11.))
+                    .text_color(ui.muted)
+                    .font_family("Lilex")
+                    .child(format!("[diff body cleared after review, {n} lines]")),
+            )
+            .into_any_element();
+    }
+
     let lines = line_diff(diff.old_text.as_deref().unwrap_or(""), &diff.new_text);
     let gutter_width = compute_gutter_width(&lines);
 
@@ -452,6 +473,15 @@ enum DiffLineKind {
 /// Output: every line from the longer of the two sequences appears in
 /// the result, tagged Added / Removed / Context, with both legacy and
 /// new line numbers filled in where they apply.
+/// US-001 (cli-hardening-followup): public counter for the diff-line
+/// total without leaking the internal `DiffLine` / `DiffLineKind`
+/// types. Used by `ThreadView::purge_reviewed_tool_ui_state` to
+/// record the original line count on the snapshot before freeing
+/// `DiffSnapshot.old_text`.
+pub(crate) fn diff_line_count(old: &str, new: &str) -> usize {
+    line_diff(old, new).len()
+}
+
 fn line_diff(old: &str, new: &str) -> Vec<DiffLine> {
     let old_lines: Vec<&str> = if old.is_empty() {
         Vec::new()
@@ -621,6 +651,7 @@ mod tests {
             path: std::path::PathBuf::from("x.rs"),
             old_text: Some("a\nb\nc".to_string()),
             new_text: "a\nB\nc".to_string(),
+            cleared_diff_lines: None,
         }];
         let (added, removed) = diff_stats(&diffs);
         assert_eq!(added, 1);
