@@ -122,6 +122,7 @@ struct PaneFlowApp {
     pending_config:
         std::sync::Arc<std::sync::Mutex<Option<paneflow_config::schema::PaneFlowConfig>>>,
     ipc_rx: std::sync::mpsc::Receiver<ipc::IpcRequest>,
+    ipc_status: ipc::IpcStatus,
     title_bar: Entity<title_bar::TitleBar>,
     /// File watcher for `.git/HEAD` and `.git/index` across all workspaces.
     /// `None` if the OS watcher could not be created (graceful degradation).
@@ -618,6 +619,7 @@ impl Render for PaneFlowApp {
             tb.workspace_name = ws_name;
             tb.sidebar_width = px(sidebar_px);
             tb.update_available = update_info;
+            tb.ipc_state = self.ipc_status.state();
         });
 
         // --- CSD resize backdrop ---
@@ -1017,6 +1019,16 @@ fn main() {
         println!("paneflow {}", env!("CARGO_PKG_VERSION"));
         return;
     }
+
+    // US-011 (cli-hardening-followup-2026-Q3): scrub the `CLAUDECODE`
+    // env var BEFORE any thread::spawn / tokio runtime / smol /
+    // GPUI init reads or mutates env. Rust 1.85 made
+    // `std::env::remove_var` `unsafe` precisely because it races
+    // with concurrent `getenv` calls; the only race-free place to
+    // mutate process env is the top of `main()` before any other
+    // thread exists. Subsequent calls from `spawn_acp_agent` are
+    // now idempotent no-ops, preserving the per-spawn safety net.
+    paneflow_acp::scrub_claudecode_env();
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
         "info,wgpu_hal=off,wgpu_core=warn,naga=warn,zbus=warn,tracing::span=warn",

@@ -53,7 +53,7 @@ pub use permission::{
     PermissionDecision,
 };
 pub use session::{SessionMeta, SessionRegistry};
-pub use spawn::spawn_acp_agent;
+pub use spawn::{scrub_claudecode_env, spawn_acp_agent};
 pub use streaming::{PacingConfig, StreamingBuffer};
 pub use terminal::{
     handle_create as handle_create_terminal, handle_kill as handle_kill_terminal,

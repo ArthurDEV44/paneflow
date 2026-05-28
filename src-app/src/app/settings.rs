@@ -12,6 +12,7 @@ use gpui::{
     prelude::*, px,
 };
 
+use crate::widgets::callout::{Callout, CalloutIcon, CalloutSeverity};
 use crate::widgets::scrollbar;
 use crate::{PaneFlowApp, SettingsSection, config_writer, keybindings};
 
@@ -60,6 +61,12 @@ impl PaneFlowApp {
             SettingsSection::Shortcuts => self.render_shortcuts_content(cx).into_any_element(),
             SettingsSection::Appearance => self.render_appearance_content(cx).into_any_element(),
         };
+        let ipc_offline_banner = self.ipc_status.is_disabled().then(|| {
+            Callout::new(CalloutSeverity::Warning, "IPC offline")
+                .icon(CalloutIcon::TriangleAlert)
+                .description("External clients (paneflow-ai-hook) will not connect.")
+                .render()
+        });
 
         div()
             .id("settings-page")
@@ -70,6 +77,9 @@ impl PaneFlowApp {
             .size_full()
             .bg(ui.base)
             .child(header)
+            .when_some(ipc_offline_banner, |d, banner| {
+                d.child(div().px(px(24.)).pb(px(8.)).child(banner))
+            })
             .child(
                 div()
                     .flex()

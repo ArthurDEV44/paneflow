@@ -77,22 +77,34 @@ fn candidate_names(tool: &str) -> Vec<String> {
 }
 
 /// Walk `$PATH` and return the first entry that contains a matching
-/// executable, skipping the shim's own directory so we don't exec ourselves.
+/// executable, skipping the shim's own directory AND any candidate
+/// that is the shim binary itself by inode (US-017 hardlink defense).
 fn find_real_binary(tool: &str) -> Option<PathBuf> {
     let path_var = env::var_os("PATH")?;
     // Per `install_method.rs:92-98`, always canonicalize `current_exe()` —
     // on Linux it may point at `/proc/self/exe` or follow through a symlink.
-    let self_dir = env::current_exe()
-        .ok()
+    let self_exe = env::current_exe().ok();
+    let self_dir = self_exe
+        .as_deref()
         .and_then(|p| p.parent().map(Path::to_path_buf));
 
-    find_real_binary_in(tool, env::split_paths(&path_var), self_dir.as_deref())
+    find_real_binary_in(
+        tool,
+        env::split_paths(&path_var),
+        self_dir.as_deref(),
+        self_exe.as_deref(),
+    )
 }
 
-/// Pure inner — takes PATH entries as an iterator and an optional self dir,
-/// so tests can pass a controlled set without mutating `$PATH` or relying
-/// on `current_exe()`.
-fn find_real_binary_in<I>(tool: &str, path_entries: I, self_dir: Option<&Path>) -> Option<PathBuf>
+/// Pure inner — takes PATH entries as an iterator and optional
+/// self-dir / self-exe paths, so tests can pass a controlled set
+/// without mutating `$PATH` or relying on `current_exe()`.
+fn find_real_binary_in<I>(
+    tool: &str,
+    path_entries: I,
+    self_dir: Option<&Path>,
+    self_exe: Option<&Path>,
+) -> Option<PathBuf>
 where
     I: IntoIterator<Item = PathBuf>,
 {
@@ -100,6 +112,12 @@ where
     // can't match anything against it, so the self-exclusion is a no-op and
     // PATH is walked in full — safer than silently skipping nothing).
     let self_canon = self_dir.and_then(|d| std::fs::canonicalize(d).ok());
+    // US-017 (cli-hardening-followup-2026-Q3): capture the shim's
+    // own file identity (Unix: `(st_dev, st_ino)`; Windows: dir-only
+    // fallback, see `is_same_file_as_shim`). A candidate matching
+    // this identity is the shim itself reached via a hardlink and
+    // must be skipped to break the recursive-spawn loop.
+    let self_identity = self_exe.and_then(file_identity);
     let candidates = candidate_names(tool);
 
     for dir in path_entries {
@@ -108,28 +126,83 @@ where
         }
         for name in &candidates {
             let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Some(candidate);
+            if !candidate.is_file() {
+                continue;
             }
+            if is_same_file_as_shim(&self_identity, &candidate) {
+                // US-017: hardlink-loop guard. The shim has no `log`
+                // dep (would bloat the small binary); stderr is
+                // already the diagnostic channel used elsewhere
+                // in this binary (cf. line ~287).
+                eprintln!(
+                    "paneflow-shim: skipping {} -- matches shim identity (hardlink loop guard)",
+                    candidate.display()
+                );
+                continue;
+            }
+            return Some(candidate);
         }
     }
     None
+}
+
+/// US-017 (cli-hardening-followup-2026-Q3): capture a file's
+/// cross-path identity tuple.
+///
+/// - **Unix**: `(st_dev, st_ino)` from `stat(2)`. Two paths return
+///   the same tuple iff they refer to the same on-disk inode --
+///   the canonical hardlink detection on POSIX.
+/// - **Windows**: `(volume_serial_number, file_index)` from
+///   `BY_HANDLE_FILE_INFORMATION` (stable in std since Rust 1.75
+///   via `std::os::windows::fs::MetadataExt`). NTFS hardlinks share
+///   the same file index on the same volume, so this catches the
+///   `mklink /H` attack the same way POSIX inodes do. Returns
+///   `None` when either field is unavailable (rare -- happens on
+///   FAT32 / exFAT volumes where Windows simulates `file_index`
+///   as 0; the comparison then degrades to dir-only via
+///   `same_canonical_dir`).
+///
+/// Returns `None` when the path cannot be stat'd, in which case
+/// the comparison degrades to a no-op and the dir-canonicalize
+/// path remains the residual defense.
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.dev(), m.ino()))
+}
+
+#[cfg(windows)]
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::windows::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    // Both are Option<...> since Rust 1.75 -- they require the
+    // metadata to have been produced through a handle that supports
+    // `GetFileInformationByHandle`. Hand-rolling the FFI would just
+    // duplicate what std already exposes.
+    let vol = m.volume_serial_number()? as u64;
+    let idx = m.file_index()?;
+    Some((vol, idx))
+}
+
+fn is_same_file_as_shim(self_identity: &Option<(u64, u64)>, candidate: &Path) -> bool {
+    match (self_identity, file_identity(candidate)) {
+        (Some(a), Some(b)) => *a == b,
+        _ => false,
+    }
 }
 
 /// Returns `true` when `dir` canonicalizes to the same path as `self_canon`.
 /// Handles symlinks, trailing slashes, and `..` segments that would otherwise
 /// make two string-equal paths compare as different and vice versa.
 ///
-/// Known limitation (Phase 7 security audit, MEDIUM): this compares
-/// directories, not inodes. An attacker with write access to a PATH
-/// directory earlier than the shim's own dir (requires root for
-/// `/usr/local/bin` etc.) could plant a *hardlink* of the shim there
-/// named `claude` or `codex`. Running that hardlink would pass dir-based
-/// self-exclusion on each hop and recurse indefinitely. Practical
-/// exploitability is low: an attacker with that write access could plant
-/// a real malicious binary instead, which is strictly simpler. A future
-/// hardening story can tighten this with a Unix `(dev, ino)` inode
-/// comparison via `std::os::unix::fs::MetadataExt`; out of US-004 AC scope.
+/// This stays as the cheap fast-path filter that skips the shim's
+/// own install directory wholesale (saves one `metadata` syscall
+/// per candidate when the dir matches by canonicalization). The
+/// inode-level defense against a hardlinked shim planted in a
+/// different `$PATH` directory lives in [`is_same_file_as_shim`]
+/// and runs for every candidate that survives the dir filter
+/// (US-017 cli-hardening-followup-2026-Q3).
 fn same_canonical_dir(self_canon: &Option<PathBuf>, dir: &Path) -> bool {
     match (self_canon, std::fs::canonicalize(dir).ok()) {
         (Some(s), Some(d)) => *s == d,
@@ -207,6 +280,43 @@ fn run_real(tool: &str, path: &Path, args: &[OsString]) -> ExitCode {
             libc::sigaddset(&mut set, libc::SIGHUP);
             libc::sigaddset(&mut set, libc::SIGTERM);
             libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+
+            // US-016 (cli-hardening-followup-2026-Q3): on Linux,
+            // install PR_SET_PDEATHSIG so the spawned agent CLI
+            // (claude/codex/opencode) is killed by the kernel as
+            // soon as the shim's parent process (Paneflow) dies --
+            // even on a hard `kill -9` of Paneflow that bypasses
+            // any graceful Drop discipline. Without this, the agent
+            // is reparented to PID 1 and keeps streaming, burning
+            // the user's API tokens until its natural timeout.
+            //
+            // `parent_guard.rs` documents this gap on Linux/macOS
+            // because the GPUI app spawns through
+            // `portable-pty::CommandBuilder` which does not expose
+            // `pre_exec`. The shim wraps ~80% of those spawns
+            // (claude/codex/opencode all go through it) so this
+            // covers the realistic Linux path. macOS uses a stub
+            // pending kqueue NOTE_EXIT (out of US-016 scope).
+            //
+            // SAFETY: prctl is async-signal-safe; the call happens
+            // in the forked child between fork() and execve().
+            // A non-zero return is rare (only on a stripped kernel
+            // without prctl PR_SET_PDEATHSIG support) and is best-
+            // effort: we emit nothing on stderr because writing
+            // from pre_exec is not async-signal-safe in general,
+            // and we explicitly do NOT abort the exec -- letting
+            // the child run without PDEATHSIG is strictly better
+            // than failing the spawn entirely.
+            #[cfg(target_os = "linux")]
+            {
+                let _ = libc::prctl(
+                    libc::PR_SET_PDEATHSIG,
+                    libc::SIGKILL as libc::c_ulong,
+                    0,
+                    0,
+                    0,
+                );
+            }
             Ok(())
         });
     }
@@ -1531,7 +1641,7 @@ mod tests {
         let fake = dir.path().join("claude");
         std::fs::File::create(&fake).unwrap();
 
-        let found = find_real_binary_in("claude", vec![dir.path().to_owned()], None);
+        let found = find_real_binary_in("claude", vec![dir.path().to_owned()], None, None);
         assert_eq!(found.as_deref(), Some(fake.as_path()));
     }
 
@@ -1546,18 +1656,63 @@ mod tests {
         std::fs::File::create(&cmd_path).unwrap();
 
         // With only .cmd present, the walk falls through to it.
-        let found = find_real_binary_in("claude", vec![dir.path().to_owned()], None);
+        let found = find_real_binary_in("claude", vec![dir.path().to_owned()], None, None);
         assert_eq!(found.as_deref(), Some(cmd_path.as_path()));
 
         // With both .exe and .cmd present, .exe wins per candidate ordering.
         let exe_path = dir.path().join("claude.exe");
         std::fs::File::create(&exe_path).unwrap();
-        let found = find_real_binary_in("claude", vec![dir.path().to_owned()], None);
+        let found = find_real_binary_in("claude", vec![dir.path().to_owned()], None, None);
         assert_eq!(
             found.as_deref(),
             Some(exe_path.as_path()),
             "native .exe must take precedence over the .cmd wrapper"
         );
+    }
+
+    /// US-017 (cli-hardening-followup-2026-Q3): a hardlink of the
+    /// shim binary planted in a DIFFERENT `$PATH` directory must be
+    /// detected by inode and skipped. The previous dir-only check
+    /// let this through, recursively re-invoking the shim every
+    /// time the user typed `claude` -- a single-user fork-bomb.
+    #[cfg(unix)]
+    #[test]
+    fn shim_refuses_hardlink_loop() {
+        let shim_dir = tempfile::TempDir::new().unwrap();
+        let attacker_dir = tempfile::TempDir::new().unwrap();
+        // Stand-in for the shim binary itself.
+        let real_shim = shim_dir.path().join("paneflow-shim");
+        std::fs::File::create(&real_shim).unwrap();
+        // Hardlink it into the attacker-controlled `$PATH` dir as
+        // `claude` -- the dir-canonicalize check at the head of
+        // `find_real_binary_in` would NOT catch this, but the
+        // inode comparison must.
+        let attack_link = attacker_dir.path().join("claude");
+        std::fs::hard_link(&real_shim, &attack_link).expect("hard_link");
+
+        // `current_exe` analog: pretend the shim binary is at `real_shim`.
+        let found = find_real_binary_in(
+            "claude",
+            vec![attacker_dir.path().to_owned()],
+            Some(shim_dir.path()),
+            Some(real_shim.as_path()),
+        );
+        assert!(
+            found.is_none(),
+            "hardlinked shim must be skipped; got {found:?}"
+        );
+
+        // Sanity: with NO self_exe (i.e. degraded mode where we can't
+        // compute identity), the walk falls back to dir-only semantics
+        // and DOES find the attacker file. The fix is dependent on
+        // current_exe() resolving correctly -- documented degradation.
+        let found = find_real_binary_in(
+            "claude",
+            vec![attacker_dir.path().to_owned()],
+            Some(shim_dir.path()),
+            None,
+        );
+        assert!(found.is_some(), "no-identity fallback finds candidate");
     }
 
     #[cfg(unix)]
@@ -1570,7 +1725,12 @@ mod tests {
         // The tempdir appears as both the only PATH entry AND as the self
         // dir. The self-exclusion must skip it and yield `None` — otherwise
         // the shim would exec itself and recurse.
-        let found = find_real_binary_in("claude", vec![dir.path().to_owned()], Some(dir.path()));
+        let found = find_real_binary_in(
+            "claude",
+            vec![dir.path().to_owned()],
+            Some(dir.path()),
+            None,
+        );
         assert!(found.is_none(), "self_dir must be excluded from PATH walk");
     }
 
@@ -1593,6 +1753,7 @@ mod tests {
             "claude",
             vec![shim_dir.path().to_owned(), real_dir.path().to_owned()],
             Some(shim_dir.path()),
+            None,
         );
         assert_eq!(found.as_deref(), Some(real_fake.as_path()));
     }
@@ -1601,7 +1762,7 @@ mod tests {
     fn find_real_binary_in_returns_none_when_absent() {
         let dir = tempfile::TempDir::new().unwrap();
         // Empty dir, no matching binary anywhere on the passed "PATH".
-        let found = find_real_binary_in("claude", vec![dir.path().to_owned()], None);
+        let found = find_real_binary_in("claude", vec![dir.path().to_owned()], None, None);
         assert!(found.is_none());
     }
 
@@ -1614,7 +1775,7 @@ mod tests {
             PathBuf::from("/definitely/does/not/exist/foo"),
             PathBuf::from("/also/not/real/bar"),
         ];
-        let found = find_real_binary_in("claude", dirs, None);
+        let found = find_real_binary_in("claude", dirs, None, None);
         assert!(found.is_none());
     }
 
@@ -1631,7 +1792,7 @@ mod tests {
             .collect();
 
         let start = std::time::Instant::now();
-        let _ = find_real_binary_in("claude", dirs, None);
+        let _ = find_real_binary_in("claude", dirs, None, None);
         let elapsed = start.elapsed();
 
         assert!(

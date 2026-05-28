@@ -29,7 +29,9 @@ use gpui::{
 use markdown::{Markdown, MarkdownElement};
 use paneflow_threads::{ContentBlock, MessageRole};
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style as SyntectStyle, Theme as SyntectTheme, ThemeSet};
 use syntect::parsing::SyntaxSet;
@@ -60,7 +62,7 @@ pub(crate) fn render_message_body(
     content: &[ContentBlock],
     markdown_entity: Option<Entity<Markdown>>,
     ui: crate::theme::UiColors,
-    cwd: Option<std::path::PathBuf>,
+    cwd: Option<std::sync::Arc<std::path::Path>>,
 ) -> AnyElement {
     // US-016 (audit P2-3): lazy `join_text_blocks` -- the markdown-
     // entity path never reads `body_text`, so the alloc was wasted on
@@ -75,7 +77,9 @@ pub(crate) fn render_message_body(
             Some(md) => render_assistant_body_md(md, ui, cwd).into_any_element(),
             None => render_assistant_body(&join_text_blocks(content), ui).into_any_element(),
         },
-        MessageRole::System => render_system_note(&join_text_blocks(content), ui).into_any_element(),
+        MessageRole::System => {
+            render_system_note(&join_text_blocks(content), ui).into_any_element()
+        }
     }
 }
 
@@ -90,7 +94,7 @@ pub(crate) fn render_message_body(
 pub(crate) fn render_assistant_body_md(
     md: Entity<Markdown>,
     ui: crate::theme::UiColors,
-    cwd: Option<std::path::PathBuf>,
+    cwd: Option<std::sync::Arc<std::path::Path>>,
 ) -> impl IntoElement {
     let body_color = gpui::rgb(0xc4c4c4).into();
     // Mirror Zed's `MarkdownStyle::themed(MarkdownFont::Agent, ...)`
@@ -124,7 +128,7 @@ pub(crate) fn render_assistant_body_md(
 /// (Logs reported the "URI must contain a scheme" failure on
 /// 2026-05-26.)
 fn make_link_handler(
-    cwd: Option<std::path::PathBuf>,
+    cwd: Option<std::sync::Arc<std::path::Path>>,
 ) -> impl Fn(SharedString, &mut gpui::Window, &mut gpui::App) + 'static {
     move |href, _w, cx| {
         // First try the user's configured external editor (Zed / Cursor /
@@ -196,7 +200,7 @@ fn strip_line_col_suffix(href: &str) -> Option<String> {
 fn render_user_bubble_md(
     md: Entity<Markdown>,
     ui: crate::theme::UiColors,
-    cwd: Option<std::path::PathBuf>,
+    cwd: Option<std::sync::Arc<std::path::Path>>,
 ) -> impl IntoElement {
     let body_color = gpui::rgb(0xc4c4c4).into();
     let style = super::markdown_style::paneflow_markdown_style(ui, body_color, 12.0);
@@ -382,6 +386,16 @@ struct InlineRun {
     text: String,
     style: InlineStyle,
     link: Option<String>,
+    /// US-019 (cli-hardening-followup-2026-Q3): precomputed
+    /// `SharedString` element id for links. The previous code did
+    /// `format!("md-link-{}", djb2(&url))` inside the per-element
+    /// render closure -- harmless allocation when the closure runs
+    /// at parse time (the actual case in our codebase, the audit's
+    /// per-frame claim was misread), but the cleaner shape is to
+    /// hash + format once at parse time and clone the
+    /// `SharedString` (Arc-backed, refcount bump) into the
+    /// element id slot. `None` for non-link runs.
+    link_id: Option<SharedString>,
 }
 
 struct CodeBlockBuffer {
@@ -740,10 +754,17 @@ fn push_run(target: &mut Vec<InlineRun>, text: &str, style: InlineStyle, link: O
         last.text.push_str(text);
         return;
     }
+    // US-019: precompute the link element id at parse time so the
+    // render closure can clone the SharedString instead of running
+    // `format!()` + `djb2()` on the URL bytes again.
+    let link_id = link
+        .as_deref()
+        .map(|url| SharedString::from(format!("md-link-{}", djb2(url))));
     target.push(InlineRun {
         text: text.to_string(),
         style,
         link,
+        link_id,
     });
 }
 
@@ -799,7 +820,14 @@ fn render_inline_run(run: InlineRun, ui: crate::theme::UiColors) -> AnyElement {
             // browser via `open::that`. Restrict to http(s) so a crafted
             // assistant message cannot launch arbitrary URI handlers
             // (javascript:, file:, data:, etc.) via the OS opener.
-            let id: SharedString = format!("md-link-{}", djb2(&url)).into();
+            //
+            // US-019: id is precomputed at parse time and stored on
+            // the InlineRun; here we just clone the SharedString
+            // (cheap Arc bump) instead of re-formatting the URL.
+            let id = run
+                .link_id
+                .clone()
+                .unwrap_or_else(|| SharedString::from(format!("md-link-{}", djb2(&url))));
             el.id(id)
                 .cursor_pointer()
                 .on_click(move |_e: &ClickEvent, _w, _cx| {
@@ -823,10 +851,30 @@ fn render_inline_run(run: InlineRun, ui: crate::theme::UiColors) -> AnyElement {
 /// schemes (javascript:, file:, data:, vbscript:, mailto:, etc.) are
 /// blocked because assistant output is partially-trusted and the OS-level
 /// URL opener can invoke arbitrary registered handlers.
+///
+/// US-023 (cli-hardening-followup-2026-Q3): the byte-level
+/// `eq_ignore_ascii_case` skips the `to_ascii_lowercase` `String`
+/// allocation that the previous code performed on every call. The
+/// audit projected this as a per-frame allocation cost, but the
+/// callable runs only on link clicks in our codebase (the hot
+/// streaming path uses `Entity<Markdown>` -- US-021 territory --
+/// not this fallback inline-run path). The change is still
+/// strictly cheaper and avoids a needless allocation, just not the
+/// "thousands per frame" scale the audit suggested.
 fn is_safe_link_scheme(url: &str) -> bool {
-    let lower = url.trim_start();
-    let lower_lc = lower.to_ascii_lowercase();
-    lower_lc.starts_with("https://") || lower_lc.starts_with("http://")
+    let trimmed = url.trim_start();
+    let bytes = trimmed.as_bytes();
+    if let Some(head) = bytes.get(..8)
+        && head.eq_ignore_ascii_case(b"https://")
+    {
+        return true;
+    }
+    if let Some(head) = bytes.get(..7)
+        && head.eq_ignore_ascii_case(b"http://")
+    {
+        return true;
+    }
+    false
 }
 
 fn djb2(s: &str) -> u64 {
@@ -947,12 +995,15 @@ fn render_code_block(buf: &CodeBlockBuffer, ui: crate::theme::UiColors) -> impl 
     }
     match highlighted {
         Some(lines) => {
-            for line in lines {
+            // US-018: `lines` is now `Arc<Vec<HighlightedLine>>`;
+            // iterate by reference so the cached value is shared
+            // across renders without cloning.
+            for line in lines.iter() {
                 let mut line_div = div().flex().flex_row();
                 for (style, text) in line {
                     line_div = line_div.child(
                         div()
-                            .text_color(syntect_color(style))
+                            .text_color(syntect_color(*style))
                             .child(text.replace('\n', "")),
                     );
                 }
@@ -972,8 +1023,111 @@ fn render_code_block(buf: &CodeBlockBuffer, ui: crate::theme::UiColors) -> impl 
 /// is unrecognised OR when highlighting fails for any reason (AC #9
 /// "render as plain monospace without crashing"). The outer `Vec` is
 /// one entry per source line.
+///
+/// US-018 (cli-hardening-followup-2026-Q3): results are memoised by
+/// `(lang, djb2(source))`. On a long thread with 50 visible code
+/// blocks rendering at 60 Hz, the per-frame syntect cost drops from
+/// ~150-400 ms (3-8 ms x 50 blocks) to a HashMap lookup that returns
+/// the cached `Arc<Vec<HighlightedLine>>` -- single-digit
+/// microseconds on warm cache. In-progress streaming blocks whose
+/// source grows token-by-token miss the cache on every frame (the
+/// hash changes); this is the expected and accepted trade-off
+/// (cf. AC bullet 4).
 type HighlightedLine = Vec<(SyntectStyle, String)>;
-fn highlight_code(source: &str, lang: Option<&str>) -> Option<Vec<HighlightedLine>> {
+
+/// Cached highlight entry. Carries the shared `Arc<Vec<HighlightedLine>>`
+/// alongside an `access_seq` stamp bumped on every cache hit and every
+/// insert so eviction can pick the genuinely-least-recently-used entry
+/// instead of relying on `HashMap`'s unspecified iteration order
+/// (review follow-up: mirror the LRU pattern used by
+/// `agent_sessions::cache`).
+struct CachedHighlight {
+    arc: Arc<Vec<HighlightedLine>>,
+    access_seq: u64,
+}
+
+/// Monotonic LRU stamp. Bumped on every cache hit and store, so the
+/// entry with the smallest stamp is the eviction victim. Mirrors
+/// `agent_sessions::cache::next_access_seq` for consistency.
+fn next_highlight_access_seq() -> u64 {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    SEQ.fetch_add(1, Ordering::Relaxed)
+}
+fn highlight_code(source: &str, lang: Option<&str>) -> Option<Arc<Vec<HighlightedLine>>> {
+    let key = highlight_cache_key(lang, source);
+    {
+        let mut cache = global_highlight_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(hit) = cache.get_mut(&key) {
+            hit.access_seq = next_highlight_access_seq();
+            return Some(Arc::clone(&hit.arc));
+        }
+    }
+    let computed = compute_highlight_uncached(source, lang)?;
+    let arc = Arc::new(computed);
+    {
+        let mut cache = global_highlight_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // LRU eviction: when at capacity AND this is a fresh key,
+        // drop the entry with the smallest `access_seq` (= the one
+        // not touched for longest). Linear scan on N=256 is cheap
+        // versus pulling in `lru` for one call site. Matches the
+        // `session_cache_evicts_lru` pattern in `agent_sessions`.
+        if cache.len() >= HIGHLIGHT_CACHE_CAP
+            && !cache.contains_key(&key)
+            && let Some(victim_key) = cache
+                .iter()
+                .min_by_key(|(_, v)| v.access_seq)
+                .map(|(k, _)| *k)
+        {
+            cache.remove(&victim_key);
+            log::debug!(
+                target: "paneflow_app::agents::message_render",
+                "highlight cache: LRU evicted key {victim_key:#x}"
+            );
+        }
+        cache.insert(
+            key,
+            CachedHighlight {
+                arc: Arc::clone(&arc),
+                access_seq: next_highlight_access_seq(),
+            },
+        );
+    }
+    Some(arc)
+}
+
+/// US-018 (cli-hardening-followup-2026-Q3): build the per-source
+/// cache key. `djb2` is already used elsewhere in this file for the
+/// markdown element IDs; reusing it keeps the hash function single-
+/// source-of-truth and avoids importing a heavier hasher. Folding
+/// the language token into the key prevents false sharing between
+/// "rust" vs "python" snippets that happen to djb2 to the same value.
+fn highlight_cache_key(lang: Option<&str>, source: &str) -> u64 {
+    let src_hash = djb2(source);
+    let lang_hash = lang.map(djb2).unwrap_or(0);
+    // Mix the two hashes deterministically; xor-with-rotation is
+    // good enough for an in-memory render cache (no adversarial
+    // input -- source comes from the agent, not the network).
+    src_hash ^ lang_hash.rotate_left(13)
+}
+
+/// US-018: soft cap on the highlight cache. 256 distinct code blocks
+/// covers a typical session (a refactor turn touches 5-20 distinct
+/// files, each with 1-3 code blocks in chat). Past the cap, the
+/// LRU entry (smallest `access_seq`) is evicted before insertion.
+const HIGHLIGHT_CACHE_CAP: usize = 256;
+
+fn global_highlight_cache() -> &'static std::sync::Mutex<HashMap<u64, CachedHighlight>> {
+    static CACHE: OnceLock<std::sync::Mutex<HashMap<u64, CachedHighlight>>> = OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Original (uncached) syntect pipeline; split out so US-018's cache
+/// wrapper can call it on a miss.
+fn compute_highlight_uncached(source: &str, lang: Option<&str>) -> Option<Vec<HighlightedLine>> {
     let syntax_set = global_syntax_set();
     let theme = global_theme();
 
@@ -1162,6 +1316,34 @@ mod tests {
         assert!(result.is_some(), "syntect should highlight bash code");
         let lines = result.unwrap();
         assert!(lines.len() >= 3, "got {} lines", lines.len());
+    }
+
+    /// US-018 (cli-hardening-followup-2026-Q3): two `highlight_code`
+    /// calls with the same `(lang, source)` must return the same
+    /// `Arc`, proving the second call short-circuited via the cache
+    /// instead of re-invoking syntect. `Arc::ptr_eq` is the cheapest
+    /// observable signal we can get without instrumenting the
+    /// uncached compute helper with a counter.
+    #[test]
+    fn highlight_code_memoizes_repeated_input() {
+        // Use a distinct fixture to avoid being affected by any
+        // earlier test's cache state. The cache is process-wide and
+        // tests can share it, but cache hits on this exact source
+        // can only come from this test.
+        let src = "fn main() { println!(\"US-018 cache fixture {} {}\", 1, 2); }\n";
+        let first = highlight_code(src, Some("rust")).expect("syntect rust");
+        let second = highlight_code(src, Some("rust")).expect("syntect rust 2");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "cache must return the same Arc on a repeated (lang, src) call"
+        );
+        // Different language with same src must NOT alias -- the
+        // cache key folds both.
+        let third = highlight_code(src, Some("python")).unwrap_or_else(|| Arc::new(Vec::new()));
+        assert!(
+            !Arc::ptr_eq(&first, &third),
+            "different lang must not share the cache slot"
+        );
     }
 
     #[test]

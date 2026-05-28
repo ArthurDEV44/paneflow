@@ -73,6 +73,19 @@ const PERSIST_THROTTLE: Duration = Duration::from_millis(500);
 /// frequency as the source string grows so the cumulative O(n^2)
 /// concat cost stays bounded. Returning a `Duration` (not a multiplier)
 /// keeps the constants readable side-by-side at the top of the module.
+/// Compute the tool-call positions a from-scratch scan of `items`
+/// would produce. Single source of truth shared by the production
+/// debug-assert (see [`ThreadView::assert_tool_call_indices_consistent`])
+/// and the unit tests that pin the invariant down. Pure -- no GPUI
+/// context required.
+fn expected_tool_call_indices(items: &[ThreadItem]) -> Vec<usize> {
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, item)| matches!(item, ThreadItem::ToolCall(_)).then_some(i))
+        .collect()
+}
+
 fn adaptive_streaming_tick(open_message_chars: usize) -> Duration {
     if open_message_chars >= STREAMING_ADAPT_LONG {
         STREAMING_TICK_SLOW
@@ -227,6 +240,30 @@ pub struct ThreadView {
     /// `cx.notify()` and grew with timeline length).
     tool_call_ordered_indices: Vec<usize>,
 
+    /// US-022 (cli-hardening-followup-2026-Q3): per-item persisted-
+    /// form cache parallel to `self.items`. Each slot is `Some` when
+    /// the cached entry is up-to-date with the corresponding item;
+    /// `None` when the slot is dirty and must be rebuilt on the next
+    /// `collect_persisted_items` call.
+    ///
+    /// Invariants:
+    /// - `persist_cache_items.len() == self.items.len()` at every
+    ///   public mutation boundary; the helpers
+    ///   [`Self::cache_push_slot`] / [`Self::cache_truncate`] /
+    ///   [`Self::cache_clear`] keep them in sync, and any in-place
+    ///   item mutation must call [`Self::mark_persist_dirty`] (or
+    ///   [`Self::invalidate_persist_cache_all`] for sweeping
+    ///   changes) before the next persist.
+    /// - The hot streaming path (`push_streaming_chunk`,
+    ///   `update_tool_call`, `push_thinking_chunk`,
+    ///   `append_message`) is instrumented so that on a 200-item
+    ///   thread with 2 streaming chunks per persist tick, only 2
+    ///   slots get re-serialised instead of all 200. Mutation
+    ///   sites that are not on the hot path call
+    ///   `invalidate_persist_cache_all` for safety (correctness
+    ///   over saving allocations on rare paths).
+    persist_cache_items: Vec<Option<PersistedThreadItem>>,
+
     /// User-forced expand state for inline tool-call bursts, keyed by
     /// the index of the burst's first item in `items`. Absence ==
     /// follow the auto policy (open while any tool in the burst is
@@ -277,7 +314,11 @@ pub struct ThreadView {
     /// reads this instead of doing
     /// `composer.read(cx).cwd().to_path_buf()` per visible message --
     /// the cwd does not change inside a single render pass (audit P2-4).
-    _cwd_snapshot: Option<std::path::PathBuf>,
+    /// Stored as `Arc<Path>` so per-item clones are a refcount bump
+    /// rather than a fresh `PathBuf` allocation. The link-handler
+    /// closure needs `'static` ownership of the path so a borrowed
+    /// `&Path` cannot replace this entirely (review follow-up).
+    _cwd_snapshot: Option<std::sync::Arc<std::path::Path>>,
 }
 
 /// US-020: inline edit-in-progress on a user message.
@@ -473,6 +514,7 @@ impl ThreadView {
             )
         }));
 
+        let initial_persist_cache_len = items.len();
         Self {
             store_id,
             store,
@@ -492,6 +534,11 @@ impl ThreadView {
             diff_scroll_handles: HashMap::new(),
             tool_call_index,
             tool_call_ordered_indices,
+            // US-022: cache starts empty-but-correctly-sized; first
+            // `collect_persisted_items` fills every slot. Subsequent
+            // calls only rebuild the slots flagged dirty by
+            // `mark_persist_dirty`.
+            persist_cache_items: vec![None; initial_persist_cache_len],
             tool_group_user_open: HashMap::new(),
             persist_deadline: None,
             streaming_thinking_key: None,
@@ -650,8 +697,12 @@ impl ThreadView {
         let title = snapshot.title.clone();
         let prev_count = self.items.len();
         self.items.push(ThreadItem::ToolCall(Arc::new(snapshot)));
+        // US-022: keep cache parallel to items.
+        self.persist_cache_items.push(None);
         self.tool_call_index.insert(id.clone(), prev_count);
         self.tool_call_ordered_indices.push(prev_count);
+        #[cfg(debug_assertions)]
+        self.assert_tool_call_indices_consistent();
         self.list_state.splice(prev_count..prev_count, 1);
         let md = Self::make_markdown(&title, cx);
         self.tool_label_markdown.insert(id, md);
@@ -853,6 +904,9 @@ impl ThreadView {
             );
         }
         if touched {
+            // US-022: sweep changed many tool-call snapshots in one
+            // pass; the safest move is to drop the whole cache.
+            self.invalidate_persist_cache_all();
             self.persist_snapshot_now(cx);
             cx.notify();
         }
@@ -916,6 +970,11 @@ impl ThreadView {
                 is_terminal,
                 has_diffs,
             );
+            // US-022: tool-call snapshot changed; mark its cache
+            // slot dirty so the next persist re-serialises only it.
+            if let Some(&idx) = self.tool_call_index.get(&id) {
+                self.mark_persist_dirty(idx);
+            }
             // Throttled — `update_tool_call` is the hottest path on a
             // file-heavy turn (every diff chunk is a patch).
             self.schedule_persist();
@@ -1037,6 +1096,15 @@ impl ThreadView {
                 .any(|d| d.old_text.is_some() && d.cleared_diff_lines.is_none());
             if needs_clear {
                 clear_reviewed_diff_bodies(Arc::make_mut(snap));
+                // US-022: snapshot changed; refresh just that slot.
+                self.mark_persist_dirty(idx);
+            } else {
+                // US-022 (correctness): even when no diff bodies
+                // need clearing, the `reviewed_edits` set may have
+                // changed for this id between cache write and now.
+                // Force the slot to rebuild so `reviewed` flips
+                // propagate to disk on the next persist.
+                self.mark_persist_dirty(idx);
             }
         }
     }
@@ -1532,6 +1600,34 @@ impl ThreadView {
             .into_any_element()
     }
 
+    /// Invariant guard for [`Self::tool_call_ordered_indices`] and
+    /// [`Self::tool_call_index`]. Both maps are maintained by hand at
+    /// 4 mutation sites (push_tool_call, truncate_for_edit,
+    /// clear_local_display, post-construction); a future addition to
+    /// items mutation that forgets the maintenance call would silently
+    /// rot [`Self::compute_activity_state`]. The check is debug-only:
+    /// in release it compiles to nothing.
+    #[cfg(debug_assertions)]
+    fn assert_tool_call_indices_consistent(&self) {
+        let expected = expected_tool_call_indices(&self.items);
+        debug_assert_eq!(
+            self.tool_call_ordered_indices, expected,
+            "tool_call_ordered_indices drifted from items: expected {expected:?}, got {:?}",
+            self.tool_call_ordered_indices,
+        );
+        for &idx in &self.tool_call_ordered_indices {
+            if let Some(ThreadItem::ToolCall(snap)) = self.items.get(idx) {
+                debug_assert_eq!(
+                    self.tool_call_index.get(&snap.id),
+                    Some(&idx),
+                    "tool_call_index for id {} should be {idx}, got {:?}",
+                    snap.id,
+                    self.tool_call_index.get(&snap.id),
+                );
+            }
+        }
+    }
+
     fn compute_activity_state(&self, cx: &gpui::App) -> Option<ActivityBarState> {
         let (is_streaming, queued, elapsed, used_tokens) = match self.composer.as_ref() {
             Some(c) => {
@@ -1800,6 +1896,11 @@ impl ThreadView {
         }
         self.flush_streaming(cx);
         self.items.truncate(message_idx);
+        // US-022: keep cache parallel and invalidate (truncate
+        // doesn't tell us which trailing slots changed semantically
+        // -- safer to drop them so a future restore can't serve a
+        // stale entry).
+        self.persist_cache_items.truncate(message_idx);
         self.streaming_message_idx = None;
         let new_len = self.items.len();
         // Drop collapsed-thought state for items past the truncation
@@ -1831,8 +1932,9 @@ impl ThreadView {
         // Keep the ordered-index Vec in sync with the index map.
         // Truncation only chops the tail, so positions of surviving
         // tool calls do not shift.
-        self.tool_call_ordered_indices
-            .retain(|&idx| idx < new_len);
+        self.tool_call_ordered_indices.retain(|&idx| idx < new_len);
+        #[cfg(debug_assertions)]
+        self.assert_tool_call_indices_consistent();
         // Drop user-override entries for tool-group bursts whose
         // start index now sits past the truncation point.
         self.tool_group_user_open
@@ -1907,6 +2009,8 @@ impl ThreadView {
     pub fn clear_local_display(&mut self, cx: &mut Context<Self>) {
         self.flush_streaming(cx);
         self.items.clear();
+        // US-022: drop cache contents too.
+        self.persist_cache_items.clear();
         self.collapsed_thoughts.clear();
         self.tool_label_markdown.clear();
         // Also clear edit-card state so a `/clear`-then-replay path
@@ -1916,6 +2020,8 @@ impl ThreadView {
         self.diff_scroll_handles.clear();
         self.tool_call_index.clear();
         self.tool_call_ordered_indices.clear();
+        #[cfg(debug_assertions)]
+        self.assert_tool_call_indices_consistent();
         self.tool_group_user_open.clear();
         self.streaming_message_idx = None;
         self.list_state.reset(0);
@@ -1934,13 +2040,24 @@ impl ThreadView {
     /// function held the `Arc<Mutex<Connection>>` for the duration of
     /// the WAL write inside hot streaming-tick callers like
     /// `flush_streaming` and `append_message`.
-    pub fn persist_snapshot_now(&self, cx: &gpui::App) {
-        let (Some(store), Some(id)) = (self.store.as_ref(), self.store_id.as_ref()) else {
+    pub fn persist_snapshot_now(&mut self, cx: &gpui::App) {
+        // Clone the store + id up front so the immutable borrow of
+        // `self` ends before the mutable `sync_persist_cache` call.
+        let Some((store, id)) = self
+            .store
+            .as_ref()
+            .zip(self.store_id.as_ref())
+            .map(|(s, i)| (s.clone(), i.clone()))
+        else {
             return;
         };
         let items = self.collect_persisted_items(cx);
-        let store = store.clone();
-        let id = id.clone();
+        // US-022 (cli-hardening-followup-2026-Q3): write the
+        // freshly-collected forms back into the per-item cache so
+        // the NEXT persist tick reuses the still-clean slots.
+        // Without this, the cache would stay all-None forever and
+        // every tick would re-serialise the whole thread.
+        self.sync_persist_cache(&items);
         cx.background_spawn(async move {
             if let Err(err) = store.save_items(&id, &items) {
                 log::warn!("ThreadView: persist_snapshot_now failed: {err}");
@@ -1950,46 +2067,74 @@ impl ThreadView {
     }
 
     fn collect_persisted_items(&self, _cx: &gpui::App) -> Vec<PersistedThreadItem> {
-        self.items
-            .iter()
-            .filter_map(|it| match it {
-                ThreadItem::UserMessage(um) => Some(PersistedThreadItem::Message(um.msg.clone())),
-                ThreadItem::AssistantMessage(am) => {
-                    if am.chunks.is_empty() {
-                        None
-                    } else {
-                        let chunks = am
-                            .chunks
-                            .iter()
-                            .map(|c| match c {
-                                AssistantMessageChunk::Text { text, .. } => {
-                                    PersistedAssistantChunk::Text { text: text.clone() }
-                                }
-                                AssistantMessageChunk::Thought {
-                                    text, signature, ..
-                                } => PersistedAssistantChunk::Thought {
-                                    text: text.clone(),
-                                    signature: signature.clone(),
-                                },
-                            })
-                            .collect();
-                        Some(PersistedThreadItem::Assistant(PersistedAssistant {
-                            chunks,
-                        }))
-                    }
-                }
-                ThreadItem::ToolCall(snap) => {
-                    let mut persisted = snap.to_persisted();
-                    // Carry the view-side review state into the blob
-                    // so the activity-bar footer stays dismissed
-                    // across reloads. `to_persisted` defaults it to
-                    // false because the snapshot itself has no field
-                    // for it -- review state lives on the view.
-                    persisted.reviewed = self.reviewed_edits.contains(&snap.id);
-                    Some(PersistedThreadItem::Tool(persisted))
-                }
-            })
-            .collect()
+        // US-022 (cli-hardening-followup-2026-Q3): delegate to the
+        // pure free helper so the cache-skip behaviour can be unit
+        // tested without constructing a full `ThreadView` (no GPUI
+        // `Context` required). Per-item cache: a `None` slot means
+        // the corresponding item changed since the last persist;
+        // rebuild only those slots. On a 200-item thread with 2
+        // streaming items per persist tick, this drops the
+        // per-tick allocation count from ~200 fresh `String`/`Vec`
+        // clones down to ~2.
+        //
+        // This function still takes `&self` (no `&mut`) so we
+        // cannot write back into `persist_cache_items` from here
+        // -- the caller (`persist_snapshot_now`) calls
+        // `Self::sync_persist_cache` once it has a `&mut self`.
+        build_persisted_from_cache(
+            &self.items,
+            &self.persist_cache_items,
+            &self.reviewed_edits,
+            &self.tool_call_index,
+        )
+    }
+
+    /// US-022 (cli-hardening-followup-2026-Q3): write the
+    /// just-collected persisted forms back into the per-item cache.
+    /// Called from `persist_snapshot_now` once it has a `&mut self`
+    /// handle. Safe to call when lengths drift -- the helper resets
+    /// the cache vector to match `self.items.len()` first.
+    fn sync_persist_cache(&mut self, fresh: &[PersistedThreadItem]) {
+        // The fresh slice is built by `collect_persisted_items`
+        // which skips assistant items whose `chunks` are empty (it
+        // returns `None` for those). So `fresh.len() <= items.len()`.
+        // We need to map fresh entries back to item indices for the
+        // cache. Walk both in lockstep, skipping empty-assistant
+        // items.
+        let mut new_cache: Vec<Option<PersistedThreadItem>> = vec![None; self.items.len()];
+        let mut fresh_iter = fresh.iter();
+        for (idx, item) in self.items.iter().enumerate() {
+            if let ThreadItem::AssistantMessage(am) = item
+                && am.chunks.is_empty()
+            {
+                continue;
+            }
+            if let Some(p) = fresh_iter.next() {
+                new_cache[idx] = Some(p.clone());
+            }
+        }
+        self.persist_cache_items = new_cache;
+    }
+
+    /// US-022 (cli-hardening-followup-2026-Q3): mark the cache slot
+    /// at `idx` as dirty. Called by every in-place mutation site on
+    /// the hot streaming path; the next `collect_persisted_items`
+    /// call rebuilds only that slot.
+    fn mark_persist_dirty(&mut self, idx: usize) {
+        if let Some(slot) = self.persist_cache_items.get_mut(idx) {
+            *slot = None;
+        }
+    }
+
+    /// US-022 (cli-hardening-followup-2026-Q3): blow the entire
+    /// cache. Called by sweeping mutations (truncate_for_edit,
+    /// keep_all_edits, reject_all_edits, sweep_pending_tools_*) so
+    /// stale cached forms can never serve a wrong persisted blob.
+    /// Correctness over allocation savings on rare paths.
+    fn invalidate_persist_cache_all(&mut self) {
+        for slot in self.persist_cache_items.iter_mut() {
+            *slot = None;
+        }
     }
 
     /// US-019 (`/export` slash command): serialise the current
@@ -2276,6 +2421,10 @@ impl ThreadView {
                 });
             }
         }
+        // US-022: this streaming item's text just changed; the next
+        // persist tick must re-serialise only this slot, not all 200
+        // items.
+        self.mark_persist_dirty(idx);
         if self.should_be_following.get() {
             self.list_state.scroll_to_end();
         }
@@ -3154,7 +3303,7 @@ impl Render for ThreadView {
         self._cwd_snapshot = self
             .composer
             .as_ref()
-            .map(|c| c.read(cx).cwd().to_path_buf());
+            .map(|c| std::sync::Arc::from(c.read(cx).cwd()));
         let list_body: AnyElement = if self.items.is_empty() {
             empty_state()
         } else {
@@ -3603,6 +3752,91 @@ fn empty_state() -> AnyElement {
         .into_any_element()
 }
 
+/// US-022 (cli-hardening-followup-2026-Q3): pure-function core of
+/// `ThreadView::collect_persisted_items`. Walks `items` in lockstep
+/// with `cache`; a `Some` slot is reused verbatim (modulo the
+/// per-tool-call `reviewed` flag, which lives on the view -- not
+/// the snapshot -- and can flip without bumping the item itself),
+/// a `None` slot is rebuilt via [`serialize_thread_item`]. Extracted
+/// as a free function so the cache-skip behaviour can be exercised
+/// in a unit test without constructing a full `ThreadView` (no GPUI
+/// `Context` available in plain `#[test]` harness).
+fn build_persisted_from_cache(
+    items: &[ThreadItem],
+    cache: &[Option<PersistedThreadItem>],
+    reviewed_edits: &HashSet<String>,
+    tool_call_index: &HashMap<String, usize>,
+) -> Vec<PersistedThreadItem> {
+    let mut out: Vec<PersistedThreadItem> = Vec::with_capacity(items.len());
+    for (idx, item) in items.iter().enumerate() {
+        if let Some(Some(persisted)) = cache.get(idx) {
+            if let PersistedThreadItem::Tool(t) = persisted {
+                let want_reviewed = tool_call_index
+                    .iter()
+                    .find_map(|(id, &i)| (i == idx).then_some(id.clone()))
+                    .map(|id| reviewed_edits.contains(&id))
+                    .unwrap_or(false);
+                if t.reviewed == want_reviewed {
+                    out.push(persisted.clone());
+                    continue;
+                }
+                // Fall through to rebuild when `reviewed` flips.
+            } else {
+                out.push(persisted.clone());
+                continue;
+            }
+        }
+        if let Some(rebuilt) = serialize_thread_item(item, reviewed_edits) {
+            out.push(rebuilt);
+        }
+    }
+    out
+}
+
+/// US-022 (cli-hardening-followup-2026-Q3): build the persisted
+/// form for a single `ThreadItem`. Extracted from the body of
+/// `ThreadView::collect_persisted_items` so the per-item cache can
+/// call it lazily for the slots flagged dirty. Returns `None` for
+/// an empty `AssistantMessage` (matches the pre-cache filter
+/// semantics; an empty assistant turn never makes it to disk).
+fn serialize_thread_item(
+    item: &ThreadItem,
+    reviewed_edits: &HashSet<String>,
+) -> Option<PersistedThreadItem> {
+    match item {
+        ThreadItem::UserMessage(um) => Some(PersistedThreadItem::Message(um.msg.clone())),
+        ThreadItem::AssistantMessage(am) => {
+            if am.chunks.is_empty() {
+                None
+            } else {
+                let chunks = am
+                    .chunks
+                    .iter()
+                    .map(|c| match c {
+                        AssistantMessageChunk::Text { text, .. } => {
+                            PersistedAssistantChunk::Text { text: text.clone() }
+                        }
+                        AssistantMessageChunk::Thought {
+                            text, signature, ..
+                        } => PersistedAssistantChunk::Thought {
+                            text: text.clone(),
+                            signature: signature.clone(),
+                        },
+                    })
+                    .collect();
+                Some(PersistedThreadItem::Assistant(PersistedAssistant {
+                    chunks,
+                }))
+            }
+        }
+        ThreadItem::ToolCall(snap) => {
+            let mut persisted = snap.to_persisted();
+            persisted.reviewed = reviewed_edits.contains(&snap.id);
+            Some(PersistedThreadItem::Tool(persisted))
+        }
+    }
+}
+
 /// US-004 (cli-hardening-followup-2026-Q3): apply the
 /// terminal-status prune to the two per-tool-call UI maps. Decision
 /// table:
@@ -3803,6 +4037,84 @@ mod tests {
         assert_eq!(adaptive_streaming_tick(100_000), STREAMING_TICK_SLOW);
     }
 
+    fn synthetic_tool_call_snap(id: &str) -> Arc<super::ToolCallSnapshot> {
+        use super::super::runtime::{ToolCallStatusKind, ToolKindKind};
+        Arc::new(super::ToolCallSnapshot {
+            id: id.to_string(),
+            title: format!("Tool {id}"),
+            kind: ToolKindKind::Other,
+            status: ToolCallStatusKind::Completed,
+            raw_input_pretty: None,
+            raw_output_pretty: None,
+            content_text: String::new(),
+            diffs: Vec::new(),
+            expanded: false,
+            permission_options: Vec::new(),
+            permission_picker_open: false,
+            locations: Vec::new(),
+        })
+    }
+
+    /// US-006 (review follow-up): the index-derived state in
+    /// [`super::compute_activity_state`] must always agree with a
+    /// from-scratch scan of [`ThreadView::items`]. This test pins the
+    /// pure-function half of that invariant -- the production debug-
+    /// assert called from each mutation site catches drift at runtime.
+    #[test]
+    fn expected_tool_call_indices_filters_only_tool_call_variants() {
+        use super::{AssistantMessage, ThreadItem, UserMessage, expected_tool_call_indices};
+        use paneflow_threads::message::Message;
+
+        // Mixed sequence: user / tool / assistant / tool / tool / user.
+        // The expected indices are the ToolCall positions: [1, 3, 4].
+        let items = vec![
+            ThreadItem::UserMessage(UserMessage {
+                msg: Message::user_text("hello"),
+                markdown: None,
+            }),
+            ThreadItem::ToolCall(synthetic_tool_call_snap("a")),
+            ThreadItem::AssistantMessage(AssistantMessage { chunks: Vec::new() }),
+            ThreadItem::ToolCall(synthetic_tool_call_snap("b")),
+            ThreadItem::ToolCall(synthetic_tool_call_snap("c")),
+            ThreadItem::UserMessage(UserMessage {
+                msg: Message::user_text("bye"),
+                markdown: None,
+            }),
+        ];
+        assert_eq!(expected_tool_call_indices(&items), vec![1, 3, 4]);
+    }
+
+    /// US-006 (review follow-up): a sequence with no tool calls
+    /// produces an empty index vector -- the activity bar correctly
+    /// short-circuits to None in that case.
+    #[test]
+    fn expected_tool_call_indices_empty_when_no_tool_calls() {
+        use super::{AssistantMessage, ThreadItem, UserMessage, expected_tool_call_indices};
+        use paneflow_threads::message::Message;
+        let items = vec![
+            ThreadItem::UserMessage(UserMessage {
+                msg: Message::user_text("hi"),
+                markdown: None,
+            }),
+            ThreadItem::AssistantMessage(AssistantMessage { chunks: Vec::new() }),
+        ];
+        assert!(expected_tool_call_indices(&items).is_empty());
+    }
+
+    /// US-006 (review follow-up): a sequence that's *all* tool calls
+    /// yields a dense range -- truncate_for_edit and clear_local_display
+    /// land here when the head of a thread is a tool-only burst.
+    #[test]
+    fn expected_tool_call_indices_dense_sequence() {
+        use super::{ThreadItem, expected_tool_call_indices};
+        let items = vec![
+            ThreadItem::ToolCall(synthetic_tool_call_snap("a")),
+            ThreadItem::ToolCall(synthetic_tool_call_snap("b")),
+            ThreadItem::ToolCall(synthetic_tool_call_snap("c")),
+        ];
+        assert_eq!(expected_tool_call_indices(&items), vec![0, 1, 2]);
+    }
+
     /// US-004 (cli-hardening-followup-2026-Q3): a non-edit
     /// tool call that transitions to Completed must release BOTH
     /// the label markdown entity and the scroll handle -- there is
@@ -3911,5 +4223,67 @@ mod tests {
         }
         // Idempotence: a second pass mutates nothing.
         assert_eq!(clear_reviewed_diff_bodies(&mut snap), 0);
+    }
+
+    /// US-022 (cli-hardening-followup-2026-Q3): the per-item cache
+    /// must skip re-serialising slots flagged clean. Primes the
+    /// cache with a sentinel persisted form whose text does NOT
+    /// appear in the corresponding live item; the assertion is that
+    /// the sentinel survives untouched (cache hit) while the dirty
+    /// slot rebuilds from the live item (cache miss).
+    #[test]
+    fn collect_persisted_items_skips_clean_items() {
+        use super::build_persisted_from_cache;
+        use paneflow_threads::message::Message;
+        use paneflow_threads::{ContentBlock, PersistedThreadItem};
+
+        let items = vec![
+            ThreadItem::UserMessage(UserMessage {
+                msg: Message::user_text("live-dirty-text"),
+                markdown: None,
+            }),
+            ThreadItem::UserMessage(UserMessage {
+                msg: Message::user_text("live-clean-text"),
+                markdown: None,
+            }),
+        ];
+        // Sentinel cached form for idx 1 — distinct text proves a
+        // cache hit (returned verbatim) vs a cache miss (would
+        // re-serialise from `live-clean-text`).
+        let cache = vec![
+            None,
+            Some(PersistedThreadItem::Message(Message::user_text(
+                "SENTINEL-FROM-CACHE",
+            ))),
+        ];
+
+        let out = build_persisted_from_cache(&items, &cache, &HashSet::new(), &HashMap::new());
+
+        assert_eq!(out.len(), 2, "expected one persisted entry per item");
+
+        // Dirty slot: serialize_thread_item ran -> live text wins.
+        let extract = |item: &PersistedThreadItem| -> String {
+            match item {
+                PersistedThreadItem::Message(m) => m
+                    .content
+                    .iter()
+                    .find_map(|b| match b {
+                        ContentBlock::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
+                _ => String::new(),
+            }
+        };
+        assert_eq!(
+            extract(&out[0]),
+            "live-dirty-text",
+            "dirty slot must be rebuilt from the live item"
+        );
+        assert_eq!(
+            extract(&out[1]),
+            "SENTINEL-FROM-CACHE",
+            "clean slot must return the cached sentinel verbatim (no re-serialisation)",
+        );
     }
 }

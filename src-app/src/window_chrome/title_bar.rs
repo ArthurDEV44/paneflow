@@ -12,6 +12,7 @@ pub struct TitleBar {
     should_move: bool,
     pub workspace_name: Option<String>,
     pub sidebar_width: Pixels,
+    pub ipc_state: crate::ipc::IpcState,
     /// Set by PaneFlowApp when a newer version is detected.
     pub update_available: Option<UpdateInfo>,
 }
@@ -77,6 +78,7 @@ impl TitleBar {
             should_move: false,
             workspace_name: None,
             sidebar_width: px(220.),
+            ipc_state: crate::ipc::IpcState::Online,
             update_available: None,
         }
     }
@@ -398,6 +400,33 @@ impl Render for TitleBar {
             }
             pill
         });
+        let ipc_pill = (self.ipc_state == crate::ipc::IpcState::Disabled).then(|| {
+            div()
+                .id("ipc-offline-pill")
+                .mr_2()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_center()
+                .gap(px(5.))
+                .px(px(8.))
+                .h(px(24.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(ui.border)
+                .bg(ui.subtle)
+                .text_color(ui.text)
+                .text_size(px(11.))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .child(
+                    svg()
+                        .size(px(11.))
+                        .flex_none()
+                        .path("icons/triangle-alert.svg")
+                        .text_color(ui.muted),
+                )
+                .child("IPC offline")
+        });
 
         let csd_rounding = px(10.);
 
@@ -466,6 +495,7 @@ impl Render for TitleBar {
             .children(left_controls)
             .child(brand)
             .child(content)
+            .children(ipc_pill)
             .children(update_pill)
             .children(right_controls)
             .child(

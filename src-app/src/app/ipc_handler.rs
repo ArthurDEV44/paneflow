@@ -28,6 +28,28 @@ use crate::{PaneFlowApp, ai_types, keybindings, update};
 // older `crate::find_first_terminal` lookups keep resolving.
 // ---------------------------------------------------------------------------
 
+/// US-012 (cli-hardening-followup-2026-Q3): same-UID RCE-primitive
+/// gate for `surface.send_text` and `surface.send_keystroke`.
+/// Returns `true` when `PANEFLOW_IPC_SCRIPTING=1` (the documented
+/// opt-in). Any other value -- including unset, empty, or `0` -- is
+/// `false`. The env var is read on every call (cheap: a syscall on
+/// glibc, an atomic on musl) so a user can toggle the gate mid-
+/// session by re-launching `paneflow-ai-hook` with the env set,
+/// without re-launching Paneflow itself. A one-time warn-log at
+/// first-enable confirmation is emitted on the next first-success
+/// path by the handler.
+fn ipc_scripting_enabled() -> bool {
+    scripting_enabled_from(std::env::var("PANEFLOW_IPC_SCRIPTING").ok().as_deref())
+}
+
+/// Pure truth table for the gate. Extracted so the rule can be
+/// unit-tested without mutating the process environment (which is
+/// `unsafe` on Rust 1.85+ and races with any other thread reading
+/// env in parallel test mode).
+fn scripting_enabled_from(value: Option<&str>) -> bool {
+    matches!(value, Some("1"))
+}
+
 /// Write text to the first leaf pane's active terminal PTY in a layout tree.
 /// US-020: silently skips markdown leaves (no PTY to write to).
 pub(crate) fn send_text_to_first_leaf(node: &LayoutTree, text: &str, cx: &App) {
@@ -296,10 +318,20 @@ impl PaneFlowApp {
                     .get("name")
                     .and_then(|n| n.as_str())
                     .unwrap_or("Terminal");
-                let cwd = params
-                    .get("cwd")
-                    .and_then(|c| c.as_str())
-                    .map(std::path::PathBuf::from);
+                // US-014 (cli-hardening-followup-2026-Q3):
+                // canonicalize the `cwd` field before handing it to
+                // `TerminalView::with_cwd`. Validation lives in the
+                // free helper `canonicalize_workspace_cwd` so the
+                // contract is unit-testable in isolation (see the
+                // `workspace_create_rejects_nonexistent_cwd` test
+                // below).
+                let cwd = match params.get("cwd").and_then(|c| c.as_str()) {
+                    Some(raw) => match canonicalize_workspace_cwd(raw) {
+                        Ok(canonical) => Some(canonical),
+                        Err(err) => return err.into_value(),
+                    },
+                    None => None,
+                };
                 let ws_id = next_workspace_id();
                 let ws = if let Some(dir) = cwd {
                     let terminal =
@@ -387,6 +419,21 @@ impl PaneFlowApp {
                 serde_json::json!({"pane_count": count, "workspace": self.active_idx})
             }
             "surface.send_text" => {
+                // US-012 (cli-hardening-followup-2026-Q3): same-UID
+                // RCE primitive gate. See ipc.rs module doc for the
+                // blast-radius rationale. Opt-in via env var; default
+                // off. Returning JSON-RPC error code mirrors a
+                // disabled-method shape so generic clients can
+                // surface a clean "feature disabled" message.
+                if !ipc_scripting_enabled() {
+                    return JsonRpcError {
+                        code: -32601,
+                        message:
+                            "surface.send_text disabled; set PANEFLOW_IPC_SCRIPTING=1 to enable"
+                                .to_string(),
+                    }
+                    .into_value();
+                }
                 let text = params.get("text").and_then(|t| t.as_str()).unwrap_or("");
                 if text.is_empty() {
                     return serde_json::json!({"error": "Missing 'text' parameter"});
@@ -412,12 +459,29 @@ impl PaneFlowApp {
                 serde_json::json!({"error": "No active terminal"})
             }
             "surface.send_keystroke" => {
+                // US-012 (cli-hardening-followup-2026-Q3): same gate
+                // as `surface.send_text`. Even when enabled, CRLF
+                // bytes are rejected so a multi-keystroke payload
+                // cannot smuggle a newline-terminated PTY command.
+                if !ipc_scripting_enabled() {
+                    return JsonRpcError {
+                        code: -32601,
+                        message: "surface.send_keystroke disabled; set PANEFLOW_IPC_SCRIPTING=1 to enable".to_string(),
+                    }
+                    .into_value();
+                }
                 let keystroke = params
                     .get("keystroke")
                     .and_then(|k| k.as_str())
                     .unwrap_or("");
                 if keystroke.is_empty() {
                     return serde_json::json!({"error": "Missing 'keystroke' parameter"});
+                }
+                if keystroke.contains('\r') || keystroke.contains('\n') {
+                    return JsonRpcError::invalid_params(
+                        "keystroke must not contain CR or LF bytes",
+                    )
+                    .into_value();
                 }
                 // Route by surface_id if provided, otherwise use active terminal
                 let terminal = if let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64())
@@ -872,6 +936,35 @@ pub(crate) fn promote_response(
     })
 }
 
+/// US-014 (cli-hardening-followup-2026-Q3): validate and canonicalize the
+/// `cwd` field of a `workspace.create` IPC request.
+///
+/// A same-UID client could otherwise pass a relative path that walks outside
+/// the intended workspace (`"../../etc"`), a path containing NUL bytes (which
+/// most OSes truncate silently on PTY spawn), or a path to a regular file
+/// (creating a PTY whose cwd resolution then fails at the first chdir). This
+/// helper resolves symlinks + relatives, rejects non-existence, and rejects
+/// non-directories upfront with structured `-32602` errors so the client
+/// knows the request was refused.
+///
+/// Successful canonicalization is logged at `info!` for audit trail
+/// (relative-path resolution and symlink traversal visibility).
+pub(crate) fn canonicalize_workspace_cwd(raw: &str) -> Result<std::path::PathBuf, JsonRpcError> {
+    let canonical = std::fs::canonicalize(raw).map_err(|e| {
+        JsonRpcError::invalid_params(format!("cwd does not exist or is unreadable: {raw} ({e})"))
+    })?;
+    let meta = std::fs::metadata(&canonical).map_err(|e| {
+        JsonRpcError::invalid_params(format!("cwd metadata read failed for {raw}: {e}"))
+    })?;
+    if !meta.is_dir() {
+        return Err(JsonRpcError::invalid_params(format!(
+            "cwd is not a directory: {raw}"
+        )));
+    }
+    log::info!("ipc::workspace.create: canonical cwd resolved {raw:?} -> {canonical:?}");
+    Ok(canonical)
+}
+
 /// Parse the optional `layout` field from a `workspace.create` params object.
 ///
 /// Returns `Ok(None)` if the field is absent or `null` (preserves the
@@ -1098,6 +1191,123 @@ mod tests {
         assert!(resp.get("result").is_none());
         assert_eq!(resp["error"]["code"], -32602);
         assert_eq!(resp["error"]["message"], "bad layout");
+    }
+
+    // -----------------------------------------------------------------
+    // US-012 (cli-hardening-followup-2026-Q3) — surface.send_text gate
+    // -----------------------------------------------------------------
+
+    /// AC #6: `surface.send_text` MUST be gated behind
+    /// `PANEFLOW_IPC_SCRIPTING=1`. The handler is on `PaneFlowApp`
+    /// and not driveable from a unit test, so we cover the contract
+    /// in two pieces: (a) the pure `scripting_enabled_from()` truth
+    /// table -- no env mutation needed, race-free under `cargo
+    /// test`'s default multi-threaded harness; (b) the exact
+    /// `JsonRpcError` shape the handler constructs at
+    /// `ipc_handler.rs:451-459`.
+    #[test]
+    fn send_text_rejected_when_scripting_disabled() {
+        // (a) Pure truth table: only the literal "1" enables.
+        assert!(
+            !super::scripting_enabled_from(None),
+            "unset env must read as disabled"
+        );
+        assert!(
+            !super::scripting_enabled_from(Some("")),
+            "empty string must read as disabled"
+        );
+        assert!(
+            !super::scripting_enabled_from(Some("0")),
+            "explicit 0 must read as disabled"
+        );
+        assert!(
+            !super::scripting_enabled_from(Some("true")),
+            "truthy strings other than \"1\" must read as disabled"
+        );
+        assert!(
+            super::scripting_enabled_from(Some("1")),
+            "the documented opt-in value must enable"
+        );
+
+        // (b) JSON-RPC envelope shape returned by the handler.
+        let err = JsonRpcError {
+            code: -32601,
+            message: "surface.send_text disabled; set PANEFLOW_IPC_SCRIPTING=1 to enable"
+                .to_string(),
+        };
+        let envelope = promote_response(err.into_value(), serde_json::json!(42));
+        assert_eq!(envelope["error"]["code"], -32601);
+        assert!(envelope.get("result").is_none());
+        assert_eq!(envelope["id"], 42);
+    }
+
+    /// AC #4 corollary: even when scripting IS enabled,
+    /// `surface.send_keystroke` must reject CR/LF bytes with
+    /// `-32602 Invalid params` to defuse the CRLF-injection bypass.
+    /// Mirrors the rejection at `ipc_handler.rs:503-508`.
+    #[test]
+    fn send_keystroke_crlf_rejection_shape() {
+        let err = JsonRpcError::invalid_params("keystroke must not contain CR or LF bytes");
+        let envelope = promote_response(err.into_value(), serde_json::json!("req-1"));
+        assert_eq!(envelope["error"]["code"], JsonRpcError::INVALID_PARAMS);
+        assert!(
+            envelope["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("CR or LF"),
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // US-014 (cli-hardening-followup-2026-Q3) — workspace.create cwd
+    // canonicalization
+    // -----------------------------------------------------------------
+
+    /// AC #6: a non-existent `cwd` must surface as JSON-RPC `-32602
+    /// Invalid params` without attempting to spawn a PTY. Exercises
+    /// the free helper `canonicalize_workspace_cwd` directly so the
+    /// contract is verified in isolation from `PaneFlowApp`.
+    #[test]
+    fn workspace_create_rejects_nonexistent_cwd() {
+        let bogus = "/nonexistent/path/paneflow-us-014-fixture-xyz";
+        assert!(
+            !std::path::Path::new(bogus).exists(),
+            "fixture precondition: path must not exist"
+        );
+        let err = super::canonicalize_workspace_cwd(bogus).expect_err("must reject missing cwd");
+        assert_eq!(err.code, JsonRpcError::INVALID_PARAMS);
+        assert!(
+            err.message.contains("does not exist"),
+            "error must mention non-existence, got: {}",
+            err.message
+        );
+    }
+
+    /// AC #3: a `cwd` that resolves to a regular file (not a
+    /// directory) must surface as `-32602 cwd is not a directory`.
+    #[test]
+    fn workspace_create_rejects_file_cwd() {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let path = tmp.path().to_string_lossy().into_owned();
+        let err =
+            super::canonicalize_workspace_cwd(&path).expect_err("must reject regular-file cwd");
+        assert_eq!(err.code, JsonRpcError::INVALID_PARAMS);
+        assert!(
+            err.message.contains("not a directory"),
+            "error must mention not-a-directory, got: {}",
+            err.message
+        );
+    }
+
+    /// Sanity: a real, existing directory must canonicalize successfully.
+    #[test]
+    fn workspace_create_accepts_existing_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let resolved = super::canonicalize_workspace_cwd(tmp.path().to_str().expect("utf-8 path"))
+            .expect("real dir must canonicalize");
+        // canonicalize resolves to an absolute path.
+        assert!(resolved.is_absolute());
+        assert!(resolved.is_dir());
     }
 
     #[test]

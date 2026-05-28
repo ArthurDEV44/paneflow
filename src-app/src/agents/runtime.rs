@@ -44,9 +44,21 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender, channel};
+// US-020 (cli-hardening-followup-2026-Q3): the runtime command
+// channel is now `tokio::sync::mpsc::unbounded_channel`. The
+// previous `std::sync::mpsc::Receiver` was wrapped in
+// `Arc<Mutex<...>>` and pulled via `tokio::task::spawn_blocking`
+// on every loop iteration -- one OS thread spawn + mutex lock +
+// join per command. tokio's unbounded receiver is async-native
+// (`.recv().await`) and the sender is interior-mutable
+// (`&self`), matching the existing GPUI-thread `cmd_tx.send(...)`
+// call sites unchanged.
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use tokio::sync::mpsc::{
+    UnboundedReceiver as CommandReceiver, UnboundedSender as CommandSender,
+    unbounded_channel as command_channel,
+};
 
 // US-003 (cli-hardening-followup-2026-Q3): the runtime->GPUI event
 // channel is now bounded at `RUNTIME_EVENT_CAPACITY`. The previous
@@ -343,16 +355,15 @@ pub struct DiffSnapshot {
     pub old_text: Option<String>,
     /// New content after modification.
     pub new_text: String,
-    /// US-001 (cli-hardening-followup-2026-Q3): set by
-    /// [`thread_view::clear_reviewed_diff_bodies`] once the user has
-    /// reviewed the edit (Keep / Reject / Keep All / Reject All).
-    /// Carries the diff-line count computed before `old_text` was
-    /// freed so the renderer can show a static
-    /// `[diff body cleared after review, N lines]` placeholder
-    /// instead of a `[]` vs `new_text` diff (which would mark every
-    /// line added and re-allocate the full new file content). Not
-    /// persisted to disk -- a reloaded snapshot starts as `None`
-    /// and re-arms the placeholder behaviour on the next review.
+    /// US-001 (cli-hardening-followup): set by
+    /// `ThreadView::purge_reviewed_tool_ui_state` after a Keep/Reject
+    /// review to record the original diff-line count before
+    /// `old_text` is freed. `None` = diff body is intact (live or
+    /// freshly loaded from disk). `Some(n)` = `old_text` has been
+    /// cleared post-review; the renderer shows a placeholder citing
+    /// `n` lines instead of computing a `[]` vs `new_text` diff.
+    /// Runtime-only; never persisted (review state on disk is the
+    /// `reviewed` flag on `PersistedToolCall`).
     pub cleared_diff_lines: Option<u32>,
 }
 
@@ -898,7 +909,7 @@ enum Command {
 /// switching agent mid-thread creates a NEW session by dropping the
 /// old runtime and constructing a new one).
 pub struct SessionRuntime {
-    cmd_tx: Sender<Command>,
+    cmd_tx: CommandSender<Command>,
     /// Push-based event stream from the tokio side. `take_event_receiver`
     /// hands it to the Composer's `cx.spawn` task exactly once; from
     /// then on the Composer awaits chunks directly without polling.
@@ -967,10 +978,8 @@ impl PermissionBroker {
     /// `Command::ResolvePermission`. Unknown ids are silently
     /// ignored (idempotent on double-click).
     fn resolve(&self, tool_call_id: &str, decision: PermissionDecision) {
-        let mut map = match self.pending.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
+        let mut map =
+            super::agent_terminal::lock_with_poison_log(&self.pending, "permission_broker_pending");
         if let Some(tx) = map.remove(tool_call_id) {
             let _ = tx.send(decision);
         }
@@ -980,10 +989,8 @@ impl PermissionBroker {
     /// from the runtime's shutdown path so the agent does not hang
     /// waiting for a response when the user closes the thread.
     fn drain_as_deny(&self) {
-        let mut map = match self.pending.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
+        let mut map =
+            super::agent_terminal::lock_with_poison_log(&self.pending, "permission_broker_pending");
         for (_, tx) in map.drain() {
             let _ = tx.send(PermissionDecision::Reject);
         }
@@ -1060,10 +1067,10 @@ impl PermissionCallback for BrokerCallback {
         Box::pin(async move {
             let (tx, rx) = tokio::sync::oneshot::channel();
             {
-                let mut map = match broker.pending.lock() {
-                    Ok(g) => g,
-                    Err(p) => p.into_inner(),
-                };
+                let mut map = super::agent_terminal::lock_with_poison_log(
+                    &broker.pending,
+                    "permission_broker_pending",
+                );
                 map.insert(tool_call_id.clone(), tx);
             }
             let _ = broker
@@ -1086,7 +1093,7 @@ impl SessionRuntime {
     /// to know when `session/new` has resolved and the model/mode
     /// pickers can hydrate.
     pub fn spawn(opts: SpawnOptions) -> Self {
-        let (cmd_tx, cmd_rx) = channel::<Command>();
+        let (cmd_tx, cmd_rx) = command_channel::<Command>();
         let (event_tx, event_rx) =
             tokio::sync::mpsc::channel::<RuntimeEvent>(RUNTIME_EVENT_CAPACITY);
 
@@ -1174,6 +1181,19 @@ impl SessionRuntime {
         self.event_rx.take()
     }
 
+    /// US-007 (cli-hardening-followup-2026-Q3): hand the OS-thread
+    /// `JoinHandle` to the event-pump task so it can `.join()` the
+    /// thread asynchronously after the event channel closes and
+    /// surface any panic payload as a synthetic `RuntimeEvent::Fatal`
+    /// on the Composer. The previous `Drop`-time `let _ = self.join.take()`
+    /// detached the thread silently, masking panics that left the
+    /// US-019 streaming spinner stuck indefinitely. Returns `None` if
+    /// the thread spawn at construction failed (the `Fatal` was
+    /// already emitted at that point).
+    pub fn take_join_handle(&mut self) -> Option<std::thread::JoinHandle<()>> {
+        self.join.take()
+    }
+
     /// Send a `session/prompt` with a plain text body. Convenience
     /// wrapper around [`Self::send_prompt_blocks`] for the common
     /// "user just typed text" path.
@@ -1207,15 +1227,32 @@ impl SessionRuntime {
     }
 
     /// Send `session/set_mode`. AC #6.
+    ///
+    /// Mirrors the SendPrompt logging: SetMode is a user-driven state
+    /// change (mode-picker click) that, if dropped on a closed
+    /// channel, would leave the UI showing the old mode forever. A
+    /// warn-level log surfaces the dropped notification in any bug
+    /// report (US-019 review follow-up; Cancel/Shutdown stay silent
+    /// because they're fire-and-forget lifecycle signals).
     pub fn set_mode(&self, mode_id: SessionModeId) {
-        let _ = self.cmd_tx.send(Command::SetMode(mode_id));
+        if let Err(err) = self.cmd_tx.send(Command::SetMode(mode_id)) {
+            log::warn!(
+                target: "paneflow_app::agents::runtime",
+                "cmd_tx.send(SetMode) failed (runtime shut down?): {err} -- UI may stay on previous mode",
+            );
+        }
     }
 
     /// Send `session/set_model`. Mirrors [`Self::set_mode`] for the
-    /// model picker — fire-and-forget; the next `RuntimeEvent::Models`
-    /// or `SessionReady` tick will reflect the new current model.
+    /// model picker — same warn-on-drop rationale: a silently dropped
+    /// set_model leaves the UI showing the old model.
     pub fn set_model(&self, model_id: ModelId) {
-        let _ = self.cmd_tx.send(Command::SetModel(model_id));
+        if let Err(err) = self.cmd_tx.send(Command::SetModel(model_id)) {
+            log::warn!(
+                target: "paneflow_app::agents::runtime",
+                "cmd_tx.send(SetModel) failed (runtime shut down?): {err} -- UI may stay on previous model",
+            );
+        }
     }
 
     /// US-018: resolve a pending permission request fired by an
@@ -1243,10 +1280,14 @@ impl Drop for SessionRuntime {
         // Signal the loop to break, then drop the sender so any
         // subsequent recv() on the runtime side returns
         // `Disconnected` (covers the case where the loop was
-        // blocked on a different command path). We do NOT join the
-        // thread here: a stuck agent process could block Drop
-        // indefinitely on the GPUI main thread, and the OS reaps
-        // the child once Paneflow exits.
+        // blocked on a different command path). We do NOT block on
+        // join here: the JoinHandle was extracted by
+        // `take_join_handle()` and lives on the event-pump task
+        // (US-007 cli-hardening-followup-2026-Q3); the task awaits
+        // the join with a 5 s deadline and emits a Fatal banner on
+        // panic. If the handle was never extracted (Composer dropped
+        // before consuming the runtime), we fall back to detach --
+        // same outcome as the pre-US-007 path.
         let _ = self.cmd_tx.send(Command::Shutdown);
         let _ = self.join.take();
     }
@@ -1348,7 +1389,7 @@ fn run_blocking(
     permission_callback: Arc<dyn PermissionCallback>,
     terminal_spawner_override: Option<Arc<dyn TerminalSpawner>>,
     broker: Arc<PermissionBroker>,
-    cmd_rx: Receiver<Command>,
+    cmd_rx: CommandReceiver<Command>,
     event_tx: UnboundedSender<RuntimeEvent>,
     resume_session_id: Option<SessionId>,
 ) {
@@ -1404,10 +1445,12 @@ fn run_blocking(
         let cwd_for_registry = cwd.clone();
 
         let event_tx_for_main = event_tx.clone();
-        // Arc so we can move clones into spawn_blocking each loop
-        // iteration; the actual receiver still lives behind a Mutex
-        // because std::mpsc::Receiver is Send but not Sync.
-        let cmd_rx = std::sync::Arc::new(std::sync::Mutex::new(cmd_rx));
+        // US-020 (cli-hardening-followup-2026-Q3): the receiver is
+        // now `tokio::sync::mpsc::UnboundedReceiver<Command>` --
+        // async-native, owned by this task directly. The previous
+        // `Arc<Mutex<std::sync::mpsc::Receiver>>` + spawn_blocking
+        // dance is gone.
+        let mut cmd_rx = cmd_rx;
 
         let connect_result =
             connect_with_handlers(agent, config, async move |cx: ConnectionTo<Agent>| {
@@ -1479,63 +1522,26 @@ fn run_blocking(
                     current_model_id: session.current_model_id.clone(),
                 });
 
-                // Drive commands from the GPUI side. recv() is sync;
-                // we shift it onto a tokio blocking thread so the
-                // current-thread runtime can keep servicing the JSON-RPC
-                // reactor between commands.
+                // US-020 (cli-hardening-followup-2026-Q3): drive
+                // commands from the GPUI side via the async tokio
+                // receiver. `recv().await` yields cooperatively so
+                // the current-thread runtime keeps servicing the
+                // JSON-RPC reactor AND any in-flight prompt task
+                // between commands. The previous spawn_blocking +
+                // mutex + join overhead (~100 us per command) is
+                // gone. A `None` return means the GPUI side dropped
+                // the sender (clean shutdown via Drop); the runtime
+                // loop exits gracefully. The pre-fix Mutex-poison
+                // and tokio-spawn-blocking-join failure branches are
+                // both unreachable now -- there is no Mutex and no
+                // spawn_blocking on this path.
                 loop {
-                    // `rx.recv()` is a SYNCHRONOUS / thread-blocking
-                    // call -- if we ran it inline on this async task,
-                    // it would block the entire current-thread tokio
-                    // runtime (no other tasks could poll, including
-                    // the JSON-RPC reactor AND the spawned in-flight
-                    // prompt below). `spawn_blocking` parks the recv
-                    // on tokio's dedicated blocking thread pool so the
-                    // runtime keeps making progress while we wait for
-                    // the next command. The await yields back to the
-                    // runtime; the JSON-RPC reactor and any spawned
-                    // prompt task get polled in the meantime.
-                    let cmd_rx_handle = cmd_rx.clone();
-                    // US-019 (audit P2-7): distinguish PoisonError vs
-                    // RecvError so a stuck UI (spinner that never
-                    // stops) has a corresponding log trail. A poison
-                    // means a previous blocking-thread panic left the
-                    // Mutex in a corrupted state; RecvError is the
-                    // clean shutdown (sender dropped).
-                    enum RecvOutcome {
-                        Cmd(Command),
-                        Poisoned,
-                        SenderClosed,
-                    }
-                    let cmd_result = tokio::task::spawn_blocking(move || match cmd_rx_handle.lock()
-                    {
-                        Ok(rx) => match rx.recv() {
-                            Ok(c) => RecvOutcome::Cmd(c),
-                            Err(_) => RecvOutcome::SenderClosed,
-                        },
-                        Err(_) => RecvOutcome::Poisoned,
-                    })
-                    .await;
-                    let cmd = match cmd_result {
-                        Ok(RecvOutcome::Cmd(c)) => c,
-                        Ok(RecvOutcome::SenderClosed) => {
+                    let cmd = match cmd_rx.recv().await {
+                        Some(c) => c,
+                        None => {
                             log::info!(
                                 target: "paneflow_app::agents::runtime",
                                 "ACP cmd_rx sender closed -- runtime loop exiting cleanly"
-                            );
-                            return Ok(());
-                        }
-                        Ok(RecvOutcome::Poisoned) => {
-                            log::error!(
-                                target: "paneflow_app::agents::runtime",
-                                "ACP cmd_rx mutex poisoned (prior blocking-thread panic); runtime loop exiting -- the UI may show a stuck spinner until the user restarts the thread"
-                            );
-                            return Ok(());
-                        }
-                        Err(join_err) => {
-                            log::error!(
-                                target: "paneflow_app::agents::runtime",
-                                "ACP cmd_rx spawn_blocking join failed: {join_err}; runtime loop exiting"
                             );
                             return Ok(());
                         }

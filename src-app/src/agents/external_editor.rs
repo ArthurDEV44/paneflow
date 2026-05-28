@@ -130,15 +130,21 @@ pub fn open(href: &str, cwd: Option<&Path>) -> bool {
 /// `cwd` is supplied -- we cannot prove the link is safe without an
 /// anchor, so the guard fails closed.
 ///
-/// `canonicalize` is preferred (it resolves symlinks and collapses
-/// `..` segments) so a symlinked escape under the workspace cannot
-/// slip through a string-prefix check. When the target does not yet
-/// exist (rare but possible -- an agent may link to a file it has
-/// just claimed to create), the lexical absolute path is used so the
-/// `starts_with` comparison still has meaning. Windows uses the same
-/// path; `canonicalize` returns the verbatim-prefixed `\\?\C:\...`
-/// form which preserves drive-letter casing for both sides of the
-/// comparison.
+/// When the target exists, `canonicalize` resolves symlinks and
+/// collapses `..` segments so a symlinked escape under the workspace
+/// cannot slip through a string-prefix check.
+///
+/// When the target does not yet exist (rare but possible -- an agent
+/// may link to a file it has just claimed to create), we walk
+/// up the target's lexical ancestors until we find one that DOES exist
+/// and canonicalise THAT. A non-existent leaf inside a real,
+/// in-workspace directory is safe; a non-existent leaf inside a
+/// symlinked directory whose canonical path escapes the workspace is
+/// not. This closes the residual symlink-escape that `std::path::
+/// absolute` alone would miss (it is purely lexical and ignores
+/// symlinks). On Windows it also keeps both sides of the comparison
+/// in the same `\\?\`-stripped form so a verbatim-prefix mismatch
+/// cannot over-block legitimate links.
 fn is_inside_workspace(target: &Path, cwd: Option<&Path>) -> bool {
     let Some(cwd) = cwd else {
         return false;
@@ -151,14 +157,36 @@ fn is_inside_workspace(target: &Path, cwd: Option<&Path>) -> bool {
     let Ok(cwd_canon) = cwd.canonicalize() else {
         return false;
     };
-    let target_resolved = match abs_target.canonicalize() {
-        Ok(p) => p,
-        Err(_) => match std::path::absolute(&abs_target) {
-            Ok(p) => p,
-            Err(_) => return false,
-        },
-    };
-    target_resolved.starts_with(&cwd_canon)
+    let cwd_canon = strip_verbatim_prefix(cwd_canon);
+
+    // Walk up `abs_target`'s ancestors until we find one that exists
+    // and can be canonicalised. Compare its real path against the
+    // workspace root. Any symlink along the way is resolved here, so
+    // a `workspace/link/<not-yet-existing>` payload where `link`
+    // points at `~/.ssh` is caught when we canonicalise `link`.
+    for ancestor in abs_target.ancestors() {
+        if let Ok(resolved) = ancestor.canonicalize() {
+            return strip_verbatim_prefix(resolved).starts_with(&cwd_canon);
+        }
+    }
+    false
+}
+
+/// Strip the Windows `\\?\` verbatim prefix so paths returned by
+/// `Path::canonicalize` (always verbatim on Windows) compare cleanly
+/// against paths that come from user input or other callers. On Unix
+/// this is a no-op.
+#[cfg(windows)]
+fn strip_verbatim_prefix(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy();
+    s.strip_prefix(r"\\?\")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(s.as_ref()))
+}
+
+#[cfg(not(windows))]
+fn strip_verbatim_prefix(p: PathBuf) -> PathBuf {
+    p
 }
 
 /// Resolve a (possibly relative) link target into an absolute
@@ -350,5 +378,66 @@ mod tests {
     #[test]
     fn is_inside_workspace_no_cwd() {
         assert!(!is_inside_workspace(Path::new("anything.rs"), None));
+    }
+
+    /// US-011 (review follow-up): a not-yet-existing leaf inside a
+    /// real, in-workspace directory is ALLOWED -- agents legitimately
+    /// link to files they have just claimed to create. The ancestor
+    /// walk finds the workspace dir, canonicalises it, and the
+    /// `starts_with` check passes.
+    #[test]
+    fn is_inside_workspace_allows_nonexistent_leaf() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).expect("mkdir src");
+        // `src/new_file.rs` doesn't exist; `src` does.
+        assert!(is_inside_workspace(
+            Path::new("src/new_file_does_not_yet_exist.rs"),
+            Some(dir.path()),
+        ));
+    }
+
+    /// US-011 (review follow-up): a not-yet-existing leaf reached via
+    /// an in-workspace SYMLINK that escapes outside the workspace is
+    /// REJECTED. Closes the previous fallback-path symlink-escape
+    /// where `std::path::absolute` could not see through the symlink.
+    /// File creation is the impact (editors create the file on open);
+    /// the guard now blocks it.
+    #[cfg(unix)]
+    #[test]
+    fn is_inside_workspace_blocks_symlink_escape_to_nonexistent_leaf() {
+        use std::os::unix::fs::symlink;
+        let parent = tempfile::tempdir().expect("tempdir");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside_secret_dir");
+        std::fs::create_dir_all(&workspace).expect("mkdir workspace");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        // `workspace/escape -> outside_secret_dir`. The leaf
+        // `escape/new_file` does not exist yet; the ancestor walk
+        // resolves `escape` (the symlink) and finds it points outside.
+        symlink(&outside, workspace.join("escape")).expect("symlink");
+        assert!(!is_inside_workspace(
+            Path::new("escape/new_file_does_not_yet_exist"),
+            Some(&workspace),
+        ));
+    }
+
+    /// US-011 (review follow-up): on Windows, `Path::canonicalize`
+    /// returns the verbatim `\\?\` form. The guard normalises both
+    /// sides via `strip_verbatim_prefix` so a `\\?\C:\…` workspace
+    /// root compares cleanly against a `C:\…` path that didn't go
+    /// through canonicalize. On Unix this is the identity function.
+    #[test]
+    fn strip_verbatim_prefix_is_identity_off_windows() {
+        let p = PathBuf::from("/tmp/foo");
+        assert_eq!(strip_verbatim_prefix(p.clone()), p);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn strip_verbatim_prefix_strips_dos_device_prefix() {
+        let with = PathBuf::from(r"\\?\C:\Users\arthur\proj");
+        let without = strip_verbatim_prefix(with);
+        assert_eq!(without, PathBuf::from(r"C:\Users\arthur\proj"));
     }
 }

@@ -24,7 +24,7 @@ impl PaneFlowApp {
         let title_bar = cx.new(title_bar::TitleBar::new);
         cx.subscribe(&title_bar, Self::handle_title_bar_event)
             .detach();
-        let ipc_rx = ipc::start_server();
+        let (ipc_rx, ipc_status) = ipc::start_server();
 
         // US-006 — install the shared cursor-blink phase as a GPUI global
         // before any `TerminalView` is constructed. Each `TerminalView`
@@ -621,6 +621,7 @@ impl PaneFlowApp {
             rename_text: String::new(),
             pending_config,
             ipc_rx,
+            ipc_status,
             title_bar,
             git_watcher,
             git_event_rx,

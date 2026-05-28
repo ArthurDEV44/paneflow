@@ -13,7 +13,7 @@
 //! [`read_sessions_for_cwd`] from inside `smol::unblock`.
 
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -28,6 +28,15 @@ use crate::agent_sessions::{SessionAgent, SessionMeta};
 /// 256 covers >95% of files in the wild without the scan being visible
 /// to the user.
 const TITLE_SCAN_LIMIT: usize = 256;
+
+/// US-010 (cli-hardening-followup-2026-Q3): per-line byte cap for the
+/// session JSONL reader. 64 KiB is comfortably above the largest
+/// well-formed line we observe in the wild (Claude Code's
+/// `ai-title` and first-user-message records sit < 16 KiB even
+/// with embedded slash-command boilerplate) and small enough that
+/// a malicious file cannot exhaust process address space before
+/// the outer `TITLE_SCAN_LIMIT` line-count guard fires.
+const MAX_LINE_BYTES: u64 = 64 * 1024;
 
 /// Cap rendered first-user-message labels at this character count to keep
 /// the popover row from overflowing horizontally.
@@ -135,9 +144,32 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
 
     for _ in 0..TITLE_SCAN_LIMIT {
         buf.clear();
-        let n = reader.read_line(&mut buf).ok()?;
+        // US-010 (cli-hardening-followup-2026-Q3): cap each line read
+        // at MAX_LINE_BYTES. An agent can write to
+        // `~/.claude/projects/<slug>/` (it's the very directory Claude
+        // Code persists sessions to), so a malicious 500 MB
+        // single-line JSONL would otherwise allocate fully on a
+        // background smol::unblock thread before the
+        // TITLE_SCAN_LIMIT count guard fires. Truncation surfaces as
+        // a partial line that fails serde_json::from_str and is
+        // skipped on `continue` below; the file's session entry is
+        // simply omitted, not the entire scan.
+        let n = reader
+            .by_ref()
+            .take(MAX_LINE_BYTES)
+            .read_line(&mut buf)
+            .ok()?;
         if n == 0 {
             break;
+        }
+        if n as u64 == MAX_LINE_BYTES && !buf.ends_with('\n') {
+            log::warn!(
+                target: "paneflow_app::claude_sessions",
+                "session JSONL line truncated at {} bytes for {} -- skipping file",
+                MAX_LINE_BYTES,
+                path.display(),
+            );
+            return None;
         }
         let trimmed = buf.trim_end();
         if !trimmed.starts_with('{') {
@@ -156,8 +188,21 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
             && let Ok(parsed) = serde_json::from_value::<FirstLineEnvelope>(value.clone())
             && !parsed.session_id.is_empty()
             && !parsed.cwd.is_empty()
-            && !parsed.session_id.chars().any(|c| c.is_control())
         {
+            // Reject any field that flows into a PTY command if it carries
+            // control characters. session_id lands in `claude --resume
+            // <id>`; cwd lands in display chrome today but a future `cd
+            // <cwd>` prefix would inherit the gap without any git blame
+            // signal -- guard both at the gate, not at the consumer.
+            if parsed.session_id.chars().any(|c| c.is_control())
+                || parsed.cwd.chars().any(|c| c.is_control())
+            {
+                log::warn!(
+                    "claude_sessions: dropped {} -- envelope carries control chars in session_id or cwd",
+                    path.display(),
+                );
+                continue;
+            }
             envelope = Some(parsed);
         }
 
@@ -377,6 +422,25 @@ mod tests {
         assert!(label.ends_with('…'));
     }
 
+    /// US-010 (cli-hardening-followup-2026-Q3): a JSONL file whose
+    /// first line exceeds [`MAX_LINE_BYTES`] must NOT be loaded
+    /// fully into memory. The truncated line fails the
+    /// `serde_json::from_str` parse and the file is skipped --
+    /// `read_session_meta` returns `None` without OOMing.
+    #[test]
+    fn read_session_meta_truncates_oversize_lines() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("oversize.jsonl");
+        // 1 MB single line, no newline. Well above MAX_LINE_BYTES.
+        let big = "x".repeat(1024 * 1024);
+        std::fs::write(&path, &big).expect("write fixture");
+        // Sanity: input file is 1 MB.
+        let meta = std::fs::metadata(&path).expect("metadata");
+        assert_eq!(meta.len(), 1024 * 1024);
+        // The reader caps at MAX_LINE_BYTES and surfaces None.
+        assert!(read_session_meta(&path).is_none());
+    }
+
     #[test]
     fn read_session_meta_returns_none_when_no_cwd_envelope_in_header() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -428,6 +492,27 @@ mod tests {
         assert_eq!(meta.session_id, "550e8400-e29b-41d4-a716-446655440000");
     }
 
+    #[test]
+    fn cwd_control_char_guard() {
+        // cwd is display-only today (prettify_cwd in sessions_menu) but
+        // the same JSONL field could leak into a future `cd <cwd>`
+        // prefix. Guard at the gate, not at each future consumer.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("malicious-cwd.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"parentUuid":null,"type":"user","message":{"role":"user","content":"hi"},"uuid":"u","timestamp":"2026-04-26T13:38:41.095Z","cwd":"/tmp/proj\r\nrm -rf ~","sessionId":"550e8400-e29b-41d4-a716-446655440000","version":"2.1.119","gitBranch":"main"}"#,
+                "\n",
+            ),
+        )
+        .expect("write fixture");
+        assert!(
+            read_session_meta(&path).is_none(),
+            "session with control chars in cwd must be dropped"
+        );
+    }
+
     /// US-017 (audit P2-5): a second read_session_meta call against
     /// the same path returns the same content, and the
     /// cache::lookup/store cycle round-trips a fixture vector. This
@@ -464,11 +549,15 @@ mod tests {
         assert_eq!(hit.len(), 1);
         assert_eq!(hit[0].session_id, "abc");
 
-        // Touch the directory to bump its mtime; sleep just enough to
-        // cross a filesystem mtime granularity boundary (some filesystems
-        // only track seconds). 1100 ms is empirically safe across
-        // ext4/apfs/ntfs.
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+        // Touch the directory to bump its mtime; sleep long enough to
+        // cross every mtime-granularity floor we care about: ext4/
+        // APFS/NTFS report sub-millisecond mtimes, but FAT32/exFAT
+        // round to 2 s and NFS without `actimeo` typically rounds to
+        // 1 s. 2500 ms is the safe floor across the matrix (FAT32
+        // 2 s + a healthy guard band) -- a faster sleep would silently
+        // flake on Windows CI runners that fall back to FAT32-style
+        // semantics or on NFS-mounted CI volumes.
+        std::thread::sleep(std::time::Duration::from_millis(2500));
         std::fs::write(project_dir.join("touch.tmp"), b"x").expect("touch");
 
         assert!(

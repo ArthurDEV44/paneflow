@@ -36,14 +36,47 @@ pub enum SessionAgent {
 pub mod cache {
     use std::collections::HashMap;
     use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Mutex, OnceLock};
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
 
     use super::{SessionAgent, SessionMeta};
+
+    /// US-025 (cli-hardening-followup-2026-Q3): LRU capacity cap.
+    /// The session-cache HashMap was process-global with no upper
+    /// bound; switching across 20+ project directories (a common
+    /// workflow for someone juggling client repos) used to grow
+    /// the map monotonically. 10 entries is sized for the typical
+    /// "active set" of recently-opened projects -- past that the
+    /// least-recently-accessed entry is evicted on the next store.
+    pub const MAX_CACHE_ENTRIES: usize = 10;
+
+    /// US-025: monotonically-increasing access stamp. Bumped on
+    /// every `lookup` hit and every `store_result` write so the
+    /// smallest stamp identifies the LRU entry to evict.
+    fn next_access_seq() -> u64 {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Maximum forward drift between the cached mtime and a newly
+    /// observed mtime before we treat the cache as stale. APFS samples
+    /// mtimes at nanosecond precision but its sampling jitter can
+    /// produce drift of a few hundred nanoseconds even when no file
+    /// actually changed -- a strict `==` would spuriously re-scan on
+    /// every popover open (apenwarr, "mtime comparison considered
+    /// harmful", 2018). 1ms is small enough that any real human-
+    /// induced write (always seconds apart) is still caught and large
+    /// enough to absorb all known filesystem-internal jitter.
+    const MTIME_FUZZ: Duration = Duration::from_millis(1);
 
     struct Entry {
         mtime: SystemTime,
         sessions: Vec<SessionMeta>,
+        /// US-025: monotonic stamp of the last access (lookup hit
+        /// or store_result write). Used by `store_result` to pick
+        /// the LRU victim when the cache hits its cap.
+        access_seq: u64,
     }
 
     fn store() -> &'static Mutex<HashMap<(SessionAgent, String), Entry>> {
@@ -59,16 +92,48 @@ pub mod cache {
         std::fs::metadata(dir).ok().and_then(|m| m.modified().ok())
     }
 
+    /// True when `observed` has not advanced past `cached` by more
+    /// than [`MTIME_FUZZ`]. mtimes only ever move forward, so the
+    /// `Err` branch of `duration_since` (clock went backwards, NTP
+    /// correction, DST transition) is treated as stale -- conservative
+    /// safe-direction failure.
+    fn within_fuzz(cached: SystemTime, observed: SystemTime) -> bool {
+        match observed.duration_since(cached) {
+            Ok(delta) => delta < MTIME_FUZZ,
+            Err(_) => false,
+        }
+    }
+
     /// Try to read a fresh `Vec<SessionMeta>` from the cache. Returns
-    /// `Some` only when the dir's mtime matches the cached snapshot.
+    /// `Some` only when the dir's mtime is within `MTIME_FUZZ` of the
+    /// cached snapshot's mtime -- catches real writes (seconds apart)
+    /// without spurious invalidation on filesystem-internal jitter.
     pub fn lookup(agent: SessionAgent, cwd: &str, project_dir: &Path) -> Option<Vec<SessionMeta>> {
         let observed = dir_mtime(project_dir)?;
-        let guard = match store().lock() {
+        let mut guard = match store().lock() {
             Ok(g) => g,
-            Err(p) => p.into_inner(),
+            // US-008 (cli-hardening-followup-2026-Q3): a poisoned
+            // session cache mutex means a prior holder panicked
+            // mid-write. The recovered state may be partially-written
+            // -- callers see a possibly-stale `Vec<SessionMeta>` once,
+            // then `store_result` replaces it on the next scan. Log
+            // so the previous panic is not hidden (matches
+            // `lock_with_poison_log` in agent_terminal.rs).
+            Err(p) => {
+                tracing::warn!(
+                    target: "paneflow_app::agent_sessions",
+                    "session cache mutex poisoned on lookup; using potentially stale data \
+                     (a previous thread panicked while holding the lock)"
+                );
+                p.into_inner()
+            }
         };
-        let entry = guard.get(&(agent, cwd.to_string()))?;
-        if entry.mtime == observed {
+        // US-025 (cli-hardening-followup-2026-Q3): bump the access
+        // stamp on a cache hit so subsequent stores see this entry
+        // as recently-used and pick a colder entry to evict.
+        let entry = guard.get_mut(&(agent, cwd.to_string()))?;
+        if within_fuzz(entry.mtime, observed) {
+            entry.access_seq = next_access_seq();
             Some(entry.sessions.clone())
         } else {
             None
@@ -91,13 +156,46 @@ pub mod cache {
         };
         let mut guard = match store().lock() {
             Ok(g) => g,
-            Err(p) => p.into_inner(),
+            // US-008 (cli-hardening-followup-2026-Q3): log poison
+            // recovery on the write path too. The `insert` overwrites
+            // the entry so the data is restored to a consistent state
+            // on the next scan, but the previous panic deserves a
+            // breadcrumb.
+            Err(p) => {
+                tracing::warn!(
+                    target: "paneflow_app::agent_sessions",
+                    "session cache mutex poisoned on store_result; overwriting entry \
+                     (a previous thread panicked while holding the lock)"
+                );
+                p.into_inner()
+            }
         };
+        let key = (agent, cwd.to_string());
+        // US-025 (cli-hardening-followup-2026-Q3): when the cache
+        // is at capacity AND this key would be a NEW entry (not an
+        // overwrite of an existing one), drop the LRU entry first.
+        // The linear scan is O(N) on N=10 -- cheap enough versus
+        // pulling in an `lru` crate dependency for one call site.
+        if guard.len() >= MAX_CACHE_ENTRIES
+            && !guard.contains_key(&key)
+            && let Some((victim_key, victim_seq)) = guard
+                .iter()
+                .map(|(k, v)| (k.clone(), v.access_seq))
+                .min_by_key(|(_, seq)| *seq)
+        {
+            tracing::debug!(
+                target: "paneflow_app::agent_sessions",
+                "session cache LRU eviction: (agent={:?}, cwd={}) seq={}",
+                victim_key.0, victim_key.1, victim_seq,
+            );
+            guard.remove(&victim_key);
+        }
         guard.insert(
-            (agent, cwd.to_string()),
+            key,
             Entry {
                 mtime,
                 sessions: sessions.to_vec(),
+                access_seq: next_access_seq(),
             },
         );
     }
@@ -105,8 +203,159 @@ pub mod cache {
     /// Drop everything; used by tests to reset state between cases.
     #[cfg(test)]
     pub fn clear() {
-        if let Ok(mut g) = store().lock() {
-            g.clear();
+        let cache = store();
+        match cache.lock() {
+            Ok(mut g) => g.clear(),
+            Err(p) => p.into_inner().clear(),
+        }
+        cache.clear_poison();
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{MTIME_FUZZ, within_fuzz};
+        use std::time::{Duration, SystemTime};
+        use tracing_test::traced_test;
+
+        /// EP-004 review follow-up: a strict `==` mtime check would
+        /// spuriously invalidate on APFS nanosecond jitter. With the
+        /// fuzz band, observed - cached < 1ms reads as fresh.
+        #[test]
+        fn within_fuzz_accepts_subms_drift() {
+            let cached = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+            // 500 microseconds forward drift -- well inside the fuzz band.
+            let observed = cached + Duration::from_micros(500);
+            assert!(
+                within_fuzz(cached, observed),
+                "{:?} sub-ms drift should be tolerated",
+                MTIME_FUZZ,
+            );
+        }
+
+        /// EP-004 review follow-up: a real human-induced write lands
+        /// seconds after the cached scan and MUST invalidate the
+        /// cache. A 5 ms forward drift already exceeds the 1 ms fuzz
+        /// band -- representative of any real file mutation.
+        #[test]
+        fn within_fuzz_rejects_real_change() {
+            let cached = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+            let observed = cached + Duration::from_millis(5);
+            assert!(
+                !within_fuzz(cached, observed),
+                "5 ms drift (well past {:?}) should invalidate",
+                MTIME_FUZZ,
+            );
+        }
+
+        /// Identical mtime is the no-write hot path. Must still match.
+        #[test]
+        fn within_fuzz_accepts_exact_match() {
+            let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+            assert!(within_fuzz(t, t));
+        }
+
+        /// Backwards drift (NTP correction, DST transition) is treated
+        /// as stale -- safe-direction failure since mtimes only ever
+        /// move forward and a backwards observation means something
+        /// underneath us is unreliable.
+        #[test]
+        fn within_fuzz_rejects_backwards_drift() {
+            let cached = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+            let observed = cached - Duration::from_millis(10);
+            assert!(!within_fuzz(cached, observed));
+        }
+
+        /// US-025 (cli-hardening-followup-2026-Q3): when the cache
+        /// is at capacity, inserting a new distinct (agent, cwd)
+        /// must evict the least-recently-accessed existing entry.
+        ///
+        /// Review 2026-05-28: switched from inlining the eviction
+        /// logic into the test (which risked drifting away from the
+        /// production path in `store_result`) to calling
+        /// `store_result` directly with a tempdir, so the test now
+        /// exercises the real production code path. The earlier
+        /// shape was kept only because `store_result` reads
+        /// `dir_mtime`; supplying a tempdir satisfies that without
+        /// duplicating the eviction branch.
+        #[test]
+        fn session_cache_evicts_lru() {
+            use super::super::SessionAgent;
+            use super::Entry;
+            // Isolate from any sibling test's cache state.
+            super::clear();
+            // Real on-disk dir for `store_result`'s `dir_mtime` call.
+            let dir = tempfile::tempdir().expect("tempdir");
+            // Seed the cache directly to MAX_CACHE_ENTRIES so the
+            // 11th insert exercises the production eviction path.
+            // We bypass `store_result` for the seeding step because
+            // `dir_mtime` returns the SAME mtime for the SAME path,
+            // and we want each entry to have a distinct
+            // (agent, cwd) key for the LRU comparison.
+            {
+                let mut guard = super::store().lock().expect("lock");
+                for i in 0..super::MAX_CACHE_ENTRIES {
+                    let key = (SessionAgent::Claude, format!("/proj-{i}"));
+                    guard.insert(
+                        key,
+                        Entry {
+                            mtime: SystemTime::UNIX_EPOCH,
+                            sessions: Vec::new(),
+                            access_seq: super::next_access_seq(),
+                        },
+                    );
+                }
+                assert_eq!(guard.len(), super::MAX_CACHE_ENTRIES);
+                // /proj-0 is the oldest entry by access_seq.
+                assert!(guard.contains_key(&(SessionAgent::Claude, "/proj-0".to_string())));
+            }
+            // Insert the 11th distinct entry via the REAL production
+            // path: `store_result` enforces the cap, picks the LRU
+            // victim, evicts it, then inserts. This catches any
+            // future drift in the eviction branch (line 179-192).
+            super::store_result(SessionAgent::Claude, "/proj-N", dir.path(), &[]);
+            {
+                let guard = super::store().lock().expect("lock");
+                assert_eq!(
+                    guard.len(),
+                    super::MAX_CACHE_ENTRIES,
+                    "cache must stay at cap after store_result eviction"
+                );
+                assert!(
+                    guard.contains_key(&(SessionAgent::Claude, "/proj-N".to_string())),
+                    "new entry must be present"
+                );
+                assert!(
+                    !guard.contains_key(&(SessionAgent::Claude, "/proj-0".to_string())),
+                    "LRU victim (proj-0) must have been evicted"
+                );
+            }
+            super::clear();
+        }
+
+        /// US-008 (cli-hardening-followup-2026-Q3): poison recovery
+        /// must leave a log breadcrumb. The cache can still recover
+        /// with `PoisonError::into_inner`, but the previous panic is
+        /// operationally relevant and should not disappear.
+        #[test]
+        #[traced_test]
+        fn poisoned_session_cache_logs_warning() {
+            use super::super::SessionAgent;
+
+            super::clear();
+            let _ = std::thread::spawn(|| {
+                let _guard = super::store().lock().expect("lock cache for poison");
+                panic!("force session cache poison");
+            })
+            .join();
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            super::store_result(SessionAgent::Claude, "/poisoned", dir.path(), &[]);
+
+            assert!(
+                logs_contain("session cache mutex poisoned on store_result"),
+                "poison recovery warning should be emitted"
+            );
+            super::clear();
         }
     }
 }
@@ -162,18 +411,47 @@ pub struct SessionMeta {
 ///
 /// Falls back to the date prefix (`YYYY-MM-DD`) when parsing fails.
 pub fn format_relative_time(iso8601: &str) -> String {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    // US-009 (cli-hardening-followup-2026-Q3): if the system clock
+    // is before UNIX_EPOCH (impossible in practice, but
+    // `duration_since` returns `Err` and the previous `unwrap_or(0)`
+    // silently mapped every session to "30+ days ago"), drop to the
+    // ISO-date prefix fallback instead. Future NTP step-backwards
+    // beyond the cached `parse_iso8601_to_unix_secs` is already
+    // safe-bounded by `saturating_sub`.
+    //
+    // US-026 (cli-hardening-followup-2026-Q3): the fallback path
+    // additionally trims to the first 10 characters defensively --
+    // a malformed JSONL field containing a newline or
+    // `<script>alert(1)</script>` will not blow up the sidebar
+    // layout. Well-formed `YYYY-MM-DDTHH:MM:SS` and
+    // `YYYY-MM-DD` inputs are already <= 10 chars after the
+    // `split('T').next()` so the clamp is a no-op for them.
+    let now_secs = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => return iso8601_safe_fallback(iso8601),
+    };
 
     match parse_iso8601_to_unix_secs(iso8601) {
         Some(ts_secs) => {
             let delta = now_secs.saturating_sub(ts_secs);
             relative_label(delta)
         }
-        None => iso8601.split('T').next().unwrap_or(iso8601).to_string(),
+        None => iso8601_safe_fallback(iso8601),
     }
+}
+
+/// US-026 (cli-hardening-followup-2026-Q3): defensive ISO-date
+/// fallback. Takes the substring before the first `T` (the typical
+/// `YYYY-MM-DD` prefix of an ISO-8601 timestamp), then clamps to
+/// the first 10 chars on a `chars()` boundary (UTF-8 safe).
+fn iso8601_safe_fallback(iso8601: &str) -> String {
+    iso8601
+        .split('T')
+        .next()
+        .unwrap_or(iso8601)
+        .chars()
+        .take(10)
+        .collect()
 }
 
 fn relative_label(delta_secs: i64) -> String {
@@ -263,9 +541,37 @@ mod tests {
         assert_eq!(secs, 1_736_944_245);
     }
 
+    /// US-026 (cli-hardening-followup-2026-Q3): the fallback now
+    /// also clamps to 10 chars, so an unparseable input is truncated.
+    /// The original assertion is updated accordingly; the storage
+    /// shape didn't change (still ISO-date prefix shape), only its
+    /// length is bounded.
     #[test]
     fn iso8601_unparseable_falls_back_to_date_prefix() {
         let label = format_relative_time("not a real timestamp");
-        assert_eq!(label, "not a real timestamp");
+        // "not a real timestamp" has no 'T', so `split('T').next()`
+        // returns the whole string; the 10-char clamp then trims it.
+        assert_eq!(label, "not a real");
+    }
+
+    /// US-026 (cli-hardening-followup-2026-Q3): the fallback must
+    /// be safe against malformed inputs that would otherwise blow
+    /// up the sidebar layout (newlines, oversize strings, multi-byte).
+    #[test]
+    fn iso8601_date_trims_to_10_chars() {
+        // Well-formed: behaves as before.
+        let well = format_relative_time("definitely-not-a-timestamp-2025");
+        assert_eq!(well.chars().count(), 10);
+
+        // Newline-injected malformed input: only the date prefix
+        // (or the first 10 chars in the absence of 'T') is kept.
+        let malicious = format_relative_time("2026-05-28\n<script>alert(1)</script>");
+        assert!(!malicious.contains('\n'));
+        assert!(malicious.chars().count() <= 10);
+
+        // Multi-byte safety: a `cafétimestamp` truncates on a char
+        // boundary (chars().take(10) -- not bytes().take(10)).
+        let multi = format_relative_time("café-timestamp-very-long");
+        assert_eq!(multi.chars().count(), 10);
     }
 }

@@ -114,32 +114,47 @@ pub fn on_turn_ended(reason: StopReasonKind, ran_tools: bool, model_label: Optio
     if !user_opted_in() || panel_is_focused() {
         return;
     }
-    let body = match reason {
-        StopReasonKind::EndTurn => {
-            if ran_tools {
-                "Finished running tools".to_string()
-            } else {
-                "New message".to_string()
-            }
-        }
+    let Some(body) = turn_ended_body(reason, ran_tools, model_label) else {
+        return;
+    };
+    fire("Paneflow", &body);
+}
+
+/// Pure body builder. Extracted from [`on_turn_ended`] so tests can
+/// exercise the exact production logic (including the `Refusal`
+/// branch's call into [`sanitize_model_label`]) without firing the
+/// notify-rust path. Returns `None` for branches that intentionally
+/// stay silent.
+fn turn_ended_body(
+    reason: StopReasonKind,
+    ran_tools: bool,
+    model_label: Option<&str>,
+) -> Option<String> {
+    match reason {
+        StopReasonKind::EndTurn => Some(if ran_tools {
+            "Finished running tools".to_string()
+        } else {
+            "New message".to_string()
+        }),
         StopReasonKind::Refusal => {
             let model_owned = model_label
                 .map(sanitize_model_label)
                 .filter(|s| !s.is_empty());
             let model = model_owned.as_deref().unwrap_or("Agent");
-            format!("{model} refused to respond to this request")
+            Some(format!("{model} refused to respond to this request"))
         }
         // MaxTokens / MaxTurnRequests: surface the truncation reason
         // so a user who alt-tabbed away learns why the response is
         // incomplete. Cancelled / Other stay silent (user-initiated
         // or unknown -- a notification would just add noise).
-        StopReasonKind::MaxTokens => "Response truncated: max output tokens reached".to_string(),
-        StopReasonKind::MaxTurnRequests => {
-            "Stopped: agent reached the per-turn request limit".to_string()
+        StopReasonKind::MaxTokens => {
+            Some("Response truncated: max output tokens reached".to_string())
         }
-        StopReasonKind::Cancelled | StopReasonKind::Other => return,
-    };
-    fire("Paneflow", &body);
+        StopReasonKind::MaxTurnRequests => {
+            Some("Stopped: agent reached the per-turn request limit".to_string())
+        }
+        StopReasonKind::Cancelled | StopReasonKind::Other => None,
+    }
 }
 
 /// US-116 AC #5: surface a fatal-runtime notification when the panel
@@ -159,17 +174,29 @@ pub fn on_fatal() {
 const MODEL_LABEL_MAX_CHARS: usize = 32;
 
 /// Neutralise an agent-supplied `model_label` before it lands in the
-/// notification body. Strips Pango / HTML tags (`<...>`) and entities
-/// (`&...;`) and caps the result at [`MODEL_LABEL_MAX_CHARS`]. The
-/// GNOME/libnotify notification daemon renders Pango markup by
-/// default, so without this an attacker-controlled `current_model_id`
-/// could forge a fake "system" message in the desktop toast.
+/// notification body. Strips ASCII / Unicode `Cc` control chars (ESC,
+/// BEL, etc.), Pango / HTML tags (`<...>`) and entities (`&...;`) and
+/// caps the result at [`MODEL_LABEL_MAX_CHARS`]. The GNOME/libnotify
+/// notification daemon renders Pango markup by default, so without
+/// this an attacker-controlled `current_model_id` could forge a fake
+/// "system" message in the desktop toast. The control-char strip is
+/// defense-in-depth -- libnotify has no VT parser today, but a stray
+/// OSC sequence (`\x1b]2;...\x07`) has no business in a model id.
+///
+/// On a malformed entity (`&` followed by 13+ chars without a `;`) we
+/// stop processing entirely and return what we have. A legitimate
+/// model id has no `&`; the truncation is the safe direction.
 fn sanitize_model_label(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut in_tag = false;
     let mut in_entity = false;
     let mut entity_len = 0usize;
     for ch in raw.chars() {
+        // Drop control characters up front so they cannot land in tag
+        // content, entity payloads, or the final output.
+        if ch.is_control() {
+            continue;
+        }
         if in_tag {
             if ch == '>' {
                 in_tag = false;
@@ -177,12 +204,18 @@ fn sanitize_model_label(raw: &str) -> String {
             continue;
         }
         if in_entity {
-            // Cap entity scan at 12 chars to avoid swallowing the rest
-            // of the string on a malformed `&` without a closing `;`.
             entity_len += 1;
-            if ch == ';' || entity_len > 12 {
+            if ch == ';' {
                 in_entity = false;
                 entity_len = 0;
+                continue;
+            }
+            if entity_len > 12 {
+                // Malformed entity -- treat the remainder of the input
+                // as untrusted. Keeping going would let an attacker
+                // craft `&xxxxxxxxxxxx<b>evil</b>` and have `evil` leak
+                // through the tag stripper.
+                break;
             }
             continue;
         }
@@ -248,56 +281,49 @@ mod tests {
     }
 
     /// AC #3: EndTurn with tools picks the "Finished running tools"
-    /// body. Pure body builder check -- the notify-rust fire path is
-    /// not exercised by tests (it would need a freedesktop daemon).
-    /// We assert the branch by inspecting `panel_is_focused` + the
-    /// expected body string via a helper that mirrors `on_turn_ended`.
+    /// body. Exercises the production [`turn_ended_body`] helper
+    /// directly so refactors to `on_turn_ended` cannot drift this
+    /// branch logic out of sync with the test.
     #[test]
     fn end_turn_body_switches_on_ran_tools() {
-        // Mirror the body-decision logic without firing the
-        // notification (the daemon is absent in CI).
-        fn body_for(
-            reason: StopReasonKind,
-            ran_tools: bool,
-            model: Option<&str>,
-        ) -> Option<String> {
-            match reason {
-                StopReasonKind::EndTurn => Some(if ran_tools {
-                    "Finished running tools".to_string()
-                } else {
-                    "New message".to_string()
-                }),
-                StopReasonKind::Refusal => {
-                    let m = model.unwrap_or("Agent");
-                    Some(format!("{m} refused to respond to this request"))
-                }
-                StopReasonKind::MaxTokens => {
-                    Some("Response truncated: max output tokens reached".to_string())
-                }
-                StopReasonKind::MaxTurnRequests => {
-                    Some("Stopped: agent reached the per-turn request limit".to_string())
-                }
-                StopReasonKind::Cancelled | StopReasonKind::Other => None,
-            }
-        }
         assert_eq!(
-            body_for(StopReasonKind::EndTurn, true, None).as_deref(),
+            turn_ended_body(StopReasonKind::EndTurn, true, None).as_deref(),
             Some("Finished running tools"),
         );
         assert_eq!(
-            body_for(StopReasonKind::EndTurn, false, None).as_deref(),
+            turn_ended_body(StopReasonKind::EndTurn, false, None).as_deref(),
             Some("New message"),
         );
         assert_eq!(
-            body_for(StopReasonKind::Refusal, false, Some("claude-sonnet-4-5")).as_deref(),
+            turn_ended_body(StopReasonKind::Refusal, false, Some("claude-sonnet-4-5")).as_deref(),
             Some("claude-sonnet-4-5 refused to respond to this request"),
         );
         assert_eq!(
-            body_for(StopReasonKind::Refusal, false, None).as_deref(),
+            turn_ended_body(StopReasonKind::Refusal, false, None).as_deref(),
             Some("Agent refused to respond to this request"),
         );
         // Other = no notification body at all.
-        assert!(body_for(StopReasonKind::Other, true, None).is_none());
+        assert!(turn_ended_body(StopReasonKind::Other, true, None).is_none());
+    }
+
+    /// US-007 (review follow-up): the Refusal branch of
+    /// [`turn_ended_body`] MUST apply [`sanitize_model_label`] to the
+    /// agent-supplied label. Regression guard against an unwired call
+    /// site -- the dedicated sanitize_model_label_* tests only cover
+    /// the function itself, not the production wiring.
+    #[test]
+    fn refusal_body_sanitises_model_label() {
+        let body = turn_ended_body(StopReasonKind::Refusal, false, Some("<b>system</b>")).unwrap();
+        assert!(
+            !body.contains('<') && !body.contains('>'),
+            "refusal body must not carry Pango/HTML markup, got {body:?}",
+        );
+        assert_eq!(body, "system refused to respond to this request");
+
+        // Empty-after-sanitisation label falls back to "Agent" so the
+        // body never reads " refused to respond to this request".
+        let stripped = turn_ended_body(StopReasonKind::Refusal, false, Some("<b></b>")).unwrap();
+        assert_eq!(stripped, "Agent refused to respond to this request");
     }
 
     /// US-007 AC #1: HTML/Pango tags supplied by the agent must be
@@ -321,14 +347,39 @@ mod tests {
         assert_eq!(sanitize_model_label("&lt;not-a-tag&gt;"), "not-a-tag");
         // Numeric entity is stripped wholesale.
         assert_eq!(sanitize_model_label("x&#65;y"), "xy");
-        // Unterminated entity is capped to avoid swallowing the entire
-        // string on a stray `&`. Caller doesn't depend on the exact
-        // cut-off; the invariant is "the tail leaks back into output".
-        let out = sanitize_model_label("&unterminatedlongtail");
-        assert!(
-            !out.is_empty() && "unterminatedlongtail".ends_with(&out),
-            "expected a non-empty suffix of the original tail, got {out:?}"
+        // Unterminated entity (no `;` within 12 chars) aborts processing
+        // so a payload like `&xxxxxxxxxxxx<b>evil</b>` cannot leak `evil`
+        // back through the tag stripper. Output is empty when the `&`
+        // begins the string and no `;` arrives in time.
+        assert_eq!(sanitize_model_label("&unterminatedlongtail"), "");
+        // A short stray `&` at end-of-input also aborts cleanly: out
+        // is whatever was accumulated before the `&`.
+        assert_eq!(sanitize_model_label("safe&"), "safe");
+        // The historic bypass payload: prefix output is preserved, but
+        // the post-entity `<b>evil</b>` content does NOT leak through.
+        assert_eq!(sanitize_model_label("safe&xxxxxxxxxxxx<b>evil</b>"), "safe",);
+    }
+
+    /// US-007 (review follow-up): control characters supplied by the
+    /// agent must be stripped before the Pango pass so an OSC sequence
+    /// (`\x1b]2;...\x07`) cannot reach `notify_rust::body`. libnotify
+    /// has no VT parser today, but the strip is defense-in-depth.
+    /// Only the control bytes themselves are stripped -- non-control
+    /// punctuation that happens to participate in an escape sequence
+    /// (`]`, `;`) survives, which is fine since they are not Pango
+    /// markup and cannot drive a terminal emulator without ESC.
+    #[test]
+    fn sanitize_model_label_strips_control_chars() {
+        // ESC + BEL discarded; the surrounding bytes survive as plain
+        // text. An OSC sequence without ESC + ST is harmless ASCII.
+        assert_eq!(
+            sanitize_model_label("claude\x1b]2;evil\x07-sonnet"),
+            "claude]2;evil-sonnet",
         );
+        // Bare ESC at start: dropped, prefix unaffected.
+        assert_eq!(sanitize_model_label("\x1bgpt-5"), "gpt-5");
+        // Newline / CR inside a model id is non-sensical -- drop them.
+        assert_eq!(sanitize_model_label("gpt\n5\r"), "gpt5");
     }
 
     /// US-007 AC #2: the result is capped at 32 chars with an ellipsis

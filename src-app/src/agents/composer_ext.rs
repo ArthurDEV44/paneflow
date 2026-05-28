@@ -45,6 +45,29 @@ pub fn attachment_limit_message() -> String {
     format!("Attachment limit reached ({MAX_ATTACHMENTS}). Remove a chip before adding more.",)
 }
 
+/// US-024 (cli-hardening-followup-2026-Q3): hard cap on the number
+/// of prompts queued behind a streaming turn. 8 is the threshold
+/// where the UI starts to feel "stale" (the user is sending faster
+/// than the agent can drain); past this point we surface a banner
+/// rather than silently buffering.
+pub const MAX_PENDING_PROMPTS: usize = 8;
+
+/// US-024 (cli-hardening-followup-2026-Q3): byte budget across all
+/// queued prompts (text + image data + resource-link URIs). Sized to
+/// the worst case implied by the count cap: a full queue
+/// (`MAX_PENDING_PROMPTS` = 8) where every prompt carries a single
+/// max-size attachment ([`MAX_IMAGE_BYTES`] = 10 MiB) lands at
+/// 80 MiB transient RAM -- well within the hardware envelope of any
+/// machine that can run an LLM agent and small enough to fail the
+/// gate before a runaway scripted client (US-012) drives the
+/// composer into multi-GiB allocations.
+pub const MAX_PENDING_BYTES: usize = (MAX_PENDING_PROMPTS as u64 * MAX_IMAGE_BYTES) as usize;
+
+/// Stable, localizable message for the queue caps.
+pub fn pending_queue_full_message() -> String {
+    format!("Prompt queue full ({MAX_PENDING_PROMPTS}). Submit running prompt first.")
+}
+
 /// Cap the file walk so a huge monorepo cwd does not block the pump
 /// thread. The popup only displays the top results anyway.
 pub const MAX_FILE_RESULTS: usize = 50;
@@ -540,8 +563,8 @@ mod tests {
     #[test]
     fn token_before_cursor_cjk_cursor_mid_codepoint() {
         let text = "@\u{4F60}\u{597D}"; // "@你好"
-                                        // After the '@' (1 byte) the next char `你` occupies bytes
-                                        // [1, 4). Cursor at byte 2 is mid-codepoint.
+        // After the '@' (1 byte) the next char `你` occupies bytes
+        // [1, 4). Cursor at byte 2 is mid-codepoint.
         let _ = token_before_cursor(text, 2, '@');
         // Cursor at byte 3 is also mid-codepoint.
         let _ = token_before_cursor(text, 3, '@');
@@ -627,9 +650,11 @@ mod tests {
         let merged = merge_and_filter_slash_commands(&built_ins, &[], "");
         let names: Vec<&str> = merged.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["clear", "export"]);
-        assert!(merged
-            .iter()
-            .all(|c| matches!(c.source, SlashCommandSource::BuiltIn)));
+        assert!(
+            merged
+                .iter()
+                .all(|c| matches!(c.source, SlashCommandSource::BuiltIn))
+        );
     }
 
     /// US-112 AC #1: agent commands are merged with built-ins and
@@ -678,9 +703,11 @@ mod tests {
             "agent's /clear must win over the built-in"
         );
         // The built-in /export must still be present (no collision).
-        assert!(merged
-            .iter()
-            .any(|c| c.name == "export" && matches!(c.source, SlashCommandSource::BuiltIn)));
+        assert!(
+            merged
+                .iter()
+                .any(|c| c.name == "export" && matches!(c.source, SlashCommandSource::BuiltIn))
+        );
     }
 
     /// US-112 AC #1: substring filter is case-insensitive and matches
