@@ -291,6 +291,62 @@ enum ChildState {
     Released,
 }
 
+/// US-002 (cli-hardening-followup-2026-Q3): hard deadline on
+/// [`AgentTerminalSession::wait_for_exit`]. A SIGKILL race where the
+/// OS reaps the zombie before our `poll_child_exit` can observe it
+/// used to park a `tokio::spawn_blocking` thread forever. With the
+/// blocking pool capped at 128, repeated such races leaked the pool
+/// over a session lifetime. 30 s matches the upper bound of an
+/// `agent_client_protocol` `terminal/create` response handler tolerance.
+const WAIT_FOR_EXIT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// US-002 (cli-hardening-followup-2026-Q3): pure wait loop extracted
+/// from [`AgentTerminalSession::wait_for_exit`] so unit tests can
+/// exercise the deadline with a millisecond-scale fixture instead
+/// of the 30 s production cap.
+///
+/// `poll` returns `Some(status)` when the child has exited and the
+/// loop terminates with `Ok(status)`. `deadline` bounds the total
+/// wait. `poll_interval` controls the sleep between polls and is
+/// the bottleneck for test responsiveness -- tests use 1 ms.
+/// `pid_for_log` is captured by the caller before the loop starts
+/// and feeds the `Timeout` log line.
+fn wait_for_exit_loop<F>(
+    mut poll: F,
+    deadline: Duration,
+    poll_interval: Duration,
+    pid_for_log: Option<u32>,
+) -> Result<TerminalExitStatus, TerminalError>
+where
+    F: FnMut() -> Option<TerminalExitStatus>,
+{
+    let start = Instant::now();
+    loop {
+        if let Some(es) = poll() {
+            return Ok(es);
+        }
+        let elapsed = start.elapsed();
+        if elapsed >= deadline {
+            let elapsed_secs = elapsed.as_secs();
+            match pid_for_log {
+                Some(pid) => log::warn!(
+                    "wait_for_exit: child pid={pid} did not exit within {elapsed_secs}s; \
+                     returning Timeout to release the tokio blocking thread"
+                ),
+                None => log::warn!(
+                    "wait_for_exit: child pid=? did not exit within {elapsed_secs}s; \
+                     returning Timeout to release the tokio blocking thread"
+                ),
+            }
+            return Err(TerminalError::Timeout {
+                operation: "wait_for_exit",
+                elapsed_secs,
+            });
+        }
+        std::thread::sleep(poll_interval);
+    }
+}
+
 impl AgentTerminalSession {
     fn spawn(
         request: &CreateTerminalRequest,
@@ -382,8 +438,7 @@ impl TerminalSession for AgentTerminalSession {
         let shared = Arc::clone(&self.shared);
         Box::pin(async move {
             // Check if the child has exited (non-blocking poll).
-            let exit_status =
-                poll_child_exit(&mut lock_with_poison_log(&shared.child, "child"));
+            let exit_status = poll_child_exit(&mut lock_with_poison_log(&shared.child, "child"));
             let (output, truncated) = lock_with_poison_log(&shared.buffer, "buffer").snapshot();
             Ok(TerminalOutputSnapshot {
                 output,
@@ -396,18 +451,28 @@ impl TerminalSession for AgentTerminalSession {
     fn wait_for_exit(&self) -> BoxFuture<'_, Result<TerminalExitStatus, TerminalError>> {
         let shared = Arc::clone(&self.shared);
         Box::pin(async move {
+            // Capture the PID once for the warn-log on the timeout
+            // path. May be `None` when the child has already been
+            // dropped before this future polls, in which case the
+            // log just says `pid=?` -- still actionable.
+            let pid_for_log = {
+                let guard = lock_with_poison_log(&shared.child, "child");
+                match &*guard {
+                    ChildState::Running(c) => c.process_id(),
+                    _ => None,
+                }
+            };
             // Block the tokio task on a dedicated blocking thread so
             // the single-threaded runtime can keep servicing other
             // commands. Poll cadence is 100 ms -- ACP agents tend to
             // tolerate this since `wait_for_exit` is a one-shot.
             tokio::task::spawn_blocking(move || {
-                loop {
-                    let exit = poll_child_exit(&mut lock_with_poison_log(&shared.child, "child"));
-                    if let Some(es) = exit {
-                        return Ok(es);
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
+                wait_for_exit_loop(
+                    || poll_child_exit(&mut lock_with_poison_log(&shared.child, "child")),
+                    WAIT_FOR_EXIT_DEADLINE,
+                    Duration::from_millis(100),
+                    pid_for_log,
+                )
             })
             .await
             .map_err(|e| TerminalError::Other(anyhow::anyhow!("wait_for_exit join failed: {e}")))?
@@ -452,11 +517,9 @@ impl TerminalSession for AgentTerminalSession {
                     let deadline = Instant::now() + Duration::from_secs(2);
                     while Instant::now() < deadline {
                         std::thread::sleep(Duration::from_millis(50));
-                        let exited = poll_child_exit(&mut lock_with_poison_log(
-                            &shared.child,
-                            "child",
-                        ))
-                        .is_some();
+                        let exited =
+                            poll_child_exit(&mut lock_with_poison_log(&shared.child, "child"))
+                                .is_some();
                         if exited {
                             return Ok(());
                         }
@@ -502,9 +565,17 @@ impl TerminalSession for AgentTerminalSession {
 /// prior thread panicked mid-write -- the recovered state may be
 /// inconsistent. Logging at warn surfaces that risk in any bug report
 /// instead of swallowing it silently. `site` is the field name (e.g.
-/// `"buffer"`, `"child"`, `"master"`) so the log narrows down the
-/// affected lock.
-fn lock_with_poison_log<'a, T>(m: &'a Mutex<T>, site: &str) -> std::sync::MutexGuard<'a, T> {
+/// `"buffer"`, `"child"`, `"master"`, `"permission_broker_pending"`)
+/// so the log narrows down the affected lock.
+///
+/// `pub(super)` so [`crate::agents::runtime::PermissionBroker`] can
+/// share the same recovery-with-log discipline (US-019 review
+/// follow-up). Lives here because the 9 in-file call sites dominate
+/// the function's gravity.
+pub(super) fn lock_with_poison_log<'a, T>(
+    m: &'a Mutex<T>,
+    site: &str,
+) -> std::sync::MutexGuard<'a, T> {
     match m.lock() {
         Ok(g) => g,
         Err(p) => {
@@ -517,24 +588,68 @@ fn lock_with_poison_log<'a, T>(m: &'a Mutex<T>, site: &str) -> std::sync::MutexG
     }
 }
 
-/// Synchronous body of [`AgentTerminalSession::release`]. Closes the
-/// master fd (drives the reader thread to EOF) and signals the child
-/// if it is still running. Idempotent: the `Option::take`-style
-/// discipline on `master` and the `ChildState::Released` terminal
-/// state make repeat calls cheap no-ops. Used both by the async
-/// `TerminalSession::release` (ACP-driven path) and by the `Drop`
-/// impl below (panic / unexpected-shutdown path).
+/// Synchronous body of [`AgentTerminalSession::release`]. Drives the
+/// reader thread to EOF by terminating the child first, then drops
+/// the master fd. Idempotent: the `Option::take`-style discipline on
+/// `master` and the `ChildState::Released` terminal state make repeat
+/// calls cheap no-ops.
+///
+/// Ordering matters here. The reader thread is parked on `read()`
+/// against a fd cloned via `try_clone_reader()` -- a separate fd
+/// from the master we hold. Closing the master alone does NOT EOF
+/// that cloned fd; EOF only arrives when the child closes the slave,
+/// which happens when the child exits. So the kill is the load-
+/// bearing step. On Unix, [`portable_pty::Child::kill`] sends SIGHUP,
+/// which a SIGHUP-immune child (Node-based dev servers with their
+/// own SIGHUP handler, daemon-mode wrappers) can survive -- leaving
+/// the reader thread blocked indefinitely and the [`Arc<SessionShared>`]
+/// alive. We escalate to SIGKILL on the process group first
+/// (portable-pty calls `setsid()` in its `pre_exec`, so the child's
+/// pid is its pgid), then run the portable-pty fallback as belt-
+/// and-suspenders, then close the master.
+///
+/// Race with the async [`AgentTerminalSession::release`]: both paths
+/// can call this concurrently (Drop on the GPUI main thread + ACP
+/// release on the smol pool). The two `Mutex` lock sites serialise
+/// them: the second caller observes [`Option::take`]-ed `master` and
+/// [`ChildState::Released`] and skips its work. No double-kill, no
+/// use-after-free.
+///
+/// Used both by [`TerminalSession::release`] (ACP-driven path) and
+/// the [`Drop`] impl below (panic / unexpected-shutdown path).
 fn release_sync(shared: &SessionShared) {
-    {
-        let mut guard = lock_with_poison_log(&shared.master, "master");
-        *guard = None;
-    }
+    // Kill the child first so the kernel delivers EOF to the reader
+    // thread via the slave-close path; otherwise dropping the master
+    // alone races against a stubborn child.
     {
         let mut guard = lock_with_poison_log(&shared.child, "child");
         if let ChildState::Running(c) = &mut *guard {
+            #[cfg(unix)]
+            if let Some(pid) = c.process_id()
+                && pid > 0
+            {
+                // SAFETY: portable-pty calls `setsid()` in pre_exec so
+                // pid == pgid; negating it targets the whole process
+                // group with the canonical POSIX group-signal idiom.
+                // SIGKILL is delivered immediately and cannot be
+                // caught/ignored even by debugger-attached children
+                // (modulo the always-residual ptrace edge case).
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+            }
+            // portable-pty fallback: SIGHUP on Unix, TerminateProcess
+            // on Windows. On Unix this is belt-and-suspenders after
+            // SIGKILL above; on Windows it is the primary signal.
             let _ = c.kill();
+            // Drive the poll to reap the zombie, if any.
+            let _ = poll_child_exit(&mut guard);
         }
         *guard = ChildState::Released;
+    }
+    {
+        let mut guard = lock_with_poison_log(&shared.master, "master");
+        *guard = None;
     }
 }
 
@@ -757,5 +872,149 @@ mod drop_tests {
         release_sync(&shared);
         release_sync(&shared); // must not panic, must not double-close
         assert!(shared.master.lock().expect("master lock").is_none());
+    }
+
+    /// US-009 (review follow-up): dropping a session whose child is
+    /// `ChildState::Running` must actually terminate the child --
+    /// closing the master alone does NOT EOF the reader thread (the
+    /// cloned reader fd is independent), so the kill is load-bearing.
+    /// This test spawns a long-lived `sleep` process, drops the
+    /// session, and asserts the child exits within a short deadline.
+    #[cfg(unix)]
+    #[test]
+    fn agent_terminal_drop_kills_running_child() {
+        let pty = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+        // A 60-second sleep is plenty for the deadline below and short
+        // enough that a CI runner leaking it would still time out the
+        // job rather than hang forever.
+        let mut cmd = CommandBuilder::new("sleep");
+        cmd.arg("60");
+        let child = pty.slave.spawn_command(cmd).expect("spawn sleep");
+        // Reaper handle clones don't outlive `child`, so we read the
+        // pid up front for the post-drop liveness check.
+        let pid = child.process_id().expect("child pid");
+        let shared = Arc::new(SessionShared {
+            buffer: Mutex::new(OutputBuffer::with_limit(1024)),
+            child: Mutex::new(ChildState::Running(child)),
+            master: Mutex::new(Some(pty.master)),
+        });
+        let inspect = Arc::clone(&shared);
+
+        let session = AgentTerminalSession {
+            id: TerminalId::from("test-agent-term-drop-kill".to_string()),
+            shared,
+        };
+        drop(session);
+
+        // The child mutex must have transitioned to Released.
+        assert!(
+            matches!(
+                &*inspect.child.lock().expect("child lock"),
+                ChildState::Released
+            ),
+            "Drop must transition child state to Released",
+        );
+
+        // The OS must agree the pid is gone. We give the kernel a
+        // short grace period to reap; SIGKILL is delivered
+        // synchronously but the post-mortem cleanup can take a few ms.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            // `kill(pid, 0)` probes liveness without actually
+            // signalling. ESRCH (no such process) is the success
+            // condition.
+            // SAFETY: kill(0) is documented as side-effect-free.
+            let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
+            if !alive {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!(
+            "Drop did not terminate child pid {pid} within the 3s deadline -- \
+             SIGKILL escalation in release_sync is broken",
+        );
+    }
+
+    /// US-002 (cli-hardening-followup-2026-Q3): the wait-loop must
+    /// surface `TerminalError::Timeout` when `poll` keeps returning
+    /// `None` past the deadline. A real SIGKILL-raced child would
+    /// reach this branch (the kernel reaped the zombie before we
+    /// could observe it). The production deadline is 30 s; the test
+    /// drives a 50 ms deadline to keep `cargo test` fast.
+    #[test]
+    fn wait_for_exit_times_out_on_stuck_child() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let calls = AtomicU32::new(0);
+        let start = std::time::Instant::now();
+        let result = super::wait_for_exit_loop(
+            || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                None
+            },
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(1),
+            Some(424242),
+        );
+        let elapsed = start.elapsed();
+        match result {
+            Err(super::TerminalError::Timeout {
+                operation,
+                elapsed_secs,
+            }) => {
+                assert_eq!(operation, "wait_for_exit");
+                // 50 ms deadline truncates to 0 s in u64 — the
+                // contract is that the value matches `elapsed_secs`
+                // at the moment of the trip, which is < 1 here.
+                assert_eq!(elapsed_secs, 0);
+            }
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+        // The poll loop must have fired at least a handful of times
+        // before the deadline tripped -- guards against a regression
+        // that short-circuits before the first poll.
+        assert!(calls.load(Ordering::SeqCst) >= 3);
+        // The loop must not run substantially past the deadline.
+        // 250 ms is generous for slow CI runners.
+        assert!(
+            elapsed < std::time::Duration::from_millis(250),
+            "loop ran for {elapsed:?}, deadline was 50ms",
+        );
+    }
+
+    /// US-002 (cli-hardening-followup-2026-Q3): the happy path must
+    /// still return `Ok(status)` when the child exits before the
+    /// deadline trips.
+    #[test]
+    fn wait_for_exit_returns_ok_when_child_exits() {
+        use super::TerminalExitStatus;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let calls = AtomicU32::new(0);
+        let result = super::wait_for_exit_loop(
+            || {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                // Exit on the third poll so we know the loop ran
+                // more than once.
+                if n >= 2 {
+                    Some(TerminalExitStatus::new().exit_code(0u32))
+                } else {
+                    None
+                }
+            },
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(1),
+            None,
+        );
+        let es = result.expect("happy path must return Ok");
+        assert_eq!(es.exit_code, Some(0));
     }
 }
