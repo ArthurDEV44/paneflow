@@ -73,6 +73,16 @@ ignore = [
     #   * OR PaneFlow starts using zed/rpc directly (any
     #     `use rpc::` in src-app/** would invalidate this ignore).
     "RUSTSEC-2023-0071",
+
+    # NOTE (2026-05-28, prd-cli-hardening-followup-2026-Q3 US-027):
+    # a preemptive ignore for RUSTSEC-2025-0052 (async-std
+    # discontinued) was removed -- `async-std` is NOT in the current
+    # Cargo.lock (the ArthurDEV44/zed fork pin does not pull
+    # zed/http_client → async-tar → async-std). cargo-deny rejects
+    # an `ignore` entry that matches no crate (`unmatched-skip`), so
+    # the dead entry was failing the `security_audit` PR gate AND the
+    # release build. Re-add it ONLY if a future GPUI-pin bump
+    # reintroduces async-std into the tree.
 ]
 
 [licenses]
@@ -130,6 +140,11 @@ allow-registry   = ["https://github.com/rust-lang/crates.io-index"]
 # Pre-declared GitHub orgs that host the known git deps transitively
 # pulled in by GPUI. Verified against the current Cargo.lock via
 #   grep -E '^source = "git\+' Cargo.lock | sed 's|.*github.com/\([^/]*\)/.*|\1|' | sort -u
-# which returns exactly these three orgs. When bumping the GPUI pin,
+# which returns exactly these four orgs. When bumping the GPUI pin,
 # re-run that check and update the list if new orgs appear.
-github = ["zed-industries", "smol-rs", "proptest-rs"]
+#
+# `ArthurDEV44` hosts the Paneflow fork of `zed-industries/zed` (branch
+# `paneflow/markdown-append-fix`) used by `prd-markdown-append-fix-2026-Q3`.
+# Remove this entry when the upstream Zed PR merges and the fork pin is
+# reverted to mainline (see CLAUDE.md "Fork-pin maintenance").
+github = ["zed-industries", "smol-rs", "proptest-rs", "ArthurDEV44"]
