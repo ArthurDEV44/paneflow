@@ -162,8 +162,9 @@ jobs:
           #   3. Flip `windows_check` / `windows_render_smoke` /
           #      `windows_aarch64_check` `if: false` → original
           #      expression in run_tests.yml.
-          #   4. Restore the `release: published` trigger in
-          #      update_winget.yml.
+          #   4. Recreate update_winget.yml (removed 2026-05-28 while
+          #      Windows is out of scope -- restore from git history) with
+          #      its `release: published` trigger.
           # The downstream `release` job already drops Windows
           # assets from its `release-assets-*` glob whenever this
           # leg is absent, so no other change is required.
@@ -1324,9 +1325,10 @@ jobs:
   release:
     name: Publish GitHub Release
     # US-003: skip the entire publish chain in dry-run mode. The
-    # downstream `update_cask.yml` and `update_winget.yml` workflows
-    # are triggered by `release: published`, so skipping this job
-    # transitively skips them. `repo_publish.yml` is triggered by
+    # the downstream `update_cask.yml` workflow is triggered by
+    # `release: published`, so skipping this job transitively skips it.
+    # (`update_winget.yml` was removed 2026-05-28 while Windows is out of
+    # scope until Azure signing.) `repo_publish.yml` is triggered by
     # `workflow_run` of this workflow but already filters on
     # `workflow_run.event == 'push'` (line ~94 of repo_publish.yml),
     # so a workflow_dispatch run never touches pkg.paneflow.dev.
