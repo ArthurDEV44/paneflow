@@ -24,6 +24,14 @@ cargo clippy --workspace -- -D warnings
 cargo fmt --check
 ```
 
+### Fork-pin maintenance (Zed Markdown widget)
+
+While `prd-markdown-append-fix-2026-Q3.md` is in flight, the Zed git deps in `src-app/Cargo.toml` and `crates/paneflow-threads/Cargo.toml` point at a Paneflow fork branch (`ArthurDEV44/zed@paneflow/markdown-append-fix`) instead of upstream `zed-industries/zed`. To bump the pin (rebase the fork onto a newer upstream rev, or revert to mainline once the PR merges), follow the two-outcome runbook in `tasks/prd-markdown-append-fix-2026-Q3.md` under "Technical Considerations" → "Switchover Plan".
+
+### Perf / heap profiling
+
+See `tasks/heaptrack-runbook.md` (US-029 of `prd-cli-hardening-followup-2026-Q3.md`) for the reproducible procedures behind every perf claim shipped by EP-001 / EP-004 / EP-005: heaptrack diffs for RAM stories, `cargo flamegraph` for CPU stories, `cargo bench -p paneflow-threads` for the criterion baselines (`blob_compress`, `markdown_append`), Linux `kill -9` orphan smoke for US-016, and the `ulimit -u 1` IPC-degradation smoke for US-005.
+
 ## Pre-commit checks (mandatory)
 
 **Before EVERY `git commit` and EVERY `git push` that touches Rust code, run:**
