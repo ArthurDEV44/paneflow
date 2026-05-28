@@ -1,7 +1,7 @@
 name: update_cask
 
-# US-017 AC4. Triggered whenever a GitHub Release is *published* (not just
-# a tag push): grabs the freshly-attached .dmg assets, computes their
+# US-017 AC4. Chained off the `release` workflow's completion (via
+# workflow_run): grabs the freshly-attached .dmg assets, computes their
 # SHA-256s, renders Casks/paneflow.rb from the canonical template at
 # packaging/homebrew/paneflow.rb, and pushes the result into the external
 # tap repo https://github.com/ArthurDEV44/homebrew-paneflow.
@@ -12,16 +12,23 @@ name: update_cask
 #     with `contents: read-and-write`. The default GITHUB_TOKEN cannot
 #     push to an external repo.
 #
-# Why `release: published` and not `push: tags`:
-#   - The release workflow must finish (produce + upload the .dmg) before
-#     this one can compute SHAs. `release: published` fires after the
-#     release is fully created, so the assets exist when we download.
-#   - A `push: tags` trigger would race the release workflow's asset
-#     upload and often fail with "404 Not Found" on `gh release download`.
+# Why `workflow_run` and not `release: published`:
+#   - A release published by the default GITHUB_TOKEN (softprops/
+#     action-gh-release in release.yml) does NOT emit a `release` event
+#     other workflows can observe -- GitHub suppresses events triggered
+#     by GITHUB_TOKEN to prevent recursion. A `release: published`
+#     trigger here would therefore NEVER fire (confirmed: 0 historical
+#     runs on this workflow before 2026-05-28).
+#   - `workflow_run` bypasses that: it fires whenever release.yml
+#     completes, by which point the .dmg assets are already uploaded.
+#     Mirrors repo_publish.yml's trigger.
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    # MUST match the parent workflow's `name:` exactly (GitHub matches
+    # workflow_run events by declared name, not filename).
+    workflows: ["release"]
+    types: [completed]
   # Allow manual re-runs so operator can recover from a transient network
   # hiccup without cutting a new release tag.
   workflow_dispatch:
@@ -50,17 +57,40 @@ defaults:
 jobs:
   update-cask:
     runs-on: ubuntu-22.04
+    # Run on: (a) manual workflow_dispatch (always); (b) workflow_run
+    # chained from release.yml -- allow `success` OR `failure` conclusion
+    # (a non-publish job like the auto-update e2e smoke can fail without
+    # invalidating the already-published release), require event == 'push'
+    # (the tag-push that cut the release; a dry-run release.yml is
+    # 'workflow_dispatch' and is filtered out), and skip prerelease tags
+    # (rc/alpha/beta) which are not distributed via Homebrew. Mirrors
+    # repo_publish.yml's gate.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (
+        (github.event.workflow_run.conclusion == 'success'
+           || github.event.workflow_run.conclusion == 'failure')
+        && github.event.workflow_run.event == 'push'
+        && !contains(github.event.workflow_run.head_branch, 'rc')
+        && !contains(github.event.workflow_run.head_branch, 'alpha')
+        && !contains(github.event.workflow_run.head_branch, 'beta')
+      )
     steps:
       - name: Resolve tag
         id: tag
         env:
           EVENT_NAME: ${{ github.event_name }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          # For a tag-push-triggered release.yml run, workflow_run.head_branch
+          # is the tag short-name (e.g. "v0.3.4"). The strict regex below
+          # rejects anything that is not vMAJOR.MINOR.PATCH, so a non-tag
+          # head_branch (e.g. "main") fails fast rather than rendering a
+          # bogus cask. Both inputs go through env -- never inline in run.
+          RUN_TAG: ${{ github.event.workflow_run.head_branch }}
           DISPATCH_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "release" ]; then
-            tag="$RELEASE_TAG"
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            tag="$RUN_TAG"
           else
             tag="$DISPATCH_TAG"
           fi
