@@ -343,6 +343,17 @@ pub struct DiffSnapshot {
     pub old_text: Option<String>,
     /// New content after modification.
     pub new_text: String,
+    /// US-001 (cli-hardening-followup-2026-Q3): set by
+    /// [`thread_view::clear_reviewed_diff_bodies`] once the user has
+    /// reviewed the edit (Keep / Reject / Keep All / Reject All).
+    /// Carries the diff-line count computed before `old_text` was
+    /// freed so the renderer can show a static
+    /// `[diff body cleared after review, N lines]` placeholder
+    /// instead of a `[]` vs `new_text` diff (which would mark every
+    /// line added and re-allocate the full new file content). Not
+    /// persisted to disk -- a reloaded snapshot starts as `None`
+    /// and re-arms the placeholder behaviour on the next review.
+    pub cleared_diff_lines: Option<u32>,
 }
 
 /// Patch describing the changes from one `ToolCallUpdate` wire
@@ -517,6 +528,7 @@ impl ToolCallSnapshot {
                     path: d.path,
                     old_text: d.old_text,
                     new_text: d.new_text,
+                    cleared_diff_lines: None,
                 })
                 .collect(),
             expanded: false,
@@ -668,6 +680,7 @@ fn flatten_content(content: &[AcpToolCallContent]) -> (String, Vec<DiffSnapshot>
                     path: d.path.clone(),
                     old_text: d.old_text.clone(),
                     new_text: d.new_text.clone(),
+                    cleared_diff_lines: None,
                 });
             }
             AcpToolCallContent::Terminal(_) => out.push_str("\n[terminal]"),
