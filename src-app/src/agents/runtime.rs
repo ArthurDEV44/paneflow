@@ -48,7 +48,110 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded as futures_unbounded};
+// US-003 (cli-hardening-followup-2026-Q3): the runtime->GPUI event
+// channel is now bounded at `RUNTIME_EVENT_CAPACITY`. The previous
+// `futures::channel::mpsc::unbounded` could accumulate hundreds of
+// `RuntimeEvent::Chunk(String)` entries on a tool-call burst (Claude
+// Code doing 200 rapid edits) before the GPUI consumer drained it,
+// transiently spiking 5-20 MB. Switched to `tokio::sync::mpsc` because
+// its `Sender::try_send` takes `&self` (futures::mpsc::Sender needs
+// `&mut self`), which lets `ChannelSink` (an ACP trait implementor
+// whose methods take `&self`) call into it without an interior
+// `Mutex`. Producer back-pressure is encoded in
+// [`send_runtime_event`]: try_send, then log + drop on saturation --
+// the consumer's existing coalescing at `composer.rs:1129` tolerates
+// gaps in the Chunk stream.
+use tokio::sync::mpsc::Receiver as UnboundedReceiver;
+use tokio::sync::mpsc::Sender as UnboundedSender;
+
+/// US-003 (cli-hardening-followup-2026-Q3): cap on the runtime->GPUI
+/// event channel. 256 entries is enough headroom for the burstiest
+/// observed agent traffic (Claude Code emitting ~150 ToolCall +
+/// ToolCallUpdate frames during a multi-file refactor) without
+/// allowing transient 5-20 MB allocations when the GPUI consumer is
+/// behind on a large markdown render.
+const RUNTIME_EVENT_CAPACITY: usize = 256;
+
+/// US-003 (cli-hardening-followup-2026-Q3): single producer-side
+/// entry point that all runtime event emissions go through.
+///
+/// Replaces the previous `event_tx.unbounded_send(event)` pattern.
+/// On a successful `try_send`, the channel slot is consumed. On
+/// `TrySendError::Full`, the event is dropped and logged at `warn!`
+/// (or `debug!` for the high-frequency idempotent `Chunk`/`Thought`
+/// variants -- the consumer's coalescing at `composer.rs:1129`
+/// reconstructs the streaming buffer even with a few lost frames).
+/// On `TrySendError::Closed`, the event is dropped silently because
+/// the consumer side has already torn down -- mirrors the previous
+/// `let _ = event_tx.unbounded_send(...)` behaviour on a dead
+/// channel.
+///
+/// `tx` is `&Sender` (not `&mut`) because tokio's mpsc sender uses
+/// interior mutability; this preserves the existing call-site shape
+/// where `event_tx.clone()` is shared across multiple producer
+/// holders (ChannelSink, BrokerCallback, run_blocking, Drop path).
+fn send_runtime_event(tx: &UnboundedSender<RuntimeEvent>, event: RuntimeEvent) {
+    use tokio::sync::mpsc::error::TrySendError;
+    match tx.try_send(event) {
+        Ok(()) => {}
+        Err(TrySendError::Full(dropped)) => {
+            // High-frequency idempotent variants get a quieter log
+            // line so a slow-render burst does not flood
+            // `paneflow-debug.log`.
+            match &dropped {
+                RuntimeEvent::Chunk(_) | RuntimeEvent::Thought(_) => log::debug!(
+                    "runtime channel saturated; dropping idempotent event \
+                     (consumer coalescing will rebuild)"
+                ),
+                other => log::warn!(
+                    "runtime channel saturated; dropping non-coalescable event: {}",
+                    runtime_event_variant_name(other)
+                ),
+            }
+        }
+        Err(TrySendError::Closed(_)) => {
+            // Consumer torn down. Matches the pre-US-003 silent-drop
+            // behaviour of `let _ = event_tx.unbounded_send(...)`.
+        }
+    }
+}
+
+/// US-003 (cli-hardening-followup-2026-Q3): drop-in compat shim that
+/// lets every pre-existing `event_tx.unbounded_send(RuntimeEvent::X(...))`
+/// call site keep its current shape after the channel switched from
+/// `futures::channel::mpsc::unbounded` to `tokio::sync::mpsc::channel`.
+/// The trait method delegates to [`send_runtime_event`], which
+/// applies the saturation / closed-channel discipline. Returns
+/// `Result<(), ()>` purely so call sites that wrap the result in
+/// `let _ = ...` keep compiling without `let _ = ();` clippy churn.
+trait UnboundedSendCompat {
+    fn unbounded_send(&self, event: RuntimeEvent) -> Result<(), ()>;
+}
+
+impl UnboundedSendCompat for tokio::sync::mpsc::Sender<RuntimeEvent> {
+    fn unbounded_send(&self, event: RuntimeEvent) -> Result<(), ()> {
+        send_runtime_event(self, event);
+        Ok(())
+    }
+}
+
+/// Stable variant name for diagnostics; avoids needing `Debug` on
+/// the full event payload (some variants embed large strings).
+fn runtime_event_variant_name(ev: &RuntimeEvent) -> &'static str {
+    match ev {
+        RuntimeEvent::Chunk(_) => "Chunk",
+        RuntimeEvent::Thought(_) => "Thought",
+        RuntimeEvent::ToolCall(_) => "ToolCall",
+        RuntimeEvent::ToolCallUpdate(_) => "ToolCallUpdate",
+        RuntimeEvent::AvailableCommandsUpdate(_) => "AvailableCommandsUpdate",
+        RuntimeEvent::UsageUpdate { .. } => "UsageUpdate",
+        RuntimeEvent::SessionTitle(_) => "SessionTitle",
+        RuntimeEvent::SessionReady { .. } => "SessionReady",
+        RuntimeEvent::PermissionRequest { .. } => "PermissionRequest",
+        RuntimeEvent::Fatal(_) => "Fatal",
+        RuntimeEvent::TurnEnded(_) => "TurnEnded",
+    }
+}
 
 use agent_client_protocol::schema::{
     AvailableCommand, ContentBlock, ContentChunk, ModelId,
@@ -971,7 +1074,8 @@ impl SessionRuntime {
     /// pickers can hydrate.
     pub fn spawn(opts: SpawnOptions) -> Self {
         let (cmd_tx, cmd_rx) = channel::<Command>();
-        let (event_tx, event_rx) = futures_unbounded::<RuntimeEvent>();
+        let (event_tx, event_rx) =
+            tokio::sync::mpsc::channel::<RuntimeEvent>(RUNTIME_EVENT_CAPACITY);
 
         let SpawnOptions {
             spawn_command,
