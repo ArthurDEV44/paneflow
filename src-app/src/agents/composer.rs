@@ -652,7 +652,7 @@ pub struct Composer {
     _pump_task: Option<Task<()>>,
 
     /// Push-based ACP event task. Awaits on a
-    /// [`futures::channel::mpsc::UnboundedReceiver`] handed over by
+    /// [`tokio::sync::mpsc::Receiver`] handed over by
     /// [`SessionRuntime::take_event_receiver`] and drains every queued
     /// event in one entity update per wake. Replaces the previous
     /// 16 ms poll path so first-token latency drops from "up to one
@@ -1113,13 +1113,16 @@ impl Composer {
     /// sat behind the pump tick.
     fn start_event_task(
         &mut self,
-        mut rx: futures::channel::mpsc::UnboundedReceiver<RuntimeEvent>,
+        mut rx: tokio::sync::mpsc::Receiver<RuntimeEvent>,
         cx: &mut Context<Self>,
     ) {
         let weak_self: WeakEntity<Self> = cx.weak_entity();
         self._event_task = Some(cx.spawn(async move |_, cx: &mut AsyncApp| {
-            use futures::stream::StreamExt;
-            while let Some(first) = rx.next().await {
+            // US-003 (cli-hardening-followup-2026-Q3): the runtime->GPUI
+            // event channel is now `tokio::sync::mpsc::Receiver`. The
+            // burst-coalesce idiom is preserved: block on the first
+            // event, then drain everything already queued in one render.
+            while let Some(first) = rx.recv().await {
                 let outcome = cx.update(|cx| {
                     weak_self.update(cx, |composer, cx| {
                         composer.handle_runtime_event(first, cx);
