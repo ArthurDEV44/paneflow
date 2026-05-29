@@ -278,6 +278,26 @@ impl PaneFlowApp {
                 }
                 cx.notify();
             }
+            pane::PaneEvent::CopySurfaceRef(surface_id) => {
+                // US-010: resolve the globally-disambiguated name (matching the
+                // MCP `list_panes` tool) and copy it to the clipboard. Fall back
+                // to the raw id if the surface vanished between click and here.
+                let sid = *surface_id;
+                let reference = self
+                    .collect_surface_meta(cx)
+                    .into_iter()
+                    .find(|m| m.surface_id == sid)
+                    .map(|m| m.name)
+                    .unwrap_or_else(|| sid.to_string());
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(reference.clone()));
+                self.show_toast(format!("Copied surface ref: {reference}"), cx);
+            }
+            pane::PaneEvent::SurfaceRenamed => {
+                // US-013: a tab's custom name changed — persist so it survives
+                // restart (the name rides in the layout's SurfaceDefinition).
+                self.save_session(cx);
+                cx.notify();
+            }
             pane::PaneEvent::Split(direction) => {
                 let direction = *direction;
                 const MAX_PANES: usize = 32;

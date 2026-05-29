@@ -221,6 +221,38 @@ pub fn data_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
+/// Stable, **non-versioned** absolute path of the embedded `paneflow-mcp`
+/// bridge binary (EP-001 US-003).
+///
+/// Unlike the shim / ai-hook helpers — which live under
+/// `cache_dir()/paneflow/bin/<VERSION>/` and are re-resolved by Paneflow on
+/// every launch — the bridge path is written into **external, persistent
+/// agent configs** (`~/.claude/settings.json`, `~/.codex/config.toml`, …) by
+/// `paneflow mcp install`. A version-pinned path would go stale on the next
+/// Paneflow update, and `cache_dir()` can be purged by the OS. So the bridge
+/// lives under `data_dir()` (durable, non-versioned):
+///
+/// - Linux:   `~/.local/share/paneflow/bin/paneflow-mcp`
+/// - macOS:   `~/Library/Application Support/paneflow/bin/paneflow-mcp`
+/// - Windows: `%LOCALAPPDATA%\paneflow\bin\paneflow-mcp.exe`
+///
+/// Returns `None` when `data_dir()` is unresolvable or unwritable. Callers
+/// (`ai_hooks::extract::ensure_bridge_extracted`, and later `paneflow mcp
+/// install`) must treat `None` as "refuse to register a config pointing at a
+/// path that does not exist" rather than fabricating a path.
+///
+/// This only **computes** the path; it does not extract. The byte
+/// materialization + SHA-compared atomic rewrite is
+/// `ai_hooks::extract::ensure_bridge_extracted`.
+pub fn bridge_binary_path() -> Option<PathBuf> {
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    Some(
+        data_dir()?
+            .join("bin")
+            .join(format!("paneflow-mcp{suffix}")),
+    )
+}
+
 #[cfg(unix)]
 fn check_sun_path_fits(path: &std::path::Path) -> bool {
     let bytes = path.as_os_str().len();

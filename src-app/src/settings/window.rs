@@ -58,6 +58,14 @@ pub struct SettingsWindow {
     pub(super) should_move: bool,
     pub(super) content_scroll: gpui::ScrollHandle,
     pub(super) content_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
+    /// US-012 — MCP bridge install affordance state. Read-only `status`
+    /// snapshot (cached so render never does config I/O), the last
+    /// `install` result (Ok per-agent recap, or Err refusal message), and
+    /// a busy flag while the background install runs. All three are
+    /// mutated only from the GPUI main thread inside `cx.spawn` callbacks.
+    pub(super) mcp_status: Option<Vec<paneflow_mcp_install::StatusReport>>,
+    pub(super) mcp_install: Option<Result<Vec<paneflow_mcp_install::InstallReport>, String>>,
+    pub(super) mcp_busy: bool,
 }
 
 impl SettingsWindow {
@@ -69,7 +77,7 @@ impl SettingsWindow {
 
         let config = paneflow_config::loader::load_config();
 
-        Self {
+        let window = Self {
             section: SettingsSection::Shortcuts,
             effective_shortcuts: keybindings::effective_shortcuts(&config.shortcuts),
             recording_shortcut_idx: None,
@@ -80,7 +88,16 @@ impl SettingsWindow {
             should_move: false,
             content_scroll: gpui::ScrollHandle::new(),
             content_drag: None,
-        }
+            mcp_status: None,
+            mcp_install: None,
+            mcp_busy: false,
+        };
+
+        // US-012: warm the MCP bridge status off the main thread so the
+        // AI-agent tab can render its button label without ever doing
+        // config I/O during a frame.
+        window.refresh_mcp_status(cx);
+        window
     }
 
     /// Compose the scrollable settings content area + visible scrollbar

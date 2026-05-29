@@ -60,6 +60,10 @@ impl LayoutTree {
                         SurfaceDefinition {
                             surface_type: Some("terminal".to_string()),
                             name,
+                            // US-013: persist the user's custom name so it
+                            // survives restart (keyed by layout position, since
+                            // surface_id is not restart-stable).
+                            custom_name: tv_ref.terminal.custom_name.clone(),
                             command: None,
                             cwd,
                             env: None,

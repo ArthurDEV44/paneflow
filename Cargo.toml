@@ -4,6 +4,8 @@ members = [
     "crates/paneflow-acp",
     "crates/paneflow-ai-hook",
     "crates/paneflow-config",
+    "crates/paneflow-mcp",
+    "crates/paneflow-mcp-install",
     "crates/paneflow-shim",
     "crates/paneflow-telemetry",
     "crates/paneflow-threads",

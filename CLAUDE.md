@@ -253,6 +253,32 @@ Active PRDs in `tasks/`:
 Architecture decision: `tasks/audit-v2-options-final.md`
 cmux reference spec: `CMUX_ANALYSIS.md` (417 lines, covers cmux Swift architecture)
 
+## MCP bridge (`paneflow-mcp`)
+
+`crates/paneflow-mcp/` is a stdio MCP server letting CLI agents (Claude Code,
+Codex, Gemini, opencode) read other panes' terminal output via the existing IPC
+socket. Read-only (`list_panes` / `read_pane` / `search_pane`).
+
+**Distribution (`paneflow mcp install`).** The bridge ships embedded in the
+`paneflow` binary (staged by `build.rs`, extracted at launch to a stable,
+non-versioned path under `data_dir()/paneflow/bin/` that survives updates —
+`runtime_paths::bridge_binary_path()`). `paneflow mcp install | uninstall |
+status` (intercepted in `main.rs` before GUI init) registers/removes/inspects
+the `paneflow` MCP entry across every detected agent. The engine is the
+GPU-free `crates/paneflow-mcp-install/` crate (idempotent, no-clobber, backup +
+atomic write; `toml_edit` kept out of the embedded bridge per budget). Per-agent
+shapes: Claude Code `~/.claude.json` `mcpServers` (prefers `claude mcp add`),
+Codex `~/.codex/config.toml` `[mcp_servers.*]` (prefers `codex mcp add`), Gemini
+`~/.gemini/settings.json` `mcpServers` (`trust:true`), opencode
+`~/.config/opencode/opencode.json` key `mcp` (`command` array, `type:local`).
+The repo's `.mcp.json` still auto-wires Claude Code inside this project. Full
+setup + per-agent config: `docs/mcp-bridge.md`. There is also a Settings →
+AI Agent → "MCP bridge" button that runs the same install off the render
+thread (state-aware label: Install / Repair / Reinstall). PRDs:
+`tasks/prd-pane-context-bridge-2026-Q3.md` (bridge),
+`tasks/prd-mcp-bridge-distribution-2026-Q3.md` (distribution, all 12 stories /
+EP-001..004 done).
+
 ## Commit convention
 
 ```

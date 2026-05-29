@@ -264,6 +264,7 @@ impl Default for crate::schema::SurfaceDefinition {
         Self {
             surface_type: Some("terminal".to_string()),
             name: None,
+            custom_name: None,
             command: None,
             cwd: None,
             env: None,

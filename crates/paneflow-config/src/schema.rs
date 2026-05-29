@@ -678,6 +678,11 @@ pub struct SurfaceDefinition {
     pub surface_type: Option<String>,
     /// Display name for this surface.
     pub name: Option<String>,
+    /// User-assigned custom name (US-013). When set, it overrides the
+    /// auto-derived surface name everywhere (sidebar/IPC `surface.list`/MCP),
+    /// and survives restart via this field. Cleared by renaming to empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_name: Option<String>,
     /// Shell command to run in this surface.
     pub command: Option<String>,
     /// Working directory override for this surface.

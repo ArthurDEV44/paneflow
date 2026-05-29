@@ -86,6 +86,11 @@ paneflow-threads = { path = "../crates/paneflow-threads" }
 # `paneflow-trust` member can emit events without pulling the desktop binary
 # into its dep graph.
 paneflow-telemetry = { workspace = true }
+# EP-002 (prd-mcp-bridge-distribution): GPU-free install engine behind
+# `paneflow mcp install|uninstall|status`. Kept in its own crate so its
+# `toml_edit` dep stays out of the size-budgeted embedded `paneflow-mcp`
+# bridge binary (PRD decision D3).
+paneflow-mcp-install = { path = "../crates/paneflow-mcp-install" }
 
 # File system watcher (OS-native: inotify/FSEvents/ReadDirectoryChanges)
 notify = "7"

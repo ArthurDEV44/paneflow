@@ -144,6 +144,10 @@ pub struct TerminalState {
     /// Updated via OSC 7 escape sequence (push from shell) or on-demand
     /// via `cwd_now()` (fallback for shells that don't emit OSC 7).
     pub current_cwd: Option<String>,
+    /// User-assigned custom name (US-013). When `Some`, it overrides the
+    /// auto-derived surface name in `surface.list` / MCP / the sidebar, and is
+    /// persisted to `session.json`. `None` falls back to derivation.
+    pub custom_name: Option<String>,
     /// OSC 52 clipboard access mode (default: copy-only for security).
     pub osc52_mode: Osc52Mode,
     /// Deferred clipboard operations from sync() — drained in the poll loop
@@ -334,6 +338,7 @@ impl TerminalState {
             exited: None,
             child_pid: pty.child_pid,
             current_cwd: None,
+            custom_name: None,
             osc52_mode: Osc52Mode::CopyOnly,
             pending_clipboard_ops: Vec::new(),
             pending_size_ops: Vec::new(),
@@ -394,6 +399,7 @@ impl TerminalState {
             exited: None,
             child_pid: 0,
             current_cwd: None,
+            custom_name: None,
             osc52_mode: Osc52Mode::Disabled,
             pending_clipboard_ops: Vec::new(),
             pending_size_ops: Vec::new(),
@@ -758,6 +764,82 @@ impl TerminalState {
         }
     }
 
+    /// Best-effort foreground command of this surface, for naming (US-001,
+    /// prd-pane-context-bridge). Returns the command line (argv joined by
+    /// spaces) of the process currently in the shell's foreground, or the
+    /// shell itself when idle (which the namer maps to `shell`). `None` on
+    /// platforms without a cheap lookup — callers fall back to the OSC title.
+    #[cfg(target_os = "linux")]
+    pub fn foreground_command(&self) -> Option<String> {
+        // The most-recently-spawned child of the shell approximates the
+        // foreground job for the common interactive case (one job at a time).
+        // With no children the shell is idle → report its own comm so naming
+        // resolves to `shell`.
+        let children_path = format!("/proc/{pid}/task/{pid}/children", pid = self.child_pid);
+        let target = std::fs::read_to_string(&children_path)
+            .ok()
+            .and_then(|s| {
+                s.split_whitespace()
+                    .last()
+                    .and_then(|p| p.parse::<u32>().ok())
+            })
+            .unwrap_or(self.child_pid);
+        read_proc_command(target)
+    }
+
+    /// macOS/Windows stub: no cheap foreground lookup wired in v1, so naming
+    /// degrades to the OSC title (cross-platform rule — graceful fallback).
+    #[cfg(not(target_os = "linux"))]
+    pub fn foreground_command(&self) -> Option<String> {
+        None
+    }
+
+    /// Search the scrollback for `pattern` (plain-text, case-insensitive) and
+    /// return matching lines as `(grid_line, text)` pairs, deduped by line and
+    /// capped at `max_matches`. The bool is `true` when the cap truncated the
+    /// result. Backs the `surface.search` IPC method (US-004). The grid lock
+    /// is held only for text extraction, never across an await.
+    pub fn search_scrollback(
+        &self,
+        pattern: &str,
+        max_matches: usize,
+    ) -> (Vec<(i32, String)>, bool) {
+        if pattern.is_empty() || max_matches == 0 {
+            return (Vec::new(), false);
+        }
+        let result = crate::search::search_term(&self.term, pattern, false);
+
+        // Collect unique line numbers in order of first appearance.
+        let mut seen = std::collections::HashSet::new();
+        let mut rows: Vec<i32> = Vec::new();
+        let mut hit_cap = false;
+        for m in &result.matches {
+            let row = m.start.line.0;
+            if seen.insert(row) {
+                rows.push(row);
+                if rows.len() >= max_matches {
+                    hit_cap = true;
+                    break;
+                }
+            }
+        }
+
+        // Extract each matched line's text under a single read lock.
+        let term = self.term.lock_unfair();
+        let cols = term.last_column();
+        let out: Vec<(i32, String)> = rows
+            .into_iter()
+            .map(|row| {
+                let text = term.bounds_to_string(
+                    AlacPoint::new(GridLine(row), GridCol(0)),
+                    AlacPoint::new(GridLine(row), cols),
+                );
+                (row, text.trim_end().to_string())
+            })
+            .collect();
+        (out, hit_cap)
+    }
+
     /// Feed saved scrollback text into the terminal grid via VTE processor.
     /// Called during session restore, before the shell has produced output.
     /// Prepends `\x1b[0m` (SGR reset) to clear any dangling style state from
@@ -1043,6 +1125,32 @@ impl Drop for TerminalState {
     }
 }
 
+/// Read a process's command line from `/proc/<pid>/cmdline`, falling back to
+/// `/proc/<pid>/comm` when the cmdline is empty (kernel thread / zombie).
+#[cfg(target_os = "linux")]
+fn read_proc_command(pid: u32) -> Option<String> {
+    if let Ok(bytes) = std::fs::read(format!("/proc/{pid}/cmdline"))
+        && let Some(cmd) = command_from_cmdline(&bytes)
+    {
+        return Some(cmd);
+    }
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    let trimmed = comm.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Parse a `/proc/<pid>/cmdline` blob (NUL-separated argv) into a space-joined
+/// command string. Pure, so the parsing is unit-testable without `/proc`.
+#[cfg(target_os = "linux")]
+fn command_from_cmdline(bytes: &[u8]) -> Option<String> {
+    let parts: Vec<String> = bytes
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1287,5 +1395,23 @@ mod tests {
             PathBuf::from(&bin_dir),
             "US-009 AC: PANEFLOW_BIN_DIR must be first on PATH"
         );
+    }
+
+    // US-001 (prd-pane-context-bridge): /proc cmdline parsing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn command_from_cmdline_joins_nul_separated_argv() {
+        assert_eq!(
+            super::command_from_cmdline(b"cargo\0run\0--release\0"),
+            Some("cargo run --release".to_string())
+        );
+        // Trailing/leading NULs and empty fields are dropped.
+        assert_eq!(
+            super::command_from_cmdline(b"\0node\0\0server.js\0"),
+            Some("node server.js".to_string())
+        );
+        // Empty blob → None (kernel thread / zombie).
+        assert_eq!(super::command_from_cmdline(b""), None);
+        assert_eq!(super::command_from_cmdline(b"\0\0"), None);
     }
 }

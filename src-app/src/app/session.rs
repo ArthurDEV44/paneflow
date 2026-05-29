@@ -288,6 +288,12 @@ impl PaneFlowApp {
                     if let Some(ref scrollback) = surface.scrollback {
                         t.read(cx).terminal.restore_scrollback(scrollback);
                     }
+                    // US-013: re-apply the persisted custom name.
+                    if let Some(ref custom) = surface.custom_name {
+                        t.update(cx, |view, _cx| {
+                            view.terminal.custom_name = Some(custom.clone());
+                        });
+                    }
                     cx.subscribe(&t, Self::handle_terminal_event).detach();
                     if surface.focus == Some(true) {
                         focus_idx = i;

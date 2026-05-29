@@ -18,26 +18,30 @@
 //!    still embeds the previous value until an unrelated source change
 //!    forces a rebuild.
 //!
-//! 2. **US-008 — AI-hook binary staging.** Build the
-//!    `paneflow-shim` and `paneflow-ai-hook` workspace binaries for the
-//!    current target triple and stage them into
+//! 2. **US-008 / EP-001 — embedded binary staging.** Build the
+//!    `paneflow-shim`, `paneflow-ai-hook` and `paneflow-mcp` workspace
+//!    binaries for the current target triple and stage them into
 //!    `src-app/target/embed/bin/<target>/` so the `Bins` `RustEmbed` struct
 //!    in `src-app/src/assets.rs` picks them up at compile time. A nested
 //!    `cargo build` is used rather than relying on workspace build ordering
-//!    because `paneflow-app` does not directly depend on either of those
+//!    because `paneflow-app` does not directly depend on any of those
 //!    crates — without this step they would not be guaranteed to exist when
-//!    `rust-embed` expands.
+//!    `rust-embed` expands. `paneflow-mcp` (the MCP pane-context bridge) is
+//!    embedded here so every package ships it with zero new CI step; it is
+//!    extracted at launch to a stable path by
+//!    `ai_hooks::extract::ensure_bridge_extracted` (see EP-001 US-003).
 //!
 //!    The nested build uses a **separate `--target-dir`**
 //!    (`<workspace>/target/embed-build`) so it does not fight the outer
 //!    cargo for the same target-dir lock. The cost is duplicated
-//!    compilation of the shim + hook dependency closure; both closures are
-//!    tiny (serde_json, tempfile, interprocess) so the overhead is
-//!    acceptable and far cheaper than designing a shared build graph.
+//!    compilation of the shim + hook + bridge dependency closure; all three
+//!    closures are tiny (serde_json, tempfile, interprocess) so the overhead
+//!    is acceptable and far cheaper than designing a shared build graph.
 //!
 //!    Size budget: total embedded bytes per target triple must stay
-//!    ≤ 1 MB. The check fails the outer build when exceeded rather than
-//!    silently shipping a bloated `paneflow` binary.
+//!    ≤ the documented cap on `EMBED_SIZE_LIMIT_BYTES`. The check fails the
+//!    outer build when exceeded rather than silently shipping a bloated
+//!    `paneflow` binary.
 //!
 //!    Escape hatch: setting `PANEFLOW_SKIP_EMBED_BUILD=1` skips the nested
 //!    build — useful in CI pre-stages that build the nested crates
@@ -52,9 +56,25 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Hard cap on the total bytes staged under `target/embed/bin/<target>/`.
-/// Enforced to keep the main PaneFlow binary slim; the PRD sets the
-/// per-OS/per-arch budget at ≤ 1 MB with a month-3 target of ≤ 1.0 MB.
-const EMBED_SIZE_LIMIT_BYTES: u64 = 1_048_576;
+/// Enforced to keep the main PaneFlow binary slim.
+///
+/// EP-001 US-002 — measured release-min sizes (Linux x86_64, 2026-05-29):
+///
+/// ```text
+///   paneflow-shim      455_320 B
+///   paneflow-ai-hook   360_448 B
+///   paneflow-mcp       426_216 B   (added by EP-001 US-001)
+///   ----------------------------
+///   total            1_241_984 B  (~1.18 MB)
+/// ```
+///
+/// The previous 1 MB cap (shim + ai-hook only ≈ 815 KB) no longer fits once
+/// the MCP bridge is embedded. Raised to 1.75 MiB (1_835_008 B), leaving
+/// ~593 KB / 48% headroom over the Linux total to absorb per-triple variance
+/// (Windows `.exe` and macOS Mach-O binaries run larger than ELF). The guard
+/// stays active: the outer build still fails if the staged total exceeds
+/// this cap, so an unexpectedly bloated dependency cannot ship silently.
+const EMBED_SIZE_LIMIT_BYTES: u64 = 1_835_008;
 
 fn main() {
     // 1. Telemetry env vars (unchanged behavior — preserved so a key
@@ -101,6 +121,10 @@ fn main() {
         "cargo:rerun-if-changed={}",
         workspace_root.join("crates/paneflow-ai-hook").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        workspace_root.join("crates/paneflow-mcp").display()
+    );
     // Also rerun if the root manifest changes (workspace-wide lint policy,
     // dep version bumps, etc., affect the staged binaries).
     println!(
@@ -124,9 +148,9 @@ fn main() {
 }
 
 /// Invoke a child `cargo build` against the workspace to produce the
-/// `paneflow-shim` and `paneflow-ai-hook` binaries for `target`, then
-/// copy them into `embed_dir`. Panics (fails the outer build) on any
-/// non-success exit, non-existent artifact, or IO error.
+/// `paneflow-shim`, `paneflow-ai-hook` and `paneflow-mcp` binaries for
+/// `target`, then copy them into `embed_dir`. Panics (fails the outer
+/// build) on any non-success exit, non-existent artifact, or IO error.
 fn stage_ai_hook_binaries(workspace_root: &Path, target: &str, embed_dir: &Path) {
     // Use a dedicated `--target-dir` so we do not fight the outer cargo
     // for `target/debug/.cargo-lock` or `target/release/.cargo-lock`.
@@ -152,6 +176,8 @@ fn stage_ai_hook_binaries(workspace_root: &Path, target: &str, embed_dir: &Path)
         .arg("paneflow-shim")
         .arg("-p")
         .arg("paneflow-ai-hook")
+        .arg("-p")
+        .arg("paneflow-mcp")
         // Prevent the nested cargo from inheriting the outer cargo's
         // target-dir via `CARGO_TARGET_DIR` — the explicit `--target-dir`
         // above already pins it, but removing the env avoids confusion if
@@ -167,7 +193,7 @@ fn stage_ai_hook_binaries(workspace_root: &Path, target: &str, embed_dir: &Path)
         .unwrap_or_else(|e| panic!("US-008: failed to spawn nested cargo build: {e}"));
     if !status.success() {
         panic!(
-            "US-008: nested `cargo build --profile {profile} -p paneflow-shim -p paneflow-ai-hook --target {target}` \
+            "US-008: nested `cargo build --profile {profile} -p paneflow-shim -p paneflow-ai-hook -p paneflow-mcp --target {target}` \
              failed with {status}. Re-run the outer build with verbose logging to see the child cargo output."
         );
     }
@@ -184,9 +210,9 @@ fn stage_ai_hook_binaries(workspace_root: &Path, target: &str, embed_dir: &Path)
         ""
     };
 
-    // Copy only the two binaries we need; anything else in
+    // Copy only the three binaries we need; anything else in
     // `artifact_dir` is a transitive build product we don't want to embed.
-    for bin in ["paneflow-shim", "paneflow-ai-hook"] {
+    for bin in ["paneflow-shim", "paneflow-ai-hook", "paneflow-mcp"] {
         let src = artifact_dir.join(format!("{bin}{bin_exe}"));
         let dst = embed_dir.join(format!("{bin}{bin_exe}"));
 
@@ -210,7 +236,7 @@ fn stage_ai_hook_binaries(workspace_root: &Path, target: &str, embed_dir: &Path)
     }
 }
 
-/// Enforce the ≤ 1 MB total embedded-bytes cap defined by the PRD.
+/// Enforce the `EMBED_SIZE_LIMIT_BYTES` total embedded-bytes cap.
 /// Inspects only top-level files in `embed_dir` — there are no subdirs
 /// in the per-target staging layout so a recursive walk is not warranted.
 fn enforce_embed_size_budget(embed_dir: &Path) {
@@ -242,10 +268,11 @@ fn enforce_embed_size_budget(embed_dir: &Path) {
             details.push_str(&format!("  {name}: {size} bytes\n"));
         }
         panic!(
-            "US-008: embedded AI-hook binaries exceed the 1 MB cap ({total} > {EMBED_SIZE_LIMIT_BYTES} bytes).\n\
+            "US-008/EP-001: embedded binaries exceed the {EMBED_SIZE_LIMIT_BYTES}-byte cap ({total} bytes).\n\
              Staging dir: {}\n\
              Per-file:\n{details}\
-             Shrink the shim/ai-hook via smaller deps or tighter release-min profile.",
+             Shrink shim/ai-hook/paneflow-mcp via smaller deps or a tighter release-min profile, \
+             or raise EMBED_SIZE_LIMIT_BYTES with a fresh measurement note.",
             embed_dir.display()
         );
     }
