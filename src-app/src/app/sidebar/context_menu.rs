@@ -5,11 +5,12 @@
 //! Part of the US-025 sidebar decomposition.
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton,
+    AnyElement, App, ClickEvent, Context, Entity, InteractiveElement, IntoElement, MouseButton,
     ParentElement, SharedString, Styled, Window, deferred, div, prelude::*, px,
 };
 
-use crate::{PaneFlowApp, WorkspaceContextMenu};
+use crate::pane::Pane;
+use crate::{PaneFlowApp, TabContextMenu, WorkspaceContextMenu};
 
 impl PaneFlowApp {
     pub(crate) fn shortcut_for_description(&self, description: &str) -> Option<&str> {
@@ -241,6 +242,137 @@ impl PaneFlowApp {
                     )
                 }),
         );
+
+        deferred(context_menu).priority(3).into_any_element()
+    }
+
+    /// Build the deferred "Move to pane…" tab context menu (EP-002 US-006, the
+    /// WCAG 2.5.7 non-drag alternative to a cross-pane drag). Lists every other
+    /// pane in the source pane's workspace; selecting one moves the tab there
+    /// through the same [`crate::pane_drag::move_tab_into`] path the drag uses,
+    /// so the PTY is preserved and an emptied source pane is reflowed away. When
+    /// the source pane is the workspace's only pane, the menu shows a disabled
+    /// note instead of move targets.
+    pub(crate) fn render_tab_context_menu(
+        &self,
+        menu: TabContextMenu,
+        ui: crate::theme::UiColors,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let source = menu.source_pane.clone();
+        let source_idx = menu.tab_idx;
+
+        // Enumerate the panes of the workspace that owns the source pane, in
+        // tree order, dropping the source itself.
+        let others: Vec<(usize, Entity<Pane>)> = self
+            .workspaces
+            .iter()
+            .find_map(|ws| {
+                ws.root
+                    .as_ref()
+                    .filter(|r| r.collect_leaves().contains(&source))
+                    .map(|r| r.collect_leaves())
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, p)| p != &source)
+            .collect();
+
+        let rows = others.len().max(1);
+        let menu_height = px(16. + rows as f32 * 27.);
+        let win_h = window.window_bounds().get_bounds().size.height;
+        let menu_y = if menu.position.y + menu_height > win_h {
+            (menu.position.y - menu_height).max(px(0.))
+        } else {
+            menu.position.y
+        };
+
+        let mut context_menu = div()
+            .id("tab-context-menu")
+            .occlude()
+            .absolute()
+            .left(menu.position.x)
+            .top(menu_y)
+            .w(px(248.))
+            .bg(ui.overlay)
+            .border_1()
+            .border_color(ui.border)
+            .rounded(px(8.))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .p(px(4.))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.tab_menu_open = None;
+                cx.notify();
+            }))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
+
+        if others.is_empty() {
+            // AC US-006: with a single pane there is nowhere to move to.
+            context_menu = context_menu.child(
+                div()
+                    .px(px(8.))
+                    .py(px(5.))
+                    .rounded(px(4.))
+                    .text_size(px(11.))
+                    .text_color(ui.muted)
+                    .child("No other panes"),
+            );
+        } else {
+            for (orig_idx, dest) in others {
+                let label = format!(
+                    "Move to Pane {} — {}",
+                    orig_idx + 1,
+                    dest.read(cx).active_tab_label(cx)
+                );
+                let dest_for_click = dest.clone();
+                let source_for_click = source.clone();
+                context_menu = context_menu.child(self.render_context_menu_item(
+                    SharedString::from(format!("tab-move-{orig_idx}")),
+                    &label,
+                    None,
+                    ui,
+                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.tab_menu_open = None;
+                        cx.stop_propagation();
+                        // Both panes are held alive by strong refs, but either
+                        // could have been removed from the tree while the menu
+                        // was open (e.g. a background shell exited and emptied
+                        // its pane). Moving into/out of an off-tree pane would
+                        // be a confusing no-op, so verify both are still live
+                        // leaves of the same workspace before committing.
+                        let both_live = this.workspaces.iter().any(|ws| {
+                            ws.root.as_ref().is_some_and(|r| {
+                                let leaves = r.collect_leaves();
+                                leaves.contains(&source_for_click)
+                                    && leaves.contains(&dest_for_click)
+                            })
+                        });
+                        if !both_live {
+                            cx.notify();
+                            return;
+                        }
+                        dest_for_click.update(cx, |dest_pane, dest_cx| {
+                            let dest_idx = dest_pane.tabs.len();
+                            crate::pane_drag::move_tab_into(
+                                dest_pane,
+                                dest_cx,
+                                &source_for_click,
+                                source_idx,
+                                dest_idx,
+                                window,
+                            );
+                        });
+                        this.save_session(cx);
+                        cx.notify();
+                    }),
+                ));
+            }
+        }
 
         deferred(context_menu).priority(3).into_any_element()
     }

@@ -137,17 +137,10 @@ impl PaneFlowApp {
                 self.save_session(cx);
                 cx.notify();
             }
-            pane::PaneEvent::OpenClaudeSessions(position) => {
-                // Toggle: clicking the icon again with the menu open closes it.
-                if self.claude_sessions_menu_open.is_some() {
-                    self.claude_sessions_menu_open = None;
-                    self.claude_sessions.clear();
-                    self.codex_sessions.clear();
-                    self.opencode_sessions.clear();
-                    self.claude_sessions_cwd = None;
-                    self.claude_sessions_pane = None;
-                    self.sessions_active_agent = crate::agent_sessions::SessionAgent::Claude;
-                    cx.notify();
+            pane::PaneEvent::ToggleAgentSessions => {
+                // Toggle: clicking the icon again with the sidebar open closes it.
+                if self.sessions_sidebar_open {
+                    self.close_sessions_sidebar(cx);
                     return;
                 }
 
@@ -163,32 +156,34 @@ impl PaneFlowApp {
                     })
                 });
 
-                // Mutually exclusive with the other dropdowns; matches the
-                // title-bar / profile / notif menu pattern.
+                // Mutual exclusion: only one right column. Opening sessions
+                // closes the Files sidebar (and vice-versa, in
+                // `toggle_files_sidebar`).
+                if self.files_sidebar_open {
+                    self.close_files_sidebar(cx);
+                }
+
+                // Close the floating dropdowns so they don't paint over the
+                // newly opened sidebar (the sidebar itself is docked, not an
+                // overlay, so it does not need mutual exclusion with itself).
                 self.workspace_menu_open = None;
                 self.profile_menu_open = None;
 
-                self.claude_sessions_menu_open = Some(*position);
+                self.sessions_sidebar_open = true;
                 self.claude_sessions_cwd = cwd_str.clone();
                 self.claude_sessions_pane = Some(pane.downgrade());
                 self.claude_sessions.clear();
                 self.codex_sessions.clear();
                 self.opencode_sessions.clear();
-                // Seed the active tab to the first agent the user has kept
-                // visible in Settings → AI Agent. Falling back to Claude
-                // when the list is empty is harmless: with no agent enabled
-                // the sessions icon itself is hidden in `pane.rs`, so this
-                // open path can't fire — the value just needs to satisfy
-                // the field's type.
+                // Fresh per-group state for this open: all expanded, capped at 5,
+                // not-yet-scanning (each spawned scan flips its own flag below).
+                self.sessions_group_collapsed = [false; 3];
+                self.sessions_group_show_all = [false; 3];
+                self.sessions_scanning = [false; 3];
                 let enabled_agents = crate::agent_sessions::enabled_session_agents();
-                self.sessions_active_agent = enabled_agents
-                    .first()
-                    .copied()
-                    .unwrap_or(crate::agent_sessions::SessionAgent::Claude);
-                // Fresh handle so a previous scroll offset doesn't bleed
-                // into the new popover.
+                // Fresh handle so a previous scroll offset doesn't bleed into
+                // the new sidebar.
                 self.claude_sessions_scroll = gpui::ScrollHandle::new();
-                self.claude_sessions_drag = None;
 
                 if let Some(cwd) = cwd_str {
                     // Parallel scans — Claude Code under
@@ -214,6 +209,10 @@ impl PaneFlowApp {
                         enabled_agents.contains(&crate::agent_sessions::SessionAgent::OpenCode);
 
                     if scan_claude {
+                        let idx = crate::app::sessions_sidebar::agent_index(
+                            crate::agent_sessions::SessionAgent::Claude,
+                        );
+                        self.sessions_scanning[idx] = true;
                         let claude_cwd_scan = cwd.clone();
                         let claude_cwd_match = cwd.clone();
                         cx.spawn(async move |this, cx| {
@@ -222,11 +221,12 @@ impl PaneFlowApp {
                             })
                             .await;
                             let _ = this.update(cx, |app, cx| {
-                                if app.claude_sessions_menu_open.is_some()
+                                if app.sessions_sidebar_open
                                     && app.claude_sessions_cwd.as_deref()
                                         == Some(claude_cwd_match.as_str())
                                 {
                                     app.claude_sessions = sessions;
+                                    app.sessions_scanning[idx] = false;
                                     cx.notify();
                                 }
                             });
@@ -235,6 +235,10 @@ impl PaneFlowApp {
                     }
 
                     if scan_codex {
+                        let idx = crate::app::sessions_sidebar::agent_index(
+                            crate::agent_sessions::SessionAgent::Codex,
+                        );
+                        self.sessions_scanning[idx] = true;
                         let codex_cwd_scan = cwd.clone();
                         let codex_cwd_match = cwd.clone();
                         cx.spawn(async move |this, cx| {
@@ -243,11 +247,12 @@ impl PaneFlowApp {
                             })
                             .await;
                             let _ = this.update(cx, |app, cx| {
-                                if app.claude_sessions_menu_open.is_some()
+                                if app.sessions_sidebar_open
                                     && app.claude_sessions_cwd.as_deref()
                                         == Some(codex_cwd_match.as_str())
                                 {
                                     app.codex_sessions = sessions;
+                                    app.sessions_scanning[idx] = false;
                                     cx.notify();
                                 }
                             });
@@ -256,6 +261,10 @@ impl PaneFlowApp {
                     }
 
                     if scan_opencode {
+                        let idx = crate::app::sessions_sidebar::agent_index(
+                            crate::agent_sessions::SessionAgent::OpenCode,
+                        );
+                        self.sessions_scanning[idx] = true;
                         let opencode_cwd_scan = cwd.clone();
                         let opencode_cwd_match = cwd;
                         cx.spawn(async move |this, cx| {
@@ -264,11 +273,12 @@ impl PaneFlowApp {
                             })
                             .await;
                             let _ = this.update(cx, |app, cx| {
-                                if app.claude_sessions_menu_open.is_some()
+                                if app.sessions_sidebar_open
                                     && app.claude_sessions_cwd.as_deref()
                                         == Some(opencode_cwd_match.as_str())
                                 {
                                     app.opencode_sessions = sessions;
+                                    app.sessions_scanning[idx] = false;
                                     cx.notify();
                                 }
                             });
@@ -277,6 +287,12 @@ impl PaneFlowApp {
                     }
                 }
                 cx.notify();
+            }
+            pane::PaneEvent::ToggleFilesSidebar => {
+                // Open/close the docked Files tree for the active workspace's
+                // folder. Mutual exclusion with the sessions sidebar is handled
+                // inside `toggle_files_sidebar`.
+                self.toggle_files_sidebar(cx);
             }
             pane::PaneEvent::CopySurfaceRef(surface_id) => {
                 // US-010: resolve the globally-disambiguated name (matching the
@@ -295,6 +311,334 @@ impl PaneFlowApp {
             pane::PaneEvent::SurfaceRenamed => {
                 // US-013: a tab's custom name changed — persist so it survives
                 // restart (the name rides in the layout's SurfaceDefinition).
+                self.save_session(cx);
+                cx.notify();
+            }
+            pane::PaneEvent::OpenTabMenu { tab_idx, position } => {
+                // EP-002 US-006: open the "Move to pane…" menu for this tab.
+                // Mutually exclusive with the other popovers, matching the
+                // workspace/profile/sessions menu pattern.
+                self.workspace_menu_open = None;
+                self.profile_menu_open = None;
+                self.tab_menu_open = Some(crate::TabContextMenu {
+                    source_pane: pane.clone(),
+                    tab_idx: *tab_idx,
+                    position: *position,
+                });
+                cx.notify();
+            }
+            pane::PaneEvent::DropSplit {
+                edge,
+                source_pane,
+                source_idx,
+                duplicate,
+            } => {
+                use crate::pane_drag::DropEdge;
+                let edge = *edge;
+                let source_idx = *source_idx;
+                let duplicate = *duplicate;
+                let source_pane = source_pane.clone();
+                let target = &pane; // the emitting pane is the split target
+
+                const MAX_PANES: usize = 32;
+
+                // Resolve the workspace owning the target pane.
+                let Some(ws_idx) = self.workspaces.iter().position(|ws| {
+                    ws.root
+                        .as_ref()
+                        .is_some_and(|r| r.collect_leaves().contains(target))
+                }) else {
+                    return;
+                };
+
+                // A split adds one pane — refuse at the cap (edge case #5).
+                if self.workspaces[ws_idx]
+                    .root
+                    .as_ref()
+                    .map(|r| r.leaf_count())
+                    .unwrap_or(0)
+                    >= MAX_PANES
+                {
+                    return;
+                }
+
+                // Refuse a meaningless self-split: promoting a pane's *only*
+                // tab onto its own edge just replaces it with an identical
+                // single-tab pane (edge case #9). A pane with >1 tab can
+                // legitimately split one tab out.
+                if !duplicate && &source_pane == target && source_pane.read(cx).tabs.len() <= 1 {
+                    return;
+                }
+
+                let ws_id = self.workspaces[ws_idx].id;
+
+                // Build the new pane: a fresh terminal at the dragged tab's cwd
+                // (duplicate, US-010) or the moved tab itself (US-009).
+                let new_pane = if duplicate {
+                    let cwd = source_pane
+                        .read(cx)
+                        .tabs
+                        .get(source_idx)
+                        .and_then(crate::pane::TabContent::as_terminal)
+                        .and_then(|t| t.read(cx).terminal.cwd_now());
+                    let term = cx.new(|cx| TerminalView::with_cwd(ws_id, cwd, None, cx));
+                    self.create_pane(term, ws_id, cx)
+                } else {
+                    let Some(tab) =
+                        source_pane.update(cx, |src, _| src.take_tab_for_move(source_idx))
+                    else {
+                        return;
+                    };
+                    let p = cx.new(|cx| crate::pane::Pane::new_with_tab(tab, ws_id, cx));
+                    cx.subscribe(&p, Self::handle_pane_event).detach();
+                    p
+                };
+
+                // `split_at_pane` always inserts the new pane *after* the
+                // target, so the leading edges (Up/Left) additionally swap so
+                // the moved/duplicated pane ends up on the correct side.
+                let (direction, swap) = match edge {
+                    DropEdge::Up => (crate::layout::SplitDirection::Horizontal, true),
+                    DropEdge::Down => (crate::layout::SplitDirection::Horizontal, false),
+                    DropEdge::Left => (crate::layout::SplitDirection::Vertical, true),
+                    DropEdge::Right => (crate::layout::SplitDirection::Vertical, false),
+                };
+                if let Some(root) = &mut self.workspaces[ws_idx].root {
+                    root.split_at_pane(target, direction, new_pane.clone());
+                    if swap {
+                        root.swap_panes(target, &new_pane);
+                    }
+                }
+
+                // Move-only: reflow away the source pane if it emptied.
+                if !duplicate {
+                    source_pane.update(cx, |src, src_cx| {
+                        if src.tabs.is_empty() {
+                            src_cx.emit(pane::PaneEvent::Remove);
+                        } else {
+                            src_cx.notify();
+                        }
+                    });
+                }
+
+                self.workspaces[ws_idx].propagate_custom_buttons(cx);
+                // Focus the new pane on next render (no Window here).
+                self.pending_pane_focus = Some(new_pane);
+                self.save_session(cx);
+                cx.notify();
+            }
+            pane::PaneEvent::DuplicateTabInto {
+                source_pane,
+                source_idx,
+                dest_idx,
+            } => {
+                // EP-003 US-010: a strip/center drop with the duplicate modifier
+                // held. Spawn a fresh terminal at the dragged tab's CWD and
+                // insert it into the emitting (destination) pane; the original
+                // stays put. Spawning here (not in the Pane) is required so the
+                // app-level CWD/port subscription gets wired, exactly like the
+                // `DropSplit` duplicate path and `create_pane`.
+                let source_idx = *source_idx;
+                let dest_idx = *dest_idx;
+                let source_pane = source_pane.clone();
+                let dest = pane.clone(); // the emitting pane is the destination
+
+                // Resolve the workspace owning the destination pane (for ws_id).
+                // A bail here also covers the race where `dest` was removed from
+                // the tree between the drop emit and this handler.
+                let Some(ws_idx) = self.workspaces.iter().position(|ws| {
+                    ws.root
+                        .as_ref()
+                        .is_some_and(|r| r.collect_leaves().contains(&dest))
+                }) else {
+                    return;
+                };
+                let ws_id = self.workspaces[ws_idx].id;
+
+                // CWD of the dragged terminal. `None` (non-terminal tab, or a
+                // stale `source_idx`) → fresh terminal at the default cwd,
+                // matching `DropSplit`'s duplicate path.
+                let cwd = source_pane
+                    .read(cx)
+                    .tabs
+                    .get(source_idx)
+                    .and_then(crate::pane::TabContent::as_terminal)
+                    .and_then(|t| t.read(cx).terminal.cwd_now());
+                let term = cx.new(|cx| TerminalView::with_cwd(ws_id, cwd, None, cx));
+                // App-level subscription so CWD/port/service events route
+                // (mirrors `create_pane`); the pane-level subscription is wired
+                // by `insert_duplicated_tab`.
+                cx.subscribe(&term, Self::handle_terminal_event).detach();
+
+                dest.update(cx, |p, cx| {
+                    p.insert_duplicated_tab(crate::pane::TabContent::Terminal(term), dest_idx, cx);
+                });
+                self.workspaces[ws_idx].propagate_custom_buttons(cx);
+                // Focus the destination pane (its newly-selected duplicate tab)
+                // on next render (no Window here).
+                self.pending_pane_focus = Some(dest);
+                self.save_session(cx);
+                cx.notify();
+            }
+            pane::PaneEvent::DropSessionSplit {
+                edge,
+                agent,
+                session_id,
+                cwd,
+            } => {
+                // A session row was dropped out of the sidebar onto a pane.
+                // Spawn a fresh terminal at the session's cwd running the
+                // agent's resume command, then split the target pane toward the
+                // previewed edge (or append it here as a tab for center).
+                use crate::pane_drag::DropEdge;
+                let edge = *edge;
+                let agent = *agent;
+                let session_id = session_id.clone();
+                let cwd = cwd.clone();
+                let target = pane.clone(); // the emitting pane is the target
+
+                const MAX_PANES: usize = 32;
+
+                let Some(ws_idx) = self.workspaces.iter().position(|ws| {
+                    ws.root
+                        .as_ref()
+                        .is_some_and(|r| r.collect_leaves().contains(&target))
+                }) else {
+                    return;
+                };
+
+                // A split adds one pane — refuse at the cap (edge case #5). A
+                // center drop appends a tab to an existing pane, so it doesn't
+                // grow the count and isn't capped.
+                if edge.is_some()
+                    && self.workspaces[ws_idx]
+                        .root
+                        .as_ref()
+                        .map(|r| r.leaf_count())
+                        .unwrap_or(0)
+                        >= MAX_PANES
+                {
+                    return;
+                }
+
+                let ws_id = self.workspaces[ws_idx].id;
+                let cwd_path = (!cwd.is_empty()).then(|| std::path::PathBuf::from(&cwd));
+                let term = cx.new(|cx| TerminalView::with_cwd(ws_id, cwd_path, None, cx));
+                // Resume the picked session in the new terminal. Honors the
+                // Claude bypass flag exactly like a tab-bar launch.
+                let resume = crate::app::sessions_sidebar::resume_command(agent, &session_id);
+                term.read(cx).send_command(&resume);
+
+                match edge {
+                    Some(edge) => {
+                        // `create_pane` wires the app-level CWD/port subscription
+                        // and the pane-event subscription (mirrors `DropSplit`).
+                        let new_pane = self.create_pane(term, ws_id, cx);
+                        let (direction, swap) = match edge {
+                            DropEdge::Up => (crate::layout::SplitDirection::Horizontal, true),
+                            DropEdge::Down => (crate::layout::SplitDirection::Horizontal, false),
+                            DropEdge::Left => (crate::layout::SplitDirection::Vertical, true),
+                            DropEdge::Right => (crate::layout::SplitDirection::Vertical, false),
+                        };
+                        if let Some(root) = &mut self.workspaces[ws_idx].root {
+                            root.split_at_pane(&target, direction, new_pane.clone());
+                            if swap {
+                                root.swap_panes(&target, &new_pane);
+                            }
+                        }
+                        self.workspaces[ws_idx].propagate_custom_buttons(cx);
+                        self.pending_pane_focus = Some(new_pane);
+                    }
+                    None => {
+                        // Center drop: append the resumed session as a new tab in
+                        // the target pane (mirrors `DuplicateTabInto`).
+                        cx.subscribe(&term, Self::handle_terminal_event).detach();
+                        target.update(cx, |p, cx| {
+                            let dest_idx = p.tabs.len();
+                            p.insert_duplicated_tab(
+                                crate::pane::TabContent::Terminal(term),
+                                dest_idx,
+                                cx,
+                            );
+                        });
+                        self.workspaces[ws_idx].propagate_custom_buttons(cx);
+                        self.pending_pane_focus = Some(target);
+                    }
+                }
+                self.save_session(cx);
+                cx.notify();
+            }
+            pane::PaneEvent::DropMarkdownSplit { edge, path } => {
+                // A markdown row was dropped out of the Files sidebar onto a
+                // pane (EP-003 US-008). Open it via the existing `MarkdownView`
+                // API, then split the target toward the previewed edge or append
+                // it here as a tab (center). Mirrors `DropSessionSplit`, minus
+                // the terminal spawn.
+                use crate::pane_drag::DropEdge;
+                let edge = *edge;
+                let path = path.clone();
+                let target = pane.clone(); // the emitting pane is the target
+
+                const MAX_PANES: usize = 32;
+
+                let Some(ws_idx) = self.workspaces.iter().position(|ws| {
+                    ws.root
+                        .as_ref()
+                        .is_some_and(|r| r.collect_leaves().contains(&target))
+                }) else {
+                    return;
+                };
+
+                // A split adds one pane — refuse at the cap (edge case #9). A
+                // center drop appends a tab, so it isn't capped.
+                if edge.is_some()
+                    && self.workspaces[ws_idx]
+                        .root
+                        .as_ref()
+                        .map(|r| r.leaf_count())
+                        .unwrap_or(0)
+                        >= MAX_PANES
+                {
+                    return;
+                }
+
+                let ws_id = self.workspaces[ws_idx].id;
+                let markdown = cx.new(|cx| crate::markdown::MarkdownView::open(path, cx));
+
+                match edge {
+                    Some(edge) => {
+                        let new_pane = cx.new(|cx| {
+                            crate::pane::Pane::new_with_tab(
+                                crate::pane::TabContent::Markdown(markdown),
+                                ws_id,
+                                cx,
+                            )
+                        });
+                        cx.subscribe(&new_pane, Self::handle_pane_event).detach();
+                        let (direction, swap) = match edge {
+                            DropEdge::Up => (crate::layout::SplitDirection::Horizontal, true),
+                            DropEdge::Down => (crate::layout::SplitDirection::Horizontal, false),
+                            DropEdge::Left => (crate::layout::SplitDirection::Vertical, true),
+                            DropEdge::Right => (crate::layout::SplitDirection::Vertical, false),
+                        };
+                        if let Some(root) = &mut self.workspaces[ws_idx].root {
+                            root.split_at_pane(&target, direction, new_pane.clone());
+                            if swap {
+                                root.swap_panes(&target, &new_pane);
+                            }
+                        }
+                        self.workspaces[ws_idx].propagate_custom_buttons(cx);
+                        self.pending_pane_focus = Some(new_pane);
+                    }
+                    None => {
+                        // Center drop: append the markdown as a new tab in the
+                        // target pane (mirrors the click-to-open path).
+                        target.update(cx, |p, cx| {
+                            p.add_markdown_tab(markdown, cx);
+                        });
+                        self.pending_pane_focus = Some(target);
+                    }
+                }
                 self.save_session(cx);
                 cx.notify();
             }

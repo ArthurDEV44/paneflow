@@ -653,6 +653,13 @@ pub struct WorkspaceSession {
     /// User-defined command buttons rendered in this workspace's tab bar.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub custom_buttons: Vec<ButtonCommand>,
+    /// Workspace-relative directory paths expanded in the Files tree sidebar
+    /// (PRD files-tree US-007). Additive + optional: absent in older
+    /// `session.json` files, which deserialize to an empty list and never
+    /// break restore of the other fields. The sidebar's open/closed state is
+    /// deliberately NOT persisted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expanded_paths: Vec<String>,
 }
 
 /// A user-defined command button rendered in a workspace's tab bar.

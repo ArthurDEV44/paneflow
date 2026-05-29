@@ -56,6 +56,9 @@ impl PaneFlowApp {
         self.profile_menu_open = None;
         if idx < self.workspaces.len() && idx != self.active_idx {
             self.active_idx = idx;
+            // Re-root the Files tree to the new workspace's folder if it's open
+            // (PRD files-tree US-002 workspace-switch). No-op when closed.
+            self.reroot_files_tree();
             self.workspaces[idx].focus_first(window, cx);
             self.save_session(cx);
             cx.notify();

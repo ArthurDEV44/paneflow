@@ -12,14 +12,23 @@
 //!
 //! Tab bar UI is modeled after Zed's tab bar design.
 
+use std::cell::Cell;
+use std::rc::Rc;
+use std::time::Duration;
+
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
-    InteractiveElement, IntoElement, Pixels, Point, Render, SharedString, Styled, Window, div,
-    prelude::*, px, rgb, svg,
+    Animation, AnimationExt, App, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter,
+    FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    Pixels, Point, Render, SharedString, Size, Styled, Window, div, ease_out_quint, prelude::*, px,
+    rgb, svg,
 };
 use paneflow_config::schema::ButtonCommand;
 
 use crate::markdown::MarkdownView;
+use crate::pane_drag::{
+    DropEdge, InsertSide, MarkdownFileDrag, SPLIT_EDGE_BAND, SessionDrag, TabDrag, TabDragPreview,
+    compute_drop_edge, insertion_side, reordered_index, split_rect,
+};
 use crate::terminal::{TerminalEvent, TerminalView};
 
 // ---------------------------------------------------------------------------
@@ -66,6 +75,11 @@ const TAB_MAX_WIDTH: f32 = 200.0;
 const CLOSE_SIZE: f32 = 14.0;
 /// Section padding (start/end areas)
 const SECTION_PX: f32 = 6.0;
+/// Uniform gap (px) between the drop-to-split preview overlay and its region's
+/// edges, so the blue box floats inside the target half/pane (EP-003 US-008).
+const OVERLAY_MARGIN: f32 = 8.0;
+/// Corner radius (px) of the drop-to-split preview overlay.
+const OVERLAY_RADIUS: f32 = 8.0;
 /// Hard upper bound on tab title length in characters. Mirrors Zed's
 /// `MAX_TAB_TITLE_LEN` (`zed/crates/editor/src/items.rs:64`). Anything past
 /// this is replaced with a trailing ellipsis so the tab chip stays inside
@@ -94,12 +108,16 @@ pub enum PaneEvent {
     Remove,
     /// Request a split in the given direction from this pane.
     Split(crate::layout::SplitDirection),
-    /// Open the Claude Code sessions menu for the active terminal's cwd.
-    /// Carries the click anchor (window-space) so the popover can be
-    /// positioned by the parent renderer (popovers must paint at the
-    /// `PaneFlowApp` layer; a `deferred()` inside `Pane::render` is clipped
-    /// to the pane's bbox).
-    OpenClaudeSessions(Point<Pixels>),
+    /// Toggle the docked agent-sessions sidebar for the active terminal's cwd
+    /// (PRD `prd-agent-sessions-sidebar-2026-Q3`). The parent resolves the cwd,
+    /// binds this pane, and spawns the per-agent scans; no anchor is needed
+    /// since the sidebar docks in the root layout rather than floating.
+    ToggleAgentSessions,
+    /// Toggle the docked Files sidebar for the active workspace's folder
+    /// (PRD `prd-files-tree-sidebar-2026-Q3`, EP-001). Payload-free: the parent
+    /// resolves the active workspace's `cwd` to the tree root and enforces
+    /// mutual exclusion with the sessions sidebar.
+    ToggleFilesSidebar,
     /// Copy the active terminal's human-readable surface reference (its
     /// disambiguated name, e.g. `cargo-run`) to the clipboard (US-010).
     /// Carries the surface_id; the parent resolves the globally-disambiguated
@@ -109,6 +127,62 @@ pub enum PaneEvent {
     /// A surface's custom name changed via inline rename (US-013) — the parent
     /// should persist the session so the name survives restart.
     SurfaceRenamed,
+    /// Right-click on a tab requested the "Move to pane…" context menu
+    /// (EP-002 US-006, WCAG 2.5.7 non-drag alternative). Carries the tab's
+    /// index and the click anchor (window-space); the parent resolves the
+    /// other panes in the workspace and paints the menu at the app layer.
+    OpenTabMenu {
+        tab_idx: usize,
+        position: Point<Pixels>,
+    },
+    /// A tab was dropped on this pane's content edge to create a split
+    /// (EP-003 US-009). The parent owns the `LayoutTree`, so it performs the
+    /// `split_at_pane` and moves (or, with `duplicate`, copies) the dragged
+    /// terminal into the new pane. The emitting pane is the split *target*.
+    DropSplit {
+        edge: DropEdge,
+        source_pane: Entity<Pane>,
+        source_idx: usize,
+        /// `true` when the duplicate modifier was held (Ctrl on Linux/Windows,
+        /// Alt on macOS) — spawn a fresh terminal at the dragged tab's CWD
+        /// instead of moving the original (US-010).
+        duplicate: bool,
+    },
+    /// A tab was dropped on this pane's tab strip (or content center) with the
+    /// duplicate modifier held (EP-003 US-010). The parent spawns a fresh
+    /// terminal at the dragged tab's CWD and inserts it into this — the
+    /// emitting — pane at `dest_idx`, leaving the original in place. Routed to
+    /// `PaneFlowApp` because spawning a terminal needs the app-level CWD/port
+    /// subscription wiring (mirrors `DropSplit`'s duplicate path).
+    DuplicateTabInto {
+        source_pane: Entity<Pane>,
+        source_idx: usize,
+        dest_idx: usize,
+    },
+    /// An agent-session row was dropped out of the sessions sidebar onto this
+    /// pane (bridges `prd-agent-sessions-sidebar` × `prd-pane-drag-drop`). The
+    /// parent spawns a *fresh* terminal at `cwd` running the agent's resume
+    /// command, then — for `edge = Some` — splits this (the emitting target)
+    /// pane toward that edge, or — for `edge = None` (center) — appends it as a
+    /// new tab here. Routed to `PaneFlowApp` because spawning a terminal needs
+    /// the app-level CWD/port subscription wiring (mirrors `DropSplit`).
+    DropSessionSplit {
+        edge: Option<DropEdge>,
+        agent: crate::agent_sessions::SessionAgent,
+        session_id: String,
+        cwd: String,
+    },
+    /// A markdown file was dropped out of the Files sidebar onto this (the
+    /// emitting target) pane (PRD `prd-files-tree-sidebar-2026-Q3`, EP-003).
+    /// For `edge = Some` the parent opens the file in a new pane split toward
+    /// that edge; for `edge = None` (center) it appends the markdown as a new
+    /// tab here. Routed to `PaneFlowApp` (LayoutTree owner) to keep the tree
+    /// mutation out of the drop callback (entity re-entrancy, mirrors
+    /// `DropSessionSplit`).
+    DropMarkdownSplit {
+        edge: Option<DropEdge>,
+        path: std::path::PathBuf,
+    },
 }
 
 /// Inline tab-rename state (US-013).
@@ -138,6 +212,35 @@ pub struct Pane {
     /// Focus target for the inline rename input, so keystrokes route to the
     /// rename handler (not the terminal) while a tab name is being edited.
     rename_focus: FocusHandle,
+    /// Live drop-to-split target (EP-003 US-007): the edge the blue overlay
+    /// previews while a tab is dragged over this pane's content. `None` =
+    /// center band (move-into-pane) or no drag. Updated by the content
+    /// `on_drag_move` handler; reset on drop. While no drag is active the
+    /// overlay is `invisible()` regardless of this value, so a stale value
+    /// after a cancel is harmless (the next drag-move recomputes it).
+    drag_split_direction: Option<DropEdge>,
+    /// Previous drop region, kept only as a *fallback* start rect for the glide
+    /// on the first crossing of a drag, before the live position cell
+    /// ([`Self::overlay_current`]) holds anything meaningful. Set to the old
+    /// value of `drag_split_direction` each time it changes.
+    overlay_prev_dir: Option<DropEdge>,
+    /// Start rect `(x, y, w, h)` of the current glide, captured at the instant
+    /// the region changes. Captured from the overlay's *live* on-screen
+    /// position ([`Self::overlay_current`]) rather than the previous region's
+    /// resting rect, so a fast multi-band crossing redirects from wherever the
+    /// box actually is mid-flight instead of jumping back to the prior target.
+    overlay_from: (f32, f32, f32, f32),
+    /// The overlay's live interpolated rect, written by the glide animator every
+    /// frame and read back by `on_drag_move` to seed the next glide's start
+    /// (see [`Self::overlay_from`]). `Rc<Cell>` because it is shared between the
+    /// render-time animator closure and the event handler.
+    overlay_current: Rc<Cell<(f32, f32, f32, f32)>>,
+    /// Bumped every time `drag_split_direction` changes. Feeds the overlay's
+    /// animation `ElementId`, so a new region restarts the glide from delta 0.
+    overlay_seq: usize,
+    /// Last observed content size (captured in the `on_drag_move` handler), used
+    /// to convert a [`DropEdge`] into an absolute-pixel rectangle for the glide.
+    overlay_pane_size: Size<Pixels>,
 }
 
 impl EventEmitter<PaneEvent> for Pane {}
@@ -154,6 +257,39 @@ impl Pane {
             custom_buttons: Vec::new(),
             rename: None,
             rename_focus: cx.focus_handle(),
+            drag_split_direction: None,
+            overlay_prev_dir: None,
+            overlay_from: (0.0, 0.0, 0.0, 0.0),
+            overlay_current: Rc::new(Cell::new((0.0, 0.0, 0.0, 0.0))),
+            overlay_seq: 0,
+            overlay_pane_size: Size::default(),
+        }
+    }
+
+    /// Create a new pane wrapping an existing tab moved in from elsewhere
+    /// (EP-003 drop-to-split). The pane-level subscription is wired for a
+    /// terminal tab so `ChildExited`/`TitleChanged` route here, but — unlike
+    /// [`crate::PaneFlowApp::create_pane`] — the app-level terminal
+    /// subscription is NOT re-added, because the moved terminal already has
+    /// one from its original creation (re-adding would double CWD/port events).
+    pub fn new_with_tab(tab: TabContent, workspace_id: u64, cx: &mut Context<Self>) -> Self {
+        if let TabContent::Terminal(t) = &tab {
+            Self::subscribe_terminal(t, cx);
+        }
+        Self {
+            tabs: vec![tab],
+            selected_idx: 0,
+            zoomed: false,
+            workspace_id,
+            custom_buttons: Vec::new(),
+            rename: None,
+            rename_focus: cx.focus_handle(),
+            drag_split_direction: None,
+            overlay_prev_dir: None,
+            overlay_from: (0.0, 0.0, 0.0, 0.0),
+            overlay_current: Rc::new(Cell::new((0.0, 0.0, 0.0, 0.0))),
+            overlay_seq: 0,
+            overlay_pane_size: Size::default(),
         }
     }
 
@@ -364,6 +500,131 @@ impl Pane {
         cx.notify();
     }
 
+    /// Move a tab from one slot to another within this pane (EP-001 US-002).
+    ///
+    /// Single mutation entry point for same-pane reordering — drag-drop today,
+    /// any future keyboard/menu reorder routes through here too. The moved tab
+    /// becomes the selected tab so `selected_idx` follows it (per the AC). A
+    /// no-op move (origin slot, out of range, or a trailing drop that resolves
+    /// to the current last slot) skips `cx.notify()` so there's no flicker.
+    ///
+    /// `to` is treated as the desired final index; callers pass `tabs.len() - 1`
+    /// for "drop on the trailing area". Insert is into the post-removal vec, so
+    /// inserting at the (clamped) target index yields the dragged tab's final
+    /// position in both forward and backward moves.
+    pub fn reorder_tab(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        let Some(dest) = reordered_index(from, to, self.tabs.len()) else {
+            return;
+        };
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(dest, tab);
+        self.selected_idx = dest;
+        cx.notify();
+    }
+
+    /// Remove a tab for a cross-pane move (EP-002 US-004). Unlike
+    /// [`Self::close_tab_at`], this does NOT emit `PaneEvent::Remove` when the
+    /// pane empties — the move orchestration ([`crate::pane_drag::move_tab_into`])
+    /// decides source cleanup so the tree owner reflows exactly once. Clamps
+    /// `selected_idx` if it pointed past the removed slot. Returns the tab, or
+    /// `None` if the index is out of range.
+    pub fn take_tab_for_move(&mut self, idx: usize) -> Option<TabContent> {
+        if idx >= self.tabs.len() {
+            return None;
+        }
+        let tab = self.tabs.remove(idx);
+        if !self.tabs.is_empty() && self.selected_idx >= self.tabs.len() {
+            self.selected_idx = self.tabs.len() - 1;
+        }
+        Some(tab)
+    }
+
+    /// Insert a tab moved in from another pane (EP-002 US-004), making it the
+    /// selected, focused tab. Terminal tabs are re-subscribed so
+    /// `ChildExited`/`TitleChanged` route to this pane; the source's now-stale
+    /// subscription degrades to a no-op (it can't find the moved terminal in
+    /// its own `tabs`). `dest_idx` is clamped to `[0, len]` — pass `tabs.len()`
+    /// to append.
+    pub fn insert_moved_tab(
+        &mut self,
+        tab: TabContent,
+        dest_idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let TabContent::Terminal(t) = &tab {
+            Self::subscribe_terminal(t, cx);
+        }
+        let at = dest_idx.min(self.tabs.len());
+        self.tabs.insert(at, tab);
+        self.selected_idx = at;
+        self.focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    /// Insert a freshly-spawned duplicate terminal (EP-003 US-010) at
+    /// `dest_idx`, making it the selected tab. Like [`Self::insert_moved_tab`]
+    /// but without a `Window`: the duplicate is created in `PaneFlowApp`'s
+    /// `DuplicateTabInto` subscription handler, which has no `Window`, so focus
+    /// is applied by the app via `pending_pane_focus` on the next render.
+    /// `dest_idx` is clamped to `[0, len]`. Pane-level subscription is wired so
+    /// `ChildExited`/`TitleChanged` route here; the app-level CWD/port
+    /// subscription is wired by the caller (the handler), mirroring
+    /// `create_pane`.
+    pub fn insert_duplicated_tab(
+        &mut self,
+        tab: TabContent,
+        dest_idx: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if let TabContent::Terminal(t) = &tab {
+            Self::subscribe_terminal(t, cx);
+        }
+        let at = dest_idx.min(self.tabs.len());
+        self.tabs.insert(at, tab);
+        self.selected_idx = at;
+        cx.notify();
+    }
+
+    /// Shared `on_drag_move` body for both [`TabDrag`] and [`SessionDrag`]:
+    /// resolve the cursor (relative to the content `bounds`) to a split edge
+    /// and, when it changes, seed the overlay glide and request a repaint. Both
+    /// drag types drive the same blue preview, so the geometry lives here once.
+    fn apply_drag_edge(
+        &mut self,
+        bounds: gpui::Bounds<Pixels>,
+        pos: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let w = bounds.size.width.as_f32();
+        let h = bounds.size.height.as_f32();
+        let x = (pos.x - bounds.left()).as_f32();
+        let y = (pos.y - bounds.top()).as_f32();
+        self.overlay_pane_size = bounds.size;
+        let edge = compute_drop_edge(w, h, x, y, SPLIT_EDGE_BAND);
+        if self.drag_split_direction != edge {
+            let live = self.overlay_current.get();
+            self.overlay_from = if live.2 > 0.0 && live.3 > 0.0 {
+                live
+            } else {
+                split_rect(self.overlay_prev_dir, w, h)
+            };
+            self.overlay_prev_dir = self.drag_split_direction;
+            self.drag_split_direction = edge;
+            self.overlay_seq = self.overlay_seq.wrapping_add(1);
+            cx.notify();
+        }
+    }
+
+    /// Human-readable label for this pane's active tab, used by the
+    /// "Move to pane…" menu (EP-002 US-006) to identify each destination.
+    pub fn active_tab_label(&self, cx: &App) -> String {
+        self.tabs
+            .get(self.selected_idx)
+            .map(|t| Self::tab_title(t, cx))
+            .unwrap_or_else(|| "Empty".into())
+    }
+
     /// Close the currently selected tab. Returns `true` if the pane is now empty.
     pub fn close_selected_tab(&mut self, cx: &mut Context<Self>) -> bool {
         self.close_tab_at(self.selected_idx, cx);
@@ -476,6 +737,12 @@ impl Pane {
         let ui = tab_colors();
         let theme = crate::theme::active_theme();
         let chrome_border = ui.border;
+        // Handle to this pane, captured once for the per-tab drag closures
+        // (EP-001): same-pane vs cross-pane is decided by comparing the
+        // drag's `source_pane` to this entity. `accent` tints the insertion
+        // indicator drawn during a same-pane reorder hover.
+        let self_entity = cx.entity();
+        let accent = ui.accent;
 
         // Outer container: full-width, fixed height, tab_bar background
         let bar = div()
@@ -487,12 +754,25 @@ impl Pane {
             .bg(theme.title_bar_background);
 
         // Scrollable tab area (Zed pattern: overflow_x_scroll on inner row)
+        let highlight_entity = self_entity.clone();
         let tabs_area = div()
             .id("pane-tabs-area")
             .relative()
             .flex_1()
             .h_full()
             .overflow_x_hidden()
+            // EP-002 US-005: while a tab from *another* pane hovers this strip,
+            // tint it so the cross-pane drop target is obvious. The per-slot
+            // insertion border (US-002) only shows for same-pane drags, so the
+            // two indicators never collide; the source pane's own strip shows
+            // no pane-level highlight (the guard below).
+            .drag_over::<TabDrag>(move |style, drag, _window, _cx| {
+                if drag.source_pane != highlight_entity {
+                    style.bg(accent.opacity(0.12))
+                } else {
+                    style
+                }
+            })
             .on_click(cx.listener(|this, e: &ClickEvent, _window, cx| {
                 if matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2) {
                     let ws_id = this.workspace_id;
@@ -548,6 +828,89 @@ impl Pane {
                     .border_r_1()
                     .border_b_1()
                     .border_color(chrome_border);
+            }
+
+            // EP-001 drag wiring. GPUI's managed drag applies its own movement
+            // threshold before firing `on_drag`, so a plain click (select) and
+            // a double-click (rename) on the inner `content` div are unaffected.
+            // Title/icon are snapshotted into the payload so the floating ghost
+            // renders without re-reading the entity.
+            {
+                let drag_title: SharedString = Self::tab_title(&self.tabs[i], cx).into();
+                let drag_icon: SharedString = Self::tab_icon(&self.tabs[i]).into();
+                let drag_content = self.tabs[i].clone();
+                let pane_entity = self_entity.clone();
+                tab = tab
+                    .on_drag(
+                        TabDrag {
+                            source_pane: pane_entity.clone(),
+                            source_idx: tab_idx,
+                            content: drag_content,
+                            title: drag_title.clone(),
+                            icon: drag_icon.clone(),
+                        },
+                        |drag, _offset, _window, cx| {
+                            cx.new(|_| TabDragPreview {
+                                title: drag.title.clone(),
+                                icon: drag.icon.clone(),
+                            })
+                        },
+                    )
+                    // Insertion indicator: 2px border on the side the tab will
+                    // land. Same-pane only — a cross-pane hover shows nothing
+                    // in the strip (EP-002 adds the pane-level highlight); the
+                    // drag's own origin slot shows nothing either.
+                    .drag_over::<TabDrag>(move |style, drag, _window, _cx| {
+                        if drag.source_pane != pane_entity {
+                            return style;
+                        }
+                        match insertion_side(drag.source_idx, tab_idx) {
+                            Some(InsertSide::Left) => style.border_l_2().border_color(accent),
+                            Some(InsertSide::Right) => style.border_r_2().border_color(accent),
+                            None => style,
+                        }
+                    })
+                    .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
+                        if crate::pane_drag::duplicate_modifier_held(window) {
+                            // US-010: modifier held → spawn a fresh terminal at
+                            // the dragged tab's CWD into this pane at the dropped
+                            // slot; the original stays put. Routed to PaneFlowApp
+                            // (it wires the app-level CWD/port subscription).
+                            cx.emit(PaneEvent::DuplicateTabInto {
+                                source_pane: drag.source_pane.clone(),
+                                source_idx: drag.source_idx,
+                                dest_idx: tab_idx,
+                            });
+                        } else if drag.source_pane == cx.entity() {
+                            // Same pane: reorder in place (EP-001 US-002).
+                            this.reorder_tab(drag.source_idx, tab_idx, cx);
+                        } else {
+                            // Cross-pane: migrate the terminal into this pane at
+                            // the dropped slot, preserving its PTY (EP-002 US-004).
+                            crate::pane_drag::move_tab_into(
+                                this,
+                                cx,
+                                &drag.source_pane,
+                                drag.source_idx,
+                                tab_idx,
+                                window,
+                            );
+                        }
+                    }))
+                    // Right-click opens the "Move to pane…" menu (EP-002 US-006,
+                    // the WCAG 2.5.7 non-drag alternative). The pane emits its
+                    // index + anchor; `PaneFlowApp` resolves the sibling panes
+                    // and paints the menu at the app layer.
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |_this, e: &MouseDownEvent, _window, cx| {
+                            cx.emit(PaneEvent::OpenTabMenu {
+                                tab_idx,
+                                position: e.position,
+                            });
+                            cx.stop_propagation();
+                        }),
+                    );
             }
 
             // Close button — always visible on active tab, hover-only on inactive.
@@ -656,6 +1019,44 @@ impl Pane {
             tabs_row = tabs_row.child(tab);
         }
 
+        // Trailing drop zone (EP-001 US-002): the leftover strip space after
+        // the last tab. `flex_1` claims whatever width the tabs don't, so a
+        // drop here moves the dragged tab to the last slot. When the strip
+        // overflows (overflow_x_scroll), this collapses to zero width and is
+        // simply not a drop target — which is correct, there is no trailing
+        // area to aim at. Lives inside `tabs_row` so it never overlaps a tab,
+        // keeping its `on_drop` distinct from the per-tab handlers.
+        tabs_row = tabs_row.child(div().id("pane-tabs-trailing").flex_1().h_full().on_drop(
+            cx.listener(move |this, drag: &TabDrag, window, cx| {
+                if crate::pane_drag::duplicate_modifier_held(window) {
+                    // US-010: modifier held → duplicate at the dragged tab's CWD
+                    // into this pane's last slot; the original stays put.
+                    cx.emit(PaneEvent::DuplicateTabInto {
+                        source_pane: drag.source_pane.clone(),
+                        source_idx: drag.source_idx,
+                        dest_idx: this.tabs.len(),
+                    });
+                } else if drag.source_pane == cx.entity() {
+                    // Same pane: reorder to the last slot (EP-001 US-002). Use
+                    // the live count so a tab opened/closed since render is
+                    // accounted for.
+                    this.reorder_tab(drag.source_idx, this.tabs.len().saturating_sub(1), cx);
+                } else {
+                    // Cross-pane: append the migrated terminal after the last
+                    // tab of this pane (EP-002 US-004).
+                    let dest_idx = this.tabs.len();
+                    crate::pane_drag::move_tab_into(
+                        this,
+                        cx,
+                        &drag.source_pane,
+                        drag.source_idx,
+                        dest_idx,
+                        window,
+                    );
+                }
+            }),
+        ));
+
         let tabs_area = tabs_area
             .child(
                 div()
@@ -742,66 +1143,36 @@ impl Pane {
                     cx.emit(PaneEvent::Split(crate::layout::SplitDirection::Horizontal));
                 }),
             ))
-            // Open a markdown file as a NEW TAB in this pane via the native
-            // OS file picker (xdg-portal on Linux, NSOpenPanel on macOS,
-            // Win32 file-open on Windows). Picker root = workspace git root
-            // walked up from the active terminal's cwd, falling back to the
-            // cwd itself when the terminal isn't inside a repo. On selection
-            // we re-emit `TerminalEvent::OpenMarkdownPath` from the active
-            // terminal so `PaneFlowApp::handle_terminal_event` routes through
-            // the same `open_markdown_in_pane` codepath as Cmd/Ctrl-click on
-            // a `.md` hyperlink (US-020) — single source of truth for "open
-            // markdown tab in this pane".
-            //
-            // No-op when the active tab is already a markdown viewer (the
-            // doc button needs a terminal cwd to anchor the picker).
+            // Toggle the docked Files sidebar (PRD files-tree EP-001): a tree
+            // of the active workspace's folder, replacing the former native
+            // markdown picker. Markdown rows there are click-to-open into the
+            // active pane (and drag-to-pane in EP-003). The Cmd/Ctrl-click `.md`
+            // hyperlink path (`TerminalEvent::OpenMarkdownPath`) is untouched.
             .child(Self::action_button(
-                "pane-btn-open-markdown",
-                "icons/file-text.svg",
-                cx.listener(|this, _, _window, cx| {
-                    let Some(terminal) = this.active_terminal_opt().cloned() else {
-                        return;
-                    };
-                    let cwd = terminal.read(cx).terminal.cwd_now();
-                    let start_dir = cwd
-                        .as_deref()
-                        .and_then(crate::workspace::find_workdir)
-                        .or_else(|| cwd.clone());
-                    cx.spawn(async move |_this, cx| {
-                        let mut dialog = rfd::AsyncFileDialog::new()
-                            .set_title("Open markdown file")
-                            .add_filter("Markdown", &["md", "markdown", "mdx"]);
-                        if let Some(dir) = start_dir.as_ref() {
-                            dialog = dialog.set_directory(dir);
-                        }
-                        let Some(handle) = dialog.pick_file().await else {
-                            return;
-                        };
-                        let path = handle.path().to_path_buf();
-                        terminal.update(cx, |_view, cx_term| {
-                            cx_term.emit(TerminalEvent::OpenMarkdownPath(path));
-                        });
-                    })
-                    .detach();
+                "pane-btn-files",
+                "icons/folder.svg",
+                cx.listener(|_this, _e: &ClickEvent, _window, cx| {
+                    cx.emit(PaneEvent::ToggleFilesSidebar);
+                    cx.stop_propagation();
                 }),
             ))
-            // Claude Code session history for the active terminal's cwd.
-            // The actual cwd lookup + filesystem scan happens in
-            // `PaneFlowApp::handle_pane_event` so the cwd-source resolution
-            // and the off-thread read live next to the popover renderer.
+            // Agent session history for the active terminal's cwd. The cwd
+            // lookup + filesystem scan happens in
+            // `PaneFlowApp::handle_pane_event`; this button just toggles the
+            // docked sidebar.
             //
             // Hidden when the user has toggled off every AI-agent button in
-            // Settings → AI Agent: with no agent visible the popover would
-            // open empty, so the icon itself is suppressed for symmetry
-            // with the launcher buttons below.
+            // Settings → AI Agent: with no agent visible the sidebar would open
+            // empty, so the icon itself is suppressed for symmetry with the
+            // launcher buttons below.
             .when(
                 !crate::agent_sessions::enabled_session_agents().is_empty(),
                 |s| {
                     s.child(Self::action_button(
                         "pane-btn-claude-sessions",
                         "icons/sessions.svg",
-                        cx.listener(|_this, e: &ClickEvent, _window, cx| {
-                            cx.emit(PaneEvent::OpenClaudeSessions(e.position()));
+                        cx.listener(|_this, _e: &ClickEvent, _window, cx| {
+                            cx.emit(PaneEvent::ToggleAgentSessions);
                             cx.stop_propagation();
                         }),
                     ))
@@ -916,12 +1287,219 @@ impl Render for Pane {
             None => div().size_full().into_any_element(),
         };
 
+        // EP-003 drop-to-split: the content region hosts the drag-move
+        // direction probe, the drop commit, and the blue preview overlay.
+        // A unique group name (per pane entity) scopes `group_drag_over` so
+        // only this pane's overlay reacts while a tab hovers its content.
+        let group_name =
+            SharedString::from(format!("pane-content-{}", cx.entity().entity_id().as_u64()));
+        let accent = tab_colors().accent;
+
+        // Glide geometry: lerp the overlay from its previous region's rect to
+        // the current one over a short ease, so the preview slides between
+        // halves/center instead of hard-snapping (the cmux feel; Zed itself
+        // snaps). The seq keys the animation ElementId, restarting the ease
+        // each time the region changes; `split_rect` maps a `DropEdge` to an
+        // absolute-pixel rect within the cached content size.
+        let (cw, ch) = (
+            self.overlay_pane_size.width.as_f32(),
+            self.overlay_pane_size.height.as_f32(),
+        );
+        let from_rect = self.overlay_from;
+        let to_rect = split_rect(self.drag_split_direction, cw, ch);
+        let live_rect = self.overlay_current.clone();
+        let overlay_anim_id = SharedString::from(format!(
+            "pane-overlay-{}-{}",
+            cx.entity().entity_id().as_u64(),
+            self.overlay_seq
+        ));
+
+        // Translucent preview: full pane for center (move-into), or the half
+        // the new split would occupy for an edge. `invisible()` by default and
+        // only shown via `group_drag_over`, so it never paints — and so never
+        // hit-tests / blocks terminal mouse input — unless a tab is being
+        // dragged over this pane (US-008). Geometry is set per-frame by the
+        // glide animator below (absolute px), not statically.
+        // The overlay is also the drop target. Carrying `on_drop` here (rather
+        // than on the parent `content`) is what gives the overlay its own
+        // hitbox: GPUI's `should_insert_hitbox` keys off `drop_listeners`
+        // (among others) but NOT off `group_drag_over`, so a handler-less div
+        // never allocates a hitbox and its `group_drag_over` style is never
+        // evaluated — i.e. the overlay would stay `invisible()` forever. This
+        // mirrors Zed's `crates/workspace/src/pane.rs` drag-target div, which
+        // is likewise `.invisible()` + `group_drag_over` + `on_drop`. The
+        // hitbox is `HitboxBehavior::Normal`, so it never blocks the terminal's
+        // mouse input behind it (Risk #3).
+        // Bright "tech" blue (Tailwind sky-500, #0EA5E9) for the border, so the
+        // translucent fill reads as a crisp framed panel rather than a flat
+        // wash. Fixed rather than accent-derived: darkening the accent landed on
+        // navy, which read as muddy. Alpha ~0.75 so the border is present but
+        // not harsh.
+        let border_blue = gpui::rgba(0x0ea5e9bf);
+        let overlay = div()
+            .absolute()
+            .bg(accent.opacity(0.22))
+            .rounded(px(OVERLAY_RADIUS))
+            .border_2()
+            .border_color(border_blue)
+            .invisible()
+            .group_drag_over::<TabDrag>(group_name.clone(), |s| s.visible())
+            // A session dragged from the sidebar lights up the same overlay.
+            .group_drag_over::<SessionDrag>(group_name.clone(), |s| s.visible())
+            // A markdown file dragged from the Files sidebar — same overlay.
+            .group_drag_over::<MarkdownFileDrag>(group_name.clone(), |s| s.visible())
+            // Markdown drop: open the file via `MarkdownView`, split toward the
+            // previewed edge (or append as a tab for center). Tree mutation +
+            // open live in `PaneFlowApp`, so emit + defer out of this callback
+            // (entity re-entrancy, mirrors the session drop).
+            .on_drop(
+                cx.listener(move |this, drag: &MarkdownFileDrag, _window, cx| {
+                    let edge = this.drag_split_direction.take();
+                    cx.emit(PaneEvent::DropMarkdownSplit {
+                        edge,
+                        path: drag.path.clone(),
+                    });
+                    cx.notify();
+                }),
+            )
+            // Session drop: spawn a fresh terminal running the resume command,
+            // split toward the previewed edge (or append as a tab for center).
+            // Tree mutation + spawn live in `PaneFlowApp`, so emit and defer out
+            // of this callback (entity re-entrancy, Risk #1).
+            .on_drop(cx.listener(move |this, drag: &SessionDrag, _window, cx| {
+                let edge = this.drag_split_direction.take();
+                cx.emit(PaneEvent::DropSessionSplit {
+                    edge,
+                    agent: drag.agent,
+                    session_id: drag.session_id.clone(),
+                    cwd: drag.cwd.clone(),
+                });
+                cx.notify();
+            }))
+            // US-009 / US-010: commit. `take()` also resets the preview state.
+            .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
+                let edge = this.drag_split_direction.take();
+                // Duplicate when the per-OS modifier is held (US-010); Shift is
+                // deliberately never used (terminal selection).
+                let duplicate = crate::pane_drag::duplicate_modifier_held(window);
+                match edge {
+                    Some(edge) => {
+                        // Tree mutation lives in `PaneFlowApp` (owner of the
+                        // LayoutTree); emitting defers it out of this drop
+                        // callback, avoiding entity re-entrancy.
+                        cx.emit(PaneEvent::DropSplit {
+                            edge,
+                            source_pane: drag.source_pane.clone(),
+                            source_idx: drag.source_idx,
+                            duplicate,
+                        });
+                    }
+                    None if duplicate => {
+                        // Center band + modifier: duplicate the dragged tab's
+                        // CWD into this pane as a new tab (US-010). Works even
+                        // for a same-pane drop (spawns a sibling shell).
+                        cx.emit(PaneEvent::DuplicateTabInto {
+                            source_pane: drag.source_pane.clone(),
+                            source_idx: drag.source_idx,
+                            dest_idx: this.tabs.len(),
+                        });
+                    }
+                    None => {
+                        // Center band: move the tab into this pane (US-004
+                        // path). A same-pane center drop is a no-op.
+                        if drag.source_pane != cx.entity() {
+                            let dest_idx = this.tabs.len();
+                            crate::pane_drag::move_tab_into(
+                                this,
+                                cx,
+                                &drag.source_pane,
+                                drag.source_idx,
+                                dest_idx,
+                                window,
+                            );
+                        }
+                    }
+                }
+                cx.notify();
+            }))
+            // Glide between regions: lerp the absolute-px rect from the previous
+            // region to the current one over a short ease-out. The animation
+            // self-drives frames until it settles (no terminal-poll dependency),
+            // and restarts whenever `overlay_anim_id` changes (region change).
+            .with_animation(
+                overlay_anim_id,
+                Animation::new(Duration::from_millis(130)).with_easing(ease_out_quint()),
+                move |overlay, delta| {
+                    let lerp = |a: f32, b: f32| a + (b - a) * delta;
+                    let raw = (
+                        lerp(from_rect.0, to_rect.0),
+                        lerp(from_rect.1, to_rect.1),
+                        lerp(from_rect.2, to_rect.2),
+                        lerp(from_rect.3, to_rect.3),
+                    );
+                    // Inset the visible box by a uniform margin so it floats
+                    // inside the region (gap on every side, including the center
+                    // line). The margin is applied *after* the lerp and is NOT
+                    // stored in `live_rect` — seeding the next glide stays in the
+                    // un-inset region space so `from`/`to` remain consistent.
+                    let m = OVERLAY_MARGIN;
+                    let cur = (
+                        raw.0 + m,
+                        raw.1 + m,
+                        (raw.2 - 2.0 * m).max(0.0),
+                        (raw.3 - 2.0 * m).max(0.0),
+                    );
+                    // Publish the *un-inset* live rect so the next region change
+                    // can lerp from the box's actual mid-flight position, not
+                    // the old target (kills the fast-crossing jump).
+                    live_rect.set(raw);
+                    overlay
+                        .left(px(cur.0))
+                        .top(px(cur.1))
+                        .w(px(cur.2))
+                        .h(px(cur.3))
+                },
+            );
+
+        let content = div()
+            .id("pane-content")
+            .group(group_name)
+            .relative()
+            .flex_1()
+            .size_full()
+            .overflow_hidden()
+            // US-007: map the cursor within the content bounds to a split edge.
+            // Stays on `content` (full pane) — the overlay shrinks to a half
+            // when `dir = Some(edge)`, so probing there would miss the cursor
+            // moving back toward the center band. `content` keeps its hitbox via
+            // `.group(group_name)`.
+            .on_drag_move::<TabDrag>(cx.listener(
+                |this, e: &DragMoveEvent<TabDrag>, _window, cx| {
+                    this.apply_drag_edge(e.bounds, e.event.position, cx);
+                },
+            ))
+            // Same edge-band probe for a session dragged out of the sidebar, so
+            // it gets the identical blue preview (bridges the sessions PRD).
+            .on_drag_move::<SessionDrag>(cx.listener(
+                |this, e: &DragMoveEvent<SessionDrag>, _window, cx| {
+                    this.apply_drag_edge(e.bounds, e.event.position, cx);
+                },
+            ))
+            // Identical edge-band probe for a markdown file dragged in.
+            .on_drag_move::<MarkdownFileDrag>(cx.listener(
+                |this, e: &DragMoveEvent<MarkdownFileDrag>, _window, cx| {
+                    this.apply_drag_edge(e.bounds, e.event.position, cx);
+                },
+            ))
+            .child(body)
+            .child(overlay);
+
         div()
             .flex()
             .flex_col()
             .size_full()
             .child(self.render_tab_bar(window, cx))
-            .child(div().flex_1().size_full().overflow_hidden().child(body))
+            .child(content)
     }
 }
 
