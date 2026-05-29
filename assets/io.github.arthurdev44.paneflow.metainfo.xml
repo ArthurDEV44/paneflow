@@ -5,7 +5,7 @@
   <summary>GPU-accelerated terminal multiplexer</summary>
 
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>MIT</project_license>
+  <project_license>GPL-3.0-or-later</project_license>
 
   <!-- Legacy pre-AppStream-1.0 form. The newer <developer id=..> block
        is rejected by the appstream package on ubuntu-22.04 (release.yml
