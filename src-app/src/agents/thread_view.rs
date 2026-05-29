@@ -1463,6 +1463,7 @@ impl ThreadView {
                         offset: gpui::point(px(0.), px(1.)),
                         blur_radius: px(4.),
                         spread_radius: px(0.),
+                        inset: false,
                     }])
                     .children(children),
             )

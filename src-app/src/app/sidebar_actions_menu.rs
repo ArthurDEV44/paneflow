@@ -92,6 +92,7 @@ impl PaneFlowApp {
                     offset: gpui::point(px(0.), px(2.)),
                     blur_radius: px(8.),
                     spread_radius: px(0.),
+                    inset: false,
                 }])
                 // Click anywhere outside the popover (or its trigger)
                 // dismisses it. Same pattern as `profile_menu.rs:128`.
