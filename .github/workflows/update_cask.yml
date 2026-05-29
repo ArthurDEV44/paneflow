@@ -8,9 +8,12 @@ name: update_cask
 #
 # Prereqs (one-time, manual):
 #   - ArthurDEV44/homebrew-paneflow exists (empty Casks/ dir).
-#   - Repo secret HOMEBREW_TAP_TOKEN holds a PAT scoped to the tap repo
-#     with `contents: read-and-write`. The default GITHUB_TOKEN cannot
-#     push to an external repo.
+#   - Repo secret HOMEBREW_TAP_DEPLOY_KEY holds the PRIVATE half of an
+#     ed25519 SSH deploy key whose PUBLIC half is registered as a
+#     write-enabled deploy key on the tap repo. A deploy key is
+#     repo-scoped and non-expiring (unlike a PAT, which lapses in ≤1y
+#     and silently breaks this job); the default GITHUB_TOKEN cannot
+#     push to an external repo. Provisioned 2026-05-29.
 #
 # Why `workflow_run` and not `release: published`:
 #   - A release published by the default GITHUB_TOKEN (softprops/
@@ -188,38 +191,39 @@ jobs:
 
       - name: Push to tap repo
         env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # SSH deploy key for ArthurDEV44/homebrew-paneflow (write). A
+          # deploy key is repo-scoped and NON-EXPIRING — unlike a PAT it
+          # never silently lapses, and it carries no personal-account
+          # coupling. This is the durable auth for cross-repo push from CI.
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
-          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
-            echo "::error::HOMEBREW_TAP_TOKEN secret is not set — cannot push to tap repo. See packaging/homebrew/paneflow.rb header for setup steps."
+          # The job shell runs with `-x` (see `defaults.run.shell`), which
+          # would echo the private key when we write it. Disable xtrace for
+          # this whole step so no key material reaches the run log.
+          set +x
+          if [ -z "${DEPLOY_KEY:-}" ]; then
+            echo "::error::HOMEBREW_TAP_DEPLOY_KEY secret is not set — cannot push to tap repo. See packaging/homebrew/paneflow.rb header for setup steps."
             exit 1
           fi
+          # Materialize the deploy key to a 0600 temp file and point git at
+          # it via GIT_SSH_COMMAND. Only the file PATH (never the key bytes)
+          # appears in argv / the trace; the file is removed on step exit.
+          # `IdentitiesOnly=yes` forces this key only (ignores agent/~/.ssh).
+          keyfile="$(mktemp)"
+          chmod 600 "$keyfile"
+          printf '%s\n' "$DEPLOY_KEY" > "$keyfile"
+          trap 'rm -f "$keyfile"' EXIT
+          export GIT_SSH_COMMAND="ssh -i $keyfile -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
+
           tmp="$(mktemp -d)"
-          # Authenticate via a stdin-fed credential helper so the token
-          # never lands in argv (visible via /proc/<pid>/cmdline to any
-          # same-uid process), the reflog, or shell history. `git -c`
-          # options ARE recorded in /proc/<pid>/cmdline — so passing the
-          # bearer token that way (even via env-expanded $VAR) leaks it
-          # for the lifetime of the clone and push processes.
-          #
-          # `credential.helper=!f() { ... }; f` defines an inline shell
-          # helper that git invokes when it needs credentials. The helper
-          # replies `username=x-access-token` + `password=<token>` on
-          # stdout; git consumes it internally without ever placing the
-          # token on the command line. The token is read from the
-          # HOMEBREW_TAP_TOKEN env var already exported to this step.
-          helper='!f() { echo "username=x-access-token"; echo "password=$HOMEBREW_TAP_TOKEN"; }; f'
-          git -c credential.helper="" \
-              -c credential.helper="$helper" \
-              clone --depth=1 https://github.com/ArthurDEV44/homebrew-paneflow.git "$tmp"
+          git clone --depth=1 git@github.com:ArthurDEV44/homebrew-paneflow.git "$tmp"
           mkdir -p "$tmp/Casks"
           cp /tmp/paneflow.rb "$tmp/Casks/paneflow.rb"
           cd "$tmp"
-          # Identity is the "github-actions[bot]" synthetic user; commits
-          # from a workflow default to this when no committer is
-          # configured, and GitHub renders them with the automation badge.
+          # Identity is the "github-actions[bot]" synthetic user; GitHub
+          # renders these commits with the automation badge.
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Casks/paneflow.rb
@@ -228,6 +232,4 @@ jobs:
             exit 0
           fi
           git commit -m "paneflow ${VERSION}" -m "Automated update from ArthurDEV44/paneflow release v${VERSION}."
-          git -c credential.helper="" \
-              -c credential.helper="$helper" \
-              push origin HEAD
+          git push origin HEAD
