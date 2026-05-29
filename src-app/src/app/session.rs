@@ -65,6 +65,15 @@ impl PaneFlowApp {
                     cwd: ws.cwd.clone(),
                     layout: ws.serialize_layout(cx),
                     custom_buttons: ws.custom_buttons.clone(),
+                    // US-007: store expanded dirs relative to the workspace
+                    // root. A path that can't be made relative (symlinked
+                    // outside the root) is dropped rather than persisted absolute.
+                    expanded_paths: ws
+                        .files_expanded
+                        .iter()
+                        .filter_map(|p| p.strip_prefix(&ws.cwd).ok())
+                        .map(|rel| rel.to_string_lossy().into_owned())
+                        .collect(),
                 })
                 .collect(),
             // US-007 (prd-agents-view.md): persist project + thread
@@ -244,6 +253,15 @@ impl PaneFlowApp {
             };
 
             workspace.custom_buttons = ws_session.custom_buttons.clone();
+            // US-007: rehydrate expanded dirs as absolute paths under this
+            // workspace's cwd. Paths that no longer resolve to a directory are
+            // dropped lazily later (by the tree's `hydrated` filter on open),
+            // so a deleted folder never resurrects a dead row.
+            workspace.files_expanded = ws_session
+                .expanded_paths
+                .iter()
+                .map(|rel| PathBuf::from(&ws_session.cwd).join(rel))
+                .collect();
             workspace.propagate_custom_buttons(cx);
             workspaces.push(workspace);
         }

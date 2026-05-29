@@ -37,6 +37,7 @@ mod markdown;
 mod mouse;
 mod opencode_sessions;
 mod pane;
+mod pane_drag;
 mod project;
 mod pty;
 mod runtime_paths;
@@ -53,7 +54,7 @@ mod workspace;
 use crate::window_chrome::title_bar;
 
 use gpui::{
-    App, Bounds, Context, CursorStyle, Decorations, Entity, FocusHandle, HitboxBehavior,
+    App, Bounds, Context, CursorStyle, Decorations, Entity, FocusHandle, Focusable, HitboxBehavior,
     InteractiveElement, IntoElement, MouseButton, Pixels, Point, Render, ResizeEdge, Styled,
     Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, point, prelude::*, px,
     rgb, size, transparent_black,
@@ -101,6 +102,25 @@ pub(crate) enum SettingsSection {
 #[derive(Clone, Copy)]
 pub(crate) struct WorkspaceContextMenu {
     pub(crate) idx: usize,
+    pub(crate) position: Point<Pixels>,
+}
+
+/// Open "Move to pane…" tab context menu (EP-002 US-006). Identifies the tab
+/// (its owning pane + index) and the click anchor; the destination panes are
+/// resolved at render time from the workspace's split tree.
+#[derive(Clone)]
+pub(crate) struct TabContextMenu {
+    pub(crate) source_pane: Entity<Pane>,
+    pub(crate) tab_idx: usize,
+    pub(crate) position: Point<Pixels>,
+}
+
+/// Open right-click menu for a Files-sidebar row (PRD files-tree EP-003
+/// US-009). Carries the row's absolute path and the click anchor; "Copy
+/// relative path" resolves the workspace root at render/action time.
+#[derive(Clone)]
+pub(crate) struct FilesContextMenu {
+    pub(crate) path: std::path::PathBuf,
     pub(crate) position: Point<Pixels>,
 }
 
@@ -158,51 +178,71 @@ struct PaneFlowApp {
     font_search: String,
     /// Workflow action menu currently open in the sidebar (`None` = closed).
     workspace_menu_open: Option<WorkspaceContextMenu>,
+    /// "Move to pane…" tab context menu (EP-002 US-006), or `None` when closed.
+    tab_menu_open: Option<TabContextMenu>,
+    /// Pane to focus on the next render (EP-003 US-009). Set by the
+    /// `DropSplit` handler — which runs in a subscription callback without a
+    /// `Window` — and consumed in `render`, which has one. One-shot.
+    pending_pane_focus: Option<Entity<Pane>>,
     /// Profile menu currently open at the right of the title bar.
     /// Stores the click position so the menu can anchor near the profile
     /// button. `None` = closed.
     profile_menu_open: Option<Point<Pixels>>,
-    /// Claude Code sessions popover anchor (click position). `None` = closed.
-    /// Opened by clicking the sessions icon in a tab bar; rendered at the
-    /// `PaneFlowApp` level so the `deferred()` overlay is not clipped to the
-    /// pane bbox.
-    claude_sessions_menu_open: Option<Point<Pixels>>,
-    /// Claude Code sessions for the cwd associated with the currently
-    /// open popover. Filled asynchronously by a background fs scan;
-    /// stays empty while the scan is pending and after it resolves with
-    /// no matches.
+    /// Whether the docked agent-sessions right sidebar is visible
+    /// (PRD `prd-agent-sessions-sidebar-2026-Q3`, EP-001). Toggled by the
+    /// tab-bar sessions button; the sidebar renders as a layout child of the
+    /// root row, not a `deferred()` overlay.
+    sessions_sidebar_open: bool,
+    /// Claude Code sessions for the active terminal's cwd. Filled
+    /// asynchronously by a background fs scan; stays empty while the scan is
+    /// pending and after it resolves with no matches.
     claude_sessions: Vec<agent_sessions::SessionMeta>,
-    /// Codex CLI sessions for the same cwd, populated by a parallel
-    /// scan. The popover renders one of the two lists based on
-    /// [`Self::sessions_active_agent`].
+    /// Codex CLI sessions for the same cwd, populated by a parallel scan.
     codex_sessions: Vec<agent_sessions::SessionMeta>,
-    /// OpenCode CLI sessions for the same cwd, populated by a third
-    /// parallel scan that shells out to `opencode session list --format
-    /// json` (see `opencode_sessions.rs`). Rendered when
-    /// [`Self::sessions_active_agent`] is `OpenCode`.
+    /// OpenCode CLI sessions for the same cwd, populated by a third parallel
+    /// scan that shells out to `opencode session list --format json` (see
+    /// `opencode_sessions.rs`).
     opencode_sessions: Vec<agent_sessions::SessionMeta>,
-    /// Which agent's tab is currently selected in the popover header.
-    /// Defaults to `Claude` on every fresh open.
-    sessions_active_agent: agent_sessions::SessionAgent,
-    /// Working directory the popover was opened for. Used both to filter
-    /// stale scan results that resolve after the menu was closed and as the
-    /// label inside the popover header.
+    /// Working directory the sidebar was opened for. Used both to filter stale
+    /// scan results that resolve after the sidebar was closed and as the label
+    /// inside the sidebar header.
     claude_sessions_cwd: Option<String>,
-    /// Weak handle to the pane whose tab-bar button opened the popover.
-    /// Used to route `claude --resume <id>` back to the *originating*
-    /// pane's terminal even if the user shifts focus while the popover is
-    /// open. Weak so the popover never keeps a closed pane alive.
+    /// Weak handle to the pane whose tab-bar button opened the sidebar. Routes
+    /// `claude --resume <id>` back to the *originating* pane's terminal even if
+    /// focus shifts. Weak so the sidebar never keeps a closed pane alive.
     claude_sessions_pane: Option<gpui::WeakEntity<crate::pane::Pane>>,
-    /// Scroll state for the sessions list. Re-created on every menu open
-    /// so a fresh popover always starts at offset 0 regardless of where
-    /// the previous one was scrolled.
+    /// Scroll state for the sessions list. Re-created on every open so a fresh
+    /// sidebar starts at offset 0.
     claude_sessions_scroll: gpui::ScrollHandle,
-    /// Active scrollbar drag, if the user is currently holding the thumb.
-    /// Stores the mouse Y at drag-start and the scroll offset Y at
-    /// drag-start; mouse-move computes `(current_y - start_y)` and shifts
-    /// the offset by the same amount (track-space === content-space when
-    /// the thumb height is computed from the viewport ratio).
-    claude_sessions_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
+    /// Per-agent sidebar group state, indexed by `agent_index()`
+    /// (Claude=0, Codex=1, OpenCode=2). All reset on close/open.
+    /// `collapsed`: the group's caret has hidden its rows (EP-002 US-006).
+    sessions_group_collapsed: [bool; 3],
+    /// `show_all`: the group is past its 5-row cap via "Show more" (US-005).
+    sessions_group_show_all: [bool; 3],
+    /// `scanning`: a background scan for this agent is in flight, so an empty
+    /// list should read as "loading" not "none" (US-004).
+    sessions_scanning: [bool; 3],
+    /// Whether the docked Files right sidebar is visible (PRD
+    /// `prd-files-tree-sidebar-2026-Q3`, EP-001). Mutually exclusive with
+    /// `sessions_sidebar_open`. Never persisted — always `false` on launch.
+    files_sidebar_open: bool,
+    /// In-memory tree state for the open Files sidebar (root + expanded set +
+    /// lazily-cached directory listings). Empty when the sidebar is closed.
+    files_tree: app::files_tree::FilesTreeState,
+    /// Scroll state for the Files tree body. Re-created on every open so a
+    /// fresh sidebar starts at offset 0.
+    files_tree_scroll: gpui::ScrollHandle,
+    /// Recursive `notify` watcher on the Files tree root (EP-002 US-005).
+    /// `None` when the sidebar is closed or the watch could not be installed
+    /// (US-006 graceful degradation — the tree then refreshes on expand).
+    files_watcher: Option<notify::RecommendedWatcher>,
+    /// Receiver for raw watch events, drained + debounced by the background
+    /// loop in `bootstrap`. `Some` only while a watcher is installed.
+    files_event_rx: Option<std::sync::mpsc::Receiver<notify::Result<notify::Event>>>,
+    /// Open right-click context menu for a Files-sidebar row (EP-003 US-009),
+    /// or `None` when closed. Mutually exclusive with the other popovers.
+    files_menu_open: Option<FilesContextMenu>,
     /// Ephemeral bottom-right toast.
     toast: Option<Toast>,
     /// Dismiss timer for the active toast — dropped on new toast to cancel the old timer.
@@ -476,6 +516,12 @@ use crate::window_chrome::csd::resize_edge;
 impl Render for PaneFlowApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
+
+        // EP-003 US-009: focus the pane created by a drop-to-split. Deferred
+        // here from the `DropSplit` subscription handler (no `Window` there).
+        if let Some(pane) = self.pending_pane_focus.take() {
+            pane.read(cx).focus_handle(cx).focus(window, cx);
+        }
         let main_content = if matches!(self.mode, paneflow_config::schema::AppMode::Agents) {
             // US-008 (prd-agents-view.md): mode is the source of
             // truth for which screen renders. The AgentsView entity
@@ -718,6 +764,19 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_start_self_update))
             .on_action(cx.listener(Self::handle_dismiss_update))
             .on_action(cx.listener(Self::handle_open_agents_view))
+            // EP-001 US-003: Escape cancels an in-flight tab drag. Capture
+            // phase runs ancestor-before-descendant, so this pre-empts the
+            // focused terminal's own Escape->PTY forwarding — but only while a
+            // drag is active; otherwise we leave the key untouched so normal
+            // terminal Escape behaviour is unaffected. Drop-outside-target is
+            // handled by GPUI itself (it clears the active drag on mouse-up
+            // over a non-target), so no extra wiring is needed there.
+            .capture_key_down(cx.listener(|_this, e: &gpui::KeyDownEvent, window, cx| {
+                if cx.has_active_drag() && e.keystroke.key == "escape" {
+                    cx.stop_active_drag(window);
+                    cx.stop_propagation();
+                }
+            }))
             .on_mouse_move(|_e, _, cx| cx.stop_propagation())
             // Title bar (Entity with drag-to-move support)
             .child(self.title_bar.clone())
@@ -746,7 +805,19 @@ impl Render for PaneFlowApp {
                             .bg(rgb(0x212121))
                             .overflow_hidden()
                             .child(main_content),
-                    ),
+                    )
+                    // Docked agent-sessions sidebar (right edge). A layout child
+                    // — not an overlay — so it reflows the content and persists
+                    // while the user works (PRD agent-sessions-sidebar EP-001).
+                    .when(self.sessions_sidebar_open, |row| {
+                        row.child(self.render_sessions_sidebar(cx))
+                    })
+                    // Docked Files sidebar (right edge) — same layout child as
+                    // the sessions sidebar, mutually exclusive with it (PRD
+                    // files-tree EP-001).
+                    .when(self.files_sidebar_open, |row| {
+                        row.child(self.render_files_sidebar(cx))
+                    }),
             );
 
         if let Some(toast) = &self.toast {
@@ -755,10 +826,6 @@ impl Render for PaneFlowApp {
 
         if let Some(anchor) = self.profile_menu_open {
             app_content = app_content.child(self.render_profile_menu(anchor, window, cx));
-        }
-
-        if let Some(anchor) = self.claude_sessions_menu_open {
-            app_content = app_content.child(self.render_claude_sessions_menu(anchor, window, cx));
         }
 
         if self.show_theme_picker {
@@ -778,6 +845,16 @@ impl Render for PaneFlowApp {
         {
             app_content =
                 app_content.child(self.render_workspace_context_menu(menu, ui, window, cx));
+        }
+
+        // EP-002 US-006: "Move to pane…" tab context menu.
+        if let Some(menu) = self.tab_menu_open.clone() {
+            app_content = app_content.child(self.render_tab_context_menu(menu, ui, window, cx));
+        }
+
+        // files-tree EP-003 US-009: per-file copy-path context menu.
+        if let Some(menu) = self.files_menu_open.clone() {
+            app_content = app_content.child(self.render_files_context_menu(menu, ui, window, cx));
         }
 
         // US-011 (prd-agents-view.md): Agents-mode right-click context

@@ -12,7 +12,7 @@ mod git;
 mod ports;
 pub mod surface_naming;
 
-pub use git::{GitDiffStats, detect_branch, find_git_dir, find_workdir};
+pub use git::{GitDiffStats, detect_branch, find_git_dir};
 pub use ports::{detect_ai_processes, detect_ports};
 
 use std::cell::Cell;
@@ -82,6 +82,12 @@ pub struct Workspace {
     /// User-defined tab-bar buttons for this workspace.
     /// Rendered after the 2 built-in defaults (Claude / Codex).
     pub custom_buttons: Vec<ButtonCommand>,
+    /// Absolute directory paths expanded in the Files tree sidebar, held
+    /// per-workspace so reopening the sidebar (within a session or after a
+    /// restart) restores the same expansion (PRD files-tree US-007). Excludes
+    /// the implicit root. Persisted as workspace-relative paths in
+    /// `session.json`; the sidebar's visibility itself is never persisted.
+    pub files_expanded: Vec<std::path::PathBuf>,
 }
 
 impl Workspace {
@@ -113,6 +119,7 @@ impl Workspace {
             loader_angle: Rc::new(Cell::new(0.0)),
             detected_agents: std::collections::HashSet::new(),
             custom_buttons: Vec::new(),
+            files_expanded: Vec::new(),
         }
     }
 
@@ -147,6 +154,7 @@ impl Workspace {
             loader_angle: Rc::new(Cell::new(0.0)),
             detected_agents: std::collections::HashSet::new(),
             custom_buttons: Vec::new(),
+            files_expanded: Vec::new(),
         }
     }
 
@@ -181,6 +189,7 @@ impl Workspace {
             loader_angle: Rc::new(Cell::new(0.0)),
             detected_agents: std::collections::HashSet::new(),
             custom_buttons: Vec::new(),
+            files_expanded: Vec::new(),
         }
     }
 

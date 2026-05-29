@@ -397,6 +397,9 @@ pub struct SessionMeta {
     pub cwd: String,
     /// Git branch — empty string when the session was outside a git repo
     /// (Claude Code) or when the agent doesn't record one (Codex CLI).
+    /// Retained in the data contract (the scans still populate it) but no
+    /// longer surfaced in the sidebar UI.
+    #[allow(dead_code)]
     pub git_branch: String,
     /// Human-readable session label. Sourced from an LLM-generated title
     /// when available, falling back to the cleaned first user message

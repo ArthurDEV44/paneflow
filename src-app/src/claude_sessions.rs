@@ -163,13 +163,38 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
             break;
         }
         if n as u64 == MAX_LINE_BYTES && !buf.ends_with('\n') {
-            log::warn!(
+            // Newer Claude Code writes oversized records ahead of the
+            // envelope -- notably a `type:"queue-operation"` first line
+            // whose `content` blob can run to hundreds of KB and which
+            // carries no `cwd`. Abandoning the file here dropped the
+            // whole session from the sidebar (and logged a WARN per
+            // file on every open). Instead, discard the rest of this
+            // one overlong line in bounded chunks -- preserving the
+            // US-010 anti-OOM guard, since we never buffer the tail --
+            // and keep scanning: the envelope lands on a later,
+            // normal-sized line.
+            log::debug!(
                 target: "paneflow_app::claude_sessions",
-                "session JSONL line truncated at {} bytes for {} -- skipping file",
+                "skipped an oversized (>{} B) line in {}; continuing scan for the envelope",
                 MAX_LINE_BYTES,
                 path.display(),
             );
-            return None;
+            loop {
+                let chunk = match reader.fill_buf() {
+                    Ok(b) => b,
+                    Err(_) => return None,
+                };
+                if chunk.is_empty() {
+                    return None; // EOF mid-line: nothing more to find.
+                }
+                if let Some(nl) = chunk.iter().position(|&b| b == b'\n') {
+                    reader.consume(nl + 1);
+                    break;
+                }
+                let consumed = chunk.len();
+                reader.consume(consumed);
+            }
+            continue;
         }
         let trimmed = buf.trim_end();
         if !trimmed.starts_with('{') {
@@ -494,7 +519,7 @@ mod tests {
 
     #[test]
     fn cwd_control_char_guard() {
-        // cwd is display-only today (prettify_cwd in sessions_menu) but
+        // cwd is display-only today (prettify_cwd in sessions_sidebar) but
         // the same JSONL field could leak into a future `cd <cwd>`
         // prefix. Guard at the gate, not at each future consumer.
         let dir = tempfile::tempdir().expect("tempdir");

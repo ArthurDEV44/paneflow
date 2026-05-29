@@ -339,6 +339,85 @@ impl PaneFlowApp {
         )
         .detach();
 
+        // Files-sidebar watcher drain loop (EP-002 US-005). Mirrors the git
+        // loop above: poll the per-open watch channel, coalesce affected parent
+        // dirs, debounce ~100ms with a 500ms hard-flush ceiling (so a
+        // continuous stream like `git checkout` still flushes), then re-read
+        // only the affected cached directories. A notify overflow/`Rescan`
+        // signal forces a root re-read (US-006 AC3).
+        cx.spawn(
+            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let debounce = std::time::Duration::from_millis(100);
+                let ceiling = std::time::Duration::from_millis(500);
+                let mut first_pending: Option<std::time::Instant> = None;
+                let mut last_event = std::time::Instant::now();
+                let mut pending_dirs = std::collections::HashSet::<std::path::PathBuf>::new();
+                let mut need_rescan = false;
+
+                loop {
+                    smol::Timer::after(std::time::Duration::from_millis(50)).await;
+
+                    // Drain the watch channel → affected parent dirs + rescan flag.
+                    let drained = cx.update(|cx| {
+                        this.update(cx, |app: &mut Self, _cx: &mut Context<Self>| {
+                            let mut dirs = Vec::new();
+                            let mut rescan = false;
+                            if let Some(rx) = &app.files_event_rx {
+                                while let Ok(res) = rx.try_recv() {
+                                    if let Ok(ev) = res {
+                                        if ev.need_rescan() {
+                                            rescan = true;
+                                        }
+                                        for p in &ev.paths {
+                                            if let Some(parent) = p.parent() {
+                                                dirs.push(parent.to_path_buf());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            (dirs, rescan)
+                        })
+                    });
+
+                    let (dirs, rescan) = match drained {
+                        Ok(d) => d,
+                        Err(_) => break, // app shutting down
+                    };
+
+                    if !dirs.is_empty() || rescan {
+                        if first_pending.is_none() {
+                            first_pending = Some(std::time::Instant::now());
+                        }
+                        last_event = std::time::Instant::now();
+                        pending_dirs.extend(dirs);
+                        need_rescan |= rescan;
+                    }
+
+                    // Fire after a quiet debounce window OR once the hard
+                    // ceiling elapses under a continuous event stream.
+                    let should_fire = first_pending.is_some_and(|start| {
+                        last_event.elapsed() >= debounce || start.elapsed() >= ceiling
+                    });
+                    if should_fire {
+                        first_pending = None;
+                        let affected: Vec<std::path::PathBuf> =
+                            std::mem::take(&mut pending_dirs).into_iter().collect();
+                        let rescan = std::mem::replace(&mut need_rescan, false);
+                        let applied = cx.update(|cx| {
+                            this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                                app.refresh_files_dirs(affected, rescan, cx);
+                            })
+                        });
+                        if applied.is_err() {
+                            break;
+                        }
+                    }
+                }
+            },
+        )
+        .detach();
+
         // Poll IPC requests + config changes every 50ms
         cx.spawn(
             async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
@@ -640,16 +719,25 @@ impl PaneFlowApp {
             font_dropdown_open: false,
             font_search: String::new(),
             workspace_menu_open: None,
+            tab_menu_open: None,
+            pending_pane_focus: None,
             profile_menu_open: None,
-            claude_sessions_menu_open: None,
+            sessions_sidebar_open: false,
             claude_sessions: Vec::new(),
             codex_sessions: Vec::new(),
             opencode_sessions: Vec::new(),
-            sessions_active_agent: crate::agent_sessions::SessionAgent::Claude,
             claude_sessions_cwd: None,
             claude_sessions_pane: None,
             claude_sessions_scroll: gpui::ScrollHandle::new(),
-            claude_sessions_drag: None,
+            sessions_group_collapsed: [false; 3],
+            sessions_group_show_all: [false; 3],
+            sessions_scanning: [false; 3],
+            files_sidebar_open: false,
+            files_tree: crate::app::files_tree::FilesTreeState::default(),
+            files_tree_scroll: gpui::ScrollHandle::new(),
+            files_watcher: None,
+            files_event_rx: None,
+            files_menu_open: None,
             toast: None,
             _toast_task: None,
             loader_anim_running: false,
