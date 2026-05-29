@@ -21,6 +21,16 @@
 # committed (Apr 2026 baseline) icons in place until a master is dropped in.
 set -euo pipefail
 
+# Serialise ImageMagick's coder-module loading. The intermittent SIGABRT
+# documented on `run_magick` below is a thread race in IM7's module
+# registry during first-load of a coder/delegate: two worker threads
+# initialise the same module concurrently and abort. Pinning IM to a
+# single thread makes module init deterministic and serial. It only
+# affects parallelism inside one invocation (icon resizes are tiny, so
+# the wall-clock cost is nil) and never changes a single output pixel.
+export MAGICK_THREAD_LIMIT=1
+export OMP_NUM_THREADS=1
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 
@@ -102,7 +112,13 @@ MASK_RADIUS_PCT=2237
 run_magick() {
     local bin="$1"; shift
     local attempt=0
-    local max=3
+    # 6 attempts (was 3): the IM7 coder-loader SIGABRT can recur across
+    # consecutive identical invocations, so a 3-attempt budget is too
+    # tight -- v0.3.6's first tag build exhausted it on the masked
+    # `paneflow-512.png` step and failed the whole release. The
+    # `MAGICK_THREAD_LIMIT=1` export above is the primary mitigation;
+    # the wider budget + escalating backoff is the belt to its braces.
+    local max=6
     while : ; do
         if "$bin" "$@"; then
             return 0
@@ -112,8 +128,11 @@ run_magick() {
             warn "$bin failed after $max attempts"
             return 1
         fi
-        warn "$bin transient failure (attempt $attempt/$max); retrying in 1s"
-        sleep 1
+        # Escalating backoff (1s, 2s, 3s, ...) gives any transient
+        # module-loader / temp-file contention more room between tries
+        # than a flat 1s without ballooning total wall-clock.
+        warn "$bin transient failure (attempt $attempt/$max); retrying in ${attempt}s"
+        sleep "$attempt"
     done
 }
 
