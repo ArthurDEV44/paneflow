@@ -21,6 +21,16 @@
 //! cache is already up to date — verified by the `re_extraction_is_noop`
 //! unit test below.
 //!
+//! EP-001 US-003 — the `paneflow-mcp` bridge takes a **different** path.
+//! The shim/ai-hook helpers live in the version-pinned cache above because
+//! Paneflow re-resolves them on every launch. The bridge path, by contrast,
+//! is written into external, persistent agent configs by `paneflow mcp
+//! install`, so it must NOT change across Paneflow updates. It is extracted
+//! by `ensure_bridge_extracted` to the stable, non-versioned location
+//! `runtime_paths::bridge_binary_path()` (under `data_dir()`, not
+//! `cache_dir()`), with the same atomic-write + SHA-compared idempotency
+//! used here.
+//!
 //! Unhappy path: every IO error surfaces as `anyhow::Err` so the caller
 //! (PTY spawn, US-009) can log-and-continue without the PATH-prepend
 //! instead of aborting the user's terminal session. Constraint C4 of the
@@ -122,6 +132,57 @@ pub fn ensure_binaries_extracted() -> Result<PathBuf> {
 
     extract_into(&entries, &target_dir)?;
     Ok(target_dir)
+}
+
+/// EP-001 US-003 — materialize the embedded `paneflow-mcp` bridge at the
+/// stable, non-versioned path returned by
+/// `runtime_paths::bridge_binary_path()` and return that absolute path.
+///
+/// Reuses the same atomic-write + SHA256-compared idempotency as
+/// `ensure_binaries_extracted`, but targets `data_dir()/paneflow/bin/`
+/// instead of the version-pinned cache so the path written into external
+/// agent configs survives Paneflow updates. When the embedded bytes differ
+/// from what is on disk (a new Paneflow version shipped a newer bridge), the
+/// file is rewritten atomically; when they match, this is a no-op (no churn).
+///
+/// Unhappy path: if `data_dir()` is unresolvable / unwritable,
+/// `bridge_binary_path()` returns `None` and this returns `Err` — the caller
+/// at launch logs a warn and continues (the GUI still opens; `paneflow mcp
+/// install` will later refuse cleanly rather than write a config pointing at
+/// a non-existent path).
+pub fn ensure_bridge_extracted() -> Result<PathBuf> {
+    let bridge_path = crate::runtime_paths::bridge_binary_path().ok_or_else(|| {
+        anyhow!("EP-001 US-003: data_dir() unresolvable/unwritable; cannot extract paneflow-mcp")
+    })?;
+    let target_dir = bridge_path
+        .parent()
+        .ok_or_else(|| {
+            anyhow!(
+                "EP-001 US-003: bridge path {} has no parent",
+                bridge_path.display()
+            )
+        })?
+        .to_path_buf();
+    let filename = bridge_path
+        .file_name()
+        .ok_or_else(|| {
+            anyhow!(
+                "EP-001 US-003: bridge path {} has no filename",
+                bridge_path.display()
+            )
+        })?
+        .to_string_lossy()
+        .into_owned();
+
+    // Embed source basename matches the bridge filename on every OS
+    // (`paneflow-mcp` / `paneflow-mcp.exe`).
+    let bytes = embedded_bytes(&filename)?;
+    let entry = Entry {
+        filename,
+        bytes: bytes.as_ref(),
+    };
+    extract_into(std::slice::from_ref(&entry), &target_dir)?;
+    Ok(bridge_path)
 }
 
 /// Core extraction loop. Factored out of `ensure_binaries_extracted` so
@@ -427,20 +488,21 @@ mod tests {
     }
 
     #[test]
-    fn bins_embed_contains_both_staged_binaries() {
+    fn bins_embed_contains_all_staged_binaries() {
         // Proves the build.rs → rust-embed path populates the archive
-        // with both expected keys. `embedded_bytes` wraps `Bins::get`;
+        // with every expected key. `embedded_bytes` wraps `Bins::get`;
         // a `None` here means either build.rs did not run or the
         // nested cargo build silently skipped one of the binaries.
+        // `paneflow-mcp` is included by EP-001 US-001.
         let suffix = exe_suffix();
-        for src in ["paneflow-shim", "paneflow-ai-hook"] {
+        for src in ["paneflow-shim", "paneflow-ai-hook", "paneflow-mcp"] {
             let name = format!("{src}{suffix}");
             let bytes = embedded_bytes(&name).unwrap_or_else(|e| {
-                panic!("US-008: Bins must contain `bin/{TARGET_TRIPLE}/{name}`: {e}")
+                panic!("US-008/EP-001: Bins must contain `bin/{TARGET_TRIPLE}/{name}`: {e}")
             });
             assert!(
                 !bytes.is_empty(),
-                "US-008: embedded {name} must be non-empty"
+                "US-008/EP-001: embedded {name} must be non-empty"
             );
         }
     }
@@ -470,6 +532,55 @@ mod tests {
                 p.is_file(),
                 "US-008: ensure_binaries_extracted must produce {}",
                 p.display()
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_bridge_extracted_produces_stable_path() {
+        // EP-001 US-003 end-to-end smoke: extract the bridge to the real
+        // data_dir-backed stable path and assert the binary lands. Skip
+        // when data_dir() is unresolvable (ephemeral CI containers with no
+        // writable $HOME) so the test no-ops rather than false-fails.
+        if crate::runtime_paths::bridge_binary_path().is_none() {
+            eprintln!("skip: bridge_binary_path() unresolvable in this environment");
+            return;
+        }
+        let path = ensure_bridge_extracted().unwrap();
+        assert!(
+            path.is_file(),
+            "EP-001 US-003: ensure_bridge_extracted must produce {}",
+            path.display()
+        );
+        let suffix = exe_suffix();
+        assert_eq!(
+            path.file_name().unwrap().to_string_lossy(),
+            format!("paneflow-mcp{suffix}"),
+            "EP-001 US-003: bridge filename must be paneflow-mcp[.exe]"
+        );
+    }
+
+    #[test]
+    fn bridge_path_is_non_versioned_and_distinct_from_cache() {
+        // EP-001 US-003 AC: the bridge must live at a NON-versioned path
+        // (no `CARGO_PKG_VERSION` component) and be distinct from the
+        // version-pinned helper cache, so a Paneflow update does not
+        // invalidate the path written into external agent configs.
+        let Some(bridge) = crate::runtime_paths::bridge_binary_path() else {
+            eprintln!("skip: bridge_binary_path() unresolvable in this environment");
+            return;
+        };
+        let bridge_str = bridge.to_string_lossy();
+        assert!(
+            !bridge_str.contains(VERSION),
+            "EP-001 US-003: bridge path {bridge_str} must NOT embed the version {VERSION}"
+        );
+        // Distinct from the versioned helper cache dir.
+        if let Ok(cache) = ensure_binaries_extracted() {
+            assert_ne!(
+                bridge.parent(),
+                Some(cache.as_path()),
+                "EP-001 US-003: bridge dir must differ from the versioned cache dir"
             );
         }
     }

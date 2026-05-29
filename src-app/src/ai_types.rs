@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn single_session_no_suffix() {
-        let sessions = vec![s(AiTool::Claude, AgentState::Thinking)];
+        let sessions = [s(AiTool::Claude, AgentState::Thinking)];
         let rows = aggregate_by_tool(sessions.iter());
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].count, 1);
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn multi_same_tool_yields_plus_n_suffix() {
-        let sessions = vec![
+        let sessions = [
             s(AiTool::Claude, AgentState::Thinking),
             s(AiTool::Claude, AgentState::Thinking),
             s(AiTool::Claude, AgentState::Thinking),
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn dominant_picks_waiting_over_thinking() {
-        let sessions = vec![
+        let sessions = [
             s(AiTool::Claude, AgentState::Thinking),
             s(AiTool::Claude, AgentState::WaitingForInput),
             s(AiTool::Claude, AgentState::Finished),
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn dominant_picks_thinking_over_finished() {
-        let sessions = vec![
+        let sessions = [
             s(AiTool::Claude, AgentState::Finished),
             s(AiTool::Claude, AgentState::Thinking),
         ];
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn claude_renders_before_codex() {
-        let sessions = vec![
+        let sessions = [
             s(AiTool::Codex, AgentState::Thinking),
             s(AiTool::Claude, AgentState::Thinking),
         ];

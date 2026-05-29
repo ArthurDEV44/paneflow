@@ -10,6 +10,7 @@
 
 mod git;
 mod ports;
+pub mod surface_naming;
 
 pub use git::{GitDiffStats, detect_branch, find_git_dir, find_workdir};
 pub use ports::{detect_ai_processes, detect_ports};

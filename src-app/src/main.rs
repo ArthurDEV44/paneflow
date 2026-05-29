@@ -1065,9 +1065,44 @@ fn main() {
         std::process::exit(run_update_and_exit());
     }
 
+    // EP-002 US-004: `paneflow mcp <subcommand>` runs as a scriptable CLI
+    // and exits — it never initializes GPUI / opens a window. Placed after
+    // `augment_path_for_gui_launch` (so agent-CLI detection sees `~/.bun/bin`
+    // etc.) and after `--update-and-exit`, before any GUI bootstrap. The
+    // install engine lives in the GPU-free `paneflow-mcp-install` crate; we
+    // extract the bridge first so the path written into agent configs is
+    // guaranteed to exist (best-effort — the engine refuses cleanly if not).
+    // Diagnostics go to stderr (env_logger), the per-agent report to stdout.
+    if args.get(1).map(String::as_str) == Some("mcp") {
+        let bridge_path = match ai_hooks::extract::ensure_bridge_extracted() {
+            Ok(p) => Some(p),
+            Err(e) => {
+                log::warn!("paneflow mcp: bridge extraction failed ({e:#})");
+                // Fall back to the resolved-but-maybe-missing path so the
+                // engine can emit the precise "binary missing at <path>"
+                // refusal rather than a vaguer "data dir unresolved".
+                runtime_paths::bridge_binary_path()
+            }
+        };
+        std::process::exit(paneflow_mcp_install::run_cli(&args[2..], bridge_path));
+    }
+
     warn_if_legacy_run_install();
     #[cfg(target_os = "macos")]
     warn_if_rosetta_translated();
+
+    // EP-001 US-003: materialize the embedded `paneflow-mcp` bridge to its
+    // stable, non-versioned path so a registered MCP server keeps resolving
+    // across Paneflow updates. SHA-compared + atomic: a no-op when the
+    // on-disk bytes already match the embedded version. Non-fatal — the GUI
+    // must still open if data_dir is unwritable; `paneflow mcp install`
+    // (EP-002) refuses cleanly later rather than write a dangling path.
+    match ai_hooks::extract::ensure_bridge_extracted() {
+        Ok(path) => log::info!("paneflow: MCP bridge ready at {}", path.display()),
+        Err(e) => log::warn!(
+            "paneflow: MCP bridge extraction failed ({e:#}); `paneflow mcp install` will be unavailable until resolved"
+        ),
+    }
 
     application()
         .with_assets(assets::Assets)

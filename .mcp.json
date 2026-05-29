@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "paneflow": {
+      "type": "stdio",
+      "command": "${CLAUDE_PROJECT_DIR}/target/release/paneflow-mcp"
+    }
+  }
+}

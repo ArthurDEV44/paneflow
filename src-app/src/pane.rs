@@ -100,6 +100,23 @@ pub enum PaneEvent {
     /// `PaneFlowApp` layer; a `deferred()` inside `Pane::render` is clipped
     /// to the pane's bbox).
     OpenClaudeSessions(Point<Pixels>),
+    /// Copy the active terminal's human-readable surface reference (its
+    /// disambiguated name, e.g. `cargo-run`) to the clipboard (US-010).
+    /// Carries the surface_id; the parent resolves the globally-disambiguated
+    /// name via `collect_surface_meta` so the copied value matches what the
+    /// MCP `list_panes` tool advertises.
+    CopySurfaceRef(u64),
+    /// A surface's custom name changed via inline rename (US-013) — the parent
+    /// should persist the session so the name survives restart.
+    SurfaceRenamed,
+}
+
+/// Inline tab-rename state (US-013).
+struct TabRename {
+    /// Index of the tab being renamed.
+    idx: usize,
+    /// In-progress name buffer.
+    buffer: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +133,11 @@ pub struct Pane {
     /// Workspace-specific command buttons rendered in the tab bar after the
     /// built-in defaults. Populated/updated by `Workspace::propagate_custom_buttons`.
     pub custom_buttons: Vec<ButtonCommand>,
+    /// Inline tab-rename state (US-013). `None` when not renaming.
+    rename: Option<TabRename>,
+    /// Focus target for the inline rename input, so keystrokes route to the
+    /// rename handler (not the terminal) while a tab name is being edited.
+    rename_focus: FocusHandle,
 }
 
 impl EventEmitter<PaneEvent> for Pane {}
@@ -130,6 +152,8 @@ impl Pane {
             zoomed: false,
             workspace_id,
             custom_buttons: Vec::new(),
+            rename: None,
+            rename_focus: cx.focus_handle(),
         }
     }
 
@@ -229,7 +253,13 @@ impl Pane {
     }
 
     fn terminal_tab_title(terminal: &Entity<TerminalView>, cx: &App) -> String {
-        let raw = &terminal.read(cx).terminal.title;
+        let view = terminal.read(cx);
+        // US-013: a user-assigned custom name wins over the OSC-derived title
+        // so a renamed tab visibly shows its new name.
+        if let Some(custom) = view.terminal.custom_name.as_ref().filter(|c| !c.is_empty()) {
+            return custom.clone();
+        }
+        let raw = &view.terminal.title;
         if raw.is_empty() {
             return "Terminal".into();
         }
@@ -353,6 +383,93 @@ impl Pane {
     // -----------------------------------------------------------------------
     // Tab bar rendering — Zed-style design
     // -----------------------------------------------------------------------
+
+    /// Render a tab's title slot. While that tab is being renamed (US-013) the
+    /// slot becomes a focusable inline input capturing keystrokes; otherwise
+    /// it's the normal ellipsized title.
+    fn render_tab_title(&self, i: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let ui = tab_colors();
+        if self.rename.as_ref().map(|r| r.idx) == Some(i) {
+            let buffer = self
+                .rename
+                .as_ref()
+                .map(|r| r.buffer.clone())
+                .unwrap_or_default();
+            div()
+                .flex_1()
+                .min_w_0()
+                .track_focus(&self.rename_focus)
+                .bg(ui.overlay)
+                .px_1()
+                .rounded_sm()
+                .text_color(ui.text)
+                .text_align(gpui::TextAlign::Center)
+                .on_key_down(cx.listener(
+                    |this, e: &gpui::KeyDownEvent, window: &mut Window, cx| {
+                        if this.rename.is_none() {
+                            return;
+                        }
+                        match e.keystroke.key.as_str() {
+                            "enter" => this.commit_rename(window, cx),
+                            "escape" => {
+                                this.rename = None;
+                                this.focus_handle(cx).focus(window, cx);
+                                cx.notify();
+                            }
+                            "backspace" => {
+                                if let Some(r) = this.rename.as_mut() {
+                                    r.buffer.pop();
+                                }
+                                cx.notify();
+                            }
+                            _ => {
+                                if let Some(ch) = &e.keystroke.key_char
+                                    && !ch.is_empty()
+                                    && !e.keystroke.modifiers.control
+                                    && !e.keystroke.modifiers.platform
+                                    && let Some(r) = this.rename.as_mut()
+                                {
+                                    r.buffer.push_str(ch);
+                                    cx.notify();
+                                }
+                            }
+                        }
+                    },
+                ))
+                .child(format!("{buffer}|"))
+                .into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_x_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_align(gpui::TextAlign::Center)
+                .child(Self::tab_title(&self.tabs[i], cx))
+                .into_any_element()
+        }
+    }
+
+    /// Commit the in-progress inline rename (US-013): a non-empty buffer sets
+    /// the tab's terminal custom name; an empty one clears it (reverting to the
+    /// auto-derived name). Emits `SurfaceRenamed` so the app persists the
+    /// session, then returns focus to the terminal.
+    fn commit_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.rename.take() else {
+            return;
+        };
+        if let Some(TabContent::Terminal(t)) = self.tabs.get(state.idx).cloned() {
+            let trimmed = state.buffer.trim();
+            let new_name = (!trimmed.is_empty()).then(|| trimmed.to_string());
+            t.update(cx, |view, _cx| {
+                view.terminal.custom_name = new_name;
+            });
+            cx.emit(PaneEvent::SurfaceRenamed);
+        }
+        self.focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
 
     fn render_tab_bar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tab_count = self.tabs.len();
@@ -507,25 +624,32 @@ impl Pane {
                 // path.
                 .min_w_0()
                 .w_full()
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    if tab_idx < this.tabs.len() {
+                .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                    if tab_idx >= this.tabs.len() {
+                        cx.stop_propagation();
+                        return;
+                    }
+                    let is_double = matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2);
+                    if is_double {
+                        // US-013: double-click a terminal tab to rename it.
+                        if let Some(TabContent::Terminal(t)) = this.tabs.get(tab_idx) {
+                            let buffer =
+                                t.read(cx).terminal.custom_name.clone().unwrap_or_default();
+                            this.rename = Some(TabRename {
+                                idx: tab_idx,
+                                buffer,
+                            });
+                            this.rename_focus.focus(window, cx);
+                        }
+                    } else {
                         this.selected_idx = tab_idx;
                         this.focus_handle(cx).focus(window, cx);
-                        cx.notify();
                     }
+                    cx.notify();
                     cx.stop_propagation();
                 }))
                 .child(leading_icon)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_x_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .text_align(gpui::TextAlign::Center)
-                        .child(Self::tab_title(&self.tabs[i], cx)),
-                )
+                .child(self.render_tab_title(i, cx))
                 .child(close_btn);
 
             tab = tab.child(content);
@@ -575,6 +699,22 @@ impl Pane {
         }
 
         end_section = end_section
+            // Copy this surface's reference (its human-readable name) so it
+            // can be pasted into an AI agent ("read the logs in cargo-run").
+            // US-010: fallback affordance for when semantic disambiguation by
+            // the agent isn't enough. Emits the surface_id; the app resolves
+            // the disambiguated name so the copied value matches `list_panes`.
+            .child(Self::action_button(
+                "pane-btn-copy-ref",
+                "icons/link.svg",
+                cx.listener(|this, _, _window, cx| {
+                    let Some(terminal) = this.active_terminal_opt() else {
+                        return;
+                    };
+                    let surface_id = terminal.entity_id().as_u64();
+                    cx.emit(PaneEvent::CopySurfaceRef(surface_id));
+                }),
+            ))
             // New terminal tab
             .child(Self::action_button(
                 "pane-btn-new-tab",

@@ -126,6 +126,80 @@ fn find_terminal_in_tree(
     }
 }
 
+/// Collect every terminal entity in a layout tree, in deterministic traversal
+/// order. Unlike [`find_first_terminal`] this includes ALL tabs of each pane
+/// (a pane can hold several terminal surfaces). Used by `surface.list`
+/// (US-002, prd-pane-context-bridge).
+fn collect_surface_entities(
+    node: &LayoutTree,
+    cx: &App,
+    out: &mut Vec<gpui::Entity<TerminalView>>,
+) {
+    match node {
+        LayoutTree::Leaf(pane) => {
+            for terminal in pane.read(cx).terminals() {
+                out.push(terminal.clone());
+            }
+        }
+        LayoutTree::Container { children, .. } => {
+            for child in children {
+                collect_surface_entities(&child.node, cx, out);
+            }
+        }
+    }
+}
+
+/// Per-surface metadata for `surface.list` (US-002) and name-based resolution
+/// in `surface.read` / `surface.search` (US-003/US-004).
+pub(crate) struct SurfaceMeta {
+    pub surface_id: u64,
+    pub name: String,
+    pub title: String,
+    pub cwd: Option<String>,
+    pub cmd: Option<String>,
+    pub workspace: usize,
+}
+
+/// Window a scrollback string by line for `surface.read` (US-003). `offset`
+/// counts lines skipped from the most-recent end; `lines` is the window size.
+/// Returns `(text, returned_line_count, total_lines, eof)`, where `eof` is
+/// `true` once the window reaches the oldest retained line. Pure → unit-tested.
+pub(crate) fn paginate_scrollback(
+    full: &str,
+    lines: usize,
+    offset: usize,
+) -> (String, usize, usize, bool) {
+    if full.is_empty() {
+        return (String::new(), 0, 0, true);
+    }
+    let all: Vec<&str> = full.split('\n').collect();
+    let total = all.len();
+    let end = total.saturating_sub(offset);
+    if end == 0 {
+        // Offset is past the oldest line — nothing to return, at the top.
+        return (String::new(), 0, total, true);
+    }
+    let start = end.saturating_sub(lines);
+    let window = &all[start..end];
+    (window.join("\n"), window.len(), total, start == 0)
+}
+
+/// Parse the `new_name` field of a `surface.rename` request (US-013). Trims
+/// whitespace, strips control characters, and caps length; an empty/absent
+/// value yields `None` (clear the custom name, reverting to auto-derived).
+pub(crate) fn parse_rename_name(params: &serde_json::Value) -> Option<String> {
+    const MAX_NAME_LEN: usize = 64;
+    let raw = params.get("new_name").and_then(|v| v.as_str())?;
+    let cleaned: String = raw
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_NAME_LEN)
+        .collect();
+    let cleaned = cleaned.trim().to_string();
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
 impl PaneFlowApp {
     pub(crate) fn process_ipc_requests(&mut self, cx: &mut Context<Self>) {
         while let Ok(req) = self.ipc_rx.try_recv() {
@@ -259,6 +333,114 @@ impl PaneFlowApp {
             // to invoke `cx.restart()`.
             self.try_auto_kickoff_install(cx);
         }
+    }
+
+    /// Walk every workspace's layout tree and build per-surface metadata with
+    /// globally-disambiguated human-readable names (US-002). Order is
+    /// deterministic: workspace index, then tree-traversal order.
+    pub(crate) fn collect_surface_meta(&self, cx: &App) -> Vec<SurfaceMeta> {
+        // Stage 1: gather raw signals per surface in stable order, with an
+        // empty `name` placeholder filled in by stage 2. `customs` tracks each
+        // surface's user-assigned name (US-013) in parallel.
+        let mut metas: Vec<SurfaceMeta> = Vec::new();
+        let mut customs: Vec<Option<String>> = Vec::new();
+        for (ws_idx, ws) in self.workspaces.iter().enumerate() {
+            if let Some(root) = &ws.root {
+                let mut entities = Vec::new();
+                collect_surface_entities(root, cx, &mut entities);
+                for entity in entities {
+                    let view = entity.read(cx);
+                    let ts = &view.terminal;
+                    customs.push(ts.custom_name.clone());
+                    metas.push(SurfaceMeta {
+                        surface_id: entity.entity_id().as_u64(),
+                        name: String::new(),
+                        title: ts.title.clone(),
+                        cwd: ts.current_cwd.clone(),
+                        cmd: ts.foreground_command(),
+                        workspace: ws_idx,
+                    });
+                }
+            }
+        }
+
+        // Stage 2: a custom name (US-013) wins verbatim; otherwise derive a
+        // base name. Globally resolve to unique names, then assign.
+        let inputs: Vec<(Option<String>, String, Option<String>)> = metas
+            .iter()
+            .zip(&customs)
+            .map(|(m, custom)| {
+                let base = crate::workspace::surface_naming::derive_surface_base_name(
+                    m.cmd.as_deref(),
+                    Some(m.title.as_str()).filter(|t| !t.is_empty()),
+                );
+                (custom.clone(), base, m.cwd.clone())
+            })
+            .collect();
+        for (meta, name) in
+            metas
+                .iter_mut()
+                .zip(crate::workspace::surface_naming::resolve_surface_names(
+                    &inputs,
+                ))
+        {
+            meta.name = name;
+        }
+        metas
+    }
+
+    /// Resolve a `surface.*` target from the request params to a terminal
+    /// entity (US-003/US-004). Precedence: explicit `surface_id` → `name` →
+    /// the active workspace's first leaf. Returns a structured `-32602` error
+    /// when the target is missing, unknown, or an ambiguous name.
+    fn resolve_surface(
+        &self,
+        params: &serde_json::Value,
+        cx: &App,
+    ) -> Result<gpui::Entity<TerminalView>, JsonRpcError> {
+        if let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64()) {
+            return find_terminal_by_surface_id(&self.workspaces, sid, cx).ok_or_else(|| {
+                JsonRpcError::invalid_params(format!("surface_id {sid} not found"))
+            });
+        }
+        if let Some(name) = params
+            .get("name")
+            .and_then(|n| n.as_str())
+            .filter(|n| !n.is_empty())
+        {
+            let meta = self.collect_surface_meta(cx);
+            let matches: Vec<&SurfaceMeta> = meta.iter().filter(|m| m.name == name).collect();
+            match matches.as_slice() {
+                [one] => {
+                    let sid = one.surface_id;
+                    return find_terminal_by_surface_id(&self.workspaces, sid, cx).ok_or_else(
+                        || JsonRpcError::invalid_params(format!("surface '{name}' vanished")),
+                    );
+                }
+                [] => {
+                    let available: Vec<&str> = meta.iter().map(|m| m.name.as_str()).collect();
+                    return Err(JsonRpcError::invalid_params(format!(
+                        "no surface named '{name}'; available: [{}]",
+                        available.join(", ")
+                    )));
+                }
+                many => {
+                    let ids: Vec<String> = many.iter().map(|m| m.surface_id.to_string()).collect();
+                    return Err(JsonRpcError::invalid_params(format!(
+                        "surface name '{name}' is ambiguous across {} surfaces (ids: {}); pass surface_id",
+                        many.len(),
+                        ids.join(", ")
+                    )));
+                }
+            }
+        }
+        if let Some(ws) = self.active_workspace()
+            && let Some(root) = &ws.root
+            && let Some(t) = find_first_terminal(root, cx)
+        {
+            return Ok(t);
+        }
+        Err(JsonRpcError::invalid_params("no surface available"))
     }
 
     fn handle_ipc(
@@ -415,8 +597,115 @@ impl PaneFlowApp {
                 }
             }
             "surface.list" => {
+                // US-002: additive enrichment — keep the legacy root fields
+                // (`pane_count`, `workspace`) for back-compat and add a
+                // per-surface `surfaces` array with disambiguated names.
+                let surfaces: Vec<_> = self
+                    .collect_surface_meta(cx)
+                    .into_iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "surface_id": s.surface_id,
+                            "name": s.name,
+                            "title": s.title,
+                            "cwd": s.cwd,
+                            "cmd": s.cmd,
+                            "workspace": s.workspace,
+                        })
+                    })
+                    .collect();
                 let count = self.active_workspace().map_or(0, |ws| ws.pane_count());
-                serde_json::json!({"pane_count": count, "workspace": self.active_idx})
+                serde_json::json!({
+                    "pane_count": count,
+                    "workspace": self.active_idx,
+                    "surfaces": surfaces,
+                })
+            }
+            "surface.read" => {
+                // US-003: read a surface's scrollback as plain text. Read-only;
+                // no scripting gate (the send_* gate guards writes, not reads).
+                let terminal = match self.resolve_surface(params, cx) {
+                    Ok(t) => t,
+                    Err(e) => return e.into_value(),
+                };
+                const DEFAULT_LINES: usize = 200;
+                // Mirror `extract_scrollback`'s own 4000-line cap.
+                const MAX_LINES: usize = 4000;
+                let lines = params
+                    .get("lines")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| (n as usize).clamp(1, MAX_LINES))
+                    .unwrap_or(DEFAULT_LINES);
+                let offset = params
+                    .get("offset")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize)
+                    .unwrap_or(0);
+                let full = terminal
+                    .read(cx)
+                    .terminal
+                    .extract_scrollback()
+                    .unwrap_or_default();
+                let (text, returned, total, eof) = paginate_scrollback(&full, lines, offset);
+                serde_json::json!({
+                    "text": text,
+                    "lines": returned,
+                    "total_lines": total,
+                    "eof": eof,
+                })
+            }
+            "surface.search" => {
+                // US-004: locate a pattern in a surface's scrollback without
+                // pulling the whole buffer. Plain-text, case-insensitive.
+                let pattern = params.get("pattern").and_then(|p| p.as_str()).unwrap_or("");
+                if pattern.is_empty() {
+                    return JsonRpcError::invalid_params("missing or empty 'pattern' parameter")
+                        .into_value();
+                }
+                if pattern.len() > crate::search::MAX_QUERY_LEN {
+                    return JsonRpcError::invalid_params(format!(
+                        "pattern exceeds {} bytes",
+                        crate::search::MAX_QUERY_LEN
+                    ))
+                    .into_value();
+                }
+                let terminal = match self.resolve_surface(params, cx) {
+                    Ok(t) => t,
+                    Err(e) => return e.into_value(),
+                };
+                const DEFAULT_MAX: usize = 50;
+                const HARD_MAX: usize = 1000;
+                let max_matches = params
+                    .get("max_matches")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| (n as usize).clamp(1, HARD_MAX))
+                    .unwrap_or(DEFAULT_MAX);
+                let (matches, truncated) = terminal
+                    .read(cx)
+                    .terminal
+                    .search_scrollback(pattern, max_matches);
+                let arr: Vec<_> = matches
+                    .into_iter()
+                    .map(|(line, text)| serde_json::json!({"line": line, "text": text}))
+                    .collect();
+                serde_json::json!({"matches": arr, "truncated": truncated})
+            }
+            "surface.rename" => {
+                // US-013: assign (or clear) a surface's custom name. `new_name`
+                // is trimmed + capped; empty/absent clears it (back to the
+                // auto-derived name). Targeting reuses `resolve_surface`
+                // (surface_id / current name / active).
+                let terminal = match self.resolve_surface(params, cx) {
+                    Ok(t) => t,
+                    Err(e) => return e.into_value(),
+                };
+                let new_name = parse_rename_name(params);
+                terminal.update(cx, |view, _cx| {
+                    view.terminal.custom_name = new_name.clone();
+                });
+                self.save_session(cx);
+                cx.notify();
+                serde_json::json!({"renamed": true, "name": new_name})
             }
             "surface.send_text" => {
                 // US-012 (cli-hardening-followup-2026-Q3): same-UID
@@ -1319,5 +1608,87 @@ mod tests {
         let resp = promote_response(legacy, id);
         assert_eq!(resp["result"]["error"], "Workspace limit reached");
         assert!(resp.get("error").is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // US-003 (prd-pane-context-bridge) — surface.read pagination
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn paginate_empty_buffer_is_eof() {
+        assert_eq!(
+            super::paginate_scrollback("", 200, 0),
+            (String::new(), 0, 0, true)
+        );
+    }
+
+    #[test]
+    fn paginate_default_window_returns_tail() {
+        // offset 0 returns the most-recent `lines` lines, not at eof.
+        let (text, returned, total, eof) = super::paginate_scrollback("a\nb\nc\nd\ne", 2, 0);
+        assert_eq!(text, "d\ne");
+        assert_eq!(returned, 2);
+        assert_eq!(total, 5);
+        assert!(!eof);
+    }
+
+    #[test]
+    fn paginate_offset_walks_back_up_the_buffer() {
+        // Skip the 2 most-recent lines, then take 2 → "b\nc".
+        let (text, returned, total, eof) = super::paginate_scrollback("a\nb\nc\nd\ne", 2, 2);
+        assert_eq!(text, "b\nc");
+        assert_eq!(returned, 2);
+        assert_eq!(total, 5);
+        assert!(!eof);
+    }
+
+    #[test]
+    fn paginate_window_covering_whole_buffer_is_eof() {
+        let (text, returned, total, eof) = super::paginate_scrollback("a\nb\nc", 10, 0);
+        assert_eq!(text, "a\nb\nc");
+        assert_eq!(returned, 3);
+        assert_eq!(total, 3);
+        assert!(eof, "reaching the oldest line sets eof");
+    }
+
+    #[test]
+    fn paginate_offset_past_top_returns_empty_at_eof() {
+        let (text, returned, total, eof) = super::paginate_scrollback("a\nb\nc", 2, 10);
+        assert!(text.is_empty());
+        assert_eq!(returned, 0);
+        assert_eq!(total, 3);
+        assert!(eof);
+    }
+
+    // -----------------------------------------------------------------
+    // US-013 (prd-pane-context-bridge) — surface.rename name parsing
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn parse_rename_name_trims_and_accepts() {
+        let p = serde_json::json!({"new_name": "  build logs  "});
+        assert_eq!(super::parse_rename_name(&p).as_deref(), Some("build logs"));
+    }
+
+    #[test]
+    fn parse_rename_name_empty_or_absent_clears() {
+        assert_eq!(super::parse_rename_name(&serde_json::json!({})), None);
+        assert_eq!(
+            super::parse_rename_name(&serde_json::json!({"new_name": "   "})),
+            None
+        );
+        assert_eq!(
+            super::parse_rename_name(&serde_json::json!({"new_name": ""})),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_rename_name_strips_control_chars_and_caps_length() {
+        let p = serde_json::json!({"new_name": "ab\ncd\u{7}ef"});
+        assert_eq!(super::parse_rename_name(&p).as_deref(), Some("abcdef"));
+        let long = "x".repeat(200);
+        let p = serde_json::json!({ "new_name": long });
+        assert_eq!(super::parse_rename_name(&p).map(|s| s.len()), Some(64));
     }
 }

@@ -5422,6 +5422,7 @@ dependencies = [
  "open",
  "paneflow-acp",
  "paneflow-config",
+ "paneflow-mcp-install",
  "paneflow-telemetry",
  "paneflow-threads",
  "parking_lot",
@@ -5462,6 +5463,29 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "paneflow-mcp"
+version = "0.3.4"
+dependencies = [
+ "interprocess",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "paneflow-mcp-install"
+version = "0.3.4"
+dependencies = [
+ "anyhow",
+ "dirs 6.0.0",
+ "log",
+ "serde_json",
+ "tempfile",
+ "toml_edit 0.22.27",
+ "which 8.0.2",
 ]
 
 [[package]]
