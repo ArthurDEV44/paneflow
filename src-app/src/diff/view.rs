@@ -20,9 +20,11 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 use futures::future::Either;
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, Context, DragMoveEvent, Entity, FocusHandle, Focusable,
-    FontWeight, Hsla, IntoElement, KeyDownEvent, ParentElement, Pixels, Point, Render,
-    ScrollHandle, SharedString, Styled, Window, deferred, div, point, prelude::*, px, relative,
+    AnyElement, App, Bounds, ClickEvent, Context, CursorStyle, DragMoveEvent, Entity, EventEmitter,
+    FocusHandle, Focusable, FontWeight, Hsla, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
+    ScrollHandle, SharedString, Styled, Window, anchored, deferred, div, point, prelude::*, px,
+    relative,
 };
 use notify::event::ModifyKind;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -73,6 +75,17 @@ const REFRESH_COOLDOWN: Duration = Duration::from_millis(1000);
 /// build time off-thread. `super::syntax::DiffSyntax` supplies theme-derived
 /// (ANSI) colors; unknown grammars fall back to monochrome.
 const SYNTAX_HIGHLIGHT_ENABLED: bool = true;
+
+/// Delay before pre-filling a freshly-launched embedded review CLI's input (tmux
+/// send-keys style). Long enough for `claude` / `codex` / `opencode` / `pi` to
+/// boot their readline; the clipboard fallback covers a missed window.
+const REVIEW_PREFILL_DELAY_MS: u64 = 1800;
+
+/// Embedded review-terminal region height (px): default + drag clamp bounds.
+/// Opens roughly half the view so the CLI/shell has real room (drag to resize).
+const REVIEW_DEFAULT_HEIGHT: f32 = 520.0;
+const REVIEW_MIN_HEIGHT: f32 = 120.0;
+const REVIEW_MAX_HEIGHT: f32 = 1000.0;
 
 /// Inline (unified) vs side-by-side. Unified is the default — it mirrors Zed's
 /// git-panel Diff view (single gutter, one merged line number, colored hunk
@@ -165,6 +178,13 @@ enum ColumnState {
         /// ([`DiffView::jump_to_file`]). Built once per load, off-thread.
         anchors_unified: Rc<Vec<(String, usize)>>,
         anchors_split: Rc<Vec<(String, usize)>>,
+        /// US-001/US-002 (prd-ai-in-diff-2026-Q3.md): the raw per-file diffs
+        /// retained so "copy hunk/file" (US-003) and the agent review payload
+        /// (US-005) serialize an exact unified diff at action time (no stable
+        /// hunk ID — hunks are resolved from these on demand). Bounded by the
+        /// same per-file caps as the rows; shared `Rc` so reads never clone the
+        /// base/new text.
+        files_full: Rc<Vec<super::git::FileDiff>>,
     },
     Failed(String),
 }
@@ -181,15 +201,51 @@ enum Built {
         files: Vec<FileEntry>,
         anchors_unified: Vec<(String, usize)>,
         anchors_split: Vec<(String, usize)>,
+        /// US-001/US-002: raw per-file diffs retained for copy/review, moved out
+        /// of the off-thread `diff.files` after the rows are built from it.
+        files_full: Vec<super::git::FileDiff>,
         /// US-016: captured in the same off-thread pass as the diff, so a later
         /// `revalidate` compares against it without re-shelling at harvest time.
         fingerprint: super::git::ColumnFingerprint,
     },
 }
 
+/// prd-ai-in-diff-2026-Q3.md (terminal-launch revision): a review CLI running in
+/// a real terminal embedded under a column's diff. The diff view owns the
+/// `TerminalView` entity directly (no workspace pane); dropping it shuts the PTY.
+struct ReviewTerminal {
+    label: SharedString,
+    terminal: Entity<crate::terminal::TerminalView>,
+}
+
+/// Hover tooltip body for the icon-only column-header buttons (Review, terminal).
+struct DiffHeaderTooltip {
+    label: SharedString,
+}
+
+impl Render for DiffHeaderTooltip {
+    fn render(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = crate::theme::active_theme();
+        let ui = crate::theme::ui_colors();
+        div()
+            .px(px(8.))
+            .py(px(6.))
+            .rounded(px(6.))
+            .bg(theme.title_bar_background)
+            .border_1()
+            .border_color(ui.border)
+            .text_color(ui.text)
+            .text_size(px(11.))
+            .child(self.label.clone())
+    }
+}
+
 struct Column {
     branch: String,
     path: PathBuf,
+    /// The open workspace this column's worktree belongs to (seed
+    /// [`DiffWorktree::workspace_id`]), used to tag the embedded review terminal.
+    workspace_id: Option<u64>,
     state: ColumnState,
     /// Scroll handle for the custom [`DiffElement`] path (hosted in an
     /// `overflow_y_scroll` div). Also the offset source/target for cross-column
@@ -229,13 +285,20 @@ struct Column {
     /// the columns whose fingerprint moved — never discards an in-flight full
     /// reload of the OTHER columns.
     generation: u64,
+    /// Review CLIs launched on this column's branch, rendered as real terminals
+    /// under the diff body (prd-ai-in-diff-2026-Q3.md). Empty until the user runs
+    /// Review; replaced on a re-run; dropped (PTY shutdown) when the column is.
+    review_terminals: Vec<ReviewTerminal>,
+    /// User-resizable height (px) of this column's embedded review region.
+    review_height: f32,
 }
 
 impl Column {
-    fn new_loading(branch: String, path: PathBuf) -> Self {
+    fn new_loading(branch: String, path: PathBuf, workspace_id: Option<u64>) -> Self {
         Self {
             branch,
             path,
+            workspace_id,
             state: ColumnState::Loading,
             el_scroll: ScrollHandle::new(),
             visible: true,
@@ -247,6 +310,8 @@ impl Column {
             fingerprint: None,
             base_override: None,
             generation: 0,
+            review_terminals: Vec::new(),
+            review_height: REVIEW_DEFAULT_HEIGHT,
         }
     }
 
@@ -351,6 +416,69 @@ pub struct DiffView {
     /// `DiffColumnDrag` is in flight, so the hovered pane's overlay can preview
     /// the split. `None` edge = center (move/reorder). Cleared on drop.
     drag_target: Option<(usize, Option<DropEdge>)>,
+    /// US-002/US-003 (prd-ai-in-diff-2026-Q3.md): open body context menu
+    /// (right-click), carrying the resolved scope + window-space anchor. `None`
+    /// when closed.
+    body_menu: Option<DiffBodyMenu>,
+    /// US-003: last pointer position over a column body `(col idx, window point)`,
+    /// so the `Ctrl+Shift+C` action resolves the hunk under the cursor without a
+    /// continuous row recompute on every move.
+    last_body_pos: Option<(usize, Point<Pixels>)>,
+    /// US-003: transient "copied" confirmation pill, auto-cleared by a spawned
+    /// timer. Self-hosted so the diff view needs no PaneFlowApp toast handle.
+    flash: Option<SharedString>,
+    /// Which branch column's Review CLI multi-select popover is open (by column
+    /// index), or `None` when closed. Anchored to that branch's header.
+    review_menu_open: Option<usize>,
+    /// Per-CLI "include in the review" toggles, aligned to [`ReviewCli::all`]
+    /// order. Re-synced (default all-on) when the menu opens.
+    review_picks: Vec<bool>,
+    /// Active review-region resize drag: `(col_idx, start_pointer_y_px,
+    /// start_height_px)`. `None` when not dragging.
+    review_resizing: Option<(usize, f32, f32)>,
+    /// `(col_idx, unified row)` of the changed line under the cursor while that
+    /// column has a review CLI running — painted as hover-highlighted + clickable
+    /// (left-click sends it to the CLI). `None` when not over an actionable line.
+    hover_line: Option<(usize, usize)>,
+    /// When true, the column-header `×` emits [`DiffViewEvent::CloseColumn`] (the
+    /// host deselects the branch from the scope) instead of locally hiding the
+    /// column. Set for the Worktree scope, where a branch is either shown or not —
+    /// no in-between "hidden but tracked" state with a "N hidden" pill.
+    close_removes: bool,
+}
+
+/// Events a [`DiffView`] raises to its host (`PaneFlowApp`). Today: the user
+/// asked to drop a branch column from the Worktree scope via its header `×`.
+pub enum DiffViewEvent {
+    CloseColumn { path: PathBuf },
+}
+
+/// US-002/US-003: an open right-click menu on the diff body, anchored at the
+/// click point and pre-resolved to the file (+ optional hunk + clicked line)
+/// under the cursor.
+struct DiffBodyMenu {
+    position: Point<Pixels>,
+    col_idx: usize,
+    scope: DiffBodyScope,
+}
+
+/// A changed line resolved under the pointer, for sending into the embedded
+/// review CLI's input (prd-ai-in-diff-2026-Q3.md).
+#[derive(Clone)]
+struct ClickedLine {
+    path: String,
+    lineno: u32,
+    content: String,
+    removed: bool,
+}
+
+/// Which file (+ optional hunk) a body point resolves to. Indices are into the
+/// column's `files_full` and that file's `hunks`, resolved at action time from
+/// the live rows (no stable hunk ID).
+#[derive(Clone, Copy)]
+struct DiffBodyScope {
+    file_idx: usize,
+    hunk_idx: Option<usize>,
 }
 
 impl DiffView {
@@ -372,7 +500,7 @@ impl DiffView {
         let element_id = SharedString::from(format!("diff-view-{}", repo_root.display()));
         let columns: Vec<Column> = worktrees
             .into_iter()
-            .map(|w| Column::new_loading(w.branch, w.path))
+            .map(|w| Column::new_loading(w.branch, w.path, w.workspace_id))
             .collect();
         // Initial arrangement: every column side by side (mirrors the old fixed
         // flex row). Drag-and-drop reshapes this; `reconcile` keeps it in sync
@@ -407,9 +535,35 @@ impl DiffView {
             bootstrapped: false,
             arrange,
             drag_target: None,
+            body_menu: None,
+            last_body_pos: None,
+            flash: None,
+            review_menu_open: None,
+            review_picks: Vec::new(),
+            review_resizing: None,
+            hover_line: None,
+            close_removes: false,
         };
         view.bootstrap(cx);
         view
+    }
+
+    /// Host opt-in: make the column-header `×` deselect the branch (emit
+    /// [`DiffViewEvent::CloseColumn`]) rather than hide it in place. Used by the
+    /// Worktree scope.
+    pub fn set_close_removes(&mut self, v: bool) {
+        self.close_removes = v;
+    }
+
+    /// Working-tree paths of the currently visible columns, in column order.
+    /// Lets the host materialize the "currently shown" branch set (including
+    /// on-disk-discovered columns) when deselecting one.
+    pub fn column_paths(&self) -> Vec<PathBuf> {
+        self.columns
+            .iter()
+            .filter(|c| c.visible)
+            .map(|c| c.path.clone())
+            .collect()
     }
 
     /// Resolve the base ref + branch list off the main thread, then kick off the
@@ -641,6 +795,9 @@ impl DiffView {
                         files,
                         anchors_unified,
                         anchors_split,
+                        // Move the raw FileDiffs out for copy/review (US-001..005);
+                        // every `&diff.files` consumer above has finished borrowing.
+                        files_full: diff.files,
                         fingerprint,
                     }
                 })
@@ -670,6 +827,7 @@ impl DiffView {
                                 files,
                                 anchors_unified,
                                 anchors_split,
+                                files_full,
                                 fingerprint,
                             } => {
                                 log::debug!("diff: col {i} ({branch}) LOADED ({file_count} files)");
@@ -683,6 +841,7 @@ impl DiffView {
                                     files: Rc::new(files),
                                     anchors_unified: Rc::new(anchors_unified),
                                     anchors_split: Rc::new(anchors_split),
+                                    files_full: Rc::new(files_full),
                                 }
                             }
                         };
@@ -1099,7 +1258,8 @@ impl DiffView {
             if existing.contains(&norm_key(&w.path)) {
                 continue;
             }
-            self.columns.push(Column::new_loading(w.branch, w.path));
+            self.columns
+                .push(Column::new_loading(w.branch, w.path, w.workspace_id));
             added = true;
         }
         if added {
@@ -1240,16 +1400,22 @@ impl DiffView {
         if tops.is_empty() {
             return;
         }
+        // A jumped-to hunk is parked HUNK_JUMP_MARGIN px below the viewport top,
+        // so the hunk "at" the current position is the one near
+        // `cur_y + HUNK_JUMP_MARGIN` — not `cur_y`. Pivot on that: otherwise
+        // `forward` keeps matching the already-parked hunk (its top is still
+        // > cur_y), and the down arrow looks dead while up works.
+        let pivot = cur_y + HUNK_JUMP_MARGIN;
         let target = if forward {
             tops.iter()
                 .copied()
-                .find(|&t| t > cur_y + 4.0)
+                .find(|&t| t > pivot + 4.0)
                 .unwrap_or(tops[0])
         } else {
             tops.iter()
                 .rev()
                 .copied()
-                .find(|&t| t < cur_y - 4.0)
+                .find(|&t| t < pivot - 4.0)
                 .unwrap_or_else(|| *tops.last().unwrap_or(&0.0))
         };
         let x = handle.offset().x;
@@ -1271,6 +1437,13 @@ impl DiffView {
     ) {
         self.select_column(col_idx, cx);
         let mode = self.effective_mode(window);
+        // prd-ai-in-diff-2026-Q3.md: left-click a changed line sends it to the
+        // review CLI to ask about it — launching Claude Code first if no session
+        // is open. Context/header rows fall through to header-collapse.
+        if let Some(line) = self.resolve_clicked_line(col_idx, ev.position(), mode) {
+            self.ask_review_about_line(col_idx, line, window, cx);
+            return;
+        }
         let row = {
             let Some(col) = self.columns.get(col_idx) else {
                 return;
@@ -1335,6 +1508,828 @@ impl DiffView {
             col.recompute_display();
             cx.notify();
         }
+    }
+
+    /// US-002: map a window-space point over column `col_idx`'s body to its row
+    /// index, walking the same variable row heights as [`Self::handle_body_click`].
+    fn row_at_point(&self, col_idx: usize, point: Point<Pixels>, mode: ViewMode) -> Option<usize> {
+        let col = self.columns.get(col_idx)?;
+        let bounds = col.el_scroll.bounds();
+        if point.y < bounds.top() || point.y > bounds.bottom() {
+            return None;
+        }
+        let target = f32::from(point.y - bounds.top() - col.el_scroll.offset().y).max(0.0);
+        let mut acc = 0.0f32;
+        match mode {
+            ViewMode::Unified => {
+                for (i, r) in col.disp_unified.iter().enumerate() {
+                    let h = display_row_height(r);
+                    if target < acc + h {
+                        return Some(i);
+                    }
+                    acc += h;
+                }
+            }
+            ViewMode::Split => {
+                for (i, r) in col.disp_split.iter().enumerate() {
+                    let h = split_row_height(r);
+                    if target < acc + h {
+                        return Some(i);
+                    }
+                    acc += h;
+                }
+            }
+        }
+        None
+    }
+
+    /// US-002: resolve a body point to the file (+ optional enclosing hunk) under
+    /// it. Returns `None` for a click in a gap, on a collapsed/blank area, or when
+    /// the column is not loaded. Hunk resolution is unified-mode only (the split
+    /// view resolves to file scope); a click on a context/header line yields a
+    /// file scope with no hunk.
+    fn resolve_body_scope(
+        &self,
+        col_idx: usize,
+        point: Point<Pixels>,
+        mode: ViewMode,
+    ) -> Option<DiffBodyScope> {
+        let row = self.row_at_point(col_idx, point, mode)?;
+        let col = self.columns.get(col_idx)?;
+        let ColumnState::Loaded { files_full, .. } = &col.state else {
+            return None;
+        };
+        let anchors = match mode {
+            ViewMode::Unified => &col.disp_anchors_unified,
+            ViewMode::Split => &col.disp_anchors_split,
+        };
+        // The file whose header row is the closest one at or above `row`.
+        let path = anchors
+            .iter()
+            .filter(|(_, hdr)| *hdr <= row)
+            .max_by_key(|(_, hdr)| *hdr)
+            .map(|(p, _)| p.clone())?;
+        let file_idx = files_full.iter().position(|f| f.path == path)?;
+        let hunk_idx = match mode {
+            ViewMode::Unified => {
+                let r = col.disp_unified.get(row)?;
+                let file = files_full.get(file_idx)?;
+                match r.kind {
+                    RowKind::Added => r.new_no.and_then(|n| n.checked_sub(1)).and_then(|idx| {
+                        file.hunks
+                            .iter()
+                            .position(|h| h.new_row_range.contains(&idx))
+                    }),
+                    RowKind::Removed => r.old_no.and_then(|n| n.checked_sub(1)).and_then(|idx| {
+                        file.hunks
+                            .iter()
+                            .position(|h| h.base_row_range.contains(&idx))
+                    }),
+                    _ => None,
+                }
+            }
+            ViewMode::Split => None,
+        };
+        Some(DiffBodyScope { file_idx, hunk_idx })
+    }
+
+    /// US-003: serialize the scope (a single hunk when `want_hunk`, else the whole
+    /// file) to the clipboard and flash a confirmation. Copying a hunk on a
+    /// non-hunk scope is a no-op with a "No hunk here" flash.
+    fn copy_scope(
+        &mut self,
+        col_idx: usize,
+        scope: DiffBodyScope,
+        want_hunk: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let result = {
+            let Some(col) = self.columns.get(col_idx) else {
+                return;
+            };
+            let ColumnState::Loaded { files_full, .. } = &col.state else {
+                return;
+            };
+            let Some(file) = files_full.get(scope.file_idx) else {
+                return;
+            };
+            if want_hunk {
+                scope.hunk_idx.and_then(|h| file.hunks.get(h)).map(|hunk| {
+                    (
+                        super::extract::hunk_to_unified(file, hunk),
+                        format!("Hunk copied ({})", super::extract::hunk_tag(file, hunk)),
+                    )
+                })
+            } else {
+                Some((
+                    super::extract::file_to_unified(file),
+                    format!("Copied {} diff", file.path),
+                ))
+            }
+        };
+        match result {
+            Some((diff, msg)) => {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(diff));
+                self.set_flash(msg.into(), cx);
+            }
+            None => self.set_flash("No hunk here".into(), cx),
+        }
+    }
+
+    /// US-003 action handler (`Ctrl+Shift+C` in the `DiffView` context): copy the
+    /// hunk under the last-known cursor position.
+    fn copy_hovered_hunk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mode = self.effective_mode(window);
+        let Some((col_idx, point)) = self.last_body_pos else {
+            self.set_flash("No hunk here".into(), cx);
+            return;
+        };
+        match self.resolve_body_scope(col_idx, point, mode) {
+            Some(scope) => self.copy_scope(col_idx, scope, true, cx),
+            None => self.set_flash("No hunk here".into(), cx),
+        }
+    }
+
+    /// US-003: open the right-click body menu, pre-resolving the scope under the
+    /// pointer. A right-click that resolves to nothing closes any open menu.
+    fn open_body_menu(
+        &mut self,
+        col_idx: usize,
+        point: Point<Pixels>,
+        mode: ViewMode,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_column(col_idx, cx);
+        self.body_menu = self
+            .resolve_body_scope(col_idx, point, mode)
+            .map(|scope| DiffBodyMenu {
+                position: point,
+                col_idx,
+                scope,
+            });
+        cx.notify();
+    }
+
+    /// Resolve the changed line under a body point (unified mode only): its file
+    /// path, 1-based line number, content, and whether it is a removed line.
+    /// `None` on a context/header/gap row.
+    fn resolve_clicked_line(
+        &self,
+        col_idx: usize,
+        point: Point<Pixels>,
+        mode: ViewMode,
+    ) -> Option<ClickedLine> {
+        if mode != ViewMode::Unified {
+            return None;
+        }
+        let row = self.row_at_point(col_idx, point, mode)?;
+        let col = self.columns.get(col_idx)?;
+        let path = col
+            .disp_anchors_unified
+            .iter()
+            .filter(|(_, hdr)| *hdr <= row)
+            .max_by_key(|(_, hdr)| *hdr)
+            .map(|(p, _)| p.clone())?;
+        let r = col.disp_unified.get(row)?;
+        let (lineno, removed) = match r.kind {
+            RowKind::Added => (r.new_no?, false),
+            RowKind::Removed => (r.old_no?, true),
+            _ => return None,
+        };
+        Some(ClickedLine {
+            path,
+            lineno,
+            content: r.text.to_string(),
+            removed,
+        })
+    }
+
+    /// The unified row under `point` IF it is a changed line (added/removed) —
+    /// the hover-to-ask affordance. Left-clicking it sends the line to the review
+    /// CLI, launching Claude Code first if no session is open, so changed lines
+    /// are always clickable.
+    fn actionable_row_at(
+        &self,
+        col_idx: usize,
+        point: Point<Pixels>,
+        mode: ViewMode,
+    ) -> Option<usize> {
+        if mode != ViewMode::Unified {
+            return None;
+        }
+        let col = self.columns.get(col_idx)?;
+        let row = self.row_at_point(col_idx, point, mode)?;
+        let r = col.disp_unified.get(row)?;
+        matches!(r.kind, RowKind::Added | RowKind::Removed).then_some(row)
+    }
+
+    /// Append `text` to the column's review CLI input WITHOUT Enter, then focus
+    /// it, so the user types their question after. If NO session is open on the
+    /// column, default to launching Claude Code and pre-fill `text` once it boots
+    /// (prd-ai-in-diff-2026-Q3.md: left-click a line with no session running).
+    fn send_to_review(
+        &mut self,
+        col_idx: usize,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Existing session -> send immediately + focus.
+        if let Some(col) = self.columns.get(col_idx)
+            && let Some(rt) = col.review_terminals.first()
+        {
+            let term = rt.terminal.clone();
+            term.read(cx).send_text(&text);
+            term.read(cx).focus_handle(cx).focus(window, cx);
+            return;
+        }
+        // No session -> launch Claude Code by default, pre-fill `text` after boot.
+        let Some(col) = self.columns.get(col_idx) else {
+            return;
+        };
+        let cwd = col.path.clone();
+        let ws_id = col.workspace_id.unwrap_or(0);
+        let cli = super::review::ReviewCli::ClaudeCode;
+        let term = cx.new(|cx| crate::terminal::TerminalView::with_cwd(ws_id, Some(cwd), None, cx));
+        term.read(cx).send_command(cli.launch_command());
+        let prefill = text.clone();
+        let term_weak = term.downgrade();
+        cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+            smol::Timer::after(Duration::from_millis(REVIEW_PREFILL_DELAY_MS)).await;
+            cx.update(|cx| {
+                if let Some(t) = term_weak.upgrade() {
+                    t.read(cx).send_text(&prefill);
+                }
+            });
+        })
+        .detach();
+        term.read(cx).focus_handle(cx).focus(window, cx);
+        if let Some(col) = self.columns.get_mut(col_idx) {
+            col.review_terminals.push(ReviewTerminal {
+                label: cli.label().into(),
+                terminal: term,
+            });
+        }
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        cx.notify();
+    }
+
+    /// Send a changed line (`path:line` + content) into the review CLI input so
+    /// the user can ask about it.
+    fn ask_review_about_line(
+        &mut self,
+        col_idx: usize,
+        line: ClickedLine,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let tag = if line.removed {
+            format!("{}:{} (removed)", line.path, line.lineno)
+        } else {
+            format!("{}:{}", line.path, line.lineno)
+        };
+        let text = format!("`{tag}` `{}` — ", line.content.trim());
+        self.send_to_review(col_idx, text, window, cx);
+    }
+
+    /// Send a hunk's unified diff into the review CLI input so the user can ask
+    /// about it.
+    fn ask_review_about_hunk(
+        &mut self,
+        col_idx: usize,
+        scope: DiffBodyScope,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = {
+            let Some(col) = self.columns.get(col_idx) else {
+                return;
+            };
+            let ColumnState::Loaded { files_full, .. } = &col.state else {
+                return;
+            };
+            let Some(file) = files_full.get(scope.file_idx) else {
+                return;
+            };
+            let Some(hunk) = scope.hunk_idx.and_then(|h| file.hunks.get(h)) else {
+                return;
+            };
+            format!(
+                "About this change:\n{}\n",
+                super::extract::hunk_to_unified(file, hunk)
+            )
+        };
+        self.send_to_review(col_idx, text, window, cx);
+    }
+
+    /// US-003: show a transient confirmation pill, auto-cleared after a beat.
+    fn set_flash(&mut self, msg: SharedString, cx: &mut Context<Self>) {
+        self.flash = Some(msg);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            smol::Timer::after(Duration::from_millis(1600)).await;
+            let _ = this.update(cx, |this, cx| {
+                this.flash = None;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// US-003: the deferred right-click menu, window-anchored at the click point.
+    fn render_body_menu(
+        &self,
+        menu: &DiffBodyMenu,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let has_hunk = menu.scope.hunk_idx.is_some();
+        let col_idx = menu.col_idx;
+        let scope = menu.scope;
+        let panel = div()
+            .id("diff-body-context-menu")
+            .occlude()
+            .w(px(230.))
+            .bg(ui.overlay)
+            .border_1()
+            .border_color(ui.border)
+            .rounded(px(8.))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .p(px(4.))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.body_menu = None;
+                cx.notify();
+            }))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            // Send the hunk into the embedded review CLI's input so the user can
+            // ask about it (a changed LINE is sent by left-clicking it directly).
+            .when(has_hunk, |panel| {
+                panel.child(
+                    div()
+                        .id("diff-menu-ask-hunk")
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(4.))
+                        .text_size(px(12.))
+                        .text_color(ui.text)
+                        .cursor_pointer()
+                        .hover(|s| {
+                            let ui = crate::theme::ui_colors();
+                            s.bg(ui.subtle)
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.body_menu = None;
+                            this.ask_review_about_hunk(col_idx, scope, window, cx);
+                            cx.stop_propagation();
+                        }))
+                        .child("Ask the CLI about this hunk"),
+                )
+            })
+            .child(
+                div()
+                    .id("diff-menu-copy-hunk")
+                    .px(px(8.))
+                    .py(px(4.))
+                    .rounded(px(4.))
+                    .text_size(px(12.))
+                    .text_color(if has_hunk { ui.text } else { ui.muted })
+                    .when(has_hunk, |d| {
+                        d.cursor_pointer()
+                            .hover(|s| {
+                                let ui = crate::theme::ui_colors();
+                                s.bg(ui.subtle)
+                            })
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                this.body_menu = None;
+                                this.copy_scope(col_idx, scope, true, cx);
+                                cx.stop_propagation();
+                            }))
+                    })
+                    .child("Copy hunk"),
+            )
+            .child(
+                div()
+                    .id("diff-menu-copy-file")
+                    .px(px(8.))
+                    .py(px(4.))
+                    .rounded(px(4.))
+                    .text_size(px(12.))
+                    .text_color(ui.text)
+                    .cursor_pointer()
+                    .hover(|s| {
+                        let ui = crate::theme::ui_colors();
+                        s.bg(ui.subtle)
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        this.body_menu = None;
+                        this.copy_scope(col_idx, scope, false, cx);
+                        cx.stop_propagation();
+                    }))
+                    .child("Copy file diff"),
+            );
+        deferred(
+            anchored()
+                .position(menu.position)
+                .snap_to_window()
+                .child(panel),
+        )
+        .priority(3)
+        .into_any_element()
+    }
+
+    /// US-003: the transient "copied" pill, centered near the bottom of the view.
+    fn render_flash(&self, msg: SharedString, ui: crate::theme::UiColors) -> AnyElement {
+        deferred(
+            div()
+                .absolute()
+                .bottom(px(16.))
+                .left_0()
+                .right_0()
+                .flex()
+                .flex_row()
+                .justify_center()
+                .child(
+                    div()
+                        .px(px(10.))
+                        .py(px(5.))
+                        .rounded(px(6.))
+                        .bg(ui.overlay)
+                        .border_1()
+                        .border_color(ui.border)
+                        .shadow_lg()
+                        .text_size(px(11.))
+                        .text_color(ui.text)
+                        .child(msg),
+                ),
+        )
+        .priority(4)
+        .into_any_element()
+    }
+
+    /// A branch column has something to review when it's loaded with > 0 files.
+    fn column_has_changes(col: &Column) -> bool {
+        matches!(&col.state, ColumnState::Loaded { file_count, .. } if *file_count > 0)
+    }
+
+    /// Open/close a column's Review CLI multi-select. On open, sync the pick
+    /// toggles to the CLI list (default all-on). Clicking the same column's
+    /// Review button again (or a different one) toggles / re-targets the popover.
+    fn toggle_review_menu(&mut self, col_idx: usize, cx: &mut Context<Self>) {
+        if self.review_menu_open == Some(col_idx) {
+            self.review_menu_open = None;
+        } else {
+            self.review_menu_open = Some(col_idx);
+            let n = super::review::ReviewCli::all().len();
+            if self.review_picks.len() != n {
+                self.review_picks = vec![true; n];
+            }
+        }
+        cx.notify();
+    }
+
+    /// Toggle one CLI's inclusion in the next review.
+    fn toggle_review_pick(&mut self, i: usize, cx: &mut Context<Self>) {
+        if let Some(p) = self.review_picks.get_mut(i) {
+            *p = !*p;
+            cx.notify();
+        }
+    }
+
+    /// Launch the selected CLIs to review column `col_idx`'s branch: one real
+    /// terminal per CLI, embedded UNDER the column's diff (in the Diff interface,
+    /// not the CLI mode), cwd-pinned to the worktree, with a compact review prompt
+    /// pre-filled (the human submits). Human-in-the-loop — no headless session.
+    fn launch_review(&mut self, col_idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.review_menu_open = None;
+        let clis = super::review::ReviewCli::all();
+        let selected: Vec<usize> = (0..clis.len())
+            .filter(|i| self.review_picks.get(*i).copied().unwrap_or(true))
+            .collect();
+        if selected.is_empty() {
+            self.set_flash("Select at least one CLI".into(), cx);
+            return;
+        }
+        let Some(col) = self.columns.get(col_idx) else {
+            return;
+        };
+        let cwd = col.path.clone();
+        let branch = col.branch.clone();
+        let ws_id = col.workspace_id.unwrap_or(0);
+        let base = col
+            .base_override
+            .clone()
+            .unwrap_or_else(|| self.base_ref.clone());
+
+        // One terminal per selected CLI; the 2nd+ get the adversarial framing so a
+        // multi-CLI panel is a real second opinion, not an echo.
+        let mut created: Vec<ReviewTerminal> = Vec::new();
+        let mut first_prompt: Option<String> = None;
+        let mut focus_target: Option<Entity<crate::terminal::TerminalView>> = None;
+        for (rank, &i) in selected.iter().enumerate() {
+            let cli = clis[i];
+            let prompt = super::review::build_cli_review_prompt(&branch, &base, rank > 0);
+            let term = cx.new(|cx| {
+                crate::terminal::TerminalView::with_cwd(ws_id, Some(cwd.clone()), None, cx)
+            });
+            // Launch the CLI in the embedded terminal's shell.
+            term.read(cx).send_command(cli.launch_command());
+            // Pre-fill the prompt once the CLI has booted (tmux send-keys style):
+            // a delayed write with NO Enter — the human reviews + submits. The
+            // clipboard fallback (below) covers a missed timing window.
+            let prefill = prompt.clone();
+            let term_weak = term.downgrade();
+            cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                smol::Timer::after(Duration::from_millis(REVIEW_PREFILL_DELAY_MS)).await;
+                cx.update(|cx| {
+                    if let Some(t) = term_weak.upgrade() {
+                        t.read(cx).send_text(&prefill);
+                    }
+                });
+            })
+            .detach();
+            let label = if rank > 0 {
+                format!("{} · 2nd opinion", cli.label())
+            } else {
+                cli.label().to_string()
+            };
+            if focus_target.is_none() {
+                focus_target = Some(term.clone());
+            }
+            if first_prompt.is_none() {
+                first_prompt = Some(prompt);
+            }
+            created.push(ReviewTerminal {
+                label: label.into(),
+                terminal: term,
+            });
+        }
+
+        if let Some(col) = self.columns.get_mut(col_idx) {
+            col.review_terminals = created; // replace any prior run (drops old PTYs)
+        }
+        if let Some(t) = focus_target {
+            t.read(cx).focus_handle(cx).focus(window, cx);
+        }
+        if let Some(p) = first_prompt {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(p));
+        }
+        cx.notify();
+    }
+
+    /// Close one embedded terminal (drops it → PTY shutdown).
+    fn close_review_terminal(&mut self, col_idx: usize, term_idx: usize, cx: &mut Context<Self>) {
+        let Some(col) = self.columns.get_mut(col_idx) else {
+            return;
+        };
+        if term_idx < col.review_terminals.len() {
+            col.review_terminals.remove(term_idx);
+            cx.notify();
+        }
+    }
+
+    /// Terminal button on a column header: open a plain shell terminal in the
+    /// branch's worktree, embedded under the diff. Just a terminal — no CLI
+    /// launch, no prefill (distinct from Review).
+    fn open_terminal_for_column(
+        &mut self,
+        col_idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(col) = self.columns.get(col_idx) else {
+            return;
+        };
+        let cwd = col.path.clone();
+        let ws_id = col.workspace_id.unwrap_or(0);
+        let term = cx.new(|cx| crate::terminal::TerminalView::with_cwd(ws_id, Some(cwd), None, cx));
+        term.read(cx).focus_handle(cx).focus(window, cx);
+        if let Some(col) = self.columns.get_mut(col_idx) {
+            col.review_terminals.push(ReviewTerminal {
+                label: "Terminal".into(),
+                terminal: term,
+            });
+        }
+        cx.notify();
+    }
+
+    /// Render the embedded review terminals under a column's diff body (one card
+    /// per CLI, side by side). `None` when the column has no review running.
+    fn render_review_terminals(
+        &self,
+        col_idx: usize,
+        col: &Column,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if col.review_terminals.is_empty() {
+            return None;
+        }
+        let terminals = div().flex_1().min_h_0().flex().flex_row().children(
+            col.review_terminals.iter().enumerate().map(|(ti, rt)| {
+                let header = div()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.))
+                    .px(px(8.))
+                    .py(px(3.))
+                    .bg(ui.surface)
+                    .border_b_1()
+                    .border_color(ui.border)
+                    .child(
+                        gpui::svg()
+                            .size(px(11.))
+                            .flex_none()
+                            .path("icons/terminal.svg")
+                            .text_color(ui.accent),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(10.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ui.text)
+                            .child(rt.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "diff-review-term-close-{col_idx}-{ti}"
+                            )))
+                            .flex_none()
+                            .px(px(4.))
+                            .text_size(px(12.))
+                            .text_color(ui.muted)
+                            .cursor_pointer()
+                            .hover(|s| {
+                                let ui = crate::theme::ui_colors();
+                                s.text_color(ui.text)
+                            })
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                this.close_review_terminal(col_idx, ti, cx);
+                            }))
+                            .child("×"),
+                    );
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .when(ti > 0, |d| d.border_l_1().border_color(ui.border))
+                    .child(header)
+                    .child(div().flex_1().min_h_0().child(rt.terminal.clone()))
+            }),
+        );
+        // Drag handle (top edge): drag up/down to resize the review region.
+        let divider = div()
+            .id(SharedString::from(format!("diff-review-resize-{col_idx}")))
+            .flex_none()
+            .h(px(6.))
+            .cursor(CursorStyle::ResizeUpDown)
+            .bg(ui.border)
+            .hover(|s| {
+                let ui = crate::theme::ui_colors();
+                s.bg(ui.accent)
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                    let start_h = this
+                        .columns
+                        .get(col_idx)
+                        .map(|c| c.review_height)
+                        .unwrap_or(REVIEW_DEFAULT_HEIGHT);
+                    this.review_resizing = Some((col_idx, f32::from(ev.position.y), start_h));
+                    cx.stop_propagation();
+                }),
+            );
+        let region = div()
+            .flex_none()
+            .h(px(col.review_height))
+            .flex()
+            .flex_col()
+            .child(divider)
+            .child(terminals);
+        Some(region.into_any_element())
+    }
+
+    /// The Review chip's CLI multi-select popover. Lists the CLIs as toggles and
+    /// a Review button that opens one terminal pane per checked CLI under the
+    /// branch's worktree.
+    fn render_review_menu(
+        &self,
+        col_idx: usize,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let clis = super::review::ReviewCli::all();
+        let mut menu = div()
+            .id("diff-review-menu")
+            .occlude()
+            .absolute()
+            // Anchored just below this branch's header (header ≈ 26px tall).
+            .top(px(30.))
+            .right(px(6.))
+            .w(px(256.))
+            .bg(ui.overlay)
+            .border_1()
+            .border_color(ui.border)
+            .rounded(px(8.))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .p(px(6.))
+            .gap(px(2.))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.review_menu_open = None;
+                cx.notify();
+            }))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .px(px(6.))
+                    .py(px(2.))
+                    .text_size(px(10.))
+                    .text_color(ui.muted)
+                    .child("Launch a CLI to review this branch"),
+            );
+        for (i, cli) in clis.iter().enumerate() {
+            let checked = self.review_picks.get(i).copied().unwrap_or(true);
+            let label = cli.label();
+            menu = menu.child(
+                div()
+                    .id(SharedString::from(format!("diff-review-pick-{i}")))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(6.))
+                    .py(px(4.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|s| {
+                        let ui = crate::theme::ui_colors();
+                        s.bg(ui.subtle)
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        this.toggle_review_pick(i, cx);
+                    }))
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(14.))
+                            .rounded(px(3.))
+                            .border_1()
+                            .border_color(ui.border)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(checked, |d| {
+                                d.bg(ui.accent.opacity(0.18)).child(
+                                    gpui::svg()
+                                        .size(px(10.))
+                                        .path("icons/check.svg")
+                                        .text_color(ui.accent),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.))
+                            .text_color(ui.text)
+                            .child(label),
+                    ),
+            );
+        }
+        menu = menu.child(
+            div()
+                .id("diff-review-run")
+                .mt(px(2.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .py(px(5.))
+                .rounded(px(5.))
+                .bg(ui.accent.opacity(0.15))
+                .text_size(px(12.))
+                .text_color(ui.accent)
+                .cursor_pointer()
+                .hover(|s| {
+                    let ui = crate::theme::ui_colors();
+                    s.bg(ui.accent.opacity(0.25))
+                })
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.launch_review(col_idx, window, cx);
+                }))
+                .child("Review"),
+        );
+        deferred(menu).priority(8).into_any_element()
     }
 
     /// Toolbar: collapse every file in every visible column, or expand all.
@@ -1533,79 +2528,6 @@ impl DiffView {
         }
     }
 
-    /// US-016++: bird's-eye strip across the visible branches (multi-column
-    /// scopes only): branch count, shared base, aggregate file + line counts, and
-    /// a persistent hint that clicking a branch header focuses its file list —
-    /// which also documents the column-selection affordance.
-    fn render_aggregate_strip(&self) -> AnyElement {
-        let ui = crate::theme::ui_colors();
-        // Single source of truth (shared with the sidebar "Changes" header):
-        // count only Loaded, non-empty columns, so a branch identical to the
-        // base never inflates "N branches", and the strip + sidebar can never
-        // show two different totals for the same diff.
-        let (branches, files, added, removed) = aggregate_file_lists(&self.column_file_lists());
-        let branch_word = if branches == 1 { "branch" } else { "branches" };
-        let base = if self.base_ref.is_empty() {
-            "—".to_string()
-        } else {
-            self.base_ref.clone()
-        };
-        div()
-            .flex_none()
-            .h(px(24.))
-            .px(px(10.))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(8.))
-            .bg(ui.base)
-            .border_b_1()
-            .border_color(ui.border)
-            .text_size(px(11.))
-            .child(
-                div()
-                    .flex_none()
-                    .text_color(ui.muted)
-                    .child(format!("{branches} {branch_word} vs {base}")),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_color(ui.muted.opacity(0.5))
-                    .child("·"),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_color(ui.muted)
-                    .child(format!("{files} files")),
-            )
-            .when(added > 0, |d| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .text_color(ui.vc_added)
-                        .child(format!("+{added}")),
-                )
-            })
-            .when(removed > 0, |d| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .text_color(ui.vc_deleted)
-                        .child(format!("-{removed}")),
-                )
-            })
-            .child(div().flex_1())
-            .child(
-                div()
-                    .flex_none()
-                    .text_color(ui.muted.opacity(0.7))
-                    .child("Click a branch header to focus its files"),
-            )
-            .into_any_element()
-    }
-
     fn render_column(
         &self,
         idx: usize,
@@ -1615,6 +2537,11 @@ impl DiffView {
     ) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
         let palette = Self::palette(ui);
+
+        // Review is offered per branch: live only when this column has changes,
+        // highlighted while its own CLI-picker popover is open.
+        let col_has_changes = Self::column_has_changes(col);
+        let review_open = self.review_menu_open == Some(idx);
 
         let summary = match &col.state {
             ColumnState::Loading => "loading…".to_string(),
@@ -1684,6 +2611,8 @@ impl DiffView {
         let branch_drag = SharedString::from(col.branch.clone());
         let header = div()
             .id(SharedString::from(format!("diff-col-head-{idx}")))
+            // Positioned ancestor for the Review CLI-picker popover below.
+            .relative()
             .flex()
             .flex_row()
             .items_center()
@@ -1723,6 +2652,79 @@ impl DiffView {
                     .child(summary),
             )
             .when(has_base, move |d| d.child(base_chip))
+            // Review this branch: launch one or more CLIs against its diff. Sits
+            // beside the terminal button (prd-ai-in-diff-2026-Q3.md); live only
+            // when the column has changes.
+            .when(col_has_changes, |d| {
+                d.child(
+                    div()
+                        .id(SharedString::from(format!("diff-col-review-{idx}")))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(18.))
+                        .rounded(px(4.))
+                        // Visible neutral wash — ui.subtle (0x2a2a2a) on the dark
+                        // header (0x212121) is ~invisible. The open popover keeps
+                        // it lit.
+                        .when(review_open, |d| d.bg(ui.text.opacity(0.12)))
+                        .cursor_pointer()
+                        .hover(|s| {
+                            let ui = crate::theme::ui_colors();
+                            s.bg(ui.text.opacity(0.12))
+                        })
+                        .tooltip(|_w, cx| {
+                            cx.new(|_| DiffHeaderTooltip {
+                                label: "Review".into(),
+                            })
+                            .into()
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                            this.toggle_review_menu(idx, cx);
+                        }))
+                        .child(
+                            gpui::svg()
+                                .size(px(12.))
+                                .flex_none()
+                                .path("icons/eye.svg")
+                                .text_color(if review_open { ui.text } else { ui.muted }),
+                        ),
+                )
+            })
+            // Open a plain terminal in this branch's worktree, embedded under the
+            // diff (prd-ai-in-diff-2026-Q3.md).
+            .child(
+                div()
+                    .id(SharedString::from(format!("diff-col-term-{idx}")))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(18.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|s| {
+                        let ui = crate::theme::ui_colors();
+                        s.bg(ui.text.opacity(0.12))
+                    })
+                    .tooltip(|_w, cx| {
+                        cx.new(|_| DiffHeaderTooltip {
+                            label: "Open terminal".into(),
+                        })
+                        .into()
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.open_terminal_for_column(idx, window, cx);
+                    }))
+                    .child(
+                        gpui::svg()
+                            .size(px(12.))
+                            .flex_none()
+                            .path("icons/terminal.svg")
+                            .text_color(ui.muted),
+                    ),
+            )
             .child(
                 div()
                     .id(SharedString::from(format!("diff-col-hide-{idx}")))
@@ -1736,10 +2738,25 @@ impl DiffView {
                         s.text_color(ui.text)
                     })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                        this.hide_column(idx, cx);
+                        // Worktree scope: deselect the branch from the scope (the
+                        // host drops it + rebuilds) so it's strictly shown-or-not.
+                        // Other scopes keep the in-place hide.
+                        if this.close_removes {
+                            if let Some(col) = this.columns.get(idx) {
+                                cx.emit(DiffViewEvent::CloseColumn {
+                                    path: col.path.clone(),
+                                });
+                            }
+                        } else {
+                            this.hide_column(idx, cx);
+                        }
                     }))
                     .child("×"),
-            );
+            )
+            // Per-branch Review CLI-picker popover, anchored under this header.
+            .when(review_open, |d| {
+                d.child(self.render_review_menu(idx, ui, cx))
+            });
 
         let body: AnyElement = match &col.state {
             ColumnState::Loading => centered(ui.muted, "Computing diff…".into()),
@@ -1760,6 +2777,9 @@ impl DiffView {
                     ViewMode::Split => DiffBody::Split(col.disp_split.clone()),
                     ViewMode::Unified => DiffBody::Unified(col.disp_unified.clone()),
                 };
+                // Hover-to-ask: the changed line under the cursor (this column)
+                // while a review CLI runs, highlighted + cursor-pointer + clickable.
+                let hover_row = self.hover_line.filter(|(c, _)| *c == idx).map(|(_, r)| r);
                 div()
                     .id(SharedString::from(format!("diff-col-{idx}")))
                     .flex_1()
@@ -1771,10 +2791,32 @@ impl DiffView {
                             this.scroll_driver = idx;
                         },
                     ))
+                    .when(hover_row.is_some(), |d| d.cursor(CursorStyle::PointingHand))
                     .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                         this.handle_body_click(idx, ev, window, cx);
                     }))
-                    .child(DiffElement::new(body, palette))
+                    // Track the pointer for `Ctrl+Shift+C` (hunk under cursor) AND
+                    // for the hover-to-ask highlight (changed line under cursor while
+                    // a review CLI runs). Only re-renders on a hover-row transition.
+                    .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, window, cx| {
+                        this.last_body_pos = Some((idx, ev.position));
+                        let mode = this.effective_mode(window);
+                        let new_hover = this
+                            .actionable_row_at(idx, ev.position, mode)
+                            .map(|r| (idx, r));
+                        if this.hover_line != new_hover {
+                            this.hover_line = new_hover;
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                            let mode = this.effective_mode(window);
+                            this.open_body_menu(idx, ev.position, mode, cx);
+                        }),
+                    )
+                    .child(DiffElement::new(body, palette).hover_row(hover_row))
                     .into_any_element()
             }
         };
@@ -1797,6 +2839,9 @@ impl DiffView {
             .flex_col()
             .child(header)
             .child(body)
+            // Embedded review CLIs render UNDER the diff body, in the Diff
+            // interface (prd-ai-in-diff-2026-Q3.md, terminal-launch revision).
+            .children(self.render_review_terminals(idx, col, ui, cx))
     }
 
     /// Toolbar: base selector + diffstat on the left, collapse / sync / view-mode
@@ -2055,7 +3100,8 @@ impl DiffView {
             })
             // --- spacer ---
             .child(div().flex_1())
-            // --- right: list actions ---
+            // --- right: list actions (AI Review now lives per-branch in the
+            // column header, beside the terminal button) ---
             .child(
                 control("diff-collapse-all", false)
                     .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
@@ -2722,6 +3768,8 @@ impl Focusable for DiffView {
     }
 }
 
+impl EventEmitter<DiffViewEvent> for DiffView {}
+
 impl Render for DiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
@@ -2729,6 +3777,31 @@ impl Render for DiffView {
             .id(self.element_id.clone())
             .key_context("DiffView")
             .track_focus(&self.focus_handle)
+            // US-003: Ctrl+Shift+C copies the hunk under the cursor (scoped to the
+            // DiffView context so it does not collide with the markdown / terminal
+            // copy bindings).
+            .on_action(cx.listener(|this, _: &crate::CopyDiffHunk, window, cx| {
+                this.copy_hovered_hunk(window, cx);
+            }))
+            // Review-region resize: while a divider drag is active, the pointer is
+            // tracked at the root so the drag survives leaving the 6px handle.
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
+                if let Some((col_idx, start_y, start_h)) = this.review_resizing
+                    && let Some(col) = this.columns.get_mut(col_idx)
+                {
+                    let dy = start_y - f32::from(ev.position.y); // drag up = taller
+                    col.review_height = (start_h + dy).clamp(REVIEW_MIN_HEIGHT, REVIEW_MAX_HEIGHT);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _w, cx| {
+                    if this.review_resizing.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .size_full()
             .flex()
             .flex_col()
@@ -2752,12 +3825,15 @@ impl Render for DiffView {
         let arrange = self.arrange.clone();
         let body = self.render_arrange(&arrange, mode, cx);
 
-        let mut root = root.child(self.render_toolbar(mode, cx));
-        // Bird's-eye strip across the branches (multi-column only) + the
-        // click-a-branch-to-focus hint that documents the column selection.
-        if self.visible_count() > 1 {
-            root = root.child(self.render_aggregate_strip());
+        let root = root.child(self.render_toolbar(mode, cx));
+        let mut root = root.child(div().flex_1().min_h_0().flex().child(body));
+        // US-003 overlays: the right-click copy menu and the transient flash.
+        if let Some(menu) = &self.body_menu {
+            root = root.child(self.render_body_menu(menu, ui, cx));
         }
-        root.child(div().flex_1().min_h_0().flex().child(body))
+        if let Some(flash) = &self.flash {
+            root = root.child(self.render_flash(flash.clone(), ui));
+        }
+        root
     }
 }

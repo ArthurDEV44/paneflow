@@ -15,9 +15,11 @@ mod align;
 mod arrange;
 mod element;
 mod engine;
+mod extract;
 mod git;
 mod highlighter;
 mod multi_view;
+mod review;
 mod rows;
 mod scope;
 mod scope_header;
@@ -31,4 +33,6 @@ mod worddiff;
 pub use git::{FileChange, list_repo_worktrees};
 pub use multi_view::MultiRepoDiffView;
 pub use scope::{DiffScope, RepoGroup};
-pub use view::{DiffView, DiffWorktree, FileEntry, FileListState, aggregate_file_lists};
+pub use view::{
+    DiffView, DiffViewEvent, DiffWorktree, FileEntry, FileListState, aggregate_file_lists,
+};

@@ -406,6 +406,15 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         context: "",
         description: "Toggle Git Diff view",
     },
+    // US-003 (prd-ai-in-diff-2026-Q3.md): copy the hunk under the cursor as a
+    // unified diff. Scoped to the DiffView context so Ctrl+Shift+C there never
+    // collides with the global markdown / terminal copy bindings.
+    ActionMeta {
+        name: "copy_diff_hunk",
+        factory: || Box::new(crate::CopyDiffHunk),
+        context: "DiffView",
+        description: "Copy hunk as diff",
+    },
     // Zed-parity: accept / revert AI-applied file edits (Shift+Alt+Y /
     // Shift+Alt+Z). Global context so the chord fires regardless of
     // which pane has focus while the user is reviewing.

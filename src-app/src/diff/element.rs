@@ -144,6 +144,10 @@ pub struct DiffElement {
     /// number (floor [`GUTTER_W`]). A field so the layout helpers read one
     /// resolved value instead of threading it through every signature.
     gutter_w: Pixels,
+    /// prd-ai-in-diff-2026-Q3.md: the unified-row index currently hovered while a
+    /// review CLI is running on the column, painted with a brighter wash to signal
+    /// "click to ask the CLI about this line". `None` when not actionable.
+    hover_row: Option<usize>,
 }
 
 impl DiffElement {
@@ -162,7 +166,14 @@ impl DiffElement {
             font_size: px(12.),
             line_height: px(ROW_HEIGHT),
             gutter_w: px(GUTTER_W),
+            hover_row: None,
         }
+    }
+
+    /// Mark a unified row as hover-highlighted (clickable to ask the review CLI).
+    pub fn hover_row(mut self, row: Option<usize>) -> Self {
+        self.hover_row = row;
+        self
     }
 
     /// Split a line into `TextRun`s: the syntax runs carry their own color, the
@@ -773,6 +784,14 @@ impl Element for DiffElement {
                         &mut quads,
                         &mut glyphs,
                     );
+                    // Hover-to-ask wash: a brighter overlay on the hovered row so
+                    // it reads as clickable (painted over the row bg, under glyphs).
+                    if Some(i) == self.hover_row {
+                        quads.push(Quad {
+                            bounds: Bounds::new(origin, size(width, row_h)),
+                            color: self.palette.text.opacity(0.08),
+                        });
+                    }
                 }
                 // Pinned sticky header for the file under the viewport top.
                 let cur = (0..=first.min(row_count.saturating_sub(1)))
