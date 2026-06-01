@@ -8,7 +8,7 @@
 //! renders a placeholder. EP-002 (US-004/US-005) mounts the reused
 //! `diff::DiffView` engine here; EP-005 adds the scope selector.
 
-use crate::diff::{DiffScope, DiffWorktree, RepoGroup};
+use crate::diff::{DiffScope, DiffView, DiffViewEvent, DiffWorktree, RepoGroup};
 use crate::{OpenDiffView, PaneFlowApp};
 use gpui::{
     AnyElement, AppContext, Context, Entity, IntoElement, ParentElement, Styled, Window, div, px,
@@ -241,6 +241,15 @@ impl PaneFlowApp {
             return (view, false);
         }
         let view = cx.new(|cx| crate::diff::DiffView::new(root, worktrees, cx));
+        // Worktree scope: the column-header `×` deselects the branch (rebuild
+        // without it) instead of hiding it in place — shown-or-not, no "N hidden"
+        // limbo. Wire it once on the fresh entity; the subscription + flag persist
+        // across cache resume (the key is scope-stamped, so a worktree view is
+        // never reused for another scope).
+        if self.diff_scope == DiffScope::Worktree {
+            view.update(cx, |v, _| v.set_close_removes(true));
+            cx.subscribe(&view, Self::handle_diff_view_event).detach();
+        }
         self.diff_view_cache.insert(key.clone(), view.clone());
         self.diff_view_key = Some(key.clone());
         self.evict_diff_cache_if_needed(&key);
@@ -409,6 +418,54 @@ impl PaneFlowApp {
             Some(set) => set.contains(path),
             None => true,
         }
+    }
+
+    /// Worktree scope: a branch column asked to close (its header `×`). Drop it
+    /// from the chosen set and rebuild — same selection model as the branches
+    /// picker, so re-checking it there brings it back. No "hidden" limbo.
+    pub(crate) fn handle_diff_view_event(
+        &mut self,
+        _view: Entity<DiffView>,
+        event: &DiffViewEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            DiffViewEvent::CloseColumn { path } => {
+                self.deselect_diff_worktree(path.to_string_lossy().into_owned(), cx);
+            }
+        }
+    }
+
+    /// Remove `path` from the active repo's chosen-worktree set, then rebuild so
+    /// the column disappears. The "all-shown" default is materialized from the
+    /// columns currently on screen (so on-disk-discovered branches survive), then
+    /// `path` is dropped. No-op when only one column remains — a zero-column diff
+    /// is meaningless (mirrors [`Self::toggle_chosen_worktree`]'s empty guard).
+    fn deselect_diff_worktree(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(root) = self
+            .workspaces
+            .get(self.active_idx)
+            .and_then(|ws| ws.repo_root.clone())
+        else {
+            return;
+        };
+        let shown: std::collections::HashSet<String> = self
+            .diff_view
+            .as_ref()
+            .map(|v| {
+                v.read(cx)
+                    .column_paths()
+                    .into_iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if shown.len() <= 1 {
+            return;
+        }
+        let set = self.diff_chosen_worktrees.entry(root).or_insert(shown);
+        set.remove(&path);
+        self.rebuild_diff_view(cx);
     }
 
     /// Return to [`AppMode::Cli`] from any non-CLI mode. Idempotent
