@@ -217,6 +217,20 @@ pub mod cache {
         use std::time::{Duration, SystemTime};
         use tracing_test::traced_test;
 
+        /// Cache-stateful tests share the process-global `store()`
+        /// Mutex. `poisoned_session_cache_logs_warning` deliberately
+        /// poisons it from a spawned thread; run concurrently with
+        /// `session_cache_evicts_lru` (which locks `store()` directly
+        /// and asserts exact contents) it made the latter flaky -- the
+        /// LRU test would observe the poison mid-run and panic. cargo
+        /// runs tests in parallel within one process, so serialize the
+        /// two so each owns the shared cache exclusively. The guard is
+        /// itself poison-tolerant for the same reason.
+        fn serial() -> std::sync::MutexGuard<'static, ()> {
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
         /// EP-004 review follow-up: a strict `==` mtime check would
         /// spuriously invalidate on APFS nanosecond jitter. With the
         /// fuzz band, observed - cached < 1ms reads as fresh.
@@ -281,6 +295,11 @@ pub mod cache {
         fn session_cache_evicts_lru() {
             use super::super::SessionAgent;
             use super::Entry;
+            // Serialize against `poisoned_session_cache_logs_warning`,
+            // which poisons the shared `store()` Mutex from a parallel
+            // thread; without this the direct lock below sees a
+            // PoisonError and panics (CI flake, aarch64 scheduling).
+            let _serial = serial();
             // Isolate from any sibling test's cache state.
             super::clear();
             // Real on-disk dir for `store_result`'s `dir_mtime` call.
@@ -341,6 +360,9 @@ pub mod cache {
         fn poisoned_session_cache_logs_warning() {
             use super::super::SessionAgent;
 
+            // See `serial()` -- this test poisons the shared cache, so
+            // it must not overlap `session_cache_evicts_lru`.
+            let _serial = serial();
             super::clear();
             let _ = std::thread::spawn(|| {
                 let _guard = super::store().lock().expect("lock cache for poison");
