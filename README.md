@@ -1,18 +1,54 @@
 # Paneflow
 
-**The cross-platform terminal for working with coding agents.** Run Claude Code, Codex, OpenCode, and any CLI agent in parallel, each in its own pane, and see the moment one finishes, stops, or needs your input. Native Rust, open source, Linux and macOS today, Windows next.
+<p align="center">
+  <a href="https://github.com/ArthurDEV44/paneflow/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ArthurDEV44/paneflow?sort=semver"></a>
+  <a href="https://github.com/ArthurDEV44/paneflow/actions/workflows/run_tests.yml"><img alt="Tests" src="https://github.com/ArthurDEV44/paneflow/actions/workflows/run_tests.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/ArthurDEV44/paneflow"></a>
+  <a href="https://github.com/ArthurDEV44/paneflow/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/ArthurDEV44/paneflow/total"></a>
+  <img alt="Platforms" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%20next-informational">
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-1.95-orange?logo=rust">
+</p>
 
-Drive three or four agents at once and the bottleneck stops being how fast you type. It becomes attention: which agent is waiting on you, and can you get to it without losing track of the others. Paneflow gives every agent its own pane inside a branch-aware workspace, tracks each session, and emits a JSON-RPC event stream so the interface (and your own tooling) can react the instant an agent stops or asks a question.
+**The native terminal workspace for running coding agents in parallel.** Launch Claude Code, Codex, opencode, Pi, and any CLI agent in real terminal panes; keep each session visible; and see when an agent finishes, stalls, or needs input.
 
-It all runs on one native core: pure Rust on [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) rendering engine, sub-200 ms cold start, sub-4 ms keystroke-to-pixel latency, a single GPL-3.0 binary, maintained by an indie dev who runs it all day. The "workspace per project, pane per agent" model is openly inspired by [cmux](https://github.com/manaflow-ai/cmux); Paneflow is an independent codebase, not a fork. The difference that shows up in daily use: where the other agent terminals in this space have shipped macOS-only, Paneflow is native on Linux too (Wayland and X11), with macOS (Apple Silicon) today and Windows next. Side-by-side comparisons: [paneflow.dev/compare](https://paneflow.dev/compare).
+Paneflow turns “one terminal per agent” into a branch-aware workspace: panes, tabs, sidebars, session restore, in-app diffs, review prompts, and a JSON-RPC event stream that your own tooling can react to. It is open source, written in Rust on [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), native on Linux and macOS today, with Windows support in progress.
 
 <p align="center">
   <img src="assets/images/hero-paneflow.png" alt="Paneflow" width="100%" />
 </p>
 
+## Quickstart
+
+Install a release build first; you do **not** need Rust unless you are building from source.
+
+```bash
+# Linux portable AppImage
+VER=$(curl -fsSL https://api.github.com/repos/ArthurDEV44/paneflow/releases/latest \
+      | grep -oE '"tag_name":\s*"v[^"]+"' | cut -d\" -f4 | sed 's/^v//')
+ARCH=$(uname -m)
+curl -LO "https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-${VER}-${ARCH}.AppImage"
+chmod +x "paneflow-${VER}-${ARCH}.AppImage"
+./paneflow-${VER}-${ARCH}.AppImage
+```
+
+Need `.deb`, `.rpm`, `.tar.gz`, or macOS DMG? Jump to [Install](#install).
+
+## Where it fits
+
+| Setup | Best for | Paneflow focus |
+|---|---|---|
+| Terminal tabs or tmux | Shell-native multiplexing | Native panes plus agent status, workspace metadata, and app-level sidebars |
+| cmux-style agent workspaces | Coordinating several coding agents | Independent Rust/GPUI app with Linux support today |
+| AI terminal apps | Polished single-terminal AI workflows | Keeps raw CLI agents visible in real PTY panes |
+| Paneflow | Parallel agent sessions inside one project window | Branch-aware panes, review flows, MCP pane reading, IPC automation |
+
+Side-by-side comparisons live at [paneflow.dev/compare](https://paneflow.dev/compare).
+
 ## Features
 
-- **Agent orchestration**: one-click Claude Code, Codex, and OpenCode launchers in the tab bar, per-session tracking, and an `ai.*` JSON-RPC event stream (`session_start`, `tool_use`, `notification`, `stop`) that the interface and your own tooling can react to the moment an agent needs you
+- **Agent orchestration**: one-click Claude Code, Codex, opencode, and Pi launchers in the tab bar, per-session tracking, and an `ai.*` JSON-RPC event stream (`session_start`, `tool_use`, `notification`, `stop`) that the interface and your own tooling can react to the moment an agent needs you
+- **In-app code review**: Git diff viewer, hunk navigation, branch review prompts, and copy-as-diff actions without leaving the workspace
+- **MCP pane reading**: `paneflow mcp install` lets capable agents inspect other panes through `list_panes`, `read_pane`, and `search_pane`
 - **Cross-platform by design**: one native Rust core on Linux (Wayland + X11) and macOS 13 Ventura+ (Apple Silicon) today, Windows 10 1809+ next, where the other agent terminals in this space ship macOS-only
 - **Parallel panes**: horizontal and vertical splits, drag-to-resize, layout presets (even, main+stack, tiled), up to 32 panes
 - **Branch-aware workspaces**: up to 20 workspaces with rename, quick-switch (`Ctrl+1`-`9`), undo close; the sidebar surfaces the active git branch per workspace
@@ -27,63 +63,12 @@ It all runs on one native core: pure Rust on [Zed's GPUI](https://github.com/zed
 - **Auto-update**: in-app updater for every supported install format
 - **IPC**: JSON-RPC 2.0 over Unix socket (Linux/macOS) or named pipe (Windows)
 
-## Prerequisites
-
-### Rust toolchain
-
-Paneflow pins **Rust 1.95** via [`rust-toolchain.toml`](rust-toolchain.toml). [rustup](https://rustup.rs/) installs the exact version automatically the first time you run `cargo`:
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-### Linux system dependencies
-
-Install the build libraries for your distribution:
-
-**Debian/Ubuntu:**
-```bash
-sudo apt install build-essential pkg-config libssl-dev libvulkan-dev \
-  libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxcb1-dev \
-  libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig-dev \
-  libfreetype-dev libdbus-1-dev
-```
-
-**Fedora:**
-```bash
-sudo dnf install gcc pkgconf-pkg-config openssl-devel vulkan-loader-devel \
-  wayland-devel libxkbcommon-devel libX11-devel libxcb-devel \
-  fontconfig-devel freetype-devel dbus-devel
-```
-
-**Arch Linux:**
-```bash
-sudo pacman -S base-devel pkg-config openssl vulkan-icd-loader wayland \
-  libxkbcommon libx11 libxcb fontconfig freetype2 dbus
-```
-
-### Vulkan GPU driver (Linux only)
-
-```bash
-# AMD/Intel (Mesa)
-sudo apt install mesa-vulkan-drivers        # Debian/Ubuntu
-sudo dnf install mesa-vulkan-drivers        # Fedora
-sudo pacman -S vulkan-radeon vulkan-intel    # Arch
-
-# NVIDIA
-sudo apt install nvidia-vulkan-icd          # Debian/Ubuntu
-sudo pacman -S nvidia-utils                 # Arch
-
-# Verify Vulkan works
-vulkaninfo --summary
-```
-
 ## Install
 
-Pick the format that matches your platform. Every format ships the same binary; the differences are how updates arrive and where files land on disk. All artifacts are attached to the [latest GitHub release](https://github.com/ArthurDEV44/paneflow/releases/latest).
+Pick the format that matches your platform. Published release artifacts are attached to the [latest GitHub release](https://github.com/ArthurDEV44/paneflow/releases/latest); the differences between formats are how updates arrive and where files land on disk.
 
 > **Substitute placeholders before running.** The commands below use two placeholders:
-> - `X.Y.Z`: replace with the release version (e.g., `0.2.16`). **No leading `v`** in the asset filename.
+> - `X.Y.Z`: replace with the release version (e.g., `0.3.7`). **No leading `v`** in the asset filename.
 > - `<ARCH>`: replace with `x86_64` or `aarch64` (check with `uname -m`).
 >
 > To auto-resolve the latest version:
@@ -92,7 +77,7 @@ Pick the format that matches your platform. Every format ships the same binary; 
 >       | grep -oE '"tag_name":\s*"v[^"]+"' | cut -d\" -f4 | sed 's/^v//')
 > ARCH=$(uname -m)
 > ```
-> Then paste `$VER` and `$ARCH` in place of the placeholders below. The Git tag uses a `v` prefix (`v0.2.16`); the artifact filenames do not (`paneflow-0.2.16-x86_64.deb`).
+> Then paste `$VER` and `$ARCH` in place of the placeholders below. The Git tag uses a `v` prefix (`v0.3.7`); the artifact filenames do not (`paneflow-0.3.7-x86_64.deb`).
 
 ### Ubuntu / Debian / Mint (apt + repo)
 
@@ -170,13 +155,73 @@ curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/panefl
 open paneflow-X.Y.Z-aarch64-apple-darwin.dmg
 ```
 
-A Homebrew cask (`brew tap arthurdev44/paneflow && brew install --cask paneflow`) is wired into the release pipeline and will publish from v0.3.0 onward. Until then, prefer the direct DMG download.
+A Homebrew cask is wired into the release pipeline:
+
+```bash
+brew tap arthurdev44/paneflow
+brew install --cask paneflow
+```
+
+If the cask lags a new release, prefer the direct DMG download above.
 
 Gatekeeper accepts the signed DMG offline; no `xattr -cr` workaround is needed for release builds.
 
 ### Windows
 
 A signed `.msi` for `x86_64-pc-windows-msvc` (Windows 10 1809+ and Windows 11) is on the release roadmap; the Azure Trusted Signing pipeline is in place but the artifact is not yet attached to releases. winget (`winget install ArthurDev44.PaneFlow`) follows the first signed MSI submission to Microsoft. See [`docs/WINDOWS.md`](docs/WINDOWS.md) for the supported-versions matrix and known limitations, and the contributor build instructions below for building locally in the meantime.
+
+## Prerequisites
+
+You do not need these to install a packaged release. This section is for building from source and for troubleshooting GPU/runtime setup.
+
+### Rust toolchain
+
+Paneflow pins **Rust 1.95** via [`rust-toolchain.toml`](rust-toolchain.toml). [rustup](https://rustup.rs/) installs the exact version automatically the first time you run `cargo`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+### Linux system dependencies
+
+Install the build libraries for your distribution:
+
+**Debian/Ubuntu:**
+```bash
+sudo apt install build-essential pkg-config libssl-dev libvulkan-dev \
+  libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxcb1-dev \
+  libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig-dev \
+  libfreetype-dev libdbus-1-dev
+```
+
+**Fedora:**
+```bash
+sudo dnf install gcc pkgconf-pkg-config openssl-devel vulkan-loader-devel \
+  wayland-devel libxkbcommon-devel libX11-devel libxcb-devel \
+  fontconfig-devel freetype-devel dbus-devel
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S base-devel pkg-config openssl vulkan-icd-loader wayland \
+  libxkbcommon libx11 libxcb fontconfig freetype2 dbus
+```
+
+### Vulkan GPU driver (Linux only)
+
+```bash
+# AMD/Intel (Mesa)
+sudo apt install mesa-vulkan-drivers        # Debian/Ubuntu
+sudo dnf install mesa-vulkan-drivers        # Fedora
+sudo pacman -S vulkan-radeon vulkan-intel    # Arch
+
+# NVIDIA
+sudo apt install nvidia-vulkan-icd          # Debian/Ubuntu
+sudo pacman -S nvidia-utils                 # Arch
+
+# Verify Vulkan works
+vulkaninfo --summary
+```
 
 ## Troubleshooting
 
@@ -487,7 +532,7 @@ Paneflow reads `paneflow.json` from a platform-appropriate config directory:
 
 ### AI agent buttons
 
-The tab bar can launch the [Claude Code](https://claude.com/claude-code), [Codex](https://github.com/openai/codex), and [Opencode](https://github.com/sst/opencode) CLIs. Each button is gated by a `*_button_visible` flag (all default `true`). `claude_code_bypass_permissions` (default `false`) controls whether the Claude Code button launches with `--permission-mode bypassPermissions`; that flag disables every permission prompt and offers no protection against prompt injection; opt in only on machines where that risk is acceptable.
+The tab bar can launch the [Claude Code](https://claude.com/claude-code), [Codex](https://github.com/openai/codex), and [opencode](https://github.com/sst/opencode) CLIs. Each button is gated by a `*_button_visible` flag (all default `true`). `claude_code_bypass_permissions` (default `false`) controls whether the Claude Code button launches with `--permission-mode bypassPermissions`; that flag disables every permission prompt and offers no protection against prompt injection; opt in only on machines where that risk is acceptable.
 
 ### Telemetry
 
@@ -569,13 +614,22 @@ Stateful methods are dispatched to the GPUI main thread; stateless methods (`sys
 
 ## Compare
 
-Honest side-by-side comparisons of Paneflow against the terminals and multiplexers it overlaps with - architecture, feature matrices, performance numbers, when each tool wins:
+Paneflow overlaps with terminals, multiplexers, and agent workspaces, but the design center is narrower: keep several real CLI agents visible and controllable inside one native project window.
+
+| Tool family | Strength | Paneflow difference |
+|---|---|---|
+| tmux / terminal tabs | Universal shell workflow, scriptable, lightweight | Adds app-level panes, session restore, agent state, and sidebars |
+| WezTerm / iTerm2 | Mature terminal emulation and customization | Focuses on agent orchestration, branch workspaces, and review flows |
+| Warp-style AI terminals | Polished AI-assisted command entry | Keeps Claude Code, Codex, opencode, Pi, and other CLIs as visible PTY sessions |
+| cmux-style agent workspaces | Multi-agent coordination | Independent Rust/GPUI codebase with Linux support today |
+
+Detailed comparisons:
 
 - **Hub:** [paneflow.dev/compare](https://paneflow.dev/compare)
-- [vs cmux](https://paneflow.dev/compare/cmux) - minimal native Rust vs the macOS kitchen-sink toolkit
-- [vs WezTerm](https://paneflow.dev/compare/wezterm) - agent-first workspace vs the Lua-scriptable cross-platform emulator
-- [vs iTerm2](https://paneflow.dev/compare/iterm2) - agent orchestration vs the long-standing macOS terminal
-- [vs Warp](https://paneflow.dev/compare/warp) - native indie tool vs the cloud-backed AI terminal
+- [vs cmux](https://paneflow.dev/compare/cmux)
+- [vs WezTerm](https://paneflow.dev/compare/wezterm)
+- [vs iTerm2](https://paneflow.dev/compare/iterm2)
+- [vs Warp](https://paneflow.dev/compare/warp)
 
 ## License
 
