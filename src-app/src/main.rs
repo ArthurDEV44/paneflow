@@ -13,9 +13,10 @@
         clippy::panic
     )
 )]
-//! PaneFlow v2 — GPUI Native Terminal Multiplexer
+//! PaneFlow — native terminal workspace for coding agents.
 //!
-//! App shell with sidebar workspace list + main content area.
+//! App shell with sidebar workspace list, terminal panes, agent surfaces, and
+//! diff/review workflows.
 
 mod agent_sessions;
 mod agents;
@@ -1166,16 +1167,19 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "PaneFlow {version} — GPU-accelerated terminal multiplexer\n\
+            "PaneFlow {version} — native terminal workspace for coding agents\n\
              \n\
              Usage: paneflow [OPTIONS]\n\
+             \x20      paneflow mcp <install|status|uninstall>\n\
              \n\
              Options:\n\
              \x20 -h, --help       Print this help message\n\
              \x20 -v, --version    Print version\n\
+             \x20 --update-and-exit  Check for an update and exit (CI harness)\n\
              \n\
-             Configuration: ~/.config/paneflow/paneflow.json\n\
-             IPC socket:    $XDG_RUNTIME_DIR/paneflow/paneflow.sock\n\
+             Agent workflow:\n\
+             \x20 Launch Claude Code, Codex, opencode, Pi, or any CLI agent in panes\n\
+             \x20 Use `paneflow mcp install` so capable agents can read pane output\n\
              \n\
              Keybindings:\n\
              \x20 Ctrl+Shift+D/E   Split horizontal/vertical\n\
@@ -1185,6 +1189,7 @@ fn main() {
              \x20 Ctrl+Tab         Next workspace\n\
              \x20 Ctrl+1-9         Switch to workspace N\n\
              \n\
+             Config paths and IPC endpoints are documented in the README.\n\
              https://github.com/ArthurDEV44/paneflow",
             version = env!("CARGO_PKG_VERSION")
         );

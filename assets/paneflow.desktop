@@ -1,10 +1,10 @@
 [Desktop Entry]
 Name=PaneFlow
-Comment=Cross-platform terminal multiplexer
+Comment=Native terminal workspace for coding agents
 Exec=paneflow
 Icon=paneflow
 Terminal=false
 Type=Application
 Categories=System;TerminalEmulator;
-Keywords=terminal;multiplexer;pane;split;
+Keywords=terminal;coding-agents;ai-agents;claude-code;codex;opencode;rust;gpui;
 StartupWMClass=paneflow

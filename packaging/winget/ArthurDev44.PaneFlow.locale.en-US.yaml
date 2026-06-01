@@ -9,11 +9,8 @@
 # REQUIRED field per the default-locale JSON schema; `LicenseUrl` is
 # optional-but-recommended and included for winget UI discoverability.
 #
-# Note on LICENSE file: the project is declared MIT in Cargo.toml but
-# the top-level LICENSE file is not yet committed (flagged in
-# CLAUDE.md §Gotchas). The LicenseUrl below will 404 until that file
-# ships; winget-pkgs maintainers may flag this on the first submission.
-# Land the LICENSE file before the first winget release.
+# LicenseUrl points at the canonical GPL-3.0-or-later license file in
+# the repository root; keep this in sync with Cargo.toml.
 PackageIdentifier: ArthurDev44.PaneFlow
 PackageVersion: __VERSION__
 PackageLocale: en-US
@@ -21,19 +18,22 @@ Publisher: Strivex
 PublisherUrl: https://github.com/ArthurDEV44
 PublisherSupportUrl: https://github.com/ArthurDEV44/paneflow/issues
 PackageName: PaneFlow
-PackageUrl: https://github.com/ArthurDEV44/paneflow
-License: MIT
+PackageUrl: https://paneflow.dev
+License: GPL-3.0-or-later
 LicenseUrl: https://github.com/ArthurDEV44/paneflow/blob/main/LICENSE
-ShortDescription: Cross-platform terminal multiplexer built with Rust and GPUI.
+ShortDescription: Native Rust terminal workspace for parallel coding agents.
 Description: |-
-  PaneFlow is a cross-platform terminal multiplexer — panes, splits, and
-  workspaces in a native GPU-rendered window. Built in Rust with the GPUI
-  framework used by the Zed editor. A port of the cmux terminal multiplexer
-  to Linux, macOS, and Windows.
+  PaneFlow is a native terminal workspace for running coding agents in
+  parallel. Launch Claude Code, Codex, opencode, Pi, and other CLI agents in
+  real panes; keep sessions visible; review branch diffs in-app; and let
+  MCP-capable agents read pane output without copy/paste.
 Tags:
   - terminal
-  - multiplexer
-  - tmux
+  - coding-agents
+  - ai-agents
+  - claude-code
+  - codex
+  - opencode
   - rust
   - gpui
   - developer-tools

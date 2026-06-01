@@ -39,8 +39,8 @@ cask "paneflow" do
       verified: "github.com/ArthurDEV44/paneflow/"
 
   name "PaneFlow"
-  desc "Cross-platform terminal multiplexer built on GPUI"
-  homepage "https://github.com/ArthurDEV44/paneflow"
+  desc "Native terminal workspace for parallel coding agents"
+  homepage "https://paneflow.dev"
 
   # `ventura` (macOS 13) is the floor because GPUI's macOS backend targets
   # that era. Same value as `LSMinimumSystemVersion` in assets/Info.plist
