@@ -1,6 +1,5 @@
 //! "Appearance" settings tab — font family selector with an inline-
-//! expanding dropdown, plus a live preview pane. "Reset to defaults"
-//! sits inline in the section header.
+//! expanding dropdown. "Reset to defaults" sits inline in the section header.
 //!
 //! Font list enumeration comes from `crate::fonts::load_mono_fonts()`.
 //! Theme selection lives in the title bar menu (`main.rs`).
@@ -12,7 +11,7 @@ use gpui::{
 
 use crate::config_writer;
 use crate::settings::components::{
-    secondary_button, section_header, section_header_with_action, setting_card, setting_text,
+    secondary_button, section_header_with_action, setting_card, setting_text,
 };
 
 use super::super::window::SettingsWindow;
@@ -90,11 +89,6 @@ impl SettingsWindow {
                     .min_w_0()
                     .text_size(px(12.))
                     .text_color(trigger_label_color)
-                    .font_family(if self.font_dropdown_open {
-                        "monospace".to_string()
-                    } else {
-                        current_font.clone()
-                    })
                     .truncate()
                     .child(trigger_label),
             )
@@ -108,7 +102,7 @@ impl SettingsWindow {
 
         // True popover: dropdown is rendered as a deferred absolutely-positioned
         // child of the trigger (which is `.relative()` above), so it floats over
-        // the preview pane below instead of pushing it down.
+        // the content below instead of pushing it down.
         if self.font_dropdown_open {
             let search = self.font_search.to_lowercase();
             let filtered: Vec<&String> = self
@@ -216,31 +210,6 @@ impl SettingsWindow {
 
         let font_card = setting_card(ui).child(font_row);
 
-        let preview_card = setting_card(ui).child(
-            div()
-                .px(px(16.))
-                .py(px(12.))
-                .font_family(current_font.clone())
-                .text_size(px(13.))
-                .text_color(ui.text)
-                .child(
-                    "The quick brown fox jumps over the lazy dog\n\
-                     ABCDEFGHIJKLM 0123456789 {}[]()",
-                ),
-        );
-
-        let preview_section = div()
-            .mt(px(24.))
-            .flex()
-            .flex_col()
-            .child(section_header(ui, "Preview"))
-            .child(preview_card);
-
-        div()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(font_card)
-            .child(preview_section)
+        div().flex().flex_col().child(header).child(font_card)
     }
 }

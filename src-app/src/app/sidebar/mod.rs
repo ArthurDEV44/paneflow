@@ -135,7 +135,42 @@ impl PaneFlowApp {
             return sidebar;
         }
 
+        // ── Sibling-worktree grouping (US-002) ──
+        // Workspaces sharing a `repo_root` are members of one repo. When ≥2
+        // share it, they render contiguously (no group header); a lone
+        // workspace (or one with no `repo_root`) keeps its original position.
+        // `idx` stays the workspace's real index in `self.workspaces`, so
+        // selection/drag/rename are unaffected by the display reordering.
+        let mut repo_members: std::collections::HashMap<&std::path::Path, Vec<usize>> =
+            std::collections::HashMap::new();
         for (i, ws) in self.workspaces.iter().enumerate() {
+            if let Some(root) = &ws.repo_root {
+                repo_members.entry(root.as_path()).or_default().push(i);
+            }
+        }
+        // Display order: groups appear at their first member's position, members
+        // contiguous; standalone workspaces keep their original position.
+        let mut display_order: Vec<usize> = Vec::with_capacity(self.workspaces.len());
+        let mut placed = vec![false; self.workspaces.len()];
+        for (i, ws) in self.workspaces.iter().enumerate() {
+            if placed[i] {
+                continue;
+            }
+            if let Some(root) = &ws.repo_root
+                && let Some(members) = repo_members.get(root.as_path())
+                && members.len() >= 2
+            {
+                for &m in members {
+                    display_order.push(m);
+                    placed[m] = true;
+                }
+                continue;
+            }
+            display_order.push(i);
+            placed[i] = true;
+        }
+        for &i in &display_order {
+            let ws = &self.workspaces[i];
             let is_active = i == self.active_idx;
 
             let title = ws.title.clone();

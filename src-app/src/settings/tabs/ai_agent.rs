@@ -6,9 +6,8 @@
 //! toggle, separated by `hairline()` dividers. Each row is fully
 //! clickable; the switch is purely visual.
 //!
-//! Persistence mirrors `tabs::privacy`: clicks call
-//! `config_writer::save_config_value_checked`, and `pane.rs` re-reads
-//! the config on the next render so the tab bar reflects changes
+//! Persistence uses `config_writer::save_config_value_checked`, and
+//! `pane.rs` re-reads the config on the next render so the tab bar reflects changes
 //! without a restart.
 
 use gpui::{
@@ -33,6 +32,8 @@ impl SettingsWindow {
         let claude_visible = config.claude_code_button_visible.unwrap_or(true);
         let codex_visible = config.codex_button_visible.unwrap_or(true);
         let opencode_visible = config.opencode_button_visible.unwrap_or(true);
+        let pi_visible = config.pi_button_visible.unwrap_or(true);
+        let hermes_agent_visible = config.hermes_agent_button_visible.unwrap_or(true);
         let bypass = config.claude_code_bypass_permissions.unwrap_or(false);
 
         let buttons_card = setting_card(ui)
@@ -62,6 +63,26 @@ impl SettingsWindow {
                 "Show the Opencode launcher button in every tab bar.",
                 opencode_visible,
                 "opencode_button_visible",
+                ui,
+                cx,
+            ))
+            .child(hairline(ui))
+            .child(setting_row(
+                "row-pi-visible",
+                "Pi",
+                "Show the Pi launcher button in every tab bar.",
+                pi_visible,
+                "pi_button_visible",
+                ui,
+                cx,
+            ))
+            .child(hairline(ui))
+            .child(setting_row(
+                "row-hermes-agent-visible",
+                "Hermes Agent",
+                "Show the Hermes Agent launcher button in every tab bar.",
+                hermes_agent_visible,
+                "hermes_agent_button_visible",
                 ui,
                 cx,
             ));

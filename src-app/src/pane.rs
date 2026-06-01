@@ -24,6 +24,7 @@ use gpui::{
 };
 use paneflow_config::schema::ButtonCommand;
 
+use crate::diff::DiffView;
 use crate::markdown::MarkdownView;
 use crate::pane_drag::{
     DropEdge, InsertSide, MarkdownFileDrag, SPLIT_EDGE_BAND, SessionDrag, TabDrag, TabDragPreview,
@@ -43,13 +44,14 @@ use crate::terminal::{TerminalEvent, TerminalView};
 pub enum TabContent {
     Terminal(Entity<TerminalView>),
     Markdown(Entity<MarkdownView>),
+    Diff(Entity<DiffView>),
 }
 
 impl TabContent {
     pub fn as_terminal(&self) -> Option<&Entity<TerminalView>> {
         match self {
             TabContent::Terminal(t) => Some(t),
-            TabContent::Markdown(_) => None,
+            TabContent::Markdown(_) | TabContent::Diff(_) => None,
         }
     }
 }
@@ -325,6 +327,14 @@ impl Pane {
         self.selected_idx = self.tabs.len() - 1;
     }
 
+    /// Append a multi-worktree diff tab and select it. Like markdown tabs,
+    /// `DiffView` emits no pane-level events, so no subscription is needed;
+    /// closing the tab drops the entity (and any future watchers it owns).
+    pub fn add_diff_tab(&mut self, diff: Entity<DiffView>, _cx: &mut Context<Self>) {
+        self.tabs.push(TabContent::Diff(diff));
+        self.selected_idx = self.tabs.len() - 1;
+    }
+
     /// Subscribe to a terminal's events — close tab on exit, repaint on title change.
     fn subscribe_terminal(terminal: &Entity<TerminalView>, cx: &mut Context<Self>) {
         cx.subscribe(terminal, |this, terminal, event: &TerminalEvent, cx| {
@@ -374,6 +384,7 @@ impl Pane {
     fn tab_title(tab: &TabContent, cx: &App) -> String {
         let raw = match tab {
             TabContent::Markdown(md) => md.read(cx).title().to_string(),
+            TabContent::Diff(d) => d.read(cx).title(),
             TabContent::Terminal(t) => Self::terminal_tab_title(t, cx),
         };
         truncate_tab_title(&raw)
@@ -385,6 +396,7 @@ impl Pane {
         match tab {
             TabContent::Terminal(_) => "icons/terminal.svg",
             TabContent::Markdown(_) => "icons/file-text.svg",
+            TabContent::Diff(_) => "icons/git-branch.svg",
         }
     }
 
@@ -452,9 +464,9 @@ impl Pane {
         )
     }
 
-    /// Render a small icon button with a caller-supplied tint colour.
-    /// Used for the 2 built-in defaults (Claude / Codex brand colours) and
-    /// for user-defined `custom_buttons` (muted, matching the other controls).
+    /// Render a small SVG icon button with a caller-supplied tint colour.
+    /// Used for most built-in agent buttons and for user-defined
+    /// `custom_buttons` (muted, matching the other controls).
     fn command_button(
         id: SharedString,
         icon_path: SharedString,
@@ -732,7 +744,12 @@ impl Pane {
         cx.notify();
     }
 
-    fn render_tab_bar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_tab_bar(
+        &self,
+        is_active: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let tab_count = self.tabs.len();
         let ui = tab_colors();
         let theme = crate::theme::active_theme();
@@ -743,6 +760,14 @@ impl Pane {
         // indicator drawn during a same-pane reorder hover.
         let self_entity = cx.entity();
         let accent = ui.accent;
+        // Active pane: full-strength title-bar chrome. Inactive pane: the muted
+        // inactive-chrome slot, so the whole strip reads as dimmed without ever
+        // touching the terminal body — reinforcing the accent focus ring.
+        let bar_bg = if is_active {
+            theme.title_bar_background
+        } else {
+            theme.title_bar_inactive_background
+        };
 
         // Outer container: full-width, fixed height, tab_bar background
         let bar = div()
@@ -751,7 +776,7 @@ impl Pane {
             .flex_row()
             .w_full()
             .h(px(TAB_BAR_HEIGHT))
-            .bg(theme.title_bar_background);
+            .bg(bar_bg);
 
         // Scrollable tab area (Zed pattern: overflow_x_scroll on inner row)
         let highlight_entity = self_entity.clone();
@@ -823,7 +848,7 @@ impl Pane {
                     .border_color(chrome_border);
             } else {
                 tab = tab
-                    .bg(theme.title_bar_background)
+                    .bg(bar_bg)
                     .text_color(ui.muted)
                     .border_r_1()
                     .border_b_1()
@@ -1245,6 +1270,44 @@ impl Pane {
                         }),
                     ))
                 },
+            )
+            .when(
+                paneflow_config::loader::load_config()
+                    .pi_button_visible
+                    .unwrap_or(true),
+                |s| {
+                    // Pi's icon is monochrome (currentColor SVG) — tint with
+                    // the theme's primary text color so it stays readable.
+                    s.child(Self::command_button(
+                        "pane-btn-pi".into(),
+                        "icons/pi-coding-agent.svg".into(),
+                        tab_colors().text,
+                        cx.listener(|this, _, _window, cx| {
+                            let Some(terminal) = this.active_terminal_opt() else {
+                                return;
+                            };
+                            terminal.read(cx).send_command("clear && pi");
+                        }),
+                    ))
+                },
+            )
+            .when(
+                paneflow_config::loader::load_config()
+                    .hermes_agent_button_visible
+                    .unwrap_or(true),
+                |s| {
+                    s.child(Self::command_button(
+                        "pane-btn-hermes-agent".into(),
+                        "icons/hermesagent.svg".into(),
+                        tab_colors().text,
+                        cx.listener(|this, _, _window, cx| {
+                            let Some(terminal) = this.active_terminal_opt() else {
+                                return;
+                            };
+                            terminal.read(cx).send_command("clear && hermes");
+                        }),
+                    ))
+                },
             );
 
         // User-defined command buttons (persisted per workspace).
@@ -1274,6 +1337,7 @@ impl gpui::Focusable for Pane {
         match self.tabs.get(self.selected_idx) {
             Some(TabContent::Terminal(t)) => t.read(cx).focus_handle(cx),
             Some(TabContent::Markdown(m)) => m.read(cx).focus_handle(cx),
+            Some(TabContent::Diff(d)) => d.read(cx).focus_handle(cx),
             None => cx.focus_handle(),
         }
     }
@@ -1284,6 +1348,7 @@ impl Render for Pane {
         let body = match self.tabs.get(self.selected_idx) {
             Some(TabContent::Terminal(t)) => t.clone().into_any_element(),
             Some(TabContent::Markdown(m)) => m.clone().into_any_element(),
+            Some(TabContent::Diff(d)) => d.clone().into_any_element(),
             None => div().size_full().into_any_element(),
         };
 
@@ -1494,11 +1559,23 @@ impl Render for Pane {
             .child(body)
             .child(overlay);
 
+        // Active-pane focus ring. `Pane::focus_handle` delegates to the active
+        // tab's content handle, so this is true exactly when this pane's
+        // terminal/markdown holds focus. Every pane reserves a 1px border so
+        // toggling focus only swaps the color (accent ⇄ transparent) — zero
+        // layout reflow between active and inactive panes.
+        let is_active = self.focus_handle(cx).is_focused(window);
         div()
             .flex()
             .flex_col()
             .size_full()
-            .child(self.render_tab_bar(window, cx))
+            .border_1()
+            .border_color(if is_active {
+                accent.opacity(0.5)
+            } else {
+                accent.opacity(0.)
+            })
+            .child(self.render_tab_bar(is_active, window, cx))
             .child(content)
     }
 }

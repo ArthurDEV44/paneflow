@@ -1,0 +1,249 @@
+//! US-014 (prd-git-diff-mode-2026-Q3.md): Multi-project scope — a **repo tab
+//! bar** above a single, full-height [`DiffView`] for the selected repo.
+//!
+//! Each open repo is a tab; the selected repo's `DiffView` fills the whole area
+//! (its own worktree columns side by side, its own internal scroll), so two
+//! repos never compete for vertical space and there is no inner/outer scroll
+//! fight. Only the selected repo's `DiffView` is mounted (lazy) — switching
+//! tabs drops the previous entity, releasing its filesystem watchers + git
+//! subprocesses, and bounds the watcher count to one repo regardless of how
+//! many are open. The base ref chosen in one repo is carried to the next tab
+//! (shared comparison base across repos).
+
+use std::path::PathBuf;
+
+use gpui::{
+    AnyElement, App, AppContext, ClickEvent, Context, FontWeight, InteractiveElement, IntoElement,
+    ParentElement, Render, SharedString, Styled, Window, div, prelude::*, px,
+};
+
+use super::DiffWorktree;
+use super::scope::RepoGroup;
+use super::view::{DiffView, FileListState};
+
+struct Group {
+    repo_root: PathBuf,
+    repo_name: String,
+    /// Seed kept so the `DiffView` can be (re)mounted on select without
+    /// re-collecting from the app.
+    worktrees: Vec<DiffWorktree>,
+    /// Lazy: `Some` only for the currently-selected tab.
+    view: Option<gpui::Entity<DiffView>>,
+}
+
+/// Hosts the per-repo diff tabs for the Multi-project scope.
+pub struct MultiRepoDiffView {
+    groups: Vec<Group>,
+    /// Index of the repo whose `DiffView` is mounted + shown.
+    selected: usize,
+    /// Shared comparison base carried across tabs: when the user picks a base in
+    /// one repo, switching to another seeds it with the same base. `None` until
+    /// a repo resolves/sets one.
+    base_ref: Option<String>,
+}
+
+impl MultiRepoDiffView {
+    /// Build from the repo groups (US-014). The first repo is selected (and
+    /// mounted) by default; the rest mount on demand when their tab is clicked.
+    pub fn new(groups: Vec<RepoGroup>, cx: &mut Context<Self>) -> Self {
+        let groups: Vec<Group> = groups
+            .into_iter()
+            .map(|g| Group {
+                repo_root: g.repo_root,
+                repo_name: g.repo_name,
+                worktrees: g.worktrees,
+                view: None,
+            })
+            .collect();
+        let mut this = Self {
+            groups,
+            selected: 0,
+            base_ref: None,
+        };
+        this.mount_selected(cx);
+        this
+    }
+
+    /// Mount the selected repo's `DiffView` if not already, seeding it with the
+    /// shared base ref so cross-repo comparison stays on one base.
+    fn mount_selected(&mut self, cx: &mut Context<Self>) {
+        let base = self.base_ref.clone();
+        if let Some(g) = self.groups.get_mut(self.selected)
+            && g.view.is_none()
+        {
+            let root = g.repo_root.clone();
+            let wts = g.worktrees.clone();
+            g.view = Some(cx.new(|cx| DiffView::with_base(root, wts, base, cx)));
+        }
+    }
+
+    fn select(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if idx == self.selected || idx >= self.groups.len() {
+            return;
+        }
+        // Carry the outgoing repo's base forward so the next tab opens on it.
+        if let Some(g) = self.groups.get(self.selected)
+            && let Some(view) = &g.view
+        {
+            self.base_ref = Some(view.read(cx).base_ref().to_string());
+        }
+        // Drop the outgoing entity → releases its watchers + ends its debounce
+        // loop (lazy-mount perf contract).
+        if let Some(g) = self.groups.get_mut(self.selected) {
+            g.view = None;
+        }
+        self.selected = idx;
+        self.mount_selected(cx);
+        cx.notify();
+    }
+
+    /// US-016 warm-resume passthrough: suspend the one mounted child `DiffView`
+    /// (only the selected tab is `Some`) so the Multi-project host releases its
+    /// watchers when the diff surface is hidden, while retaining the child's
+    /// loaded rows for an instant warm resume.
+    pub fn suspend(&mut self, cx: &mut Context<Self>) {
+        if let Some(g) = self.groups.get(self.selected)
+            && let Some(view) = g.view.clone()
+        {
+            view.update(cx, |v, cx| v.suspend(cx));
+        }
+    }
+
+    /// US-016 warm-resume passthrough: re-arm + revalidate the mounted child.
+    pub fn resume(&mut self, cx: &mut Context<Self>) {
+        if let Some(g) = self.groups.get(self.selected)
+            && let Some(view) = g.view.clone()
+        {
+            view.update(cx, |v, cx| v.resume(cx));
+        }
+    }
+
+    /// Per-branch changed-file lists of the selected repo's `DiffView`, for the
+    /// multi-branch sidebar (one section per worktree column of that repo).
+    pub fn active_column_file_lists(
+        &self,
+        cx: &App,
+    ) -> Vec<(String, usize, PathBuf, FileListState)> {
+        self.groups
+            .get(self.selected)
+            .and_then(|g| g.view.as_ref())
+            .map(|v| v.read(cx).column_file_lists())
+            .unwrap_or_default()
+    }
+
+    /// Selected column index of the selected repo's `DiffView` (active-branch
+    /// highlight in the sidebar).
+    pub fn active_selected_column(&self, cx: &App) -> usize {
+        self.groups
+            .get(self.selected)
+            .and_then(|g| g.view.as_ref())
+            .map(|v| v.read(cx).selected_column())
+            .unwrap_or(0)
+    }
+
+    /// Select column `col_idx` of the selected repo's `DiffView` and scroll its
+    /// body to `path` (sidebar file click in a multi-branch section).
+    pub fn active_select_and_jump(
+        &self,
+        col_idx: usize,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(g) = self.groups.get(self.selected)
+            && let Some(view) = g.view.clone()
+        {
+            view.update(cx, |v, cx| v.select_and_jump(col_idx, path, window, cx));
+        }
+    }
+}
+
+impl Render for MultiRepoDiffView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = crate::theme::ui_colors();
+
+        let mut tabs = div()
+            .id("multi-diff-tabs")
+            .flex_none()
+            .h(px(34.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.))
+            .px(px(8.))
+            .overflow_x_scroll()
+            .bg(ui.surface)
+            .border_b_1()
+            .border_color(ui.border);
+
+        for (i, g) in self.groups.iter().enumerate() {
+            let active = i == self.selected;
+            tabs = tabs.child(
+                // Flat browser-style tab: accent underline + content-bg + bold
+                // when active; muted + transparent (border blends into the bar)
+                // otherwise. The 2px bottom border is always present so the row
+                // height does not jump between states. Repo name only — no git
+                // icon, no worktree-count badge (kept deliberately minimal).
+                div()
+                    .id(SharedString::from(format!("multi-diff-tab-{i}")))
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .px(px(12.))
+                    .border_b_2()
+                    .border_color(if active { ui.accent } else { ui.surface })
+                    .when(active, |d| d.bg(ui.base))
+                    .cursor_pointer()
+                    .hover(|s| {
+                        let ui = crate::theme::ui_colors();
+                        s.bg(ui.subtle)
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        this.select(i, cx);
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(if active {
+                                FontWeight::SEMIBOLD
+                            } else {
+                                FontWeight::NORMAL
+                            })
+                            .text_color(if active { ui.text } else { ui.muted })
+                            .child(g.repo_name.clone()),
+                    ),
+            );
+        }
+
+        let body: AnyElement = self
+            .groups
+            .get(self.selected)
+            .and_then(|g| g.view.clone())
+            .map(|v| v.into_any_element())
+            .unwrap_or_else(|| {
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_color(ui.muted)
+                            .text_size(px(13.))
+                            .child("No repository selected"),
+                    )
+                    .into_any_element()
+            });
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(ui.base)
+            .child(tabs)
+            .child(div().flex_1().min_h_0().child(body))
+    }
+}

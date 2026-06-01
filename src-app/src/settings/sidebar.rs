@@ -24,7 +24,6 @@ impl SettingsWindow {
             ("Shortcuts", SettingsSection::Shortcuts),
             ("Appearance", SettingsSection::Appearance),
             ("AI Agent", SettingsSection::AiAgent),
-            ("Privacy", SettingsSection::Privacy),
         ];
 
         let mut nav = div()

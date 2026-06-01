@@ -96,6 +96,18 @@ actions!(
         // None). Bound to Shift+Alt+Y / Shift+Alt+Z to match Zed's
         // default keymap so muscle memory transfers.
         KeepEdits,
-        RejectEdits
+        RejectEdits,
+        // US-003 of tasks/prd-multi-worktree-diff-2026-Q3.md — open the
+        // multi-worktree diff view for the active workspace's repo. Resolves
+        // the repo from `active_idx`'s `repo_root` and opens a `DiffView` tab
+        // seeded with every sibling worktree. Also invoked directly by the
+        // sidebar group header's "Diff all" button.
+        OpenMultiDiff,
+        // US-003 of tasks/prd-git-diff-mode-2026-Q3.md — toggle the
+        // dedicated Git Diff mode (AppMode::Diff): a full-screen diff
+        // surface entered via the CLI / Diff / Agents sidebar toggle.
+        // Distinct from `OpenMultiDiff` (the ephemeral tab path), which
+        // stays alive as a secondary entry.
+        OpenDiffView
     ]
 );

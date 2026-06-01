@@ -12,7 +12,7 @@ mod git;
 mod ports;
 pub mod surface_naming;
 
-pub use git::{GitDiffStats, detect_branch, find_git_dir};
+pub use git::{GitDiffStats, detect_branch, find_git_dir, resolve_repo_root};
 pub use ports::{detect_ai_processes, detect_ports};
 
 use std::cell::Cell;
@@ -52,6 +52,16 @@ pub struct Workspace {
     pub is_git_repo: bool,
     /// Resolved `.git` directory path (for file watcher). `None` if not a git repo.
     pub git_dir: Option<std::path::PathBuf>,
+    /// Working directory of the shared repository (parent of the *main* `.git`),
+    /// canonicalized. Sibling worktrees of one repo share an identical value —
+    /// the invariant the sidebar uses to group them. `None` when not a git repo.
+    pub repo_root: Option<std::path::PathBuf>,
+    /// Whether this workspace's CWD is a *linked* git worktree (as opposed to
+    /// the repo's main checkout). Linked worktrees carry a `commondir` file.
+    // Read by EP-002 (US-005) to target git operations at the worktree root and
+    // by EP-004 column labeling; stored at construction in EP-001 (US-001).
+    #[allow(dead_code)]
+    pub is_worktree: bool,
     /// Active TCP listening ports from workspace terminal processes.
     pub active_ports: Vec<u16>,
     /// Generation counter for debouncing event-driven port scans.
@@ -102,6 +112,10 @@ impl Workspace {
             Some(dir) => parse_head(dir),
             None => (String::new(), false),
         };
+        let (repo_root, is_worktree) = match &git_dir {
+            Some(dir) => resolve_repo_root(dir),
+            None => (None, false),
+        };
         Self {
             id,
             title: title.into(),
@@ -112,6 +126,8 @@ impl Workspace {
             git_branch,
             is_git_repo,
             git_dir,
+            repo_root,
+            is_worktree,
             active_ports: vec![],
             port_scan_generation: 0,
             service_labels: std::collections::HashMap::new(),
@@ -137,6 +153,10 @@ impl Workspace {
             Some(dir) => parse_head(dir),
             None => (String::new(), false),
         };
+        let (repo_root, is_worktree) = match &git_dir {
+            Some(dir) => resolve_repo_root(dir),
+            None => (None, false),
+        };
         Self {
             id,
             title: title.into(),
@@ -147,6 +167,8 @@ impl Workspace {
             git_branch,
             is_git_repo,
             git_dir,
+            repo_root,
+            is_worktree,
             active_ports: vec![],
             port_scan_generation: 0,
             service_labels: std::collections::HashMap::new(),
@@ -172,6 +194,10 @@ impl Workspace {
             Some(dir) => parse_head(dir),
             None => (String::new(), false),
         };
+        let (repo_root, is_worktree) = match &git_dir {
+            Some(dir) => resolve_repo_root(dir),
+            None => (None, false),
+        };
         Self {
             id,
             title: title.into(),
@@ -182,6 +208,8 @@ impl Workspace {
             git_branch,
             is_git_repo,
             git_dir,
+            repo_root,
+            is_worktree,
             active_ports: vec![],
             port_scan_generation: 0,
             service_labels: std::collections::HashMap::new(),

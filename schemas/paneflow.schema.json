@@ -97,6 +97,16 @@
       "description": "Show the built-in 'Opencode' command button in the tab bar.",
       "default": true
     },
+    "pi_button_visible": {
+      "type": ["boolean", "null"],
+      "description": "Show the built-in 'Pi' command button in the tab bar.",
+      "default": true
+    },
+    "hermes_agent_button_visible": {
+      "type": ["boolean", "null"],
+      "description": "Show the built-in 'Hermes Agent' command button in the tab bar.",
+      "default": true
+    },
     "telemetry": {
       "type": ["object", "null"],
       "description": "Opt-in desktop telemetry consent. The first-run consent modal only appears when 'enabled' is unanswered.",

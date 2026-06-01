@@ -63,7 +63,6 @@ impl SettingsWindow {
                     .rounded(px(5.))
                     .bg(ui.subtle)
                     .text_size(px(11.))
-                    .font_family("monospace")
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(ui.text)
                     .child(entry.key.clone())

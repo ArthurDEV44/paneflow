@@ -293,6 +293,14 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "open_agents_view",
         context: None,
     },
+    // US-003 (prd-git-diff-mode-2026-Q3.md): `secondary-shift-g` is
+    // Ctrl+Shift+G on Linux/Windows and Cmd+Shift+G on macOS. Toggles
+    // the dedicated Git Diff mode (AppMode::Diff).
+    DefaultBinding {
+        key: "secondary-shift-g",
+        action_name: "open_diff_view",
+        context: None,
+    },
     // Zed-parity: review of AI-applied edits. Shift+Alt+Y keeps every
     // unreviewed edit, Shift+Alt+Z reverts them on disk. Mirrors Zed's
     // `agent::KeepAll` / `agent::RejectAll` in

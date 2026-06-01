@@ -697,6 +697,8 @@ mod tests {
             claude_code_button_visible: None,
             codex_button_visible: None,
             opencode_button_visible: None,
+            pi_button_visible: None,
+            hermes_agent_button_visible: None,
             telemetry: None,
             terminal: None,
             agent_panel: None,
@@ -903,6 +905,7 @@ mod tests {
             projects: Vec::new(),
             active_project: 0,
             mode: AppMode::default(),
+            diff_scope: None,
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         let restored: SessionState = serde_json::from_str(&json).unwrap();
@@ -944,6 +947,7 @@ mod tests {
             projects: Vec::new(),
             active_project: 0,
             mode: AppMode::default(),
+            diff_scope: None,
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         let restored: SessionState = serde_json::from_str(&json).unwrap();
@@ -989,6 +993,7 @@ mod tests {
             projects: Vec::new(),
             active_project: 0,
             mode: AppMode::default(),
+            diff_scope: None,
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         let restored: SessionState = serde_json::from_str(&json).unwrap();
@@ -1022,6 +1027,7 @@ mod tests {
             projects: Vec::new(),
             active_project: 0,
             mode: AppMode::default(),
+            diff_scope: None,
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         let restored: SessionState = serde_json::from_str(&json).unwrap();
@@ -1261,6 +1267,7 @@ mod tests {
             }],
             active_project: 0,
             mode: AppMode::Agents,
+            diff_scope: None,
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         let restored: SessionState = serde_json::from_str(&json).unwrap();
@@ -1299,6 +1306,45 @@ mod tests {
             serde_json::to_string(&AppMode::Agents).unwrap(),
             "\"agents\""
         );
+        // US-001 (prd-git-diff-mode-2026-Q3.md): the third mode.
+        assert_eq!(serde_json::to_string(&AppMode::Diff).unwrap(), "\"diff\"");
+    }
+
+    #[test]
+    fn test_app_mode_diff_round_trips() {
+        // US-001 (prd-git-diff-mode-2026-Q3.md): `Diff` survives a
+        // serialize -> deserialize cycle and a session.json carrying it
+        // restores into `AppMode::Diff` (not the `Cli` default).
+        let json = serde_json::to_string(&AppMode::Diff).unwrap();
+        let back: AppMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, AppMode::Diff);
+
+        let session = r#"{
+            "version": 1,
+            "active_workspace": 0,
+            "workspaces": [],
+            "mode": "diff"
+        }"#;
+        let restored: SessionState = serde_json::from_str(session).unwrap();
+        assert_eq!(restored.mode, AppMode::Diff);
+    }
+
+    #[test]
+    fn test_session_diff_scope_round_trips_and_defaults() {
+        // US-015 (prd-git-diff-mode-2026-Q3.md): diff_scope persists, and a
+        // session.json written before this field restores it as `None`.
+        let legacy = r#"{ "version": 1, "active_workspace": 0, "workspaces": [] }"#;
+        let restored: SessionState = serde_json::from_str(legacy).unwrap();
+        assert_eq!(restored.diff_scope, None);
+
+        let with_scope = r#"{
+            "version": 1,
+            "active_workspace": 0,
+            "workspaces": [],
+            "diff_scope": "worktree"
+        }"#;
+        let restored2: SessionState = serde_json::from_str(with_scope).unwrap();
+        assert_eq!(restored2.diff_scope.as_deref(), Some("worktree"));
     }
 
     #[test]

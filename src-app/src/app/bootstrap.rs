@@ -129,6 +129,13 @@ impl PaneFlowApp {
         // UI never opens onto a blank Agents view if discovery returns
         // empty (e.g. user uninstalled `bunx` between launches).
         let restored_mode = saved_session.as_ref().map(|s| s.mode).unwrap_or_default();
+        // US-015 (prd-git-diff-mode-2026-Q3.md): restore the diff scope (an
+        // unknown / absent value falls back to the default, Project).
+        let restored_diff_scope = saved_session
+            .as_ref()
+            .and_then(|s| s.diff_scope.as_deref())
+            .and_then(crate::diff::DiffScope::from_persisted)
+            .unwrap_or_default();
         let restored_projects: Vec<crate::project::Project> = saved_session
             .as_ref()
             .map(|s| {
@@ -693,6 +700,13 @@ impl PaneFlowApp {
             }
         }
 
+        // US-008: the diff panel's persistent file filter. Observe it so each
+        // keystroke re-renders the app (the TextInput only notifies itself).
+        let diff_file_filter =
+            cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Filter files…", cx));
+        cx.observe(&diff_file_filter, |_, _, cx| cx.notify())
+            .detach();
+
         let mut app = Self {
             workspaces,
             active_idx,
@@ -766,6 +780,25 @@ impl PaneFlowApp {
             // US-005 (prd-agents-view.md): closed by default; created
             // lazily when the user dispatches `OpenAgentsView`.
             agents_view: None,
+            diff_view: None,
+            multi_diff_view: None,
+            diff_view_cache: std::collections::HashMap::new(),
+            diff_view_key: None,
+            multi_diff_view_retained: None,
+            diff_collapsed_branches: std::collections::HashSet::new(),
+            diff_discovering: false,
+            diff_chosen_worktrees: std::collections::HashMap::new(),
+            diff_worktree_picker_open: false,
+            diff_available_worktrees: Vec::new(),
+            diff_available_repo: None,
+            diff_scope: restored_diff_scope,
+            diff_scope_picker_open: false,
+            diff_project_picker_open: false,
+            diff_selected_file: None,
+            diff_files_collapsed: false,
+            diff_files_tree: false,
+            diff_collapsed_dirs: std::collections::HashSet::new(),
+            diff_file_filter,
             // US-008 + US-009 (prd-agents-view.md): start in the
             // mode the user left on quit. A no-agents fallback below
             // can flip this back to `Cli` if discovery comes up empty.
@@ -840,6 +873,29 @@ impl PaneFlowApp {
             log::info!("agents-view restore: no ACP agents on PATH; falling back to CLI mode");
             app.mode = paneflow_config::schema::AppMode::Cli;
             app.show_toast("No AI agents detected, opening terminal view", cx);
+        }
+
+        // US-015 (prd-git-diff-mode-2026-Q3.md): restore Diff mode only when
+        // it is reconstructable. The diff derives its repo from the restored
+        // active workspace (Project / Worktree) or any open repo (Multi-project),
+        // so no separate repo-root needs persisting. If viable, mount the diff
+        // for the restored scope; otherwise collapse to CLI so the window never
+        // opens onto an empty diff.
+        if matches!(app.mode, paneflow_config::schema::AppMode::Diff) {
+            let viable = match app.diff_scope {
+                crate::diff::DiffScope::MultiProject => {
+                    app.workspaces.iter().any(|ws| ws.repo_root.is_some())
+                }
+                _ => app
+                    .workspaces
+                    .get(app.active_idx)
+                    .is_some_and(|ws| ws.repo_root.is_some()),
+            };
+            if viable {
+                app.rebuild_diff_view(cx);
+            } else {
+                app.mode = paneflow_config::schema::AppMode::Cli;
+            }
         }
 
         // US-116 (prd-agent-ui-refactor-2026-Q3.md): seed the panel-

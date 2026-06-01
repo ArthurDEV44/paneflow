@@ -40,11 +40,6 @@ pub(crate) enum SettingsSection {
     /// Persisted to `paneflow.json` like every other settings tab — users can
     /// also edit the JSON directly.
     AiAgent,
-    /// Tri-state telemetry consent toggle (US-014) plus a link to the
-    /// public privacy page. Separate from Appearance so future privacy
-    /// settings (telemetry_id reset, DSR contact shortcut, crash
-    /// reporter toggle) land here without shoehorning.
-    Privacy,
 }
 
 pub struct SettingsWindow {
@@ -200,18 +195,12 @@ impl Focusable for SettingsWindow {
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
-        let ui_font = crate::terminal::element::resolve_font_family(
-            paneflow_config::loader::load_config()
-                .font_family
-                .as_deref(),
-        );
         let decorations = window.window_decorations();
 
         let content = match self.section {
             SettingsSection::Shortcuts => self.render_shortcuts_content(cx).into_any_element(),
             SettingsSection::Appearance => self.render_appearance_content(cx).into_any_element(),
             SettingsSection::AiAgent => self.render_ai_agent_content(cx).into_any_element(),
-            SettingsSection::Privacy => self.render_privacy_content(cx).into_any_element(),
         };
 
         match decorations {
@@ -367,7 +356,7 @@ impl Render for SettingsWindow {
 
         let app_content = div()
             .id("settings-window")
-            .font_family(ui_font)
+            .font_family("IBM Plex Sans")
             .track_focus(&self.settings_focus)
             .on_key_down(cx.listener(Self::handle_settings_key_down))
             .flex()

@@ -9,6 +9,8 @@ pub mod agents_view_actions;
 pub mod bootstrap;
 pub mod constants;
 pub mod custom_buttons_modal;
+pub mod diff_sidebar;
+pub mod diff_view_actions;
 pub mod drag;
 pub mod event_handlers;
 pub mod files_sidebar;

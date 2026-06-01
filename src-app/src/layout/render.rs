@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, InteractiveElement, IntoElement, MouseButton, ParentElement, Styled, Window,
-    canvas, div, px, rgb,
+    canvas, div, px,
 };
 
 use super::tree::{DIVIDER_PX, DragState, LayoutTree, MIN_PANE_SIZE, SplitDirection};
@@ -132,13 +132,13 @@ impl LayoutTree {
                                 .w_full()
                                 .flex_shrink_0()
                                 .cursor_row_resize()
-                                .bg(rgb(0x313244)),
+                                .bg(crate::theme::ui_colors().border),
                             SplitDirection::Vertical => div()
                                 .w(px(DIVIDER_PX))
                                 .h_full()
                                 .flex_shrink_0()
                                 .cursor_col_resize()
-                                .bg(rgb(0x313244)),
+                                .bg(crate::theme::ui_colors().border),
                         };
 
                         let divider =

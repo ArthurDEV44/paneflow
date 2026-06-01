@@ -109,6 +109,59 @@ pub fn find_git_dir(cwd: &str) -> Option<std::path::PathBuf> {
     }
 }
 
+/// Canonicalize a path, falling back to the input when it cannot be resolved
+/// (e.g. the path does not exist). Canonicalization is what lets two sibling
+/// worktrees of the same repo produce an *identical* `repo_root`, since their
+/// `commondir` pointers (`../..`) both collapse to the same absolute path.
+fn canonicalize_or(path: &std::path::Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Resolve the shared (main) `.git` directory for a given worktree git dir.
+///
+/// For a linked worktree, `git_dir` is `<main>/.git/worktrees/<name>` and holds
+/// a `commondir` file pointing — usually relatively, e.g. `../..` — at the
+/// shared `<main>/.git`. For a normal checkout, `git_dir` is already the main
+/// `.git` and no `commondir` file exists, so it is returned as-is. An absolute
+/// `commondir` is honored verbatim (no double-join). Result is canonicalized
+/// when the path exists, otherwise returned best-effort (never panics).
+pub fn resolve_main_git_dir(git_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let commondir_file = git_dir.join("commondir");
+    let main_git_dir = if commondir_file.is_file() {
+        let content = read_capped(&commondir_file, 512).ok()?;
+        let rel = content.trim();
+        if rel.is_empty() {
+            return None;
+        }
+        let p = std::path::Path::new(rel);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            git_dir.join(p)
+        }
+    } else {
+        git_dir.to_path_buf()
+    };
+    Some(canonicalize_or(&main_git_dir))
+}
+
+/// Resolve `(repo_root, is_worktree)` from a working directory's git dir.
+///
+/// - `repo_root`: the working directory of the shared repository (parent of the
+///   main `.git`), canonicalized so sibling worktrees of one repo yield an
+///   identical value — the key invariant for grouping siblings.
+/// - `is_worktree`: true when `git_dir` is a *linked* worktree (it carries a
+///   `commondir` file). The main checkout of a repo is not a worktree.
+///
+/// Never panics: a bare repo, a missing `commondir`, or an unresolvable path
+/// degrades to a best-effort `repo_root` (possibly `None`).
+pub fn resolve_repo_root(git_dir: &std::path::Path) -> (Option<std::path::PathBuf>, bool) {
+    let is_worktree = git_dir.join("commondir").is_file();
+    let repo_root = resolve_main_git_dir(git_dir)
+        .and_then(|main_git| main_git.parent().map(|p| p.to_path_buf()));
+    (repo_root, is_worktree)
+}
+
 /// Parse branch name from a known `.git` directory's `HEAD` file.
 ///
 /// Returns `(branch_name, true)`. On read failure returns `("", true)` —
@@ -334,5 +387,86 @@ mod tests {
 
         let result = find_git_dir(sub_dir.to_str().unwrap());
         assert_eq!(result, Some(git_dir));
+    }
+
+    #[test]
+    fn resolve_repo_root_normal_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+
+        let (repo_root, is_worktree) = resolve_repo_root(&git_dir);
+        assert!(!is_worktree);
+        // repo_root is the canonicalized parent of `.git` (the repo working dir).
+        assert_eq!(repo_root, Some(std::fs::canonicalize(dir.path()).unwrap()));
+    }
+
+    #[test]
+    fn resolve_repo_root_worktree_relative_commondir() {
+        let dir = tempfile::tempdir().unwrap();
+        // Main repo at <root>/main, its .git at <root>/main/.git
+        let main_git = dir.path().join("main").join(".git");
+        std::fs::create_dir_all(&main_git).unwrap();
+        // Linked worktree git dir at <root>/main/.git/worktrees/wt1
+        let wt_git = main_git.join("worktrees").join("wt1");
+        std::fs::create_dir_all(&wt_git).unwrap();
+        // commondir points back to the main .git relatively: ../..
+        std::fs::write(wt_git.join("commondir"), "../..\n").unwrap();
+
+        let (repo_root, is_worktree) = resolve_repo_root(&wt_git);
+        assert!(is_worktree);
+        assert_eq!(
+            repo_root,
+            Some(std::fs::canonicalize(dir.path().join("main")).unwrap())
+        );
+    }
+
+    #[test]
+    fn resolve_repo_root_worktree_absolute_commondir() {
+        let dir = tempfile::tempdir().unwrap();
+        let main_git = dir.path().join("main").join(".git");
+        std::fs::create_dir_all(&main_git).unwrap();
+        let wt_git = main_git.join("worktrees").join("wt2");
+        std::fs::create_dir_all(&wt_git).unwrap();
+        // Absolute commondir must be honored verbatim (no double-join).
+        std::fs::write(
+            wt_git.join("commondir"),
+            format!("{}\n", main_git.display()),
+        )
+        .unwrap();
+
+        let (repo_root, is_worktree) = resolve_repo_root(&wt_git);
+        assert!(is_worktree);
+        assert_eq!(
+            repo_root,
+            Some(std::fs::canonicalize(dir.path().join("main")).unwrap())
+        );
+    }
+
+    #[test]
+    fn resolve_repo_root_siblings_match() {
+        // Two sibling worktrees of the same repo must produce an identical repo_root.
+        let dir = tempfile::tempdir().unwrap();
+        let main_git = dir.path().join("main").join(".git");
+        std::fs::create_dir_all(&main_git).unwrap();
+        let wt_a = main_git.join("worktrees").join("a");
+        let wt_b = main_git.join("worktrees").join("b");
+        std::fs::create_dir_all(&wt_a).unwrap();
+        std::fs::create_dir_all(&wt_b).unwrap();
+        std::fs::write(wt_a.join("commondir"), "../..\n").unwrap();
+        std::fs::write(wt_b.join("commondir"), "../..\n").unwrap();
+
+        let (root_a, _) = resolve_repo_root(&wt_a);
+        let (root_b, _) = resolve_repo_root(&wt_b);
+        assert!(root_a.is_some());
+        assert_eq!(root_a, root_b);
+    }
+
+    #[test]
+    fn resolve_repo_root_missing_dir() {
+        let (repo_root, is_worktree) = resolve_repo_root(std::path::Path::new("/nonexistent/.git"));
+        assert!(!is_worktree);
+        // Non-existent path: canonicalize fails, parent is still derivable.
+        assert_eq!(repo_root, Some(std::path::PathBuf::from("/nonexistent")));
     }
 }
