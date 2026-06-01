@@ -1,6 +1,6 @@
 # CLAUDE.md — PaneFlow
 
-Cross-platform terminal multiplexer (cmux port) built in pure Rust with Zed's GPUI framework and upstream `alacritty_terminal` (crates.io) for VT emulation. Linux-first, targeting Wayland + X11.
+Native Rust terminal workspace for running coding agents in parallel. Built with Zed's GPUI framework and upstream `alacritty_terminal` (crates.io) for VT emulation, with Linux and macOS support today and Windows in progress.
 
 ## Commands
 
@@ -15,7 +15,7 @@ RUST_LOG=info cargo run        # with logging (env_logger)
 PANEFLOW_LATENCY_PROBE=1 cargo run  # keystroke→pixel latency tracing (debug only)
 
 # Test
-cargo test --workspace         # all tests (config crate only — app crate has zero tests)
+cargo test --workspace         # all workspace tests
 cargo test -p paneflow-config  # config crate tests only
 cargo test <test_name> -- --nocapture  # single test with output
 
@@ -146,15 +146,15 @@ KeyDownEvent → TerminalView::handle_key_down() → keys::to_esc_str()
 
 ## Critical external dependencies
 
-GPUI and related crates are **git dependencies** pinned to a specific Zed monorepo commit:
+GPUI and related crates are **git dependencies** pinned to the Paneflow Zed fork while the markdown streaming patch is in flight:
 
 ```toml
-gpui = { git = "https://github.com/zed-industries/zed", rev = "0b984b5..." }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "0b984b5..." }
-collections = { git = "https://github.com/zed-industries/zed", rev = "0b984b5..." }
+gpui = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-append-fix" }
+gpui_platform = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-append-fix" }
+collections = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-append-fix" }
 ```
 
-Cargo fetches GPUI from the Zed repo automatically — no local checkout required. Two crates-io patches are required by GPUI:
+Cargo fetches GPUI from git automatically — no local checkout required. Two crates-io patches are required by GPUI:
 - `async-task` → `smol-rs/async-task` (specific git commit)
 - `calloop` → `zed-industries/calloop` fork
 
@@ -233,16 +233,15 @@ Stateful methods dispatch to GPUI main thread via `mpsc::channel`, polled every 
 
 ## Gotchas
 
-- **GPUI is not on crates.io** — it's a local path dep from `/home/arthur/dev/zed`. Never suggest adding it as a crates-io dependency.
+- **GPUI is not on crates.io** — it is consumed from the pinned Zed git fork above. Never replace it with a crates.io dependency.
 - **Never recommend iced** for this project — it was evaluated and rejected (unstable, custom WGPU glyph atlas too complex). The decision is final.
 - **`SplitDirection::Horizontal`** means a horizontal divider bar (panes stacked top/bottom), NOT side-by-side. This is counterintuitive but consistent with the codebase.
 - **`alacritty_terminal` is upstream** (crates.io `0.26`), migrated from Zed's fork. Uses `ZedListener` and `FairMutex` from the GPUI integration layer.
 - **`dirs` version mismatch**: `src-app` uses `dirs = "5.0"`, config crate uses `dirs = "6"`. They coexist but are separate semver releases.
 - **Config `default_shell` is wired** — `TerminalState::new()` uses fallback chain: config `default_shell` → `$SHELL` → `/bin/sh`.
 - **The `_io_thread` handle is discarded** (`terminal.rs:139`) — PTY I/O threads run detached. Shutdown is via `Msg::Shutdown` in `Drop`.
-- **No tests in the app crate** — all 39 tests are in `paneflow-config`. UI is verified manually.
-- **No CI/CD** — no GitHub Actions or automation. Quality gates are developer-run.
-- **No LICENSE file** — license is declared as MIT in Cargo.toml but no LICENSE file exists at the repo root.
+- **Tests + CI exist** — run `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo fmt --check`; UI changes still need manual verification.
+- **License** — the project is GPL-3.0-or-later; keep packaging metadata in sync with the root `LICENSE` file and `Cargo.toml`.
 
 ## PRD reference
 
@@ -251,7 +250,7 @@ Active PRDs in `tasks/`:
 - `prd-v2-title-bar.md` — 12 stories, all delivered (US-001 through US-012)
 
 Architecture decision: `tasks/audit-v2-options-final.md`
-cmux reference spec: `CMUX_ANALYSIS.md` (417 lines, covers cmux Swift architecture)
+Historical cmux reference spec: `CMUX_ANALYSIS.md` (417 lines, covers the Swift architecture that inspired some workspace ergonomics; Paneflow is an independent codebase, not a fork.)
 
 ## MCP bridge (`paneflow-mcp`)
 

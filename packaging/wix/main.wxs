@@ -43,7 +43,7 @@
 
         <Package Id='*'
             Keywords='Installer'
-            Description='PaneFlow — GPU-accelerated terminal multiplexer with split panes and workspaces, built in Rust on Zed&#39;s GPUI framework.'
+            Description='PaneFlow — native terminal workspace for running coding agents in parallel.'
             Manufacturer='Strivex'
             InstallerVersion='450'
             Languages='1033'
@@ -106,7 +106,7 @@
                     <Component Id='ApplicationShortcut' Guid='E369E12B-8CFA-4A4E-BDBF-5EA5BD50DA28'>
                         <Shortcut Id='ApplicationStartMenuShortcut'
                                   Name='PaneFlow'
-                                  Description='GPU-accelerated terminal multiplexer'
+                                  Description='Run coding agents in parallel'
                                   Target='[APPLICATIONFOLDER]paneflow.exe'
                                   WorkingDirectory='APPLICATIONFOLDER'
                                   Icon='PaneflowICO'

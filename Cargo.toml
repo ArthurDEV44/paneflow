@@ -22,10 +22,10 @@ version = "0.3.7"
 edition = "2021"
 license = "GPL-3.0-or-later"
 authors = ["Arthur"]
-description = "GPU-accelerated terminal multiplexer for Linux, built in Rust with Zed's GPUI framework"
+description = "Native Rust terminal workspace for running coding agents in parallel"
 repository = "https://github.com/ArthurDEV44/paneflow"
-homepage = "https://github.com/ArthurDEV44/paneflow"
-keywords = ["terminal", "multiplexer", "gpui", "tmux", "tty"]
+homepage = "https://paneflow.dev"
+keywords = ["terminal", "coding-agents", "ai-agents", "gpui", "rust"]
 categories = ["command-line-utilities"]
 
 [workspace.dependencies]

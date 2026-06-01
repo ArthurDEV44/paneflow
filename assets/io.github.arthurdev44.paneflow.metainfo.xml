@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>io.github.arthurdev44.paneflow</id>
   <name>PaneFlow</name>
-  <summary>GPU-accelerated terminal multiplexer</summary>
+  <summary>Terminal for coding agents</summary>
 
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
@@ -14,25 +14,25 @@
 
   <description>
     <p>
-      PaneFlow is a GPU-accelerated terminal multiplexer for Linux. It splits
-      your terminal into panes and workspaces rendered natively with Vulkan via
-      Zed's GPUI framework — no host terminal emulator required.
+      PaneFlow is a native terminal workspace for running coding agents in
+      parallel. Launch Claude Code, Codex, opencode, Pi, or any CLI agent in
+      real panes, keep each session visible, and react when one needs input.
     </p>
     <p>Features:</p>
     <ul>
+      <li>One-click coding-agent launchers with per-session status tracking</li>
       <li>Horizontal and vertical split panes with drag-to-resize, up to 32 panes</li>
-      <li>Up to 20 workspaces with rename and quick-switch shortcuts</li>
-      <li>Session persistence — layouts, working directories, and workspace names restored on relaunch</li>
-      <li>Hot-reloading themes (Catppuccin Mocha, One Dark, Dracula, Gruvbox Dark, Solarized Dark)</li>
-      <li>Customizable keybindings via JSON configuration</li>
-      <li>Unix socket JSON-RPC 2.0 IPC for scripting and AI agent integration</li>
-      <li>Native Wayland and X11 support</li>
+      <li>Branch-aware workspaces with rename, quick-switch, and session restore</li>
+      <li>In-app Git diff viewer and branch review prompts for agents</li>
+      <li>MCP bridge so capable agents can read other panes without copy/paste</li>
+      <li>JSON-RPC 2.0 IPC for local automation and integrations</li>
+      <li>Native Rust/GPUI rendering with Wayland and X11 support on Linux</li>
     </ul>
   </description>
 
   <launchable type="desktop-id">paneflow.desktop</launchable>
 
-  <url type="homepage">https://github.com/ArthurDEV44/paneflow</url>
+  <url type="homepage">https://paneflow.dev</url>
   <url type="bugtracker">https://github.com/ArthurDEV44/paneflow/issues</url>
   <!-- vcs-browser URL type is flagged url-invalid-type by the
        appstream package on ubuntu-22.04; homepage already points at
@@ -46,11 +46,13 @@
 
   <keywords>
     <keyword>terminal</keyword>
-    <keyword>multiplexer</keyword>
-    <keyword>pane</keyword>
-    <keyword>split</keyword>
+    <keyword>coding agents</keyword>
+    <keyword>ai agents</keyword>
+    <keyword>claude code</keyword>
+    <keyword>codex</keyword>
+    <keyword>opencode</keyword>
     <keyword>gpui</keyword>
-    <keyword>tmux</keyword>
+    <keyword>rust</keyword>
   </keywords>
 
   <supports>

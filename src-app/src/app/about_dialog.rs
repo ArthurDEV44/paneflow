@@ -102,7 +102,7 @@ impl PaneFlowApp {
                 div()
                     .text_color(ui.muted)
                     .text_size(px(12.))
-                    .child("Cross-platform terminal multiplexer"),
+                    .child("Run coding agents in parallel"),
             );
 
         // ── Meta rows (two-column: label muted, value text) ──
@@ -142,7 +142,7 @@ impl PaneFlowApp {
             .bg(ui.surface)
             .child(meta_row("Built with", SharedString::from("Rust + GPUI")))
             .child(div().h(px(1.)).w_full().bg(ui.border))
-            .child(meta_row("License", SharedString::from("MIT")))
+            .child(meta_row("License", SharedString::from("GPL-3.0-or-later")))
             .child(div().h(px(1.)).w_full().bg(ui.border))
             .child(meta_row("Author", SharedString::from("Arthur Jean")));
 
