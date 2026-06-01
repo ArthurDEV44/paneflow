@@ -316,6 +316,14 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "reject_edits",
         context: None,
     },
+    // US-003 (prd-ai-in-diff-2026-Q3.md): copy the hunk under the cursor as a
+    // unified diff, only while the Git Diff view holds focus. Same chord as the
+    // terminal / markdown copies — disambiguated by the `DiffView` context.
+    DefaultBinding {
+        key: "ctrl-shift-c",
+        action_name: "copy_diff_hunk",
+        context: Some("DiffView"),
+    },
 ];
 
 /// Platform-specific default bindings layered on top of [`DEFAULTS`].

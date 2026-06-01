@@ -21,7 +21,7 @@
 
 use agent_client_protocol::schema::{
     PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome,
+    RequestPermissionResponse, SelectedPermissionOutcome, ToolKind,
 };
 use std::future::Future;
 use std::pin::Pin;
@@ -92,6 +92,25 @@ pub fn always_deny() -> Arc<dyn PermissionCallback> {
     FnPermissionCallback::new(|_| PermissionDecision::Reject)
 }
 
+/// US-004 (prd-ai-in-diff-2026-Q3.md): a read-only policy for headless agent
+/// review sessions. Allow-lists the inspect-only tool kinds (`Read`, `Search`,
+/// `Fetch`, `Think`) and rejects everything else — `Edit` / `Delete` / `Move` /
+/// `Execute` that would touch the working tree, plus any unclassified
+/// (`Other` / `SwitchMode` / unset) kind, conservatively. Rejection maps to the
+/// ACP `Cancelled` outcome with NO interactive prompt, so a diff review can
+/// never mutate disk and never stalls the user. Reused by the N=1 review
+/// (US-005/US-007) and the Second-Opinion fan-out (US-011).
+pub fn read_only() -> Arc<dyn PermissionCallback> {
+    FnPermissionCallback::new(
+        |req: &RequestPermissionRequest| match req.tool_call.fields.kind {
+            Some(ToolKind::Read | ToolKind::Search | ToolKind::Fetch | ToolKind::Think) => {
+                PermissionDecision::AllowOnce
+            }
+            _ => PermissionDecision::Reject,
+        },
+    )
+}
+
 /// Translate a [`PermissionDecision`] into the ACP wire response
 /// (US-111 of `tasks/prd-agent-ui-refactor-2026-Q3.md`).
 ///
@@ -157,8 +176,58 @@ mod tests {
     use super::*;
     use agent_client_protocol::schema::{
         PermissionOption, PermissionOptionId, PermissionOptionKind, SessionId, ToolCallId,
-        ToolCallUpdate, ToolCallUpdateFields,
+        ToolCallUpdate, ToolCallUpdateFields, ToolKind,
     };
+
+    fn req_with_tool_kind(kind: Option<ToolKind>) -> RequestPermissionRequest {
+        let mut fields = ToolCallUpdateFields::new();
+        fields.kind = kind;
+        RequestPermissionRequest::new(
+            SessionId::from("sess".to_string()),
+            ToolCallUpdate::new(ToolCallId::from("tool-1".to_string()), fields),
+            vec![PermissionOption::new(
+                PermissionOptionId::from("ok".to_string()),
+                "ok-name".to_string(),
+                PermissionOptionKind::AllowOnce,
+            )],
+        )
+    }
+
+    #[tokio::test]
+    async fn read_only_allows_reads_rejects_writes_and_unknown() {
+        let cb = read_only();
+        for k in [
+            ToolKind::Read,
+            ToolKind::Search,
+            ToolKind::Fetch,
+            ToolKind::Think,
+        ] {
+            assert_eq!(
+                cb.decide(&req_with_tool_kind(Some(k))).await,
+                PermissionDecision::AllowOnce,
+                "{k:?} should be allowed"
+            );
+        }
+        for k in [
+            ToolKind::Edit,
+            ToolKind::Delete,
+            ToolKind::Move,
+            ToolKind::Execute,
+            ToolKind::SwitchMode,
+            ToolKind::Other,
+        ] {
+            assert_eq!(
+                cb.decide(&req_with_tool_kind(Some(k))).await,
+                PermissionDecision::Reject,
+                "{k:?} should be rejected"
+            );
+        }
+        // An unset/unclassified kind is rejected conservatively.
+        assert_eq!(
+            cb.decide(&req_with_tool_kind(None)).await,
+            PermissionDecision::Reject,
+        );
+    }
 
     fn make_request_with_kinds(
         options: &[(&str, PermissionOptionKind)],

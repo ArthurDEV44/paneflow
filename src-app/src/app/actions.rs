@@ -108,6 +108,9 @@ actions!(
         // surface entered via the CLI / Diff / Agents sidebar toggle.
         // Distinct from `OpenMultiDiff` (the ephemeral tab path), which
         // stays alive as a secondary entry.
-        OpenDiffView
+        OpenDiffView,
+        // US-003 of tasks/prd-ai-in-diff-2026-Q3.md — copy the hunk under the
+        // cursor as a unified diff (Ctrl+Shift+C inside the DiffView context).
+        CopyDiffHunk
     ]
 );
