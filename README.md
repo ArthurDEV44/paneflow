@@ -1,10 +1,10 @@
 # Paneflow
 
-**A terminal workspace for orchestrating coding agents.** Run Claude Code, Codex, OpenCode, and custom CLI agents side by side with branch-aware workspaces, live dev-server status, session restore, and a JSON-RPC IPC server.
+**The cross-platform terminal for working with coding agents.** Run Claude Code, Codex, OpenCode, and any CLI agent in parallel, each in its own pane, and see the moment one finishes, stops, or needs your input. Native Rust, open source, Linux and macOS today, Windows next.
 
-Paneflow is the minimal, native core: pure Rust on top of [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) rendering engine, sub-200 ms cold start, sub-4 ms keystroke-to-pixel latency, a single GPL-3.0-licensed binary, built by an indie maintainer who uses it daily. macOS (Apple Silicon) and Linux ship today; native Windows is on the roadmap.
+Drive three or four agents at once and the bottleneck stops being how fast you type. It becomes attention: which agent is waiting on you, and can you get to it without losing track of the others. Paneflow gives every agent its own pane inside a branch-aware workspace, tracks each session, and emits a JSON-RPC event stream so the interface (and your own tooling) can react the instant an agent stops or asks a question.
 
-Paneflow's design is openly inspired by [cmux](https://github.com/manaflow-ai/cmux), which pioneered the "workspace per project, panes per agent" mental model for agent-first terminal multiplexing. Paneflow is not a fork; it is an independent Rust codebase that takes the workflow idea in a deliberately minimal, native direction. Side-by-side comparison vs cmux and other terminals: [paneflow.dev/compare](https://paneflow.dev/compare).
+It all runs on one native core: pure Rust on [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) rendering engine, sub-200 ms cold start, sub-4 ms keystroke-to-pixel latency, a single GPL-3.0 binary, maintained by an indie dev who runs it all day. The "workspace per project, pane per agent" model is openly inspired by [cmux](https://github.com/manaflow-ai/cmux); Paneflow is an independent codebase, not a fork. The difference that shows up in daily use: where the other agent terminals in this space have shipped macOS-only, Paneflow is native on Linux too (Wayland and X11), with macOS (Apple Silicon) today and Windows next. Side-by-side comparisons: [paneflow.dev/compare](https://paneflow.dev/compare).
 
 <p align="center">
   <img src="assets/images/hero-paneflow.png" alt="Paneflow" width="100%" />
@@ -12,20 +12,20 @@ Paneflow's design is openly inspired by [cmux](https://github.com/manaflow-ai/cm
 
 ## Features
 
-- **Agent orchestration**: Claude Code / Codex / OpenCode launchers in the tab bar, session tracking, and a JSON-RPC event stream downstream tools can subscribe to
-- **Branch-aware workspaces**: up to 20 workspaces with rename, quick-switch (`Ctrl+1`-`9`), undo close; the sidebar surfaces the active git branch per workspace
+- **Agent orchestration**: one-click Claude Code, Codex, and OpenCode launchers in the tab bar, per-session tracking, and an `ai.*` JSON-RPC event stream (`session_start`, `tool_use`, `notification`, `stop`) that the interface and your own tooling can react to the moment an agent needs you
+- **Cross-platform by design**: one native Rust core on Linux (Wayland + X11) and macOS 13 Ventura+ (Apple Silicon) today, Windows 10 1809+ next, where the other agent terminals in this space ship macOS-only
 - **Parallel panes**: horizontal and vertical splits, drag-to-resize, layout presets (even, main+stack, tiled), up to 32 panes
-- **Dev-server detection**: surfaces Vite, Next.js, Webpack, and other local ports in the sidebar with one-click open
+- **Branch-aware workspaces**: up to 20 workspaces with rename, quick-switch (`Ctrl+1`-`9`), undo close; the sidebar surfaces the active git branch per workspace
 - **Session restore**: save/restore layouts, CWD, workspace names, and custom buttons; resume yesterday's setup with one launch
 - **Markdown pane**: render a Markdown file in-pane next to a terminal (useful for keeping a PRD or README open beside the agent)
 - **GPU-accelerated rendering**: Vulkan on Linux, Metal on macOS, DirectX on Windows (handled by GPUI)
+- **Dev-server detection**: surfaces Vite, Next.js, Webpack, and other local ports in the sidebar with one-click open
 - **Find-in-buffer**: `Ctrl+Shift+F`, regex toggle, match cycling
 - **Hyperlinks**: OSC 8 escape sequences + automatic URL detection
 - **Themes**: 2 bundled themes with hot-reload (One Dark, PaneFlow Light)
 - **Custom keybindings**: JSON-configurable override of every default action (57 actions)
 - **Auto-update**: in-app updater for every supported install format
 - **IPC**: JSON-RPC 2.0 over Unix socket (Linux/macOS) or named pipe (Windows)
-- **Cross-platform**: Linux (Wayland + X11), macOS 13 Ventura+ (Apple Silicon today); Windows 10 1809+ planned
 
 ## Prerequisites
 
