@@ -151,6 +151,12 @@ pub(crate) fn render_window_button(
     };
 
     let element_id = format!("{id}-{side}");
+    let is_left = side == "l";
+    let (button_width, button_height) = if is_left {
+        (px(22.), px(22.))
+    } else {
+        (px(28.), px(22.))
+    };
 
     div()
         .id(SharedString::from(element_id))
@@ -158,9 +164,10 @@ pub(crate) fn render_window_button(
         .flex()
         .items_center()
         .justify_center()
-        .w(px(28.))
-        .h(px(22.))
-        .rounded_sm()
+        .w(button_width)
+        .h(button_height)
+        .when(is_left, |s| s.rounded_full())
+        .when(!is_left, |s| s.rounded_sm())
         .cursor_pointer()
         .hover(|s| {
             let ui = crate::theme::ui_colors();

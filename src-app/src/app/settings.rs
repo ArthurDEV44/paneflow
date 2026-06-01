@@ -490,30 +490,6 @@ impl PaneFlowApp {
             font_row = font_row.child(dropdown);
         }
 
-        // ── Font Preview ──
-        let preview = div()
-            .pb(px(20.))
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .text_color(ui.muted)
-                    .pb(px(6.))
-                    .child("Preview"),
-            )
-            .child(
-                div()
-                    .px(px(16.))
-                    .py(px(12.))
-                    .rounded(px(6.))
-                    .bg(ui.preview_bg)
-                    .border_1()
-                    .border_color(ui.border)
-                    .font_family(current_font.clone())
-                    .text_size(px(14.))
-                    .text_color(ui.text)
-                    .child("The quick brown fox jumps over the lazy dog\nABCDEFGHIJKLM 0123456789 {}[]()"),
-            );
-
         // ── Reset to defaults ──
         let reset_btn = div()
             .id("reset-appearance")
@@ -549,7 +525,6 @@ impl PaneFlowApp {
             )
             .child(theme_row)
             .child(font_row)
-            .child(preview)
     }
 
     pub(crate) fn handle_settings_key_down(

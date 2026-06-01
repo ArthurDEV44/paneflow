@@ -53,6 +53,170 @@ pub struct TerminalTheme {
     pub dim_magenta: Hsla,
     pub dim_cyan: Hsla,
     pub dim_white: Hsla,
+    /// Per-language syntax-highlighting colors for the diff view
+    /// (prd-diff-syntax-palette-2026-Q3.md, EP-001). A dedicated semantic
+    /// palette — NOT the 8-hue ANSI set above — so diff syntax can mirror the
+    /// coverage of a modern editor's `SyntaxTheme` (≈18 distinct hues).
+    /// `Copy`, snapshotted once per diff load via `DiffSyntax::from_theme`.
+    pub syntax: SyntaxPalette,
+}
+
+/// Semantic syntax-highlighting palette for the diff view, mirroring the
+/// *structure and coverage* of Zed's `SyntaxTheme` (a `name → color` map) in
+/// Paneflow's Catppuccin brand. Each slot is one tree-sitter capture family;
+/// `diff/syntax.rs::color_for_capture` resolves a capture name to a slot with
+/// longest-prefix fallback. Color-only for v1 (no font-style); `Copy` and
+/// allocation-free (~30 × `Hsla`).
+#[derive(Clone, Copy)]
+pub struct SyntaxPalette {
+    pub comment: Hsla,
+    pub comment_doc: Hsla,
+    pub keyword: Hsla,
+    pub function: Hsla,
+    pub r#type: Hsla,
+    pub r#enum: Hsla,
+    pub constructor: Hsla,
+    pub string: Hsla,
+    pub string_escape: Hsla,
+    pub string_special: Hsla,
+    pub number: Hsla,
+    pub boolean: Hsla,
+    pub constant: Hsla,
+    pub constant_builtin: Hsla,
+    pub property: Hsla,
+    pub variable: Hsla,
+    pub variable_builtin: Hsla,
+    pub operator: Hsla,
+    pub punctuation: Hsla,
+    pub punctuation_special: Hsla,
+    pub attribute: Hsla,
+    pub tag: Hsla,
+    pub label: Hsla,
+    pub namespace: Hsla,
+    pub title: Hsla,
+    pub text_literal: Hsla,
+    pub link_uri: Hsla,
+    pub link_text: Hsla,
+    pub emphasis: Hsla,
+    pub emphasis_strong: Hsla,
+}
+
+impl SyntaxPalette {
+    /// Catppuccin Mocha — the dark-theme syntax palette (`one_dark()`).
+    /// Hues mirror the families Zed's One Dark `SyntaxTheme` colors, remapped
+    /// to Catppuccin per the project brand (US-007 of
+    /// `prd-git-diff-mode-2026-Q3.md`). ≥ 18 distinct values.
+    pub fn catppuccin_mocha() -> Self {
+        Self {
+            comment: h(0x6c7086),             // Overlay0
+            comment_doc: h(0x7f849c),         // Overlay1
+            keyword: h(0xcba6f7),             // Mauve
+            function: h(0x89b4fa),            // Blue
+            r#type: h(0x94e2d5),              // Teal
+            r#enum: h(0x94e2d5),              // Teal
+            constructor: h(0x89b4fa),         // Blue
+            string: h(0xa6e3a1),              // Green
+            string_escape: h(0x89dceb),       // Sky
+            string_special: h(0xf5c2e7),      // Pink
+            number: h(0xfab387),              // Peach
+            boolean: h(0xfab387),             // Peach
+            constant: h(0xf9e2af),            // Yellow
+            constant_builtin: h(0x74c7ec),    // Sapphire
+            property: h(0xf38ba8),            // Red
+            variable: h(0xcdd6f4),            // Text
+            variable_builtin: h(0xfab387),    // Peach
+            operator: h(0x89dceb),            // Sky
+            punctuation: h(0xbac2de),         // Subtext1
+            punctuation_special: h(0xeba0ac), // Maroon
+            attribute: h(0x89b4fa),           // Blue
+            tag: h(0xf38ba8),                 // Red
+            label: h(0xf5e0dc),               // Rosewater
+            namespace: h(0xb4befe),           // Lavender
+            title: h(0xf38ba8),               // Red
+            text_literal: h(0xa6e3a1),        // Green
+            link_uri: h(0x89dceb),            // Sky
+            link_text: h(0x89b4fa),           // Blue
+            emphasis: h(0xeba0ac),            // Maroon
+            emphasis_strong: h(0xf2cdcd),     // Flamingo
+        }
+    }
+
+    /// Catppuccin Latte — the light-theme syntax palette (`paneflow_light()`).
+    /// Darker, saturated hues that read on a light editor surface; every slot
+    /// is distinct from the light foreground/background (US-007 contrast gate).
+    /// ≥ 18 distinct values.
+    pub fn catppuccin_latte() -> Self {
+        Self {
+            comment: h(0x9ca0b0),             // Overlay0
+            comment_doc: h(0x8c8fa1),         // Overlay1
+            keyword: h(0x8839ef),             // Mauve
+            function: h(0x1e66f5),            // Blue
+            r#type: h(0x179299),              // Teal
+            r#enum: h(0x179299),              // Teal
+            constructor: h(0x1e66f5),         // Blue
+            string: h(0x40a02b),              // Green
+            string_escape: h(0x04a5e5),       // Sky
+            string_special: h(0xea76cb),      // Pink
+            number: h(0xfe640b),              // Peach
+            boolean: h(0xfe640b),             // Peach
+            constant: h(0xdf8e1d),            // Yellow
+            constant_builtin: h(0x209fb5),    // Sapphire
+            property: h(0xd20f39),            // Red
+            variable: h(0x4c4f69),            // Text
+            variable_builtin: h(0xfe640b),    // Peach
+            operator: h(0x04a5e5),            // Sky
+            punctuation: h(0x5c5f77),         // Subtext1
+            punctuation_special: h(0xe64553), // Maroon
+            attribute: h(0x1e66f5),           // Blue
+            tag: h(0xd20f39),                 // Red
+            label: h(0xdc8a78),               // Rosewater
+            namespace: h(0x7287fd),           // Lavender
+            title: h(0xd20f39),               // Red
+            text_literal: h(0x40a02b),        // Green
+            link_uri: h(0x04a5e5),            // Sky
+            link_text: h(0x1e66f5),           // Blue
+            emphasis: h(0xe64553),            // Maroon
+            emphasis_strong: h(0xdd7878),     // Flamingo
+        }
+    }
+
+    /// All slots as a flat array — for tests counting distinct hues and for any
+    /// future iteration over the palette.
+    #[cfg(test)]
+    pub(crate) fn all_slots(&self) -> [Hsla; 30] {
+        [
+            self.comment,
+            self.comment_doc,
+            self.keyword,
+            self.function,
+            self.r#type,
+            self.r#enum,
+            self.constructor,
+            self.string,
+            self.string_escape,
+            self.string_special,
+            self.number,
+            self.boolean,
+            self.constant,
+            self.constant_builtin,
+            self.property,
+            self.variable,
+            self.variable_builtin,
+            self.operator,
+            self.punctuation,
+            self.punctuation_special,
+            self.attribute,
+            self.tag,
+            self.label,
+            self.namespace,
+            self.title,
+            self.text_literal,
+            self.link_uri,
+            self.link_text,
+            self.emphasis,
+            self.emphasis_strong,
+        ]
+    }
 }
 
 pub(super) fn h(hex: u32) -> Hsla {
@@ -125,21 +289,46 @@ pub(super) fn apply_surface_overrides(mut theme: TerminalTheme) -> TerminalTheme
 /// Colors for the app chrome (sidebar, settings, badges, etc.).
 #[derive(Clone, Copy)]
 pub struct UiColors {
-    pub base: Hsla,       // deepest background (settings sidebar, app bg)
-    pub surface: Hsla,    // card/panel background
-    pub overlay: Hsla,    // dropdown/popover bg
-    pub border: Hsla,     // borders, dividers
-    pub subtle: Hsla,     // hover bg, badge bg
-    pub muted: Hsla,      // secondary text, labels
-    pub text: Hsla,       // primary text
-    pub accent: Hsla,     // active indicator, highlighted items
-    pub preview_bg: Hsla, // preview box background
+    pub base: Hsla,    // deepest background (settings sidebar, app bg)
+    pub surface: Hsla, // card/panel background
+    pub overlay: Hsla, // dropdown/popover bg
+    pub border: Hsla,  // borders, dividers
+    pub subtle: Hsla,  // hover bg, badge bg
+    pub muted: Hsla,   // secondary text, labels
+    pub text: Hsla,    // primary text
+    pub accent: Hsla,  // active indicator, highlighted items
     /// Distinct background for the `WaitingForConfirmation` tool-card
     /// header (US-110 AC #2 of `tasks/prd-agent-ui-refactor-2026-Q3.md`).
     /// Mirrors Zed's `tool_card_header_bg` -- an accent-tinted variant
     /// of the card surface that signals "this row is actionable" at a
     /// glance without redrawing the whole card.
     pub tool_card_header_bg: Hsla,
+    // US-007 (prd-git-diff-mode-2026-Q3.md): curated version-control
+    // colors for the Git Diff surface, mirroring Zed's `StatusColors`
+    // model (`crates/theme/src/styles/status.rs`) — first-class slots,
+    // NOT terminal-ANSI-derived. Light/dark variants are resolved in
+    // `ui_colors_with`. `vc_*` are the foreground (status icons, file
+    // labels, hunk gutter); `*_background` default to the foreground at
+    // 0.25 alpha (Zed's `*_background` convention) for line washes;
+    // `vc_word_*` are the stronger intra-line word-diff emphasis.
+    /// Added / created (green).
+    pub vc_added: Hsla,
+    /// Modified / changed (yellow).
+    pub vc_modified: Hsla,
+    /// Deleted / removed (red).
+    pub vc_deleted: Hsla,
+    /// Merge conflict (orange — distinct from delete-red).
+    pub vc_conflict: Hsla,
+    /// Added-line background wash.
+    pub vc_added_background: Hsla,
+    /// Deleted-line background wash.
+    pub vc_deleted_background: Hsla,
+    /// Modified-line background wash.
+    pub vc_modified_background: Hsla,
+    /// Intra-line word-diff emphasis (added side).
+    pub vc_word_added: Hsla,
+    /// Intra-line word-diff emphasis (deleted side).
+    pub vc_word_deleted: Hsla,
 }
 
 /// Derive UI colors from the active terminal theme.
@@ -171,12 +360,24 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
             muted: h(0x71717a),
             text: h(0x27272a),
             accent: h(0x4078f2),
-            preview_bg: h(0xfafafa),
             // Light theme: a slightly warmer surface with a faint
             // accent tint so the awaiting-confirmation row stands
             // out from neutral card surfaces without overwhelming
             // the chat stream.
             tool_card_header_bg: h(0xe8effb),
+            // Curated diff palette (Catppuccin Latte family) — darker,
+            // saturated hues that read on a light surface.
+            vc_added: h(0x40a02b),
+            vc_modified: h(0xdf8e1d),
+            vc_deleted: h(0xd20f39),
+            vc_conflict: h(0xfe640b),
+            // Subtle line wash (Zed editor_diff_hunk_*_background, light a=0x29=0.16);
+            // the opaque gutter hunk bar carries the strong status signal.
+            vc_added_background: ha(0x40a02b, 0.16),
+            vc_deleted_background: ha(0xd20f39, 0.16),
+            vc_modified_background: ha(0xdf8e1d, 0.16),
+            vc_word_added: ha(0x40a02b, 0.40),
+            vc_word_deleted: ha(0xd20f39, 0.40),
         }
     } else {
         UiColors {
@@ -188,11 +389,24 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
             muted: h(0x888888),
             text: h(0xffffff),
             accent: h(0x89b4fa),
-            preview_bg: h(0x141414),
             // Dark theme: a touch lighter and bluer than the card
             // surface (`0x212121`) so the accent character of the
             // awaiting row reads even at a glance.
             tool_card_header_bg: h(0x2a2e3a),
+            // Curated diff palette (Catppuccin Mocha family) — the same
+            // hues `view.rs::palette()` currently hardcodes, so EP-004's
+            // `palette()` refactor onto these tokens is seamless.
+            vc_added: h(0xa6e3a1),
+            vc_modified: h(0xf9e2af),
+            vc_deleted: h(0xf38ba8),
+            vc_conflict: h(0xfab387),
+            // Subtle line wash (Zed editor_diff_hunk_*_background, dark a=0x1f=0.12);
+            // the opaque gutter hunk bar carries the strong status signal.
+            vc_added_background: ha(0xa6e3a1, 0.12),
+            vc_deleted_background: ha(0xf38ba8, 0.12),
+            vc_modified_background: ha(0xf9e2af, 0.12),
+            vc_word_added: ha(0xa6e3a1, 0.40),
+            vc_word_deleted: ha(0xf38ba8, 0.40),
         }
     };
 
@@ -209,7 +423,7 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
         use std::sync::Once;
         static LOG_ONCE: Once = Once::new();
         LOG_ONCE.call_once(|| {
-            log::info!(
+            log::debug!(
                 "ui_colors diagnostic: is_light={} \
                  theme.background=(h={:.3},s={:.3},l={:.3},a={:.3}) \
                  text=(h={:.3},s={:.3},l={:.3},a={:.3}) \
@@ -332,6 +546,44 @@ mod tests {
     }
 
     #[test]
+    fn vc_diff_slots_distinct_with_subtle_zed_alpha_backgrounds() {
+        // US-007 (prd-git-diff-mode-2026-Q3.md): the curated diff slots are
+        // distinct hues. The line-wash backgrounds are subtle (Zed's
+        // editor_diff_hunk_*_background: 0.12 dark / 0.16 light) — the opaque
+        // gutter hunk bar carries the strong status signal, not the wash.
+        let dark = ui_colors_with(&one_dark());
+        assert_ne!(dark.vc_added, dark.vc_deleted);
+        assert_ne!(dark.vc_added, dark.vc_modified);
+        assert_ne!(dark.vc_deleted, dark.vc_modified);
+        for bg in [
+            dark.vc_added_background,
+            dark.vc_deleted_background,
+            dark.vc_modified_background,
+        ] {
+            assert!(
+                (bg.a - 0.12).abs() < 1e-6,
+                "dark diff background alpha must be 0.12, got {}",
+                bg.a
+            );
+        }
+        // The light theme resolves a distinct (darker, saturated) palette with
+        // a slightly stronger wash to read on the light editor surface.
+        let light = ui_colors_with(&paneflow_light());
+        assert_ne!(light.vc_added, dark.vc_added);
+        for bg in [
+            light.vc_added_background,
+            light.vc_deleted_background,
+            light.vc_modified_background,
+        ] {
+            assert!(
+                (bg.a - 0.16).abs() < 1e-6,
+                "light diff background alpha must be 0.16, got {}",
+                bg.a
+            );
+        }
+    }
+
+    #[test]
     fn recompute_is_idempotent() {
         // Running the recompute twice must yield the same value — guards
         // against accidental mutation of `foreground` or `selection` during
@@ -342,5 +594,101 @@ mod tests {
         theme.recompute_selection_foreground();
         let second = theme.selection_foreground;
         assert_eq!(first, second);
+    }
+
+    // ------------------------------------------------------------------
+    // EP-001 / US-001 + US-007 (prd-diff-syntax-palette-2026-Q3.md):
+    // the per-language syntax palette must be richly populated on BOTH
+    // themes and stay readable on the light theme.
+    // ------------------------------------------------------------------
+
+    /// Count pairwise-distinct colors. `Hsla` is `PartialEq` but neither `Eq`
+    /// nor `Hash`, so a `HashSet` is out; O(n²) over 30 slots is trivial.
+    fn distinct_count(colors: &[Hsla]) -> usize {
+        let mut seen: Vec<Hsla> = Vec::new();
+        for &c in colors {
+            if !seen.contains(&c) {
+                seen.push(c);
+            }
+        }
+        seen.len()
+    }
+
+    #[test]
+    fn both_themes_populate_at_least_18_distinct_syntax_hues() {
+        // US-001 AC #1/#5: ≥ 18 distinct color values per theme (up from 8).
+        for (label, theme) in [
+            ("One Dark", one_dark()),
+            ("PaneFlow Light", paneflow_light()),
+        ] {
+            let distinct = distinct_count(&theme.syntax.all_slots());
+            assert!(
+                distinct >= 18,
+                "{label}: syntax palette has only {distinct} distinct hues (< 18)"
+            );
+        }
+    }
+
+    #[test]
+    fn no_syntax_slot_equals_default_or_foreground() {
+        // US-001 AC #2/#5 (unhappy path): a slot left at the default `Hsla`
+        // (transparent black) or equal to the theme foreground would render
+        // that token family invisible / indistinguishable from plain text.
+        let default = Hsla::default();
+        for (label, theme) in [
+            ("One Dark", one_dark()),
+            ("PaneFlow Light", paneflow_light()),
+        ] {
+            for (i, slot) in theme.syntax.all_slots().iter().enumerate() {
+                assert_ne!(*slot, default, "{label}: syntax slot #{i} left at default");
+                assert_ne!(
+                    *slot, theme.foreground,
+                    "{label}: syntax slot #{i} equals foreground"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn light_theme_comment_and_punctuation_perceptibly_off_foreground() {
+        // US-001 AC #4: on the light theme, comment and punctuation must clear
+        // a perceptible APCA margin from the row foreground (not just `!=`).
+        let theme = paneflow_light();
+        for (slot_label, slot) in [
+            ("comment", theme.syntax.comment),
+            ("punctuation", theme.syntax.punctuation),
+        ] {
+            let lc = apca_contrast(slot, theme.foreground).abs();
+            assert!(
+                lc > 5.0,
+                "Latte: {slot_label} too close to foreground (APCA Lc {lc:.1})"
+            );
+        }
+    }
+
+    #[test]
+    fn latte_core_slots_distinct_and_clear_of_background() {
+        // US-007 AC #1/#2: the highest-traffic families (comment / string /
+        // keyword / operator) are mutually distinct and distinct from
+        // foreground on the light theme; and NO family near-equals the light
+        // editor background (a slot collapsing onto bg = invisible category).
+        let theme = paneflow_light();
+        let p = theme.syntax;
+        let core = [p.comment, p.string, p.keyword, p.operator];
+        assert_eq!(
+            distinct_count(&core),
+            4,
+            "Latte: comment/string/keyword/operator not mutually distinct"
+        );
+        for c in core {
+            assert_ne!(c, theme.foreground, "Latte: core slot equals foreground");
+        }
+        for (i, slot) in p.all_slots().iter().enumerate() {
+            let lc = apca_contrast(*slot, theme.background).abs();
+            assert!(
+                lc > 5.0,
+                "Latte: syntax slot #{i} too close to background (APCA Lc {lc:.1})"
+            );
+        }
     }
 }

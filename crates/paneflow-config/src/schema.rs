@@ -72,6 +72,12 @@ pub struct PaneFlowConfig {
     /// Show the built-in "Opencode" command button in the tab bar.
     /// Same semantics as `claude_code_button_visible`.
     pub opencode_button_visible: Option<bool>,
+    /// Show the built-in "Pi" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub pi_button_visible: Option<bool>,
+    /// Show the built-in "Hermes Agent" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub hermes_agent_button_visible: Option<bool>,
     /// Opt-in desktop telemetry block.
     ///
     /// Tri-state semantics:
@@ -522,17 +528,21 @@ impl LayoutNode {
     }
 }
 
-/// Top-level UI mode (US-007/US-008 of `prd-agents-view.md`).
+/// Top-level UI mode (US-007/US-008 of `prd-agents-view.md`;
+/// `Diff` added by US-001 of `prd-git-diff-mode-2026-Q3.md`).
 ///
-/// `Cli` is the traditional terminal-multiplexer view. `Agents` is the
-/// Agents view (project + thread sidebar + chat thread). Default is
-/// `Cli` so existing users see no behaviour change on first launch
-/// after upgrading.
+/// `Cli` is the traditional terminal-multiplexer view. `Diff` is the
+/// dedicated git/worktree diff surface (left git panel + diff area).
+/// `Agents` is the Agents view (project + thread sidebar + chat thread).
+/// Default is `Cli` so existing users see no behaviour change on first
+/// launch after upgrading. Variant order mirrors the on-screen segment
+/// order (CLI / Diff / Agents) in `render_mode_toggle`.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AppMode {
     #[default]
     Cli,
+    Diff,
     Agents,
 }
 
@@ -563,6 +573,14 @@ pub struct SessionState {
     /// reopen the Agents view if it was active at quit time (US-009).
     #[serde(default)]
     pub mode: AppMode,
+    /// US-015 (prd-git-diff-mode-2026-Q3.md): the Git Diff view scope at save
+    /// time, snake_case (`"project"` / `"multi_project"` / `"worktree"`),
+    /// restored into `AppMode::Diff` on boot when reconstructable. Stored as a
+    /// string so this config crate stays independent of the app's `DiffScope`
+    /// type. Absent / `None` on sessions written before this field — defaults
+    /// to the app's `DiffScope::default()` (Project).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_scope: Option<String>,
 }
 
 /// Persisted shape of one [`crate::project::Project`] (the runtime type

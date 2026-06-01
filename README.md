@@ -455,6 +455,8 @@ Paneflow reads `paneflow.json` from a platform-appropriate config directory:
   "claude_code_bypass_permissions": false,
   "codex_button_visible": true,
   "opencode_button_visible": true,
+  "pi_button_visible": true,
+  "hermes_agent_button_visible": true,
   "commands": []
 }
 ```

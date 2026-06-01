@@ -156,6 +156,43 @@ pulldown-cmark = { version = "0.10", default-features = false }
 # acceptable per the PRD's Technical Considerations section).
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 ureq = { version = "3", features = ["json"] }
+# Multi-worktree diff engine (prd-multi-worktree-diff-2026-Q3.md, EP-002).
+# Histogram line-diff lifted from Zed's `buffer_diff::compute_hunks`; pinned to
+# the same 0.1.8 Zed uses so the ported algorithm matches the reference API.
+imara-diff = "0.1.8"
+
+# Diff syntax highlighting (prd-diff-syntax-highlight-2026-Q3.md). Tree-sitter,
+# the same engine Zed uses — fast enough (ms-scale parse) that we highlight at
+# build time off-thread, no lazy-viewport machinery needed. Core `tree-sitter`
+# 0.26 is already a transitive workspace dep (via the Zed fork); grammars below
+# all bridge through `tree-sitter-language` 0.1 (LANGUAGE: LanguageFn, ABI 15,
+# accepted by the 0.26 runtime). Each grammar compiles bundled C via `cc`.
+tree-sitter = "0.26"
+tree-sitter-language = "0.1"
+tree-sitter-rust = "0.24"
+tree-sitter-json = "0.24"
+tree-sitter-bash = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-toml-ng = "0.7"
+tree-sitter-md = "0.5"
+# Expanded language coverage (prd-diff-syntax-palette-2026-Q3.md, EP-002).
+# All bridge through `tree-sitter-language` 0.1 (verified compatible with the
+# 0.26 runtime). NOTE: tree-sitter-c / tree-sitter-cpp expose `HIGHLIGHT_QUERY`
+# (singular) — every other grammar here uses `HIGHLIGHTS_QUERY` (plural).
+# tree-sitter-yaml is the maintained `tree-sitter-grammars` fork (crates.io name
+# resolves to it); its highlights query is bundled as a const.
+tree-sitter-go = "0.25"   # US-003: P1
+tree-sitter-yaml = "0.7"  # US-003: P1
+tree-sitter-css = "0.25"  # US-003: P1
+tree-sitter-html = "0.23" # US-003: P1
+tree-sitter-c = "0.24"    # US-005: P2
+tree-sitter-cpp = "0.23"  # US-005: P2
+tree-sitter-java = "0.23" # US-005: P2
+tree-sitter-ruby = "0.23" # US-005: P2
+# QueryCursor::captures returns a StreamingIterator (tree-sitter >= 0.25), not
+# a std Iterator.
+streaming-iterator = "0.1"
 semver = "1"
 # `uuid` removed as a direct src-app dep in US-003 — only the telemetry id
 # subsystem consumed it, and that lives in `paneflow-telemetry` now. If a

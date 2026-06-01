@@ -398,6 +398,14 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         context: "",
         description: "Toggle Agents view",
     },
+    // US-003 (prd-git-diff-mode-2026-Q3.md): toggle the dedicated Git
+    // Diff mode (AppMode::Diff).
+    ActionMeta {
+        name: "open_diff_view",
+        factory: || Box::new(crate::OpenDiffView),
+        context: "",
+        description: "Toggle Git Diff view",
+    },
     // Zed-parity: accept / revert AI-applied file edits (Shift+Alt+Y /
     // Shift+Alt+Z). Global context so the chord fires regardless of
     // which pane has focus while the user is reviewing.

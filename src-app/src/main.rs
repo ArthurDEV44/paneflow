@@ -27,6 +27,7 @@ mod assets;
 mod claude_sessions;
 mod codex_sessions;
 mod config_writer;
+mod diff;
 mod editor;
 mod fonts;
 mod ipc;
@@ -318,6 +319,89 @@ struct PaneFlowApp {
     /// truth for which screen renders; this field is just the entity
     /// lifecycle holder so subscriptions stay alive.
     agents_view: Option<gpui::Entity<crate::agents_view::AgentsView>>,
+    /// US-005 (prd-git-diff-mode-2026-Q3.md): the mounted Git Diff mode
+    /// view, when `mode == AppMode::Diff`. Lazily (re)built by
+    /// `rebuild_diff_view` on mode entry and on workspace switch;
+    /// `None` when no git repo backs the active workspace. Dropping it
+    /// releases the DiffView's filesystem watchers.
+    diff_view: Option<gpui::Entity<crate::diff::DiffView>>,
+    /// US-014 (prd-git-diff-mode-2026-Q3.md): the Multi-project host,
+    /// mounted when `diff_scope == MultiProject`. Separate from
+    /// `diff_view` (the single-repo host for Project / Worktree).
+    multi_diff_view: Option<gpui::Entity<crate::diff::MultiRepoDiffView>>,
+    /// US-016 warm-resume: cache of mounted single-repo `DiffView` entities
+    /// (Project / Worktree scopes), keyed by repo + scope + worktree set. A
+    /// CLI↔Diff toggle (or a workspace switch back to a visited repo) reuses
+    /// the cached entity instead of cold-rebuilding it, so the diff shows in
+    /// one frame with its computed rows instead of flashing "Computing diff…".
+    /// Non-displayed entries are suspended (watchers released — US-016), so at
+    /// most one diff entity ever holds live watchers. Mirrors the
+    /// `agents_thread_view_cache` pointer/owner split; bounded by
+    /// `DIFF_VIEW_CACHE_CAP` and pruned to open repos on workspace close.
+    diff_view_cache: std::collections::HashMap<
+        crate::app::diff_view_actions::DiffViewKey,
+        gpui::Entity<crate::diff::DiffView>,
+    >,
+    /// US-016: the cache key the current `diff_view` pointer is bound to (which
+    /// cache entry it clones). `None` outside Diff mode, in Multi-project scope,
+    /// or when no git repo backs the active workspace.
+    diff_view_key: Option<crate::app::diff_view_actions::DiffViewKey>,
+    /// US-016: retained Multi-project host + the signature of the repo-group set
+    /// it was built for. Reused across CLI↔Diff toggles while the open project
+    /// set is unchanged; rebuilt when projects open/close. `multi_diff_view` is
+    /// the display pointer into this slot.
+    multi_diff_view_retained: Option<(u64, gpui::Entity<crate::diff::MultiRepoDiffView>)>,
+    /// Diff sidebar: branch sections (keyed by branch name) the user has
+    /// collapsed in the multi-branch changed-files panel. Ephemeral UI state
+    /// (resets on remount), so a `HashSet` of names is enough.
+    diff_collapsed_branches: std::collections::HashSet<String>,
+    /// `true` while the Worktree-scope on-disk worktree discovery
+    /// (`spawn_worktree_discovery`) is in flight, so the diff sidebar can show a
+    /// "Discovering worktrees…" note instead of looking like columns are missing
+    /// during the brief cold-mount window.
+    diff_discovering: bool,
+    /// Worktree-scope branch curation: per repo, the set of worktree paths (raw
+    /// path strings) the user explicitly chose to show as columns. NO entry for a
+    /// repo ⇒ show ALL its worktrees (the default). An entry ⇒ build columns for
+    /// exactly those worktrees, so branches the user didn't pick are never diffed
+    /// (not merely hidden). Edited by the branches picker; in-memory per session.
+    diff_chosen_worktrees:
+        std::collections::HashMap<std::path::PathBuf, std::collections::HashSet<String>>,
+    /// Whether the Worktree-scope branches multi-select popover is open.
+    diff_worktree_picker_open: bool,
+    /// All worktrees of `diff_available_repo`, fetched off-thread for the branches
+    /// picker so it can offer branches not currently shown. Populated lazily when
+    /// the picker opens.
+    diff_available_worktrees: Vec<crate::diff::DiffWorktree>,
+    /// The repo [`Self::diff_available_worktrees`] was fetched for (guards against
+    /// showing a stale list after a workspace/repo switch).
+    diff_available_repo: Option<std::path::PathBuf>,
+    /// US-011: the active Git Diff view scope (Project / Multi-project /
+    /// Worktree). Defaults to Project; `rebuild_diff_view` branches on it.
+    diff_scope: crate::diff::DiffScope,
+    /// US-012: whether the scope-selector popover is open.
+    diff_scope_picker_open: bool,
+    /// Whether the project-selector popover (Project / Worktree scopes) is
+    /// open. Lets the user pick which open workspace's repo the single-repo
+    /// diff follows, without leaving Diff mode.
+    diff_project_picker_open: bool,
+    /// US-008 (prd-git-diff-mode-2026-Q3.md): path of the file row
+    /// selected in the diff git panel (presentation-only until the
+    /// scroll-to-file wiring lands). `None` = nothing selected.
+    diff_selected_file: Option<String>,
+    /// US-008: whether the git panel's "Changes" section is collapsed.
+    diff_files_collapsed: bool,
+    /// Changed-files panel layout: `false` = flat list (default), `true` =
+    /// collapsible directory tree (compact-folder chains merged). Toggled from
+    /// the "Changes" header.
+    diff_files_tree: bool,
+    /// Collapsed directory nodes in tree mode, keyed `col_idx\0<dir path>` so a
+    /// directory present in two branch sections collapses independently.
+    diff_collapsed_dirs: std::collections::HashSet<String>,
+    /// US-008: persistent type-to-filter field for the diff changed-files
+    /// panel. Observed at construction so each keystroke re-renders the
+    /// sidebar (which recomputes the visible matches by path substring).
+    diff_file_filter: gpui::Entity<crate::widgets::text_input::TextInput>,
     /// US-008 (prd-agents-view.md): top-level UI mode. `Cli` = the
     /// traditional terminal multiplexer; `Agents` = the projects +
     /// threads sidebar and chat thread view. Toggled by the
@@ -529,6 +613,12 @@ impl Render for PaneFlowApp {
             // released on toggle-back, so `render_agents_main` only
             // ever sees a real entity here.
             self.render_agents_main(cx)
+        } else if matches!(self.mode, paneflow_config::schema::AppMode::Diff) {
+            // US-003 (prd-git-diff-mode-2026-Q3.md). NOTE: this site is
+            // an `if matches!`, not a `match`, so the compiler does NOT
+            // force a Diff arm — it must be added by hand or the diff
+            // mode would silently fall through to the terminal view.
+            self.render_diff_main(cx)
         } else if self.settings_section.is_some() {
             self.render_settings_page(cx).into_any_element()
         } else if let Some(ws) = self.active_workspace() {
@@ -659,6 +749,9 @@ impl Render for PaneFlowApp {
             paneflow_config::schema::AppMode::Agents => {
                 crate::app::agents_view_actions::AGENTS_SIDEBAR_WIDTH
             }
+            paneflow_config::schema::AppMode::Diff => {
+                crate::app::diff_view_actions::DIFF_SIDEBAR_WIDTH
+            }
             paneflow_config::schema::AppMode::Cli => SIDEBAR_WIDTH,
         };
         self.title_bar.update(cx, |tb, _| {
@@ -714,6 +807,8 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_split_equalize))
             .on_action(cx.listener(Self::handle_swap_pane))
             .on_action(cx.listener(Self::handle_undo_close_pane))
+            .on_action(cx.listener(Self::handle_open_multi_diff))
+            .on_action(cx.listener(Self::handle_open_diff_view))
             .on_action(cx.listener(Self::handle_ws1))
             .on_action(cx.listener(Self::handle_ws2))
             .on_action(cx.listener(Self::handle_ws3))
@@ -793,6 +888,9 @@ impl Render for PaneFlowApp {
                     .child(match self.mode {
                         paneflow_config::schema::AppMode::Agents => {
                             self.render_agents_sidebar(window, cx)
+                        }
+                        paneflow_config::schema::AppMode::Diff => {
+                            self.render_diff_sidebar(window, cx)
                         }
                         paneflow_config::schema::AppMode::Cli => {
                             self.render_sidebar(cx).into_any_element()
@@ -1107,9 +1205,15 @@ fn main() {
     // now idempotent no-ops, preserving the per-spawn safety net.
     paneflow_acp::scrub_claudecode_env();
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
-        "info,wgpu_hal=off,wgpu_core=warn,naga=warn,zbus=warn,tracing::span=warn",
-    ))
+    // Quiet by default: a plain `cargo run` (or a shipped binary) shows only
+    // warnings + errors. `RUST_LOG=info` restores the startup/runtime
+    // diagnostics (GPU selection, IPC, session restore, …) and `RUST_LOG=debug`
+    // adds the per-operation diff/git trace — matching the documented
+    // "RUST_LOG=info cargo run # with logging" workflow.
+    env_logger::Builder::from_env(
+        env_logger::Env::default()
+            .default_filter_or("warn,wgpu_hal=off,naga=warn,zbus=warn,tracing::span=warn"),
+    )
     .init();
 
     // US-003: install the process-wide kill-on-parent-death guard

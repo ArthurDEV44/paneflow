@@ -62,6 +62,23 @@ impl PaneFlowApp {
             self.workspaces[idx].focus_first(window, cx);
             self.save_session(cx);
             cx.notify();
+            // US-005 (prd-git-diff-mode-2026-Q3.md): in Diff mode the diff
+            // follows the active workspace's repo.
+            self.reconcile_diff_after_workspace_change(cx);
+        }
+    }
+
+    /// US-005/US-014: if in Diff mode, rebuild the mounted diff (deferred) so it
+    /// follows the current workspace set and active workspace — covers workspace
+    /// switch (re-target) and close (Multi-project group reconcile). Deferred so
+    /// the rebuild (which mounts a fresh entity) never runs inside a
+    /// render/callback. No-op outside Diff mode.
+    fn reconcile_diff_after_workspace_change(&self, cx: &mut Context<Self>) {
+        if matches!(self.mode, paneflow_config::schema::AppMode::Diff) {
+            let weak = cx.weak_entity();
+            cx.defer(move |cx| {
+                let _ = weak.update(cx, |app, cx| app.rebuild_diff_view(cx));
+            });
         }
     }
 
@@ -125,6 +142,9 @@ impl PaneFlowApp {
                             app.active_idx = app.workspaces.len() - 1;
                             app.save_session(cx);
                             cx.notify();
+                            // US-016 (prd-git-diff-mode-2026-Q3.md): a new repo
+                            // must surface in Multi-project / re-target the diff.
+                            app.reconcile_diff_after_workspace_change(cx);
                         })
                     });
                 }
@@ -437,6 +457,11 @@ impl PaneFlowApp {
         }
         self.save_session(cx);
         cx.notify();
+        // US-014 (prd-git-diff-mode-2026-Q3.md): in Diff mode, closing a
+        // workspace reconciles the diff (a Multi-project group / column for the
+        // closed workspace must drop). Deferred so the rebuild runs after the
+        // close settles, never inside a render/callback.
+        self.reconcile_diff_after_workspace_change(cx);
     }
 
     /// Move a workspace (identified by `from_id`) so it ends up at `to_idx`
@@ -521,6 +546,8 @@ impl PaneFlowApp {
         };
         self.show_toast(msg, cx);
         cx.notify();
+        // US-014: reconcile the diff (now empty) if in Diff mode.
+        self.reconcile_diff_after_workspace_change(cx);
     }
 
     pub(crate) fn copy_workspace_path(&mut self, idx: usize, cx: &mut Context<Self>) {

@@ -90,6 +90,9 @@ impl PaneFlowApp {
             // so US-009's restore branch can reopen Paneflow in the
             // same screen the user left.
             mode: self.mode,
+            // US-015 (prd-git-diff-mode-2026-Q3.md): persist the diff scope so
+            // a session that quit in Diff mode reopens on the same scope.
+            diff_scope: Some(self.diff_scope.as_persisted().to_string()),
         };
         let Some(path) = paneflow_config::loader::session_path() else {
             return;

@@ -1,6 +1,6 @@
 //! Bundled terminal themes and the registry used to look them up by name.
 
-use super::model::{TerminalTheme, h, ha};
+use super::model::{SyntaxPalette, TerminalTheme, h, ha};
 
 pub type ThemeEntry = (&'static str, fn() -> TerminalTheme);
 
@@ -46,6 +46,7 @@ pub fn paneflow_light() -> TerminalTheme {
         dim_magenta: h(0xb881b8),
         dim_cyan: h(0x6aa9c0),
         dim_white: h(0x9ca0b0),
+        syntax: SyntaxPalette::catppuccin_latte(),
     }
 }
 
@@ -89,6 +90,7 @@ pub fn one_dark() -> TerminalTheme {
         dim_magenta: h(0x955aa6),
         dim_cyan: h(0x418992),
         dim_white: h(0x808690),
+        syntax: SyntaxPalette::catppuccin_mocha(),
     }
 }
 

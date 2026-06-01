@@ -50,7 +50,10 @@ impl PaneFlowApp {
             AppMode::Agents => {
                 self.exit_agents_mode(window, cx);
             }
-            AppMode::Cli => {
+            // From CLI or the Diff mode, pressing the Agents binding
+            // switches into Agents (US-003 of prd-git-diff-mode-2026-Q3.md;
+            // `enter_agents_mode` clears any other non-CLI surface).
+            AppMode::Cli | AppMode::Diff => {
                 self.enter_agents_mode(cx);
             }
         }
@@ -132,6 +135,12 @@ impl PaneFlowApp {
 
     pub(crate) fn enter_agents_mode(&mut self, cx: &mut Context<Self>) {
         self.mode = AppMode::Agents;
+        // US-016 warm-resume: entering Agents from Diff suspends the diff host
+        // (releases its watchers + ends its debounce loop) while the cache keeps
+        // its computed rows for an instant warm return; no-op from CLI (already
+        // parked). Keeps the non-CLI surfaces mutually exclusive (prd-git-diff
+        // US-003/US-005) without throwing away the diff.
+        self.park_displayed_diff(cx);
         // US-116: panel is now front-and-center; the gate combines
         // this with window-active to decide notification firing.
         crate::agents::notifications::set_agents_panel_visible(true);
