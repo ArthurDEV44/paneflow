@@ -19,17 +19,19 @@ use std::process::Command;
 use super::engine::{DiffHunk, compute_hunks};
 
 /// A git worktree as reported by `git worktree list --porcelain`.
-// The shipped view seeds its columns from the sidebar's open workspaces (those
-// sharing a `repo_root`), so this porcelain parser is not on the live path. It
-// is provided + tested per the US-005 AC and kept for a future "discover all
-// on-disk worktrees" option (PRD Open Question on view population).
-#[allow(dead_code)]
+///
+/// On the live Worktree-scope discovery path (US-013): the porcelain parser
+/// feeds [`list_repo_worktrees`], which the GUI invokes to enumerate worktrees
+/// not open as workspaces. `is_main` / `is_bare` are parsed for completeness but
+/// only exercised by the unit tests today, hence the field-level `allow`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Worktree {
     pub path: PathBuf,
     pub ref_name: Option<String>,
     pub sha: String,
+    #[allow(dead_code)]
     pub is_main: bool,
+    #[allow(dead_code)]
     pub is_bare: bool,
 }
 
@@ -88,7 +90,6 @@ pub struct WorktreeDiff {
 
 /// Parse `git worktree list --porcelain`. Ported from Zed's
 /// `git::repository::parse_worktrees_from_str` (`crates/git/src/repository.rs:363`).
-#[allow(dead_code)]
 pub fn parse_worktrees_from_str(raw: &str, main_worktree_path: Option<&Path>) -> Vec<Worktree> {
     let mut worktrees = Vec::new();
     let normalized = raw.replace("\r\n", "\n");
@@ -151,10 +152,9 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     Ok(output.stdout)
 }
 
-/// List all worktrees of the repository containing `repo_dir`. Not on the
-/// shipped path (columns are seeded from open workspaces); kept + exercising
-/// the tested parser for the future "discover all on-disk worktrees" option.
-#[allow(dead_code)]
+/// List all worktrees of the repository containing `repo_dir`. Live path:
+/// [`list_repo_worktrees`] calls this for the US-013 Worktree-scope "include
+/// worktrees not open as workspaces" enumeration.
 pub fn list_worktrees(repo_dir: &Path) -> Result<Vec<Worktree>, String> {
     let out = run_git(repo_dir, &["worktree", "list", "--porcelain"])?;
     let text = String::from_utf8_lossy(&out);
@@ -377,11 +377,17 @@ fn load_base_text(worktree_dir: &Path, merge_base: &str, rel_path: &str) -> (Str
 }
 
 /// Read the working-tree text of `rel_path`. Returns `(text, is_binary)`; a
-/// missing file (deleted in the working tree) yields empty text.
+/// missing file (deleted in the working tree) yields empty text. Any other I/O
+/// error (permission denied, device error) is logged and rendered as an
+/// unreadable (binary) stub rather than masquerading as a deletion.
 fn load_working_text(worktree_dir: &Path, rel_path: &str) -> (String, bool) {
     match std::fs::read(worktree_dir.join(rel_path)) {
         Ok(bytes) => classify(bytes),
-        Err(_) => (String::new(), false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
+        Err(e) => {
+            log::warn!("git: failed to read working-tree file {rel_path}: {e}");
+            (String::new(), true)
+        }
     }
 }
 
@@ -443,15 +449,20 @@ const SKIP_FILENAMES: &[&str] = &[
     "Gemfile.lock",
 ];
 
-fn is_skipped_name(path: &str) -> bool {
+/// Whether `path`'s final component is a known generated/lockfile name. Public
+/// so the file watcher ([`super::view`]) shares this single source of truth and
+/// cannot drift from the diff-time skip list.
+pub fn is_skipped_name(path: &str) -> bool {
     std::path::Path::new(path)
         .file_name()
         .and_then(|n| n.to_str())
         .is_some_and(|n| SKIP_FILENAMES.contains(&n))
 }
 
-/// Working-tree size of `rel_path` exceeds [`MAX_FILE_BYTES`]. Covers the common
-/// added/modified case; a metadata miss (deleted file) reads as not-too-large.
+/// Working-tree size of `rel_path` exceeds [`MAX_FILE_BYTES`]. Fast pre-load
+/// guard for the common added/modified case; a metadata miss (deleted file)
+/// reads as not-too-large. The base side — and the metadata-miss case — is
+/// caught by the post-load length check in [`compute_worktree_diff`].
 fn is_too_large(worktree_dir: &Path, rel_path: &str) -> bool {
     std::fs::metadata(worktree_dir.join(rel_path))
         .map(|m| m.len() > MAX_FILE_BYTES)
@@ -560,6 +571,16 @@ pub fn compute_worktree_diff(worktree_dir: &Path, base_ref: &str) -> WorktreeDif
             FileChange::Deleted => (String::new(), false),
             _ => load_working_text(worktree_dir, &path),
         };
+        // Post-load size guard. `is_too_large` only sees the working-tree side
+        // via metadata, so a file that is huge at the merge-base but small or
+        // deleted now (a bulk rewrite / deletion commit) would otherwise load
+        // its full base blob into a retained `FileDiff` — unbounded across the N
+        // columns. Stub it instead, bounding retained RAM symmetrically.
+        if base_text.len() as u64 > MAX_FILE_BYTES || new_text.len() as u64 > MAX_FILE_BYTES {
+            log::debug!("git: skip (oversized post-load) {path}");
+            files.push(stub_file(path, change));
+            continue;
+        }
         let is_binary = base_bin || new_bin;
         let hunks = if is_binary {
             Vec::new()

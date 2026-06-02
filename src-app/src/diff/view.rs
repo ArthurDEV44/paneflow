@@ -9,8 +9,8 @@
 //! EP-004: N columns render side by side in one tab (US-012) with a shared
 //! base-branch selector (US-013), per-column hide/show (US-014), and live
 //! refresh on working-tree / HEAD / index / base-ref changes via an
-//! entity-owned `notify` watcher (US-015). Rendering is virtualized by
-//! `uniform_list` in both unified and split modes (US-006/US-009).
+//! entity-owned `notify` watcher (US-015). Rendering is virtualized by the
+//! custom `DiffElement` in both unified and split modes (US-006/US-009).
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -46,12 +46,22 @@ pub struct DiffColumnDrag {
 }
 use super::rows::{
     DisplayRow, RowKind, RowPalette, SplitRow, build_display_rows, build_split_rows,
-    display_row_height, split_row_height,
+    display_row_height, split_max_line_no, split_offsets, split_row_height, unified_max_line_no,
+    unified_offsets,
 };
 
 /// When jumping to a hunk, leave this much room above its first changed line so
 /// the pinned sticky file header (24px) does not cover it.
 const HUNK_JUMP_MARGIN: f32 = 28.0;
+
+/// Column-header bar height. The per-branch Review popover anchors just below it;
+/// named so a header-height change has a single place to update (mirrors how
+/// `HUNK_JUMP_MARGIN` centralizes the sticky-header offset).
+const COL_HEADER_HEIGHT: f32 = 30.0;
+
+/// Bottom of the toolbar base-ref chip; the base-branch popover anchors just
+/// under it.
+const TOOLBAR_CHIP_BOTTOM: f32 = 31.0;
 
 /// Below this estimated per-column width the split view auto-falls back to
 /// unified (mirroring Zed's `too_narrow_for_split`).
@@ -104,11 +114,10 @@ pub struct DiffWorktree {
     pub branch: String,
     /// US-011 (prd-git-diff-mode-2026-Q3.md): the open workspace this worktree
     /// belongs to, or `None` for a worktree discovered on disk (git worktree
-    /// list) that has no open workspace. Render-only — never serialized — so
-    /// the field is additive and does not touch session persistence. Read by
-    /// the Multi-project stale-reconcile pass (US-016, EP-006); carried now so
-    /// the seed already distinguishes open vs discovered worktrees.
-    #[allow(dead_code)]
+    /// list) that has no open workspace. Render-only — never serialized.
+    /// Consumed at column build (`Column::new_loading`, via `with_base` /
+    /// `add_columns`) and carried as `Column::workspace_id` to tag the embedded
+    /// review terminal.
     pub workspace_id: Option<u64>,
 }
 
@@ -266,6 +275,14 @@ struct Column {
     disp_split: Rc<Vec<SplitRow>>,
     disp_anchors_unified: Rc<Vec<(String, usize)>>,
     disp_anchors_split: Rc<Vec<(String, usize)>>,
+    /// Precomputed cumulative row offsets (`len + 1`) + widest line number for
+    /// each display set, derived once in [`Column::recompute_display`] and shared
+    /// with `DiffElement` so it never re-walks every row during `request_layout`
+    /// / `prepaint`. Kept in lockstep with `disp_unified` / `disp_split`.
+    disp_unified_offsets: Rc<Vec<f32>>,
+    disp_split_offsets: Rc<Vec<f32>>,
+    disp_unified_max_no: u32,
+    disp_split_max_no: u32,
     /// US-016 warm-resume: the git fingerprint (HEAD + base + status hash) this
     /// column's rows were built against, captured off-thread at load time.
     /// `DiffView::revalidate` compares a fresh fingerprint on diff-mode re-entry
@@ -307,6 +324,10 @@ impl Column {
             disp_split: Rc::new(Vec::new()),
             disp_anchors_unified: Rc::new(Vec::new()),
             disp_anchors_split: Rc::new(Vec::new()),
+            disp_unified_offsets: Rc::new(vec![0.0]),
+            disp_split_offsets: Rc::new(vec![0.0]),
+            disp_unified_max_no: 0,
+            disp_split_max_no: 0,
             fingerprint: None,
             base_override: None,
             generation: 0,
@@ -349,6 +370,12 @@ impl Column {
             self.disp_split = s;
             self.disp_anchors_unified = au;
             self.disp_anchors_split = as_;
+            // Refresh the cached layout inputs in lockstep with the row sets, so
+            // `DiffElement` reads them per frame instead of re-walking the rows.
+            self.disp_unified_offsets = Rc::new(unified_offsets(&self.disp_unified));
+            self.disp_split_offsets = Rc::new(split_offsets(&self.disp_split));
+            self.disp_unified_max_no = unified_max_line_no(&self.disp_unified);
+            self.disp_split_max_no = split_max_line_no(&self.disp_split);
         }
     }
 }
@@ -360,6 +387,10 @@ pub struct DiffView {
     base_ref: String,
     /// Local branches offered by the base selector.
     branches: Vec<String>,
+    /// Lowercased mirror of `branches`, precomputed once when `branches` is set so
+    /// the base-popover filter never `to_lowercase()`es every branch on every
+    /// keystroke / frame while the popover is open.
+    branches_lc: Vec<String>,
     base_picker_open: bool,
     /// Live type-to-filter field inside the base-branch popover. Owned so the
     /// popover can be a real searchable list (the DiffView observes it to
@@ -390,9 +421,6 @@ pub struct DiffView {
     /// Column whose changed-file list feeds the sidebar and whose body
     /// `jump_to_file` scrolls. Set by clicking a column header.
     selected_column: usize,
-    /// Toolbar collapse/expand-all state: drives the chip label and the bulk
-    /// action applied across every visible column.
-    all_collapsed: bool,
     /// Entity-owned filesystem watchers (US-015). Dropped on tab close, which
     /// unregisters the OS handles and ends the debounce loop.
     _watchers: Vec<RecommendedWatcher>,
@@ -519,6 +547,7 @@ impl DiffView {
             // "pick a base" prompt rather than spinning on a bogus ref.
             base_ref: base.unwrap_or_default(),
             branches: Vec::new(),
+            branches_lc: Vec::new(),
             base_picker_open: false,
             base_filter,
             columns,
@@ -529,7 +558,6 @@ impl DiffView {
             sync_scroll: true,
             scroll_driver: 0,
             selected_column: 0,
-            all_collapsed: false,
             _watchers: Vec::new(),
             suspended: false,
             bootstrapped: false,
@@ -607,6 +635,7 @@ impl DiffView {
             let _ = cx.update(|cx| {
                 this.update(cx, |view: &mut Self, cx| {
                     view.base_ref = base;
+                    view.branches_lc = branches.iter().map(|b| b.to_lowercase()).collect();
                     view.branches = branches;
                     view.bootstrapped = true;
                     view.start_loading(cx);
@@ -849,6 +878,14 @@ impl DiffView {
                         // Rebuild the collapse-filtered views from the fresh rows
                         // (carries any per-file collapse across the reload).
                         col.recompute_display();
+                        // A reload can reorder or drop entries in this column's
+                        // `files_full`, which an open body context menu indexes by
+                        // position. Drop a menu targeting this column so a menu
+                        // action can never land on the wrong file after a live
+                        // refresh.
+                        if view.body_menu.as_ref().is_some_and(|m| m.col_idx == i) {
+                            view.body_menu = None;
+                        }
                         cx.notify();
                     });
                 });
@@ -1223,11 +1260,25 @@ impl DiffView {
 
     /// US-014: hide a column (drop its data, skip future refreshes).
     fn hide_column(&mut self, idx: usize, cx: &mut Context<Self>) {
-        if let Some(col) = self.columns.get_mut(idx) {
-            col.visible = false;
-            col.state = ColumnState::Loading; // dropped data; reloads on re-show
-            cx.notify();
+        let Some(col) = self.columns.get_mut(idx) else {
+            return;
+        };
+        col.visible = false;
+        col.state = ColumnState::Loading; // dropped data; reloads on re-show
+        // The hidden column must not remain the sync source or the selection: the
+        // scroll broadcast would otherwise re-run its first-visible fallback every
+        // frame, and the header selection marker would point at nothing. Re-anchor
+        // both to the first still-visible column.
+        if self.scroll_driver == idx || self.selected_column == idx {
+            let first_visible = self.columns.iter().position(|c| c.visible).unwrap_or(0);
+            if self.scroll_driver == idx {
+                self.scroll_driver = first_visible;
+            }
+            if self.selected_column == idx {
+                self.selected_column = first_visible;
+            }
         }
+        cx.notify();
     }
 
     /// US-014: re-show every hidden column and reload them.
@@ -1267,6 +1318,12 @@ impl DiffView {
             // fresh diff swaps in, so only the new columns visibly start from
             // Loading. Re-arm the watcher off-thread to include the new trees.
             self.start_loading(cx);
+            // Bump the watcher epoch BEFORE clearing so any watcher build still in
+            // flight from a prior `start_watchers` (e.g. bootstrap) sees a stale
+            // epoch and drops its result instead of pushing a second live watcher
+            // (a leaked inotify fd) alongside the one re-armed here — mirrors
+            // `suspend`.
+            self.watch_epoch = self.watch_epoch.wrapping_add(1);
             self._watchers.clear();
             self.start_watchers(cx);
         }
@@ -2232,8 +2289,8 @@ impl DiffView {
             .id("diff-review-menu")
             .occlude()
             .absolute()
-            // Anchored just below this branch's header (header ≈ 26px tall).
-            .top(px(30.))
+            // Anchored just below this branch's header.
+            .top(px(COL_HEADER_HEIGHT))
             .right(px(6.))
             .w(px(256.))
             .bg(ui.overlay)
@@ -2332,10 +2389,37 @@ impl DiffView {
         deferred(menu).priority(8).into_any_element()
     }
 
+    /// True when every visible, loaded column has all of its files collapsed —
+    /// the live source for the toolbar collapse/expand-all chip. Replaces a cached
+    /// bool that drifted whenever per-file collapse (body click) or a live-refresh
+    /// reload changed the real state without updating it.
+    fn all_visible_collapsed(&self) -> bool {
+        let mut any_loaded = false;
+        for col in &self.columns {
+            if !col.visible {
+                continue;
+            }
+            if let ColumnState::Loaded {
+                anchors_unified, ..
+            } = &col.state
+            {
+                any_loaded = true;
+                if !anchors_unified
+                    .iter()
+                    .all(|(p, _)| col.collapsed.contains(p))
+                {
+                    return false;
+                }
+            }
+        }
+        any_loaded
+    }
+
     /// Toolbar: collapse every file in every visible column, or expand all.
     fn toggle_collapse_all(&mut self, cx: &mut Context<Self>) {
-        self.all_collapsed = !self.all_collapsed;
-        let collapse = self.all_collapsed;
+        // Decide from the live state, not a cached flag: if everything is already
+        // collapsed, expand; otherwise collapse all.
+        let collapse = !self.all_visible_collapsed();
         for col in &mut self.columns {
             if !col.visible {
                 continue;
@@ -2774,8 +2858,16 @@ impl DiffView {
                 // click Y to a row and toggles that file's collapse if it landed
                 // on a file header.
                 let body = match mode {
-                    ViewMode::Split => DiffBody::Split(col.disp_split.clone()),
-                    ViewMode::Unified => DiffBody::Unified(col.disp_unified.clone()),
+                    ViewMode::Split => DiffBody::Split {
+                        rows: col.disp_split.clone(),
+                        offsets: col.disp_split_offsets.clone(),
+                        max_line_no: col.disp_split_max_no,
+                    },
+                    ViewMode::Unified => DiffBody::Unified {
+                        rows: col.disp_unified.clone(),
+                        offsets: col.disp_unified_offsets.clone(),
+                        max_line_no: col.disp_unified_max_no,
+                    },
                 };
                 // Hover-to-ask: the changed line under the cursor (this column)
                 // while a review CLI runs, highlighted + cursor-pointer + clickable.
@@ -2825,9 +2917,9 @@ impl DiffView {
             .flex_1()
             // `h_full` + `min_h_0`: pin the column to the (definite) height of the
             // horizontally-scrolling columns row. Without a definite height the
-            // body's `uniform_list` is laid out at content height (item_h ×
-            // 10001) and renders EVERY row instead of virtualizing — the scroll
-            // lag. With it, only the ~viewport rows paint.
+            // `overflow_y_scroll` host can't clip, so `DiffElement` (which reports
+            // full content height) would paint every row instead of culling to the
+            // viewport — the scroll lag. With it, only the ~viewport rows paint.
             .h_full()
             .min_h_0()
             // Panes shrink to share the split evenly (inc 5); the DiffElement
@@ -2851,6 +2943,9 @@ impl DiffView {
     fn render_toolbar(&self, effective: ViewMode, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
         let hidden = self.columns.len() - self.visible_count();
+        // Derived live (not a cached flag) so the chip can never disagree with the
+        // real per-column collapse state.
+        let all_collapsed = self.all_visible_collapsed();
 
         // US-009: diffstat for the column you're actually looking at (the
         // selected one, else first-visible; Zed-style `DiffStat`, curated `vc_*`
@@ -3108,12 +3203,12 @@ impl DiffView {
                         this.toggle_collapse_all(cx);
                     }))
                     .text_color(ui.muted)
-                    .child(icon(if self.all_collapsed {
+                    .child(icon(if all_collapsed {
                         "icons/chevron-down.svg"
                     } else {
                         "icons/chevron_up.svg"
                     }))
-                    .child(if self.all_collapsed {
+                    .child(if all_collapsed {
                         "Expand all"
                     } else {
                         "Collapse all"
@@ -3199,11 +3294,19 @@ impl DiffView {
         let ui = crate::theme::ui_colors();
 
         let filter = self.base_filter.read(cx).value().to_lowercase();
+        // Filter against the precomputed lowercase mirror so an open popover does
+        // not re-`to_lowercase()` every branch on each keystroke / frame.
         let matches: Vec<(usize, &String)> = self
             .branches
             .iter()
             .enumerate()
-            .filter(|(_, b)| filter.is_empty() || b.to_lowercase().contains(&filter))
+            .filter(|(i, _)| {
+                filter.is_empty()
+                    || self
+                        .branches_lc
+                        .get(*i)
+                        .is_some_and(|b| b.contains(&filter))
+            })
             .collect();
 
         // Header: a search field. The leading glyph + the real cursor-aware
@@ -3330,7 +3433,7 @@ impl DiffView {
             .occlude()
             .absolute()
             .left(px(8.))
-            .top(px(31.))
+            .top(px(TOOLBAR_CHIP_BOTTOM))
             .w(px(288.))
             .flex()
             .flex_col()
@@ -3396,17 +3499,15 @@ fn watch_event_relevant(res: &notify::Result<Event>) -> bool {
         let s = p.to_string_lossy();
         // Skipped files are never diffed (git.rs SKIP_FILENAMES / MAX_FILE_BYTES),
         // so a `cargo add` rewriting Cargo.lock or a `git fetch` touching
-        // FETCH_HEAD must not trigger a (no-op) re-diff storm.
+        // FETCH_HEAD must not trigger a (no-op) re-diff storm. The lockfile set is
+        // shared with the diff builder via `git::is_skipped_name`, so the two
+        // can't drift.
         !(s.contains("/target/")
             || s.contains("/.git/objects")
             || s.contains("/.git/logs")
             || s.contains("/.git/index.lock")
             || s.contains("/node_modules/")
-            || s.ends_with("/Cargo.lock")
-            || s.ends_with("/package-lock.json")
-            || s.ends_with("/bun.lockb")
-            || s.ends_with("/yarn.lock")
-            || s.ends_with("/pnpm-lock.yaml")
+            || super::git::is_skipped_name(&s)
             || s.ends_with("/.git/FETCH_HEAD")
             || s.ends_with("/.git/ORIG_HEAD")
             || s.ends_with("/.git/COMMIT_EDITMSG")
@@ -3758,6 +3859,11 @@ impl DiffView {
         self.arrange.remove(source);
         self.arrange.split(target, axis, source, before);
         self.selected_column = source;
+        // Keep the sync source aligned with the just-moved/selected pane (as
+        // goto_hunk / jump_to_file do), so the lockstep offset is sourced from the
+        // pane the user acted on rather than whichever column last received a
+        // scroll-wheel event.
+        self.scroll_driver = source;
         cx.notify();
     }
 }
@@ -3822,8 +3928,7 @@ impl Render for DiffView {
         // by drag. The `Vec<Column>` and its index-based logic are untouched.
         let visible: Vec<bool> = self.columns.iter().map(|c| c.visible).collect();
         self.arrange.reconcile(&visible);
-        let arrange = self.arrange.clone();
-        let body = self.render_arrange(&arrange, mode, cx);
+        let body = self.render_arrange(&self.arrange, mode, cx);
 
         let root = root.child(self.render_toolbar(mode, cx));
         let mut root = root.child(div().flex_1().min_h_0().flex().child(body));
