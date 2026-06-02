@@ -2,9 +2,10 @@
 //! prd-multi-worktree-diff-2026-Q3.md).
 //!
 //! `build_display_rows` reconstructs a standard unified diff (context / removed
-//! / added lines, with file headers) as a flat row list keyed for
-//! virtualization by `uniform_list`. Every row renders at a fixed height so the
-//! uniform-list layout math holds. Side-by-side rendering (LHS/RHS with phantom
+//! / added lines, with file headers) as a flat row list consumed by the custom
+//! virtualized `super::element::DiffElement`, which culls to the visible window
+//! using the precomputed per-row offsets (file headers are taller; other rows
+//! use the compact line height). Side-by-side rendering (LHS/RHS with phantom
 //! rows) is EP-003 (US-008/US-009); this is the EP-002 unified view.
 
 use std::collections::HashMap;
@@ -85,6 +86,53 @@ pub fn split_row_height(row: &SplitRow) -> f32 {
     }
 }
 
+/// Cumulative top offsets (px) for a unified row set: `offsets[i]` is the top of
+/// row `i`, `offsets[len]` the total content height. Precomputed off the render
+/// path (in `Column::recompute_display`) and shared with `DiffElement`, which
+/// culls + lays out against it instead of re-walking every row each frame.
+pub fn unified_offsets(rows: &[DisplayRow]) -> Vec<f32> {
+    let mut acc = 0.0;
+    let mut out = Vec::with_capacity(rows.len() + 1);
+    out.push(0.0);
+    for r in rows {
+        acc += display_row_height(r);
+        out.push(acc);
+    }
+    out
+}
+
+/// Side-by-side analog of [`unified_offsets`].
+pub fn split_offsets(rows: &[SplitRow]) -> Vec<f32> {
+    let mut acc = 0.0;
+    let mut out = Vec::with_capacity(rows.len() + 1);
+    out.push(0.0);
+    for r in rows {
+        acc += split_row_height(r);
+        out.push(acc);
+    }
+    out
+}
+
+/// Widest line number across a unified row set (both sides); `0` when empty.
+/// Used to size the line-number gutter once at build time.
+pub fn unified_max_line_no(rows: &[DisplayRow]) -> u32 {
+    rows.iter()
+        .map(|r| r.new_no.unwrap_or(0).max(r.old_no.unwrap_or(0)))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Side-by-side analog of [`unified_max_line_no`].
+pub fn split_max_line_no(rows: &[SplitRow]) -> u32 {
+    rows.iter()
+        .map(|r| match r {
+            SplitRow::Pair { left, right } => left.no.unwrap_or(0).max(right.no.unwrap_or(0)),
+            _ => 0,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// Cap on rendered rows across a whole column. Beyond this the column shows a
 /// truncation notice instead of freezing the frame on a pathological diff.
 pub const MAX_DISPLAY_ROWS: usize = 10_000;
@@ -120,7 +168,7 @@ pub struct DisplayRow {
 }
 
 /// Diff colors, snapshotted once per render and copied into the (`'static`)
-/// `uniform_list` row closure.
+/// `super::element::DiffElement`, which owns its row data for the frame.
 #[derive(Clone, Copy)]
 pub struct RowPalette {
     pub text: Hsla,

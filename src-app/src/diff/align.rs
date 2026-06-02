@@ -81,23 +81,28 @@ pub fn align_rows(
         }
 
         // Hunk body: pair removed (left) with added (right), pad with phantoms.
-        let rem: Vec<u32> = h.base_row_range.clone().collect();
-        let add: Vec<u32> = h.new_row_range.clone().collect();
-        let pairs = rem.len().max(add.len());
+        // Index directly into the ranges — no per-hunk `Vec<u32>` allocation.
+        let rem_start = h.base_row_range.start;
+        let add_start = h.new_row_range.start;
+        let rem_len = h.base_row_range.end - rem_start;
+        let add_len = h.new_row_range.end - add_start;
+        let pairs = rem_len.max(add_len);
         for k in 0..pairs {
-            let left = match rem.get(k) {
-                Some(&row) => Cell {
+            let left = if k < rem_len {
+                Cell {
                     kind: CellKind::Removed,
-                    line: Some(row),
-                },
-                None => Cell::PHANTOM,
+                    line: Some(rem_start + k),
+                }
+            } else {
+                Cell::PHANTOM
             };
-            let right = match add.get(k) {
-                Some(&row) => Cell {
+            let right = if k < add_len {
+                Cell {
                     kind: CellKind::Added,
-                    line: Some(row),
-                },
-                None => Cell::PHANTOM,
+                    line: Some(add_start + k),
+                }
+            } else {
+                Cell::PHANTOM
             };
             rows.push(AlignedRow { left, right });
         }

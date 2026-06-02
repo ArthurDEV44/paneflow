@@ -22,10 +22,7 @@ use gpui::{
 };
 
 use super::align::CellKind;
-use super::rows::{
-    DisplayRow, HalfCell, ROW_HEIGHT, RowKind, RowPalette, SplitRow, display_row_height,
-    split_row_height,
-};
+use super::rows::{DisplayRow, HalfCell, ROW_HEIGHT, RowKind, RowPalette, SplitRow};
 
 const PAD: f32 = 6.0; // file-header text inset
 const CHEVRON_W: f32 = 14.0; // collapsible-section chevron column on file headers
@@ -41,66 +38,52 @@ const BAR_W: f32 = 4.0; // colored hunk-indicator bar
 const PAD2: f32 = 6.0; // gap between the hunk bar and the line-number gutter
 
 /// The row source for one column — either unified or side-by-side.
+///
+/// Each variant carries its precomputed cumulative row offsets (`offsets[i]` =
+/// top of row `i`, `offsets[len]` = total content height) and widest line
+/// number. Both are derived ONCE off the per-frame path — in
+/// [`super::view::Column::recompute_display`] — and shared as an `Rc`, so
+/// `request_layout` / `prepaint` never re-walk every row (previously two O(N)
+/// `Vec<f32>` allocations per column per frame).
 pub enum DiffBody {
-    Unified(Rc<Vec<DisplayRow>>),
-    Split(Rc<Vec<SplitRow>>),
+    Unified {
+        rows: Rc<Vec<DisplayRow>>,
+        offsets: Rc<Vec<f32>>,
+        max_line_no: u32,
+    },
+    Split {
+        rows: Rc<Vec<SplitRow>>,
+        offsets: Rc<Vec<f32>>,
+        max_line_no: u32,
+    },
 }
 
 impl DiffBody {
     fn len(&self) -> usize {
         match self {
-            DiffBody::Unified(r) => r.len(),
-            DiffBody::Split(r) => r.len(),
+            DiffBody::Unified { rows, .. } => rows.len(),
+            DiffBody::Split { rows, .. } => rows.len(),
         }
     }
 
-    /// Largest line number anywhere in the body (across both sides), used to
-    /// size the gutter so wide line numbers never clip past its left edge. `0`
-    /// for an empty body (no numbered rows). One linear pass — cheap relative to
-    /// the per-frame `offsets()` walk it sits beside.
+    /// Widest line number anywhere in the body (across both sides), used to size
+    /// the gutter so wide line numbers never clip past its left edge. Precomputed
+    /// at build time; `0` for an empty body.
     fn max_line_no(&self) -> u32 {
         match self {
-            DiffBody::Unified(rows) => rows
-                .iter()
-                .map(|r| r.new_no.unwrap_or(0).max(r.old_no.unwrap_or(0)))
-                .max()
-                .unwrap_or(0),
-            DiffBody::Split(rows) => rows
-                .iter()
-                .map(|r| match r {
-                    SplitRow::Pair { left, right } => {
-                        left.no.unwrap_or(0).max(right.no.unwrap_or(0))
-                    }
-                    _ => 0,
-                })
-                .max()
-                .unwrap_or(0),
+            DiffBody::Unified { max_line_no, .. } | DiffBody::Split { max_line_no, .. } => {
+                *max_line_no
+            }
         }
     }
 
-    /// Cumulative top offsets (px) for every row, length `len + 1`. `offsets[i]`
-    /// is the top of row `i`; `offsets[len]` is the total content height. Rows
-    /// have variable height (taller file headers), so the element culls + lays
-    /// out against this instead of a uniform line height.
-    fn offsets(&self) -> Vec<f32> {
-        let mut acc = 0.0;
-        let mut out = Vec::with_capacity(self.len() + 1);
-        out.push(0.0);
+    /// Cheap clone of the shared cumulative-offset vector (length `len + 1`).
+    /// Returned as an owned `Rc` so the caller can mutate other `self` fields
+    /// (e.g. `gutter_w`) without holding a borrow of `self.body`.
+    fn offsets_rc(&self) -> Rc<Vec<f32>> {
         match self {
-            DiffBody::Unified(rows) => {
-                for r in rows.iter() {
-                    acc += display_row_height(r);
-                    out.push(acc);
-                }
-            }
-            DiffBody::Split(rows) => {
-                for r in rows.iter() {
-                    acc += split_row_height(r);
-                    out.push(acc);
-                }
-            }
+            DiffBody::Unified { offsets, .. } | DiffBody::Split { offsets, .. } => offsets.clone(),
         }
-        out
     }
 }
 
@@ -152,12 +135,20 @@ pub struct DiffElement {
 
 impl DiffElement {
     pub fn new(body: DiffBody, palette: RowPalette) -> Self {
-        let family = crate::terminal::element::resolve_font_family(None);
+        // The mono family is constant (always the embedded default) and a fresh
+        // `DiffElement` is built every frame, so resolve it once per thread and
+        // clone the cheap `SharedString` handle instead of re-resolving + heap-
+        // allocating a family string on every render.
+        thread_local! {
+            static MONO_FAMILY: SharedString =
+                crate::terminal::element::resolve_font_family(None).into();
+        }
+        let family = MONO_FAMILY.with(|f| f.clone());
         Self {
             body,
             palette,
             font: Font {
-                family: family.into(),
+                family,
                 features: FontFeatures::disable_ligatures(),
                 fallbacks: None,
                 weight: FontWeight::NORMAL,
@@ -696,8 +687,9 @@ impl Element for DiffElement {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         // Full content height (sum of variable row heights) — the hosting
-        // `overflow_y_scroll` div clips/scrolls.
-        let h = px(self.body.offsets().last().copied().unwrap_or(0.0));
+        // `overflow_y_scroll` div clips/scrolls. Reads the precomputed offsets
+        // (no per-frame walk).
+        let h = px(self.body.offsets_rc().last().copied().unwrap_or(0.0));
         style.size.height = Length::Definite(h.into());
         (window.request_layout(style, [], cx), ())
     }
@@ -713,9 +705,10 @@ impl Element for DiffElement {
     ) -> Self::PrepaintState {
         let row_count = self.body.len();
 
-        // Variable-height layout: cumulative top offsets per row. Cull against
-        // them (binary search) instead of a uniform line height.
-        let offsets = self.body.offsets();
+        // Variable-height layout: cumulative top offsets per row (precomputed,
+        // shared). Cull against them (binary search) instead of a uniform line
+        // height.
+        let offsets = self.body.offsets_rc();
         let mask = window.content_mask();
         let vtop = f32::from(mask.bounds.origin.y - bounds.origin.y).max(0.0);
         let vbot = vtop + f32::from(mask.bounds.size.height);
@@ -758,7 +751,7 @@ impl Element for DiffElement {
         // Clone the Rc so the borrow of `self.body` doesn't conflict with the
         // `&mut self` shaping calls below.
         match &self.body {
-            DiffBody::Unified(rows) => {
+            DiffBody::Unified { rows, .. } => {
                 let rows = rows.clone();
                 for i in first..last {
                     let origin = point(bounds.origin.x, bounds.origin.y + px(offsets[i]));
@@ -832,7 +825,7 @@ impl Element for DiffElement {
                     }
                 }
             }
-            DiffBody::Split(rows) => {
+            DiffBody::Split { rows, .. } => {
                 let rows = rows.clone();
                 for i in first..last {
                     let origin = point(bounds.origin.x, bounds.origin.y + px(offsets[i]));
