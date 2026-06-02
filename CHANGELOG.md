@@ -5,7 +5,24 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
-- Community-health files, issue templates, and README onboarding polish.
+## [0.3.8] - 2026-06-02
+
+- Changed the Agents view to a terminal-only model: each thread now launches a
+  CLI coding agent directly in a terminal pane with a pre-filled prompt instead
+  of an in-app chat, keeping the agent in its native terminal with permission
+  bypass respected exactly as the tab-bar buttons do.
+- Added eleven launchable agents alongside Claude Code, Codex, OpenCode, Pi, and
+  Hermes: Grok, Amp, Cursor, Gemini, Kiro, Antigravity, Copilot, CodeBuddy,
+  Factory, Qoder, and Openclaw, each with its own tab-bar button, icon, and
+  Settings visibility toggle.
+- Each Terminal Thread now remembers which agent it launches and restores it on
+  the next session.
+- Removed the in-app ACP chat, its conversation timeline and composer, and the
+  separate agent sign-in page; agents now authenticate in their own terminal.
+- Hardened the Git diff viewer with safer working-tree reads, a shared
+  generated-file skip-list, and a watcher-refresh race fix.
+- Polished open-source onboarding: community-health files, issue templates, and
+  README positioning on the agent cockpit and cross-platform story.
 
 ## [0.3.7] - 2026-06-01
 
