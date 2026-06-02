@@ -9,12 +9,12 @@ use gpui::Action;
 use crate::{
     ClearScrollHistory, ClosePane, CloseTab, CloseWindow, CloseWorkspace, CopyWorkspacePath,
     DismissSearch, FocusDown, FocusLeft, FocusRight, FocusUp, JumpToPromptNext, JumpToPromptPrev,
-    KeepEdits, LayoutEvenHorizontal, LayoutEvenVertical, LayoutMainVertical, LayoutTiled,
-    MarkdownCopy, MarkdownFindDismiss, MarkdownFindNext, MarkdownFindOpen, MarkdownFindPrev,
+    LayoutEvenHorizontal, LayoutEvenVertical, LayoutMainVertical, LayoutTiled, MarkdownCopy,
+    MarkdownFindDismiss, MarkdownFindNext, MarkdownFindOpen, MarkdownFindPrev,
     MarkdownScrollPageDown, MarkdownScrollPageUp, NewTab, NewWorkspace, NextWorkspace,
     OpenWorkspaceInCursor, OpenWorkspaceInVsCode, OpenWorkspaceInWindsurf, OpenWorkspaceInZed,
-    Quit, RejectEdits, ResetTerminal, RevealWorkspaceInFileManager, ScrollPageDown, ScrollPageUp,
-    SearchNext, SearchPrev, SelectWorkspace1, SelectWorkspace2, SelectWorkspace3, SelectWorkspace4,
+    Quit, ResetTerminal, RevealWorkspaceInFileManager, ScrollPageDown, ScrollPageUp, SearchNext,
+    SearchPrev, SelectWorkspace1, SelectWorkspace2, SelectWorkspace3, SelectWorkspace4,
     SelectWorkspace5, SelectWorkspace6, SelectWorkspace7, SelectWorkspace8, SelectWorkspace9,
     SplitEqualize, SplitHorizontally, SplitVertically, SwapPane, TerminalCopy, TerminalPaste,
     ToggleCopyMode, ToggleSearch, ToggleSearchRegex, ToggleZoom, UndoClosePane,
@@ -414,21 +414,6 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         factory: || Box::new(crate::CopyDiffHunk),
         context: "DiffView",
         description: "Copy hunk as diff",
-    },
-    // Zed-parity: accept / revert AI-applied file edits (Shift+Alt+Y /
-    // Shift+Alt+Z). Global context so the chord fires regardless of
-    // which pane has focus while the user is reviewing.
-    ActionMeta {
-        name: "keep_edits",
-        factory: || Box::new(KeepEdits),
-        context: "",
-        description: "Keep AI edits",
-    },
-    ActionMeta {
-        name: "reject_edits",
-        factory: || Box::new(RejectEdits),
-        context: "",
-        description: "Reject AI edits",
     },
 ];
 

@@ -219,25 +219,6 @@ impl PaneFlowApp {
             keybindings::apply_keybindings(cx, &config.shortcuts);
             self.effective_shortcuts = keybindings::effective_shortcuts(&config.shortcuts);
             crate::theme::invalidate_theme_cache();
-            // US-103: refresh the agent-panel config slot so the next
-            // ThreadView render picks up a changed `max_content_width`
-            // without an app restart. AC #4 — the watcher's 300ms
-            // debounce already meets the ≤500ms target.
-            crate::agents::panel_config::install_agent_panel_config(
-                config.agent_panel.clone().unwrap_or_default(),
-            );
-            // US-111 AC #7: an edit to `tool_permissions` while a
-            // tool is mid-await must auto-resolve the pending call.
-            // The runtime-side check fires from the broker callback
-            // BEFORE event-tx -- but the awaiting call already has
-            // its oneshot in flight; for v1 we settle the simpler
-            // contract: the live cache is refreshed now, and the
-            // NEXT call (after the watcher debounce) auto-resolves.
-            // The currently-awaiting call still needs an explicit
-            // user click. Future cut: drive the broker via the
-            // watcher to also resolve the in-flight oneshot.
-            crate::agents::panel_config::install_tool_permissions(config.tool_permissions.clone());
-            crate::agents::panel_config::install_default_shell(config.default_shell.clone());
             // US-014: reconcile the telemetry consent state. On any change,
             // rebuild the `TelemetryClient` handle (Null ↔ Active) so future
             // emissions reflect the new choice; show a confirmation toast;

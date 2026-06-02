@@ -89,14 +89,6 @@ actions!(
         // missing-agents empty state. US-008 will repurpose the same
         // action as the full AppMode toggle.
         OpenAgentsView,
-        // Zed-parity (2026-05-25): review actions for AI-applied file
-        // edits. KeepEdits accepts every unreviewed change in the
-        // current thread; RejectEdits reverts each one on disk
-        // (fs::write old_text, or fs::remove_file when old_text is
-        // None). Bound to Shift+Alt+Y / Shift+Alt+Z to match Zed's
-        // default keymap so muscle memory transfers.
-        KeepEdits,
-        RejectEdits,
         // US-003 of tasks/prd-multi-worktree-diff-2026-Q3.md — open the
         // multi-worktree diff view for the active workspace's repo. Resolves
         // the repo from `active_idx`'s `repo_root` and opens a `DiffView` tab

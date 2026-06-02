@@ -585,29 +585,6 @@ impl PaneFlowApp {
         let posthog_api_key = option_env!("POSTHOG_API_KEY").unwrap_or("");
         let posthog_host = option_env!("POSTHOG_HOST").unwrap_or("https://eu.i.posthog.com");
         let telemetry_config_snapshot = paneflow_config::loader::load_config();
-        // US-103: seed the agent-panel config slot from the initial
-        // load so the first render of the Agents view honors the
-        // user's `max_content_width` without waiting for a watcher
-        // event. Subsequent reloads route through
-        // `apply_pending_config` in `app/ipc_handler.rs`.
-        crate::agents::panel_config::install_agent_panel_config(
-            telemetry_config_snapshot
-                .agent_panel
-                .clone()
-                .unwrap_or_default(),
-        );
-        // US-111: seed the tool-permissions slot + the default-shell
-        // cache so the first Agents-view render auto-resolves any
-        // patterns the user already persisted and the permission row
-        // can hide "Allow Always" for non-POSIX shells without a
-        // disk read per render. Subsequent reloads route through the
-        // same path in `apply_pending_config`.
-        crate::agents::panel_config::install_tool_permissions(
-            telemetry_config_snapshot.tool_permissions.clone(),
-        );
-        crate::agents::panel_config::install_default_shell(
-            telemetry_config_snapshot.default_shell.clone(),
-        );
         let telemetry_enabled_last = telemetry_config_snapshot
             .telemetry
             .as_ref()
@@ -777,9 +754,6 @@ impl PaneFlowApp {
             // US-006: shared signal flipped by the theme watcher's debounce
             // thread; drained by the 50 ms IPC loop to schedule a repaint.
             theme_changed,
-            // US-005 (prd-agents-view.md): closed by default; created
-            // lazily when the user dispatches `OpenAgentsView`.
-            agents_view: None,
             diff_view: None,
             multi_diff_view: None,
             diff_view_cache: std::collections::HashMap::new(),
@@ -799,9 +773,10 @@ impl PaneFlowApp {
             diff_files_tree: false,
             diff_collapsed_dirs: std::collections::HashSet::new(),
             diff_file_filter,
-            // US-008 + US-009 (prd-agents-view.md): start in the
-            // mode the user left on quit. A no-agents fallback below
-            // can flip this back to `Cli` if discovery comes up empty.
+            // US-008 (prd-agents-view.md): start in the mode the user
+            // left on quit. The Agents view is terminal-only and works
+            // without any agent installed, so there is no agent-presence
+            // gate on restore.
             mode: restored_mode,
             // US-007 + US-009 (prd-agents-view.md): rehydrate project
             // metadata from session.json. Empty for users on first
@@ -810,29 +785,6 @@ impl PaneFlowApp {
             projects: restored_projects,
             active_project_idx: restored_active_project,
             active_thread_idx: None,
-            // US-006 + US-011 (prd-agents-view.md): open the durable
-            // thread store. Failure is non-fatal -- the UI degrades
-            // to "in-memory only for this session". Corruption is
-            // handled inside `ThreadStore::open_default` (it renames
-            // the bad file aside and starts fresh).
-            thread_store: match paneflow_threads::ThreadStore::open_default() {
-                Ok((store, outcome)) => {
-                    if matches!(
-                        outcome,
-                        paneflow_threads::OpenOutcome::RecoveredFromCorruption { .. }
-                    ) {
-                        // Surface the corruption recovery to the user
-                        // via toast once the app is up (deferred to
-                        // post-construction so `show_toast` is callable).
-                        log::warn!("paneflow-threads: recovered from corrupted threads.db");
-                    }
-                    Some(store)
-                }
-                Err(err) => {
-                    log::warn!("paneflow-threads: could not open store: {err}");
-                    None
-                }
-            },
             // US-011: rename / context-menu / confirm-delete state.
             // All start empty; the affordance handlers set them in
             // response to user actions.
@@ -852,28 +804,8 @@ impl PaneFlowApp {
             agents_skills_tab: crate::agents_view::SkillsTab::default(),
             agents_skills_copied: None,
             sidebar_actions_menu_open: false,
-            // US-013: thread view entity. Lazily mounted when the user
-            // selects a thread in the sidebar; pulled from the cache
-            // on switch so the in-memory timeline (reasoning cards,
-            // streaming pumps) survives the round-trip.
-            agents_thread_view: None,
-            agents_thread_view_for: None,
-            agents_thread_view_cache: std::collections::HashMap::new(),
             agents_terminal_view_cache: std::collections::HashMap::new(),
         };
-
-        // US-009 (prd-agents-view.md): no-agents fallback. If the
-        // user quit in Agents mode but no ACP agents are installed
-        // anymore (e.g. they uninstalled `bunx` or claude-code-acp),
-        // flip back to CLI mode and queue a one-shot toast so the
-        // window doesn't open onto a blank Agents view.
-        if matches!(app.mode, paneflow_config::schema::AppMode::Agents)
-            && paneflow_acp::AgentDiscovery::new().list().is_empty()
-        {
-            log::info!("agents-view restore: no ACP agents on PATH; falling back to CLI mode");
-            app.mode = paneflow_config::schema::AppMode::Cli;
-            app.show_toast("No AI agents detected, opening terminal view", cx);
-        }
 
         // US-015 (prd-git-diff-mode-2026-Q3.md): restore Diff mode only when
         // it is reconstructable. The diff derives its repo from the restored

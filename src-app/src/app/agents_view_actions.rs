@@ -1,13 +1,11 @@
-//! US-005 + US-008 (prd-agents-view.md): action handler + lifecycle
-//! helpers + render branch entry points for the Agents view.
+//! Action handler + lifecycle helpers + render branch entry points for
+//! the Agents view.
 //!
-//! - US-005 built the lightweight shell entity (auth-required card,
-//!   missing-agents empty state, embedded login terminal).
-//! - US-008 promoted [`paneflow_config::schema::AppMode`] to the source
-//!   of truth for which top-level screen renders. The `agents_view`
-//!   field on [`PaneFlowApp`] is now just the entity holder so the
-//!   discovery results / subscriptions stay alive across renders --
-//!   `self.mode` decides whether the view is currently visible.
+//! [`paneflow_config::schema::AppMode`] is the source of truth for which
+//! top-level screen renders; `self.mode` decides whether the Agents view
+//! is currently visible. The main area is terminal-only: a selected
+//! thread renders its PTY, and the no-thread state renders the agent
+//! picker for the active project (the home/empty state).
 //!
 //! Toggled by the [`crate::OpenAgentsView`] action (Ctrl+Shift+A on
 //! Linux/Windows, Cmd+Shift+A on macOS). Both render branches
@@ -16,7 +14,6 @@
 //! `self.mode == AppMode::Cli` -- main `render` only calls them on the
 //! Agents arm.
 
-use crate::agents_view::{AgentsView, CloseRequested};
 use crate::{OpenAgentsView, PaneFlowApp};
 use gpui::{AppContext, Context, IntoElement, ParentElement, Styled, Window, div, px};
 use paneflow_config::schema::AppMode;
@@ -30,10 +27,6 @@ pub(crate) const AGENTS_SIDEBAR_WIDTH: f32 = 280.0;
 
 impl PaneFlowApp {
     /// Toggle between [`AppMode::Cli`] and [`AppMode::Agents`].
-    /// Lazily mounts the [`AgentsView`] entity on the first switch
-    /// into Agents mode and runs PATH discovery immediately so the
-    /// next paint already has the agents-listed / empty / auth state
-    /// decided.
     ///
     /// Focus contract (US-008 AC): when toggling back to CLI, the
     /// previously active workspace's first pane re-receives focus.
@@ -57,50 +50,6 @@ impl PaneFlowApp {
                 self.enter_agents_mode(cx);
             }
         }
-    }
-
-    /// Programmatic alias for "the user clicked the close button on
-    /// the Agents view header". Kept as a separate entry point so
-    /// callers that have no [`Window`] (e.g. event subscribers) can
-    /// still toggle back. Focus restore is best-effort here -- the
-    /// next mouse / key event in the CLI tree will resolve focus the
-    /// regular way.
-    pub(crate) fn close_agents_view(&mut self, cx: &mut Context<Self>) {
-        if self.mode == AppMode::Agents {
-            self.mode = AppMode::Cli;
-            self.agents_view = None;
-            // US-116: panel is no longer visible -- let the
-            // notifications gate know so the next TurnEnded fires the
-            // OS toast even though the window is still focused.
-            crate::agents::notifications::set_agents_panel_visible(false);
-            cx.notify();
-        }
-    }
-
-    /// Switch the main pane to the AgentsView welcome screen
-    /// (PATH-discovered agents + signed-in chips / Sign-in buttons).
-    /// Used by the sidebar "Connect" affordance: drops the active
-    /// thread selection so `render_agents_main_body` falls through to
-    /// the `AgentsView` entity instead of a ThreadView, then re-runs
-    /// PATH discovery so freshly installed agents show up without a
-    /// restart.
-    pub(crate) fn show_agents_welcome(&mut self, cx: &mut Context<Self>) {
-        self.active_thread_idx = None;
-        self.agents_skills_visible = false;
-        let view = match self.agents_view.clone() {
-            Some(v) => v,
-            None => {
-                let fresh = cx.new(|_cx| AgentsView::new());
-                cx.subscribe(&fresh, |this, _emitter, _event: &CloseRequested, cx| {
-                    this.close_agents_view(cx);
-                })
-                .detach();
-                self.agents_view = Some(fresh.clone());
-                fresh
-            }
-        };
-        view.update(cx, |v, cx| v.refresh(cx));
-        cx.notify();
     }
 
     /// Switch the main pane to the Skills browser (~/.claude/skills,
@@ -144,24 +93,12 @@ impl PaneFlowApp {
         // US-116: panel is now front-and-center; the gate combines
         // this with window-active to decide notification firing.
         crate::agents::notifications::set_agents_panel_visible(true);
-        // Lazy mount: a fresh AgentsView on every entry so PATH
-        // discovery re-runs (the user may have installed an agent
-        // between toggles -- AC of US-004's focus refresh).
-        let view = cx.new(|_cx| AgentsView::new());
-        view.update(cx, |v, cx| v.refresh(cx));
-        cx.subscribe(&view, |this, _emitter, _event: &CloseRequested, cx| {
-            this.close_agents_view(cx);
-        })
-        .detach();
-        self.agents_view = Some(view);
         cx.notify();
     }
 
     fn exit_agents_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.mode = AppMode::Cli;
-        self.agents_view = None;
-        // US-116: as in `close_agents_view`, flip the gate so the
-        // next runtime event surfaces a toast.
+        // US-116: flip the gate so the next runtime event surfaces a toast.
         crate::agents::notifications::set_agents_panel_visible(false);
         // Focus contract: restore focus to the active workspace's
         // first pane so the keyboard immediately targets the
@@ -178,13 +115,12 @@ impl PaneFlowApp {
     /// Main-content render branch for [`AppMode::Agents`].
     ///
     /// Priority order:
-    /// 1. A selected thread -> render its [`agents::thread_view::ThreadView`]
-    ///    (US-013). The entity is lazily mounted and recreated when
-    ///    the user picks a different thread.
-    /// 2. No selection but the auth/missing-agents shell is mounted ->
-    ///    render that (US-005).
-    /// 3. Defensive fallback ("Loading agents view...") which should
-    ///    not be reachable in normal flow.
+    /// 1. The Skills page, if open.
+    /// 2. A selected thread -> its terminal surface (the PTY launching
+    ///    the thread's CLI agent).
+    /// 3. A project open but no thread selected -> the agent picker for
+    ///    that project (the home/empty state).
+    /// 4. No project at all -> the "no project" empty state.
     pub(crate) fn render_agents_main(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let body: gpui::AnyElement = self.render_agents_main_body(cx);
         div()
@@ -195,12 +131,12 @@ impl PaneFlowApp {
             .into_any_element()
     }
 
-    /// US-104: the inner Agents-view body (ThreadView or AgentsView
-    /// fallback). Pulled out so the toolbar wrapping logic stays in
-    /// one place. Returns the v1 selection priority unchanged.
+    /// The inner Agents-view body (skills page / terminal surface /
+    /// agent picker / empty state). Pulled out so the toolbar wrapping
+    /// logic stays in one place.
     fn render_agents_main_body(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        // Sidebar "Skills" affordance takes precedence over both the
-        // thread view and the welcome view.
+        // Sidebar "Skills" affordance takes precedence over the thread /
+        // picker surfaces.
         if self.agents_skills_visible {
             return crate::agents_view::render_skills_page(
                 self.agents_skills_tab,
@@ -208,57 +144,166 @@ impl PaneFlowApp {
                 cx,
             );
         }
-        // US-013 + Terminal Thread surface: per-thread main area.
-        if let Some(target) = self.current_thread_view_target() {
-            let (p_idx, t_idx) = target;
-            let kind = self
-                .projects
-                .get(p_idx)
-                .and_then(|p| p.threads.get(t_idx))
-                .map(|t| t.kind)
-                .unwrap_or(crate::project::ThreadKind::Agent);
-            match kind {
-                crate::project::ThreadKind::Agent => {
-                    self.ensure_thread_view_mounted(target, cx);
-                    if let Some(view) = self.agents_thread_view.clone() {
-                        return view.into_any_element();
-                    }
-                }
-                crate::project::ThreadKind::Terminal => {
-                    // Drop any stale ThreadView pointer so its
-                    // subscriptions don't race against the PTY surface.
-                    self.agents_thread_view = None;
-                    self.agents_thread_view_for = None;
-                    if let Some(view) = self.ensure_terminal_view_mounted(target, cx) {
-                        return crate::app::agents_view_actions::render_terminal_thread_surface(
-                            view,
-                        );
-                    }
-                }
-            }
-        } else if self.agents_thread_view.is_some() {
-            // The user deselected (e.g. deleted the active thread).
-            // Drop the entity so its subscriptions are released.
-            self.agents_thread_view = None;
-            self.agents_thread_view_for = None;
+        // A selected thread renders its terminal surface. Every thread
+        // is a terminal now (the in-app ACP chat was removed); legacy
+        // `ThreadKind::Agent` rows relaunch their original CLI agent in a
+        // PTY (see `ensure_terminal_view_mounted`).
+        if let Some(target) = self.current_thread_view_target()
+            && let Some(view) = self.ensure_terminal_view_mounted(target, cx)
+        {
+            return render_terminal_thread_surface(view);
         }
+        // No thread selected: the agent picker for the active project is
+        // the home/empty state (start a thread by picking an agent).
+        if !self.projects.is_empty() && self.active_project_idx < self.projects.len() {
+            let project_idx = self.active_project_idx;
+            return self.render_agents_launcher(project_idx, cx);
+        }
+        // No project at all: a minimal empty state mirroring the
+        // sidebar's "No projects yet" copy.
+        render_agents_no_project()
+    }
 
-        if let Some(view) = self.agents_view.clone() {
-            return view.into_any_element();
-        }
-        // Defensive: mode is Agents but the entity is missing. Show a
-        // minimal placeholder rather than a blank pane.
+    /// Agent picker: a centered card list of the CLI coding agents
+    /// enabled in Settings → AI Agent. Clicking one creates a Terminal
+    /// Thread in `project_idx` that auto-launches that agent in a PTY
+    /// (honoring the bypass-permission flag). This is the Agents view's
+    /// home/empty state whenever a project is open but no thread is
+    /// selected.
+    fn render_agents_launcher(
+        &mut self,
+        project_idx: usize,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        use crate::agent_launcher::TerminalAgent;
+        use gpui::{
+            ClickEvent, CursorStyle, FontWeight, InteractiveElement, MouseButton, SharedString,
+            StatefulInteractiveElement, rgb,
+        };
+
         let ui = crate::theme::ui_colors();
+        let theme = crate::theme::active_theme();
+        let config = paneflow_config::loader::load_config();
+        let agents = TerminalAgent::visible(&config);
+
+        let rows: Vec<gpui::AnyElement> = agents
+            .into_iter()
+            .map(|agent| {
+                let name = agent.display_name();
+                let icon_color: gpui::Hsla =
+                    agent.accent().map(|c| rgb(c).into()).unwrap_or(ui.text);
+                div()
+                    .id(SharedString::from(format!(
+                        "agents-launcher-{}",
+                        agent.tag()
+                    )))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(12.))
+                    .px(px(14.))
+                    .py(px(12.))
+                    .my(px(4.))
+                    .rounded(px(10.))
+                    .bg(ui.surface)
+                    .border_1()
+                    .border_color(ui.border)
+                    .cursor(CursorStyle::PointingHand)
+                    .hover(|s| {
+                        let ui = crate::theme::ui_colors();
+                        s.bg(ui.subtle).border_color(ui.accent)
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        this.create_agent_terminal_thread_in(project_idx, agent, cx);
+                    }))
+                    // Multi-color logos render via `img()` (resvg rasterizes
+                    // the SVG, keeping every native fill); monochrome logos
+                    // stay a `text_color`-tinted `svg()` mask.
+                    .child(if agent.icon_multicolor() {
+                        gpui::img(agent.icon_path())
+                            .size(px(18.))
+                            .flex_none()
+                            .into_any_element()
+                    } else {
+                        gpui::svg()
+                            .size(px(18.))
+                            .flex_none()
+                            .path(agent.icon_path())
+                            .text_color(icon_color)
+                            .into_any_element()
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(ui.text)
+                            .child(SharedString::from(name)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(12.))
+                            .text_color(ui.muted)
+                            .child("Open"),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+
+        let body: gpui::AnyElement = if rows.is_empty() {
+            div()
+                .text_size(px(13.))
+                .text_color(ui.muted)
+                .child(
+                    "Every agent is hidden in Settings → AI Agent. Enable one to start a thread.",
+                )
+                .into_any_element()
+        } else {
+            div().flex().flex_col().children(rows).into_any_element()
+        };
+
         div()
             .size_full()
             .flex()
-            .items_center()
-            .justify_center()
+            .flex_col()
+            .bg(theme.title_bar_background)
+            .text_color(ui.text)
             .child(
                 div()
-                    .text_color(ui.muted)
-                    .text_size(px(13.))
-                    .child("Loading agents view..."),
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .px(px(20.))
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(640.))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .mb(px(4.))
+                                    .text_size(px(16.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ui.text)
+                                    .child("Start a new thread"),
+                            )
+                            .child(
+                                div()
+                                    .mb(px(12.))
+                                    .text_size(px(12.))
+                                    .text_color(ui.muted)
+                                    .child("Pick an agent to launch in a terminal."),
+                            )
+                            .child(body),
+                    ),
             )
             .into_any_element()
     }
@@ -276,165 +321,14 @@ impl PaneFlowApp {
         }
     }
 
-    /// Mount (or remount) the ThreadView entity for `target`. Looks
-    /// up the cache by `Thread.id` first — if the user has visited
-    /// this thread earlier in the session, the same Entity is
-    /// re-bound so the in-memory timeline (reasoning cards, in-flight
-    /// streaming pumps, scroll position) survives the round trip.
-    /// Otherwise a fresh entity is built and inserted into the cache.
-    fn ensure_thread_view_mounted(&mut self, target: (usize, usize), cx: &mut Context<Self>) {
-        if self.agents_thread_view_for == Some(target) && self.agents_thread_view.is_some() {
-            return;
-        }
-        let (p_idx, t_idx) = target;
-        let Some(thread) = self.projects.get(p_idx).and_then(|p| p.threads.get(t_idx)) else {
-            return;
-        };
-        let thread_id = thread.id;
-        // Cache hit: re-bind the existing entity. Subscriptions and
-        // streaming tasks owned by the ThreadView stay alive because
-        // we never dropped it.
-        if let Some(cached) = self.agents_thread_view_cache.get(&thread_id) {
-            self.agents_thread_view = Some(cached.clone());
-            self.agents_thread_view_for = Some(target);
-            return;
-        }
-        let store_id = thread
-            .store_id
-            .clone()
-            .map(paneflow_threads::ThreadId::from_string);
-        let agent_kind = thread.agent;
-        let cwd = std::path::PathBuf::from(&thread.cwd);
-        let store = self.thread_store.clone();
-        // US-016: the Composer hosted inside ThreadView needs its
-        // own AgentDiscovery handle to render the agent picker
-        // popover (PRD AC #4). AgentDiscovery caches its first
-        // probe so allocating one per ThreadView is cheap.
-        let discovery = std::sync::Arc::new(paneflow_acp::AgentDiscovery::new());
-        let view = cx.new(|cx| {
-            crate::agents::thread_view::ThreadView::new(
-                store_id, store, agent_kind, cwd, discovery, cx,
-            )
-        });
-        // US-020: subscribe to the ThreadView's ForkRequested events
-        // so a Save click in the inline editor lands in
-        // `handle_thread_fork`. The subscription is detached -- the
-        // ThreadView entity owns its own lifecycle and the
-        // subscription drops with the view.
-        cx.subscribe(
-            &view,
-            |this, _src, event: &crate::agents::thread_view::ForkRequested, cx| {
-                this.handle_thread_fork(event.message_idx, event.new_text.clone(), cx);
-            },
-        )
-        .detach();
-        // Agent-suggested title (Claude Code `/resume` summary, Codex
-        // session label) OR client-side auto-derive from first prompt.
-        // Renames the matching sidebar row + mirrors into `threads.db`
-        // so the new title survives a restart.
-        cx.subscribe(
-            &view,
-            |this, _src, event: &crate::agents::thread_view::TitleSuggested, cx| {
-                this.handle_thread_title_suggested(event.title.clone(), event.policy.clone(), cx);
-            },
-        )
-        .detach();
-        self.agents_thread_view_cache
-            .insert(thread_id, view.clone());
-        self.agents_thread_view = Some(view);
-        self.agents_thread_view_for = Some(target);
-    }
-
-    /// Apply an agent-suggested title to the currently active thread:
-    /// updates the in-memory sidebar row, mirrors to `threads.db`
-    /// via `ThreadStore::set_summary`, then persists the session so a
-    /// restart picks up the new title.
-    pub(crate) fn handle_thread_title_suggested(
-        &mut self,
-        title: String,
-        policy: crate::agents::thread_view::TitleReplacePolicy,
-        cx: &mut Context<Self>,
-    ) {
-        let Some((project_idx, thread_idx)) = self.agents_thread_view_for else {
-            return;
-        };
-        // Strip the leading status-glyph decoration (Claude Code's
-        // `✻`, Codex's braille spinner, generic `●`/`•`) that some CLI
-        // wrappers prepend to the session title -- without this, the
-        // sidebar row literally renders the dot in front of the label
-        // and reads as a stalled spinner.
-        let Some(title) = crate::project::clean_sidebar_title(&title) else {
-            return;
-        };
-        let store_id = match self
-            .projects
-            .get_mut(project_idx)
-            .and_then(|p| p.threads.get_mut(thread_idx))
-        {
-            Some(thread) => {
-                if thread.title == title {
-                    return;
-                }
-                // Replace policy gate. See `TitleReplacePolicy` for the
-                // three call sites that produce a suggestion (agent
-                // push, client auto-derive, background summarizer) and
-                // what each one needs to preserve.
-                use crate::agents::thread_view::TitleReplacePolicy;
-                let allowed = match &policy {
-                    TitleReplacePolicy::Always => true,
-                    TitleReplacePolicy::OnlyIfDefault => thread.title == "New thread",
-                    TitleReplacePolicy::OnlyIfStillEqualTo(snapshot) => &thread.title == snapshot,
-                };
-                if !allowed {
-                    return;
-                }
-                thread.title = title.clone();
-                thread.store_id.clone()
-            }
-            None => return,
-        };
-        if let (Some(id), Some(store)) = (store_id, &self.thread_store) {
-            let typed = paneflow_threads::store::ThreadId::from_string(id);
-            if let Err(err) = store.set_summary(&typed, &title) {
-                log::warn!("agents-view: thread title sync to db failed: {err}");
-            }
-        }
-        self.save_session(cx);
-        cx.notify();
-    }
-
-    /// Commit an in-place edit on the active thread: truncate every
-    /// item from `message_idx` onwards (the edited user message + the
-    /// agent's response chain), persist the truncated history, then
-    /// dispatch `new_text` through the composer so the agent regenerates
-    /// the turn on the SAME thread (no fork, no `(fork)` row).
-    pub(crate) fn handle_thread_fork(
-        &mut self,
-        message_idx: usize,
-        new_text: String,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(view) = self.agents_thread_view.clone() else {
-            return;
-        };
-        view.update(cx, |tv, cx| {
-            tv.truncate_for_edit(message_idx, cx);
-        });
-        if let Some(composer) = view.read(cx).composer() {
-            composer.update(cx, |c, cx| {
-                c.send_prompt(new_text, cx);
-            });
-        }
-    }
-
     /// Mount (or reuse from cache) the [`TerminalView`] entity that
     /// backs a Terminal Thread at `target`. Returns the entity ready
     /// to be wrapped by [`render_terminal_thread_surface`].
     ///
-    /// Mirrors [`Self::ensure_thread_view_mounted`] for the PTY path:
-    /// cache hit re-binds the existing entity so the running shell
+    /// Cache hit re-binds the existing entity so the running shell
     /// process survives sidebar navigation; cache miss spawns a fresh
-    /// PTY in the thread's cwd via [`TerminalView::with_cwd`].
+    /// PTY in the thread's cwd via [`TerminalView::with_cwd`] and (when
+    /// the thread is bound to a CLI agent) auto-launches it.
     ///
     /// `workspace_id` for the new view defaults to the thread's own
     /// `id` so PTY tracking (signal routing, kill-on-quit) keys off a
@@ -455,9 +349,32 @@ impl PaneFlowApp {
             return Some(cached.clone());
         }
         let cwd = std::path::PathBuf::from(&thread.cwd);
+        // Explicit per-thread agent wins; legacy `Agent`-kind chat rows
+        // fall back to their stored ACP agent so reopening them launches
+        // the same CLI in a terminal. Plain Terminal Threads stay a bare
+        // shell (`None`).
+        let terminal_agent = thread.terminal_agent.or_else(|| match thread.kind {
+            crate::project::ThreadKind::Agent => Some(
+                crate::agent_launcher::TerminalAgent::from_agent_kind(thread.agent),
+            ),
+            crate::project::ThreadKind::Terminal => None,
+        });
         let view = cx.new(|cx| {
             crate::terminal::view::TerminalView::with_cwd(thread_id, Some(cwd), None, cx)
         });
+        // Cache miss = first mount of this thread's PTY (fresh creation
+        // or first reopen after a restart). When the thread is bound to
+        // a CLI agent, auto-run its launch command so opening the thread
+        // drops the user straight into the agent. The command honors
+        // `claude_code_bypass_permissions` via `launch_command`. Writing
+        // immediately is safe: the PTY buffers input until the shell is
+        // ready (same pattern as the discovery-view login terminal).
+        // Cache hits (in-session re-selection) skip this, so a running
+        // agent is never relaunched on navigation.
+        if let Some(agent) = terminal_agent {
+            let cmd = agent.launch_command(&paneflow_config::loader::load_config());
+            view.read(cx).send_command(cmd);
+        }
         // Mirror Zed's `AgentTerminal::refresh_terminal_metadata`
         // (agent_panel.rs around `TerminalEvent::TitleChanged`): every
         // OSC 0/2 title update from the running process is reflected
@@ -542,5 +459,33 @@ pub(crate) fn render_terminal_thread_surface(
         .size_full()
         .bg(ui.base)
         .child(view.into_any_element())
+        .into_any_element()
+}
+
+/// Main-area empty state when the Agents view has no project to pick an
+/// agent for. Mirrors the sidebar's "No projects yet" copy; the
+/// "New threads" sidebar row opens the folder picker.
+fn render_agents_no_project() -> gpui::AnyElement {
+    let ui = crate::theme::ui_colors();
+    let theme = crate::theme::active_theme();
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(8.))
+        .bg(theme.title_bar_background)
+        .child(
+            div()
+                .text_size(px(15.))
+                .text_color(ui.text)
+                .child("No project open"),
+        )
+        .child(
+            div().text_size(px(12.)).text_color(ui.muted).child(
+                "Click \"New threads\" in the sidebar to add a project, then pick an agent.",
+            ),
+        )
         .into_any_element()
 }

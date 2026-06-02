@@ -17,10 +17,10 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt, App, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter,
-    FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    Pixels, Point, Render, SharedString, Size, Styled, Window, div, ease_out_quint, prelude::*, px,
-    rgb, svg,
+    Animation, AnimationExt, AnyElement, App, ClickEvent, Context, DragMoveEvent, Entity,
+    EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, Pixels, Point, Render, SharedString, Size, Styled, Window, div, ease_out_quint,
+    img, prelude::*, px, rgb, svg,
 };
 use paneflow_config::schema::ButtonCommand;
 
@@ -460,17 +460,37 @@ impl Pane {
             SharedString::from(id),
             SharedString::from(icon_path),
             tab_colors().muted,
+            false,
             handler,
         )
     }
 
-    /// Render a small SVG icon button with a caller-supplied tint colour.
-    /// Used for most built-in agent buttons and for user-defined
-    /// `custom_buttons` (muted, matching the other controls).
+    /// A 14px tab-bar icon. Monochrome logos render as a `text_color`-tinted
+    /// `svg()` mask; multi-color logos render via `img()`, which rasterizes
+    /// the SVG (resvg) and keeps every native fill/gradient — a `text_color`
+    /// tint has no effect there, so `tint` is ignored when `multicolor`.
+    fn command_icon(icon_path: SharedString, tint: Hsla, multicolor: bool) -> AnyElement {
+        if multicolor {
+            img(icon_path).size(px(14.)).flex_none().into_any_element()
+        } else {
+            svg()
+                .size(px(14.))
+                .flex_none()
+                .path(icon_path)
+                .text_color(tint)
+                .into_any_element()
+        }
+    }
+
+    /// Render a small icon button with a caller-supplied tint colour. Used
+    /// for most built-in agent buttons and for user-defined `custom_buttons`
+    /// (muted, matching the other controls). `multicolor` switches the icon
+    /// to native-color `img()` rendering (see [`Self::command_icon`]).
     fn command_button(
         id: SharedString,
         icon_path: SharedString,
         tint: Hsla,
+        multicolor: bool,
         handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
         div()
@@ -487,13 +507,7 @@ impl Pane {
                 s.bg(ui.subtle)
             })
             .on_click(move |e, w, cx| handler(e, w, cx))
-            .child(
-                svg()
-                    .size(px(14.))
-                    .flex_none()
-                    .path(icon_path)
-                    .text_color(tint),
-            )
+            .child(Self::command_icon(icon_path, tint, multicolor))
     }
 
     /// Close a tab at the given index. Emits `PaneEvent::Remove` if the pane becomes empty.
@@ -1202,113 +1216,35 @@ impl Pane {
                         }),
                     ))
                 },
-            )
-            // Built-in default command buttons. Each one is opt-out via
-            // Settings → AI Agent (or by editing paneflow.json directly);
-            // `None` and `Some(true)` render the button, `Some(false)` hides it.
-            .when(
-                paneflow_config::loader::load_config()
-                    .claude_code_button_visible
-                    .unwrap_or(true),
-                |s| {
-                    s.child(Self::command_button(
-                        "pane-btn-claude".into(),
-                        "icons/claude-color.svg".into(),
-                        rgb(0xd97757).into(),
-                        cx.listener(|this, _, _window, cx| {
-                            let Some(terminal) = this.active_terminal_opt() else {
-                                return;
-                            };
-                            let bypass = paneflow_config::loader::load_config()
-                                .claude_code_bypass_permissions
-                                .unwrap_or(false);
-                            let cmd = if bypass {
-                                "clear && claude --permission-mode bypassPermissions"
-                            } else {
-                                "clear && claude"
-                            };
-                            terminal.read(cx).send_command(cmd);
-                        }),
-                    ))
-                },
-            )
-            .when(
-                paneflow_config::loader::load_config()
-                    .codex_button_visible
-                    .unwrap_or(true),
-                |s| {
-                    s.child(Self::command_button(
-                        "pane-btn-codex".into(),
-                        "icons/codex-color.svg".into(),
-                        rgb(0x7a9dff).into(),
-                        cx.listener(|this, _, _window, cx| {
-                            let Some(terminal) = this.active_terminal_opt() else {
-                                return;
-                            };
-                            terminal.read(cx).send_command("clear && codex");
-                        }),
-                    ))
-                },
-            )
-            .when(
-                paneflow_config::loader::load_config()
-                    .opencode_button_visible
-                    .unwrap_or(true),
-                |s| {
-                    // Opencode's logo is monochrome (currentColor SVG) — tint
-                    // with the theme's primary text color so it stays readable
-                    // on both dark and light backgrounds.
-                    s.child(Self::command_button(
-                        "pane-btn-opencode".into(),
-                        "icons/opencode-color.svg".into(),
-                        tab_colors().text,
-                        cx.listener(|this, _, _window, cx| {
-                            let Some(terminal) = this.active_terminal_opt() else {
-                                return;
-                            };
-                            terminal.read(cx).send_command("clear && opencode");
-                        }),
-                    ))
-                },
-            )
-            .when(
-                paneflow_config::loader::load_config()
-                    .pi_button_visible
-                    .unwrap_or(true),
-                |s| {
-                    // Pi's icon is monochrome (currentColor SVG) — tint with
-                    // the theme's primary text color so it stays readable.
-                    s.child(Self::command_button(
-                        "pane-btn-pi".into(),
-                        "icons/pi-coding-agent.svg".into(),
-                        tab_colors().text,
-                        cx.listener(|this, _, _window, cx| {
-                            let Some(terminal) = this.active_terminal_opt() else {
-                                return;
-                            };
-                            terminal.read(cx).send_command("clear && pi");
-                        }),
-                    ))
-                },
-            )
-            .when(
-                paneflow_config::loader::load_config()
-                    .hermes_agent_button_visible
-                    .unwrap_or(true),
-                |s| {
-                    s.child(Self::command_button(
-                        "pane-btn-hermes-agent".into(),
-                        "icons/hermesagent.svg".into(),
-                        tab_colors().text,
-                        cx.listener(|this, _, _window, cx| {
-                            let Some(terminal) = this.active_terminal_opt() else {
-                                return;
-                            };
-                            terminal.read(cx).send_command("clear && hermes");
-                        }),
-                    ))
-                },
             );
+
+        // Built-in agent launcher buttons (the 15 CLI coding agents).
+        // Each is opt-out via Settings → AI Agent; `TerminalAgent::visible`
+        // applies the per-agent `*_button_visible` gate (absent/true =>
+        // shown) and is the same single source of truth the Agents-view
+        // picker iterates. The launch command (always prefixed with
+        // `clear &&`) is read fresh on click so Claude Code's bypass toggle
+        // takes effect without forcing a re-render.
+        let config = paneflow_config::loader::load_config();
+        for agent in crate::agent_launcher::TerminalAgent::visible(&config) {
+            let tint: Hsla = match agent.accent() {
+                Some(c) => rgb(c).into(),
+                None => tab_colors().text,
+            };
+            end_section = end_section.child(Self::command_button(
+                SharedString::from(format!("pane-btn-{}", agent.tag())),
+                SharedString::from(agent.icon_path()),
+                tint,
+                agent.icon_multicolor(),
+                cx.listener(move |this, _, _window, cx| {
+                    let Some(terminal) = this.active_terminal_opt() else {
+                        return;
+                    };
+                    let cmd = agent.launch_command(&paneflow_config::loader::load_config());
+                    terminal.read(cx).send_command(cmd);
+                }),
+            ));
+        }
 
         // User-defined command buttons (persisted per workspace).
         for btn in &self.custom_buttons {
@@ -1319,6 +1255,7 @@ impl Pane {
                 id,
                 icon,
                 ui.muted,
+                false,
                 cx.listener(move |this, _, _window, cx| {
                     let Some(terminal) = this.active_terminal_opt() else {
                         return;

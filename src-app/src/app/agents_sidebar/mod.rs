@@ -302,14 +302,6 @@ impl PaneFlowApp {
         use crate::app::sidebar_actions_menu::SidebarMenuItem;
         vec![
             SidebarMenuItem {
-                id: "agents-menu-connect".into(),
-                icon: "icons/topology-star-3.svg",
-                label: "Connect".into(),
-                on_click: Box::new(|app, _w, cx| {
-                    app.show_agents_welcome(cx);
-                }),
-            },
-            SidebarMenuItem {
                 id: "agents-menu-themes".into(),
                 icon: "icons/palette.svg",
                 label: "Themes".into(),
@@ -383,50 +375,8 @@ impl PaneFlowApp {
             .into_any_element()
     }
 
-    /// "Connect" affordance, styled identically to `new_project_row`.
-    /// Switches the main pane to the AgentsView welcome screen so the
-    /// user can see signed-in chips + (re)connect agents.
-    fn connect_row(&self, ui: crate::theme::UiColors, cx: &mut Context<Self>) -> gpui::AnyElement {
-        div()
-            .id("agents-sidebar-connect")
-            .mx(px(6.))
-            .px(px(8.))
-            .py(px(6.))
-            .rounded(px(6.))
-            .cursor_pointer()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.))
-            .hover(|s| {
-                let ui = crate::theme::ui_colors();
-                s.bg(ui.subtle)
-            })
-            .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                this.show_agents_welcome(cx);
-            }))
-            .child(
-                svg()
-                    .size(px(14.))
-                    .flex_none()
-                    .path("icons/topology-star-3.svg")
-                    .text_color(ui.muted),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_color(ui.text)
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::NORMAL)
-                    .truncate()
-                    .child("Connect"),
-            )
-            .into_any_element()
-    }
-
-    /// "Skills" affordance, styled identically to `new_project_row` /
-    /// `connect_row`. Switches the main pane to the skills browser
+    /// "Skills" affordance, styled identically to `new_project_row`.
+    /// Switches the main pane to the skills browser
     /// (scans `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`).
     fn skills_row(&self, ui: crate::theme::UiColors, cx: &mut Context<Self>) -> gpui::AnyElement {
         div()
@@ -1026,14 +976,13 @@ fn empty_state(ui: crate::theme::UiColors) -> impl IntoElement {
                 .text_size(px(11.))
                 .text_color(ui.muted)
                 .text_center()
-                .child("Create a project to start a thread with Claude Code or Codex."),
+                .child("Create a project, then start a thread with any CLI agent."),
         )
 }
 
 /// Inline hint shown directly under an expanded project header that
-/// has zero threads. PRD Edge Case #10:
-/// "Sidebar shows project header expanded with inline CTA --
-///  No threads yet. Click + to start a new chat."
+/// has zero threads. Right-click the project (or use "New thread") to
+/// open the agent picker.
 fn empty_project_hint(ui: crate::theme::UiColors) -> impl IntoElement {
     div()
         .mx(px(12.))
@@ -1041,7 +990,7 @@ fn empty_project_hint(ui: crate::theme::UiColors) -> impl IntoElement {
         .py(px(4.))
         .text_size(px(11.))
         .text_color(ui.muted)
-        .child("No threads yet. Click + to start a new chat.")
+        .child("No threads yet. Right-click to start one.")
 }
 
 /// US-012 AC #7: inline empty-state row shown when the filter
