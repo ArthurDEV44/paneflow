@@ -8,7 +8,7 @@
 use crate::PaneFlowApp;
 use gpui::{
     AnyElement, ClickEvent, Context, FontWeight, IntoElement, ParentElement, SharedString, Styled,
-    div, prelude::*, px,
+    div, prelude::*, px, svg,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -54,11 +54,21 @@ struct SkillEntry {
 }
 
 const FRONTMATTER_SCAN_BYTES: usize = 16 * 1024;
-const DESCRIPTION_MAX_CHARS: usize = 180;
-/// Fixed card width drives the grid layout via `flex_wrap`: at the
-/// page's `max_w(960)` we get a clean 3-column grid on wide windows
-/// and naturally collapses to 2 / 1 column on narrower ones.
+/// Trimmed so the preview fills ~3 lines at the card width without
+/// overflowing the fixed-height card (any spill is clipped anyway).
+const DESCRIPTION_MAX_CHARS: usize = 160;
+/// Preferred card width: the flex-basis that drives how many columns the
+/// `flex_wrap` grid packs. Cards then `flex_grow` to share the leftover row
+/// width so the grid fills the whole panel instead of leaving a dead gutter
+/// on wide windows.
 const CARD_WIDTH_PX: f32 = 300.0;
+/// Upper bound on a grown card so a sparse last row (e.g. 2 cards) doesn't
+/// stretch them across the full width.
+const CARD_MAX_WIDTH_PX: f32 = 440.0;
+/// Every card is the same height so the wrapped grid aligns into clean
+/// rows instead of the ragged staircase variable-length descriptions
+/// would otherwise produce.
+const CARD_HEIGHT_PX: f32 = 122.0;
 
 pub(crate) fn render_skills_page(
     active_tab: SkillsTab,
@@ -106,8 +116,10 @@ pub(crate) fn render_skills_page(
                 .is_some_and(|c| c == s.name.as_str());
             render_skill_card(s, is_copied, ui, cx)
         });
-        // `flex_wrap` + fixed card width gives a clean grid that
-        // collapses gracefully on narrow windows.
+        // `flex_wrap` packs as many ~`CARD_WIDTH_PX` cards per row as fit the
+        // panel; each card's `flex_grow` then shares the row's leftover width
+        // so the grid fills edge-to-edge (no dead right gutter) and reflows to
+        // fewer columns on narrow windows.
         div()
             .flex()
             .flex_row()
@@ -134,7 +146,6 @@ pub(crate) fn render_skills_page(
         .child(
             div()
                 .w_full()
-                .max_w(px(960.))
                 .flex()
                 .flex_col()
                 .gap(px(4.))
@@ -152,13 +163,8 @@ pub(crate) fn render_skills_page(
                         .child("Skills discovered across your agent home directories."),
                 ),
         )
-        .child(
-            div()
-                .w_full()
-                .max_w(px(960.))
-                .child(render_tab_bar(active_tab, ui, cx)),
-        )
-        .child(div().w_full().max_w(px(960.)).child(body))
+        .child(div().w_full().child(render_tab_bar(active_tab, ui, cx)))
+        .child(div().w_full().child(body))
         .into_any_element()
 }
 
@@ -214,25 +220,81 @@ fn render_skill_card(
     ui: crate::theme::UiColors,
     cx: &mut Context<PaneFlowApp>,
 ) -> AnyElement {
-    // Same chrome as the Agents welcome card (`ui.surface` bg, neutral
-    // border, rounded(10)) so the two pages read as one design language.
-    // Fixed `w(CARD_WIDTH_PX)` drives the parent's `flex_wrap` grid.
     let name_for_copy = skill.name.clone();
     let name_for_mark = skill.name.clone();
     let copy_id: SharedString = format!("skill-copy-{}-{}", skill.source, skill.name).into();
-    let copy_label = if is_copied { "Copied" } else { "Copy" };
-    let copy_text_color = if is_copied { ui.text } else { ui.muted };
+    let card_id: SharedString = format!("skill-card-{}-{}", skill.source, skill.name).into();
+    let group: SharedString = format!("skill-grp-{}-{}", skill.source, skill.name).into();
+
+    // Copy affordance. Hidden until the card is hovered (40 always-on "Copy"
+    // labels were the main source of visual noise), then brightens on its
+    // own hover. Once copied it stays lit with a check so the confirmation
+    // reads at a glance.
+    let mut copy_btn = div()
+        .id(copy_id)
+        .flex_none()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(4.))
+        .px(px(7.))
+        .py(px(3.))
+        .rounded(px(5.))
+        .text_size(px(11.))
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _w, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(name_for_copy.clone()));
+            this.mark_skill_copied(name_for_mark.clone(), cx);
+        }));
+    if is_copied {
+        copy_btn = copy_btn
+            .bg(ui.subtle)
+            .text_color(ui.text)
+            .child(
+                svg()
+                    .size(px(10.))
+                    .flex_none()
+                    .path("icons/check.svg")
+                    .text_color(ui.text),
+            )
+            .child("Copied");
+    } else {
+        copy_btn = copy_btn
+            .opacity(0.)
+            .text_color(ui.muted)
+            .group_hover(group.clone(), |s| s.opacity(1.))
+            .hover(|s| {
+                let ui = crate::theme::ui_colors();
+                s.text_color(ui.text)
+            })
+            .child("Copy");
+    }
+
+    // Uniform-height card; hover amplifies an accent ring (no dimming of the
+    // others) and reveals the Copy button. Background stays `ui.surface` so
+    // the ring is the only emphasis — consistent with the active-pane cue.
     div()
+        .id(card_id)
+        .group(group)
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(px(7.))
+        .h(px(CARD_HEIGHT_PX))
+        // Flexible width: `w` acts as the flex-basis (drives wrap), `flex_grow`
+        // fills the row's leftover space, `max_w` caps a grown card.
         .w(px(CARD_WIDTH_PX))
-        .px(px(12.))
-        .py(px(10.))
+        .flex_grow()
+        .max_w(px(CARD_MAX_WIDTH_PX))
+        .px(px(14.))
+        .py(px(12.))
         .rounded(px(10.))
         .bg(ui.surface)
         .border_1()
         .border_color(ui.border)
+        .hover(|s| {
+            let ui = crate::theme::ui_colors();
+            s.border_color(ui.accent.opacity(0.6))
+        })
         .child(
             div()
                 .flex()
@@ -241,41 +303,26 @@ fn render_skill_card(
                 .justify_between()
                 .gap(px(8.))
                 .w_full()
+                .flex_none()
                 .child(
                     div()
                         .min_w_0()
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::NORMAL)
+                        .truncate()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(ui.text)
                         .child(SharedString::from(skill.name.clone())),
                 )
-                .child(
-                    div()
-                        .id(copy_id)
-                        .flex_none()
-                        .px(px(8.))
-                        .py(px(3.))
-                        .rounded(px(5.))
-                        .text_size(px(11.))
-                        .text_color(copy_text_color)
-                        .cursor_pointer()
-                        .hover(|s| {
-                            let ui = crate::theme::ui_colors();
-                            s.bg(ui.subtle).text_color(ui.text)
-                        })
-                        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _w, cx| {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                name_for_copy.clone(),
-                            ));
-                            this.mark_skill_copied(name_for_mark.clone(), cx);
-                        }))
-                        .child(copy_label),
-                ),
+                .child(copy_btn),
         )
         .when(!skill.description.is_empty(), |d| {
             d.child(
                 div()
-                    .text_size(px(11.))
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
                     .text_color(ui.muted)
                     .child(SharedString::from(skill.description)),
             )
@@ -337,21 +384,66 @@ fn discover_skills() -> Vec<SkillEntry> {
 
 fn read_frontmatter(path: &Path) -> Option<(String, String)> {
     let raw = read_capped(path, FRONTMATTER_SCAN_BYTES).ok()?;
+    parse_frontmatter(&raw)
+}
+
+/// Pull `(name, description)` from a `SKILL.md`'s YAML frontmatter. Handles
+/// inline scalars, quoted strings, and `>`/`|` block scalars (folded into a
+/// single whitespace-collapsed line). Pure over the raw text so it can be
+/// unit-tested without touching the filesystem.
+fn parse_frontmatter(raw: &str) -> Option<(String, String)> {
     let mut lines = raw.lines();
     if lines.next()?.trim() != "---" {
         return None;
     }
+    // Collect the frontmatter block (up to the closing `---`) so a
+    // multi-line block scalar (`description: >` / `|`) can consume its
+    // indented continuation lines by index.
+    let fm: Vec<&str> = lines
+        .map(|l| l.trim_end_matches('\r'))
+        .take_while(|l| l.trim() != "---")
+        .collect();
+
     let mut name = String::new();
     let mut description = String::new();
-    for line in lines {
-        let trimmed = line.trim_end_matches('\r');
-        if trimmed.trim() == "---" {
-            break;
-        }
-        if let Some(rest) = trimmed.strip_prefix("name:") {
+    let mut i = 0;
+    while i < fm.len() {
+        let line = fm[i];
+        if let Some(rest) = line.strip_prefix("name:") {
             name = strip_yaml_value(rest);
-        } else if let Some(rest) = trimmed.strip_prefix("description:") {
-            description = strip_yaml_value(rest);
+            i += 1;
+        } else if let Some(rest) = line.strip_prefix("description:") {
+            let inline = rest.trim();
+            if inline.starts_with('>') || inline.starts_with('|') {
+                // Block scalar: gather the following indented lines, fold
+                // them into one whitespace-collapsed string (good enough for
+                // a one-line preview, regardless of folded vs literal).
+                i += 1;
+                let mut parts: Vec<&str> = Vec::new();
+                while i < fm.len() {
+                    let cont = fm[i];
+                    if cont.trim().is_empty() {
+                        i += 1;
+                        continue;
+                    }
+                    if cont.starts_with(' ') || cont.starts_with('\t') {
+                        parts.push(cont.trim());
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                description = parts
+                    .join(" ")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+            } else {
+                description = strip_yaml_value(rest);
+                i += 1;
+            }
+        } else {
+            i += 1;
         }
     }
     Some((name, description))
@@ -391,4 +483,46 @@ fn ellipsize(text: String, max_chars: usize) -> String {
     }
     cut.push('\u{2026}');
     cut
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_inline_quoted_description() {
+        let raw = "---\nname: clerk-cli\ndescription: \"Manage Clerk apps.\"\n---\nbody";
+        let (name, desc) = parse_frontmatter(raw).expect("frontmatter");
+        assert_eq!(name, "clerk-cli");
+        assert_eq!(desc, "Manage Clerk apps.");
+    }
+
+    #[test]
+    fn folds_block_scalar_description() {
+        // Regression: `description: >` used to surface a literal ">" because
+        // the parser took the inline token instead of the indented block.
+        let raw = "---\nmodel: opus\nname: frontend-design\ndescription: >\n  Creates distinctive\n  frontend interfaces\n  with intent.\nargument-hint: \"[x]\"\n---\nbody";
+        let (name, desc) = parse_frontmatter(raw).expect("frontmatter");
+        assert_eq!(name, "frontend-design");
+        assert_eq!(desc, "Creates distinctive frontend interfaces with intent.");
+    }
+
+    #[test]
+    fn folds_literal_block_scalar_description() {
+        let raw = "---\nname: x\ndescription: |\n  Line one\n  Line two\n---\n";
+        let (_, desc) = parse_frontmatter(raw).expect("frontmatter");
+        assert_eq!(desc, "Line one Line two");
+    }
+
+    #[test]
+    fn missing_opening_fence_is_none() {
+        assert!(parse_frontmatter("name: x\ndescription: y\n").is_none());
+    }
+
+    #[test]
+    fn absent_description_yields_empty() {
+        let (name, desc) = parse_frontmatter("---\nname: solo\n---\n").expect("frontmatter");
+        assert_eq!(name, "solo");
+        assert!(desc.is_empty());
+    }
 }

@@ -11,8 +11,8 @@
 //! without a restart.
 
 use gpui::{
-    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled, div, prelude::*, px,
+    AnyElement, ClickEvent, Context, CursorStyle, Hsla, InteractiveElement, IntoElement,
+    ParentElement, SharedString, Styled, div, img, prelude::*, px, rgb, svg,
 };
 
 use paneflow_mcp_install::{InstallKind, OverallState, StatusKind};
@@ -23,17 +23,33 @@ use crate::settings::components::{
 };
 
 use super::super::window::SettingsWindow;
+use crate::agent_launcher::TerminalAgent;
 
 impl SettingsWindow {
     pub(crate) fn render_ai_agent_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let config = paneflow_config::loader::load_config();
         let ui = crate::theme::ui_colors();
 
-        let claude_visible = config.claude_code_button_visible.unwrap_or(true);
-        let codex_visible = config.codex_button_visible.unwrap_or(true);
-        let opencode_visible = config.opencode_button_visible.unwrap_or(true);
-        let pi_visible = config.pi_button_visible.unwrap_or(true);
-        let hermes_agent_visible = config.hermes_agent_button_visible.unwrap_or(true);
+        // Effective state, not the raw key: an absent key defaults to
+        // "shown only if the agent's CLI is installed" (see
+        // `TerminalAgent::is_visible`). Toggling writes an explicit
+        // `Some(..)` that pins the choice regardless of install state.
+        let claude_visible = TerminalAgent::ClaudeCode.is_visible(&config);
+        let codex_visible = TerminalAgent::Codex.is_visible(&config);
+        let opencode_visible = TerminalAgent::OpenCode.is_visible(&config);
+        let pi_visible = TerminalAgent::Pi.is_visible(&config);
+        let hermes_agent_visible = TerminalAgent::Hermes.is_visible(&config);
+        let grok_visible = TerminalAgent::Grok.is_visible(&config);
+        let amp_visible = TerminalAgent::Amp.is_visible(&config);
+        let cursor_visible = TerminalAgent::Cursor.is_visible(&config);
+        let gemini_visible = TerminalAgent::Gemini.is_visible(&config);
+        let kiro_visible = TerminalAgent::Kiro.is_visible(&config);
+        let antigravity_visible = TerminalAgent::Antigravity.is_visible(&config);
+        let copilot_visible = TerminalAgent::Copilot.is_visible(&config);
+        let codebuddy_visible = TerminalAgent::CodeBuddy.is_visible(&config);
+        let factory_visible = TerminalAgent::Factory.is_visible(&config);
+        let qoder_visible = TerminalAgent::Qoder.is_visible(&config);
+        let openclaw_visible = TerminalAgent::Openclaw.is_visible(&config);
         let bypass = config.claude_code_bypass_permissions.unwrap_or(false);
 
         let buttons_card = setting_card(ui)
@@ -41,6 +57,7 @@ impl SettingsWindow {
                 "row-claude-visible",
                 "Claude Code",
                 "Show the Claude Code launcher button in every tab bar.",
+                Some(TerminalAgent::ClaudeCode),
                 claude_visible,
                 "claude_code_button_visible",
                 ui,
@@ -51,6 +68,7 @@ impl SettingsWindow {
                 "row-codex-visible",
                 "Codex",
                 "Show the Codex launcher button in every tab bar.",
+                Some(TerminalAgent::Codex),
                 codex_visible,
                 "codex_button_visible",
                 ui,
@@ -61,6 +79,7 @@ impl SettingsWindow {
                 "row-opencode-visible",
                 "Opencode",
                 "Show the Opencode launcher button in every tab bar.",
+                Some(TerminalAgent::OpenCode),
                 opencode_visible,
                 "opencode_button_visible",
                 ui,
@@ -71,6 +90,7 @@ impl SettingsWindow {
                 "row-pi-visible",
                 "Pi",
                 "Show the Pi launcher button in every tab bar.",
+                Some(TerminalAgent::Pi),
                 pi_visible,
                 "pi_button_visible",
                 ui,
@@ -81,8 +101,130 @@ impl SettingsWindow {
                 "row-hermes-agent-visible",
                 "Hermes Agent",
                 "Show the Hermes Agent launcher button in every tab bar.",
+                Some(TerminalAgent::Hermes),
                 hermes_agent_visible,
                 "hermes_agent_button_visible",
+                ui,
+                cx,
+            ))
+            .child(hairline(ui))
+            .child(setting_row(
+                "row-grok-visible",
+                "Grok",
+                "Show the Grok launcher button in every tab bar.",
+                Some(TerminalAgent::Grok),
+                grok_visible,
+                "grok_button_visible",
+                ui,
+                cx,
+            ))
+            .child(hairline(ui))
+            .child(setting_row(
+                "row-amp-visible",
+                "Amp",
+                "Show the Amp launcher button in every tab bar.",
+                Some(TerminalAgent::Amp),
+                amp_visible,
+                "amp_button_visible",
+                ui,
+                cx,
+            ))
+            .child(hairline(ui))
+            .child(setting_row(
+                "row-cursor-visible",
+                "Cursor",
+                "Show the Cursor launcher button in every tab bar.",
+                Some(TerminalAgent::Cursor),
+                cursor_visible,
+                "cursor_button_visible",
+                ui,
+                cx,
+            ))
+            .child(hairline(ui))
+            .child(setting_row(
+                "row-gemini-visible",
+                "Gemini",
+                "Show the Gemini launcher button in every tab bar.",
+                Some(TerminalAgent::Gemini),
+                gemini_visible,
+                "gemini_button_visible",
+                ui,
+                cx,
+            ))
+            .child(hairline(ui))
+            .child(setting_row(
+                "row-kiro-visible",
+                "Kiro",
+                "Show the Kiro launcher button in every tab bar.",
+                Some(TerminalAgent::Kiro),
+                kiro_visible,
+                "kiro_button_visible",
+                ui,
+                cx,
+            ))
+            .child(hairline(ui))
+            .child(setting_row(
+                "row-antigravity-visible",
+                "Antigravity",
+                "Show the Antigravity launcher button in every tab bar.",
+                Some(TerminalAgent::Antigravity),
+                antigravity_visible,
+                "antigravity_button_visible",
+                ui,
+                cx,
+            ))
+            .child(hairline(ui))
+            .child(setting_row(
+                "row-copilot-visible",
+                "Copilot",
+                "Show the Copilot launcher button in every tab bar.",
+                Some(TerminalAgent::Copilot),
+                copilot_visible,
+                "copilot_button_visible",
+                ui,
+                cx,
+            ))
+            .child(hairline(ui))
+            .child(setting_row(
+                "row-codebuddy-visible",
+                "CodeBuddy",
+                "Show the CodeBuddy launcher button in every tab bar.",
+                Some(TerminalAgent::CodeBuddy),
+                codebuddy_visible,
+                "codebuddy_button_visible",
+                ui,
+                cx,
+            ))
+            .child(hairline(ui))
+            .child(setting_row(
+                "row-factory-visible",
+                "Factory",
+                "Show the Factory launcher button in every tab bar.",
+                Some(TerminalAgent::Factory),
+                factory_visible,
+                "factory_button_visible",
+                ui,
+                cx,
+            ))
+            .child(hairline(ui))
+            .child(setting_row(
+                "row-qoder-visible",
+                "Qoder",
+                "Show the Qoder launcher button in every tab bar.",
+                Some(TerminalAgent::Qoder),
+                qoder_visible,
+                "qoder_button_visible",
+                ui,
+                cx,
+            ))
+            .child(hairline(ui))
+            .child(setting_row(
+                "row-openclaw-visible",
+                "Openclaw",
+                "Show the Openclaw launcher button in every tab bar.",
+                Some(TerminalAgent::Openclaw),
+                openclaw_visible,
+                "openclaw_button_visible",
                 ui,
                 cx,
             ));
@@ -96,12 +238,12 @@ impl SettingsWindow {
         let permissions_card = setting_card(ui).child(setting_row(
             "row-claude-bypass",
             "Bypass permissions",
-            "Disables every confirmation prompt across Paneflow. The \
-             terminal Claude Code launcher adds --permission-mode \
-             bypassPermissions, and the Agents view auto-approves every \
-             tool call for both Claude Code and Codex sessions. \
-             Anthropic warns this mode offers no protection against \
-             prompt injection — only enable on machines you trust.",
+            "Adds --permission-mode bypassPermissions whenever Paneflow \
+             launches Claude Code in a terminal (tab-bar button and the \
+             Agents-view thread picker). Anthropic warns this mode offers \
+             no protection against prompt injection — only enable on \
+             machines you trust.",
+            None,
             bypass,
             "claude_code_bypass_permissions",
             ui,
@@ -336,10 +478,31 @@ fn danger_color() -> gpui::Hsla {
     gpui::rgb(0xE0_6C_75).into()
 }
 
+/// The agent's logo for its settings row, rendered identically to the tab
+/// bar: multi-color logos via `img()` (native palette preserved), monochrome
+/// logos via a `text_color`-tinted `svg()` mask (brand accent if any, else
+/// the theme's primary text color).
+fn agent_icon_el(agent: TerminalAgent, ui: crate::theme::UiColors) -> AnyElement {
+    let path = SharedString::from(agent.icon_path());
+    if agent.icon_multicolor() {
+        img(path).size(px(18.)).flex_none().into_any_element()
+    } else {
+        let tint: Hsla = agent.accent().map(|c| rgb(c).into()).unwrap_or(ui.text);
+        svg()
+            .size(px(18.))
+            .flex_none()
+            .path(path)
+            .text_color(tint)
+            .into_any_element()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn setting_row(
     id: &'static str,
     title: &'static str,
     description: &'static str,
+    icon: Option<TerminalAgent>,
     current: bool,
     config_key: &'static str,
     ui: crate::theme::UiColors,
@@ -357,6 +520,7 @@ fn setting_row(
         .py(px(10.))
         .cursor(CursorStyle::PointingHand)
         .hover(|s| s.bg(ui.subtle))
+        .when_some(icon, |d, agent| d.child(agent_icon_el(agent, ui)))
         .child(setting_text(ui, title, description))
         .child(toggle_pill(current, ui))
         .on_click(cx.listener(move |_this, _: &ClickEvent, _window, cx| {

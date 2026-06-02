@@ -110,15 +110,10 @@ impl PaneFlowApp {
             return Err(OpError::ProjectNotFound);
         }
         let removed = self.projects.remove(idx);
-        // Cascade the in-memory view caches so threads belonging to a
-        // closed project don't keep their entities (ThreadView's
-        // SessionRuntime + subscriptions, TerminalView's PTY) alive
-        // until the next restart. The persistence-side cascade for
-        // `threads.db` happens at the affordance layer (see
-        // `execute_agents_confirm_delete`); Terminal Threads have no
-        // SQL rows so this in-memory drop is the full cleanup.
+        // Cascade the in-memory terminal cache so threads belonging to a
+        // closed project don't keep their PTY entity alive until the
+        // next restart.
         for thread in &removed.threads {
-            self.agents_thread_view_cache.remove(&thread.id);
             self.agents_terminal_view_cache.remove(&thread.id);
         }
         // Keep active_project_idx valid: if we removed at or before
@@ -221,6 +216,7 @@ impl PaneFlowApp {
             // persistence-agnostic so it can be unit-tested without
             // a SQLite store).
             store_id: None,
+            terminal_agent: None,
         };
         let id = thread.id;
         project.threads.push(thread);
@@ -232,10 +228,13 @@ impl PaneFlowApp {
     /// [`Self::add_thread`] but stamps [`crate::project::ThreadKind::Terminal`]
     /// and never touches `threads.db` — the PTY is the source of truth
     /// for Terminal Threads and no message rows exist to persist.
+    /// `terminal_agent` is the CLI auto-launched on first PTY mount
+    /// (`None` for a bare shell).
     pub(crate) fn add_terminal_thread(
         &mut self,
         project_idx: usize,
         title: impl Into<String>,
+        terminal_agent: Option<crate::agent_launcher::TerminalAgent>,
         cx: &mut Context<Self>,
     ) -> Result<u64, OpError> {
         let project = self
@@ -245,7 +244,8 @@ impl PaneFlowApp {
         if project.threads.len() >= MAX_THREADS_PER_PROJECT {
             return Err(OpError::ThreadLimitReached);
         }
-        let thread = crate::project::Thread::new_terminal(title, project.cwd.clone());
+        let thread =
+            crate::project::Thread::new_terminal(title, project.cwd.clone(), terminal_agent);
         let id = thread.id;
         project.threads.push(thread);
         cx.notify();
@@ -294,15 +294,9 @@ impl PaneFlowApp {
             return Err(OpError::ThreadNotFound);
         }
         let removed = project.threads.remove(thread_idx);
-        // Drop the cached ThreadView entity for this thread so its
-        // SessionRuntime + subscriptions are released. Persistence has
-        // already been flushed by the time remove_thread is called
-        // (the delete confirmation dialog only fires on user click,
-        // and persistence is event-driven on every mutation).
-        self.agents_thread_view_cache.remove(&removed.id);
-        // Same for the Terminal Thread cache: dropping the entity
-        // tears down the PTY (the alacritty event loop sends
-        // `Msg::Shutdown` in `Drop`, see `src/terminal/pty_session.rs`).
+        // Drop the cached Terminal Thread entity so its PTY is torn down
+        // (the alacritty event loop sends `Msg::Shutdown` in `Drop`, see
+        // `src/terminal/pty_session.rs`).
         self.agents_terminal_view_cache.remove(&removed.id);
         // Keep the active-thread selection in range. If we removed the
         // selected thread, clear it; if we removed something earlier,

@@ -301,21 +301,6 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "open_diff_view",
         context: None,
     },
-    // Zed-parity: review of AI-applied edits. Shift+Alt+Y keeps every
-    // unreviewed edit, Shift+Alt+Z reverts them on disk. Mirrors Zed's
-    // `agent::KeepAll` / `agent::RejectAll` in
-    // `assets/keymaps/default.json:208-210`. Global context so the chord
-    // fires from anywhere in the Agents view.
-    DefaultBinding {
-        key: "shift-alt-y",
-        action_name: "keep_edits",
-        context: None,
-    },
-    DefaultBinding {
-        key: "shift-alt-z",
-        action_name: "reject_edits",
-        context: None,
-    },
     // US-003 (prd-ai-in-diff-2026-Q3.md): copy the hunk under the cursor as a
     // unified diff, only while the Git Diff view holds focus. Same chord as the
     // terminal / markdown copies — disambiguated by the `DiffView` context.

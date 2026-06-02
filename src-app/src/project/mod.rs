@@ -91,33 +91,27 @@ pub enum ThreadStatus {
     Failed,
 }
 
-/// What kind of surface a thread row drives in the main area. `Agent`
-/// is the historical chat-with-ACP-backend path (Claude Code / Codex
-/// served via the inline ThreadView). `Terminal` is the v1.x "Terminal
-/// Thread" surface (mirrors Zed's `AgentPanelEntryKind::Terminal`): the
-/// thread row spawns a raw PTY surface instead of a chat, so the user
-/// can run any CLI agent (Claude Code, Codex, Amp, OpenCode, Pi) or any
-/// long-running process and have it persist as a first-class sidebar
-/// entry next to the agent threads.
-///
-/// The variant is stored on [`Thread`] itself rather than wrapped into
-/// a `kind: ThreadKind { Agent(AgentKind), Terminal }` enum so the
-/// existing `agent: AgentKind` field keeps its meaning for the Agent
-/// path and every existing read site continues to compile unchanged.
-/// Terminal threads carry a dummy `agent` value (`ClaudeCode`) that is
-/// never read — the [`ThreadKind::Terminal`] branch short-circuits the
-/// dispatch in `render_agents_main_body` before any agent lookup runs.
+/// What kind of surface a thread row drives in the main area. The
+/// Agents view is terminal-only since the in-app ACP chat was removed,
+/// so every live thread renders a `Terminal` PTY surface (launching the
+/// thread's [`crate::agent_launcher::TerminalAgent`] CLI). `Agent` is a
+/// legacy variant retained only so a pre-removal `session.json` (chat
+/// threads) still deserializes; those rows are routed through the same
+/// terminal path at render time and relaunch their original agent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ThreadKind {
+    /// Legacy chat thread restored from an older session. Rendered as a
+    /// terminal (relaunching the stored `agent`); never created anew.
     #[default]
     Agent,
+    /// A PTY surface in the thread's cwd, optionally auto-launching a
+    /// CLI agent (`terminal_agent`).
     Terminal,
 }
 
-/// One persistent thread row in the Agents sidebar. Either an agent
-/// chat (body in `paneflow-threads` SQLite, US-006) or a Terminal
-/// Thread (no SQL row — the PTY is the source of truth and only the
-/// sidebar metadata round-trips through session.json).
+/// One persistent thread row in the Agents sidebar. A Terminal Thread:
+/// the PTY is the source of truth and only the sidebar metadata
+/// round-trips through session.json.
 #[derive(Debug, Clone)]
 pub struct Thread {
     pub id: u64,
@@ -129,12 +123,16 @@ pub struct Thread {
     pub created_at: u64,
     pub model: Option<String>,
     pub mode: Option<String>,
-    /// Foreign key into the `paneflow-threads` SQLite store (US-006).
-    /// `None` until US-011 wires the create-thread side-effect that
-    /// inserts the row; older threads loaded from a pre-US-011 session
-    /// also restore as `None` (the lookup gracefully degrades to "no
-    /// row to delete" on cascade). Always `None` for Terminal threads.
+    /// Vestigial foreign key from the removed `paneflow-threads` chat
+    /// store. No longer read or written (terminal threads have no SQL
+    /// rows); kept on the struct only so a pre-removal `session.json`
+    /// round-trips its `store_id` field without data loss.
     pub store_id: Option<String>,
+    /// Which CLI coding agent a [`ThreadKind::Terminal`] thread launches
+    /// on first PTY mount. `None` for a bare shell (the plain
+    /// "New terminal thread" affordance + legacy Agent rows). Always
+    /// `None` for `ThreadKind::Agent`.
+    pub terminal_agent: Option<crate::agent_launcher::TerminalAgent>,
 }
 
 impl Thread {
@@ -152,13 +150,20 @@ impl Thread {
             model: None,
             mode: None,
             store_id: None,
+            terminal_agent: None,
         }
     }
 
-    /// Create a fresh Terminal Thread. The `agent` slot is filled with
-    /// a placeholder (`ClaudeCode`) that the Terminal dispatch never
-    /// consults — see [`ThreadKind`] for the rationale.
-    pub fn new_terminal(title: impl Into<String>, cwd: impl Into<String>) -> Self {
+    /// Create a fresh Terminal Thread bound to `terminal_agent` (the CLI
+    /// auto-launched on first PTY mount, or `None` for a bare shell).
+    /// The `agent` slot is filled with a placeholder (`ClaudeCode`) that
+    /// the Terminal dispatch never consults — see [`ThreadKind`] for the
+    /// rationale.
+    pub fn new_terminal(
+        title: impl Into<String>,
+        cwd: impl Into<String>,
+        terminal_agent: Option<crate::agent_launcher::TerminalAgent>,
+    ) -> Self {
         Self {
             id: next_thread_id(),
             title: title.into(),
@@ -170,6 +175,7 @@ impl Thread {
             model: None,
             mode: None,
             store_id: None,
+            terminal_agent,
         }
     }
 }
@@ -239,6 +245,7 @@ pub fn thread_to_session(t: &Thread) -> ThreadSession {
             ThreadKind::Agent => None,
             ThreadKind::Terminal => Some(THREAD_KIND_TAG_TERMINAL.to_string()),
         },
+        terminal_agent: t.terminal_agent.map(|a| a.tag().to_string()),
     }
 }
 
@@ -290,6 +297,10 @@ pub fn thread_from_session(s: &ThreadSession) -> Option<Thread> {
         model: s.model.clone(),
         mode: s.mode.clone(),
         store_id: s.store_id.clone(),
+        terminal_agent: s
+            .terminal_agent
+            .as_deref()
+            .and_then(crate::agent_launcher::TerminalAgent::from_tag),
     })
 }
 
@@ -495,6 +506,7 @@ mod tests {
                 mode: None,
                 store_id: None,
                 kind: None,
+                terminal_agent: None,
             }],
         };
         let restored = project_from_session(&session);

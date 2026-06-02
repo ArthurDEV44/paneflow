@@ -121,44 +121,6 @@ __paneflow_path_prepend
 /// separators) → `%ComSpec%` → `C:\Windows\System32\cmd.exe` → `powershell.exe`
 /// on PATH → bare `"cmd.exe"` (last-ditch; the spawner will search PATH and
 /// surface a clearly-located error if even this fails).
-/// Whether `basename` (the file-name of a shell binary, with or
-/// without `.exe`) refers to a shell whose grammar can chain and
-/// nest commands with POSIX-compatible operators (`&&`, `||`, `;`,
-/// `|`). The Agents-view "Allow Always" pattern persistence relies
-/// on this: without reliable sub-command parsing the persisted
-/// pattern cannot be matched safely on the next call -- US-111
-/// AC #6 of `tasks/prd-agent-ui-refactor-2026-Q3.md`.
-///
-/// Recognised POSIX-grammar shells: `sh`, `bash`, `zsh`, `fish`,
-/// `dash`, `ash`, `ksh`, `mksh`, `pdksh`, `tcsh`, `csh`. Anything
-/// else (nushell, elvish, xonsh, rc, es, oil, pwsh, powershell,
-/// cmd) returns `false`. The check is case-insensitive and strips
-/// a trailing `.exe`.
-pub fn is_posix_shell_basename(basename: &str) -> bool {
-    let normalized = basename.to_ascii_lowercase();
-    let key = normalized.trim_end_matches(".exe");
-    matches!(
-        key,
-        "sh" | "bash" | "zsh" | "fish" | "dash" | "ash" | "ksh" | "mksh" | "pdksh" | "tcsh" | "csh"
-    )
-}
-
-/// Basename of the currently-configured default shell, with the
-/// directory and any `.exe` extension stripped. Reads the cached
-/// snapshot installed by `panel_config::install_default_shell` so
-/// the call is lock-light enough to fire on every permission-row
-/// render. Falls back to the platform default when the config has
-/// no `default_shell` set yet.
-pub fn active_basename() -> String {
-    let configured = crate::agents::panel_config::active_default_shell()
-        .unwrap_or_else(resolve_default_shell_fallback);
-    std::path::Path::new(&configured)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(&configured)
-        .to_string()
-}
-
 pub(super) fn resolve_default_shell(configured: Option<&str>) -> String {
     if let Some(path) = configured {
         if let Some(resolved) = configured_shell_if_usable(path) {
@@ -347,51 +309,5 @@ pub(super) fn setup_shell_integration(
             vec![]
         }
         _ => vec![],
-    }
-}
-
-#[cfg(test)]
-mod posix_shell_tests {
-    use super::*;
-
-    #[test]
-    fn posix_shells_recognised() {
-        for s in [
-            "sh", "bash", "zsh", "fish", "dash", "ash", "ksh", "mksh", "pdksh", "tcsh", "csh",
-        ] {
-            assert!(
-                is_posix_shell_basename(s),
-                "{s} must be classified as POSIX-grammar"
-            );
-        }
-    }
-
-    #[test]
-    fn non_posix_shells_rejected() {
-        for s in [
-            "nu",
-            "nushell",
-            "elvish",
-            "xonsh",
-            "rc",
-            "es",
-            "oil",
-            "pwsh",
-            "powershell",
-            "cmd",
-        ] {
-            assert!(
-                !is_posix_shell_basename(s),
-                "{s} must NOT be classified as POSIX-grammar"
-            );
-        }
-    }
-
-    #[test]
-    fn case_insensitive_and_strips_exe_suffix() {
-        assert!(is_posix_shell_basename("BASH"));
-        assert!(is_posix_shell_basename("bash.exe"));
-        assert!(is_posix_shell_basename("Zsh.EXE"));
-        assert!(!is_posix_shell_basename("pwsh.exe"));
     }
 }

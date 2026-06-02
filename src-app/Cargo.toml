@@ -78,10 +78,6 @@ paneflow-config = { path = "../crates/paneflow-config" }
 # auth-required parsing live in their own crate so the heavy
 # agent-client-protocol dep does not bleed into every src-app module.
 paneflow-acp = { path = "../crates/paneflow-acp" }
-# US-006 + US-011 of tasks/prd-agents-view.md: durable thread persistence
-# (SQLite + zstd). Bundles rusqlite — kept in its own crate so the
-# protocol layer (paneflow-acp) compile feedback loop stays lean.
-paneflow-threads = { path = "../crates/paneflow-threads" }
 # US-003: telemetry plumbing extracted to its own workspace crate so future
 # `paneflow-trust` member can emit events without pulling the desktop binary
 # into its dep graph.
@@ -117,16 +113,6 @@ futures = "0.3"
 # event loop. `rt` + `macros` are enough for the runtime + the
 # `agent-client-protocol` futures the SDK relies on.
 tokio = { version = "1", features = ["rt", "macros", "io-util", "sync", "time"] }
-# US-016 needs to construct `InitializeRequest`, `PromptRequest`,
-# `CancelNotification`, etc. directly. The feature mirrors the one
-# in `paneflow-acp` so Cargo unifies on the same compiled artifact.
-agent-client-protocol = { version = "0.12", features = [
-    "unstable_session_model",
-    # See paneflow-acp/Cargo.toml -- needed for the auth capability
-    # in `InitializeRequest` so Codex / Claude Code stream rich
-    # responses (incl. reasoning chunks).
-    "unstable_auth_methods",
-] }
 tracing = "0.1"
 log = { version = "0.4.16", features = ["kv_unstable_serde", "serde"] }
 env_logger = "0.11"

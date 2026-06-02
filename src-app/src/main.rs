@@ -18,6 +18,7 @@
 //! App shell with sidebar workspace list, terminal panes, agent surfaces, and
 //! diff/review workflows.
 
+mod agent_launcher;
 mod agent_sessions;
 mod agents;
 mod agents_view;
@@ -313,13 +314,6 @@ struct PaneFlowApp {
     /// calls `cx.notify()` so the next render picks up the new theme.
     /// `Arc<AtomicBool>` — Send + Sync, lock-free.
     theme_changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// US-005 (prd-agents-view.md): lazily-created Agents view shell
-    /// hosting the auth card + missing-agents empty state + embedded
-    /// login terminal. `Some` while the Agents view is mounted; cleared
-    /// on toggle-back to CLI. US-008 made [`Self::mode`] the source of
-    /// truth for which screen renders; this field is just the entity
-    /// lifecycle holder so subscriptions stay alive.
-    agents_view: Option<gpui::Entity<crate::agents_view::AgentsView>>,
     /// US-005 (prd-git-diff-mode-2026-Q3.md): the mounted Git Diff mode
     /// view, when `mode == AppMode::Diff`. Lazily (re)built by
     /// `rebuild_diff_view` on mode entry and on workspace switch;
@@ -337,7 +331,7 @@ struct PaneFlowApp {
     /// one frame with its computed rows instead of flashing "Computing diff…".
     /// Non-displayed entries are suspended (watchers released — US-016), so at
     /// most one diff entity ever holds live watchers. Mirrors the
-    /// `agents_thread_view_cache` pointer/owner split; bounded by
+    /// `agents_terminal_view_cache` pointer/owner split; bounded by
     /// `DIFF_VIEW_CACHE_CAP` and pruned to open repos on workspace close.
     diff_view_cache: std::collections::HashMap<
         crate::app::diff_view_actions::DiffViewKey,
@@ -423,12 +417,6 @@ struct PaneFlowApp {
     /// thread list. `None` when no thread is selected (e.g. the
     /// user just opened the project and hasn't picked a thread yet).
     pub(crate) active_thread_idx: Option<usize>,
-    /// US-006 + US-011 (prd-agents-view.md): durable thread store.
-    /// `None` when opening the SQLite file failed at boot (rare; the
-    /// store still recovers from corruption internally) -- the UI
-    /// degrades gracefully: thread metadata stays in `self.projects`
-    /// and lives only for the session.
-    pub(crate) thread_store: Option<paneflow_threads::ThreadStore>,
     /// US-011 (prd-agents-view.md): which sidebar row is currently in
     /// inline-rename mode (mirrors [`Self::renaming_idx`] but for the
     /// Agents domain). `None` when no rename is active.
@@ -463,10 +451,9 @@ struct PaneFlowApp {
     /// Escape / Down without competing with the global app key chain.
     pub(crate) agents_filter_focus: FocusHandle,
     /// `true` while the Agents-view sidebar's "Skills" affordance is
-    /// active. Takes precedence over the thread / welcome views in
-    /// `render_agents_main_body`. Cleared by `show_agents_welcome`,
-    /// `select_thread`, and anywhere else that intends to navigate
-    /// away from the skills page.
+    /// active. Takes precedence over the thread / picker surfaces in
+    /// `render_agents_main_body`. Cleared by `select_thread` and
+    /// anywhere else that navigates away from the skills page.
     pub(crate) agents_skills_visible: bool,
     /// Active tab on the Skills page. Persists across re-opens of
     /// the Skills view within the session; resets on app restart.
@@ -481,29 +468,9 @@ struct PaneFlowApp {
     /// Shared between CLI and Agents sidebars — only one popover is
     /// ever visible because only one sidebar is rendered at a time.
     pub(crate) sidebar_actions_menu_open: bool,
-    /// US-013: lazily-mounted [`agents::thread_view::ThreadView`] for
-    /// the currently selected thread. Pulled from
-    /// [`Self::agents_thread_view_cache`] on switch; cleared (just
-    /// the pointer, not the cache entry) when no thread is selected.
-    pub(crate) agents_thread_view: Option<gpui::Entity<crate::agents::thread_view::ThreadView>>,
-    /// US-013: which `(project_idx, thread_idx)` the current
-    /// [`Self::agents_thread_view`] is displayed for. Used to detect
-    /// "user picked a different thread" and re-bind the pointer.
-    pub(crate) agents_thread_view_for: Option<(usize, usize)>,
-    /// Cache of every ThreadView we have mounted in this session,
-    /// keyed by [`crate::project::Thread::id`] (process-local u64).
-    /// Mirrors Zed's `retained_threads`
-    /// (`agent_ui/src/agent_panel.rs:889`) — thread switches reuse
-    /// the existing entity so the in-memory timeline (including
-    /// reasoning cards and live streaming pumps) survives the
-    /// round trip. Persistence handles cross-restart survival; the
-    /// cache only addresses within-session continuity.
-    pub(crate) agents_thread_view_cache:
-        std::collections::HashMap<u64, gpui::Entity<crate::agents::thread_view::ThreadView>>,
     /// Cache of every Terminal Thread surface mounted this session,
-    /// keyed by [`crate::project::Thread::id`]. Same role as
-    /// [`Self::agents_thread_view_cache`] for the PTY path: switching
-    /// between Terminal Threads must reuse the existing
+    /// keyed by [`crate::project::Thread::id`]. The Agents view is
+    /// terminal-only: selecting a thread reuses the existing
     /// [`crate::terminal::view::TerminalView`] entity so the shell
     /// process, scrollback, and I/O threads survive the round trip.
     /// Drop happens on thread deletion (via `remove_thread`'s cache
@@ -608,11 +575,10 @@ impl Render for PaneFlowApp {
             pane.read(cx).focus_handle(cx).focus(window, cx);
         }
         let main_content = if matches!(self.mode, paneflow_config::schema::AppMode::Agents) {
-            // US-008 (prd-agents-view.md): mode is the source of
-            // truth for which screen renders. The AgentsView entity
-            // is lazily mounted in `handle_open_agents_view` and
-            // released on toggle-back, so `render_agents_main` only
-            // ever sees a real entity here.
+            // US-008 (prd-agents-view.md): mode is the source of truth
+            // for which screen renders. The Agents view is terminal-only
+            // — `render_agents_main` shows the selected thread's PTY, the
+            // agent picker, or an empty state.
             self.render_agents_main(cx)
         } else if matches!(self.mode, paneflow_config::schema::AppMode::Diff) {
             // US-003 (prd-git-diff-mode-2026-Q3.md). NOTE: this site is

@@ -78,6 +78,39 @@ pub struct PaneFlowConfig {
     /// Show the built-in "Hermes Agent" command button in the tab bar.
     /// Same semantics as `claude_code_button_visible`.
     pub hermes_agent_button_visible: Option<bool>,
+    /// Show the built-in "Grok" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub grok_button_visible: Option<bool>,
+    /// Show the built-in "Amp" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub amp_button_visible: Option<bool>,
+    /// Show the built-in "Cursor" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub cursor_button_visible: Option<bool>,
+    /// Show the built-in "Gemini" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub gemini_button_visible: Option<bool>,
+    /// Show the built-in "Kiro" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub kiro_button_visible: Option<bool>,
+    /// Show the built-in "Antigravity" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub antigravity_button_visible: Option<bool>,
+    /// Show the built-in "Copilot" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub copilot_button_visible: Option<bool>,
+    /// Show the built-in "CodeBuddy" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub codebuddy_button_visible: Option<bool>,
+    /// Show the built-in "Factory" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub factory_button_visible: Option<bool>,
+    /// Show the built-in "Qoder" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub qoder_button_visible: Option<bool>,
+    /// Show the built-in "Openclaw" command button in the tab bar.
+    /// Same semantics as `claude_code_button_visible`.
+    pub openclaw_button_visible: Option<bool>,
     /// Opt-in desktop telemetry block.
     ///
     /// Tri-state semantics:
@@ -653,6 +686,15 @@ pub struct ThreadSession {
     /// `src-app` to keep `paneflow-config` a leaf crate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// Which CLI coding agent a Terminal Thread launches on first mount
+    /// (`"claude_code"`, `"codex"`, `"opencode"`, `"pi"`, `"hermes"`).
+    /// Drives the sidebar row icon and the auto-run command. `None`
+    /// restores as a bare shell (legacy Terminal Threads + plain
+    /// "New terminal thread" rows). Stored as a tag string so this crate
+    /// stays free of the runtime `TerminalAgent` enum (which lives in
+    /// `src-app`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_agent: Option<String>,
 }
 
 fn default_true() -> bool {

@@ -111,11 +111,9 @@ impl PaneFlowApp {
     }
 
     /// Switch into [`AppMode::Diff`] and mount the `DiffView` for the
-    /// active workspace's repo. Tearing down the Agents view keeps the
-    /// two non-CLI surfaces mutually exclusive (clearing an already-
-    /// `None` entity is a no-op).
+    /// active workspace's repo. Keeps the two non-CLI surfaces mutually
+    /// exclusive.
     pub(crate) fn enter_diff_mode(&mut self, cx: &mut Context<Self>) {
-        self.agents_view = None;
         crate::agents::notifications::set_agents_panel_visible(false);
         self.mode = AppMode::Diff;
         // `rebuild_diff_view` mounts the entity and calls `cx.notify()`.
@@ -210,8 +208,7 @@ impl PaneFlowApp {
     /// workspace switch, scope change). Suspends the entity — releasing its OS
     /// watchers + ending its debounce loop — while the cache (single-repo) or
     /// the retained slot (Multi-project) keeps it alive with its computed rows.
-    /// Clears only the display pointer, mirroring the
-    /// `agents_thread_view` / `agents_thread_view_cache` pointer-vs-owner split.
+    /// Clears only the display pointer (pointer-vs-owner split).
     /// Also closes the prior `multi_diff_view` watcher leak (it was never
     /// cleared on CLI/Agents entry).
     pub(crate) fn park_displayed_diff(&mut self, cx: &mut Context<Self>) {
@@ -477,7 +474,6 @@ impl PaneFlowApp {
         if self.mode == AppMode::Cli {
             return;
         }
-        self.agents_view = None;
         // US-016 warm-resume: suspend (don't destroy) the mounted diff host.
         // Suspending releases its filesystem watchers + ends its debounce loop
         // (the watcher-release contract) while the cache retains its computed

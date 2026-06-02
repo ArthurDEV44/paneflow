@@ -12,7 +12,6 @@
 use gpui::{
     AppContext, ClickEvent, Context, MouseButton, PathPromptOptions, Pixels, Point, Window,
 };
-use paneflow_acp::AgentKind;
 
 use super::state::{AgentsContextMenu, AgentsDeleteTarget, AgentsRenameTarget};
 use crate::PaneFlowApp;
@@ -228,25 +227,12 @@ impl PaneFlowApp {
                 project_idx,
                 thread_idx,
             } => {
-                let store_id = self
+                if let Some(thread) = self
                     .projects
                     .get_mut(project_idx)
                     .and_then(|p| p.threads.get_mut(thread_idx))
-                    .map(|thread| {
-                        thread.title = text.clone();
-                        thread.store_id.clone()
-                    });
-                // Mirror the rename into threads.db so the new title
-                // survives a restart even if session.json is wiped.
-                // Best-effort -- a stale row left over from a pre-
-                // store_id thread, or a DB unavailable transiently,
-                // just doesn't get the sync; the in-memory + session
-                // restore path is authoritative.
-                if let (Some(Some(id)), Some(store)) = (store_id, &self.thread_store) {
-                    let typed = paneflow_threads::store::ThreadId::from_string(id);
-                    if let Err(err) = store.set_summary(&typed, &text) {
-                        log::warn!("agents-sidebar: thread rename DB sync failed: {err}");
-                    }
+                {
+                    thread.title = text;
                 }
                 self.save_session(cx);
             }
@@ -314,6 +300,10 @@ impl PaneFlowApp {
                                 }
                             }
                             if let Some(idx) = last_created {
+                                // Select the new project with no thread so
+                                // the main area shows the agent picker for
+                                // it: "New threads -> pick folder -> pick
+                                // agent -> terminal launches".
                                 app.active_project_idx = idx;
                                 app.active_thread_idx = None;
                             }
@@ -327,51 +317,40 @@ impl PaneFlowApp {
         .detach();
     }
 
-    /// Create a fresh thread in `project_idx`, defaulting to Claude
-    /// Code (the agent picker pill in US-016 lets the user switch
-    /// mid-thread). Selects + enters rename so the user can rename
-    /// before the first prompt.
+    /// "New thread" affordance: select `project_idx` with no thread so
+    /// the main area shows the agent picker for it. Selecting an agent
+    /// there creates a Terminal Thread (see
+    /// [`Self::create_agent_terminal_thread_in`]). No thread is created
+    /// until the user picks an agent.
     pub(crate) fn create_agents_thread_in(&mut self, project_idx: usize, cx: &mut Context<Self>) {
-        // Default agent: prefer ClaudeCode if discovery sees it, fall
-        // back to Codex, else ClaudeCode (the user can override in the
-        // composer; AC #2 only requires "creates a fresh thread").
-        let default_agent = AgentKind::ClaudeCode;
-        let (project_id_str, _project_cwd) = match self.projects.get(project_idx) {
-            Some(p) => (p.id.to_string(), p.cwd.clone()),
-            None => return,
-        };
-
-        let new_thread_id = match self.add_thread(project_idx, "New thread", default_agent, cx) {
-            Ok(id) => id,
-            Err(err) => {
-                self.show_toast(format!("Could not create thread: {err:?}"), cx);
-                return;
-            }
-        };
-
-        // Wire the durable store insert + capture the row id. Best-
-        // effort: if the store is unavailable, the thread still lives
-        // in memory for this session (graceful degradation per US-006
-        // AC: corrupted/missing DB recovers without blocking the UI).
-        if let Some(store) = self.thread_store.as_ref() {
-            let agent_tag = crate::project::agent_kind_to_str(default_agent);
-            match store.create_thread(Some(&project_id_str), agent_tag) {
-                Ok(store_id) => {
-                    if let Some(project) = self.projects.get_mut(project_idx)
-                        && let Some(thread) =
-                            project.threads.iter_mut().find(|t| t.id == new_thread_id)
-                    {
-                        thread.store_id = Some(store_id.as_str().to_string());
-                    }
-                }
-                Err(err) => {
-                    log::warn!("agents-sidebar: threads.db create failed: {err}");
-                }
-            }
+        if project_idx >= self.projects.len() {
+            return;
         }
+        self.agents_skills_visible = false;
+        self.active_thread_idx = None;
+        self.active_project_idx = project_idx;
+        cx.notify();
+    }
 
-        // Select the just-created thread so the main area opens onto
-        // it (US-013's ThreadView will pick it up once landed).
+    /// Picker selection: create a Terminal Thread bound to `agent` in
+    /// `project_idx` and select it. The agent CLI is auto-launched on
+    /// the first PTY mount in
+    /// [`PaneFlowApp::ensure_terminal_view_mounted`] (which reads the
+    /// thread's `terminal_agent` and honors the bypass-permission flag).
+    pub(crate) fn create_agent_terminal_thread_in(
+        &mut self,
+        project_idx: usize,
+        agent: crate::agent_launcher::TerminalAgent,
+        cx: &mut Context<Self>,
+    ) {
+        let new_thread_id =
+            match self.add_terminal_thread(project_idx, agent.display_name(), Some(agent), cx) {
+                Ok(id) => id,
+                Err(err) => {
+                    self.show_toast(format!("Could not create thread: {err:?}"), cx);
+                    return;
+                }
+            };
         if let Some(project) = self.projects.get(project_idx)
             && let Some(thread_idx) = project.threads.iter().position(|t| t.id == new_thread_id)
         {
@@ -380,13 +359,12 @@ impl PaneFlowApp {
         self.save_session(cx);
     }
 
-    /// Create a fresh Terminal Thread in `project_idx`. Mirrors
-    /// [`Self::create_agents_thread_in`] but stamps
-    /// [`crate::project::ThreadKind::Terminal`], skips the SQLite store
-    /// insert (no chat history to persist), and selects the new row so
-    /// the main area immediately flips to the PTY surface.
+    /// Create a fresh bare Terminal Thread (no agent) in `project_idx`:
+    /// a plain shell in the project's cwd. Backs the secondary
+    /// "New terminal thread" affordance for when the user wants a raw
+    /// terminal rather than a launched agent.
     pub(crate) fn create_terminal_thread_in(&mut self, project_idx: usize, cx: &mut Context<Self>) {
-        let new_thread_id = match self.add_terminal_thread(project_idx, "Terminal", cx) {
+        let new_thread_id = match self.add_terminal_thread(project_idx, "Terminal", None, cx) {
             Ok(id) => id,
             Err(err) => {
                 self.show_toast(format!("Could not create terminal thread: {err:?}"), cx);
@@ -401,58 +379,28 @@ impl PaneFlowApp {
         self.save_session(cx);
     }
 
-    /// Duplicate a thread: same agent + cwd, empty messages, fresh ID.
-    /// (AC #6 -- "Duplicate creates a new thread with the same agent +
-    /// cwd, empty messages".)
+    /// Duplicate a thread: same agent + cwd, fresh ID. The copy is a
+    /// Terminal Thread bound to the source's `terminal_agent` (so it
+    /// relaunches the same CLI on first open).
     pub(crate) fn duplicate_agents_thread(
         &mut self,
         project_idx: usize,
         thread_idx: usize,
         cx: &mut Context<Self>,
     ) {
-        let (agent, base_title) = match self
+        let (terminal_agent, base_title) = match self
             .projects
             .get(project_idx)
             .and_then(|p| p.threads.get(thread_idx))
         {
-            Some(t) => (t.agent, t.title.clone()),
-            None => return,
-        };
-        let project_id_str = match self.projects.get(project_idx) {
-            Some(p) => p.id.to_string(),
+            Some(t) => (t.terminal_agent, t.title.clone()),
             None => return,
         };
 
         let new_title = format!("{base_title} (copy)");
-        let new_thread_id = match self.add_thread(project_idx, new_title.clone(), agent, cx) {
-            Ok(id) => id,
-            Err(err) => {
-                self.show_toast(format!("Could not duplicate thread: {err:?}"), cx);
-                return;
-            }
-        };
-
-        if let Some(store) = self.thread_store.as_ref() {
-            let agent_tag = crate::project::agent_kind_to_str(agent);
-            match store.create_thread(Some(&project_id_str), agent_tag) {
-                Ok(store_id) => {
-                    if let Some(project) = self.projects.get_mut(project_idx)
-                        && let Some(thread) =
-                            project.threads.iter_mut().find(|t| t.id == new_thread_id)
-                    {
-                        thread.store_id = Some(store_id.as_str().to_string());
-                        // Sync the summary so the row's `summary` column
-                        // doesn't lag behind the in-memory `title`.
-                        if let Some(ref id_str) = thread.store_id {
-                            let typed = paneflow_threads::store::ThreadId::from_string(id_str);
-                            let _ = store.set_summary(&typed, &new_title);
-                        }
-                    }
-                }
-                Err(err) => {
-                    log::warn!("agents-sidebar: threads.db duplicate failed: {err}");
-                }
-            }
+        if let Err(err) = self.add_terminal_thread(project_idx, new_title, terminal_agent, cx) {
+            self.show_toast(format!("Could not duplicate thread: {err:?}"), cx);
+            return;
         }
         self.save_session(cx);
     }
@@ -461,9 +409,9 @@ impl PaneFlowApp {
     // Execute confirmed delete
     // ------------------------------------------------------------------
 
-    /// Apply the pending delete (project or thread). Cascades thread
-    /// rows when a project is deleted (AC #9 -- "cascade in code, not
-    /// in SQL").
+    /// Apply the pending delete (project or thread). The in-memory
+    /// caches are cascaded by `close_project` / `remove_thread`; Terminal
+    /// Threads have no durable rows to clean up.
     pub(crate) fn execute_agents_confirm_delete(&mut self, cx: &mut Context<Self>) {
         let Some(target) = self.agents_confirm_delete.take() else {
             return;
@@ -474,18 +422,6 @@ impl PaneFlowApp {
                     return;
                 };
                 let count = removed.threads.len();
-                if let Some(store) = self.thread_store.as_ref() {
-                    for thread in &removed.threads {
-                        if let Some(ref id_str) = thread.store_id {
-                            let typed = paneflow_threads::store::ThreadId::from_string(id_str);
-                            if let Err(err) = store.delete_thread(&typed) {
-                                log::warn!(
-                                    "agents-sidebar: cascade delete failed for {id_str}: {err}"
-                                );
-                            }
-                        }
-                    }
-                }
                 self.show_toast(
                     if count == 0 {
                         "Project deleted".to_string()
@@ -501,16 +437,8 @@ impl PaneFlowApp {
                 project_idx,
                 thread_idx,
             } => {
-                let Ok(removed) = self.remove_thread(project_idx, thread_idx, cx) else {
+                if self.remove_thread(project_idx, thread_idx, cx).is_err() {
                     return;
-                };
-                if let Some(store) = self.thread_store.as_ref()
-                    && let Some(ref id_str) = removed.store_id
-                {
-                    let typed = paneflow_threads::store::ThreadId::from_string(id_str);
-                    if let Err(err) = store.delete_thread(&typed) {
-                        log::warn!("agents-sidebar: thread delete failed for {id_str}: {err}");
-                    }
                 }
                 self.show_toast("Thread deleted", cx);
             }

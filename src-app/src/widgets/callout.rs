@@ -80,6 +80,7 @@ impl Callout {
     /// title in place of the simple `description` string. When both
     /// are set, `description_slot` wins (mirrors Zed where
     /// `description_slot` replaces `description`).
+    #[allow(dead_code)]
     pub(crate) fn description_slot(mut self, slot: AnyElement) -> Self {
         self.description_slot = Some(slot);
         self
@@ -87,6 +88,7 @@ impl Callout {
 
     /// Trailing actions cluster (right side of the banner). Typically
     /// a row of buttons or a single spinner during a pending state.
+    #[allow(dead_code)]
     pub(crate) fn actions_slot(mut self, slot: AnyElement) -> Self {
         self.actions_slot = Some(slot);
         self
