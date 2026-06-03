@@ -319,6 +319,36 @@ mod tests {
     }
 
     #[test]
+    fn test_unknown_terminal_enum_falls_back_not_wipes_config() {
+        // Regression guard: a typo in a terminal enum (`"loud"`, `"squiggle"`,
+        // `"blinky"`) must fall back to that enum's default WITHOUT discarding
+        // the rest of the config. Before the custom `Deserialize`, serde hard-
+        // errored here and `parse_and_validate` returned `default()` for the
+        // whole file -- theme, shell, and shortcuts all silently lost.
+        let json = r#"{
+            "theme": "One Dark",
+            "default_shell": "/bin/zsh",
+            "terminal": { "bell": "loud", "cursor_shape": "squiggle", "cursor_blink": "blinky" }
+        }"#;
+        let config = parse_and_validate(json);
+
+        // The surrounding config survives the bad enum values.
+        assert_eq!(config.theme.as_deref(), Some("One Dark"));
+        assert_eq!(config.default_shell.as_deref(), Some("/bin/zsh"));
+
+        // Each unrecognised enum value resolves to its documented default.
+        let term = config
+            .terminal
+            .expect("terminal block must survive unknown enum values");
+        assert_eq!(term.bell, Some(TerminalBellMode::Visual));
+        assert_eq!(term.cursor_shape, Some(CursorShapeConfig::Block));
+        assert_eq!(
+            term.cursor_blink,
+            Some(CursorBlinkConfig::TerminalControlled)
+        );
+    }
+
+    #[test]
     fn test_empty_json_object_returns_defaults() {
         let config = parse_and_validate("{}");
         assert_eq!(config, PaneFlowConfig::default());
@@ -1158,6 +1188,11 @@ mod tests {
             Some(TerminalConfig {
                 ligatures: None,
                 scrollback_lines: None,
+                bell: None,
+                cursor_shape: None,
+                cursor_blink: None,
+                env: None,
+                scroll_multiplier: None,
             })
         );
         assert_eq!(
@@ -1165,6 +1200,11 @@ mod tests {
             Some(TerminalConfig {
                 ligatures: None,
                 scrollback_lines: None,
+                bell: None,
+                cursor_shape: None,
+                cursor_blink: None,
+                env: None,
+                scroll_multiplier: None,
             })
         );
     }
@@ -1177,6 +1217,11 @@ mod tests {
             Some(TerminalConfig {
                 ligatures: Some(true),
                 scrollback_lines: None,
+                bell: None,
+                cursor_shape: None,
+                cursor_blink: None,
+                env: None,
+                scroll_multiplier: None,
             })
         );
 
@@ -1195,6 +1240,11 @@ mod tests {
             Some(TerminalConfig {
                 ligatures: Some(false),
                 scrollback_lines: None,
+                bell: None,
+                cursor_shape: None,
+                cursor_blink: None,
+                env: None,
+                scroll_multiplier: None,
             })
         );
     }
@@ -1214,6 +1264,11 @@ mod tests {
         let tc = TerminalConfig {
             ligatures: None,
             scrollback_lines: Some(50), // below MIN_SCROLLBACK_LINES
+            bell: None,
+            cursor_shape: None,
+            cursor_blink: None,
+            env: None,
+            scroll_multiplier: None,
         };
         assert_eq!(
             tc.resolved_scrollback_lines(),
@@ -1222,11 +1277,103 @@ mod tests {
         let tc = TerminalConfig {
             ligatures: None,
             scrollback_lines: Some(10_000_000), // way above MAX
+            bell: None,
+            cursor_shape: None,
+            cursor_blink: None,
+            env: None,
+            scroll_multiplier: None,
         };
         assert_eq!(
             tc.resolved_scrollback_lines(),
             TerminalConfig::MAX_SCROLLBACK_LINES
         );
+    }
+
+    // US-014: global terminal.env round-trips through parse + serialize.
+    #[test]
+    fn test_terminal_env_round_trip() {
+        let config = parse_and_validate(
+            r#"{"terminal": {"env": {"RUST_LOG": "debug", "ANTHROPIC_API_KEY": "sk-x"}}}"#,
+        );
+        let env = config
+            .terminal
+            .as_ref()
+            .and_then(|t| t.env.as_ref())
+            .expect("terminal.env must parse");
+        assert_eq!(env.get("RUST_LOG").map(String::as_str), Some("debug"));
+        assert_eq!(
+            env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("sk-x")
+        );
+
+        // Survive a serialize → parse round-trip.
+        let json = serde_json::to_string(&config).unwrap();
+        let reparsed = parse_and_validate(&json);
+        assert_eq!(reparsed.terminal, config.terminal);
+    }
+
+    // US-014: an absent env block resolves to None (no injection).
+    #[test]
+    fn test_terminal_env_absent_is_none() {
+        let config = parse_and_validate(r#"{"terminal": {}}"#);
+        assert!(
+            config
+                .terminal
+                .expect("terminal block present")
+                .env
+                .is_none(),
+            "US-014: absent terminal.env must be None"
+        );
+    }
+
+    // US-022: scroll_multiplier resolver — default, clamp, in-range, round-trip.
+    #[test]
+    fn test_scroll_multiplier_resolver_default_and_clamp() {
+        assert_eq!(
+            TerminalConfig::default().resolved_scroll_multiplier(),
+            1.0,
+            "absent → default 1.0"
+        );
+        assert_eq!(
+            TerminalConfig {
+                scroll_multiplier: Some(0.01),
+                ..Default::default()
+            }
+            .resolved_scroll_multiplier(),
+            TerminalConfig::MIN_SCROLL_MULTIPLIER,
+            "below min → clamped"
+        );
+        assert_eq!(
+            TerminalConfig {
+                scroll_multiplier: Some(99.0),
+                ..Default::default()
+            }
+            .resolved_scroll_multiplier(),
+            TerminalConfig::MAX_SCROLL_MULTIPLIER,
+            "above max → clamped"
+        );
+        assert_eq!(
+            TerminalConfig {
+                scroll_multiplier: Some(2.5),
+                ..Default::default()
+            }
+            .resolved_scroll_multiplier(),
+            2.5,
+            "in range → unchanged"
+        );
+    }
+
+    #[test]
+    fn test_scroll_multiplier_serde_roundtrip() {
+        let config = parse_and_validate(r#"{"terminal": {"scroll_multiplier": 3.0}}"#);
+        let tc = config.terminal.expect("terminal block present");
+        assert_eq!(tc.scroll_multiplier, Some(3.0));
+        assert_eq!(tc.resolved_scroll_multiplier(), 3.0);
+
+        let absent = parse_and_validate(r#"{"terminal": {}}"#);
+        let tc = absent.terminal.expect("terminal block present");
+        assert!(tc.scroll_multiplier.is_none());
+        assert_eq!(tc.resolved_scroll_multiplier(), 1.0);
     }
 
     #[test]

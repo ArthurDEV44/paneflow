@@ -169,6 +169,140 @@ pub struct ToolPermissionsEntry {
     pub always_deny: Vec<String>,
 }
 
+/// US-005: how the terminal surfaces a BEL (`\a`) byte. Default `Visual`
+/// preserves the historical flash-only behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalBellMode {
+    /// 200 ms background flash only (historical default).
+    #[default]
+    Visual,
+    /// Ring the OS system bell only (no flash).
+    Audible,
+    /// Both the visual flash and the OS system bell.
+    Both,
+    /// No bell feedback at all.
+    Off,
+}
+
+impl TerminalBellMode {
+    /// Whether this mode rings the OS system bell.
+    pub fn is_audible(self) -> bool {
+        matches!(self, Self::Audible | Self::Both)
+    }
+
+    /// Whether this mode shows the 200 ms visual flash.
+    pub fn is_visual(self) -> bool {
+        matches!(self, Self::Visual | Self::Both)
+    }
+}
+
+/// US-007: configurable default cursor shape, applied as the fallback before
+/// any app-driven DECSCUSR escape. Mapped to the renderer's cursor shapes in
+/// the app layer (this crate stays free of the terminal backend).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CursorShapeConfig {
+    /// Solid block `█` (historical default).
+    #[default]
+    Block,
+    /// Vertical bar `⎸`.
+    Beam,
+    /// Underline `_`.
+    Underline,
+    /// Hollow box `▯`.
+    Hollow,
+}
+
+/// US-008: cursor blink override. `TerminalControlled` (default) defers to the
+/// program's DECSCUSR cursor-style setting; `On`/`Off` force the behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CursorBlinkConfig {
+    /// Force the cursor to blink regardless of what the program requests.
+    On,
+    /// Force the cursor solid regardless of what the program requests.
+    Off,
+    /// Defer to the program's DECSCUSR setting (historical default).
+    #[default]
+    TerminalControlled,
+}
+
+// Manual `Deserialize` for the terminal enums. A derived `Deserialize` hard-
+// errors on an unrecognised variant; that error propagates up to
+// `parse_and_validate` (loader.rs), which discards the ENTIRE user config and
+// returns defaults. A single typo (`"bell": "loud"`) would silently wipe the
+// theme, shell, shortcuts, and agent settings. Instead fall back to the variant
+// default with a logged warning, mirroring `ThinkingDisplayMode`. `Serialize`
+// stays derived (snake_case), so round-tripping a valid value is unchanged.
+impl<'de> Deserialize<'de> for TerminalBellMode {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(d)?;
+        Ok(match raw.as_str() {
+            "visual" => Self::Visual,
+            "audible" => Self::Audible,
+            "both" => Self::Both,
+            "off" => Self::Off,
+            other => {
+                tracing::warn!(
+                    target: "paneflow_config::terminal",
+                    value = other,
+                    "terminal.bell value not recognized, defaulting to visual",
+                );
+                Self::Visual
+            }
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for CursorShapeConfig {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(d)?;
+        Ok(match raw.as_str() {
+            "block" => Self::Block,
+            "beam" => Self::Beam,
+            "underline" => Self::Underline,
+            "hollow" => Self::Hollow,
+            other => {
+                tracing::warn!(
+                    target: "paneflow_config::terminal",
+                    value = other,
+                    "terminal.cursor_shape value not recognized, defaulting to block",
+                );
+                Self::Block
+            }
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for CursorBlinkConfig {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(d)?;
+        Ok(match raw.as_str() {
+            "on" => Self::On,
+            "off" => Self::Off,
+            "terminal_controlled" => Self::TerminalControlled,
+            other => {
+                tracing::warn!(
+                    target: "paneflow_config::terminal",
+                    value = other,
+                    "terminal.cursor_blink value not recognized, defaulting to terminal_controlled",
+                );
+                Self::TerminalControlled
+            }
+        })
+    }
+}
+
 /// Terminal-scoped configuration block (US-008).
 ///
 /// Lives in its own struct so future renderer settings (cursor shape,
@@ -188,6 +322,34 @@ pub struct TerminalConfig {
     /// Read once at PTY spawn time; changing this value takes effect on
     /// the next new terminal.
     pub scrollback_lines: Option<usize>,
+    /// US-005: how a BEL (`\a`) is surfaced — `visual` flash, `audible` system
+    /// bell, `both`, or `off`. `None` resolves to `Visual` (historical
+    /// default). Read once at terminal construction; takes effect on the next
+    /// new terminal.
+    pub bell: Option<TerminalBellMode>,
+    /// US-007: default cursor shape before any app-driven DECSCUSR escape.
+    /// `None` resolves to `Block`. Read once at terminal construction.
+    pub cursor_shape: Option<CursorShapeConfig>,
+    /// US-008: cursor blink override. `None` resolves to `TerminalControlled`
+    /// (defer to DECSCUSR). Read once at terminal construction.
+    pub cursor_blink: Option<CursorBlinkConfig>,
+    /// US-014: global default extra environment variables injected into every
+    /// new terminal PTY. Per-surface `env` ([`SurfaceDefinition::env`]) is
+    /// merged on top of these (surface wins on key collision). The identity
+    /// keys `TERM` and `COLORTERM` are always protected and cannot be
+    /// overridden. On Windows, env names are case-insensitive, so user keys are
+    /// normalised to uppercase before merging to avoid a `Path`/`PATH` clash.
+    /// `None` (block absent) and `Some({})` both inject nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+    /// US-022: scroll-wheel multiplier for the non-mouse-mode scrollback path.
+    /// Multiplies the pixel delta before the line accumulator, so `> 1.0` speeds
+    /// up trackpad/wheel scrollback and `< 1.0` slows it. Forced to `1.0` in
+    /// mouse-reporting mode (the PTY owns scroll there; altering the delta would
+    /// corrupt the report) and in the alt-screen alternate-scroll path. `None`
+    /// resolves to `1.0`. Clamped to `[0.1, 10.0]`. Read live on each scroll
+    /// event, so a config reload takes effect without a restart.
+    pub scroll_multiplier: Option<f32>,
 }
 
 impl TerminalConfig {
@@ -197,6 +359,41 @@ impl TerminalConfig {
     pub const MIN_SCROLLBACK_LINES: usize = 100;
     /// Upper bound: 100K lines × ~80 cols × cell ≈ 1 GiB ceiling.
     pub const MAX_SCROLLBACK_LINES: usize = 100_000;
+
+    /// Default scroll multiplier: no amplification.
+    pub const DEFAULT_SCROLL_MULTIPLIER: f32 = 1.0;
+    /// Lower bound: below 0.1× scrollback would be nearly frozen.
+    pub const MIN_SCROLL_MULTIPLIER: f32 = 0.1;
+    /// Upper bound: beyond 10× a single tick jumps multiple screens.
+    pub const MAX_SCROLL_MULTIPLIER: f32 = 10.0;
+
+    /// Resolve `scroll_multiplier` to a usable value: default `1.0`, clamped to
+    /// `[MIN_SCROLL_MULTIPLIER, MAX_SCROLL_MULTIPLIER]`. Emits a `warn!` when the
+    /// user value is out of range so they notice the clamp.
+    pub fn resolved_scroll_multiplier(&self) -> f32 {
+        let raw = self
+            .scroll_multiplier
+            .unwrap_or(Self::DEFAULT_SCROLL_MULTIPLIER);
+        // Guard NaN/infinity (serde rejects them from JSON, but an in-memory or
+        // future caller could supply one): `f32::NAN.clamp(..)` is NaN and every
+        // NaN comparison is false, which would slip a NaN through and freeze the
+        // scroll accumulator. Fall back to the default instead.
+        if !raw.is_finite() {
+            return Self::DEFAULT_SCROLL_MULTIPLIER;
+        }
+        let clamped = raw.clamp(Self::MIN_SCROLL_MULTIPLIER, Self::MAX_SCROLL_MULTIPLIER);
+        if (clamped - raw).abs() > f32::EPSILON {
+            tracing::warn!(
+                target: "paneflow_config::terminal",
+                requested = raw,
+                clamped,
+                "terminal.scroll_multiplier out of range [{min}, {max}], clamped",
+                min = Self::MIN_SCROLL_MULTIPLIER,
+                max = Self::MAX_SCROLL_MULTIPLIER,
+            );
+        }
+        clamped
+    }
 
     /// Resolve the configured `scrollback_lines` to a usable value,
     /// applying default + clamp. Out-of-range values are clamped (a
@@ -811,5 +1008,62 @@ mod tests {
         let cfg: AgentPanelConfig = serde_json::from_str(raw).unwrap();
         assert!(cfg.thinking_display.is_none());
         assert_eq!(cfg.resolved_thinking_display(), ThinkingDisplayMode::Auto);
+    }
+
+    #[test]
+    fn terminal_bell_mode_semantics_and_serde() {
+        // US-005: feedback predicates per mode.
+        assert!(TerminalBellMode::Audible.is_audible() && !TerminalBellMode::Audible.is_visual());
+        assert!(TerminalBellMode::Both.is_audible() && TerminalBellMode::Both.is_visual());
+        assert!(TerminalBellMode::Visual.is_visual() && !TerminalBellMode::Visual.is_audible());
+        assert!(!TerminalBellMode::Off.is_audible() && !TerminalBellMode::Off.is_visual());
+
+        // Default preserves the historical flash-only behavior.
+        assert_eq!(TerminalBellMode::default(), TerminalBellMode::Visual);
+
+        // snake_case config values round-trip.
+        let cfg: TerminalConfig = serde_json::from_str(r#"{"bell": "audible"}"#).unwrap();
+        assert_eq!(cfg.bell, Some(TerminalBellMode::Audible));
+        let cfg: TerminalConfig = serde_json::from_str(r#"{"bell": "both"}"#).unwrap();
+        assert_eq!(cfg.bell, Some(TerminalBellMode::Both));
+        let cfg: TerminalConfig = serde_json::from_str(r#"{"bell": "off"}"#).unwrap();
+        assert_eq!(cfg.bell, Some(TerminalBellMode::Off));
+
+        // Missing field → None → resolves to Visual (historical default).
+        // (A typo'd value errors at parse time and is absorbed by the loader's
+        // whole-config default fallback in `loader::load_config`, never a panic.)
+        let cfg: TerminalConfig = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(cfg.bell.is_none());
+        assert_eq!(cfg.bell.unwrap_or_default(), TerminalBellMode::Visual);
+    }
+
+    #[test]
+    fn cursor_shape_and_blink_config_serde() {
+        // US-007 / US-008: snake_case config values + historical defaults.
+        assert_eq!(CursorShapeConfig::default(), CursorShapeConfig::Block);
+        assert_eq!(
+            CursorBlinkConfig::default(),
+            CursorBlinkConfig::TerminalControlled
+        );
+
+        let cfg: TerminalConfig =
+            serde_json::from_str(r#"{"cursor_shape": "beam", "cursor_blink": "off"}"#).unwrap();
+        assert_eq!(cfg.cursor_shape, Some(CursorShapeConfig::Beam));
+        assert_eq!(cfg.cursor_blink, Some(CursorBlinkConfig::Off));
+
+        let cfg: TerminalConfig = serde_json::from_str(r#"{"cursor_shape": "hollow"}"#).unwrap();
+        assert_eq!(cfg.cursor_shape, Some(CursorShapeConfig::Hollow));
+
+        // Missing → None → resolves to historical defaults.
+        let cfg: TerminalConfig = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(cfg.cursor_shape.is_none() && cfg.cursor_blink.is_none());
+        assert_eq!(
+            cfg.cursor_shape.unwrap_or_default(),
+            CursorShapeConfig::Block
+        );
+        assert_eq!(
+            cfg.cursor_blink.unwrap_or_default(),
+            CursorBlinkConfig::TerminalControlled
+        );
     }
 }
