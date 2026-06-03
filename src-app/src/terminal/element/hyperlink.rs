@@ -38,10 +38,15 @@ pub fn detect_urls_on_line_mapped(
         .filter_map(|m| {
             // Convert byte offsets to char indices for column lookup
             let char_start = line_text[..m.start()].chars().count();
-            let char_end = line_text[..m.end()].chars().count().saturating_sub(1);
+            // US-020: trim trailing punctuation / unbalanced close-parens the
+            // regex over-captures in prose (e.g. `(see https://x.com/p).`).
+            // `char_end` is recomputed from the TRIMMED length so the hover
+            // zone ends on the last clickable char, not on the stripped tail.
+            let trimmed = sanitize_url_punctuation(m.as_str());
+            let char_end = (char_start + trimmed.chars().count()).saturating_sub(1);
             let col_start = char_to_col.get(char_start)?;
             let col_end = char_to_col.get(char_end)?;
-            let uri = m.as_str().to_string();
+            let uri = trimmed.to_string();
             let is_openable = is_url_scheme_openable(&uri);
             Some(HyperlinkZone {
                 uri,
@@ -61,6 +66,53 @@ pub fn detect_urls_on_line_mapped(
             })
         })
         .collect()
+}
+
+/// Strip trailing punctuation a URL almost never intends when it appears in
+/// free-form prose (US-020). Returns a sub-slice of the input (zero alloc).
+///
+/// Algorithm mirrors Zed `alacritty/hyperlinks.rs::sanitize_url_punctuation`,
+/// adapted to operate on a `&str` instead of a grid `Match`:
+/// - count `(`/`)` and `[`/`]` over the WHOLE match first (so balanced pairs
+///   are known before trimming);
+/// - walk from the right, stripping `. , : ; ! ? ( [` unconditionally and a
+///   trailing `)` / `]` only while its closes still exceed its opens.
+///
+/// So `https://example.com/path).` → `https://example.com/path`, but
+/// `https://en.wikipedia.org/wiki/Example_(disambiguation)` is preserved.
+/// Paneflow extends Zed with `! ?` (PRD) and `]` (Markdown link tails).
+pub(super) fn sanitize_url_punctuation(url: &str) -> &str {
+    let (open_parens, mut close_parens, open_brackets, mut close_brackets) = url.chars().fold(
+        (0usize, 0usize, 0usize, 0usize),
+        |(op, cp, ob, cb), c| match c {
+            '(' => (op + 1, cp, ob, cb),
+            ')' => (op, cp + 1, ob, cb),
+            '[' => (op, cp, ob + 1, cb),
+            ']' => (op, cp, ob, cb + 1),
+            _ => (op, cp, ob, cb),
+        },
+    );
+
+    let mut end = url.len();
+    while let Some(last) = url[..end].chars().next_back() {
+        let strip = match last {
+            '.' | ',' | ':' | ';' | '!' | '?' | '(' | '[' => true,
+            ')' if close_parens > open_parens => {
+                close_parens -= 1;
+                true
+            }
+            ']' if close_brackets > open_brackets => {
+                close_brackets -= 1;
+                true
+            }
+            _ => false,
+        };
+        if !strip {
+            break;
+        }
+        end -= last.len_utf8();
+    }
+    &url[..end]
 }
 
 /// Check if a URL scheme is in the allowlist for opening.
@@ -309,7 +361,27 @@ pub fn detect_file_paths_on_line_mapped(
 /// (`C:\foo\bar.rs:42`) match as a single regex hit. The `:line[:col]`
 /// suffix is then peeled off in `split_path_and_location` by walking up
 /// to two pure-digit segments from the right.
-const CODE_PATH_REGEX_PATTERN: &str = r#"(?i)[A-Za-z0-9_:./\\\-]+\.(?:rs|ts|tsx|js|jsx|mjs|cjs|py|go|rb|java|kt|swift|c|cpp|cc|cxx|h|hpp|cs|php|sh|bash|zsh|fish|lua|sql|toml|yaml|yml|json|jsonc|html|htm|css|scss|sass|vue|svelte|dart|scala|clj|cljs|hs|ml|ex|exs|erl|nim|zig|sol|xml|gradle|vim|conf|ini|env)(?::\d+(?::\d+)?)?\b"#;
+// The location suffix accepts two forms: the colon style `:line[:col]` and the
+// paren style `(line,col)` / `:(line,col)` that `tsc`, C#/Roslyn and MSBuild
+// emit (US-013). The paren alternative is tried FIRST so `app.ts(42,7)` is
+// consumed whole rather than stopping at `app.ts`. `(` and `)` stay OUT of the
+// path character class, so a mid-name paren like `Update(src/cool.rs)` still
+// matches just `src/cool.rs` (the leading `(` is a left boundary).
+const CODE_PATH_REGEX_PATTERN: &str = r#"(?i)[A-Za-z0-9_:./\\\-]+\.(?:rs|ts|tsx|js|jsx|mjs|cjs|py|go|rb|java|kt|swift|c|cpp|cc|cxx|h|hpp|cs|php|sh|bash|zsh|fish|lua|sql|toml|yaml|yml|json|jsonc|html|htm|css|scss|sass|vue|svelte|dart|scala|clj|cljs|hs|ml|ex|exs|erl|nim|zig|sol|xml|gradle|vim|conf|ini|env)(?::?\(\d+[,:]\d+\)|(?::\d+(?::\d+)?)?\b)"#;
+
+/// US-013: Python traceback frame `File "path", line N`. The path is quoted and
+/// the line number lives in a separate clause, so the generic code-path regex
+/// would match the bare filename and lose the line. A dedicated pattern with
+/// named captures recovers both.
+const PYTHON_TRACEBACK_REGEX_PATTERN: &str = r#"File "(?P<path>[^"]+)", line (?P<line>\d+)"#;
+
+fn python_traceback_regex() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(PYTHON_TRACEBACK_REGEX_PATTERN)
+            .expect("python-traceback regex compilation failed")
+    })
+}
 
 fn code_path_regex() -> &'static regex::Regex {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
@@ -323,6 +395,26 @@ fn code_path_regex() -> &'static regex::Regex {
 /// suffixes; stops at the first non-digit segment so Windows drive
 /// letters (`C:`) and path segments containing colons stay intact.
 fn split_path_and_location(matched: &str) -> (&str, Option<u32>, Option<u32>) {
+    // US-013: paren-location form `file(42,7)` / `file:(12,3)` (tsc, C#,
+    // MSBuild). Peel a trailing `(N,M)` / `:(N,M)` group before falling back to
+    // the colon-suffix walk below.
+    if let Some(without_close) = matched.strip_suffix(')')
+        && let Some(open) = without_close.rfind('(')
+    {
+        let inner = &without_close[open + 1..];
+        let mut parts = inner.splitn(2, [',', ':']);
+        if let (Some(l), Some(c)) = (parts.next(), parts.next())
+            && let (Ok(line), Ok(col)) = (l.parse::<u32>(), c.parse::<u32>())
+        {
+            // Drop the `(` and an optional preceding `:` from the path.
+            let mut path_end = open;
+            if without_close[..path_end].ends_with(':') {
+                path_end -= 1;
+            }
+            return (&matched[..path_end], Some(line), Some(col));
+        }
+    }
+
     let mut end = matched.len();
     let mut nums: Vec<u32> = Vec::with_capacity(2);
     while nums.len() < 2 {
@@ -434,40 +526,29 @@ pub fn detect_code_paths_on_line_mapped(
     char_to_col: &[usize],
     cwd: Option<&Path>,
 ) -> Vec<HyperlinkZone> {
-    let re = code_path_regex();
-    re.find_iter(line_text)
-        .filter_map(|m| {
-            if !left_boundary_ok(line_text, m.start()) {
-                return None;
-            }
-            let matched = m.as_str();
-            if contains_control_char(matched) {
-                return None;
-            }
-            // URL schemes (http://, file://, ssh:) must not reach the open
-            // path. Windows drive letters (`C:`) are single-letter and
-            // explicitly accepted by `has_url_scheme_prefix`.
-            if has_url_scheme_prefix(matched) && !is_windows_absolute(matched) {
-                return None;
-            }
-            let (path_str, line_no, col_no) = split_path_and_location(matched);
-            let has_separator = path_str.contains('/') || path_str.contains('\\');
-            if !has_separator && stem_len(path_str) < MIN_BARE_STEM_LEN {
+    // US-013: Python traceback frames (`File "x.py", line N`) first, so they
+    // win on the quoted path. The generic scan below also matches the bare
+    // filename but with no line number; the hover `find` returns the first
+    // (Python) match, which carries the correct line.
+    let mut zones: Vec<HyperlinkZone> = python_traceback_regex()
+        .captures_iter(line_text)
+        .filter_map(|cap| {
+            let path_m = cap.name("path")?;
+            let path_str = path_m.as_str();
+            let line_no = cap.name("line")?.as_str().parse::<u32>().ok()?;
+            if contains_control_char(path_str) {
                 return None;
             }
             let resolved = resolve_path(path_str, cwd)?;
             if !canonical_has_code_extension(&resolved) {
                 return None;
             }
-            let absolute = resolved.to_string_lossy().into_owned();
-
-            let char_start = line_text[..m.start()].chars().count();
-            let char_end = line_text[..m.end()].chars().count().saturating_sub(1);
+            let char_start = line_text[..path_m.start()].chars().count();
+            let char_end = line_text[..path_m.end()].chars().count().saturating_sub(1);
             let col_start = char_to_col.get(char_start)?;
             let col_end = char_to_col.get(char_end)?;
-
             Some(HyperlinkZone {
-                uri: absolute,
+                uri: resolved.to_string_lossy().into_owned(),
                 id: String::new(),
                 start: alacritty_terminal::index::Point::new(
                     line,
@@ -479,11 +560,61 @@ pub fn detect_code_paths_on_line_mapped(
                 ),
                 is_openable: true,
                 source: HyperlinkSource::CodePath,
-                line: line_no,
-                col: col_no,
+                line: Some(line_no),
+                col: None,
             })
         })
-        .collect()
+        .collect();
+
+    let re = code_path_regex();
+    zones.extend(re.find_iter(line_text).filter_map(|m| {
+        if !left_boundary_ok(line_text, m.start()) {
+            return None;
+        }
+        let matched = m.as_str();
+        if contains_control_char(matched) {
+            return None;
+        }
+        // URL schemes (http://, file://, ssh:) must not reach the open
+        // path. Windows drive letters (`C:`) are single-letter and
+        // explicitly accepted by `has_url_scheme_prefix`.
+        if has_url_scheme_prefix(matched) && !is_windows_absolute(matched) {
+            return None;
+        }
+        let (path_str, line_no, col_no) = split_path_and_location(matched);
+        let has_separator = path_str.contains('/') || path_str.contains('\\');
+        if !has_separator && stem_len(path_str) < MIN_BARE_STEM_LEN {
+            return None;
+        }
+        let resolved = resolve_path(path_str, cwd)?;
+        if !canonical_has_code_extension(&resolved) {
+            return None;
+        }
+        let absolute = resolved.to_string_lossy().into_owned();
+
+        let char_start = line_text[..m.start()].chars().count();
+        let char_end = line_text[..m.end()].chars().count().saturating_sub(1);
+        let col_start = char_to_col.get(char_start)?;
+        let col_end = char_to_col.get(char_end)?;
+
+        Some(HyperlinkZone {
+            uri: absolute,
+            id: String::new(),
+            start: alacritty_terminal::index::Point::new(
+                line,
+                alacritty_terminal::index::Column(*col_start),
+            ),
+            end: alacritty_terminal::index::Point::new(
+                line,
+                alacritty_terminal::index::Column(*col_end),
+            ),
+            is_openable: true,
+            source: HyperlinkSource::CodePath,
+            line: line_no,
+            col: col_no,
+        })
+    }));
+    zones
 }
 
 #[cfg(test)]
@@ -499,6 +630,92 @@ mod tests {
     /// Builds a 1-to-1 char→column map for ASCII-only test text.
     fn ascii_map(text: &str) -> Vec<usize> {
         (0..text.chars().count()).collect()
+    }
+
+    // ── US-020: URL trailing-punctuation / unbalanced-paren trimming ────────
+
+    #[test]
+    fn sanitize_strips_trailing_dot_and_comma() {
+        assert_eq!(
+            sanitize_url_punctuation("https://example.com/path."),
+            "https://example.com/path"
+        );
+        assert_eq!(
+            sanitize_url_punctuation("https://example.com/path,"),
+            "https://example.com/path"
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_unbalanced_paren_then_dot() {
+        // `).` — `)` is unbalanced (0 opens, 1 close) then `.`.
+        assert_eq!(
+            sanitize_url_punctuation("https://example.com/path)."),
+            "https://example.com/path"
+        );
+    }
+
+    #[test]
+    fn sanitize_preserves_balanced_parens() {
+        let url = "https://en.wikipedia.org/wiki/Example_(disambiguation)";
+        assert_eq!(sanitize_url_punctuation(url), url);
+    }
+
+    #[test]
+    fn sanitize_trims_one_of_two_unbalanced_close_parens() {
+        // 1 open, 2 close → strip exactly one `)`.
+        assert_eq!(
+            sanitize_url_punctuation("https://example.com/a(b))"),
+            "https://example.com/a(b)"
+        );
+    }
+
+    #[test]
+    fn sanitize_bracket_balance() {
+        assert_eq!(
+            sanitize_url_punctuation("https://example.com/a[b]"),
+            "https://example.com/a[b]"
+        );
+        assert_eq!(
+            sanitize_url_punctuation("https://example.com/a]"),
+            "https://example.com/a"
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_bang_question_semicolon_colon() {
+        assert_eq!(
+            sanitize_url_punctuation("https://example.com/p!?;:"),
+            "https://example.com/p"
+        );
+    }
+
+    #[test]
+    fn sanitize_preserves_query_and_fragment() {
+        let url = "https://example.com/path?q=1&r=2#anchor";
+        assert_eq!(sanitize_url_punctuation(url), url);
+    }
+
+    #[test]
+    fn detect_urls_trims_trailing_paren_dot_end_to_end() {
+        let line = "see https://example.com/path). for details";
+        let map = ascii_map(line);
+        let zones = detect_urls_on_line_mapped(line, line0(), &map);
+        assert_eq!(zones.len(), 1, "expected exactly one URL zone");
+        assert_eq!(zones[0].uri, "https://example.com/path");
+    }
+
+    #[test]
+    fn detect_urls_preserves_wikipedia_disambiguation_end_to_end() {
+        let url = "https://en.wikipedia.org/wiki/Example_(disambiguation)";
+        let line = format!("see {url}.");
+        let map = ascii_map(&line);
+        let zones = detect_urls_on_line_mapped(&line, line0(), &map);
+        assert_eq!(zones.len(), 1);
+        assert_eq!(
+            zones[0].uri, url,
+            "balanced parens kept; only the trailing . stripped"
+        );
     }
 
     fn write_md(dir: &Path, name: &str) -> PathBuf {
@@ -847,6 +1064,97 @@ mod tests {
         assert_eq!(p, "path.rs:42:notnum");
         assert_eq!(l, Some(7));
         assert_eq!(c, None);
+    }
+
+    #[test]
+    fn split_location_paren_form_tsc() {
+        // US-013: tsc `app.ts(42,7)` → line 42, col 7.
+        let (p, l, c) = split_path_and_location("src/app.ts(42,7)");
+        assert_eq!(p, "src/app.ts");
+        assert_eq!(l, Some(42));
+        assert_eq!(c, Some(7));
+    }
+
+    #[test]
+    fn split_location_paren_form_with_colon_prefix() {
+        // US-013: the `:?` allows `file.ts:(12,3)`.
+        let (p, l, c) = split_path_and_location("file.ts:(12,3)");
+        assert_eq!(p, "file.ts");
+        assert_eq!(l, Some(12));
+        assert_eq!(c, Some(3));
+    }
+
+    #[test]
+    fn split_location_paren_colon_separator() {
+        // US-013: C#/MSBuild also emit `(line:col)`.
+        let (p, l, c) = split_path_and_location("Program.cs(10:5)");
+        assert_eq!(p, "Program.cs");
+        assert_eq!(l, Some(10));
+        assert_eq!(c, Some(5));
+    }
+
+    #[test]
+    fn split_location_non_numeric_paren_is_not_a_location() {
+        // US-013 adversarial: `foo.rs(copy)` must NOT yield a false line/col;
+        // the non-numeric paren stays attached so canonicalize rejects it.
+        let (p, l, c) = split_path_and_location("foo.rs(copy)");
+        assert_eq!(p, "foo.rs(copy)");
+        assert_eq!(l, None);
+        assert_eq!(c, None);
+    }
+
+    #[test]
+    fn code_path_scanner_matches_paren_location() {
+        // US-013 end-to-end: tsc-style `app.ts(42,7)`.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ts_path = write_md(tmp.path(), "app.ts");
+        let display = canonical_display(&ts_path);
+        let line_text = format!("{display}(42,7): error TS2345");
+        let map = ascii_map(&line_text);
+        let zones = detect_code_paths_on_line_mapped(&line_text, line0(), &map, None);
+        assert!(
+            zones
+                .iter()
+                .any(|z| z.line == Some(42) && z.col == Some(7) && z.uri.ends_with("app.ts")),
+            "US-013: tsc paren-location must resolve line+col; got {zones:?} zones",
+            zones = zones.len()
+        );
+    }
+
+    #[test]
+    fn code_path_scanner_matches_python_traceback() {
+        // US-013: `File "main.py", line 10` → line 10 on the quoted path.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let py_path = write_md(tmp.path(), "main.py");
+        let display = canonical_display(&py_path);
+        let line_text = format!("  File \"{display}\", line 10, in <module>");
+        let map = ascii_map(&line_text);
+        let zones = detect_code_paths_on_line_mapped(&line_text, line0(), &map, None);
+        assert!(
+            zones
+                .iter()
+                .any(|z| z.line == Some(10) && z.uri.ends_with("main.py")),
+            "US-013: Python traceback frame must resolve the line number"
+        );
+    }
+
+    #[test]
+    fn code_path_scanner_still_matches_update_paren_wrap() {
+        // US-013 regression: Claude-Code `Update(src/cool.rs)` must still match
+        // the inner path (leading `(` is a left boundary; the trailing `)` is
+        // not a numeric paren-location, so the path is `cool.rs`, line None).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let rs_path = write_md(tmp.path(), "cool.rs");
+        let display = canonical_display(&rs_path);
+        let line_text = format!("Update({display})");
+        let map = ascii_map(&line_text);
+        let zones = detect_code_paths_on_line_mapped(&line_text, line0(), &map, None);
+        assert!(
+            zones
+                .iter()
+                .any(|z| z.uri.ends_with("cool.rs") && z.line.is_none()),
+            "US-013: Update(path) must still match the inner path with no location"
+        );
     }
 
     #[test]

@@ -58,7 +58,7 @@ pub fn paint_hyperlink_tooltip(
     } = *geom;
 
     let display_offset = layout.display_offset as i32;
-    let screen_line = link_line.0 + display_offset;
+    let screen_line = link_line + display_offset;
     if screen_line < 0 || (screen_line as usize) >= layout.desired_rows {
         return;
     }
@@ -249,7 +249,13 @@ pub fn paint_exit_overlay(
         ..
     } = *geom;
 
-    let msg = format!("[Process exited with code {code}]");
+    // US-004: distinguish a signal kill (crash) from a clean non-zero exit.
+    // `exit_signal` carries "N (Name)" (e.g. "11 (Segmentation fault)") — the
+    // numeric signal recovered in `pty_loops` plus portable-pty's readable name.
+    let msg = match &layout.exit_signal {
+        Some(sig) => format!("[Process terminated by signal: {sig}]"),
+        None => format!("[Process exited with code {code}]"),
+    };
     let run = TextRun {
         len: msg.len(),
         font: base_font.clone(),
