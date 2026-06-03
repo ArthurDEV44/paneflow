@@ -202,6 +202,10 @@ struct TabRename {
 pub struct Pane {
     pub tabs: Vec<TabContent>,
     pub selected_idx: usize,
+    /// US-006: terminal entity IDs with a pending (unacknowledged) bell. Keyed
+    /// by `EntityId` so it survives tab reorder/move; a dot is shown in the tab
+    /// strip until that terminal is focused (cleared in `render`).
+    bell_pending: std::collections::HashSet<gpui::EntityId>,
     /// Set to true when the workspace is zoomed on this pane.
     pub zoomed: bool,
     /// Workspace ID for spawning new terminals with correct env vars.
@@ -254,6 +258,7 @@ impl Pane {
         Self {
             tabs: vec![TabContent::Terminal(terminal)],
             selected_idx: 0,
+            bell_pending: std::collections::HashSet::new(),
             zoomed: false,
             workspace_id,
             custom_buttons: Vec::new(),
@@ -281,6 +286,7 @@ impl Pane {
         Self {
             tabs: vec![tab],
             selected_idx: 0,
+            bell_pending: std::collections::HashSet::new(),
             zoomed: false,
             workspace_id,
             custom_buttons: Vec::new(),
@@ -357,12 +363,19 @@ impl Pane {
                 }
                 // CwdChanged, ActivityBurst, ServiceDetected, SelectionCopied are
                 // handled by PaneFlowApp's direct subscription to each TerminalView.
+                TerminalEvent::Bell => {
+                    // US-006: mark the source terminal's tab with a persistent
+                    // bell dot so a completion signal in a background pane is
+                    // not missed. Cleared once that terminal is focused (in
+                    // `render`). Keyed by EntityId so it survives tab reorder.
+                    this.bell_pending.insert(terminal.entity_id());
+                    cx.notify();
+                }
                 TerminalEvent::CwdChanged(_)
                 | TerminalEvent::ActivityBurst
                 | TerminalEvent::ServiceDetected(_)
                 | TerminalEvent::CancelSwapMode
                 | TerminalEvent::SelectionCopied
-                | TerminalEvent::Bell
                 | TerminalEvent::OpenMarkdownPath(_)
                 | TerminalEvent::OpenCodePath { .. } => {}
             }
@@ -515,7 +528,16 @@ impl Pane {
         if idx >= self.tabs.len() {
             return;
         }
+        // US-006: drop any pending bell for the closed terminal (no orphan).
+        let closed_id = self
+            .tabs
+            .get(idx)
+            .and_then(|t| t.as_terminal())
+            .map(|t| t.entity_id());
         self.tabs.remove(idx);
+        if let Some(id) = closed_id {
+            self.bell_pending.remove(&id);
+        }
         if self.tabs.is_empty() {
             cx.emit(PaneEvent::Remove);
             return;
@@ -833,6 +855,27 @@ impl Pane {
             let tab_idx = i;
             let group_name = SharedString::from(format!("tab-{i}"));
 
+            // US-006: a small accent dot when this tab's terminal has an
+            // unacknowledged bell. Zero-size placeholder otherwise so tab
+            // layout/truncation is unaffected.
+            let has_bell = self
+                .tabs
+                .get(i)
+                .and_then(|t| t.as_terminal())
+                .is_some_and(|t| self.bell_pending.contains(&t.entity_id()));
+            let bell_dot = if has_bell {
+                div()
+                    .flex_none()
+                    .w(px(6.0))
+                    .h(px(6.0))
+                    .ml_1()
+                    .rounded_full()
+                    .bg(ui.accent)
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            };
+
             let mut tab = div()
                 .id(SharedString::from(format!("pane-tab-{i}")))
                 .group(group_name.clone())
@@ -1050,6 +1093,7 @@ impl Pane {
                     cx.notify();
                     cx.stop_propagation();
                 }))
+                .child(bell_dot)
                 .child(leading_icon)
                 .child(self.render_tab_title(i, cx))
                 .child(close_btn);
@@ -1282,6 +1326,21 @@ impl gpui::Focusable for Pane {
 
 impl Render for Pane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // US-006: clear the bell dot for any tab whose terminal currently holds
+        // focus — the user is looking at it, so the signal is acknowledged.
+        if !self.bell_pending.is_empty() {
+            let focused: Vec<gpui::EntityId> = self
+                .tabs
+                .iter()
+                .filter_map(|t| t.as_terminal())
+                .filter(|t| t.read(cx).is_focused(window))
+                .map(|t| t.entity_id())
+                .collect();
+            for id in focused {
+                self.bell_pending.remove(&id);
+            }
+        }
+
         let body = match self.tabs.get(self.selected_idx) {
             Some(TabContent::Terminal(t)) => t.clone().into_any_element(),
             Some(TabContent::Markdown(m)) => m.clone().into_any_element(),

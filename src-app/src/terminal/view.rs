@@ -19,12 +19,10 @@ use gpui::{
     KeyContext, MouseButton, Render, Styled, Window, div, prelude::*,
 };
 
-use crate::pty::PortablePtyBackend;
-
 use super::element::TerminalElement;
 use super::pty_session::ClipboardOp;
 use super::service_detector::ServiceInfo;
-use super::types::{CopyModeCursorState, HyperlinkZone, SearchHighlight};
+use super::types::{CopyModeCursorState, HyperlinkZone, Modes, SearchHighlight};
 use super::{PtyNotifier, TerminalState};
 
 /// Global flag: when true, terminals skip `cx.notify()` to avoid repaints
@@ -44,6 +42,23 @@ pub(crate) fn probe_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("PANEFLOW_LATENCY_PROBE").as_deref() == Ok("1"))
 }
 
+/// Human-readable in-pane message for a failed PTY spawn — written into the
+/// display-only placeholder kept by the US-012 background-spawn path (and the
+/// old synchronous fallback). ANSI-formatted; `\r\n` because there is no PTY to
+/// translate bare `\n`.
+fn spawn_error_message(e: &anyhow::Error) -> String {
+    format!(
+        "\x1b[1;31mError\x1b[0m: failed to start shell.\r\n\
+         \r\n\
+         Common causes:\r\n\
+         \x20 \x20- PTY pool exhausted\r\n\
+         \x20 \x20- Shell binary not found ($SHELL / default_shell)\r\n\
+         \x20 \x20- Permission denied on /dev/ptmx\r\n\
+         \r\n\
+         \x1b[2m{e:#}\x1b[0m\r\n",
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Terminal View — GPUI Render impl
 // ---------------------------------------------------------------------------
@@ -52,6 +67,16 @@ pub(crate) fn probe_enabled() -> bool {
 // The blink itself is now driven by a single app-scoped `BlinkPhase` entity
 // observed by every `TerminalView`, replacing the per-terminal `smol::Timer`
 // loop that lived here.
+
+/// US-015: anchor for an in-progress scrollbar drag. The cursor Y and the
+/// `display_offset` at grab time; each move maps the pixel delta since the grab
+/// to a relative scrollback delta, so the thumb never jumps on grab regardless
+/// of where on it the user clicked.
+#[derive(Clone, Copy)]
+pub(super) struct ScrollbarDrag {
+    pub(super) anchor_y: gpui::Pixels,
+    pub(super) anchor_offset: usize,
+}
 
 pub struct TerminalView {
     pub terminal: TerminalState,
@@ -65,6 +90,14 @@ pub struct TerminalView {
     /// Element origin in window coordinates — set by TerminalElement::paint(),
     /// read by mouse handlers for pixel→grid conversion.
     pub(super) element_origin: Arc<Mutex<gpui::Point<gpui::Pixels>>>,
+    /// US-015: painted scrollbar geometry — set by TerminalElement::paint(),
+    /// read by the mouse handlers to hit-test click-to-jump / drag.
+    pub(super) scrollbar_metrics: Arc<Mutex<Option<super::element::ScrollbarMetrics>>>,
+    /// US-015: active scrollbar drag, or `None`. Holds the cursor Y and the
+    /// `display_offset` captured at grab time; moves apply the pixel delta
+    /// RELATIVE to this anchor, so grabbing the thumb anywhere never makes it
+    /// jump. Set in `handle_mouse_down`, cleared on left mouse-up.
+    pub(super) scrollbar_drag: Option<ScrollbarDrag>,
     /// Sub-line scroll accumulator for smooth trackpad scrolling
     pub(super) scroll_remainder: f32,
     /// Whether the search overlay is visible
@@ -79,10 +112,20 @@ pub struct TerminalView {
     pub(super) search_regex_mode: bool,
     /// Regex compilation error message (None when valid or plain text mode)
     pub(super) search_regex_error: Option<String>,
-    /// Current prompt mark navigation index (for jump-to-prompt cycling)
-    pub(super) prompt_mark_current: Option<usize>,
     /// Whether Alt key is treated as Meta (ESC prefix). Read from config.
     pub(super) option_as_meta: bool,
+    /// US-005: how a BEL is surfaced (visual flash / audible / both / off).
+    /// Read from config at construction.
+    pub(super) bell_mode: paneflow_config::schema::TerminalBellMode,
+    /// US-008: cursor blink override (On / Off / TerminalControlled). Read
+    /// from config at construction.
+    pub(super) cursor_blink_mode: paneflow_config::schema::CursorBlinkConfig,
+    /// US-022: resolved scroll-wheel multiplier for scrollback (1.0 = default).
+    /// Read from config at construction (like the cursor/bell settings) — NOT
+    /// per scroll event, so the hot scroll path does no config I/O. Takes
+    /// effect on the next new terminal, consistent with the other terminal
+    /// settings here.
+    pub(super) scroll_multiplier: f32,
     /// Whether copy mode (keyboard-driven selection) is active
     pub(super) copy_mode_active: bool,
     /// Copy mode cursor position in grid coordinates
@@ -93,10 +136,19 @@ pub struct TerminalView {
     was_focused: bool,
     /// Bell flash deadline — background pulse visible until this instant.
     bell_flash_until: Option<std::time::Instant>,
+    /// US-005: set when an audible bell is pending; rung in `render` (the only
+    /// place with a `&mut Window`) then cleared. The event poll loop runs on an
+    /// `AsyncApp` with no window, so it cannot ring the bell directly.
+    pending_system_bell: bool,
     /// Last hovered cell position for URL regex detection (US-015).
     pub(super) hovered_cell: Option<AlacPoint>,
     /// Active hyperlink under Ctrl+hover — drives underline rendering and Ctrl+click.
     pub(super) ctrl_hovered_link: Option<HyperlinkZone>,
+    /// US-012: the link under the cursor at modifier+mouse-down. The open is
+    /// deferred to mouse-up and fires only if no drag occurred (empty
+    /// selection), so a Ctrl+drag starting on a link selects text instead of
+    /// opening it. Mirrors Zed's mouse_down/up hyperlink match.
+    pub(super) mouse_down_link: Option<HyperlinkZone>,
     /// IME preedit text (in-progress composition). Empty when no composition active.
     ime_marked_text: String,
     /// Gate for clearing pre-resize shell startup content on first render.
@@ -107,6 +159,12 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
+    /// US-006: whether this terminal currently holds keyboard focus. Used by
+    /// the pane to clear a pending bell dot once the user looks at the tab.
+    pub fn is_focused(&self, window: &Window) -> bool {
+        self.focus_handle.is_focused(window)
+    }
+
     pub fn new(workspace_id: u64, cx: &mut Context<Self>) -> Self {
         Self::with_cwd(workspace_id, None, None, cx)
     }
@@ -117,49 +175,94 @@ impl TerminalView {
         initial_size: Option<(usize, usize)>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let surface_id = cx.entity_id().as_u64();
-        let backend = PortablePtyBackend;
-        let result = TerminalState::new(&backend, cwd, workspace_id, surface_id, initial_size);
-        let mut terminal = Self::expect_terminal(result);
-        // Route the Drop-time force-kill timer through GPUI's background
-        // executor instead of a detached OS thread (Zed parity, prevents
-        // a thread leak per closed pane under heavy use).
-        terminal.set_background_executor(cx.background_executor().clone());
-        Self::from_terminal_state(workspace_id, terminal, cx)
+        Self::with_cwd_and_env(workspace_id, cwd, initial_size, None, cx)
     }
 
-    fn expect_terminal(result: anyhow::Result<TerminalState>) -> TerminalState {
-        match result {
-            Ok(t) => t,
-            Err(e) => {
-                log::error!("PTY creation failed: {e:#}");
-                eprintln!(
-                    "Error: Failed to create terminal PTY.\n\
-                     Possible causes:\n\
-                     \x20 - /dev/pts exhausted (too many PTY sessions)\n\
-                     \x20 - Shell not found (check default_shell in config or $SHELL)\n\
-                     \x20 - Permission denied on /dev/ptmx\n\n\
-                     Underlying error: {e:#}"
-                );
-                // Fall back to a display-only terminal that surfaces the
-                // error in the pane instead of crashing the entire app.
-                // The user keeps every other terminal/agent session and
-                // can read why this one failed.
-                let placeholder = TerminalState::new_display_only(24, 80);
-                let message = format!(
-                    "\x1b[1;31mError\x1b[0m: failed to start shell.\r\n\
-                     \r\n\
-                     Common causes:\r\n\
-                     \x20 \x20- PTY pool exhausted\r\n\
-                     \x20 \x20- Shell binary not found ($SHELL / default_shell)\r\n\
-                     \x20 \x20- Permission denied on /dev/ptmx\r\n\
-                     \r\n\
-                     \x1b[2m{e:#}\x1b[0m\r\n",
-                );
-                placeholder.write_output(message.as_bytes());
-                placeholder
-            }
-        }
+    /// Spawn a terminal with an explicit per-surface env map (US-014). The
+    /// global `terminal.env` default is merged underneath in
+    /// [`TerminalState::new`]; `user_env` here is the per-surface override
+    /// (surface wins on key collision). Use this from the session-restore path
+    /// where a [`SurfaceDefinition::env`] is present.
+    pub fn with_cwd_and_env(
+        workspace_id: u64,
+        cwd: Option<std::path::PathBuf>,
+        initial_size: Option<(usize, usize)>,
+        user_env: Option<std::collections::HashMap<String, String>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let surface_id = cx.entity_id().as_u64();
+
+        // US-012: paint immediately. Phase 1 — resolve the (cheap) spawn params
+        // and build a display-only placeholder on the render thread. Phase 2 —
+        // open the PTY on the background executor and `promote()` the
+        // placeholder in place when it resolves, so an N-pane restore never
+        // serializes N blocking spawns on the main thread.
+        let params = TerminalState::resolve_spawn_params(
+            cwd,
+            workspace_id,
+            surface_id,
+            initial_size,
+            user_env,
+        );
+        let (mut terminal, events_tx) = TerminalState::new_pending(params.cols, params.rows);
+        // Route the Drop-time force-kill timer through GPUI's background
+        // executor instead of a detached OS thread (Zed parity, prevents a
+        // thread leak per closed pane under heavy use).
+        terminal.set_background_executor(cx.background_executor().clone());
+        // The background `EventLoop` attaches to this same shared `term` + event
+        // channel, so the placeholder's event loop keeps working after promotion
+        // — no view-side rewiring needed.
+        let term = terminal.term.clone();
+        // Capture the foreground signal mask on the MAIN thread so the
+        // background-spawned child still gets correct Ctrl-C / Ctrl-Z (US-012).
+        let signal_mask = crate::terminal::pty_session::capture_foreground_signal_mask();
+
+        let view = Self::from_terminal_state(workspace_id, terminal, cx);
+
+        let executor = cx.background_executor().clone();
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                // Blocking PTY open (`tty::new` forks) runs off the render thread.
+                let spawned = executor
+                    .spawn(async move {
+                        TerminalState::open_pty_and_eventloop(params, term, events_tx, signal_mask)
+                    })
+                    .await;
+                let _ = this.update(cx, |view, cx| {
+                    match spawned {
+                        Ok(spawned) => {
+                            view.terminal.promote(spawned);
+                            // The grid may have been resized to the real display
+                            // size during the pending phase (before the PTY existed,
+                            // so that SIGWINCH was dropped). Push the current grid
+                            // size to the freshly-opened child now, or it stays at
+                            // the initial spawn size until the next resize.
+                            let (cols, rows) = crate::terminal::types::grid_size(
+                                &view.terminal.term.lock_unfair(),
+                            );
+                            view.terminal.notifier.notify_resize(
+                                cols as u16,
+                                rows as u16,
+                                view.cell_width.as_f32() as u16,
+                                view.line_height.as_f32() as u16,
+                            );
+                        }
+                        Err(e) => {
+                            // Spawn failed: keep the display-only placeholder and
+                            // surface the error in-pane (no orphan, no panic — same
+                            // outcome as the old synchronous fallback).
+                            log::error!("PTY creation failed: {e:#}");
+                            view.terminal
+                                .write_output(spawn_error_message(&e).as_bytes());
+                        }
+                    }
+                    cx.notify();
+                });
+            },
+        )
+        .detach();
+
+        view
     }
 
     fn from_terminal_state(
@@ -295,34 +398,55 @@ impl TerminalView {
                                 view.terminal.notifier.notify(response.into_bytes());
                             }
 
-                            // Bell: trigger visual flash
+                            // Bell (US-005): surface a BEL per the configured
+                            // mode — visual flash, audible system bell, both, or
+                            // off. The system bell is deferred to `render`, the
+                            // only place with a `&mut Window`.
                             if view.terminal.bell_active {
                                 view.terminal.bell_active = false;
-                                view.bell_flash_until = Some(
-                                    std::time::Instant::now()
-                                        + std::time::Duration::from_millis(200),
-                                );
-                                cx.emit(TerminalEvent::Bell);
-                                // Schedule notify after flash duration to clear it
-                                cx.spawn(async |this, cx| {
-                                    smol::Timer::after(std::time::Duration::from_millis(200)).await;
-                                    let _ = cx.update(|cx| {
-                                        this.update(cx, |view, cx| {
-                                            // Only clear if no newer bell extended the deadline
-                                            if view
-                                                .bell_flash_until
-                                                .is_some_and(|t| t <= std::time::Instant::now())
-                                            {
-                                                view.bell_flash_until = None;
-                                            }
-                                            cx.notify();
-                                        })
-                                    });
-                                })
-                                .detach();
+                                let mode = view.bell_mode;
+                                if mode != paneflow_config::schema::TerminalBellMode::Off {
+                                    // Drives the cross-pane tab indicator (US-006).
+                                    cx.emit(TerminalEvent::Bell);
+                                }
+                                if mode.is_audible() {
+                                    view.pending_system_bell = true;
+                                    cx.notify();
+                                }
+                                if mode.is_visual() {
+                                    view.bell_flash_until = Some(
+                                        std::time::Instant::now()
+                                            + std::time::Duration::from_millis(200),
+                                    );
+                                    // Schedule notify after flash duration to clear it
+                                    cx.spawn(async |this, cx| {
+                                        smol::Timer::after(std::time::Duration::from_millis(200))
+                                            .await;
+                                        let _ = cx.update(|cx| {
+                                            this.update(cx, |view, cx| {
+                                                // Only clear if no newer bell extended the deadline
+                                                if view
+                                                    .bell_flash_until
+                                                    .is_some_and(|t| t <= std::time::Instant::now())
+                                                {
+                                                    view.bell_flash_until = None;
+                                                }
+                                                cx.notify();
+                                            })
+                                        });
+                                    })
+                                    .detach();
+                                }
                             }
 
-                            if view.terminal.exited.is_some() {
+                            // US-002: close only on a user-initiated or clean
+                            // exit. A non-zero exit with no prior user input is
+                            // a spawn/launch failure (bad shell, missing agent
+                            // binary) — keep the pane open so the exit overlay
+                            // renders the code instead of vanishing silently.
+                            if view.terminal.exited.is_some()
+                                && view.terminal.should_close_on_exit()
+                            {
                                 cx.emit(TerminalEvent::ChildExited);
                             }
                             if view.terminal.title != old_title {
@@ -408,11 +532,11 @@ impl TerminalView {
                     {
                         return;
                     }
-                    let new_visible = if view.terminal.cursor_blinking {
-                        phase.read(cx).visible
-                    } else {
-                        true
-                    };
+                    let new_visible = resolve_cursor_visible(
+                        view.cursor_blink_mode,
+                        view.terminal.cursor_blinking,
+                        phase.read(cx).visible,
+                    );
                     if new_visible != view.cursor_visible {
                         view.cursor_visible = new_visible;
                         cx.notify();
@@ -434,6 +558,8 @@ impl TerminalView {
             cell_width: gpui::px(8.0),
             line_height: gpui::px(16.0),
             element_origin: Arc::new(Mutex::new(gpui::Point::default())),
+            scrollbar_metrics: Arc::new(Mutex::new(None)),
+            scrollbar_drag: None,
             scroll_remainder: 0.0,
             search_active: false,
             search_query: String::new(),
@@ -441,17 +567,32 @@ impl TerminalView {
             search_current: 0,
             search_regex_mode: false,
             search_regex_error: None,
-            prompt_mark_current: None,
             option_as_meta: paneflow_config::loader::load_config()
                 .option_as_meta
                 .unwrap_or(true),
+            bell_mode: paneflow_config::loader::load_config()
+                .terminal
+                .unwrap_or_default()
+                .bell
+                .unwrap_or_default(),
+            cursor_blink_mode: paneflow_config::loader::load_config()
+                .terminal
+                .unwrap_or_default()
+                .cursor_blink
+                .unwrap_or_default(),
+            scroll_multiplier: paneflow_config::loader::load_config()
+                .terminal
+                .unwrap_or_default()
+                .resolved_scroll_multiplier(),
             copy_mode_active: false,
             copy_cursor: AlacPoint::new(GridLine(0), GridCol(0)),
             copy_mode_frozen_offset: 0,
             was_focused: false,
             bell_flash_until: None,
+            pending_system_bell: false,
             hovered_cell: None,
             ctrl_hovered_link: None,
+            mouse_down_link: None,
             ime_marked_text: String::new(),
             needs_initial_clear: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
@@ -500,7 +641,9 @@ impl TerminalView {
     pub fn send_keystroke(&self, keystroke_str: &str) -> Result<(), String> {
         let keystroke = gpui::Keystroke::parse(keystroke_str).map_err(|e| format!("{e}"))?;
         let mode = *self.terminal.term.lock_unfair().mode();
-        if let Some(seq) = crate::keys::to_esc_str(&keystroke, &mode, self.option_as_meta) {
+        if let Some(seq) =
+            crate::keys::to_esc_str(&keystroke, &Modes::from(mode), self.option_as_meta)
+        {
             self.terminal.write_to_pty(seq.as_bytes().to_vec());
         } else if let Some(ref key_char) = keystroke.key_char {
             self.terminal.write_to_pty(key_char.as_bytes().to_vec());
@@ -537,6 +680,14 @@ impl TerminalView {
         let term = self.terminal.term.lock_unfair();
         let grid = term.grid();
         let line = point.line;
+        // US-011 hardening: a stale hovered cell (captured before a resize,
+        // `clear`, or alt-screen swap) may now be outside the grid's line
+        // range. alacritty bounds-checks the grid only under debug_assert!, so
+        // guard before indexing to avoid a release-mode panic. Columns are
+        // already bounded by the `0..cols` loop below.
+        if line < term.topmost_line() || line > term.bottommost_line() {
+            return Vec::new();
+        }
 
         // Extract line text from grid cells, skipping wide-char spacer placeholders.
         // Track a char-to-column mapping so regex byte offsets map to grid columns.
@@ -573,6 +724,14 @@ impl TerminalView {
         let term = self.terminal.term.lock_unfair();
         let grid = term.grid();
         let line = point.line;
+        // US-011 hardening: a stale hovered cell (captured before a resize,
+        // `clear`, or alt-screen swap) may now be outside the grid's line
+        // range. alacritty bounds-checks the grid only under debug_assert!, so
+        // guard before indexing to avoid a release-mode panic. Columns are
+        // already bounded by the `0..cols` loop below.
+        if line < term.topmost_line() || line > term.bottommost_line() {
+            return Vec::new();
+        }
 
         let cols = term.columns();
         let mut line_text = String::with_capacity(cols);
@@ -620,6 +779,14 @@ impl TerminalView {
         let term = self.terminal.term.lock_unfair();
         let grid = term.grid();
         let line = point.line;
+        // US-011 hardening: a stale hovered cell (captured before a resize,
+        // `clear`, or alt-screen swap) may now be outside the grid's line
+        // range. alacritty bounds-checks the grid only under debug_assert!, so
+        // guard before indexing to avoid a release-mode panic. Columns are
+        // already bounded by the `0..cols` loop below.
+        if line < term.topmost_line() || line > term.bottommost_line() {
+            return Vec::new();
+        }
 
         let cols = term.columns();
         let mut line_text = String::with_capacity(cols);
@@ -871,16 +1038,27 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // US-005: ring the OS system bell here — the only context with a
+        // `&mut Window`. The event poll loop runs on an `AsyncApp` and merely
+        // sets `pending_system_bell`.
+        if self.pending_system_bell {
+            self.pending_system_bell = false;
+            window.play_system_bell();
+        }
         let focused = self.focus_handle.is_focused(window);
 
         // DEC 1004: send focus in/out events on focus transitions
         if focused != self.was_focused {
             let mode = { *self.terminal.term.lock_unfair().mode() };
             if mode.contains(TermMode::FOCUS_IN_OUT) {
+                // Automated protocol write, NOT user input — go through the
+                // notifier directly so US-002's keyboard_input_sent flag is not
+                // tripped by a mere focus change (a failed-spawn pane that gets
+                // focused must still count as "no input" and stay open).
                 if focused {
-                    self.terminal.write_to_pty(b"\x1b[I".to_vec());
+                    self.terminal.write_to_pty_silent(b"\x1b[I".to_vec());
                 } else {
-                    self.terminal.write_to_pty(b"\x1b[O".to_vec());
+                    self.terminal.write_to_pty_silent(b"\x1b[O".to_vec());
                 }
             }
             self.was_focused = focused;
@@ -940,23 +1118,13 @@ impl Render for TerminalView {
                 .mode()
                 .contains(TermMode::ALT_SCREEN);
 
-        // Snapshot prompt mark line positions (OSC 133 `A` marks only — the
-        // shell-prompt boundary, not output/command bookends). The element
-        // paints them as ticks in the scrollbar gutter.
-        let prompt_mark_lines: Vec<i32> = self
-            .terminal
-            .prompt_marks
-            .iter()
-            .filter(|m| m.kind == crate::terminal::PromptMarkKind::PromptStart)
-            .map(|m| m.line)
-            .collect();
-
         let terminal_element = TerminalElement::new(
             self.terminal.term.clone(),
             PtyNotifier(self.terminal.notifier.0.clone()),
             cursor_visible,
             focused,
             self.terminal.exited,
+            self.terminal.exit_signal.clone(),
             self.element_origin.clone(),
             search_match_rects,
             copy_cursor_state,
@@ -964,13 +1132,13 @@ impl Render for TerminalView {
                 .is_some_and(|t| std::time::Instant::now() < t),
             self.ctrl_hovered_link
                 .as_ref()
-                .map(|link| (link.start.line, link.start.column.0, link.end.column.0)),
+                .map(|link| (link.start.line.0, link.start.column.0, link.end.column.0)),
             self.ctrl_hovered_link.as_ref().map(|link| link.uri.clone()),
             self.ime_marked_text.clone(),
             self.focus_handle.clone(),
             cx.entity().clone(),
             self.needs_initial_clear.clone(),
-            prompt_mark_lines,
+            self.scrollbar_metrics.clone(),
             #[cfg(debug_assertions)]
             keystroke_at,
         );
@@ -982,6 +1150,17 @@ impl Render for TerminalView {
             .id("terminal-view")
             .key_context(self.dispatch_context())
             .track_focus(&self.focus_handle)
+            // US-010: hand cursor over a hovered link, text IBeam otherwise —
+            // the universal "this is clickable" affordance (mirrors Zed
+            // terminal_element.rs:1364-1371).
+            .cursor(if self.ctrl_hovered_link.is_some() {
+                gpui::CursorStyle::PointingHand
+            } else {
+                gpui::CursorStyle::IBeam
+            })
+            // US-011: reveal/clear a link the instant Ctrl/Cmd is pressed or
+            // released over a stationary cursor (no mouse move required).
+            .on_modifiers_changed(cx.listener(Self::handle_modifiers_changed))
             .on_key_down(cx.listener(Self::handle_key_down))
             .on_any_mouse_down(cx.listener(Self::handle_mouse_down))
             .on_mouse_move(cx.listener(Self::handle_mouse_move))
@@ -1021,16 +1200,6 @@ impl Render for TerminalView {
             .on_action(cx.listener(|this, _: &crate::ToggleCopyMode, _window, cx| {
                 this.toggle_copy_mode(cx);
             }))
-            .on_action(
-                cx.listener(|this, _: &crate::JumpToPromptPrev, _window, cx| {
-                    this.jump_to_prompt_prev(cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &crate::JumpToPromptNext, _window, cx| {
-                    this.jump_to_prompt_next(cx);
-                }),
-            )
             .on_drop(cx.listener(Self::handle_file_drop))
             .on_action(
                 cx.listener(|this, _: &crate::ClearScrollHistory, _window, cx| {
@@ -1070,137 +1239,33 @@ impl Render for TerminalView {
     }
 }
 
+/// US-008: decide cursor visibility for one blink tick. `On` always blinks
+/// (follows the shared phase), `Off` is always solid, `TerminalControlled`
+/// defers to the program's DECSCUSR-driven blink flag. Pure so it is
+/// unit-testable without the GPUI observer.
+fn resolve_cursor_visible(
+    mode: paneflow_config::schema::CursorBlinkConfig,
+    decscusr_blinking: bool,
+    phase_visible: bool,
+) -> bool {
+    use paneflow_config::schema::CursorBlinkConfig as M;
+    match mode {
+        M::On => phase_visible,
+        M::Off => true,
+        M::TerminalControlled => {
+            if decscusr_blinking {
+                phase_visible
+            } else {
+                true
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pty::{PtyBackend, PtyProcess};
     use crate::terminal::pty_session::strip_partial_ansi_tail;
-    use std::collections::HashMap;
-    use std::io::Cursor;
-    use std::path::Path;
-    use std::sync::{Arc, Mutex};
-
-    /// Mock PTY backend for testing — creates in-memory reader/writer pairs
-    /// without spawning a real shell process.
-    struct MockPtyBackend;
-
-    /// Minimal mock child process that reports exit code 0.
-    #[derive(Debug)]
-    struct MockChild;
-
-    impl portable_pty::ChildKiller for MockChild {
-        fn kill(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-
-        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
-            Box::new(MockChild)
-        }
-    }
-
-    impl portable_pty::Child for MockChild {
-        fn process_id(&self) -> Option<u32> {
-            Some(9999)
-        }
-
-        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
-            Ok(portable_pty::ExitStatus::with_exit_code(0))
-        }
-
-        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
-            Ok(Some(portable_pty::ExitStatus::with_exit_code(0)))
-        }
-
-        // portable_pty::Child adds an `as_raw_handle` method on Windows
-        // that mirrors `as_raw_fd` on Unix. The trait method is gated on
-        // the portable_pty side; we stub it here so MockChild satisfies
-        // the Windows trait surface during CI `cargo test` on the
-        // x86_64-pc-windows-msvc target.
-        #[cfg(windows)]
-        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
-            None
-        }
-    }
-
-    /// Minimal mock MasterPty — resize is a no-op.
-    struct MockMasterPty;
-
-    impl portable_pty::MasterPty for MockMasterPty {
-        fn resize(&self, _size: portable_pty::PtySize) -> Result<(), anyhow::Error> {
-            Ok(())
-        }
-
-        fn get_size(&self) -> Result<portable_pty::PtySize, anyhow::Error> {
-            Ok(portable_pty::PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-        }
-
-        fn try_clone_reader(&self) -> Result<Box<dyn std::io::Read + Send>, anyhow::Error> {
-            Ok(Box::new(Cursor::new(Vec::new())))
-        }
-
-        fn take_writer(&self) -> Result<Box<dyn std::io::Write + Send>, anyhow::Error> {
-            Ok(Box::new(Vec::new()))
-        }
-
-        // `process_group_leader` is a Unix-only trait method in
-        // portable_pty 0.8 (the concept doesn't map to Windows process
-        // groups); gating the impl to cfg(unix) keeps the Windows build
-        // from erroring with E0407.
-        #[cfg(unix)]
-        fn process_group_leader(&self) -> Option<i32> {
-            None
-        }
-
-        #[cfg(unix)]
-        fn as_raw_fd(&self) -> Option<i32> {
-            None
-        }
-    }
-
-    impl PtyBackend for MockPtyBackend {
-        fn spawn(
-            &self,
-            _command: &str,
-            _args: &[String],
-            _cwd: &Path,
-            _env: &HashMap<String, String>,
-            _rows: u16,
-            _cols: u16,
-        ) -> anyhow::Result<PtyProcess> {
-            // Return an empty reader that immediately reaches EOF,
-            // causing the reader thread to exit cleanly.
-            let reader: Box<dyn std::io::Read + Send> = Box::new(Cursor::new(Vec::new()));
-            let writer: Box<dyn std::io::Write + Send> = Box::new(Vec::new());
-            let child: Box<dyn portable_pty::Child + Send + Sync> = Box::new(MockChild);
-            let master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>> =
-                Arc::new(Mutex::new(Box::new(MockMasterPty)));
-
-            Ok(PtyProcess {
-                reader,
-                writer,
-                child,
-                master,
-                child_pid: 9999,
-            })
-        }
-    }
-
-    #[test]
-    fn mock_backend_creates_terminal_state() {
-        let backend = MockPtyBackend;
-        let state = TerminalState::new(&backend, None, 1, 1, None);
-        assert!(state.is_ok(), "TerminalState::new with mock backend failed");
-
-        let state = state.unwrap();
-        assert_eq!(state.child_pid, 9999);
-        assert!(state.exited.is_none());
-        assert_eq!(state.title, "Terminal");
-    }
 
     // --- strip_partial_ansi_tail tests (US-012 / US-015) ---
 
@@ -1245,9 +1310,11 @@ mod tests {
     // --- extract_scrollback / restore_scrollback tests (US-011 / US-015) ---
 
     #[test]
-    fn scrollback_round_trip_via_mock() {
-        let backend = MockPtyBackend;
-        let state = TerminalState::new(&backend, None, 1, 1, None).unwrap();
+    fn scrollback_round_trip() {
+        // EP-002 US-004: the mockable PtyBackend is gone; a display-only
+        // TerminalState has a real `Term` (no PTY) and is the right harness for
+        // the grid-only scrollback round-trip.
+        let state = TerminalState::new_display_only(24, 80);
 
         // Feed some text into the terminal grid
         state.restore_scrollback("line one\nline two\nline three");
@@ -1266,8 +1333,7 @@ mod tests {
 
     #[test]
     fn extract_scrollback_empty_terminal_returns_none() {
-        let backend = MockPtyBackend;
-        let state = TerminalState::new(&backend, None, 1, 1, None).unwrap();
+        let state = TerminalState::new_display_only(24, 80);
         // Fresh terminal with no content beyond the initial blank grid
         // May return None or Some with only whitespace — both are acceptable
         let scrollback = state.extract_scrollback();
@@ -1277,5 +1343,20 @@ mod tests {
                 "Expected empty or whitespace-only scrollback, got: {text}"
             );
         }
+    }
+
+    #[test]
+    fn cursor_blink_override_resolves_correctly() {
+        use paneflow_config::schema::CursorBlinkConfig as M;
+        // US-008: On always blinks (follows phase), ignoring DECSCUSR.
+        assert!(resolve_cursor_visible(M::On, false, true));
+        assert!(!resolve_cursor_visible(M::On, false, false));
+        // Off is always solid (visible), ignoring phase and DECSCUSR.
+        assert!(resolve_cursor_visible(M::Off, true, false));
+        // TerminalControlled defers to DECSCUSR: blink → follow phase.
+        assert!(!resolve_cursor_visible(M::TerminalControlled, true, false));
+        assert!(resolve_cursor_visible(M::TerminalControlled, true, true));
+        // TerminalControlled + DECSCUSR not blinking → always solid.
+        assert!(resolve_cursor_visible(M::TerminalControlled, false, false));
     }
 }

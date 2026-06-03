@@ -304,7 +304,19 @@ impl PaneFlowApp {
                         .map(PathBuf::from)
                         .unwrap_or_else(|| fallback_cwd.to_path_buf());
 
-                    let t = cx.new(|cx| TerminalView::with_cwd(workspace_id, Some(cwd), None, cx));
+                    // US-014: forward the per-surface env override; the global
+                    // `terminal.env` default is merged underneath in
+                    // `TerminalState::new`.
+                    let surface_env = surface.env.clone();
+                    let t = cx.new(|cx| {
+                        TerminalView::with_cwd_and_env(
+                            workspace_id,
+                            Some(cwd),
+                            None,
+                            surface_env,
+                            cx,
+                        )
+                    });
 
                     if let Some(ref scrollback) = surface.scrollback {
                         t.read(cx).terminal.restore_scrollback(scrollback);

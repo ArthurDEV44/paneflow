@@ -7,7 +7,6 @@
 //! Extracted from `main.rs` per US-026 of the src-app refactor PRD — pure
 //! code-motion, behaviour unchanged.
 
-use alacritty_terminal::grid::Dimensions;
 use gpui::{App, AppContext, Context, Entity, Window};
 use notify::Watcher;
 
@@ -661,7 +660,7 @@ impl PaneFlowApp {
                         let view = active.read(cx);
                         let cwd = view.terminal.cwd_now();
                         let term = view.terminal.term.lock();
-                        let (cols, rows) = (term.columns(), term.screen_lines());
+                        let (cols, rows) = crate::terminal::types::grid_size(&term);
                         let size = match direction {
                             crate::layout::SplitDirection::Horizontal => (cols, (rows / 2).max(1)),
                             crate::layout::SplitDirection::Vertical => ((cols / 2).max(1), rows),
