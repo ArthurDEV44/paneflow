@@ -1,7 +1,6 @@
 //! Cursor paint pass — primary text cursor (Block/Beam/Underline/HollowBlock)
 //! plus the copy-mode selection anchor cursor.
 
-use alacritty_terminal::vte::ansi::CursorShape;
 use gpui::{
     App, BorderStyle, Bounds, Font, FontStyle, FontWeight, Pixels, Point, SharedString, TextAlign,
     TextRun, Window, fill, outline, px,
@@ -9,6 +8,7 @@ use gpui::{
 
 use super::super::LayoutState;
 use super::super::geometry::CellGeometry;
+use crate::terminal::types::CursorShape;
 
 /// Paint the primary cursor at its grid position using the shape dictated by
 /// the terminal mode + config. For Block shapes, shapes the underlying

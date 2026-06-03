@@ -13,9 +13,9 @@
 //!
 //! Extracted from `terminal_element.rs` per US-009 of the src-app refactor PRD.
 
-use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
 use gpui::{Hsla, Rgba};
 
+use crate::terminal::types::{Color, NamedColor};
 use crate::theme::TerminalTheme;
 
 // ---------------------------------------------------------------------------
@@ -209,15 +209,15 @@ fn adjust_lightness_for_apca(fg: Hsla, bg: Hsla, min_lc: f32) -> Hsla {
 // Color conversion
 // ---------------------------------------------------------------------------
 
-pub(super) fn convert_color(color: AnsiColor, theme: &TerminalTheme) -> Hsla {
+pub(super) fn convert_color(color: Color, theme: &TerminalTheme) -> Hsla {
     match color {
-        AnsiColor::Named(name) => named_color(name, theme),
+        Color::Named(name) => named_color(name, theme),
         // Truecolor RGB values are kept as-is. A previous special case mapped
         // `Spec(0,0,0)` to `theme.black`, but that silently hijacked apps that
         // chose a literal `#000000` (intentional pure black) and replaced it
         // with the slightly-lighter ANSI "black" slot from the theme.
-        AnsiColor::Spec(rgb) => rgb_to_hsla(rgb.r, rgb.g, rgb.b),
-        AnsiColor::Indexed(i) => indexed_color(i, theme),
+        Color::Spec(rgb) => rgb_to_hsla(rgb.r, rgb.g, rgb.b),
+        Color::Indexed(i) => indexed_color(i, theme),
     }
 }
 

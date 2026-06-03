@@ -1,19 +1,9 @@
 //! Terminal cell renderer using GPUI's Element trait.
 //!
-//! Renders terminal cells from alacritty_terminal as batched text runs with
+//! Renders terminal cells from a backend-neutral snapshot as batched text runs
 //! full ANSI color support, cell attributes, and background quads.
 
 use std::sync::{Arc, Mutex};
-
-use alacritty_terminal::event::WindowSize;
-use alacritty_terminal::event_loop::Msg;
-use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Line as GridLine, Point as AlacPoint};
-use alacritty_terminal::selection::SelectionRange;
-use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::Term;
-use alacritty_terminal::term::cell::Flags as CellFlags;
-use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor};
 
 use gpui::{
     App, Bounds, ContentMask, Element, ElementId, Font, FontStyle, FontWeight, GlobalElementId,
@@ -21,8 +11,12 @@ use gpui::{
     UnderlineStyle, Window, px, relative,
 };
 
-use crate::terminal::types::{CopyModeCursorState, SearchHighlight};
-use crate::terminal::{PtyNotifier, SpikeTermSize, ZedListener};
+use crate::terminal::PtyNotifier;
+use crate::terminal::types::{
+    Cell, CellFlags, Color, Content, CopyModeCursorState, CursorShape, Modes, NamedColor,
+    Point as GridPoint, SearchHighlight, SelectionRange, SharedTerm, content_from_term, modes_of,
+    resize_if_needed,
+};
 
 pub(super) mod color;
 mod font;
@@ -50,6 +44,10 @@ pub use hyperlink::{
 #[allow(unused_imports)] // re-exported for theme tests; not used inside this module
 pub(crate) use color::apca_contrast;
 pub(crate) use color::ensure_minimum_contrast;
+// US-015: re-export the scrollbar geometry so the view's mouse handlers
+// (`crate::terminal::input`) can hit-test against the painted strip. `paint`
+// is a private module, so the type must surface through `element`.
+pub(crate) use paint::scrollbar::ScrollbarMetrics;
 
 /// APCA minimum Lc (lightness contrast) threshold.
 /// Lc 45 is "minimum for large fluent text" per ARC Bronze Simple Mode — matches Zed's default.
@@ -83,7 +81,7 @@ fn is_decorative_character(ch: char) -> bool {
 /// `selection_foreground`, guaranteeing readable text under the selection
 /// quad on themes whose `selection` background is close in luminance to
 /// common ANSI colors.
-fn is_cell_in_selection(point: AlacPoint, sel: &SelectionRange, display_offset: usize) -> bool {
+fn is_cell_in_selection(point: GridPoint, sel: &SelectionRange, display_offset: usize) -> bool {
     let start_line = sel.start.line.0 + display_offset as i32;
     let end_line = sel.end.line.0 + display_offset as i32;
     let start_col = sel.start.column.0;
@@ -170,6 +168,7 @@ fn merge_background_regions(mut rects: Vec<LayoutRect>) -> Vec<LayoutRect> {
 // Layout types
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy)]
 pub struct CellDimensions {
     pub cell_width: Pixels,
     pub line_height: Pixels,
@@ -287,7 +286,7 @@ fn block_char_coverages(c: char) -> Option<&'static [(f32, f32, f32, f32)]> {
     }
 }
 
-struct CursorInfo {
+pub(crate) struct CursorInfo {
     line: i32,
     col: usize,
     shape: CursorShape,
@@ -297,6 +296,39 @@ struct CursorInfo {
     text: Option<char>,
     bold: bool,
     italic: bool,
+}
+
+/// Window-free inputs to [`layout_from_snapshot`]. Everything the layout pass
+/// needs that would otherwise be read from `&mut Window` / `&App` / the `Term`
+/// lock / `&self`, captured as plain values. `build_layout` fills this from a
+/// neutral [`Content`] snapshot ([`content_from_term`]) plus the content mask;
+/// the golden-frame net fills it from a fixed fixture so the entire layout is
+/// reproducible with no display. The cells are the backend-neutral
+/// [`crate::terminal::types::Cell`] (EP-003) — no alacritty types reach here.
+pub(crate) struct LayoutInputs<'a> {
+    pub cells: Vec<Cell>,
+    /// Cursor as snapshotted from the grid (before the copy-mode / selection
+    /// anchor override, which `layout_from_snapshot` applies internally).
+    pub cursor: Option<CursorInfo>,
+    pub selection_range: Option<SelectionRange>,
+    pub copy_mode_cursor: Option<&'a CopyModeCursorState>,
+    pub search_highlights: &'a [SearchHighlight],
+    pub display_offset: usize,
+    pub history_size: usize,
+    pub desired_cols: usize,
+    pub desired_rows: usize,
+    /// Viewport cull range (rows `[first, last)`), derived from the content
+    /// mask in `build_layout`. Tests pass `0..desired_rows` to render all rows.
+    pub first_visible_row: i32,
+    pub last_visible_row: i32,
+    pub dims: CellDimensions,
+    /// Base font, resolved once by the caller (config-dependent). Bold/italic
+    /// variants are derived per-cell. Passed in so the layout pass never reads
+    /// the font config and stays deterministic.
+    pub base_font: Font,
+    pub theme: &'a crate::theme::TerminalTheme,
+    pub exited: Option<i32>,
+    pub exit_signal: Option<String>,
 }
 
 pub struct LayoutState {
@@ -313,6 +345,9 @@ pub struct LayoutState {
     background_color: Hsla,
     scrollbar_thumb: Hsla,
     exited: Option<i32>,
+    /// US-004: signal name if the child was killed by a signal; the exit
+    /// overlay renders this instead of the exit code to flag a crash.
+    exit_signal: Option<String>,
     /// Scroll position for scrollbar indicator (0 = at bottom)
     display_offset: usize,
     /// Total scrollback history size
@@ -325,11 +360,6 @@ pub struct LayoutState {
     link_text_color: Hsla,
     /// Cursor position bounds for IME popup positioning (pixel coordinates).
     ime_cursor_bounds: Option<Bounds<Pixels>>,
-    /// Grid-coordinate line numbers of every OSC 133 prompt-start marker,
-    /// snapshot at layout time. Scrollback rows are negative, viewport rows
-    /// non-negative. Used by `paint::scrollbar::paint_scrollbar` to draw
-    /// position ticks in the scrollbar gutter for quick prompt navigation.
-    pub(crate) prompt_mark_lines: Vec<i32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -351,11 +381,14 @@ struct CellStyle {
 // ---------------------------------------------------------------------------
 
 pub struct TerminalElement {
-    term: Arc<FairMutex<Term<ZedListener>>>,
+    term: SharedTerm,
     notifier: PtyNotifier,
     cursor_visible: bool,
     focused: bool,
     exited: Option<i32>,
+    /// US-004: signal name if the child was killed by a signal; the exit
+    /// overlay renders this instead of the exit code to flag a crash.
+    exit_signal: Option<String>,
     /// Shared origin — updated in paint() so mouse handlers know the element position.
     element_origin: Arc<Mutex<Point<Pixels>>>,
     /// Search match highlights to paint
@@ -365,7 +398,7 @@ pub struct TerminalElement {
     /// Whether a bell flash is currently active (200ms visual pulse).
     bell_flash_active: bool,
     /// Ctrl+hovered hyperlink range for underline rendering (line, start_col, end_col).
-    hovered_link_range: Option<(alacritty_terminal::index::Line, usize, usize)>,
+    hovered_link_range: Option<(i32, usize, usize)>,
     /// Full URI of the Ctrl+hovered link (for tooltip display).
     hovered_link_uri: Option<String>,
     /// IME preedit text to render at cursor position.
@@ -376,10 +409,11 @@ pub struct TerminalElement {
     terminal_view: gpui::Entity<crate::terminal::TerminalView>,
     /// Gate for clearing pre-resize shell startup content on first render.
     needs_initial_clear: Arc<std::sync::atomic::AtomicBool>,
-    /// Snapshot of OSC 133 PromptStart line positions (grid coordinates),
-    /// rendered as ticks in the scrollbar gutter so the user can skim
-    /// the scrollback by command boundary.
-    prompt_mark_lines: Vec<i32>,
+    /// US-015: shared sink for the painted scrollbar geometry. `paint()` writes
+    /// the current frame's [`ScrollbarMetrics`] (or `None`) here so the view's
+    /// mouse handlers can hit-test interactive scroll against the exact strip
+    /// that was drawn. Same single-thread sharing as [`element_origin`].
+    scrollbar_metrics: Arc<Mutex<Option<ScrollbarMetrics>>>,
     /// Timestamp of the keystroke that triggered this render, for latency measurement.
     #[cfg(debug_assertions)]
     last_keystroke_at: Option<std::time::Instant>,
@@ -388,22 +422,23 @@ pub struct TerminalElement {
 impl TerminalElement {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        term: Arc<FairMutex<Term<ZedListener>>>,
+        term: SharedTerm,
         notifier: PtyNotifier,
         cursor_visible: bool,
         focused: bool,
         exited: Option<i32>,
+        exit_signal: Option<String>,
         element_origin: Arc<Mutex<Point<Pixels>>>,
         search_highlights: Vec<SearchHighlight>,
         copy_mode_cursor: Option<CopyModeCursorState>,
         bell_flash_active: bool,
-        hovered_link_range: Option<(alacritty_terminal::index::Line, usize, usize)>,
+        hovered_link_range: Option<(i32, usize, usize)>,
         hovered_link_uri: Option<String>,
         ime_marked_text: String,
         focus_handle: gpui::FocusHandle,
         terminal_view: gpui::Entity<crate::terminal::TerminalView>,
         needs_initial_clear: Arc<std::sync::atomic::AtomicBool>,
-        prompt_mark_lines: Vec<i32>,
+        scrollbar_metrics: Arc<Mutex<Option<ScrollbarMetrics>>>,
         #[cfg(debug_assertions)] last_keystroke_at: Option<std::time::Instant>,
     ) -> Self {
         Self {
@@ -412,6 +447,7 @@ impl TerminalElement {
             cursor_visible,
             focused,
             exited,
+            exit_signal,
             element_origin,
             search_highlights,
             copy_mode_cursor,
@@ -422,7 +458,7 @@ impl TerminalElement {
             focus_handle,
             terminal_view,
             needs_initial_clear,
-            prompt_mark_lines,
+            scrollbar_metrics,
             #[cfg(debug_assertions)]
             last_keystroke_at,
         }
@@ -436,8 +472,6 @@ impl TerminalElement {
     ) -> LayoutState {
         let dims = measure_cell(window, cx);
         let theme = crate::theme::active_theme();
-        let background_color = theme.background;
-        let ansi_background = theme.ansi_background;
 
         // Compute desired terminal grid size from pixel bounds (accounting for left gutter)
         let gutter = dims.cell_width;
@@ -453,36 +487,23 @@ impl TerminalElement {
             .max(1.0) as usize;
         let desired_rows = (bounds.size.height / dims.line_height).next_up().floor() as usize;
 
-        // Snapshot the grid, cursor, and selection under lock to minimize FairMutex hold time.
+        // Snapshot the grid into a neutral `Content` under lock (resize first so
+        // the snapshot reflects the resized grid), minimizing FairMutex hold
+        // time. The renderer never touches alacritty types — the lock-and-read
+        // is confined to the `types` seam (`content_from_term`, EP-003).
         let cursor_color = theme.cursor;
-        let selection_color = theme.selection;
 
-        let (cells, cursor_snapshot, selection_range, display_offset, history_size): (
-            Vec<_>,
-            Option<CursorInfo>,
-            Option<SelectionRange>,
-            usize,
-            usize,
-        ) = {
+        let content: Content = {
             let mut term = self.term.lock();
-            // Resize the terminal grid if bounds have changed
-            let current_cols = term.columns();
-            let current_rows = term.screen_lines();
-            if desired_cols > 0
-                && desired_rows > 0
-                && (current_cols != desired_cols || current_rows != desired_rows)
-            {
-                term.resize(SpikeTermSize {
-                    columns: desired_cols,
-                    screen_lines: desired_rows,
-                });
-                // Notify PTY EventLoop to send SIGWINCH to the child process
-                let _ = self.notifier.0.send(Msg::Resize(WindowSize {
-                    num_cols: desired_cols as u16,
-                    num_lines: desired_rows as u16,
-                    cell_width: dims.cell_width.as_f32() as u16,
-                    cell_height: dims.line_height.as_f32() as u16,
-                }));
+            // Resize the terminal grid if bounds have changed; fire SIGWINCH to
+            // the child only on an actual dimension change.
+            if resize_if_needed(&mut term, desired_cols, desired_rows) {
+                self.notifier.notify_resize(
+                    desired_cols as u16,
+                    desired_rows as u16,
+                    dims.cell_width.as_f32() as u16,
+                    dims.line_height.as_f32() as u16,
+                );
             }
             // On the very first resize, clear any shell startup content that
             // landed in the grid before we knew the actual window dimensions.
@@ -494,192 +515,50 @@ impl TerminalElement {
             {
                 term.grid_mut().reset();
             }
-            let content = term.renderable_content();
-            let sel_range = content.selection.as_ref().map(|sel| SelectionRange {
-                start: sel.start,
-                end: sel.end,
-                is_block: sel.is_block,
-            });
-            let cursor =
-                if matches!(content.cursor.shape, CursorShape::Hidden) || !self.cursor_visible {
-                    None
+            content_from_term(&term)
+        };
+
+        let display_offset = content.display_offset;
+        let history_size = content.history_size;
+        let selection_range = content.selection;
+
+        // Apply the element's focus/visibility overrides + theme cursor color to
+        // the raw grid cursor carried by the snapshot. Mirrors the prior
+        // under-lock cursor logic exactly (zero golden-frame delta).
+        let cursor_snapshot: Option<CursorInfo> =
+            if matches!(content.cursor.shape, CursorShape::Hidden) || !self.cursor_visible {
+                None
+            } else {
+                let rc = content.cursor;
+                let shape = if !self.focused {
+                    CursorShape::HollowBlock
                 } else {
-                    let shape = if !self.focused {
-                        CursorShape::HollowBlock
-                    } else {
-                        content.cursor.shape
-                    };
-                    let cursor_cell = &term.grid()[content.cursor.point];
-                    let wide = cursor_cell.flags.contains(CellFlags::WIDE_CHAR);
-                    let cursor_char = cursor_cell.c;
-                    let cursor_flags = cursor_cell.flags;
-                    let text = if matches!(shape, CursorShape::Block)
-                        && cursor_char != ' '
-                        && cursor_char != '\0'
-                    {
-                        Some(cursor_char)
+                    rc.shape
+                };
+                let text =
+                    if matches!(shape, CursorShape::Block) && rc.text != ' ' && rc.text != '\0' {
+                        Some(rc.text)
                     } else {
                         None
                     };
-                    Some(CursorInfo {
-                        line: content.cursor.point.line.0,
-                        col: content.cursor.point.column.0,
-                        shape,
-                        color: cursor_color,
-                        wide,
-                        text,
-                        bold: cursor_flags.contains(CellFlags::BOLD)
-                            || cursor_flags.contains(CellFlags::BOLD_ITALIC),
-                        italic: cursor_flags.contains(CellFlags::ITALIC)
-                            || cursor_flags.contains(CellFlags::BOLD_ITALIC),
-                    })
-                };
-            let disp_offset = content.display_offset;
-            let hist_size = term.history_size();
-            // Transform grid-line coords (where scrollback rows are negative) into
-            // viewport-line coords so the rest of the paint pipeline — culling,
-            // Y positioning, hyperlink zones, batching — all speak the same
-            // coordinate system as the cursor and search-highlight code.
-            let disp_offset_i = disp_offset as i32;
-            let cells: Vec<_> = content
-                .display_iter
-                .map(|ic| {
-                    let zw = ic.cell.zerowidth().map(|chars| chars.to_vec());
-                    let hyperlink = ic.cell.hyperlink();
-                    let viewport_point =
-                        AlacPoint::new(GridLine(ic.point.line.0 + disp_offset_i), ic.point.column);
-                    (
-                        viewport_point,
-                        ic.cell.c,
-                        ic.cell.fg,
-                        ic.cell.bg,
-                        ic.cell.flags,
-                        zw,
-                        hyperlink,
-                    )
-                })
-                .collect();
-            (cells, cursor, sel_range, disp_offset, hist_size)
-        };
-
-        // Override cursor with copy mode cursor when active, and surface the
-        // selection anchor as a distinct secondary marker (tmux-style).
-        let (cursor_snapshot, anchor_cursor) = if let Some(ref cm) = self.copy_mode_cursor {
-            let display_line = cm.grid_line + display_offset as i32;
-            let copy_cursor_color = Hsla {
-                h: 0.5,
-                s: 0.8,
-                l: 0.65,
-                a: 0.9,
-            }; // Bright cyan — the moving cursor (current position)
-            let anchor_color = Hsla {
-                h: 0.12,
-                s: 0.95,
-                l: 0.6,
-                a: 0.95,
-            }; // Amber — the anchor (selection start)
-
-            let main = if display_line >= 0 && display_line < desired_rows as i32 {
                 Some(CursorInfo {
-                    line: display_line,
-                    col: cm.col,
-                    shape: CursorShape::Block,
-                    color: copy_cursor_color,
-                    wide: false,
-                    text: None,
-                    bold: false,
-                    italic: false,
+                    line: rc.point.line.0,
+                    col: rc.point.column.0,
+                    shape,
+                    color: cursor_color,
+                    wide: rc.wide,
+                    text,
+                    bold: rc.bold,
+                    italic: rc.italic,
                 })
-            } else {
-                None
             };
 
-            let anchor = cm.anchor_grid_line.and_then(|anchor_line| {
-                let display_anchor = anchor_line + display_offset as i32;
-                if display_anchor >= 0 && display_anchor < desired_rows as i32 {
-                    Some(CursorInfo {
-                        line: display_anchor,
-                        col: cm.anchor_col,
-                        shape: CursorShape::HollowBlock,
-                        color: anchor_color,
-                        wide: false,
-                        text: None,
-                        bold: false,
-                        italic: false,
-                    })
-                } else {
-                    None
-                }
-            });
+        let cells = content.cells;
 
-            (main, anchor)
-        } else if let Some(sel) = &selection_range {
-            // Mouse selection (no copy mode): mark both endpoints with distinct
-            // hollow blocks so the user can see the selection bounds precisely
-            // before copying. Keep the normal shell cursor untouched.
-            let anchor_color = Hsla {
-                h: 0.12,
-                s: 0.95,
-                l: 0.6,
-                a: 0.95,
-            }; // Amber — selection start
-            let end_color = Hsla {
-                h: 0.5,
-                s: 0.8,
-                l: 0.65,
-                a: 0.9,
-            }; // Cyan — selection end
-
-            let start_line = sel.start.line.0 + display_offset as i32;
-            let end_line = sel.end.line.0 + display_offset as i32;
-
-            let anchor = if start_line >= 0 && start_line < desired_rows as i32 {
-                Some(CursorInfo {
-                    line: start_line,
-                    col: sel.start.column.0,
-                    shape: CursorShape::HollowBlock,
-                    color: anchor_color,
-                    wide: false,
-                    text: None,
-                    bold: false,
-                    italic: false,
-                })
-            } else {
-                None
-            };
-
-            // Overload cursor_snapshot with the selection end marker so both
-            // ends are visible. The shell's real cursor is hidden by the
-            // selection highlight anyway during a drag.
-            let end_marker = if end_line >= 0 && end_line < desired_rows as i32 {
-                Some(CursorInfo {
-                    line: end_line,
-                    col: sel.end.column.0,
-                    shape: CursorShape::HollowBlock,
-                    color: end_color,
-                    wide: false,
-                    text: None,
-                    bold: false,
-                    italic: false,
-                })
-            } else {
-                None
-            };
-
-            (end_marker.or(cursor_snapshot), anchor)
-        } else {
-            (cursor_snapshot, None)
-        };
-
-        let mut batch = BatchAccumulator::new();
-        let mut rects: Vec<LayoutRect> = Vec::new();
-        let mut block_quads: Vec<BlockQuad> = Vec::new();
-        let mut current_rect: Option<LayoutRect> = None;
-        let mut last_line: i32 = i32::MIN;
-        let mut previous_cell_had_extras = false;
-
-        // Viewport culling: compute visible row range from content mask.
-        // Rows outside the visible clip rect are skipped during cell processing.
+        // Viewport culling range from the content mask — the only remaining
+        // Window dependency. Everything downstream is Window-free and lives in
+        // `layout_from_snapshot` (US-002). Rows outside `[first, last)` are
+        // skipped during cell processing.
         let content_mask = window.content_mask();
         let visible_top = content_mask.bounds.origin.y;
         let visible_bottom = visible_top + content_mask.bounds.size.height;
@@ -690,378 +569,560 @@ impl TerminalElement {
             .ceil()
             .max(0.0) as i32;
 
-        for (point, c, cell_fg, cell_bg, flags, zw, hyperlink) in &cells {
-            let point = *point;
-            let flags = *flags;
-
-            // Viewport culling: skip rendering for rows outside the visible content mask.
-            if point.line.0 < first_visible_row || point.line.0 >= last_visible_row {
-                continue;
-            }
-
-            // Skip wide char spacers (trailing cell of CJK chars)
-            if flags.contains(CellFlags::WIDE_CHAR_SPACER) {
-                continue;
-            }
-
-            // Line change → flush batch and rect
-            if point.line.0 != last_line {
-                batch.flush();
-                if let Some(rect) = current_rect.take() {
-                    rects.push(rect);
-                }
-                last_line = point.line.0;
-            }
-
-            // Compute colors — INVERSE swap on raw ANSI tags, then tag-based
-            // default-background skip (Zed parity: structural check, not HSLA compare).
-            let (raw_fg, raw_bg) = if flags.contains(CellFlags::INVERSE) {
-                (*cell_bg, *cell_fg)
-            } else {
-                (*cell_fg, *cell_bg)
-            };
-            let is_default_bg = matches!(raw_bg, AnsiColor::Named(NamedColor::Background));
-
-            let mut fg = convert_color(raw_fg, &theme);
-            let bg = convert_color(raw_bg, &theme);
-
-            // DIM/faint (SGR 2): reduce foreground opacity (applied after INVERSE)
-            if flags.contains(CellFlags::DIM) {
-                fg.a *= 0.7;
-            }
-
-            // Enforce minimum foreground/background contrast.
-            // Skip when:
-            //  - the character is decorative (box-drawing, Powerline, blocks),
-            //    where APCA adjustment would destroy the intended visual shape.
-            //  - the app explicitly chose the fg color via truecolor SGR
-            //    (`AnsiColor::Spec`) or the xterm-256 palette
-            //    (`AnsiColor::Indexed`). Apps that pick a specific RGB (bat,
-            //    delta, lazygit, Neovim themes) expect the color to render
-            //    exactly; APCA washing the foreground breaks their palettes.
-            //    Mirrors Zed `terminal_element.rs::is_app_chosen_exact_color`.
-            let skip_contrast = matches!(raw_fg, AnsiColor::Spec(_) | AnsiColor::Indexed(_));
-            if !is_decorative_character(*c) && !skip_contrast {
-                fg = ensure_minimum_contrast(fg, bg, MIN_APCA_CONTRAST);
-            }
-
-            // US-007: cells inside the selection rect get the precomputed
-            // contrast-validated `selection_foreground` (computed at theme-
-            // load time against `selection`). This replaces the cell-vs-
-            // background contrast we just enforced — selected text needs
-            // contrast against the selection quad painted ON TOP of the
-            // cell background, not against the cell background itself.
-            // Because `fg` is part of `CellStyle` and `BatchAccumulator::
-            // can_append` compares CellStyle by equality, this override
-            // also breaks batched runs at selection boundaries with no
-            // explicit accumulator change.
-            //
-            // Decorative characters (box-drawing, Powerline separators,
-            // block elements) are skipped: their color encodes visual
-            // shape (e.g. Powerline arrows transitioning between segment
-            // colors), and overriding `fg` to `selection_foreground`
-            // would destroy that meaning. Same exclusion as the
-            // cell-vs-bg `ensure_minimum_contrast` pass above.
-            if let Some(sel) = &selection_range
-                && !is_decorative_character(*c)
-                && is_cell_in_selection(point, sel, display_offset)
-            {
-                fg = theme.selection_foreground;
-            }
-
-            // Background rect — paint for ALL cells. Default-bg cells use
-            // ansi_background (the theme's actual background) to contrast with the
-            // slightly darker widget fill, creating visible depth for TUI content.
-            let cell_cols = if flags.contains(CellFlags::WIDE_CHAR) {
-                2
-            } else {
-                1
-            };
-            let cell_bg_color = if is_default_bg { ansi_background } else { bg };
-            match &mut current_rect {
-                Some(rect)
-                    if rect.line == point.line.0
-                        && rect.color == cell_bg_color
-                        && rect.col + rect.num_cols == point.column.0 =>
-                {
-                    rect.num_cols += cell_cols;
-                }
-                _ => {
-                    if let Some(rect) = current_rect.take() {
-                        rects.push(rect);
-                    }
-                    current_rect = Some(LayoutRect {
-                        line: point.line.0,
-                        num_lines: 1,
-                        col: point.column.0,
-                        num_cols: cell_cols,
-                        color: cell_bg_color,
-                    });
-                }
-            }
-
-            // Skip space fillers following cells with zero-width extras (emoji sequences)
-            let c = *c;
-            if c == ' ' && previous_cell_had_extras {
-                previous_cell_had_extras = false;
-                continue;
-            }
-
-            // Track whether this cell has combining/zero-width characters
-            let has_extras = matches!(zw, Some(chars) if !chars.is_empty());
-
-            // Skip empty cells for text runs (space or NUL)
-            if c == ' ' || c == '\0' {
-                previous_cell_had_extras = has_extras;
-                batch.flush();
-                continue;
-            }
-
-            // Render block elements as filled quads instead of font glyphs
-            // to eliminate subpixel gaps between adjacent cells (pixel art,
-            // Claude Code's banner robot, neofetch ASCII).
-            //
-            // Multi-quadrant chars (`▙ ▚ ▛ ▜ ▞ ▟`) emit two BlockQuad records
-            // per cell — both share the cell's outer boundary array so adjacent
-            // cells stay seamless regardless of how many sub-rects they each
-            // produce.
-            if let Some(coverages) = block_char_coverages(c) {
-                batch.flush();
-                for &coverage in coverages {
-                    block_quads.push(BlockQuad {
-                        line: point.line.0,
-                        col: point.column.0,
-                        num_cols: cell_cols,
-                        color: fg,
-                        coverage,
-                    });
-                }
-                previous_cell_had_extras = false;
-                continue;
-            }
-
-            // Build cell style for batching comparison
-            let mut font = base_font();
-            // OSC 8 hyperlinks must render with an underline even when the cell
-            // flags don't carry `UNDERLINE` — alacritty 0.26 does not auto-set
-            // the flag on OSC 8 cells, so without this we'd lose the visual
-            // affordance until Ctrl/Cmd is held. Matches Zed
-            // `terminal_element.rs:580`.
-            let is_underline = flags.contains(CellFlags::UNDERLINE)
-                || flags.contains(CellFlags::DOUBLE_UNDERLINE)
-                || flags.contains(CellFlags::UNDERCURL)
-                || flags.contains(CellFlags::DOTTED_UNDERLINE)
-                || flags.contains(CellFlags::DASHED_UNDERLINE)
-                || hyperlink.is_some();
-            let is_undercurl = flags.contains(CellFlags::UNDERCURL);
-            let is_strikethrough = flags.contains(CellFlags::STRIKEOUT);
-
-            if flags.contains(CellFlags::BOLD) || flags.contains(CellFlags::BOLD_ITALIC) {
-                font.weight = FontWeight::BOLD;
-            }
-            if flags.contains(CellFlags::ITALIC) || flags.contains(CellFlags::BOLD_ITALIC) {
-                font.style = FontStyle::Italic;
-            }
-
-            let style = CellStyle {
-                font: font.clone(),
-                fg,
-                bg,
-                underline: is_underline,
-                undercurl: is_undercurl,
-                strikethrough: is_strikethrough,
-            };
-
-            // Check if we can append to current batch
-            if batch.can_append(&style, point.line.0, point.column.0) {
-                batch.append(c, cell_cols);
-            } else {
-                batch.flush();
-                batch.start(
-                    c,
-                    cell_cols,
-                    style,
-                    font,
-                    fg,
-                    is_underline,
-                    is_undercurl,
-                    is_strikethrough,
-                    point.line.0,
-                    point.column.0,
-                );
-            }
-
-            // Append zero-width combining characters (diacriticals, ZWJ, variation selectors)
-            if let Some(chars) = zw {
-                batch.append_zerowidth(chars);
-            }
-            previous_cell_had_extras = has_extras;
-        }
-
-        // Flush remaining
-        batch.flush();
-        if let Some(rect) = current_rect {
-            rects.push(rect);
-        }
-        // Vertical merge: coalesce same-column-span, same-color, adjacent-line rects
-        let rects = merge_background_regions(rects);
-
-        // Build selection highlight rects from the SelectionRange.
-        // SelectionRange carries alacritty grid-line coords (scrollback = negative);
-        // convert to viewport-line coords to match the cell coordinate system.
-        let mut selection_rects = Vec::new();
-        if let Some(sel) = &selection_range {
-            let start_line = sel.start.line.0 + display_offset as i32;
-            let end_line = sel.end.line.0 + display_offset as i32;
-            let start_col = sel.start.column.0;
-            let end_col = sel.end.column.0;
-            let num_cols = desired_cols.max(1);
-
-            if sel.is_block {
-                // US-007: block (rectangular) selection — emit one rect per
-                // visible line covering only the columns inside the block,
-                // matching the rectangular semantics of `is_cell_in_selection`
-                // so the bg quad and the fg override agree on which cells
-                // are "in" the selection.
-                let (l_min, l_max) = if start_line <= end_line {
-                    (start_line, end_line)
-                } else {
-                    (end_line, start_line)
-                };
-                let (c_min, c_max) = if start_col <= end_col {
-                    (start_col, end_col)
-                } else {
-                    (end_col, start_col)
-                };
-                let block_cols = c_max.saturating_sub(c_min) + 1;
-                let mut line = l_min;
-                while line <= l_max {
-                    selection_rects.push(LayoutRect {
-                        line,
-                        num_lines: 1,
-                        col: c_min,
-                        num_cols: block_cols,
-                        color: selection_color,
-                    });
-                    line += 1;
-                }
-            } else if start_line == end_line {
-                // Single-line linear selection
-                selection_rects.push(LayoutRect {
-                    line: start_line,
-                    num_lines: 1,
-                    col: start_col,
-                    num_cols: end_col.saturating_sub(start_col) + 1,
-                    color: selection_color,
-                });
-            } else {
-                // Multi-line linear: first line from start.col to end of line
-                selection_rects.push(LayoutRect {
-                    line: start_line,
-                    num_lines: 1,
-                    col: start_col,
-                    num_cols: num_cols.saturating_sub(start_col),
-                    color: selection_color,
-                });
-                // Middle full lines
-                let mut line = start_line + 1;
-                while line < end_line {
-                    selection_rects.push(LayoutRect {
-                        line,
-                        num_lines: 1,
-                        col: 0,
-                        num_cols,
-                        color: selection_color,
-                    });
-                    line += 1;
-                }
-                // Last line from col 0 to end.col
-                selection_rects.push(LayoutRect {
-                    line: end_line,
-                    num_lines: 1,
-                    col: 0,
-                    num_cols: end_col + 1,
-                    color: selection_color,
-                });
-            }
-        }
-
-        // Build search match highlight rects
-        let search_match_color = Hsla {
-            h: 0.11,
-            s: 0.9,
-            l: 0.55,
-            a: 0.45,
-        }; // Amber for inactive matches
-        let search_active_color = Hsla {
-            h: 0.08,
-            s: 1.0,
-            l: 0.6,
-            a: 0.7,
-        }; // Brighter orange for active match
-
-        let mut search_rects = Vec::new();
-        for highlight in &self.search_highlights {
-            // Convert grid coordinates to display-relative line numbers
-            // display_offset is the number of scrollback lines visible above the viewport
-            // Visible lines are: -(display_offset as i32) .. (screen_lines - 1 - display_offset as i32)
-            // A match at grid line L maps to display line: L.0 + display_offset as i32
-            let display_line = highlight.start.line.0 + display_offset as i32;
-
-            // Only paint if the match is in the visible area
-            if display_line >= 0 && display_line < desired_rows as i32 {
-                let color = if highlight.is_active {
-                    search_active_color
-                } else {
-                    search_match_color
-                };
-
-                // Single-line match (search matches are always single-line)
-                let col_start = highlight.start.column.0;
-                let col_end = highlight.end.column.0;
-                search_rects.push(LayoutRect {
-                    line: display_line,
-                    num_lines: 1,
-                    col: col_start,
-                    num_cols: col_end.saturating_sub(col_start) + 1,
-                    color,
-                });
-            }
-        }
-
-        // Compute IME cursor bounds for popup positioning
-        let ime_cursor_bounds = cursor_snapshot.as_ref().map(|c| {
-            let x = dims.cell_width * c.col as f32;
-            let y = dims.line_height * c.line as f32;
-            Bounds::new(
-                Point { x, y },
-                gpui::Size {
-                    width: dims.cell_width,
-                    height: dims.line_height,
-                },
-            )
-        });
-
-        LayoutState {
-            batched_runs: batch.runs,
-            rects,
-            block_quads,
-            selection_rects,
-            search_rects,
+        layout_from_snapshot(LayoutInputs {
+            cells,
             cursor: cursor_snapshot,
-            anchor_cursor,
-            dimensions: dims,
-            background_color,
-            scrollbar_thumb: theme.scrollbar_thumb,
-            exited: self.exited,
+            selection_range,
+            copy_mode_cursor: self.copy_mode_cursor.as_ref(),
+            search_highlights: &self.search_highlights,
             display_offset,
             history_size,
             desired_cols,
             desired_rows,
-            link_text_color: theme.link_text,
-            ime_cursor_bounds,
-            prompt_mark_lines: self.prompt_mark_lines.clone(),
+            first_visible_row,
+            last_visible_row,
+            dims,
+            base_font: base_font(),
+            theme: &theme,
+            exited: self.exited,
+            exit_signal: self.exit_signal.clone(),
+        })
+    }
+}
+
+/// Window-free rendering layout pass (US-002 golden-frame net).
+///
+/// Produces the complete [`LayoutState`] from a pure snapshot of the grid,
+/// theme, and cell dimensions — no `Window`/`App` access and no `Term` lock.
+/// [`TerminalElement::build_layout`] is the thin Window-coupled wrapper that
+/// snapshots the grid under lock, measures the cell, and derives the viewport
+/// cull range from the content mask, then delegates here. Keeping this seam
+/// pure lets the golden-frame net assert total layout state over a fixed
+/// corpus with no GPU/display.
+pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
+    let LayoutInputs {
+        cells,
+        cursor: cursor_snapshot,
+        selection_range,
+        copy_mode_cursor,
+        search_highlights,
+        display_offset,
+        history_size,
+        desired_cols,
+        desired_rows,
+        first_visible_row,
+        last_visible_row,
+        dims,
+        base_font,
+        theme,
+        exited,
+        exit_signal,
+    } = inputs;
+
+    let background_color = theme.background;
+    let ansi_background = theme.ansi_background;
+    let selection_color = theme.selection;
+
+    // Override cursor with copy mode cursor when active, and surface the
+    // selection anchor as a distinct secondary marker (tmux-style).
+    let (cursor_snapshot, anchor_cursor) = if let Some(cm) = copy_mode_cursor {
+        let display_line = cm.grid_line + display_offset as i32;
+        let copy_cursor_color = Hsla {
+            h: 0.5,
+            s: 0.8,
+            l: 0.65,
+            a: 0.9,
+        }; // Bright cyan — the moving cursor (current position)
+        let anchor_color = Hsla {
+            h: 0.12,
+            s: 0.95,
+            l: 0.6,
+            a: 0.95,
+        }; // Amber — the anchor (selection start)
+
+        let main = if display_line >= 0 && display_line < desired_rows as i32 {
+            Some(CursorInfo {
+                line: display_line,
+                col: cm.col,
+                shape: CursorShape::Block,
+                color: copy_cursor_color,
+                wide: false,
+                text: None,
+                bold: false,
+                italic: false,
+            })
+        } else {
+            None
+        };
+
+        let anchor = cm.anchor_grid_line.and_then(|anchor_line| {
+            let display_anchor = anchor_line + display_offset as i32;
+            if display_anchor >= 0 && display_anchor < desired_rows as i32 {
+                Some(CursorInfo {
+                    line: display_anchor,
+                    col: cm.anchor_col,
+                    shape: CursorShape::HollowBlock,
+                    color: anchor_color,
+                    wide: false,
+                    text: None,
+                    bold: false,
+                    italic: false,
+                })
+            } else {
+                None
+            }
+        });
+
+        (main, anchor)
+    } else if let Some(sel) = &selection_range {
+        // Mouse selection (no copy mode): mark both endpoints with distinct
+        // hollow blocks so the user can see the selection bounds precisely
+        // before copying. Keep the normal shell cursor untouched.
+        let anchor_color = Hsla {
+            h: 0.12,
+            s: 0.95,
+            l: 0.6,
+            a: 0.95,
+        }; // Amber — selection start
+        let end_color = Hsla {
+            h: 0.5,
+            s: 0.8,
+            l: 0.65,
+            a: 0.9,
+        }; // Cyan — selection end
+
+        let start_line = sel.start.line.0 + display_offset as i32;
+        let end_line = sel.end.line.0 + display_offset as i32;
+
+        let anchor = if start_line >= 0 && start_line < desired_rows as i32 {
+            Some(CursorInfo {
+                line: start_line,
+                col: sel.start.column.0,
+                shape: CursorShape::HollowBlock,
+                color: anchor_color,
+                wide: false,
+                text: None,
+                bold: false,
+                italic: false,
+            })
+        } else {
+            None
+        };
+
+        // Overload cursor_snapshot with the selection end marker so both
+        // ends are visible. The shell's real cursor is hidden by the
+        // selection highlight anyway during a drag.
+        let end_marker = if end_line >= 0 && end_line < desired_rows as i32 {
+            Some(CursorInfo {
+                line: end_line,
+                col: sel.end.column.0,
+                shape: CursorShape::HollowBlock,
+                color: end_color,
+                wide: false,
+                text: None,
+                bold: false,
+                italic: false,
+            })
+        } else {
+            None
+        };
+
+        (end_marker.or(cursor_snapshot), anchor)
+    } else {
+        (cursor_snapshot, None)
+    };
+
+    let mut batch = BatchAccumulator::new();
+    let mut rects: Vec<LayoutRect> = Vec::new();
+    let mut block_quads: Vec<BlockQuad> = Vec::new();
+    let mut current_rect: Option<LayoutRect> = None;
+    let mut last_line: i32 = i32::MIN;
+    let mut previous_cell_had_extras = false;
+
+    for cell in &cells {
+        let Cell {
+            point,
+            c,
+            fg: cell_fg,
+            bg: cell_bg,
+            flags,
+            zerowidth: zw,
+            hyperlink,
+        } = cell;
+        let point = *point;
+        let flags = *flags;
+
+        // Viewport culling: skip rendering for rows outside the visible content mask.
+        if point.line.0 < first_visible_row || point.line.0 >= last_visible_row {
+            continue;
         }
+
+        // Skip wide char spacers (trailing cell of CJK chars)
+        if flags.contains(CellFlags::WIDE_CHAR_SPACER) {
+            continue;
+        }
+
+        // Line change → flush batch and rect
+        if point.line.0 != last_line {
+            batch.flush();
+            if let Some(rect) = current_rect.take() {
+                rects.push(rect);
+            }
+            last_line = point.line.0;
+        }
+
+        // Compute colors — INVERSE swap on raw ANSI tags, then tag-based
+        // default-background skip (Zed parity: structural check, not HSLA compare).
+        let (raw_fg, raw_bg) = if flags.contains(CellFlags::INVERSE) {
+            (*cell_bg, *cell_fg)
+        } else {
+            (*cell_fg, *cell_bg)
+        };
+        let is_default_bg = matches!(raw_bg, Color::Named(NamedColor::Background));
+
+        let mut fg = convert_color(raw_fg, theme);
+        let bg = convert_color(raw_bg, theme);
+
+        // DIM/faint (SGR 2): reduce foreground opacity (applied after INVERSE)
+        if flags.contains(CellFlags::DIM) {
+            fg.a *= 0.7;
+        }
+
+        // Enforce minimum foreground/background contrast.
+        // Skip when:
+        //  - the character is decorative (box-drawing, Powerline, blocks),
+        //    where APCA adjustment would destroy the intended visual shape.
+        //  - the app explicitly chose the fg color via truecolor SGR
+        //    (`Color::Spec`) or the xterm-256 palette indices 16-255
+        //    (the 6×6×6 RGB cube at 16..=231 and the 24-step grayscale ramp
+        //    at 232..=255). Apps that pick a specific color there (bat,
+        //    delta, lazygit, Neovim themes) expect it to render exactly;
+        //    APCA washing the foreground breaks their palettes.
+        //    Indices 0..=15 still go through contrast correction (US-018):
+        //    they map to theme-defined ANSI slots and can clash with the
+        //    theme background (e.g. `\e[38;5;0m` on a dark theme).
+        //    Mirrors Zed `terminal::is_app_chosen_exact_color` (PR #54565).
+        let skip_contrast = matches!(raw_fg, Color::Spec(_) | Color::Indexed(16..=255));
+        if !is_decorative_character(*c) && !skip_contrast {
+            fg = ensure_minimum_contrast(fg, bg, MIN_APCA_CONTRAST);
+        }
+
+        // US-007: cells inside the selection rect get the precomputed
+        // contrast-validated `selection_foreground` (computed at theme-
+        // load time against `selection`). This replaces the cell-vs-
+        // background contrast we just enforced — selected text needs
+        // contrast against the selection quad painted ON TOP of the
+        // cell background, not against the cell background itself.
+        // Because `fg` is part of `CellStyle` and `BatchAccumulator::
+        // can_append` compares CellStyle by equality, this override
+        // also breaks batched runs at selection boundaries with no
+        // explicit accumulator change.
+        //
+        // Decorative characters (box-drawing, Powerline separators,
+        // block elements) are skipped: their color encodes visual
+        // shape (e.g. Powerline arrows transitioning between segment
+        // colors), and overriding `fg` to `selection_foreground`
+        // would destroy that meaning. Same exclusion as the
+        // cell-vs-bg `ensure_minimum_contrast` pass above.
+        if let Some(sel) = &selection_range
+            && !is_decorative_character(*c)
+            && is_cell_in_selection(point, sel, display_offset)
+        {
+            fg = theme.selection_foreground;
+        }
+
+        // Background rect — paint for ALL cells. Default-bg cells use
+        // ansi_background (the theme's actual background) to contrast with the
+        // slightly darker widget fill, creating visible depth for TUI content.
+        let cell_cols = if flags.contains(CellFlags::WIDE_CHAR) {
+            2
+        } else {
+            1
+        };
+        let cell_bg_color = if is_default_bg { ansi_background } else { bg };
+        match &mut current_rect {
+            Some(rect)
+                if rect.line == point.line.0
+                    && rect.color == cell_bg_color
+                    && rect.col + rect.num_cols == point.column.0 =>
+            {
+                rect.num_cols += cell_cols;
+            }
+            _ => {
+                if let Some(rect) = current_rect.take() {
+                    rects.push(rect);
+                }
+                current_rect = Some(LayoutRect {
+                    line: point.line.0,
+                    num_lines: 1,
+                    col: point.column.0,
+                    num_cols: cell_cols,
+                    color: cell_bg_color,
+                });
+            }
+        }
+
+        // Skip space fillers following cells with zero-width extras (emoji sequences)
+        let c = *c;
+        if c == ' ' && previous_cell_had_extras {
+            previous_cell_had_extras = false;
+            continue;
+        }
+
+        // Track whether this cell has combining/zero-width characters
+        let has_extras = matches!(zw, Some(chars) if !chars.is_empty());
+
+        // Skip empty cells for text runs (space or NUL)
+        if c == ' ' || c == '\0' {
+            previous_cell_had_extras = has_extras;
+            batch.flush();
+            continue;
+        }
+
+        // Render block elements as filled quads instead of font glyphs
+        // to eliminate subpixel gaps between adjacent cells (pixel art,
+        // Claude Code's banner robot, neofetch ASCII).
+        //
+        // Multi-quadrant chars (`▙ ▚ ▛ ▜ ▞ ▟`) emit two BlockQuad records
+        // per cell — both share the cell's outer boundary array so adjacent
+        // cells stay seamless regardless of how many sub-rects they each
+        // produce.
+        if let Some(coverages) = block_char_coverages(c) {
+            batch.flush();
+            for &coverage in coverages {
+                block_quads.push(BlockQuad {
+                    line: point.line.0,
+                    col: point.column.0,
+                    num_cols: cell_cols,
+                    color: fg,
+                    coverage,
+                });
+            }
+            previous_cell_had_extras = false;
+            continue;
+        }
+
+        // Build cell style for batching comparison
+        let mut font = base_font.clone();
+        // OSC 8 hyperlinks must render with an underline even when the cell
+        // flags don't carry `UNDERLINE` — alacritty 0.26 does not auto-set
+        // the flag on OSC 8 cells, so without this we'd lose the visual
+        // affordance until Ctrl/Cmd is held. Matches Zed
+        // `terminal_element.rs:580`.
+        let is_underline = flags.contains(CellFlags::UNDERLINE)
+            || flags.contains(CellFlags::DOUBLE_UNDERLINE)
+            || flags.contains(CellFlags::UNDERCURL)
+            || flags.contains(CellFlags::DOTTED_UNDERLINE)
+            || flags.contains(CellFlags::DASHED_UNDERLINE)
+            || *hyperlink;
+        let is_undercurl = flags.contains(CellFlags::UNDERCURL);
+        let is_strikethrough = flags.contains(CellFlags::STRIKEOUT);
+
+        if flags.contains(CellFlags::BOLD) || flags.contains(CellFlags::BOLD_ITALIC) {
+            font.weight = FontWeight::BOLD;
+        }
+        if flags.contains(CellFlags::ITALIC) || flags.contains(CellFlags::BOLD_ITALIC) {
+            font.style = FontStyle::Italic;
+        }
+
+        let style = CellStyle {
+            font: font.clone(),
+            fg,
+            bg,
+            underline: is_underline,
+            undercurl: is_undercurl,
+            strikethrough: is_strikethrough,
+        };
+
+        // Check if we can append to current batch
+        if batch.can_append(&style, point.line.0, point.column.0) {
+            batch.append(c, cell_cols);
+        } else {
+            batch.flush();
+            batch.start(
+                c,
+                cell_cols,
+                style,
+                font,
+                fg,
+                is_underline,
+                is_undercurl,
+                is_strikethrough,
+                point.line.0,
+                point.column.0,
+            );
+        }
+
+        // Append zero-width combining characters (diacriticals, ZWJ, variation selectors)
+        if let Some(chars) = zw {
+            batch.append_zerowidth(chars);
+        }
+        previous_cell_had_extras = has_extras;
+    }
+
+    // Flush remaining
+    batch.flush();
+    if let Some(rect) = current_rect {
+        rects.push(rect);
+    }
+    // Vertical merge: coalesce same-column-span, same-color, adjacent-line rects
+    let rects = merge_background_regions(rects);
+
+    // Build selection highlight rects from the SelectionRange.
+    // SelectionRange carries alacritty grid-line coords (scrollback = negative);
+    // convert to viewport-line coords to match the cell coordinate system.
+    let mut selection_rects = Vec::new();
+    if let Some(sel) = &selection_range {
+        let start_line = sel.start.line.0 + display_offset as i32;
+        let end_line = sel.end.line.0 + display_offset as i32;
+        let start_col = sel.start.column.0;
+        let end_col = sel.end.column.0;
+        let num_cols = desired_cols.max(1);
+
+        if sel.is_block {
+            // US-007: block (rectangular) selection — emit one rect per
+            // visible line covering only the columns inside the block,
+            // matching the rectangular semantics of `is_cell_in_selection`
+            // so the bg quad and the fg override agree on which cells
+            // are "in" the selection.
+            let (l_min, l_max) = if start_line <= end_line {
+                (start_line, end_line)
+            } else {
+                (end_line, start_line)
+            };
+            let (c_min, c_max) = if start_col <= end_col {
+                (start_col, end_col)
+            } else {
+                (end_col, start_col)
+            };
+            let block_cols = c_max.saturating_sub(c_min) + 1;
+            let mut line = l_min;
+            while line <= l_max {
+                selection_rects.push(LayoutRect {
+                    line,
+                    num_lines: 1,
+                    col: c_min,
+                    num_cols: block_cols,
+                    color: selection_color,
+                });
+                line += 1;
+            }
+        } else if start_line == end_line {
+            // Single-line linear selection
+            selection_rects.push(LayoutRect {
+                line: start_line,
+                num_lines: 1,
+                col: start_col,
+                num_cols: end_col.saturating_sub(start_col) + 1,
+                color: selection_color,
+            });
+        } else {
+            // Multi-line linear: first line from start.col to end of line
+            selection_rects.push(LayoutRect {
+                line: start_line,
+                num_lines: 1,
+                col: start_col,
+                num_cols: num_cols.saturating_sub(start_col),
+                color: selection_color,
+            });
+            // Middle full lines
+            let mut line = start_line + 1;
+            while line < end_line {
+                selection_rects.push(LayoutRect {
+                    line,
+                    num_lines: 1,
+                    col: 0,
+                    num_cols,
+                    color: selection_color,
+                });
+                line += 1;
+            }
+            // Last line from col 0 to end.col
+            selection_rects.push(LayoutRect {
+                line: end_line,
+                num_lines: 1,
+                col: 0,
+                num_cols: end_col + 1,
+                color: selection_color,
+            });
+        }
+    }
+
+    // Build search match highlight rects
+    let search_match_color = Hsla {
+        h: 0.11,
+        s: 0.9,
+        l: 0.55,
+        a: 0.45,
+    }; // Amber for inactive matches
+    let search_active_color = Hsla {
+        h: 0.08,
+        s: 1.0,
+        l: 0.6,
+        a: 0.7,
+    }; // Brighter orange for active match
+
+    let mut search_rects = Vec::new();
+    for highlight in search_highlights {
+        // Convert grid coordinates to display-relative line numbers
+        // display_offset is the number of scrollback lines visible above the viewport
+        // Visible lines are: -(display_offset as i32) .. (screen_lines - 1 - display_offset as i32)
+        // A match at grid line L maps to display line: L.0 + display_offset as i32
+        let display_line = highlight.start.line.0 + display_offset as i32;
+
+        // Only paint if the match is in the visible area
+        if display_line >= 0 && display_line < desired_rows as i32 {
+            let color = if highlight.is_active {
+                search_active_color
+            } else {
+                search_match_color
+            };
+
+            // Single-line match (search matches are always single-line)
+            let col_start = highlight.start.column.0;
+            let col_end = highlight.end.column.0;
+            search_rects.push(LayoutRect {
+                line: display_line,
+                num_lines: 1,
+                col: col_start,
+                num_cols: col_end.saturating_sub(col_start) + 1,
+                color,
+            });
+        }
+    }
+
+    // Compute IME cursor bounds for popup positioning
+    let ime_cursor_bounds = cursor_snapshot.as_ref().map(|c| {
+        let x = dims.cell_width * c.col as f32;
+        let y = dims.line_height * c.line as f32;
+        Bounds::new(
+            Point { x, y },
+            gpui::Size {
+                width: dims.cell_width,
+                height: dims.line_height,
+            },
+        )
+    });
+
+    LayoutState {
+        batched_runs: batch.runs,
+        rects,
+        block_quads,
+        selection_rects,
+        search_rects,
+        cursor: cursor_snapshot,
+        anchor_cursor,
+        dimensions: dims,
+        background_color,
+        scrollbar_thumb: theme.scrollbar_thumb,
+        exited,
+        exit_signal,
+        display_offset,
+        history_size,
+        desired_cols,
+        desired_rows,
+        link_text_color: theme.link_text,
+        ime_cursor_bounds,
     }
 }
 
@@ -1245,11 +1306,25 @@ impl Element for TerminalElement {
 
         let cell_width = layout.dimensions.cell_width;
         // Offset origin by left gutter (1 cell width)
-        let origin = Point {
+        let mut origin = Point {
             x: bounds.origin.x + cell_width,
             y: bounds.origin.y,
         };
-        // Store gutter-adjusted origin for mouse → grid coordinate conversion
+        // US-017: snap the origin to physical-pixel boundaries so the grid
+        // doesn't shiver between sub-pixel positions while resizing the window
+        // or a pane divider on a HiDPI display. Snap the ORIGIN ONLY — never
+        // cell_width / line_height (Zed reverted metric-snapping in #54836; it
+        // breaks scroll math when rows × snapped_line_height ≠ viewport height).
+        // At scale 1.0 this floors the gutter-adjusted origin to whole pixels,
+        // which is also the right thing (no regression). Mirrors Zed
+        // terminal_element.rs:1062-1070 (PR #47195). `.max(1.0)` guards against
+        // a 0.0 scale on headless/test windows (would divide by zero).
+        let scale_factor = window.scale_factor().max(1.0);
+        let snap_px = |v: Pixels| px((f32::from(v) * scale_factor).floor() / scale_factor);
+        origin.x = snap_px(origin.x);
+        origin.y = snap_px(origin.y);
+        // Store the gutter-adjusted, SNAPPED origin for mouse → grid coordinate
+        // conversion so hit-testing stays coherent with what was painted.
         // Poison-safe: a prior panic inside paint() could have poisoned the
         // Mutex. The inner Point is still a valid value; recover and continue.
         *self
@@ -1312,6 +1387,22 @@ impl Element for TerminalElement {
 
             // 5. Scrollbar thumb
             paint::scrollbar::paint_scrollbar(&layout, &geom, bounds, window);
+
+            // US-015: publish the painted scrollbar geometry so the view's
+            // mouse handlers can hit-test click-to-jump / drag against the same
+            // strip. Computed even when the thumb is hidden (display_offset==0)
+            // so the track stays clickable to scroll back. Poison-safe like
+            // `element_origin`.
+            let metrics = paint::scrollbar::scrollbar_metrics(
+                layout.history_size,
+                layout.display_offset,
+                &geom,
+                bounds,
+            );
+            *self
+                .scrollbar_metrics
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = metrics;
 
             // 6. IME handler registration + preedit overlay
             let term_for_ime = self.term.clone();
@@ -1383,7 +1474,7 @@ impl IntoElement for TerminalElement {
 
 struct TerminalInputHandler {
     terminal_view: gpui::Entity<crate::terminal::TerminalView>,
-    term: Arc<FairMutex<Term<ZedListener>>>,
+    term: SharedTerm,
     cursor_bounds: Option<Bounds<Pixels>>,
 }
 
@@ -1395,8 +1486,8 @@ impl gpui::InputHandler for TerminalInputHandler {
         _cx: &mut App,
     ) -> Option<gpui::UTF16Selection> {
         // Disable IME on ALT_SCREEN (TUI apps handle their own input)
-        let mode = *self.term.lock().mode();
-        if mode.contains(alacritty_terminal::term::TermMode::ALT_SCREEN) {
+        let mode = modes_of(&self.term.lock());
+        if mode.contains(Modes::ALT_SCREEN) {
             return None;
         }
         Some(gpui::UTF16Selection {
@@ -1632,5 +1723,537 @@ mod block_char_coverage_tests {
                 c as u32,
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// US-002 — Window-free golden-frame net
+// ---------------------------------------------------------------------------
+
+/// Deterministic, platform-stable textual rendering of an [`Hsla`]. Fixed
+/// precision so the golden bytes never drift on float `Debug` formatting.
+#[cfg(test)]
+fn hsla_repr(c: Hsla) -> String {
+    format!("hsla({:.4},{:.4},{:.4},{:.4})", c.h, c.s, c.l, c.a)
+}
+
+#[cfg(test)]
+impl LayoutState {
+    /// Window-free, deterministic textual snapshot of the entire layout state
+    /// for the golden-frame net (US-002). Does NOT rely on any GPUI `Debug`
+    /// impl — every field is rendered explicitly at fixed float precision, so
+    /// the golden is reproducible across platforms (Rust float formatting is
+    /// platform-independent) and human-reviewable on diff. Regenerate goldens
+    /// with `PANEFLOW_BLESS_GOLDEN=1 cargo test -p paneflow-app golden_frame`.
+    pub(crate) fn golden_repr(&self) -> String {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        let d = &self.dimensions;
+        let _ = writeln!(
+            s,
+            "dims {:.3}x{:.3} grid {}x{} off={} hist={} exited={:?} signal={:?}",
+            d.cell_width.as_f32(),
+            d.line_height.as_f32(),
+            self.desired_cols,
+            self.desired_rows,
+            self.display_offset,
+            self.history_size,
+            self.exited,
+            self.exit_signal,
+        );
+        let _ = writeln!(
+            s,
+            "bg={} thumb={} link={}",
+            hsla_repr(self.background_color),
+            hsla_repr(self.scrollbar_thumb),
+            hsla_repr(self.link_text_color),
+        );
+        let _ = writeln!(s, "runs[{}]:", self.batched_runs.len());
+        for r in &self.batched_runs {
+            let bold = r.font.weight == FontWeight::BOLD;
+            let italic = r.font.style == FontStyle::Italic;
+            let style = match (bold, italic) {
+                (true, true) => "bold-italic",
+                (true, false) => "bold",
+                (false, true) => "italic",
+                (false, false) => "normal",
+            };
+            let _ = writeln!(
+                s,
+                "  L{} C{} {:?} fg={} {} ul={} st={}",
+                r.line,
+                r.col_start,
+                r.text,
+                hsla_repr(r.color),
+                style,
+                r.underline.is_some(),
+                r.strikethrough.is_some(),
+            );
+        }
+        let rect_line = |s: &mut String, label: &str, rects: &[LayoutRect]| {
+            use std::fmt::Write as _;
+            let _ = writeln!(s, "{label}[{}]:", rects.len());
+            for r in rects {
+                let _ = writeln!(
+                    s,
+                    "  L{}+{}ln C{}+{}c {}",
+                    r.line,
+                    r.num_lines,
+                    r.col,
+                    r.num_cols,
+                    hsla_repr(r.color),
+                );
+            }
+        };
+        rect_line(&mut s, "rects", &self.rects);
+        let _ = writeln!(s, "blocks[{}]:", self.block_quads.len());
+        for q in &self.block_quads {
+            let _ = writeln!(
+                s,
+                "  L{} C{}+{}c cov=({:.3},{:.3},{:.3},{:.3}) {}",
+                q.line,
+                q.col,
+                q.num_cols,
+                q.coverage.0,
+                q.coverage.1,
+                q.coverage.2,
+                q.coverage.3,
+                hsla_repr(q.color),
+            );
+        }
+        rect_line(&mut s, "selection_rects", &self.selection_rects);
+        rect_line(&mut s, "search_rects", &self.search_rects);
+        let cur_repr = |c: &Option<CursorInfo>| -> String {
+            match c {
+                None => "None".to_string(),
+                Some(c) => format!(
+                    "L{} C{} {:?} {} wide={} text={:?} bold={} italic={}",
+                    c.line,
+                    c.col,
+                    c.shape,
+                    hsla_repr(c.color),
+                    c.wide,
+                    c.text,
+                    c.bold,
+                    c.italic,
+                ),
+            }
+        };
+        let _ = writeln!(s, "cursor: {}", cur_repr(&self.cursor));
+        let _ = writeln!(s, "anchor: {}", cur_repr(&self.anchor_cursor));
+        match &self.ime_cursor_bounds {
+            None => {
+                let _ = writeln!(s, "ime: None");
+            }
+            Some(b) => {
+                let _ = writeln!(
+                    s,
+                    "ime: x={:.3} y={:.3} w={:.3} h={:.3}",
+                    b.origin.x.as_f32(),
+                    b.origin.y.as_f32(),
+                    b.size.width.as_f32(),
+                    b.size.height.as_f32(),
+                );
+            }
+        }
+        s
+    }
+}
+
+#[cfg(test)]
+mod golden_frame_tests {
+    //! US-002 golden-frame net: deterministic `LayoutState` snapshots over a
+    //! fixed grid, run with **no `Window`/`App`/GPU/display**. The fact these
+    //! tests construct `LayoutInputs` and call `layout_from_snapshot` directly
+    //! — never touching a GPUI context — is the Window-free proof (AC-1). Each
+    //! fixture asserts against a committed golden under `golden/` (AC-2);
+    //! regenerate with `PANEFLOW_BLESS_GOLDEN=1` (AC-3).
+    use super::*;
+    use crate::terminal::types::Rgb;
+
+    const COLS: usize = 12;
+    const ROWS: usize = 4;
+
+    fn test_dims() -> CellDimensions {
+        CellDimensions {
+            cell_width: px(8.0),
+            line_height: px(16.0),
+        }
+    }
+
+    fn test_font() -> Font {
+        Font {
+            family: "test-mono".into(),
+            features: gpui::FontFeatures::default(),
+            fallbacks: None,
+            weight: FontWeight::NORMAL,
+            style: FontStyle::Normal,
+        }
+    }
+
+    fn default_fg() -> Color {
+        Color::Named(NamedColor::Foreground)
+    }
+    fn default_bg() -> Color {
+        Color::Named(NamedColor::Background)
+    }
+
+    fn cell(line: i32, col: usize, c: char, fg: Color, bg: Color, flags: CellFlags) -> Cell {
+        Cell {
+            point: GridPoint::new(line, col),
+            c,
+            fg,
+            bg,
+            flags,
+            zerowidth: None,
+            hyperlink: false,
+        }
+    }
+
+    fn text_row(line: i32, text: &str, fg: Color, flags: CellFlags) -> Vec<Cell> {
+        text.chars()
+            .enumerate()
+            .map(|(i, c)| cell(line, i, c, fg, default_bg(), flags))
+            .collect()
+    }
+
+    fn white() -> Hsla {
+        Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 1.0,
+            a: 1.0,
+        }
+    }
+
+    fn cursor_at(col: usize, shape: CursorShape, text: Option<char>) -> CursorInfo {
+        CursorInfo {
+            line: 0,
+            col,
+            shape,
+            color: white(),
+            wide: false,
+            text,
+            bold: false,
+            italic: false,
+        }
+    }
+
+    /// Build a `LayoutState` over the fixed test grid. Each call uses a fixed
+    /// theme, font, and dimensions so the output is fully deterministic.
+    fn run(
+        cells: Vec<Cell>,
+        cursor: Option<CursorInfo>,
+        selection: Option<SelectionRange>,
+    ) -> LayoutState {
+        let theme = crate::theme::one_dark();
+        layout_from_snapshot(LayoutInputs {
+            cells,
+            cursor,
+            selection_range: selection,
+            copy_mode_cursor: None,
+            search_highlights: &[],
+            display_offset: 0,
+            history_size: 0,
+            desired_cols: COLS,
+            desired_rows: ROWS,
+            first_visible_row: 0,
+            last_visible_row: ROWS as i32,
+            dims: test_dims(),
+            base_font: test_font(),
+            theme: &theme,
+            exited: None,
+            exit_signal: None,
+        })
+    }
+
+    fn golden_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/terminal/element/golden")
+    }
+
+    fn assert_golden(name: &str, state: &LayoutState) {
+        let actual = state.golden_repr();
+        let path = golden_dir().join(format!("{name}.txt"));
+        if std::env::var_os("PANEFLOW_BLESS_GOLDEN").is_some() {
+            std::fs::create_dir_all(golden_dir()).unwrap();
+            std::fs::write(&path, actual.as_bytes()).unwrap();
+            return;
+        }
+        let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "golden '{name}' missing ({e}); regenerate with \
+                 PANEFLOW_BLESS_GOLDEN=1 cargo test -p paneflow-app golden_frame"
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "golden '{name}' drifted; if intentional, regenerate with \
+             PANEFLOW_BLESS_GOLDEN=1 cargo test -p paneflow-app golden_frame"
+        );
+    }
+
+    /// The full fixture corpus. One test so a `BLESS` run regenerates every
+    /// golden in a single pass; each fixture still asserts independently.
+    #[test]
+    fn golden_frame_corpus() {
+        // plain ASCII
+        assert_golden(
+            "plain",
+            &run(
+                text_row(0, "hi", default_fg(), CellFlags::empty()),
+                None,
+                None,
+            ),
+        );
+
+        // ANSI-16 named colors
+        let ansi16 = vec![
+            cell(
+                0,
+                0,
+                'R',
+                Color::Named(NamedColor::Red),
+                default_bg(),
+                CellFlags::empty(),
+            ),
+            cell(
+                0,
+                1,
+                'G',
+                Color::Named(NamedColor::Green),
+                default_bg(),
+                CellFlags::empty(),
+            ),
+            cell(
+                0,
+                2,
+                'B',
+                Color::Named(NamedColor::Blue),
+                default_bg(),
+                CellFlags::empty(),
+            ),
+        ];
+        assert_golden("ansi16", &run(ansi16, None, None));
+
+        // DIM (SGR 2): foreground alpha reduced
+        assert_golden(
+            "dim",
+            &run(text_row(0, "dim", default_fg(), CellFlags::DIM), None, None),
+        );
+
+        // INVERSE: fg/bg swapped on the raw ANSI tags
+        let inverse = vec![cell(
+            0,
+            0,
+            'x',
+            Color::Named(NamedColor::Red),
+            Color::Named(NamedColor::Blue),
+            CellFlags::INVERSE,
+        )];
+        assert_golden("inverse", &run(inverse, None, None));
+
+        // 256-color indexed (cube + grayscale): app-chosen, contrast-skipped
+        let indexed = vec![
+            cell(
+                0,
+                0,
+                'a',
+                Color::Indexed(33),
+                default_bg(),
+                CellFlags::empty(),
+            ),
+            cell(
+                0,
+                1,
+                'b',
+                Color::Indexed(201),
+                default_bg(),
+                CellFlags::empty(),
+            ),
+            cell(
+                0,
+                2,
+                'g',
+                Color::Indexed(240),
+                default_bg(),
+                CellFlags::empty(),
+            ),
+        ];
+        assert_golden("indexed256", &run(indexed, None, None));
+
+        // truecolor (SGR 38;2): exact RGB, contrast-skipped
+        let truecolor = vec![cell(
+            0,
+            0,
+            't',
+            Color::Spec(Rgb {
+                r: 200,
+                g: 100,
+                b: 50,
+            }),
+            default_bg(),
+            CellFlags::empty(),
+        )];
+        assert_golden("truecolor", &run(truecolor, None, None));
+
+        // block / half-block chars → BlockQuads, not glyph runs
+        let blocks: Vec<Cell> = "█▀▄▌▙"
+            .chars()
+            .enumerate()
+            .map(|(i, c)| cell(0, i, c, default_fg(), default_bg(), CellFlags::empty()))
+            .collect();
+        assert_golden("blocks", &run(blocks, None, None));
+
+        // CJK wide char + its trailing spacer (spacer must be skipped)
+        let cjk = vec![
+            cell(0, 0, '中', default_fg(), default_bg(), CellFlags::WIDE_CHAR),
+            cell(
+                0,
+                1,
+                ' ',
+                default_fg(),
+                default_bg(),
+                CellFlags::WIDE_CHAR_SPACER,
+            ),
+        ];
+        assert_golden("cjk_spacer", &run(cjk, None, None));
+
+        // selection: linear single-line range over columns 1..=3
+        let sel = SelectionRange {
+            start: GridPoint::new(0, 1),
+            end: GridPoint::new(0, 3),
+            is_block: false,
+        };
+        assert_golden(
+            "selection",
+            &run(
+                text_row(0, "selected", default_fg(), CellFlags::empty()),
+                None,
+                Some(sel),
+            ),
+        );
+
+        // each cursor shape
+        let base = || text_row(0, "ab", default_fg(), CellFlags::empty());
+        assert_golden(
+            "cursor_block",
+            &run(
+                base(),
+                Some(cursor_at(0, CursorShape::Block, Some('a'))),
+                None,
+            ),
+        );
+        assert_golden(
+            "cursor_underline",
+            &run(
+                base(),
+                Some(cursor_at(0, CursorShape::Underline, None)),
+                None,
+            ),
+        );
+        assert_golden(
+            "cursor_beam",
+            &run(base(), Some(cursor_at(0, CursorShape::Beam, None)), None),
+        );
+        assert_golden(
+            "cursor_hollow",
+            &run(
+                base(),
+                Some(cursor_at(0, CursorShape::HollowBlock, None)),
+                None,
+            ),
+        );
+        assert_golden("cursor_hidden", &run(base(), None, None));
+
+        // APCA contrast: index-0..15 fg close to a dark bg gets bumped
+        let apca = vec![cell(
+            0,
+            0,
+            'z',
+            Color::Named(NamedColor::Black),
+            default_bg(),
+            CellFlags::empty(),
+        )];
+        assert_golden("apca_contrast", &run(apca, None, None));
+    }
+
+    /// Structural invariant (AC-2/AC-4 of the spike risk): block-element cells
+    /// emit `BlockQuad`s and no glyph runs, and multi-quadrant chars emit two
+    /// quads each. Asserted independently of the golden text so a regression
+    /// here is legible even if a golden is re-blessed.
+    #[test]
+    fn block_chars_emit_quads_not_runs() {
+        let blocks: Vec<Cell> = "█▀▄▌▙"
+            .chars()
+            .enumerate()
+            .map(|(i, c)| cell(0, i, c, default_fg(), default_bg(), CellFlags::empty()))
+            .collect();
+        let state = run(blocks, None, None);
+        // █ ▀ ▄ ▌ = 1 quad each, ▙ = 2 quads → 6 total
+        assert_eq!(
+            state.block_quads.len(),
+            6,
+            "block chars should map to filled quads"
+        );
+        assert!(
+            state.batched_runs.is_empty(),
+            "block chars must not produce glyph text runs"
+        );
+    }
+
+    /// Structural invariant: a WIDE_CHAR_SPACER cell never contributes its own
+    /// run or rect — it is the trailing half of the preceding wide glyph.
+    #[test]
+    fn wide_char_spacer_is_skipped() {
+        let cjk = vec![
+            cell(0, 0, '中', default_fg(), default_bg(), CellFlags::WIDE_CHAR),
+            cell(
+                0,
+                1,
+                ' ',
+                default_fg(),
+                default_bg(),
+                CellFlags::WIDE_CHAR_SPACER,
+            ),
+        ];
+        let state = run(cjk, None, None);
+        assert_eq!(
+            state.batched_runs.len(),
+            1,
+            "only the wide glyph produces a run"
+        );
+        assert_eq!(state.batched_runs[0].text, "中");
+    }
+
+    /// Viewport culling: rows outside `[first_visible_row, last_visible_row)`
+    /// are dropped from the layout (mirrors the content-mask cull in
+    /// `build_layout`). Window-free — the cull range is just two integers.
+    #[test]
+    fn viewport_cull_drops_offscreen_rows() {
+        let theme = crate::theme::one_dark();
+        let cells = vec![
+            cell(0, 0, 'a', default_fg(), default_bg(), CellFlags::empty()),
+            cell(2, 0, 'b', default_fg(), default_bg(), CellFlags::empty()),
+        ];
+        let state = layout_from_snapshot(LayoutInputs {
+            cells,
+            cursor: None,
+            selection_range: None,
+            copy_mode_cursor: None,
+            search_highlights: &[],
+            display_offset: 0,
+            history_size: 0,
+            desired_cols: COLS,
+            desired_rows: ROWS,
+            first_visible_row: 0,
+            last_visible_row: 1, // only row 0 visible
+            dims: test_dims(),
+            base_font: test_font(),
+            theme: &theme,
+            exited: None,
+            exit_signal: None,
+        });
+        assert_eq!(state.batched_runs.len(), 1, "row 2 is culled");
+        assert_eq!(state.batched_runs[0].text, "a");
     }
 }
