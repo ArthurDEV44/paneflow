@@ -42,7 +42,6 @@ mod opencode_sessions;
 mod pane;
 mod pane_drag;
 mod project;
-mod pty;
 mod runtime_paths;
 mod search;
 mod settings;

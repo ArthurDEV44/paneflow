@@ -1,5 +1,4 @@
-//! Search, prompt-mark jumping, copy-mode navigation, and terminal reset
-//! actions on `TerminalView`.
+//! Search, copy-mode navigation, and terminal reset actions on `TerminalView`.
 //!
 //! Text matching, scroll-to-match, and the `SearchMatch` type live in the
 //! crate-level `crate::search` module — this file only owns the `TerminalView`
@@ -13,7 +12,7 @@ use alacritty_terminal::index::{Column as GridCol, Line as GridLine, Point as Al
 use alacritty_terminal::selection::{Selection, SelectionType};
 use gpui::{ClipboardItem, Context};
 
-use super::{PromptMarkKind, TerminalView};
+use super::TerminalView;
 
 impl TerminalView {
     // --- Terminal control actions ---
@@ -26,10 +25,12 @@ impl TerminalView {
     }
 
     pub(super) fn reset_terminal(&mut self, cx: &mut Context<Self>) {
+        // Automated RIS reset, NOT user input — go through the notifier
+        // directly so US-002's keyboard_input_sent flag is not tripped.
         // Explicit `&[u8]` cast: pulling `markdown` adds `palette` to the
         // dep graph, whose blanket `AsRef` impls on byte arrays make a bare
         // `b"...".as_ref()` ambiguous.
-        self.terminal.write_to_pty(b"\x1bc".as_slice());
+        self.terminal.write_to_pty_silent(b"\x1bc".as_slice());
         cx.notify();
     }
 
@@ -107,70 +108,6 @@ impl TerminalView {
     fn scroll_to_current_match(&mut self) {
         if let Some(m) = self.search_matches.get(self.search_current) {
             crate::search::scroll_to_match(&self.terminal.term, m);
-        }
-    }
-
-    // --- Prompt-mark navigation ---
-
-    pub(super) fn jump_to_prompt_prev(&mut self, cx: &mut Context<Self>) {
-        let marks = &self.terminal.prompt_marks;
-        if marks.is_empty() {
-            return;
-        }
-        // Find prompt-start marks only (kind A) — these are the actual prompt boundaries
-        let prompt_indices: Vec<usize> = marks
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.kind == PromptMarkKind::PromptStart)
-            .map(|(i, _)| i)
-            .collect();
-        if prompt_indices.is_empty() {
-            return;
-        }
-        let current = self.prompt_mark_current.unwrap_or(prompt_indices.len());
-        let next = if current == 0 {
-            0 // Stay at first prompt
-        } else {
-            current.saturating_sub(1)
-        };
-        if let Some(&mark_idx) = prompt_indices.get(next) {
-            self.prompt_mark_current = Some(next);
-            let mark = &marks[mark_idx];
-            let search_match = crate::search::SearchMatch {
-                start: AlacPoint::new(alacritty_terminal::index::Line(mark.line), GridCol(0)),
-                end: AlacPoint::new(alacritty_terminal::index::Line(mark.line), GridCol(0)),
-            };
-            crate::search::scroll_to_match(&self.terminal.term, &search_match);
-            cx.notify();
-        }
-    }
-
-    pub(super) fn jump_to_prompt_next(&mut self, cx: &mut Context<Self>) {
-        let marks = &self.terminal.prompt_marks;
-        if marks.is_empty() {
-            return;
-        }
-        let prompt_indices: Vec<usize> = marks
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.kind == PromptMarkKind::PromptStart)
-            .map(|(i, _)| i)
-            .collect();
-        if prompt_indices.is_empty() {
-            return;
-        }
-        let next = self
-            .prompt_mark_current
-            .map_or(0, |c| (c + 1).min(prompt_indices.len() - 1));
-        if let Some(&mark_idx) = prompt_indices.get(next) {
-            self.prompt_mark_current = Some(next);
-            let mark = &marks[mark_idx];
-            let search_match = crate::search::SearchMatch {
-                start: AlacPoint::new(alacritty_terminal::index::Line(mark.line), GridCol(0)),
-                end: AlacPoint::new(alacritty_terminal::index::Line(mark.line), GridCol(0)),
-            };
-            crate::search::scroll_to_match(&self.terminal.term, &search_match);
-            cx.notify();
         }
     }
 
