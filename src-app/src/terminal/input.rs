@@ -14,11 +14,11 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::TermMode;
 use gpui::{
     ClipboardEntry, ClipboardItem, Context, ExternalPaths, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, Window,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, TouchPhase, Window,
 };
 
 use crate::mouse;
-use crate::terminal::types::{HyperlinkSource, HyperlinkZone};
+use crate::terminal::types::{HyperlinkSource, HyperlinkZone, Modes};
 
 #[cfg(debug_assertions)]
 use super::probe_enabled;
@@ -35,6 +35,42 @@ fn open_link_modifier_held(modifiers: &gpui::Modifiers) -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         modifiers.control
+    }
+}
+
+/// Convert a slice of OS paths to a single space-joined, POSIX-shell-quoted
+/// string for pasting into a PTY (US-021). `None` when every path is filtered
+/// out (newline, carriage-return, or null bytes). Newline and CR are both
+/// rejected because the non-bracketed paste sink rewrites `\n` to `\r` and
+/// passes a bare `\r` verbatim, which the shell treats as Enter — a path like
+/// `evil\rrm -rf ~` would otherwise submit a second line.
+///
+/// Clean paths (no space / `'` / `"` / `\`) pass through verbatim; the rest are
+/// wrapped in `'…'` with embedded `'` escaped as `'\''`. Shared by
+/// `handle_file_drop` (drag-and-drop) and `handle_paste` (Ctrl+V after copying
+/// files in a file manager).
+fn paths_to_pty_text(paths: &[std::path::PathBuf]) -> Option<String> {
+    let quoted: Vec<String> = paths
+        .iter()
+        .filter_map(|p| {
+            let s = p.to_string_lossy();
+            // Reject paths with newline, carriage-return, or null bytes: NUL
+            // breaks shell quoting; LF/CR can inject a line submit (Enter) past
+            // the single-quote wrapping.
+            if s.contains('\n') || s.contains('\r') || s.contains('\0') {
+                return None;
+            }
+            if s.contains(' ') || s.contains('\'') || s.contains('"') || s.contains('\\') {
+                Some(format!("'{}'", s.replace('\'', "'\\''")))
+            } else {
+                Some(s.into_owned())
+            }
+        })
+        .collect();
+    if quoted.is_empty() {
+        None
+    } else {
+        Some(quoted.join(" "))
     }
 }
 
@@ -163,7 +199,9 @@ impl TerminalView {
         // (replace_text_in_range) is the single source of truth for them on
         // both normal and alt screens. Writing them here as well caused
         // character doubling in ALT_SCREEN mode (e.g. Claude Code fullscreen TUI).
-        if let Some(seq) = crate::keys::to_esc_str(keystroke, &mode, self.option_as_meta) {
+        if let Some(seq) =
+            crate::keys::to_esc_str(keystroke, &Modes::from(mode), self.option_as_meta)
+        {
             // Snap to bottom on input. Matches Zed `terminal.rs:input()` — if
             // the user is scrolled back in the history and types, the shell's
             // echo would otherwise be invisible.
@@ -263,13 +301,15 @@ impl TerminalView {
         pressed: bool,
         mode: TermMode,
     ) {
-        let format = mouse::MouseFormat::from_mode(mode);
+        let format = mouse::MouseFormat::from_mode(Modes::from(mode));
         let bytes = match format {
-            mouse::MouseFormat::Sgr => mouse::sgr_mouse_report(point, button, pressed).into_bytes(),
+            mouse::MouseFormat::Sgr => {
+                mouse::sgr_mouse_report(point.into(), button, pressed).into_bytes()
+            }
             mouse::MouseFormat::Normal { utf8 } => {
                 // Normal/UTF-8 encoding: release always uses button code 3 (no per-button release)
                 let btn = if pressed { button } else { 3 };
-                match mouse::normal_mouse_report(point, btn, utf8) {
+                match mouse::normal_mouse_report(point.into(), btn, utf8) {
                     Some(b) => b,
                     None => return, // position exceeds encoding limits
                 }
@@ -280,49 +320,85 @@ impl TerminalView {
 
     // --- Mouse selection handlers ---
 
+    /// US-015: if `x` falls on the (widened) scrollbar strip and there is
+    /// scrollback to navigate, return the painted geometry for hit-testing.
+    fn scrollbar_hit(&self, x: gpui::Pixels) -> Option<super::element::ScrollbarMetrics> {
+        let metrics = {
+            *self
+                .scrollbar_metrics
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+        }?;
+        metrics
+            .strip_contains_x(x, gpui::px(6.0))
+            .then_some(metrics)
+    }
+
+    /// US-015: scroll the grid so `target_offset` scrollback lines sit above the
+    /// viewport. `target_offset` is pre-clamped to history by the caller
+    /// (`ScrollbarMetrics::offset_for_y`). No-op when already there.
+    fn apply_scrollbar_jump(&mut self, target_offset: usize) {
+        let mut term = self.terminal.term.lock();
+        let current = term.grid().display_offset();
+        let delta = target_offset as i64 - current as i64;
+        if delta != 0 {
+            // Scrollback never approaches i32::MAX lines; the cast is safe.
+            term.scroll_display(AlacScroll::Delta(delta as i32));
+            drop(term);
+            self.terminal.dirty = true;
+        }
+    }
+
     pub(super) fn handle_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Cmd/Ctrl+Left-click: open hyperlink (US-016 + US-019 + US-020).
-        // Modifier is platform-aware: Cmd on macOS, Ctrl elsewhere.
+        // US-015: a Left press on the scrollbar strip starts a jump/drag and
+        // consumes the event — no text selection, no mouse report. Checked
+        // first so the strip wins over selection on the right edge. Gated on
+        // scrollback existing (alt-screen TUIs have none, so this never fires
+        // over them).
+        if event.button == MouseButton::Left
+            && let Some(metrics) = self.scrollbar_hit(event.position.x)
+        {
+            // A press on the bare track first jumps to that proportional
+            // position; a press on the thumb grabs it in place (no jump).
+            // Either way we anchor the drag at the resulting offset so every
+            // subsequent move is RELATIVE — the thumb never jumps under the
+            // cursor regardless of where on it the user grabbed.
+            let anchor_offset = if metrics.y_on_thumb(event.position.y) {
+                self.terminal.term.lock().grid().display_offset()
+            } else {
+                let target = metrics.offset_for_y(event.position.y);
+                self.apply_scrollbar_jump(target);
+                target
+            };
+            self.scrollbar_drag = Some(super::view::ScrollbarDrag {
+                anchor_y: event.position.y,
+                anchor_offset,
+            });
+            cx.notify();
+            return;
+        }
+
+        // Cmd/Ctrl+Left-click on a link (US-012): DEFER the open to mouse-up.
+        // Record the link under the press and start a selection so a Ctrl+drag
+        // selects text instead of opening; the open fires on release only if
+        // the selection is still empty (no drag). Mirrors Zed's
+        // mouse_down/mouse_up hyperlink match (terminal.rs:2209-2310).
         if event.button == MouseButton::Left
             && open_link_modifier_held(&event.modifiers)
             && event.click_count == 1
         {
-            if let Some(ref link) = self.ctrl_hovered_link
-                && link.is_openable
-            {
-                match link.source {
-                    HyperlinkSource::FilePath => {
-                        // US-020: route to the markdown viewer pipeline.
-                        // PaneFlowApp subscribes and splits the pane; we
-                        // never call `open::that` for `.md` files because
-                        // that would launch the OS default app instead of
-                        // the in-pane viewer.
-                        let path = std::path::PathBuf::from(&link.uri);
-                        cx.emit(TerminalEvent::OpenMarkdownPath(path));
-                    }
-                    HyperlinkSource::CodePath => {
-                        // Source-code path with optional `:line[:col]`.
-                        // Delegate the actual open to the app-level handler
-                        // so the editor-chain resolution (VISUAL/EDITOR env
-                        // → probed fallback) stays in one place and is
-                        // testable without a TerminalView context.
-                        let path = std::path::PathBuf::from(&link.uri);
-                        cx.emit(TerminalEvent::OpenCodePath {
-                            path,
-                            line: link.line,
-                            col: link.col,
-                        });
-                    }
-                    HyperlinkSource::Osc8 | HyperlinkSource::Regex => {
-                        let _ = open::that(&link.uri);
-                    }
-                }
-            }
+            self.mouse_down_link = self.ctrl_hovered_link.clone();
+            let (point, side) = self.pixel_to_grid(event.position);
+            let mut term = self.terminal.term.lock();
+            term.selection = Some(Selection::new(SelectionType::Simple, point, side));
+            drop(term);
+            self.selecting = true;
+            cx.notify();
             return;
         }
 
@@ -369,6 +445,42 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // US-015: while dragging the scrollbar, map the pixel delta since the
+        // grab to a relative scrollback delta and consume the event (no
+        // selection / mouse report). The drag continues even if the pointer
+        // leaves the strip horizontally.
+        if let Some(drag) = self.scrollbar_drag {
+            if event.pressed_button == Some(MouseButton::Left) {
+                if let Some(metrics) = {
+                    *self
+                        .scrollbar_metrics
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                } {
+                    // Drag down (positive dy) scrolls toward the live edge, so
+                    // the offset decreases by the same fraction of history. The
+                    // denominator is the thumb's USABLE travel (track minus thumb
+                    // height) — the range its top actually sweeps per the paint
+                    // formula in `scrollbar_metrics` — so the thumb tracks the
+                    // cursor 1:1 and a full drag reaches offset 0 (the live edge).
+                    // The bare `track_height` would make the thumb lag the cursor
+                    // and never quite reach the bottom.
+                    let usable = (metrics.track_height - metrics.thumb_height).max(gpui::px(1.0));
+                    let dy = (event.position.y - drag.anchor_y) / usable;
+                    let delta_lines = (dy * metrics.history_size as f32).round() as i64;
+                    let target = (drag.anchor_offset as i64 - delta_lines)
+                        .clamp(0, metrics.history_size as i64)
+                        as usize;
+                    self.apply_scrollbar_jump(target);
+                    cx.notify();
+                }
+            } else {
+                // Button released without our up-handler seeing it (defensive).
+                self.scrollbar_drag = None;
+            }
+            return;
+        }
+
         let mode = { *self.terminal.term.lock().mode() };
 
         // Forward motion to PTY when mouse tracking is active.
@@ -403,64 +515,20 @@ impl TerminalView {
         // (US-016 + US-019). OSC 8 takes priority over regex URL detection,
         // which takes priority over file-path detection.
         if open_link_modifier_held(&event.modifiers) {
-            // Throttle: only re-scan the line when the hovered cell changed
-            // OR we don't have a current hovered link to render. Without this,
-            // 60 fps of MouseMove with the modifier held = 60 regex scans / s
-            // and a Term lock per frame. Matches Zed's intent of
-            // FIND_HYPERLINK_THROTTLE_PX.
+            // Throttle: only re-scan the line when the hovered cell changed.
+            // Without this, 60 fps of MouseMove with the modifier held = 60
+            // regex scans / s and a Term lock per frame. The scan result is
+            // cached per-cell REGARDLESS of whether a link was found, so a
+            // stationary Ctrl-hold over non-link text (the common case) does
+            // NOT rescan on sub-cell jitter (US-011 AC3: no per-event scanning).
+            // Same-cell first-detect on modifier press is handled separately by
+            // `handle_modifiers_changed`. Matches Zed's FIND_HYPERLINK_THROTTLE_PX.
             let hovered_cell_changed = prev_hovered_cell != Some(hover_point);
-            if !hovered_cell_changed && self.ctrl_hovered_link.is_some() {
+            if !hovered_cell_changed {
                 return;
             }
 
-            // Check OSC 8 hyperlink on the hovered cell first
-            let osc8_link = {
-                let term = self.terminal.term.lock();
-                let cell = &term.grid()[hover_point.line][hover_point.column];
-                cell.hyperlink().map(|hl| {
-                    use crate::terminal::element::is_url_scheme_openable;
-                    HyperlinkZone {
-                        uri: hl.uri().to_string(),
-                        id: hl.id().to_string(),
-                        start: hover_point,
-                        end: hover_point, // Single cell — hover underline will cover it
-                        is_openable: is_url_scheme_openable(hl.uri()),
-                        source: HyperlinkSource::Osc8,
-                        line: None,
-                        col: None,
-                    }
-                })
-            };
-            self.ctrl_hovered_link = osc8_link
-                .or_else(|| {
-                    let zones = self.detect_url_at_hover();
-                    zones.into_iter().find(|z| {
-                        hover_point.line == z.start.line
-                            && hover_point.column >= z.start.column
-                            && hover_point.column <= z.end.column
-                    })
-                })
-                .or_else(|| {
-                    // US-019: fall back to .md/.markdown file-path detection.
-                    let zones = self.detect_file_path_at_hover();
-                    zones.into_iter().find(|z| {
-                        hover_point.line == z.start.line
-                            && hover_point.column >= z.start.column
-                            && hover_point.column <= z.end.column
-                    })
-                })
-                .or_else(|| {
-                    // Source-code path with optional :line[:col]. Last in the
-                    // chain so that an OSC 8 / URL / markdown match always
-                    // wins on the same cell (single hover affordance).
-                    let zones = self.detect_code_path_at_hover();
-                    zones.into_iter().find(|z| {
-                        hover_point.line == z.start.line
-                            && hover_point.column >= z.start.column
-                            && hover_point.column <= z.end.column
-                    })
-                });
-            cx.notify();
+            self.refresh_hovered_link(hover_point, cx);
         } else if self.ctrl_hovered_link.is_some() {
             self.ctrl_hovered_link = None;
             cx.notify();
@@ -495,17 +563,141 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// US-011/US-012: resolve the hyperlink under `hover_point` through the
+    /// OSC 8 → URL → markdown → code-path priority chain and store it in
+    /// `ctrl_hovered_link`. Shared by mouse-move (throttled by the caller) and
+    /// the modifiers-changed handler (runs on Ctrl/Cmd press without a move).
+    fn refresh_hovered_link(&mut self, hover_point: AlacPoint, cx: &mut Context<Self>) {
+        // OSC 8 explicit hyperlink on the hovered cell takes priority.
+        let osc8_link = {
+            let term = self.terminal.term.lock();
+            // US-011 hardening: `hover_point` was captured by an earlier mouse-
+            // move and may be stale — a resize, `clear`, or alt-screen swap can
+            // shrink the grid before the modifier-press path reuses it.
+            // alacritty's grid Index bounds-checks only under debug_assert!, so a
+            // stale point would index out of bounds and panic the render thread
+            // in release. Bail (clearing any existing affordance) instead.
+            if hover_point.line < term.topmost_line()
+                || hover_point.line > term.bottommost_line()
+                || hover_point.column.0 >= term.columns()
+            {
+                drop(term);
+                if self.ctrl_hovered_link.is_some() {
+                    self.ctrl_hovered_link = None;
+                    cx.notify();
+                }
+                return;
+            }
+            let cell = &term.grid()[hover_point.line][hover_point.column];
+            cell.hyperlink().map(|hl| {
+                use crate::terminal::element::is_url_scheme_openable;
+                HyperlinkZone {
+                    uri: hl.uri().to_string(),
+                    id: hl.id().to_string(),
+                    start: hover_point,
+                    end: hover_point, // single cell — hover underline covers it
+                    is_openable: is_url_scheme_openable(hl.uri()),
+                    source: HyperlinkSource::Osc8,
+                    line: None,
+                    col: None,
+                }
+            })
+        };
+        let in_zone = |z: &HyperlinkZone| {
+            hover_point.line == z.start.line
+                && hover_point.column >= z.start.column
+                && hover_point.column <= z.end.column
+        };
+        self.ctrl_hovered_link = osc8_link
+            .or_else(|| self.detect_url_at_hover().into_iter().find(|z| in_zone(z)))
+            .or_else(|| {
+                // US-019: .md/.markdown file-path fallback.
+                self.detect_file_path_at_hover()
+                    .into_iter()
+                    .find(|z| in_zone(z))
+            })
+            .or_else(|| {
+                // Source-code path with optional :line[:col]. Last so OSC 8 /
+                // URL / markdown win on the same cell (single hover affordance).
+                self.detect_code_path_at_hover()
+                    .into_iter()
+                    .find(|z| in_zone(z))
+            });
+        cx.notify();
+    }
+
+    pub(super) fn handle_modifiers_changed(
+        &mut self,
+        event: &gpui::ModifiersChangedEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // US-011: GPUI fires no MouseMove when only a modifier changes, so link
+        // detection would otherwise not run until the mouse jiggles — making
+        // the first Ctrl-click miss. Re-run detection on the last hovered cell
+        // when the open-modifier becomes held, and clear on release.
+        if open_link_modifier_held(&event.modifiers) {
+            if let Some(point) = self.hovered_cell {
+                self.refresh_hovered_link(point, cx);
+            }
+        } else if self.ctrl_hovered_link.is_some() {
+            self.ctrl_hovered_link = None;
+            cx.notify();
+        }
+    }
+
+    /// US-012: open a resolved hyperlink. `.md` routes to the in-pane markdown
+    /// viewer, code paths to the editor chain (both via app-level events so the
+    /// VISUAL/EDITOR resolution stays testable), and URLs / OSC 8 to the OS
+    /// handler. Shared routing for the mouse-up open.
+    fn open_hyperlink(&self, link: &HyperlinkZone, cx: &mut Context<Self>) {
+        match link.source {
+            HyperlinkSource::FilePath => {
+                cx.emit(TerminalEvent::OpenMarkdownPath(std::path::PathBuf::from(
+                    &link.uri,
+                )));
+            }
+            HyperlinkSource::CodePath => {
+                cx.emit(TerminalEvent::OpenCodePath {
+                    path: std::path::PathBuf::from(&link.uri),
+                    line: link.line,
+                    col: link.col,
+                });
+            }
+            HyperlinkSource::Osc8 | HyperlinkSource::Regex => {
+                let _ = open::that(&link.uri);
+            }
+        }
+    }
+
     pub(super) fn handle_mouse_up(
         &mut self,
         event: &MouseUpEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // US-015: end a scrollbar drag on the LEFT release without running the
+        // selection cleanup below (we never started a selection). Scoped to
+        // Left so a right-click release mid-drag still reaches the PTY
+        // mouse-report path and is not swallowed (which would strand a
+        // mouse-mode TUI in a phantom-button-held state).
+        if self.scrollbar_drag.is_some() && event.button == MouseButton::Left {
+            self.scrollbar_drag = None;
+            return;
+        }
+
         let mode = { *self.terminal.term.lock().mode() };
 
         // Forward release to PTY when mouse reporting is active.
         // Shift overrides mouse mode for text selection.
         if mode.intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift {
+            // US-012: a Ctrl-press may have stashed a pending link on mouse-down
+            // (that path returns before this mouse-mode check). If the modifier
+            // is released before this mouse-mode release, the link-open path
+            // below is skipped and the stash would otherwise survive — clear it
+            // here so it cannot phantom-open on a later plain click once mouse
+            // mode ends.
+            self.mouse_down_link = None;
             if let Some(button) = mouse::mouse_button_code(event.button, event.modifiers) {
                 let point = self.pixel_to_viewport(event.position);
                 self.write_mouse_report(point, button, false, mode);
@@ -534,14 +726,20 @@ impl TerminalView {
             return;
         }
         self.selecting = false;
+        // US-012: a Ctrl/Cmd-click stashed the link under the press. It opens
+        // below only if the selection is empty (no drag); a Ctrl+drag that
+        // started on a link became a text selection and copies instead.
+        let down_link = self.mouse_down_link.take();
 
         // Clear empty selections, or auto-copy non-empty selections (tmux-style):
         // write to both PRIMARY (middle-click paste) and CLIPBOARD (Ctrl+V),
         // then clear the selection so the disappearing highlight signals the copy.
         let mut term = self.terminal.term.lock();
-        let copied = if let Some(ref sel) = term.selection
-            && sel.is_empty()
-        {
+        let selection_empty = match &term.selection {
+            Some(sel) => sel.is_empty(),
+            None => true,
+        };
+        let copied = if selection_empty {
             term.selection = None;
             None
         } else {
@@ -550,6 +748,16 @@ impl TerminalView {
             })
         };
         drop(term);
+
+        // US-012: open on a genuine click (empty selection = no drag).
+        if selection_empty
+            && let Some(link) = down_link
+            && link.is_openable
+        {
+            self.open_hyperlink(&link, cx);
+            cx.notify();
+            return;
+        }
 
         if let Some(text) = copied {
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -584,7 +792,24 @@ impl TerminalView {
             return;
         }
 
-        // Text paste
+        // US-021: file(s) copied in the OS file manager (Nautilus/Finder/
+        // Explorer/Thunar) arrive as `ExternalPaths`. Insert the shell-quoted
+        // path(s). Checked BEFORE `clipboard.text()`, which falls back to
+        // unquoted path display strings — those would break on spaces. Iterate
+        // all entries (some backends emit a String entry alongside the paths)
+        // and fall through to text() when no `ExternalPaths` is present (e.g.
+        // Wayland compositors that copy a `file://` URI as text instead).
+        for entry in clipboard.entries() {
+            if let ClipboardEntry::ExternalPaths(ext_paths) = entry
+                && let Some(text) = paths_to_pty_text(ext_paths.paths())
+            {
+                let mode = { *self.terminal.term.lock().mode() };
+                self.write_paste_text(&text, mode);
+                return;
+            }
+        }
+
+        // Text paste (normal Ctrl+V)
         if let Some(text) = clipboard.text() {
             let mode = { *self.terminal.term.lock().mode() };
             self.write_paste_text(&text, mode);
@@ -599,28 +824,10 @@ impl TerminalView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let quoted: Vec<String> = paths
-            .paths()
-            .iter()
-            .filter_map(|p| {
-                let s = p.to_string_lossy();
-                // Reject paths with newlines or null bytes — they break shell quoting
-                if s.contains('\n') || s.contains('\0') {
-                    return None;
-                }
-                if s.contains(' ') || s.contains('\'') || s.contains('"') || s.contains('\\') {
-                    Some(format!("'{}'", s.replace('\'', "'\\''")))
-                } else {
-                    Some(s.into_owned())
-                }
-            })
-            .collect();
-        if quoted.is_empty() {
-            return;
+        if let Some(text) = paths_to_pty_text(paths.paths()) {
+            let mode = *self.terminal.term.lock().mode();
+            self.write_paste_text(&text, mode);
         }
-        let text = quoted.join(" ");
-        let mode = *self.terminal.term.lock().mode();
-        self.write_paste_text(&text, mode);
     }
 
     pub(super) fn write_paste_text(&self, text: &str, mode: TermMode) {
@@ -704,10 +911,27 @@ impl TerminalView {
             return;
         }
 
-        // Scrollback (mouse mode inactive, not alt screen alternate scroll)
-        // Convert pixel delta to fractional lines, accumulate sub-line remainders
+        // Scrollback (mouse mode inactive, not alt screen alternate scroll).
+        // US-022: reset the sub-line accumulator on gesture start so an
+        // opposite-direction flick is crisp (no leftover momentum). Mouse wheels
+        // arrive as `Moved`; only trackpad gestures emit Started/Ended. Mirrors
+        // Zed terminal.rs `determine_scroll_lines` (TouchPhase::Started → reset).
+        match event.touch_phase {
+            TouchPhase::Started => {
+                self.scroll_remainder = 0.0;
+                return;
+            }
+            TouchPhase::Ended => return,
+            TouchPhase::Moved => {}
+        }
+
+        // US-022: scroll-sensitivity multiplier, cached on the view at
+        // construction (no config I/O on this hot per-event path). Applied ONLY
+        // here in the scrollback path — the mouse-mode and alt-scroll branches
+        // above already returned, so the PTY protocol framing is never scaled
+        // (Zed forces 1.0 in mouse mode for the same reason).
         let delta_y = event.delta.pixel_delta(self.line_height).y;
-        self.scroll_remainder += delta_y / self.line_height;
+        self.scroll_remainder += (delta_y / self.line_height) * self.scroll_multiplier;
 
         // Clamp to prevent extreme values from synthesised events
         self.scroll_remainder = self.scroll_remainder.clamp(-500.0, 500.0);
@@ -729,6 +953,22 @@ impl TerminalView {
     }
 
     pub(super) fn handle_scroll_page_up(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        // US-009: in an alt-screen TUI (lazygit, less, vim, k9s, full-screen
+        // agent UIs) scrollback is empty, so scroll_display is a no-op and the
+        // key would be silently swallowed. Forward the PageUp escape instead so
+        // the TUI actually pages. `\x1b[5~` matches what `keys::to_esc_str`
+        // emits for a plain PageUp — the single source of truth (asserted by a
+        // test in `keys.rs`).
+        let alt_screen = self
+            .terminal
+            .term
+            .lock()
+            .mode()
+            .contains(TermMode::ALT_SCREEN);
+        if alt_screen {
+            self.terminal.write_to_pty(b"\x1b[5~".as_slice());
+            return;
+        }
         let mut term = self.terminal.term.lock();
         term.scroll_display(AlacScroll::PageUp);
         self.terminal.dirty = true;
@@ -737,10 +977,79 @@ impl TerminalView {
     }
 
     pub(super) fn handle_scroll_page_down(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        // US-009: see handle_scroll_page_up. `\x1b[6~` is plain PageDown.
+        let alt_screen = self
+            .terminal
+            .term
+            .lock()
+            .mode()
+            .contains(TermMode::ALT_SCREEN);
+        if alt_screen {
+            self.terminal.write_to_pty(b"\x1b[6~".as_slice());
+            return;
+        }
         let mut term = self.terminal.term.lock();
         term.scroll_display(AlacScroll::PageDown);
         self.terminal.dirty = true;
         drop(term);
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::paths_to_pty_text;
+    use std::path::PathBuf;
+
+    // US-021: shell-quoting of file-manager paths for paste.
+    #[test]
+    fn clean_path_passes_through_unquoted() {
+        assert_eq!(
+            paths_to_pty_text(&[PathBuf::from("/clean/path")]),
+            Some("/clean/path".to_string())
+        );
+    }
+
+    #[test]
+    fn path_with_space_is_single_quoted() {
+        assert_eq!(
+            paths_to_pty_text(&[PathBuf::from("/home/user/my file.txt")]),
+            Some("'/home/user/my file.txt'".to_string())
+        );
+    }
+
+    #[test]
+    fn embedded_single_quote_is_escaped() {
+        assert_eq!(
+            paths_to_pty_text(&[PathBuf::from("/path/it's/here")]),
+            Some("'/path/it'\\''s/here'".to_string())
+        );
+    }
+
+    #[test]
+    fn multiple_paths_join_with_space() {
+        assert_eq!(
+            paths_to_pty_text(&[PathBuf::from("/a"), PathBuf::from("/b c")]),
+            Some("/a '/b c'".to_string())
+        );
+    }
+
+    #[test]
+    fn newline_path_is_rejected() {
+        assert_eq!(paths_to_pty_text(&[PathBuf::from("/bad\npath")]), None);
+    }
+
+    #[test]
+    fn carriage_return_path_is_rejected() {
+        // A bare CR survives the non-bracketed paste rewrite and submits a
+        // line (Enter), so a path like `evil\rrm -rf ~` must be dropped.
+        assert_eq!(paths_to_pty_text(&[PathBuf::from("/bad\rpath")]), None);
+        assert_eq!(paths_to_pty_text(&[PathBuf::from("evil\rrm -rf ~")]), None);
+    }
+
+    #[test]
+    fn empty_after_filter_is_none() {
+        assert_eq!(paths_to_pty_text(&[]), None);
+        assert_eq!(paths_to_pty_text(&[PathBuf::from("/bad\0null")]), None);
     }
 }

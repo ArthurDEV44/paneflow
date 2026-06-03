@@ -8,16 +8,16 @@ use gpui::Action;
 
 use crate::{
     ClearScrollHistory, ClosePane, CloseTab, CloseWindow, CloseWorkspace, CopyWorkspacePath,
-    DismissSearch, FocusDown, FocusLeft, FocusRight, FocusUp, JumpToPromptNext, JumpToPromptPrev,
-    LayoutEvenHorizontal, LayoutEvenVertical, LayoutMainVertical, LayoutTiled, MarkdownCopy,
-    MarkdownFindDismiss, MarkdownFindNext, MarkdownFindOpen, MarkdownFindPrev,
-    MarkdownScrollPageDown, MarkdownScrollPageUp, NewTab, NewWorkspace, NextWorkspace,
-    OpenWorkspaceInCursor, OpenWorkspaceInVsCode, OpenWorkspaceInWindsurf, OpenWorkspaceInZed,
-    Quit, ResetTerminal, RevealWorkspaceInFileManager, ScrollPageDown, ScrollPageUp, SearchNext,
-    SearchPrev, SelectWorkspace1, SelectWorkspace2, SelectWorkspace3, SelectWorkspace4,
-    SelectWorkspace5, SelectWorkspace6, SelectWorkspace7, SelectWorkspace8, SelectWorkspace9,
-    SplitEqualize, SplitHorizontally, SplitVertically, SwapPane, TerminalCopy, TerminalPaste,
-    ToggleCopyMode, ToggleSearch, ToggleSearchRegex, ToggleZoom, UndoClosePane,
+    DismissSearch, FocusDown, FocusLeft, FocusRight, FocusUp, LayoutEvenHorizontal,
+    LayoutEvenVertical, LayoutMainVertical, LayoutTiled, MarkdownCopy, MarkdownFindDismiss,
+    MarkdownFindNext, MarkdownFindOpen, MarkdownFindPrev, MarkdownScrollPageDown,
+    MarkdownScrollPageUp, NewTab, NewWorkspace, NextWorkspace, OpenWorkspaceInCursor,
+    OpenWorkspaceInVsCode, OpenWorkspaceInWindsurf, OpenWorkspaceInZed, Quit, ResetTerminal,
+    RevealWorkspaceInFileManager, ScrollPageDown, ScrollPageUp, SearchNext, SearchPrev,
+    SelectWorkspace1, SelectWorkspace2, SelectWorkspace3, SelectWorkspace4, SelectWorkspace5,
+    SelectWorkspace6, SelectWorkspace7, SelectWorkspace8, SelectWorkspace9, SplitEqualize,
+    SplitHorizontally, SplitVertically, SwapPane, TerminalCopy, TerminalPaste, ToggleCopyMode,
+    ToggleSearch, ToggleSearchRegex, ToggleZoom, UndoClosePane,
 };
 
 /// Metadata for a single dispatchable action.
@@ -313,18 +313,6 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         factory: || Box::new(DismissSearch),
         context: "Search",
         description: "Dismiss search",
-    },
-    ActionMeta {
-        name: "jump_to_prompt_prev",
-        factory: || Box::new(JumpToPromptPrev),
-        context: "Terminal",
-        description: "Jump to previous prompt",
-    },
-    ActionMeta {
-        name: "jump_to_prompt_next",
-        factory: || Box::new(JumpToPromptNext),
-        context: "Terminal",
-        description: "Jump to next prompt",
     },
     ActionMeta {
         name: "clear_scroll_history",
