@@ -40,6 +40,20 @@ pub(crate) enum SettingsSection {
     /// Persisted to `paneflow.json` like every other settings tab — users can
     /// also edit the JSON directly.
     AiAgent,
+    /// US-016: terminal config — cursor shape/blink, bell, scrollback, font
+    /// size/line height, ligatures, option-as-meta.
+    Terminal,
+}
+
+/// US-016: which Terminal-tab enum dropdown is currently open (only one at a
+/// time). `None` = all closed. Kept distinct from `font_dropdown_open` (the
+/// Appearance tab's font picker) so navigating away never leaves a ghost popover.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum TerminalDropdown {
+    CursorShape,
+    CursorBlink,
+    Bell,
+    Scrollback,
 }
 
 pub struct SettingsWindow {
@@ -61,6 +75,8 @@ pub struct SettingsWindow {
     pub(super) mcp_status: Option<Vec<paneflow_mcp_install::StatusReport>>,
     pub(super) mcp_install: Option<Result<Vec<paneflow_mcp_install::InstallReport>, String>>,
     pub(super) mcp_busy: bool,
+    /// US-016: which Terminal-tab dropdown is open (`None` = all closed).
+    pub(super) terminal_dropdown: Option<TerminalDropdown>,
 }
 
 impl SettingsWindow {
@@ -86,6 +102,7 @@ impl SettingsWindow {
             mcp_status: None,
             mcp_install: None,
             mcp_busy: false,
+            terminal_dropdown: None,
         };
 
         // US-012: warm the MCP bridge status off the main thread so the
@@ -201,6 +218,7 @@ impl Render for SettingsWindow {
             SettingsSection::Shortcuts => self.render_shortcuts_content(cx).into_any_element(),
             SettingsSection::Appearance => self.render_appearance_content(cx).into_any_element(),
             SettingsSection::AiAgent => self.render_ai_agent_content(cx).into_any_element(),
+            SettingsSection::Terminal => self.render_terminal_content(cx).into_any_element(),
         };
 
         match decorations {

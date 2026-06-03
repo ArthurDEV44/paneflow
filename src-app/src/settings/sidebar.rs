@@ -24,6 +24,7 @@ impl SettingsWindow {
             ("Shortcuts", SettingsSection::Shortcuts),
             ("Appearance", SettingsSection::Appearance),
             ("AI Agent", SettingsSection::AiAgent),
+            ("Terminal", SettingsSection::Terminal),
         ];
 
         let mut nav = div()
@@ -58,6 +59,9 @@ impl SettingsWindow {
                         this.section = section;
                         this.font_dropdown_open = false;
                         this.font_search.clear();
+                        // US-016: close any open Terminal-tab dropdown so it
+                        // never lingers as a phantom popover after navigating.
+                        this.terminal_dropdown = None;
                         if this.recording_shortcut_idx.is_some() {
                             this.recording_shortcut_idx = None;
                             let config = paneflow_config::loader::load_config();
