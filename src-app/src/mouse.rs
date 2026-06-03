@@ -3,9 +3,9 @@
 //! Encodes GPUI mouse events into SGR and X10 (Normal) escape sequences
 //! for forwarding to the PTY when terminal mouse modes are active.
 
-use alacritty_terminal::index::Point as AlacPoint;
-use alacritty_terminal::term::TermMode;
 use gpui::{Modifiers, MouseButton};
+
+use crate::terminal::types::{Modes, Point};
 
 /// Mouse report encoding format, selected based on the terminal's active mode.
 pub enum MouseFormat {
@@ -17,10 +17,10 @@ pub enum MouseFormat {
 
 impl MouseFormat {
     /// Select encoding format from the terminal's current mode flags.
-    pub fn from_mode(mode: TermMode) -> Self {
-        if mode.contains(TermMode::SGR_MOUSE) {
+    pub fn from_mode(mode: Modes) -> Self {
+        if mode.contains(Modes::SGR_MOUSE) {
             MouseFormat::Sgr
-        } else if mode.contains(TermMode::UTF8_MOUSE) {
+        } else if mode.contains(Modes::UTF8_MOUSE) {
             MouseFormat::Normal { utf8: true }
         } else {
             MouseFormat::Normal { utf8: false }
@@ -85,7 +85,7 @@ fn modifier_bits(modifiers: Modifiers) -> u8 {
 ///
 /// `M` for press, `m` for release. Coordinates are 1-based (no upper limit).
 /// `button` should be the pre-encoded button code from [`mouse_button_code`].
-pub fn sgr_mouse_report(point: AlacPoint, button: u8, pressed: bool) -> String {
+pub fn sgr_mouse_report(point: Point, button: u8, pressed: bool) -> String {
     let col = point.column.0 + 1;
     let row = point.line.0.max(0) + 1; // clamp negative scrollback lines to 0
     let suffix = if pressed { 'M' } else { 'm' };
@@ -99,7 +99,7 @@ pub fn sgr_mouse_report(point: AlacPoint, button: u8, pressed: bool) -> String {
 /// (max position 2015). Returns `None` if any coordinate exceeds the limit.
 ///
 /// `button` should be the pre-encoded button code from [`mouse_button_code`].
-pub fn normal_mouse_report(point: AlacPoint, button: u8, utf8: bool) -> Option<Vec<u8>> {
+pub fn normal_mouse_report(point: Point, button: u8, utf8: bool) -> Option<Vec<u8>> {
     let col = point.column.0 as u32;
     let row = point.line.0.max(0) as u32;
     let max = if utf8 { 2015 } else { 222 };
@@ -132,10 +132,9 @@ fn push_utf8_coord(val: u32, out: &mut Vec<u8>) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alacritty_terminal::index::{Column, Line, Point};
 
-    fn pt(col: usize, line: i32) -> AlacPoint {
-        Point::new(Line(line), Column(col))
+    fn pt(col: usize, line: i32) -> Point {
+        Point::new(line, col)
     }
 
     // --- button code tests ---
@@ -341,13 +340,13 @@ mod tests {
 
     #[test]
     fn format_sgr_from_mode() {
-        let mode = TermMode::SGR_MOUSE;
+        let mode = Modes::SGR_MOUSE;
         assert!(matches!(MouseFormat::from_mode(mode), MouseFormat::Sgr));
     }
 
     #[test]
     fn format_utf8_from_mode() {
-        let mode = TermMode::UTF8_MOUSE;
+        let mode = Modes::UTF8_MOUSE;
         assert!(matches!(
             MouseFormat::from_mode(mode),
             MouseFormat::Normal { utf8: true }
@@ -356,7 +355,7 @@ mod tests {
 
     #[test]
     fn format_normal_from_mode() {
-        let mode = TermMode::empty();
+        let mode = Modes::empty();
         assert!(matches!(
             MouseFormat::from_mode(mode),
             MouseFormat::Normal { utf8: false }

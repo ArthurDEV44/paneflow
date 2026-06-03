@@ -5,8 +5,9 @@
 
 use std::borrow::Cow;
 
-use alacritty_terminal::term::TermMode;
 use gpui::Keystroke;
+
+use crate::terminal::types::Modes;
 
 /// Map a GPUI keystroke to a terminal escape sequence.
 ///
@@ -15,7 +16,7 @@ use gpui::Keystroke;
 /// or `None` if the keystroke should be handled as printable character input.
 pub fn to_esc_str(
     keystroke: &Keystroke,
-    mode: &TermMode,
+    mode: &Modes,
     option_as_meta: bool,
 ) -> Option<Cow<'static, str>> {
     let key = keystroke.key.as_str();
@@ -71,7 +72,7 @@ pub fn to_esc_str(
 
     // Special keys — no modifiers
     if !ctrl && !shift && !alt {
-        let app_cursor = mode.contains(TermMode::APP_CURSOR);
+        let app_cursor = mode.contains(Modes::APP_CURSOR);
         let seq: Option<&'static str> = match key {
             "enter" => Some("\r"),
             "tab" => Some("\t"),
@@ -214,4 +215,25 @@ pub fn to_esc_str(
 
     // Not a special key — caller should handle as printable character input
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_keys_match_us009_alt_screen_constants() {
+        // US-009 invariant: the alt-screen page-forward bytes hardcoded in
+        // `terminal/input.rs` (`\x1b[5~` / `\x1b[6~`) must equal what
+        // `to_esc_str` emits for a plain PageUp / PageDown, so `to_esc_str`
+        // stays the single source of truth. If this fails, update both.
+        let mode = Modes::empty();
+        let pageup = Keystroke::parse("pageup").expect("valid keystroke");
+        let pagedown = Keystroke::parse("pagedown").expect("valid keystroke");
+        assert_eq!(to_esc_str(&pageup, &mode, true).as_deref(), Some("\x1b[5~"));
+        assert_eq!(
+            to_esc_str(&pagedown, &mode, true).as_deref(),
+            Some("\x1b[6~")
+        );
+    }
 }

@@ -50,8 +50,6 @@ actions!(
         SwapPane,
         ToggleSearch,
         ToggleSearchRegex,
-        JumpToPromptPrev,
-        JumpToPromptNext,
         UndoClosePane,
         SearchNext,
         SearchPrev,

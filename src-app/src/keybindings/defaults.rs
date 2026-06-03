@@ -238,16 +238,6 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "toggle_search_regex",
         context: Some("Search"),
     },
-    DefaultBinding {
-        key: "ctrl-shift-up",
-        action_name: "jump_to_prompt_prev",
-        context: Some("Terminal"),
-    },
-    DefaultBinding {
-        key: "ctrl-shift-down",
-        action_name: "jump_to_prompt_next",
-        context: Some("Terminal"),
-    },
     // US-022 — markdown pane navigation. Same chord vocabulary as the
     // terminal pane so muscle memory transfers cleanly between pane types.
     DefaultBinding {
