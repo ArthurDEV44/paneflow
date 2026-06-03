@@ -7,3 +7,4 @@
 pub mod ai_agent;
 pub mod appearance;
 pub mod shortcuts;
+pub mod terminal;
