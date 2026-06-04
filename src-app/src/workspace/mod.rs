@@ -101,12 +101,14 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// Create a workspace with a pre-allocated ID (use `next_workspace_id()` to obtain one).
-    pub fn with_id(id: u64, title: impl Into<String>, pane: Entity<Pane>) -> Self {
-        let cwd = std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "~".into());
-        let git_stats = GitDiffStats::from_cwd(&cwd);
+    /// US-013: shared private factory for the three public constructors (kills
+    /// the verbatim triplication). Resolves the *cheap* git metadata — `.git`
+    /// dir, branch (`parse_head`), repo root — synchronously, since those are
+    /// direct `.git/HEAD` file reads, not subprocesses. `git_stats` is left at
+    /// its `default()` (0/0): the `git diff --shortstat` subprocess is the
+    /// blocking call, deferred off the render thread by
+    /// [`crate::PaneFlowApp::spawn_initial_git_stats`] right after creation.
+    fn build(id: u64, title: String, cwd: String, root: LayoutTree) -> Self {
         let git_dir = find_git_dir(&cwd);
         let (git_branch, is_git_repo) = match &git_dir {
             Some(dir) => parse_head(dir),
@@ -118,11 +120,11 @@ impl Workspace {
         };
         Self {
             id,
-            title: title.into(),
+            title,
             cwd,
-            root: Some(LayoutTree::Leaf(pane)),
+            root: Some(root),
             saved_layout: None,
-            git_stats,
+            git_stats: GitDiffStats::default(),
             git_branch,
             is_git_repo,
             git_dir,
@@ -137,6 +139,14 @@ impl Workspace {
             custom_buttons: Vec::new(),
             files_expanded: Vec::new(),
         }
+    }
+
+    /// Create a workspace with a pre-allocated ID (use `next_workspace_id()` to obtain one).
+    pub fn with_id(id: u64, title: impl Into<String>, pane: Entity<Pane>) -> Self {
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "~".into());
+        Self::build(id, title.into(), cwd, LayoutTree::Leaf(pane))
     }
 
     /// Create a workspace with a pre-allocated ID and explicit CWD.
@@ -146,38 +156,12 @@ impl Workspace {
         cwd: std::path::PathBuf,
         pane: Entity<Pane>,
     ) -> Self {
-        let cwd_str = cwd.display().to_string();
-        let git_stats = GitDiffStats::from_cwd(&cwd_str);
-        let git_dir = find_git_dir(&cwd_str);
-        let (git_branch, is_git_repo) = match &git_dir {
-            Some(dir) => parse_head(dir),
-            None => (String::new(), false),
-        };
-        let (repo_root, is_worktree) = match &git_dir {
-            Some(dir) => resolve_repo_root(dir),
-            None => (None, false),
-        };
-        Self {
+        Self::build(
             id,
-            title: title.into(),
-            cwd: cwd_str,
-            root: Some(LayoutTree::Leaf(pane)),
-            saved_layout: None,
-            git_stats,
-            git_branch,
-            is_git_repo,
-            git_dir,
-            repo_root,
-            is_worktree,
-            active_ports: vec![],
-            port_scan_generation: 0,
-            service_labels: std::collections::HashMap::new(),
-            agent_sessions: std::collections::HashMap::new(),
-            loader_angle: Rc::new(Cell::new(0.0)),
-            detected_agents: std::collections::HashSet::new(),
-            custom_buttons: Vec::new(),
-            files_expanded: Vec::new(),
-        }
+            title.into(),
+            cwd.display().to_string(),
+            LayoutTree::Leaf(pane),
+        )
     }
 
     /// Create a workspace with a pre-allocated ID and layout tree.
@@ -187,38 +171,7 @@ impl Workspace {
         cwd: std::path::PathBuf,
         root: LayoutTree,
     ) -> Self {
-        let cwd_str = cwd.display().to_string();
-        let git_stats = GitDiffStats::from_cwd(&cwd_str);
-        let git_dir = find_git_dir(&cwd_str);
-        let (git_branch, is_git_repo) = match &git_dir {
-            Some(dir) => parse_head(dir),
-            None => (String::new(), false),
-        };
-        let (repo_root, is_worktree) = match &git_dir {
-            Some(dir) => resolve_repo_root(dir),
-            None => (None, false),
-        };
-        Self {
-            id,
-            title: title.into(),
-            cwd: cwd_str,
-            root: Some(root),
-            saved_layout: None,
-            git_stats,
-            git_branch,
-            is_git_repo,
-            git_dir,
-            repo_root,
-            is_worktree,
-            active_ports: vec![],
-            port_scan_generation: 0,
-            service_labels: std::collections::HashMap::new(),
-            agent_sessions: std::collections::HashMap::new(),
-            loader_angle: Rc::new(Cell::new(0.0)),
-            detected_agents: std::collections::HashSet::new(),
-            custom_buttons: Vec::new(),
-            files_expanded: Vec::new(),
-        }
+        Self::build(id, title.into(), cwd.display().to_string(), root)
     }
 
     pub fn is_zoomed(&self) -> bool {

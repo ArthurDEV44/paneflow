@@ -1216,4 +1216,31 @@ impl PaneFlowApp {
         })
         .detach();
     }
+
+    /// US-013: populate a freshly-created workspace's `git diff --shortstat`
+    /// stats off the GPUI main thread. The constructors build with
+    /// `git_stats: default()` (0/0) so the blocking `git` subprocess never runs
+    /// on the render thread; this spawns it via `smol::unblock` and re-injects
+    /// the result, keyed by the stable `ws_id` (another workspace may be
+    /// created/closed during the await — EP-003 identity model). Mirrors
+    /// [`handle_cwd_change`].
+    pub(crate) fn spawn_initial_git_stats(ws_id: u64, cwd: String, cx: &mut Context<Self>) {
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let stats =
+                    smol::unblock(move || crate::workspace::GitDiffStats::from_cwd(&cwd)).await;
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                        if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.id == ws_id)
+                            && ws.git_stats != stats
+                        {
+                            ws.git_stats = stats;
+                            cx.notify();
+                        }
+                    })
+                });
+            },
+        )
+        .detach();
+    }
 }

@@ -321,6 +321,8 @@ impl PaneFlowApp {
                 .map(|rel| PathBuf::from(&ws_session.cwd).join(rel))
                 .collect();
             workspace.propagate_custom_buttons(cx);
+            // US-013: kick off the deferred git-stats probe (off render thread).
+            Self::spawn_initial_git_stats(ws_id, workspace.cwd.clone(), cx);
             workspaces.push(workspace);
         }
 

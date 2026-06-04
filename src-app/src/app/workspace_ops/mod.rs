@@ -93,6 +93,8 @@ impl PaneFlowApp {
         let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
         let pane = self.create_pane(terminal, ws_id, cx);
         let ws = Workspace::with_id(ws_id, format!("Terminal {n}"), pane);
+        // US-013: deferred git-stats probe off the render thread.
+        Self::spawn_initial_git_stats(ws_id, ws.cwd.clone(), cx);
         self.watch_git_dir(&ws);
         self.workspaces.push(ws);
         self.active_idx = self.workspaces.len() - 1;
@@ -136,6 +138,8 @@ impl PaneFlowApp {
                                     .new(|cx| TerminalView::with_cwd(ws_id, Some(path), None, cx));
                                 let pane = app.create_pane(terminal, ws_id, cx);
                                 let ws = Workspace::with_cwd_and_id(ws_id, title, dir, pane);
+                                // US-013: deferred git-stats probe off the render thread.
+                                Self::spawn_initial_git_stats(ws_id, ws.cwd.clone(), cx);
                                 app.watch_git_dir(&ws);
                                 app.workspaces.push(ws);
                             }

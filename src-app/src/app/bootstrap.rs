@@ -186,6 +186,8 @@ impl PaneFlowApp {
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
                     .unwrap_or_else(|| "Terminal 1".into());
                 let ws = Workspace::with_id(ws_id, dir_name, pane);
+                // US-013: deferred git-stats probe off the render thread.
+                Self::spawn_initial_git_stats(ws_id, ws.cwd.clone(), cx);
                 (vec![ws], 0)
             }
         };

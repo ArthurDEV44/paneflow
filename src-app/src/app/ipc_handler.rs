@@ -507,6 +507,8 @@ impl PaneFlowApp {
                     Workspace::with_id(ws_id, name, pane)
                 };
                 self.watch_git_dir(&ws);
+                // US-013: deferred git-stats probe off the render thread.
+                Self::spawn_initial_git_stats(ws_id, ws.cwd.clone(), cx);
                 self.workspaces.push(ws);
                 let idx = self.workspaces.len() - 1;
 
