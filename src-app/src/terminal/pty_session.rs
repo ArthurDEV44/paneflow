@@ -1013,11 +1013,20 @@ impl TerminalState {
     /// Extract scrollback as plain text (ANSI stripped) for session persistence.
     /// Caps at 4000 lines and 400,000 characters. Returns None if scrollback is empty.
     pub fn extract_scrollback(&self) -> Option<String> {
+        Self::extract_scrollback_from(&self.term)
+    }
+
+    /// US-011: scrollback drain decoupled from `&self` so `save_session` can
+    /// run it on a background thread against a cloned [`SharedTerm`] handle
+    /// (the term mutex is `Send + Sync` — it is the only cross-thread state in
+    /// the app) instead of holding the GPUI main thread. US-012's windowing
+    /// keeps the lock bounded to the most-recent `MAX_LINES` rows.
+    pub fn extract_scrollback_from(term: &SharedTerm) -> Option<String> {
         const MAX_LINES: usize = 4000;
         const MAX_CHARS: usize = 400_000;
 
         // Read-only scrollback drain for session persistence.
-        let term = self.term.lock_unfair();
+        let term = term.lock_unfair();
         let top = term.topmost_line();
         let bottom = term.bottommost_line();
         let cols = term.last_column();
@@ -2221,6 +2230,31 @@ mod tests {
             state.foreground_command().is_none(),
             "display-only terminal has no foreground process to resolve"
         );
+    }
+
+    /// US-011: `extract_scrollback_from` drains a *cloned* `SharedTerm` handle —
+    /// the exact handle `serialize_deferred` ships to the background save task —
+    /// and round-trips the seeded scrollback. Proves the drain is decoupled from
+    /// `&self` so `save_session` can run it off the GPUI main thread. Three
+    /// lines fit the visible grid, so the assertion is independent of any
+    /// scrollback-history config.
+    #[test]
+    fn extract_scrollback_from_drains_cloned_handle() {
+        let state = TerminalState::new_display_only(24, 80);
+        state.restore_scrollback("alpha\nbravo\ncharlie");
+
+        // Clone the Arc the way `LayoutTree::serialize_deferred` does, then
+        // drain via the free associated fn (no `&self`).
+        let handle = state.term.clone();
+        let drained = TerminalState::extract_scrollback_from(&handle)
+            .expect("seeded scrollback should not be empty");
+
+        for marker in ["alpha", "bravo", "charlie"] {
+            assert!(
+                drained.contains(marker),
+                "drained scrollback must contain {marker:?}; got:\n{drained}"
+            );
+        }
     }
 
     /// Dump the viewport grid to a string for the live smoke test.

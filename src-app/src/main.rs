@@ -143,6 +143,11 @@ struct PaneFlowApp {
     /// thread `take()`s it in the 50ms poll loop to apply keybindings + theme.
     pending_config:
         std::sync::Arc<std::sync::Mutex<Option<paneflow_config::schema::PaneFlowConfig>>>,
+    /// US-011: monotonic save-coalescing token. Every `save_session` bumps it
+    /// and the off-thread writer skips its disk write when a newer save has
+    /// been scheduled meanwhile, collapsing a burst (e.g. closing 20
+    /// workspaces) into a single write — none of it on the render thread.
+    save_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
     ipc_rx: std::sync::mpsc::Receiver<ipc::IpcRequest>,
     ipc_status: ipc::IpcStatus,
     title_bar: Entity<title_bar::TitleBar>,
@@ -786,7 +791,7 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_ws9))
             .on_action(
                 cx.listener(|this: &mut Self, _: &CloseWindow, _window, cx| {
-                    this.save_session(cx);
+                    this.save_session_blocking(cx);
                     this.emit_app_exited_and_flush();
                     cx.quit();
                 }),
@@ -799,7 +804,7 @@ impl Render for PaneFlowApp {
             // US-010). `SelectAll` is a no-op until the terminal exposes
             // a select-all action.
             .on_action(cx.listener(|this: &mut Self, _: &Quit, _window, cx| {
-                this.save_session(cx);
+                this.save_session_blocking(cx);
                 this.emit_app_exited_and_flush();
                 cx.quit();
             }))
@@ -1429,7 +1434,7 @@ fn main() {
                         let view = view.clone();
                         move |_window, cx| {
                             let app = view.read(cx);
-                            app.save_session(cx);
+                            app.save_session_blocking(cx);
                             // US-013 AC #2 — final chance to flush
                             // `app_exited` when the OS close button or a
                             // keyboard shortcut closes the last window.

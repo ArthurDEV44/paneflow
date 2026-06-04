@@ -24,6 +24,12 @@ use crate::workspace::{Workspace, next_workspace_id};
 /// chronic corruption (e.g. a flaky disk) would silently fill `~/.cache`.
 const MAX_CORRUPTION_BACKUPS: usize = 5;
 
+/// US-011: debounce window for coalescing a burst of [`PaneFlowApp::save_session`]
+/// calls into a single disk write. Short enough to be imperceptible, long
+/// enough to absorb the multi-call bursts emitted when creating/closing many
+/// workspaces in quick succession.
+const SAVE_DEBOUNCE_MS: u64 = 150;
+
 /// Forensic context emitted alongside a `session_corrupted` telemetry
 /// event (US-006). Gathered by [`PaneFlowApp::load_session_at`] inside
 /// the parse-failure branch *before* the empty fallback session is
@@ -53,8 +59,18 @@ pub(crate) struct SessionCorruptionInfo {
 }
 
 impl PaneFlowApp {
-    pub(crate) fn save_session(&self, cx: &App) {
-        let state = paneflow_config::schema::SessionState {
+    /// Build the [`SessionState`] snapshot from live app state.
+    ///
+    /// `terms` selects the scrollback strategy: `Some(vec)` defers the drain
+    /// (terminal handles are collected into `vec` in surface-emission order for
+    /// an off-thread drain — see [`save_session`]); `None` drains inline on the
+    /// calling thread (see [`save_session_blocking`]).
+    fn build_session_state(
+        &self,
+        cx: &App,
+        terms: &mut Option<Vec<crate::terminal::types::SharedTerm>>,
+    ) -> paneflow_config::schema::SessionState {
+        paneflow_config::schema::SessionState {
             version: paneflow_config::schema::SESSION_SCHEMA_VERSION,
             active_workspace: self.active_idx,
             workspaces: self
@@ -63,7 +79,10 @@ impl PaneFlowApp {
                 .map(|ws| paneflow_config::schema::WorkspaceSession {
                     title: ws.title.clone(),
                     cwd: ws.cwd.clone(),
-                    layout: ws.serialize_layout(cx),
+                    layout: match terms {
+                        Some(terms) => ws.serialize_layout_deferred(cx, terms),
+                        None => ws.serialize_layout(cx),
+                    },
                     custom_buttons: ws.custom_buttons.clone(),
                     // US-007: store expanded dirs relative to the workspace
                     // root. A path that can't be made relative (symlinked
@@ -93,33 +112,69 @@ impl PaneFlowApp {
             // US-015 (prd-git-diff-mode-2026-Q3.md): persist the diff scope so
             // a session that quit in Diff mode reopens on the same scope.
             diff_scope: Some(self.diff_scope.as_persisted().to_string()),
-        };
+        }
+    }
+
+    /// US-011: persist the session WITHOUT blocking the GPUI main thread.
+    ///
+    /// The lightweight metadata snapshot is built here (render thread, cheap),
+    /// terminal handles collected, then the heavy work — per-pane scrollback
+    /// drain, JSON serialize, atomic write — runs on a background task. A burst
+    /// of saves (e.g. closing 20 workspaces) is coalesced into a single write
+    /// via a monotonic token + short debounce, so the most-recent snapshot
+    /// wins and the render thread never drains scrollback.
+    ///
+    /// The quit / pre-update-install paths must use [`save_session_blocking`]
+    /// instead — there the write has to land before the process exits or is
+    /// replaced, so a deferred task would be lost.
+    pub(crate) fn save_session(&self, cx: &App) {
+        let mut terms = Some(Vec::new());
+        let state = self.build_session_state(cx, &mut terms);
+        let terms = terms.unwrap_or_default();
         let Some(path) = paneflow_config::loader::session_path() else {
             return;
         };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match serde_json::to_string_pretty(&state) {
-            Ok(json) => {
-                // Atomic write: write to temp file, then rename. This prevents
-                // corruption if the process is killed mid-write (US-013).
-                let tmp_path = path.with_extension("json.tmp");
-                match std::fs::write(&tmp_path, &json) {
-                    Ok(()) => {
-                        if let Err(e) = std::fs::rename(&tmp_path, &path) {
-                            log::warn!("session save rename failed: {e}");
-                            let _ = std::fs::remove_file(&tmp_path);
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("session save failed: {e}");
-                        let _ = std::fs::remove_file(&tmp_path);
+
+        let seq = self
+            .save_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        let save_seq = std::sync::Arc::clone(&self.save_seq);
+
+        cx.background_spawn(async move {
+            smol::Timer::after(std::time::Duration::from_millis(SAVE_DEBOUNCE_MS)).await;
+            if save_seq.load(std::sync::atomic::Ordering::SeqCst) != seq {
+                // A newer save was scheduled meanwhile — let it carry the
+                // latest state; skip this redundant write.
+                return;
+            }
+            // `smol::unblock` keeps the scrollback drain + serialize + write off
+            // the background executor's async threads too.
+            smol::unblock(move || {
+                let mut state = state;
+                let mut terms = terms.into_iter();
+                for ws in state.workspaces.iter_mut() {
+                    if let Some(layout) = ws.layout.as_mut() {
+                        crate::layout::fill_scrollback(layout, &mut terms);
                     }
                 }
-            }
-            Err(e) => log::warn!("session serialize failed: {e}"),
-        }
+                write_session_json(&path, &state);
+            })
+            .await;
+        })
+        .detach();
+    }
+
+    /// US-011: synchronous session save for the quit / pre-update-install
+    /// paths, where a deferred background write would be lost when the process
+    /// exits or is replaced. Drains scrollback inline on the calling thread —
+    /// acceptable because these paths are terminal and rare (one final save).
+    pub(crate) fn save_session_blocking(&self, cx: &App) {
+        let state = self.build_session_state(cx, &mut None);
+        let Some(path) = paneflow_config::loader::session_path() else {
+            return;
+        };
+        write_session_json(&path, &state);
     }
 
     /// Restore a saved session from disk, or fall back silently to an
@@ -353,6 +408,35 @@ impl PaneFlowApp {
 // ---------------------------------------------------------------------------
 // US-006: corruption-backup helpers (free functions, free of `&self`)
 // ---------------------------------------------------------------------------
+
+/// US-011: serialize a [`SessionState`] to `path` with an atomic
+/// write-temp-then-rename, so a crash mid-write never truncates the live
+/// `session.json`. Best-effort: any error is logged, never propagated. Runs off
+/// the GPUI main thread in the deferred path (`save_session` wraps it in
+/// `smol::unblock`); `save_session_blocking` calls it directly at quit.
+fn write_session_json(path: &Path, state: &paneflow_config::schema::SessionState) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match serde_json::to_string_pretty(state) {
+        Ok(json) => {
+            let tmp_path = path.with_extension("json.tmp");
+            match std::fs::write(&tmp_path, &json) {
+                Ok(()) => {
+                    if let Err(e) = std::fs::rename(&tmp_path, path) {
+                        log::warn!("session save rename failed: {e}");
+                        let _ = std::fs::remove_file(&tmp_path);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("session save failed: {e}");
+                    let _ = std::fs::remove_file(&tmp_path);
+                }
+            }
+        }
+        Err(e) => log::warn!("session serialize failed: {e}"),
+    }
+}
 
 /// Convert `serde_json::Error::classify()` to a fixed string. Telemetry
 /// schema commits to these four buckets so we can dashboard them
