@@ -1022,8 +1022,15 @@ impl TerminalState {
         let bottom = term.bottommost_line();
         let cols = term.last_column();
 
-        let mut lines: Vec<String> = Vec::new();
-        let mut row = top.0;
+        // US-012: window to the most-recent MAX_LINES *before* the loop so the
+        // lock is never held while materializing the full history (scrollback
+        // can be 10k lines — see DEFAULT_SCROLLBACK_LINES). Walk oldest→newest
+        // from `bottom - MAX_LINES`, clamped to the topmost line. The drain
+        // below stays as a defensive trim (trailing-empty removal can leave at
+        // most MAX_LINES + 1 rows).
+        let start = bottom.0.saturating_sub(MAX_LINES as i32).max(top.0);
+        let mut lines: Vec<String> = Vec::with_capacity((bottom.0 - start + 1).max(0) as usize);
+        let mut row = start;
         while row <= bottom.0 {
             let text = term.bounds_to_string(
                 AlacPoint::new(GridLine(row), GridCol(0)),
