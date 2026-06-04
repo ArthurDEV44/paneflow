@@ -270,7 +270,7 @@ impl PaneFlowApp {
                                 // click time.
                                 app.self_update_status =
                                     update::SelfUpdateStatus::ReadyToRestart;
-                                app.save_session(cx);
+                                app.save_session_blocking(cx);
                                 app.emit_update_success_and_flush();
                                 cx.notify();
                             });
@@ -412,7 +412,7 @@ impl PaneFlowApp {
                     Ok(updated_path) => {
                         let _ = this.update(cx, |app, cx| {
                             app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session(cx);
+                            app.save_session_blocking(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
                         });
@@ -473,7 +473,7 @@ impl PaneFlowApp {
                     Ok(restart_path) => {
                         let _ = this.update(cx, |app, cx| {
                             app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session(cx);
+                            app.save_session_blocking(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
                         });
@@ -513,7 +513,7 @@ impl PaneFlowApp {
                     Ok(restart_path) => {
                         let _ = this.update(cx, |app, cx| {
                             app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session(cx);
+                            app.save_session_blocking(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
                         });
@@ -558,7 +558,7 @@ impl PaneFlowApp {
                     Ok(restart_path) => {
                         let _ = this.update(cx, |app, cx| {
                             app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session(cx);
+                            app.save_session_blocking(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
                         });
@@ -644,7 +644,7 @@ impl PaneFlowApp {
                     Ok(path) => {
                         let _ = this.update(cx, |app, cx| {
                             app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session(cx);
+                            app.save_session_blocking(cx);
                             app.emit_update_success_and_flush();
                             cx.notify();
                         });
