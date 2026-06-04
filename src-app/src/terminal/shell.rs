@@ -201,6 +201,30 @@ fn resolve_default_shell_fallback() -> String {
     "cmd.exe".to_string()
 }
 
+/// Build a command that clears the terminal before launching an interactive
+/// program, using syntax supported by the shell that will own the PTY.
+///
+/// In particular, Windows PowerShell 5.1 does not support `&&`, and `cmd.exe`
+/// spells the clear command `cls`. When no shell is configured, the platform
+/// fallback is resolved before selecting syntax.
+pub(crate) fn clear_then(command: &str, configured_shell: Option<&str>) -> String {
+    clear_then_for_shell(command, &resolve_default_shell(configured_shell))
+}
+
+fn clear_then_for_shell(command: &str, shell: &str) -> String {
+    let basename = shell
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(shell)
+        .to_ascii_lowercase();
+    let key = basename.trim_end_matches(".exe");
+    match key {
+        "cmd" => format!("cls && {command}"),
+        "pwsh" | "powershell" => format!("Clear-Host; {command}"),
+        _ => format!("clear && {command}"),
+    }
+}
+
 /// Write OSC 7 shell integration scripts and return the extra shell args
 /// and env vars needed to activate them. Scripts are written to
 /// `$XDG_DATA_HOME/paneflow/shell/{zsh,bash,fish,pwsh}/` (`%APPDATA%\paneflow\shell\`
@@ -309,5 +333,35 @@ pub(super) fn setup_shell_integration(
             vec![]
         }
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clear_then_for_shell;
+
+    #[test]
+    fn clear_then_uses_cmd_syntax() {
+        assert_eq!(
+            clear_then_for_shell("codex", r"C:\Windows\System32\cmd.exe"),
+            "cls && codex"
+        );
+    }
+
+    #[test]
+    fn clear_then_uses_powershell_51_compatible_syntax() {
+        assert_eq!(
+            clear_then_for_shell("claude", "powershell.exe"),
+            "Clear-Host; claude"
+        );
+        assert_eq!(clear_then_for_shell("claude", "pwsh"), "Clear-Host; claude");
+    }
+
+    #[test]
+    fn clear_then_uses_posix_syntax_for_unix_shells() {
+        assert_eq!(
+            clear_then_for_shell("opencode", "/bin/zsh"),
+            "clear && opencode"
+        );
     }
 }

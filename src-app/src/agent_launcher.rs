@@ -279,42 +279,46 @@ impl TerminalAgent {
         installed_binaries().contains(self.binary())
     }
 
-    /// The shell command run to start the agent. Honors
-    /// `claude_code_bypass_permissions` for Claude Code (the only agent
-    /// with a wired bypass flag today); the others launch bare, matching
-    /// the tab-bar buttons verbatim. `clear &&` wipes the shell startup
-    /// banner so the agent TUI owns the viewport from the first frame.
-    pub fn launch_command(self, config: &PaneFlowConfig) -> &'static str {
+    /// Bare command that starts the agent. Honors
+    /// `claude_code_bypass_permissions` for Claude Code.
+    fn command(self, config: &PaneFlowConfig) -> &'static str {
         match self {
             TerminalAgent::ClaudeCode => {
                 if config.claude_code_bypass_permissions.unwrap_or(false) {
-                    "clear && claude --permission-mode bypassPermissions"
+                    "claude --permission-mode bypassPermissions"
                 } else {
-                    "clear && claude"
+                    "claude"
                 }
             }
-            TerminalAgent::Codex => "clear && codex",
-            TerminalAgent::OpenCode => "clear && opencode",
-            TerminalAgent::Pi => "clear && pi",
-            TerminalAgent::Hermes => "clear && hermes",
-            TerminalAgent::Grok => "clear && grok",
-            TerminalAgent::Amp => "clear && amp",
+            TerminalAgent::Codex => "codex",
+            TerminalAgent::OpenCode => "opencode",
+            TerminalAgent::Pi => "pi",
+            TerminalAgent::Hermes => "hermes",
+            TerminalAgent::Grok => "grok",
+            TerminalAgent::Amp => "amp",
             // Cursor's CLI binary is `cursor-agent`, not `cursor`.
-            TerminalAgent::Cursor => "clear && cursor-agent",
-            TerminalAgent::Gemini => "clear && gemini",
+            TerminalAgent::Cursor => "cursor-agent",
+            TerminalAgent::Gemini => "gemini",
             // Kiro's interactive entry point is the `chat` subcommand.
-            TerminalAgent::Kiro => "clear && kiro-cli chat",
+            TerminalAgent::Kiro => "kiro-cli chat",
             // Antigravity ships as the `agy` binary.
-            TerminalAgent::Antigravity => "clear && agy",
-            TerminalAgent::Copilot => "clear && copilot",
-            TerminalAgent::CodeBuddy => "clear && codebuddy",
+            TerminalAgent::Antigravity => "agy",
+            TerminalAgent::Copilot => "copilot",
+            TerminalAgent::CodeBuddy => "codebuddy",
             // Factory's CLI binary is `droid`.
-            TerminalAgent::Factory => "clear && droid",
+            TerminalAgent::Factory => "droid",
             // Qoder's CLI binary is `qodercli`.
-            TerminalAgent::Qoder => "clear && qodercli",
+            TerminalAgent::Qoder => "qodercli",
             // Openclaw's interactive entry point is the `tui` subcommand.
-            TerminalAgent::Openclaw => "clear && openclaw tui",
+            TerminalAgent::Openclaw => "openclaw tui",
         }
+    }
+
+    /// Shell-aware launch command. The clear prefix is selected for the
+    /// configured shell (`clear`, `cls`, or `Clear-Host`) so the agent TUI owns
+    /// the viewport from the first frame on every platform.
+    pub fn launch_command(self, config: &PaneFlowConfig) -> String {
+        crate::terminal::shell::clear_then(self.command(config), config.default_shell.as_deref())
     }
 
     /// Visible variants for the given config, in display order. Drives
@@ -358,11 +362,11 @@ mod tests {
         // launcher runs, or default visibility detects the wrong binary.
         let cfg = PaneFlowConfig::default();
         for agent in TerminalAgent::ALL {
-            let after_clear = agent
-                .launch_command(&cfg)
-                .strip_prefix("clear && ")
-                .expect("launch command must start with `clear && `");
-            let leading = after_clear.split_whitespace().next().unwrap_or_default();
+            let leading = agent
+                .command(&cfg)
+                .split_whitespace()
+                .next()
+                .unwrap_or_default();
             assert_eq!(
                 leading,
                 agent.binary(),
@@ -391,29 +395,6 @@ mod tests {
     }
 
     #[test]
-    fn every_launch_command_clears_first() {
-        // The `clear &&` prefix is a hard contract: it wipes the shell
-        // banner so each agent TUI owns the viewport from the first frame.
-        let default = PaneFlowConfig::default();
-        let bypass = PaneFlowConfig {
-            claude_code_bypass_permissions: Some(true),
-            ..Default::default()
-        };
-        for agent in TerminalAgent::ALL {
-            assert!(
-                agent.launch_command(&default).starts_with("clear && "),
-                "{} launch command must start with `clear && `",
-                agent.display_name()
-            );
-            assert!(
-                agent.launch_command(&bypass).starts_with("clear && "),
-                "{} launch command must start with `clear && ` under bypass",
-                agent.display_name()
-            );
-        }
-    }
-
-    #[test]
     fn icon_paths_are_embedded_assets() {
         // Every icon must live under an embedded asset root (`icons/` or
         // `agents/`) or the tab-bar `svg()` silently renders nothing.
@@ -433,17 +414,14 @@ mod tests {
             claude_code_bypass_permissions: Some(false),
             ..Default::default()
         };
-        assert_eq!(
-            TerminalAgent::ClaudeCode.launch_command(&off),
-            "clear && claude"
-        );
+        assert_eq!(TerminalAgent::ClaudeCode.command(&off), "claude");
         let on = PaneFlowConfig {
             claude_code_bypass_permissions: Some(true),
             ..Default::default()
         };
         assert_eq!(
-            TerminalAgent::ClaudeCode.launch_command(&on),
-            "clear && claude --permission-mode bypassPermissions"
+            TerminalAgent::ClaudeCode.command(&on),
+            "claude --permission-mode bypassPermissions"
         );
     }
 
@@ -453,14 +431,8 @@ mod tests {
             claude_code_bypass_permissions: Some(true),
             ..Default::default()
         };
-        assert_eq!(
-            TerminalAgent::Codex.launch_command(&config),
-            "clear && codex"
-        );
-        assert_eq!(TerminalAgent::Pi.launch_command(&config), "clear && pi");
-        assert_eq!(
-            TerminalAgent::Hermes.launch_command(&config),
-            "clear && hermes"
-        );
+        assert_eq!(TerminalAgent::Codex.command(&config), "codex");
+        assert_eq!(TerminalAgent::Pi.command(&config), "pi");
+        assert_eq!(TerminalAgent::Hermes.command(&config), "hermes");
     }
 }

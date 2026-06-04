@@ -373,7 +373,7 @@ impl PaneFlowApp {
         // agent is never relaunched on navigation.
         if let Some(agent) = terminal_agent {
             let cmd = agent.launch_command(&paneflow_config::loader::load_config());
-            view.read(cx).send_command(cmd);
+            view.read(cx).send_command(&cmd);
         }
         // Mirror Zed's `AgentTerminal::refresh_terminal_metadata`
         // (agent_panel.rs around `TerminalEvent::TitleChanged`): every
