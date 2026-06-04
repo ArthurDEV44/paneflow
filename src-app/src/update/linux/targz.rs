@@ -202,11 +202,10 @@ fn extract_and_swap(tarball: &Path, app_dir: &Path, new_dir: &Path, old_dir: &Pa
 
     // Extract into a fresh scratch directory (not `parent` directly) so
     // we can't clobber an unrelated sibling if the tarball's top-level
-    // entry name ever changes. The `tar` crate's `unpack` method rejects
-    // entries with absolute paths or `..` traversal by default, protecting
-    // against zip-slip even if a malicious archive slipped past CI. It
-    // does NOT sanitize symlinks — we walk the tree post-extract and
-    // reject any symlink outright (see `reject_symlinks_recursively`).
+    // entry name ever changes, then promote the result with an atomic
+    // rename (below). The extraction itself is hardened in
+    // [`extract_hardened`] (US-003): every entry is filtered *during*
+    // iteration, not after.
     //
     // `.paneflow-extract-<pid>` makes two PaneFlow instances updating at
     // once work: same-parent but distinct scratch dirs.
@@ -218,21 +217,14 @@ fn extract_and_swap(tarball: &Path, app_dir: &Path, new_dir: &Path, old_dir: &Pa
         .with_context(|| format!("create scratch {}", scratch.display()))?;
 
     let extract_result = (|| -> Result<()> {
-        let f =
-            std::fs::File::open(tarball).with_context(|| format!("open {}", tarball.display()))?;
-        let gz = flate2::read::GzDecoder::new(f);
-        let mut archive = tar::Archive::new(gz);
-        archive
-            .unpack(&scratch)
-            .context("extract tar.gz into scratch dir")?;
-
-        // Reject symlinks anywhere in the extracted tree before the swap.
-        // Our bundler produces a symlink-free layout; anything else is
-        // either a CI regression or a tampered archive. Blocking here
-        // prevents a symlink like `bin/paneflow → /home/u/.ssh/id_rsa`
-        // from ending up at the live install path (which the restarter
-        // would then exec or follow).
-        reject_symlinks_recursively(&scratch)?;
+        // US-003: hardened extraction. Filters every entry as it is read
+        // (reject `..`, absolute paths, drive prefixes, and any symlink /
+        // hardlink), with permissions and xattrs disabled, plus a per-entry
+        // containment check against the canonical scratch root. This replaces
+        // the old `archive.unpack()` + post-extract symlink sweep with a
+        // single pass that never writes an unsafe entry to disk at all
+        // (TARmageddon-class, CVE-2025-59825).
+        extract_hardened(tarball, &scratch)?;
 
         // Move the top-level extracted directory into place as `new_dir`.
         // Strict "exactly one top-level directory" — the bundler writes
@@ -322,33 +314,90 @@ fn extract_and_swap(tarball: &Path, app_dir: &Path, new_dir: &Path, old_dir: &Pa
     Ok(())
 }
 
-/// Walk `dir` recursively and fail if any entry is a symlink. The
-/// `tar` crate preserves symlink entries by default, so this is the
-/// only defense against a tampered archive that embeds a link like
-/// `bin/paneflow → /home/u/.ssh/authorized_keys`. Called AFTER
-/// `unpack` so broken symlinks still count — they'd otherwise vanish
-/// from `exists()` checks and survive past the swap.
-fn reject_symlinks_recursively(dir: &Path) -> Result<()> {
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(p) = stack.pop() {
-        let entries = std::fs::read_dir(&p).with_context(|| format!("read_dir {}", p.display()))?;
-        for entry in entries {
-            let entry = entry.with_context(|| format!("iterate {}", p.display()))?;
-            // `symlink_metadata` does NOT follow symlinks — the file-type
-            // probe here sees the link itself, not its target.
-            let meta = entry.path();
-            let lt = std::fs::symlink_metadata(&meta)
-                .with_context(|| format!("symlink_metadata {}", meta.display()))?
-                .file_type();
-            if lt.is_symlink() {
-                bail!(
-                    "Update archive contains a symlink at {}, which PaneFlow refuses to install. Download the release manually from the releases page.",
-                    meta.display()
-                );
-            }
-            if lt.is_dir() {
-                stack.push(meta);
-            }
+/// Extract `tarball` into `scratch`, filtering every entry as it is read
+/// (US-003). Unlike `tar::Archive::unpack`, this:
+///
+/// - **Disables permission and xattr preservation** — a tampered archive
+///   must not be able to set setuid / world-writable bits or attach
+///   quarantine-bypassing xattrs. The restart binary's mode is forced back
+///   to `0o755` by the caller after extraction.
+/// - **Rejects link entries** (symlink *and* hardlink) outright. Our
+///   bundler produces a link-free layout; a link is either a CI regression
+///   or a tampered archive pointing `bin/paneflow` at `/etc/passwd` or
+///   hardlinking a file outside the root (TARmageddon-class,
+///   CVE-2025-59825). Rejecting during iteration means the link is never
+///   materialised, closing the post-extract-walk race entirely.
+/// - **Validates path components** before extraction (no absolute path, no
+///   root/drive prefix, no `..` traversal) and relies on `unpack_in`'s own
+///   containment check against the canonicalised root as a second layer.
+///
+/// `sync` `tar` only (never `tokio-tar`/`async-tar`, whose streaming
+/// extractors are the ones the TARmageddon advisory implicates).
+fn extract_hardened(tarball: &Path, scratch: &Path) -> Result<()> {
+    let f = std::fs::File::open(tarball).with_context(|| format!("open {}", tarball.display()))?;
+    let gz = flate2::read::GzDecoder::new(f);
+    let mut archive = tar::Archive::new(gz);
+    archive.set_preserve_permissions(false);
+    archive.set_unpack_xattrs(false);
+    archive.set_preserve_mtime(false);
+
+    // Canonical root for the per-entry containment check. `scratch` was just
+    // created by the caller, so canonicalisation resolves any symlinked
+    // ancestor (e.g. `/tmp` → `/private/tmp` on macOS) to a real prefix.
+    let canonical_root = std::fs::canonicalize(scratch)
+        .with_context(|| format!("canonicalize scratch root {}", scratch.display()))?;
+
+    for entry in archive.entries().context("read tar entries")? {
+        let mut entry = entry.context("read tar entry")?;
+        let entry_type = entry.header().entry_type();
+
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            let where_at = entry
+                .path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "<unreadable path>".to_string());
+            bail!(
+                "Update archive contains a link entry at {where_at}, which PaneFlow refuses to install. Download the release manually from the releases page."
+            );
+        }
+
+        let path = entry.path().context("read tar entry path")?.into_owned();
+        validate_extract_path(&path)?;
+
+        // `unpack_in` performs its own containment check against
+        // `canonical_root` and returns `false` if it refused the entry —
+        // belt-and-braces against anything `validate_extract_path` missed.
+        // It only ever writes under `canonical_root`.
+        let unpacked = entry
+            .unpack_in(&canonical_root)
+            .with_context(|| format!("unpack entry {}", path.display()))?;
+        if !unpacked {
+            bail!(
+                "Update archive entry {} escapes the extraction root — refusing to install. Download the release manually from the releases page.",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Reject a tar entry path that is absolute, carries a Windows drive/root
+/// prefix, or contains a `..` traversal component. Pure (no I/O) so it is
+/// trivially unit-testable; the filesystem-level containment check lives in
+/// `unpack_in`.
+fn validate_extract_path(path: &Path) -> Result<()> {
+    use std::path::Component;
+    for comp in path.components() {
+        match comp {
+            Component::Prefix(_) | Component::RootDir => bail!(
+                "Update archive contains an absolute path ({}) — refusing to install.",
+                path.display()
+            ),
+            Component::ParentDir => bail!(
+                "Update archive contains a `..` traversal ({}) — refusing to install.",
+                path.display()
+            ),
+            Component::CurDir | Component::Normal(_) => {}
         }
     }
     Ok(())
@@ -573,16 +622,76 @@ mod tests {
         out
     }
 
-    // US-007 (prd-windows-port.md) — Unix-only. The test fixture calls
-    // `std::os::unix::fs::symlink` to inject an "evil symlink" entry into
-    // a tarball. Creating that entry on Windows would require
-    // `std::os::windows::fs::symlink_file` plus `SeCreateSymbolicLinkPrivilege`,
-    // which GH Actions non-admin runs lack. The property under test — that
-    // `reject_symlinks_recursively` refuses any symlink in an extracted
-    // update payload — is platform-neutral at runtime, but exercising it
-    // requires constructing a malicious tarball, which itself is a
-    // Unix-only fixture. Windows gets the same safety via the same
-    // post-extract walker; this fixture just can't be built there.
+    // ── US-003: hardened extraction ────────────────────────────────────
+
+    #[test]
+    fn validate_extract_path_accepts_normal_relative_paths() {
+        assert!(validate_extract_path(Path::new("paneflow.app/bin/paneflow")).is_ok());
+        assert!(validate_extract_path(Path::new("./paneflow.app/lib/x.so")).is_ok());
+    }
+
+    #[test]
+    fn validate_extract_path_rejects_traversal_and_absolute() {
+        assert!(validate_extract_path(Path::new("../evil")).is_err());
+        assert!(validate_extract_path(Path::new("paneflow.app/../../etc/passwd")).is_err());
+        assert!(validate_extract_path(Path::new("/etc/passwd")).is_err());
+        // A Windows drive-prefixed absolute path (rejected via Component::Prefix
+        // on Windows; on Linux `C:\…` is one Normal component and is harmless
+        // because it can't escape the root, so only assert the cross-platform
+        // cases above).
+    }
+
+    /// US-003 AC4: an entry whose path traverses out of the root via `..`
+    /// is rejected *during* extraction — it never lands on disk and the
+    /// live install is untouched.
+    #[test]
+    fn extract_rejects_path_traversal_entry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Craft a tarball with a single `../evil` entry. `append_data` /
+        // `set_path` sanitise `..` away, so write the unsanitised name
+        // straight into the GNU header's name field (offset 0..100) — this
+        // is exactly what a hostile, hand-rolled archive looks like.
+        let out = root.join("evil.tar.gz");
+        let f = std::fs::File::create(&out).unwrap();
+        let gz = flate2::write::GzEncoder::new(f, flate2::Compression::fast());
+        let mut builder = tar::Builder::new(gz);
+        let payload = b"pwned";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(payload.len() as u64);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_mode(0o644);
+        {
+            let name = b"../evil";
+            let bytes = header.as_mut_bytes();
+            bytes[..name.len()].copy_from_slice(name);
+        }
+        header.set_cksum();
+        builder.append(&header, &payload[..]).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let scratch = root.join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let err = extract_hardened(&out, &scratch).unwrap_err().to_string();
+        assert!(
+            err.contains("traversal") || err.contains("escapes"),
+            "expected traversal rejection, got: {err}"
+        );
+        // The escaping target must never have been written.
+        assert!(
+            !root.join("evil").exists(),
+            "traversal entry must not write outside the scratch root"
+        );
+    }
+
+    // US-003 — Unix-only fixture. The test injects a real symlink entry into
+    // a tarball via `std::os::unix::fs::symlink`; building that entry on
+    // Windows needs `SeCreateSymbolicLinkPrivilege`, which non-admin GH
+    // Actions runs lack. The runtime property — `extract_hardened` refuses
+    // any link entry — is platform-neutral (it checks the tar header's entry
+    // type, not the host filesystem), so Windows gets the same guard; only
+    // the malicious-fixture construction is Unix-only.
     #[cfg(unix)]
     #[test]
     fn extract_rejects_tarball_with_symlink() {
@@ -621,8 +730,8 @@ mod tests {
         let r = extract_and_swap(&out, &app_dir, &new_dir, &old_dir);
         let err = r.unwrap_err().to_string();
         assert!(
-            err.contains("symlink"),
-            "expected symlink rejection, got: {err}"
+            err.contains("link entry"),
+            "expected link rejection, got: {err}"
         );
         assert!(!app_dir.exists(), "a failed update must not leave app_dir");
         assert!(!new_dir.exists(), ".new must be cleaned up");
