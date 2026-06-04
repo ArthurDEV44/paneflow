@@ -219,12 +219,16 @@ impl PaneFlowApp {
             keybindings::apply_keybindings(cx, &config.shortcuts);
             self.effective_shortcuts = keybindings::effective_shortcuts(&config.shortcuts);
             crate::theme::invalidate_theme_cache();
-            // US-014: reconcile the telemetry consent state. On any change,
-            // rebuild the `TelemetryClient` handle (Null ↔ Active) so future
-            // emissions reflect the new choice; show a confirmation toast;
-            // fire a one-time `telemetry_reenabled` breadcrumb on an explicit
-            // opted-out → opted-in transition (ROPA audit trail).
+            // US-014 (telemetry): reconcile the telemetry consent state. On any
+            // change, rebuild the `TelemetryClient` handle (Null ↔ Active) so
+            // future emissions reflect the new choice; show a confirmation
+            // toast; fire a one-time `telemetry_reenabled` breadcrumb on an
+            // explicit opted-out → opted-in transition (ROPA audit trail).
             self.reconcile_telemetry_consent(&config, cx);
+            // US-014 (render cache): refresh the cached config so render paths
+            // pick up the reload without a per-frame `load_config()`. Last use
+            // of `config` — move it in.
+            self.cached_config = config;
             cx.notify();
         }
 

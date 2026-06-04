@@ -12,15 +12,17 @@ use crate::widgets::scrollbar;
 use crate::{PaneFlowApp, config_writer};
 
 impl PaneFlowApp {
-    /// Resolve the theme currently persisted in config (or the built-in default).
-    fn current_theme_name() -> String {
-        paneflow_config::loader::load_config()
+    /// Resolve the theme currently persisted in config (or the built-in
+    /// default). US-014: reads the cached config, not a per-call `load_config()`.
+    fn current_theme_name(&self) -> String {
+        self.cached_config
             .theme
+            .clone()
             .unwrap_or_else(|| "One Dark".to_string())
     }
 
-    fn current_theme_index() -> usize {
-        let name = Self::current_theme_name();
+    fn current_theme_index(&self) -> usize {
+        let name = self.current_theme_name();
         crate::theme::THEMES
             .iter()
             .position(|(n, _)| *n == name)
@@ -42,7 +44,7 @@ impl PaneFlowApp {
         self.show_theme_picker = true;
         self.theme_picker_query.clear();
         // Pre-select the currently applied theme so the list opens on it.
-        self.theme_picker_selected_idx = Self::current_theme_index();
+        self.theme_picker_selected_idx = self.current_theme_index();
         self.theme_picker_scroll = gpui::ScrollHandle::new();
         self.theme_picker_drag = None;
         self.theme_picker_focus.focus(window, cx);
@@ -122,7 +124,7 @@ impl PaneFlowApp {
     pub(crate) fn render_theme_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let ui = crate::theme::ui_colors();
         let matches = self.theme_picker_matches();
-        let current_name = Self::current_theme_name();
+        let current_name = self.current_theme_name();
 
         let query_text: SharedString = if self.theme_picker_query.is_empty() {
             "Select Theme…".into()
