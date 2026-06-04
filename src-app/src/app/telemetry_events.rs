@@ -86,17 +86,21 @@ impl PaneFlowApp {
         self.telemetry.flush_blocking(SHUTDOWN_FLUSH_TIMEOUT);
     }
 
-    /// Fire `update_installed { success: true, ... }` and block up to
-    /// [`SHUTDOWN_FLUSH_TIMEOUT`] so the event lands before the
-    /// `cx.restart()` call that replaces the running process.
+    /// Fire `update_installed { success: true, ... }` WITHOUT blocking.
     ///
-    /// Called from every success path in `self_update_flow.rs`
-    /// immediately before the restart. `to_version` is read from
-    /// `self.update_status` (populated during the update check); an
-    /// unknown `Some(UpdateStatus::Available { version })` state is
-    /// unreachable here by construction, but if it happens we still
-    /// emit with `to_version: "unknown"` rather than silently dropping.
-    pub(crate) fn emit_update_success_and_flush(&self) {
+    /// US-017: this is emitted at *pre-install success* (the update is staged
+    /// and we flip to `ReadyToRestart`), where the process is **not** exiting —
+    /// the user restarts later via a separate, deliberately zero-I/O click that
+    /// calls `cx.restart()`. Blocking the render thread on a network flush here
+    /// is wrong: just `capture()` and let the 5 s background `poll_flush` loop
+    /// (wired in `bootstrap.rs`) drain it while the "ready to restart" UI is up.
+    /// `flush_blocking` stays reserved for the real exit path
+    /// ([`Self::emit_app_exited_and_flush`]).
+    ///
+    /// `to_version` is read from `self.update_status` (populated during the
+    /// update check); an unknown state still emits `to_version: "unknown"`
+    /// rather than silently dropping.
+    pub(crate) fn emit_update_success(&self) {
         let to_version = match self.update_status.as_ref() {
             Some(update::checker::UpdateStatus::Available { version, .. }) => version.clone(),
             _ => "unknown".to_string(),
@@ -110,7 +114,6 @@ impl PaneFlowApp {
                 "success": true,
             }),
         );
-        self.telemetry.flush_blocking(SHUTDOWN_FLUSH_TIMEOUT);
     }
 
     /// Fire `update_installed { success: false, error_category: ... }`
