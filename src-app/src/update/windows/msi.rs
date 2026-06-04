@@ -1,22 +1,22 @@
 //! Windows MSI self-update pipeline (US-010).
 //!
 //! Flow:
-//!   1. Fetch the release asset's `.sha256` sibling — same US-011
-//!      convention every Phase 1+ artifact ships; missing sibling is a
-//!      hard abort rather than silent unverified install.
-//!   2. Download the `.msi` to `%TEMP%\paneflow-update-<pid>.msi` via
+//!   1. Download the `.msi` to `%TEMP%\paneflow-update-<pid>.msi` via
 //!      ureq with the 30-second per-call timeout (US-001).
-//!   3. Verify SHA-256; mismatch deletes the partial and bails with
-//!      [`IntegrityMismatch`].
-//!   4. Resolve `msiexec.exe` via PATH (PATHEXT-aware — the `which`
+//!   2. Verify the asset's detached **minisign** signature (`.minisig`
+//!      sibling) against a key baked into this binary (US-001), then
+//!      `WinVerifyTrust` on the Authenticode chain (US-005) — both
+//!      **before** msiexec runs. A missing/invalid signature deletes the
+//!      partial and bails; replaces the old same-host `.sha256`.
+//!   3. Resolve `msiexec.exe` via PATH (PATHEXT-aware — the `which`
 //!      crate already handles this). If absent, bail with
 //!      [`EnvironmentBroken`] naming the tool.
-//!   5. Spawn `msiexec.exe /i <msi> /qb /norestart /l*v <log>` where
+//!   4. Spawn `msiexec.exe /i <msi> /qb /norestart /l*v <log>` where
 //!      `<log>` is `%TEMP%\paneflow-msi-<pid>.log`. `/qb` keeps the UAC
 //!      elevation prompt visible (basic progress bar); `/norestart`
 //!      prevents an auto-reboot; `/l*v` writes the verbose log we name
 //!      in `InstallFailed { log_path }`.
-//!   6. Map msiexec exit codes:
+//!   5. Map msiexec exit codes:
 //!      - `0` → success, return the canonical installed binary path.
 //!      - `1602` → `InstallDeclined` ("Update cancelled — administrator
 //!        permission required") — the well-known "user declined UAC"
@@ -24,7 +24,7 @@
 //!      - `1603` → `InstallFailed { log_path }` — fatal Windows Installer
 //!        error; log captures the cause.
 //!      - other → `Other` with exit code + log-path hint for triage.
-//!   7. Delete the MSI scratch file; keep the log on failure so bug
+//!   6. Delete the MSI scratch file; keep the log on failure so bug
 //!      reports can attach it.
 //!
 //! **Cross-platform compile.** The module is built on every target so
@@ -48,9 +48,8 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use sha2::{Digest, Sha256};
 
-use super::super::error::{IntegrityMismatch, UpdateError};
+use super::super::error::UpdateError;
 
 /// Upper bound on any single HTTP call (US-001).
 const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -117,49 +116,16 @@ fn install_with(
     }
 }
 
-/// Fetch the `.sha256` sidecar, download the MSI, verify the digest,
+/// Download the MSI, verify its detached **minisign** signature (US-001),
 /// and persist at `dest` on success. Mirrors the shared pattern in
 /// `targz.rs` / `macos/dmg.rs` — see them for rationale on each guard
-/// (partial→rename, size cap, RO body stream).
+/// (partial→rename, size cap, RO body stream). The signature, not a
+/// same-host `.sha256`, is the trust anchor and is checked **before**
+/// msiexec is ever invoked.
 fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
     log::info!("self-update/msi: downloading {asset_url}");
 
-    // 1. Fetch the sibling checksum. Missing `.sha256` is a hard abort —
-    // we refuse to install an MSI without an integrity anchor.
-    let sha_url = format!("{asset_url}.sha256");
-    let mut sha_response = ureq::get(&sha_url)
-        .config()
-        .timeout_global(Some(UPDATE_HTTP_TIMEOUT))
-        .build()
-        .header(
-            "User-Agent",
-            &format!("paneflow/{}", env!("CARGO_PKG_VERSION")),
-        )
-        .call()
-        .with_context(|| {
-            "Could not fetch integrity checksum. Try again when online.".to_string()
-        })?;
-    let sha_status = sha_response.status();
-    if !sha_status.is_success() {
-        if sha_status.as_u16() == 404 {
-            bail!(
-                "This release has no SHA-256 checksum published. Download the latest version from the releases page."
-            );
-        }
-        bail!("Could not fetch integrity checksum (HTTP {sha_status}). Try again later.");
-    }
-    let sha_body = sha_response
-        .body_mut()
-        .read_to_string()
-        .context("read .sha256 body")?;
-    let expected_hex = parse_sha256_file(&sha_body).with_context(|| {
-        format!(
-            "parse .sha256 body (first 80 bytes: {:?})",
-            &sha_body.chars().take(80).collect::<String>()
-        )
-    })?;
-
-    // 2. Stream the MSI to `.partial` so a crashed download doesn't
+    // 1. Stream the MSI to `.partial` so a crashed download doesn't
     // poison the cache. The `file` handle is scoped so its Drop runs
     // before `remove_file` — Windows `DeleteFile` fails while a handle
     // is open (ERROR_SHARING_VIOLATION).
@@ -205,10 +171,13 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
         );
     }
 
-    // 3. Verify the digest. Mismatch deletes the partial and bails with
-    // the typed `IntegrityMismatch` tag so the UX toast is specific
-    // ("corrupt or tampered") rather than the generic "update failed".
-    if let Err(e) = verify_sha256_of_file(&partial, &expected_hex) {
+    // 2. Verify the detached minisign signature BEFORE msiexec runs.
+    // Fail-closed: a missing/invalid signature deletes the partial and bails
+    // with the typed `IntegrityMismatch` tag so the UX toast is specific
+    // ("corrupt or tampered"). This is the US-001 root-of-trust check that
+    // replaces the old same-host `.sha256`; US-005 adds `WinVerifyTrust` on
+    // the Authenticode chain as a second, OS-native layer.
+    if let Err(e) = super::super::signature::fetch_and_verify(&partial, asset_url) {
         let _ = std::fs::remove_file(&partial);
         return Err(e);
     }
@@ -242,53 +211,6 @@ fn append_suffix(path: &Path, suffix: &str) -> Result<PathBuf> {
     let mut name = name.to_os_string();
     name.push(suffix);
     Ok(path.with_file_name(name))
-}
-
-/// Parse a `.sha256` file's contents and return the hex digest. Accepts
-/// the same set of formats as `targz.rs::parse_sha256_file`.
-fn parse_sha256_file(body: &str) -> Result<String> {
-    let first_line = body.lines().next().context("empty .sha256 file")?;
-    let token = first_line
-        .split_whitespace()
-        .next()
-        .context("no token in .sha256 file")?;
-    let lower = token.to_ascii_lowercase();
-    if lower.len() != 64 || !lower.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("invalid SHA-256 digest (expected 64 hex chars, got {token:?})");
-    }
-    Ok(lower)
-}
-
-fn verify_sha256_of_file(file: &Path, expected_hex: &str) -> Result<()> {
-    let mut f = std::fs::File::open(file)
-        .with_context(|| format!("open {} for hashing", file.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = f.read(&mut buf).context("read chunk for hashing")?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let got = hex_lower(&hasher.finalize());
-    if got != expected_hex {
-        return Err(anyhow::Error::new(IntegrityMismatch {
-            expected: expected_hex.to_string(),
-            got,
-        }));
-    }
-    Ok(())
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
 }
 
 /// Why `msiexec` failed. `NotFound` and `NonZeroExit` route to specific
@@ -355,35 +277,6 @@ mod tests {
     use std::cell::Cell;
 
     // ── Pure helpers ─────────────────────────────────────────────────
-
-    #[test]
-    fn parse_sha256_file_accepts_bare_hex() {
-        let body = format!("{}\n", "a".repeat(64));
-        assert_eq!(parse_sha256_file(&body).unwrap(), "a".repeat(64));
-    }
-
-    #[test]
-    fn parse_sha256_file_rejects_short_digest() {
-        assert!(parse_sha256_file("abcd\n").is_err());
-    }
-
-    #[test]
-    fn verify_sha256_rejects_mismatched_digest() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("payload.msi");
-        std::fs::write(&path, b"tampered").unwrap();
-        let err = verify_sha256_of_file(&path, &"0".repeat(64)).unwrap_err();
-        assert!(err.downcast_ref::<IntegrityMismatch>().is_some());
-    }
-
-    #[test]
-    fn verify_sha256_accepts_matching_digest() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("payload.msi");
-        std::fs::write(&path, b"hello").unwrap();
-        let expected = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
-        assert!(verify_sha256_of_file(&path, expected).is_ok());
-    }
 
     #[test]
     fn append_suffix_preserves_full_name() {

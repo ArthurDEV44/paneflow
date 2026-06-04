@@ -1,10 +1,12 @@
 //! tar.gz self-update via atomic directory swap (US-011).
 //!
 //! Flow:
-//!   1. Download the tar.gz asset (and its `.sha256` sibling) to
-//!      `$HOME/.cache/paneflow/update-<pid>.tar.gz`.
-//!   2. Verify SHA-256 against the sibling file. A mismatch deletes the
-//!      download and aborts — users never get an unverified install.
+//!   1. Download the tar.gz asset to `$HOME/.cache/paneflow/update-<pid>.tar.gz`.
+//!   2. Verify the asset's detached **minisign** signature (`.minisig`
+//!      sibling) against a public key baked into this binary (US-001).
+//!      A missing or invalid signature deletes the download and aborts —
+//!      the same-host `.sha256` it replaced gave no real trust (a mirror
+//!      that swaps the tarball swaps the checksum too).
 //!   3. Extract into `<parent>/paneflow.app.new/` (a sibling of the live
 //!      install dir; same filesystem so the swap rename is atomic).
 //!   4. Atomic swap via two `rename(2)` calls:
@@ -28,9 +30,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use sha2::{Digest, Sha256};
-
-use super::super::error::IntegrityMismatch;
 
 /// 500 MB ceiling on the downloaded tarball. The real release is ~30 MB;
 /// a malicious mirror returning an unbounded stream would otherwise fill
@@ -115,7 +114,11 @@ fn staging_dirs(app_dir: &Path) -> Result<(PathBuf, PathBuf)> {
     ))
 }
 
-/// Download the asset + its `.sha256` sibling, verify, persist to `dest`.
+/// Download the asset, verify its detached **minisign** signature, and
+/// persist to `dest`. The signature — not a same-host `.sha256` — is the
+/// trust anchor (US-001): verification runs against a public key baked into
+/// this binary, so a compromised mirror or MITM cannot make us extract a
+/// tampered tarball.
 ///
 /// On any failure the partial download is removed by the caller — we
 /// don't want a half-written tarball to masquerade as a cached update on
@@ -123,47 +126,10 @@ fn staging_dirs(app_dir: &Path) -> Result<(PathBuf, PathBuf)> {
 fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
     log::info!("self-update/targz: downloading {asset_url}");
 
-    // 1. Fetch the sibling checksum first. If the server has no
-    // `.sha256`, we refuse to install an unverified binary — fail-safe.
-    // A 404 here usually means the release predates US-011's CI (when
-    // the `.sha256` sibling started being emitted), so give it a
-    // distinct, actionable message rather than lumping it in with a
-    // network failure.
-    let sha_url = format!("{asset_url}.sha256");
-    let mut sha_response = ureq::get(&sha_url)
-        .config()
-        .timeout_global(Some(UPDATE_HTTP_TIMEOUT))
-        .build()
-        .header(
-            "User-Agent",
-            &format!("paneflow/{}", env!("CARGO_PKG_VERSION")),
-        )
-        .call()
-        .with_context(|| {
-            "Could not fetch integrity checksum. Try again when online.".to_string()
-        })?;
-    let sha_status = sha_response.status();
-    if !sha_status.is_success() {
-        if sha_status.as_u16() == 404 {
-            bail!(
-                "This release has no SHA-256 checksum published. Download the latest version from the releases page."
-            );
-        }
-        bail!("Could not fetch integrity checksum (HTTP {sha_status}). Try again later.");
-    }
-    let sha_body = sha_response
-        .body_mut()
-        .read_to_string()
-        .context("read .sha256 body")?;
-    let expected_hex = parse_sha256_file(&sha_body).with_context(|| {
-        format!(
-            "parse .sha256 body (first 80 bytes: {:?})",
-            &sha_body.chars().take(80).collect::<String>()
-        )
-    })?;
-
-    // 2. Stream the tarball to disk. Reuse the `.partial` → rename trick
-    // from US-010 so a crashed download doesn't poison the cache.
+    // 1. Stream the tarball to a `.partial` sibling so a crashed download
+    // doesn't poison the cache. `file` is scoped to this block so its handle
+    // is closed before any `remove_file` — on Windows `DeleteFile` fails with
+    // ERROR_SHARING_VIOLATION while a handle is open. US-001 AC7.
     let partial = append_suffix(dest, ".partial")?;
     let mut response = ureq::get(asset_url)
         .config()
@@ -182,10 +148,6 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
         );
     }
 
-    // Stream to `.partial`. `file` is scoped to this block so its handle is
-    // closed before the caller attempts any `remove_file` — on Windows,
-    // `DeleteFile` fails with ERROR_SHARING_VIOLATION while a handle is open,
-    // so keeping this scope tight is a cross-platform requirement. US-001 AC7.
     let stream_result = {
         let reader = response.body_mut().as_reader();
         let mut reader = Read::take(reader, MAX_TARBALL_BYTES + 1);
@@ -210,9 +172,12 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
         );
     }
 
-    // 3. Verify SHA-256. Mismatch → delete and bail with the unhappy-path
-    // message mandated by US-011's acceptance criteria.
-    if let Err(e) = verify_sha256_of_file(&partial, &expected_hex) {
+    // 2. Verify the detached minisign signature BEFORE the tarball is
+    // promoted to `dest` (and long before `extract_and_swap` touches it).
+    // Fail-closed: a missing/invalid signature deletes the partial and
+    // aborts. This is the US-001 root-of-trust check that replaces the old
+    // same-host `.sha256` sibling.
+    if let Err(e) = super::super::signature::fetch_and_verify(&partial, asset_url) {
         let _ = std::fs::remove_file(&partial);
         return Err(e);
     }
@@ -425,155 +390,11 @@ fn append_suffix(path: &Path, suffix: &str) -> Result<PathBuf> {
     Ok(path.with_file_name(name))
 }
 
-/// Parse a `.sha256` file's contents and return the hex digest.
-///
-/// Accepts both coreutils styles — `<hex>  <filename>\n` and
-/// `<hex> *<filename>\n` — and the bare-hex form (`<hex>\n`). Returns the
-/// first whitespace-separated token if it is a valid 64-char lowercase
-/// hex string; errors otherwise.
-fn parse_sha256_file(body: &str) -> Result<String> {
-    let first_line = body.lines().next().context("empty .sha256 file")?;
-    let token = first_line
-        .split_whitespace()
-        .next()
-        .context("no token in .sha256 file")?;
-    let lower = token.to_ascii_lowercase();
-    if lower.len() != 64 || !lower.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("invalid SHA-256 digest (expected 64 hex chars, got {token:?})");
-    }
-    Ok(lower)
-}
-
-/// Compute the SHA-256 of `file` and compare against `expected_hex` (the
-/// output of [`parse_sha256_file`]). Errors with a stable, user-visible
-/// "failed integrity check" message on mismatch.
-fn verify_sha256_of_file(file: &Path, expected_hex: &str) -> Result<()> {
-    let mut f = std::fs::File::open(file)
-        .with_context(|| format!("open {} for hashing", file.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = f.read(&mut buf).context("read chunk for hashing")?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let got = hex_lower(&hasher.finalize());
-    if got != expected_hex {
-        // Bail with a structured tag instead of a formatted string so the
-        // top-level classifier (UpdateError::classify) can downcast and
-        // recover the exact digests for the toast + logs.
-        return Err(anyhow::Error::new(IntegrityMismatch {
-            expected: expected_hex.to_string(),
-            got,
-        }));
-    }
-    Ok(())
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     // ── Pure helpers ───────────────────────────────────────────────────
-
-    #[test]
-    fn parse_sha256_file_accepts_coreutils_format() {
-        let body = format!("{}  paneflow-v0.2.0-x86_64.tar.gz\n", "a".repeat(64));
-        assert_eq!(parse_sha256_file(&body).unwrap(), "a".repeat(64));
-    }
-
-    #[test]
-    fn parse_sha256_file_accepts_binary_mode() {
-        let body = format!("{} *paneflow.tar.gz\n", "b".repeat(64));
-        assert_eq!(parse_sha256_file(&body).unwrap(), "b".repeat(64));
-    }
-
-    #[test]
-    fn parse_sha256_file_accepts_bare_hex() {
-        let body = format!("{}\n", "c".repeat(64));
-        assert_eq!(parse_sha256_file(&body).unwrap(), "c".repeat(64));
-    }
-
-    #[test]
-    fn parse_sha256_file_is_case_insensitive() {
-        let body = format!("{}\n", "DEADBEEF".repeat(8));
-        assert_eq!(parse_sha256_file(&body).unwrap(), "deadbeef".repeat(8));
-    }
-
-    #[test]
-    fn parse_sha256_file_rejects_short_digest() {
-        let err = parse_sha256_file("abc\n").unwrap_err().to_string();
-        assert!(err.contains("64 hex chars"), "got: {err}");
-    }
-
-    #[test]
-    fn parse_sha256_file_rejects_non_hex() {
-        let body = format!("{}\n", "z".repeat(64));
-        assert!(parse_sha256_file(&body).is_err());
-    }
-
-    #[test]
-    fn parse_sha256_file_rejects_empty() {
-        assert!(parse_sha256_file("").is_err());
-        assert!(parse_sha256_file("\n").is_err());
-    }
-
-    #[test]
-    fn verify_sha256_accepts_matching_digest() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let p = tmp.path().join("x");
-        std::fs::write(&p, b"hello world").unwrap();
-        // sha256("hello world") = b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
-        verify_sha256_of_file(
-            &p,
-            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn verify_sha256_rejects_mismatched_digest() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let p = tmp.path().join("x");
-        std::fs::write(&p, b"hello world").unwrap();
-        let err = verify_sha256_of_file(&p, &"0".repeat(64))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("failed integrity check"), "got: {err}");
-    }
-
-    /// The mismatch error must carry the actual digests as a downcastable
-    /// tag so the top-level classifier (`UpdateError::classify`) can
-    /// recover them for the toast — not just format them into a string.
-    #[test]
-    fn verify_sha256_mismatch_is_downcastable() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let p = tmp.path().join("x");
-        std::fs::write(&p, b"hello world").unwrap();
-        let err = verify_sha256_of_file(&p, &"0".repeat(64)).unwrap_err();
-        let mm = err
-            .downcast_ref::<IntegrityMismatch>()
-            .expect("expected IntegrityMismatch tag");
-        assert_eq!(mm.expected, "0".repeat(64));
-        // sha256("hello world") = b94d27b9...
-        assert_eq!(
-            mm.got,
-            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
-        );
-    }
 
     #[test]
     fn append_suffix_preserves_full_name() {
@@ -805,21 +626,5 @@ mod tests {
         );
         assert!(!app_dir.exists(), "a failed update must not leave app_dir");
         assert!(!new_dir.exists(), ".new must be cleaned up");
-    }
-
-    #[test]
-    fn fixture_roundtrip_matches_known_sha256() {
-        // Sanity: the pure hash helpers agree with a pre-computed digest.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let p = tmp.path().join("f");
-        let mut f = std::fs::File::create(&p).unwrap();
-        f.write_all(b"abc").unwrap();
-        drop(f);
-        // sha256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
-        verify_sha256_of_file(
-            &p,
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-        )
-        .unwrap();
     }
 }
