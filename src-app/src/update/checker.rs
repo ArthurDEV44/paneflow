@@ -123,6 +123,88 @@ fn is_loopback_host(host: &str) -> bool {
     host == "localhost" || host == "::1" || host == "127.0.0.1" || host.starts_with("127.")
 }
 
+/// Detect the native host CPU architecture, seeing through emulation
+/// (Rosetta 2 on Apple Silicon, WOW64 on ARM64 Windows) so an emulated
+/// install can migrate to a native build (US-009). Falls back to the
+/// compile-time `consts::ARCH` when no translation is detected or the probe
+/// is unavailable — which is always the case on Linux (no desktop emulation
+/// layer in this threat model).
+fn host_arch() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        // An x86_64 binary under Rosetta 2 reports `consts::ARCH == "x86_64"`
+        // but the host is Apple Silicon — return the native arch so we offer
+        // the native aarch64 build instead of pinning the user to emulation.
+        if macos_is_translated() {
+            return "aarch64";
+        }
+        std::env::consts::ARCH
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows_native_arch().unwrap_or(std::env::consts::ARCH)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::env::consts::ARCH
+    }
+}
+
+/// True when the current process runs under Rosetta 2 translation.
+/// `sysctlbyname("sysctl.proc_translated")` returns `1` for a translated
+/// process; the key is absent (ENOENT) on Intel Macs and for native arm64
+/// processes, which we read as "not translated".
+#[cfg(target_os = "macos")]
+fn macos_is_translated() -> bool {
+    let mut ret: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    // SAFETY: standard `sysctlbyname` FFI — `name` is a valid NUL-terminated
+    // C string, `ret`/`size` are a correctly sized out buffer, and the new
+    // value pointer is null (read-only query).
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"sysctl.proc_translated".as_ptr(),
+            &mut ret as *mut libc::c_int as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    rc == 0 && ret == 1
+}
+
+/// Native machine architecture via `IsWow64Process2`, seeing past WOW64
+/// emulation (e.g. an x86_64 PaneFlow on an ARM64 Windows host). Returns
+/// `None` if the probe fails so the caller falls back to `consts::ARCH`.
+#[cfg(target_os = "windows")]
+fn windows_native_arch() -> Option<&'static str> {
+    use windows_sys::Win32::System::SystemInformation::{
+        IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_ARM64, IMAGE_FILE_MACHINE_I386,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, IsWow64Process2};
+
+    let mut process_machine: u16 = 0;
+    let mut native_machine: u16 = 0;
+    // SAFETY: `IsWow64Process2` with the current-process pseudo-handle and two
+    // valid out-params. Returns nonzero on success.
+    let ok = unsafe {
+        IsWow64Process2(
+            GetCurrentProcess(),
+            &mut process_machine,
+            &mut native_machine,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    match native_machine {
+        IMAGE_FILE_MACHINE_ARM64 => Some("aarch64"),
+        IMAGE_FILE_MACHINE_AMD64 => Some("x86_64"),
+        IMAGE_FILE_MACHINE_I386 => Some("x86"),
+        _ => None,
+    }
+}
+
 /// Release-asset format the update checker advertises to the UI.
 ///
 /// Filename convention: `paneflow-<version>-<arch>[<target-qualifier>].<format-suffix>`.
@@ -450,7 +532,7 @@ pub(crate) fn check_github_release(
 
     if remote > local {
         let method = install_method::detect();
-        let picked = pick_asset(&release.assets, std::env::consts::ARCH, method.clone());
+        let picked = pick_asset(&release.assets, host_arch(), method.clone());
         let (asset_url, asset_format) = match picked {
             Some(asset) => (
                 Some(asset.browser_download_url.clone()),
@@ -607,6 +689,17 @@ mod tests {
                 "loopback must be allowed: {url}"
             );
         }
+    }
+
+    #[test]
+    fn host_arch_falls_back_to_compile_arch_on_linux() {
+        // US-009: on Linux (no desktop emulation layer) host_arch must equal
+        // the compile-time arch. The macOS/Windows translation probes are
+        // exercised on their own CI legs.
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        assert_eq!(host_arch(), std::env::consts::ARCH);
+        // On all targets it must at least return a non-empty, known arch.
+        assert!(!host_arch().is_empty());
     }
 
     #[test]
