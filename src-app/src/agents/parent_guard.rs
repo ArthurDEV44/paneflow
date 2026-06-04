@@ -48,7 +48,7 @@ mod windows_impl {
     pub(super) fn install() -> Result<(), Box<dyn std::error::Error>> {
         let mut info = ExtendedLimitInfo::default();
         info.limit_kill_on_job_close();
-        let job = Job::create_with_limit_info(&mut info)?;
+        let job = Job::create_with_limit_info(&info)?;
         job.assign_current_process()?;
         std::mem::forget(job);
         Ok(())
