@@ -16,9 +16,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use futures::StreamExt;
-use futures::channel::mpsc;
-use futures::future::Either;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, CursorStyle, DragMoveEvent, Entity, EventEmitter,
     FocusHandle, Focusable, FontWeight, Hsla, IntoElement, KeyDownEvent, MouseButton,
@@ -26,8 +23,7 @@ use gpui::{
     ScrollHandle, SharedString, Styled, Window, anchored, deferred, div, point, prelude::*, px,
     relative,
 };
-use notify::event::ModifyKind;
-use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::RecommendedWatcher;
 
 use crate::pane_drag::{DropEdge, SPLIT_EDGE_BAND, TabDragPreview, compute_drop_edge};
 use crate::widgets::text_input::TextInput;
@@ -35,6 +31,14 @@ use crate::widgets::text_input::TextInput;
 use super::align::CellKind;
 use super::arrange::{Arrange, Axis};
 use super::element::{DiffBody, DiffElement};
+use super::review_terminal::ReviewTerminal;
+
+mod base_branch;
+mod model;
+mod render;
+mod watcher;
+
+pub use model::{DiffWorktree, FileEntry, FileListState, aggregate_file_lists};
 
 /// Drag payload for a diff branch pane dragged by its column header (inc 5).
 /// Carries the source column index; dropping on another pane's edge restructures
@@ -107,70 +111,6 @@ enum ViewMode {
     Unified,
 }
 
-/// One worktree column seed: its working-tree root and current branch name.
-#[derive(Clone)]
-pub struct DiffWorktree {
-    pub path: PathBuf,
-    pub branch: String,
-    /// US-011 (prd-git-diff-mode-2026-Q3.md): the open workspace this worktree
-    /// belongs to, or `None` for a worktree discovered on disk (git worktree
-    /// list) that has no open workspace. Render-only — never serialized.
-    /// Consumed at column build (`Column::new_loading`, via `with_base` /
-    /// `add_columns`) and carried as `Column::workspace_id` to tag the embedded
-    /// review terminal.
-    pub workspace_id: Option<u64>,
-}
-
-/// Lightweight per-file summary for the Diff-mode git panel (US-008,
-/// prd-git-diff-mode-2026-Q3.md). Derived from the off-thread
-/// [`super::git::FileDiff`] build; carries only what the sidebar renders so the
-/// heavy base/new text stays in the column's row sets, not duplicated here.
-#[derive(Clone)]
-pub struct FileEntry {
-    pub path: String,
-    pub change: super::git::FileChange,
-    /// Original path for a detected rename, mirrored from
-    /// [`super::git::FileDiff::old_path`] so the sidebar can show `old → new`.
-    pub old_path: Option<String>,
-    pub added: u32,
-    pub removed: u32,
-    pub is_binary: bool,
-}
-
-/// Changed-files list state the git panel renders, read off the first visible
-/// column (US-008; the Project scope mounts exactly one column).
-#[derive(Clone)]
-pub enum FileListState {
-    Loading,
-    Loaded(Rc<Vec<FileEntry>>),
-    Failed(String),
-}
-
-/// Aggregate diffstat over a set of per-column file lists, as
-/// `(branches, files, added, removed)`. Only columns that are `Loaded` AND
-/// non-empty are counted — a branch identical to its base contributes nothing
-/// and must never inflate the "N branches vs base" count. Single source of
-/// truth for the multi-branch aggregate strip ([`DiffView::render_aggregate_strip`])
-/// and the sidebar "Changes" header, so the two folds can never drift apart
-/// (the bug that showed +10191 in the strip but +10183 in the sidebar — two
-/// separate folds over slightly different column sets).
-pub fn aggregate_file_lists(
-    lists: &[(String, usize, std::path::PathBuf, FileListState)],
-) -> (usize, usize, u32, u32) {
-    lists
-        .iter()
-        .filter_map(|(_, _, _, st)| match st {
-            FileListState::Loaded(files) if !files.is_empty() => Some(files),
-            _ => None,
-        })
-        .fold((0usize, 0usize, 0u32, 0u32), |(b, fc, a, r), files| {
-            let (fa, fr) = files
-                .iter()
-                .fold((0u32, 0u32), |(a, r), f| (a + f.added, r + f.removed));
-            (b + 1, fc + files.len(), a + fa, r + fr)
-        })
-}
-
 /// Async lifecycle of a single column's diff. Loaded carries both row sets so
 /// toggling the view mode is instant (no recompute, US-011 AC).
 enum ColumnState {
@@ -217,14 +157,6 @@ enum Built {
         /// `revalidate` compares against it without re-shelling at harvest time.
         fingerprint: super::git::ColumnFingerprint,
     },
-}
-
-/// prd-ai-in-diff-2026-Q3.md (terminal-launch revision): a review CLI running in
-/// a real terminal embedded under a column's diff. The diff view owns the
-/// `TerminalView` entity directly (no workspace pane); dropping it shuts the PTY.
-struct ReviewTerminal {
-    label: SharedString,
-    terminal: Entity<crate::terminal::TerminalView>,
 }
 
 /// Hover tooltip body for the icon-only column-header buttons (Review, terminal).
@@ -358,8 +290,9 @@ impl Column {
                     ))
                 } else {
                     let (du, au) =
-                        apply_collapse_unified(unified, anchors_unified, &self.collapsed);
-                    let (ds, as_) = apply_collapse_split(split, anchors_split, &self.collapsed);
+                        render::apply_collapse_unified(unified, anchors_unified, &self.collapsed);
+                    let (ds, as_) =
+                        render::apply_collapse_split(split, anchors_split, &self.collapsed);
                     Some((Rc::new(du), Rc::new(ds), Rc::new(au), Rc::new(as_)))
                 }
             }
@@ -897,128 +830,6 @@ impl DiffView {
         cx.notify();
     }
 
-    /// Watch the shared `.git` (for HEAD / index / base-ref moves) and each
-    /// worktree's source subtrees — but NEVER build/VCS dirs like `target/`.
-    /// A `cargo`/rust-analyzer build churns `target/` (tens of thousands of
-    /// files) continuously; watching it recursively floods the event loop and
-    /// starves the diff result updates (the "stuck on Computing diff…" + lag).
-    /// Real working-tree edits, HEAD/index moves, and base-ref advances still
-    /// land here. Build is off-thread (the registration walk must not block the
-    /// GPUI event loop — that was the earlier "not responding" freeze).
-    fn start_watchers(&mut self, cx: &mut Context<Self>) {
-        let mut worktrees: Vec<PathBuf> = self.columns.iter().map(|c| c.path.clone()).collect();
-        worktrees.sort();
-        worktrees.dedup();
-        let repo_root = self.repo_root.clone();
-        // US-016: the epoch this watcher build belongs to. `suspend` bumps the
-        // epoch, so if a suspend (or a later re-arm) raced this off-thread build,
-        // the freshly-built watcher is dropped rather than installed on a hidden
-        // entity, and the event loop below stops the moment the epoch advances.
-        let epoch = self.watch_epoch;
-
-        let (tx, mut rx) = mpsc::unbounded::<notify::Result<Event>>();
-
-        cx.spawn(
-            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                log::debug!("diff: start_watchers building watcher off-thread");
-                let watcher = smol::unblock(move || build_watcher(tx, worktrees, repo_root)).await;
-                let Some(watcher) = watcher else {
-                    log::warn!("diff: watcher build returned None");
-                    return;
-                };
-                // Install only if our epoch is still current — else a suspend
-                // landed while we were building; drop the watcher (unregisters its
-                // OS handles) and abandon this loop.
-                // `AsyncApp::update` returns the closure's value directly (R), so
-                // the inner `WeakEntity::update` Result is unwrapped here and the
-                // outer call yields the bool as-is.
-                let installed = cx.update(|cx| {
-                    this.update(cx, |view: &mut Self, _| {
-                        if view.watch_epoch != epoch {
-                            return false;
-                        }
-                        view._watchers.push(watcher);
-                        true
-                    })
-                    .unwrap_or(false)
-                });
-                if !installed {
-                    log::debug!("diff: watcher build superseded (epoch advanced) — dropped");
-                    return;
-                }
-                log::debug!("diff: watcher live, entering event loop");
-
-                let mut relevant_events = 0u64;
-                while let Some(res) = rx.next().await {
-                    // Drop build/VCS churn (`target/`, object store, logs,
-                    // node_modules) — otherwise a `cargo build` triggers a
-                    // re-diff storm. Only real working-tree / ref changes pass.
-                    if !watch_event_relevant(&res) {
-                        continue;
-                    }
-                    relevant_events += 1;
-                    if let Ok(ev) = &res {
-                        log::debug!(
-                            "diff: watcher relevant event #{relevant_events} ({:?} {:?}) -> debounce",
-                            ev.kind,
-                            ev.paths.first()
-                        );
-                    }
-                    // Coalesce the burst before re-diffing once.
-                    let deadline = Instant::now() + REFRESH_DEBOUNCE;
-                    loop {
-                        let remaining = deadline.saturating_duration_since(Instant::now());
-                        if remaining.is_zero() {
-                            break;
-                        }
-                        match futures::future::select(rx.next(), smol::Timer::after(remaining))
-                            .await
-                        {
-                            Either::Left((Some(_), _)) => {}
-                            Either::Left((None, _)) => return,
-                            Either::Right(_) => break,
-                        }
-                    }
-                    log::debug!("diff: watcher debounce done -> start_loading (reload)");
-                    // Stop if a suspend advanced the epoch (don't reload a hidden
-                    // entity); the WeakEntity being dead also stops the loop.
-                    let alive = cx.update(|cx| {
-                        this.update(cx, |view: &mut Self, cx| {
-                            if view.watch_epoch != epoch {
-                                return false;
-                            }
-                            view.start_loading(cx);
-                            true
-                        })
-                        .unwrap_or(false)
-                    });
-                    if !alive {
-                        break;
-                    }
-                    // Cooldown: drain + discard events for a beat after a reload,
-                    // so any churn the reload itself (or a concurrent build) kicks
-                    // up can't immediately re-trigger and starve the in-flight
-                    // load. Belt-and-suspenders with the no-`.git` watch set.
-                    let cooldown = Instant::now() + REFRESH_COOLDOWN;
-                    loop {
-                        let remaining = cooldown.saturating_duration_since(Instant::now());
-                        if remaining.is_zero() {
-                            break;
-                        }
-                        match futures::future::select(rx.next(), smol::Timer::after(remaining))
-                            .await
-                        {
-                            Either::Left((Some(_), _)) => {} // discard
-                            Either::Left((None, _)) => return,
-                            Either::Right(_) => break,
-                        }
-                    }
-                }
-            },
-        )
-        .detach();
-    }
-
     /// Per-branch changed-file lists for the multi-branch diff sidebar: one entry
     /// per visible column as `(branch, column index, worktree path, file-list
     /// state)`. The worktree path is the stable, globally-unique key the sidebar
@@ -1077,185 +888,6 @@ impl DiffView {
             None => return,
         }
         self.start_loading_columns(&[idx], cx);
-    }
-
-    /// Set the shared base from free-text (base popover Enter with no list match):
-    /// accepts an arbitrary ref / tag / SHA, validated off-thread via `git
-    /// rev-parse` against the first column's worktree. Applied only if it
-    /// resolves, so a typo can't blank every column against a non-existent ref.
-    fn resolve_and_set_base(&mut self, raw: String, cx: &mut Context<Self>) {
-        let raw = raw.trim().to_string();
-        if raw.is_empty() {
-            return;
-        }
-        let Some(probe_dir) = self.columns.first().map(|c| c.path.clone()) else {
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            let raw2 = raw.clone();
-            let ok = smol::unblock(move || super::git::ref_exists(&probe_dir, &raw2)).await;
-            if !ok {
-                log::debug!("diff: base '{raw}' did not resolve to a ref; ignored");
-                return;
-            }
-            let _ = cx.update(|cx| this.update(cx, |view: &mut Self, cx| view.set_base(raw, cx)));
-        })
-        .detach();
-    }
-
-    /// US-016 warm-resume: release the OS filesystem watchers + end the debounce
-    /// loop while the diff surface is hidden (CLI/Agents mode, or cached and not
-    /// displayed) — WITHOUT discarding the computed rows. Clearing `_watchers`
-    /// drops every `RecommendedWatcher` (unregistering the OS handles) and with
-    /// them the channel sender the watcher loop holds, so its `rx.next()` yields
-    /// `None` and the spawned debounce task returns (no orphan task, no `defer`
-    /// into a hidden entity). The loaded `ColumnState` rows stay resident (RAM
-    /// only, already capped by the `MAX_FILE_*` guards) so [`Self::resume`] can
-    /// show them in one frame. Honors the US-016 AC — only watchers/background
-    /// tasks for the now-hidden repo are dropped, never the view's data.
-    pub fn suspend(&mut self, _cx: &mut Context<Self>) {
-        if self.suspended {
-            return;
-        }
-        self.suspended = true;
-        // Bump the watcher epoch so any in-flight off-thread watcher build (or a
-        // running debounce loop) retires instead of installing/refreshing on this
-        // now-hidden entity. Then drop the live watchers.
-        self.watch_epoch = self.watch_epoch.wrapping_add(1);
-        self._watchers.clear();
-    }
-
-    /// US-016 warm-resume: re-arm the live-refresh watcher after a [`Self::suspend`],
-    /// then revalidate cheaply — re-diff ONLY the columns whose git fingerprint
-    /// moved while hidden (a commit, a `git add`, a working-tree edit, a new
-    /// untracked file, or a base-ref advance an AI agent made from a CLI pane).
-    /// Unchanged columns keep their loaded rows untouched (no "Computing diff…"
-    /// flash, no recompute); when nothing moved, resume is just a watcher re-arm.
-    /// No-op if not suspended. If `bootstrap` has not finished yet, clearing
-    /// `suspended` is enough — bootstrap arms the watcher + loads once it
-    /// resolves (and now sees `suspended == false`).
-    pub fn resume(&mut self, cx: &mut Context<Self>) {
-        if !self.suspended {
-            return;
-        }
-        self.suspended = false;
-        if !self.bootstrapped {
-            return; // bootstrap still in flight; it arms + loads itself
-        }
-        self.start_watchers(cx);
-        if self.base_ref.is_empty() {
-            return; // no base resolved — nothing to revalidate
-        }
-        self.revalidate(cx);
-    }
-
-    /// US-016: off the main thread, fingerprint every visible column and re-diff
-    /// only those whose fingerprint changed since they were last loaded. The
-    /// cheap probe runs in one `smol::unblock` (never on the GPUI thread); the
-    /// targeted reload reuses [`Self::start_loading_columns`], so unchanged
-    /// columns are never touched (no flash, no recompute).
-    fn revalidate(&mut self, cx: &mut Context<Self>) {
-        let shared_base = self.base_ref.clone();
-        // Carry each column's EFFECTIVE base (per-column override, else shared) so
-        // the fingerprint matches what that column was actually diffed against —
-        // else a column on `HEAD~1` would falsely revalidate every resume.
-        let probes: Vec<(
-            usize,
-            PathBuf,
-            String,
-            Option<super::git::ColumnFingerprint>,
-        )> = self
-            .columns
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.visible)
-            .map(|(i, c)| {
-                (
-                    i,
-                    c.path.clone(),
-                    c.base_override
-                        .clone()
-                        .unwrap_or_else(|| shared_base.clone()),
-                    c.fingerprint.clone(),
-                )
-            })
-            .collect();
-        if probes.is_empty() {
-            return;
-        }
-        cx.spawn(async move |this, cx| {
-            let changed: Vec<usize> = smol::unblock(move || {
-                probes
-                    .into_iter()
-                    .filter(|(_, path, base, stored)| {
-                        stored.as_ref() != Some(&super::git::column_fingerprint(path, base))
-                    })
-                    .map(|(i, _, _, _)| i)
-                    .collect()
-            })
-            .await;
-            if changed.is_empty() {
-                log::debug!("diff: resume revalidate — no column changed, warm reuse");
-                return;
-            }
-            log::debug!(
-                "diff: resume revalidate — reloading {} changed column(s)",
-                changed.len()
-            );
-            let _ = cx.update(|cx| {
-                this.update(cx, |view: &mut Self, cx| {
-                    // The user may have toggled back to CLI while the probe ran —
-                    // don't spawn diff work on a now-hidden entity.
-                    if view.suspended {
-                        return;
-                    }
-                    view.start_loading_columns(&changed, cx);
-                })
-            });
-        })
-        .detach();
-    }
-
-    /// Toggle the base-branch popover. Opening clears + focuses the filter so
-    /// the user can type-to-search immediately; closing returns focus to the
-    /// diff body so keyboard scrolling keeps working.
-    fn toggle_base_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.base_picker_open = !self.base_picker_open;
-        if self.base_picker_open {
-            self.base_filter.update(cx, |inp, cx| {
-                inp.content = SharedString::default();
-                inp.selected_range = 0..0;
-                cx.notify();
-            });
-            let fh = self.base_filter.read(cx).focus_handle.clone();
-            window.focus(&fh, cx);
-        } else {
-            window.focus(&self.focus_handle, cx);
-        }
-        cx.notify();
-    }
-
-    /// Close the base popover (mouse-down-out / Escape / after a pick) and hand
-    /// focus back to the diff body.
-    fn close_base_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.base_picker_open {
-            self.base_picker_open = false;
-            window.focus(&self.focus_handle, cx);
-            cx.notify();
-        }
-    }
-
-    /// US-013: switch the shared base ref and re-key every column.
-    fn set_base(&mut self, base: String, cx: &mut Context<Self>) {
-        if base == self.base_ref {
-            self.base_picker_open = false;
-            cx.notify();
-            return;
-        }
-        self.base_ref = base;
-        self.base_picker_open = false;
-        self.start_loading(cx);
-        cx.notify();
     }
 
     /// US-014: hide a column (drop its data, skip future refreshes).
@@ -1806,9 +1438,11 @@ impl DiffView {
         };
         let cwd = col.path.clone();
         let ws_id = col.workspace_id.unwrap_or(0);
-        let cli = super::review::ReviewCli::ClaudeCode;
+        let cli = super::review_terminal::ReviewCli::ClaudeCode;
         let term = cx.new(|cx| crate::terminal::TerminalView::with_cwd(ws_id, Some(cwd), None, cx));
-        term.read(cx).send_command(cli.launch_command());
+        let config = paneflow_config::loader::load_config();
+        let command = cli.launch_command(&config);
+        term.read(cx).send_command(&command);
         let prefill = text.clone();
         let term_weak = term.downgrade();
         cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
@@ -2039,7 +1673,7 @@ impl DiffView {
             self.review_menu_open = None;
         } else {
             self.review_menu_open = Some(col_idx);
-            let n = super::review::ReviewCli::all().len();
+            let n = super::review_terminal::ReviewCli::all().len();
             if self.review_picks.len() != n {
                 self.review_picks = vec![true; n];
             }
@@ -2061,7 +1695,7 @@ impl DiffView {
     /// pre-filled (the human submits). Human-in-the-loop — no headless session.
     fn launch_review(&mut self, col_idx: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.review_menu_open = None;
-        let clis = super::review::ReviewCli::all();
+        let clis = super::review_terminal::ReviewCli::all();
         let selected: Vec<usize> = (0..clis.len())
             .filter(|i| self.review_picks.get(*i).copied().unwrap_or(true))
             .collect();
@@ -2085,14 +1719,16 @@ impl DiffView {
         let mut created: Vec<ReviewTerminal> = Vec::new();
         let mut first_prompt: Option<String> = None;
         let mut focus_target: Option<Entity<crate::terminal::TerminalView>> = None;
+        let config = paneflow_config::loader::load_config();
         for (rank, &i) in selected.iter().enumerate() {
             let cli = clis[i];
-            let prompt = super::review::build_cli_review_prompt(&branch, &base, rank > 0);
+            let prompt = super::review_terminal::build_cli_review_prompt(&branch, &base, rank > 0);
             let term = cx.new(|cx| {
                 crate::terminal::TerminalView::with_cwd(ws_id, Some(cwd.clone()), None, cx)
             });
             // Launch the CLI in the embedded terminal's shell.
-            term.read(cx).send_command(cli.launch_command());
+            let command = cli.launch_command(&config);
+            term.read(cx).send_command(&command);
             // Pre-fill the prompt once the CLI has booted (tmux send-keys style):
             // a delayed write with NO Enter — the human reviews + submits. The
             // clipboard fallback (below) covers a missed timing window.
@@ -2284,7 +1920,7 @@ impl DiffView {
         ui: crate::theme::UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let clis = super::review::ReviewCli::all();
+        let clis = super::review_terminal::ReviewCli::all();
         let mut menu = div()
             .id("diff-review-menu")
             .occlude()
@@ -2843,11 +2479,11 @@ impl DiffView {
             });
 
         let body: AnyElement = match &col.state {
-            ColumnState::Loading => centered(ui.muted, "Computing diff…".into()),
-            ColumnState::Failed(e) => centered(ui.muted, e.clone()),
+            ColumnState::Loading => render::centered(ui.muted, "Computing diff…".into()),
+            ColumnState::Failed(e) => render::centered(ui.muted, e.clone()),
             ColumnState::Loaded { file_count, .. } if *file_count == 0 => {
                 let b = col.base_override.as_deref().unwrap_or(&self.base_ref);
-                centered(ui.muted, format!("No changes vs {b}"))
+                render::centered(ui.muted, format!("No changes vs {b}"))
             }
             ColumnState::Loaded { .. } => {
                 // Custom direct-paint element hosted in an overflow-scroll div:
@@ -3296,18 +2932,7 @@ impl DiffView {
         let filter = self.base_filter.read(cx).value().to_lowercase();
         // Filter against the precomputed lowercase mirror so an open popover does
         // not re-`to_lowercase()` every branch on each keystroke / frame.
-        let matches: Vec<(usize, &String)> = self
-            .branches
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| {
-                filter.is_empty()
-                    || self
-                        .branches_lc
-                        .get(*i)
-                        .is_some_and(|b| b.contains(&filter))
-            })
-            .collect();
+        let matches = base_branch::matching_indices(&self.branches_lc, &filter);
 
         // Header: a search field. The leading glyph + the real cursor-aware
         // `TextInput` make the popover a command-palette-style picker.
@@ -3375,7 +3000,10 @@ impl DiffView {
                     .child("No branch matches your filter"),
             );
         } else {
-            for (bi, branch) in matches {
+            for bi in matches {
+                let Some(branch) = self.branches.get(bi) else {
+                    continue;
+                };
                 let is_current = *branch == self.base_ref;
                 let branch_owned = branch.clone();
                 list = list.child(
@@ -3454,11 +3082,10 @@ impl DiffView {
                     "enter" => {
                         let raw = this.base_filter.read(cx).value().to_string();
                         let filter = raw.to_lowercase();
-                        if let Some(branch) = this
-                            .branches
-                            .iter()
-                            .find(|b| filter.is_empty() || b.to_lowercase().contains(&filter))
-                            .cloned()
+                        if let Some(branch) =
+                            base_branch::first_matching_index(&this.branches_lc, &filter)
+                                .and_then(|index| this.branches.get(index))
+                                .cloned()
                         {
                             this.set_base(branch, cx);
                             window.focus(&this.focus_handle, cx);
@@ -3479,212 +3106,6 @@ impl DiffView {
     }
 }
 
-/// Whether a watcher event should trigger a re-diff. Filters out build and VCS
-/// churn — `target/`, the git object store / logs, `node_modules/`, and lock
-/// files — so an active build doesn't cause a refresh storm (US-015/US-016).
-/// Genuine working-tree edits, `HEAD`/`index` moves, and ref updates pass.
-fn watch_event_relevant(res: &notify::Result<Event>) -> bool {
-    let Ok(event) = res else {
-        return false;
-    };
-    // Ignore reads / atime / permission churn. Computing the diff `fs::read`s
-    // every changed file, which fires Access (and atime Metadata) events — those
-    // would self-trigger a reload loop (throttled only by the cooldown). Only
-    // content / structural changes (Create / Remove / Modify(Data|Name)) refresh.
-    match event.kind {
-        EventKind::Access(_) | EventKind::Modify(ModifyKind::Metadata(_)) => return false,
-        _ => {}
-    }
-    event.paths.iter().any(|p| {
-        let s = p.to_string_lossy();
-        // Skipped files are never diffed (git.rs SKIP_FILENAMES / MAX_FILE_BYTES),
-        // so a `cargo add` rewriting Cargo.lock or a `git fetch` touching
-        // FETCH_HEAD must not trigger a (no-op) re-diff storm. The lockfile set is
-        // shared with the diff builder via `git::is_skipped_name`, so the two
-        // can't drift.
-        !(s.contains("/target/")
-            || s.contains("/.git/objects")
-            || s.contains("/.git/logs")
-            || s.contains("/.git/index.lock")
-            || s.contains("/node_modules/")
-            || super::git::is_skipped_name(&s)
-            || s.ends_with("/.git/FETCH_HEAD")
-            || s.ends_with("/.git/ORIG_HEAD")
-            || s.ends_with("/.git/COMMIT_EDITMSG")
-            || s.ends_with("/.git/MERGE_HEAD"))
-    })
-}
-
-/// Top-level directory names never watched: build artifacts and VCS metadata
-/// that churn constantly (especially `target/`, tens of thousands of files
-/// rewritten by every `cargo`/rust-analyzer build). Watching these recursively
-/// floods the event loop and is pure noise — none of it changes the diff.
-const WATCH_IGNORE_DIRS: &[&str] = &[
-    "target",
-    "node_modules",
-    ".git",
-    ".jj",
-    ".hg",
-    ".svn",
-    "dist",
-    "build",
-    ".next",
-    ".cache",
-    ".venv",
-    "venv",
-    "vendor",
-];
-
-/// Build a filesystem watcher over the working trees PLUS a *narrow* slice of
-/// the shared `.git` (refs only). Forwards raw events to `tx`. The registration
-/// walk runs on the calling thread — invoke via `smol::unblock`, never on the
-/// GPUI thread.
-///
-/// The earlier infinite re-diff loop came from watching `.git/objects`,
-/// `.git/logs`, and `.git/index` — the diff's own ~75 git subprocesses per cycle
-/// (`merge-base`/`diff`/`show`) churn the object store and the index stat-cache,
-/// so watching those self-triggers. This watches only `refs/heads` +
-/// `packed-refs` + `HEAD` of the common git dir, which a read-only diff never
-/// writes — so it catches the one signal the working-tree watch misses: the
-/// **base branch advancing** (e.g. `develop` gets new commits → the merge-base
-/// moves → the diff is stale). `watch_event_relevant` still drops
-/// `objects`/`logs`/`index.lock` as belt-and-suspenders. Working-tree edits
-/// (and the file churn of a branch switch / rebase / reset) come from the source
-/// subtrees, excluding [`WATCH_IGNORE_DIRS`].
-fn build_watcher(
-    tx: mpsc::UnboundedSender<notify::Result<Event>>,
-    worktrees: Vec<PathBuf>,
-    repo_root: PathBuf,
-) -> Option<RecommendedWatcher> {
-    let mut watcher = match RecommendedWatcher::new(
-        move |res: notify::Result<Event>| {
-            let _ = tx.unbounded_send(res);
-        },
-        Config::default(),
-    ) {
-        Ok(w) => w,
-        Err(e) => {
-            log::warn!("diff watcher: failed to create: {e}");
-            return None;
-        }
-    };
-
-    // Collect the watch set first (filesystem reads), then register + count.
-    let mut targets: Vec<(PathBuf, RecursiveMode)> = Vec::new();
-    // Working tree only: top-level files, then each source subdir recursively,
-    // skipping build/VCS dirs so neither `target/` nor `.git/` is registered.
-    for wt in &worktrees {
-        targets.push((wt.clone(), RecursiveMode::NonRecursive));
-        let Ok(entries) = std::fs::read_dir(wt) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            if !is_dir {
-                continue;
-            }
-            let path = entry.path();
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !WATCH_IGNORE_DIRS.contains(&name) {
-                targets.push((path, RecursiveMode::Recursive));
-            }
-        }
-    }
-
-    // Narrow `.git` watch on the shared (common) git dir: refs only, never the
-    // object store / logs / index that the diff itself churns. Catches the base
-    // branch advancing + commits/branch moves on any worktree (refs are shared).
-    // `refs/heads` is recursive so slashed branch names (`feature/x`) are seen.
-    let git_common = repo_root.join(".git");
-    if git_common.is_dir() {
-        targets.push((
-            git_common.join("refs").join("heads"),
-            RecursiveMode::Recursive,
-        ));
-        targets.push((git_common.join("packed-refs"), RecursiveMode::NonRecursive));
-        targets.push((git_common.join("HEAD"), RecursiveMode::NonRecursive));
-    }
-
-    let mut ok = 0usize;
-    for (p, mode) in &targets {
-        match watcher.watch(p, *mode) {
-            Ok(()) => ok += 1,
-            // A missing dir (e.g. no `refs/heads` yet) is benign — debug.
-            Err(e) => log::debug!("diff watcher: skip {}: {e}", p.display()),
-        }
-    }
-    log::debug!(
-        "diff: watcher registered {ok}/{} paths across {} worktrees",
-        targets.len(),
-        worktrees.len()
-    );
-
-    Some(watcher)
-}
-
-/// Build the collapse-filtered unified rows + their header anchors: each
-/// collapsed file keeps only its header (prefixed `▸`); expanded files pass
-/// through unchanged. Anchors are re-indexed to the filtered row positions so
-/// body clicks + `jump_to_file` target what is actually shown. Panic-safe
-/// (bounds-checked) per the no-panic lint.
-fn apply_collapse_unified(
-    rows: &[DisplayRow],
-    anchors: &[(String, usize)],
-    collapsed: &std::collections::HashSet<String>,
-) -> (Vec<DisplayRow>, Vec<(String, usize)>) {
-    let mut out: Vec<DisplayRow> = Vec::with_capacity(rows.len());
-    let mut out_anchors: Vec<(String, usize)> = Vec::with_capacity(anchors.len());
-    for (k, (path, start)) in anchors.iter().enumerate() {
-        let Some(header) = rows.get(*start) else {
-            continue;
-        };
-        let end = anchors
-            .get(k + 1)
-            .map(|(_, s)| *s)
-            .unwrap_or(rows.len())
-            .min(rows.len());
-        out_anchors.push((path.clone(), out.len()));
-        if collapsed.contains(path) {
-            // Header only — the element paints the ▸/▾ chevron by peeking the
-            // next row, so the text is left untouched.
-            out.push(header.clone());
-        } else if let Some(seg) = rows.get(*start..end) {
-            out.extend_from_slice(seg);
-        }
-    }
-    (out, out_anchors)
-}
-
-/// Side-by-side analog of [`apply_collapse_unified`].
-fn apply_collapse_split(
-    rows: &[SplitRow],
-    anchors: &[(String, usize)],
-    collapsed: &std::collections::HashSet<String>,
-) -> (Vec<SplitRow>, Vec<(String, usize)>) {
-    let mut out: Vec<SplitRow> = Vec::with_capacity(rows.len());
-    let mut out_anchors: Vec<(String, usize)> = Vec::with_capacity(anchors.len());
-    for (k, (path, start)) in anchors.iter().enumerate() {
-        let end = anchors
-            .get(k + 1)
-            .map(|(_, s)| *s)
-            .unwrap_or(rows.len())
-            .min(rows.len());
-        out_anchors.push((path.clone(), out.len()));
-        if collapsed.contains(path) {
-            match rows.get(*start) {
-                Some(row @ SplitRow::Header(_)) => out.push(row.clone()),
-                _ => {
-                    out_anchors.pop();
-                    continue;
-                }
-            }
-        } else if let Some(seg) = rows.get(*start..end) {
-            out.extend_from_slice(seg);
-        }
-    }
-    (out, out_anchors)
-}
-
 /// Normalize a worktree path for dedup (canonicalize, lowercase on
 /// case-insensitive filesystems) so the same worktree seeded from an open
 /// workspace and discovered via `git worktree list` collapses to one column.
@@ -3695,250 +3116,5 @@ fn norm_key(p: &std::path::Path) -> String {
         s.to_lowercase()
     } else {
         s
-    }
-}
-
-/// Centered single-message body used for loading / error / empty states.
-fn centered(color: Hsla, message: String) -> AnyElement {
-    div()
-        .flex_1()
-        .min_h_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(12.))
-        .text_color(color)
-        .child(message)
-        .into_any_element()
-}
-
-// ── Inc 5: splittable diff-pane arrangement + drag-and-drop ──────────────────
-impl DiffView {
-    /// Render the arrangement tree: leaves become branch panes, splits become
-    /// nested flex rows/columns with a hairline between siblings. Recursive;
-    /// every node fills its slot so equal splits divide the space.
-    fn render_arrange(&self, node: &Arrange, mode: ViewMode, cx: &mut Context<Self>) -> AnyElement {
-        match node {
-            Arrange::Leaf(i) => self.render_pane(*i, mode, cx),
-            Arrange::Split { axis, children } => {
-                let ui = crate::theme::ui_colors();
-                let row = *axis == Axis::Row;
-                let mut container = div().size_full().flex().min_h_0().min_w_0();
-                container = if row {
-                    container.flex_row()
-                } else {
-                    container.flex_col()
-                };
-                for (k, child) in children.iter().enumerate() {
-                    let mut cell = div().flex_1().min_h_0().min_w_0().flex();
-                    if k > 0 {
-                        cell = if row {
-                            cell.border_l_1().border_color(ui.border)
-                        } else {
-                            cell.border_t_1().border_color(ui.border)
-                        };
-                    }
-                    container = container.child(cell.child(self.render_arrange(child, mode, cx)));
-                }
-                container.into_any_element()
-            }
-        }
-    }
-
-    /// One branch pane (a leaf): the column's header + body, plus the
-    /// drop-to-split machinery — a per-pane drag group, an edge probe on the
-    /// content, and a relative-sized preview overlay shown while a sibling pane
-    /// is dragged over it.
-    fn render_pane(&self, idx: usize, mode: ViewMode, cx: &mut Context<Self>) -> AnyElement {
-        let Some(col) = self.columns.get(idx) else {
-            return div().into_any_element();
-        };
-        let ui = crate::theme::ui_colors();
-        let group_name = SharedString::from(format!("{}-pane-{idx}", self.element_id));
-
-        // Which half to highlight: the resolved edge when THIS pane is the drag
-        // target (else full / nothing — the overlay is invisible unless a drag
-        // is over its group, so the fallback is never seen).
-        let region = self
-            .drag_target
-            .and_then(|(t, e)| if t == idx { e } else { None });
-        let mut overlay = div().absolute().size_full().flex();
-        let (bw, bh) = match region {
-            None => (relative(1.), relative(1.)),
-            Some(DropEdge::Left) => {
-                overlay = overlay.flex_row().justify_start();
-                (relative(0.5), relative(1.))
-            }
-            Some(DropEdge::Right) => {
-                overlay = overlay.flex_row().justify_end();
-                (relative(0.5), relative(1.))
-            }
-            Some(DropEdge::Up) => {
-                overlay = overlay.flex_col().justify_start();
-                (relative(1.), relative(0.5))
-            }
-            Some(DropEdge::Down) => {
-                overlay = overlay.flex_col().justify_end();
-                (relative(1.), relative(0.5))
-            }
-        };
-        let highlight = div()
-            .w(bw)
-            .h(bh)
-            .bg(ui.accent.opacity(0.22))
-            .border_2()
-            .border_color(gpui::rgba(0x0ea5e9bf))
-            .rounded(px(6.));
-        let overlay = overlay
-            .invisible()
-            .group_drag_over::<DiffColumnDrag>(group_name.clone(), |s| s.visible())
-            .on_drop(cx.listener(move |this, drag: &DiffColumnDrag, _w, cx| {
-                this.arrange_drop(drag.source_idx, idx, cx);
-            }))
-            .child(highlight);
-
-        div()
-            .id(SharedString::from(format!(
-                "{}-panec-{idx}",
-                self.element_id
-            )))
-            .group(group_name)
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .on_drag_move::<DiffColumnDrag>(cx.listener(
-                move |this, e: &DragMoveEvent<DiffColumnDrag>, _w, cx| {
-                    this.apply_drag_edge(idx, e.bounds, e.event.position, cx);
-                },
-            ))
-            .child(self.render_column(idx, col, mode, cx))
-            .child(overlay)
-            .into_any_element()
-    }
-
-    /// Edge probe during a pane drag: map the cursor (relative to the hovered
-    /// pane's content bounds) to a [`DropEdge`] and stash it as the drag target.
-    /// Only notifies on change, so it doesn't repaint every pointer tick.
-    fn apply_drag_edge(
-        &mut self,
-        idx: usize,
-        bounds: Bounds<Pixels>,
-        pos: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        let w = f32::from(bounds.size.width);
-        let h = f32::from(bounds.size.height);
-        let x = f32::from(pos.x - bounds.origin.x);
-        let y = f32::from(pos.y - bounds.origin.y);
-        let edge = compute_drop_edge(w, h, x, y, SPLIT_EDGE_BAND);
-        let next = Some((idx, edge));
-        if self.drag_target != next {
-            self.drag_target = next;
-            cx.notify();
-        }
-    }
-
-    /// Commit a pane drop: restructure the arrangement so `source` splits
-    /// `target` toward the previewed edge (center → moved beside it). A
-    /// drop onto itself is a no-op. The moved pane becomes selected.
-    fn arrange_drop(&mut self, source: usize, target: usize, cx: &mut Context<Self>) {
-        let edge = self.drag_target.take().and_then(|(_, e)| e);
-        if source == target {
-            cx.notify();
-            return;
-        }
-        let (axis, before) = match edge {
-            Some(DropEdge::Left) => (Axis::Row, true),
-            Some(DropEdge::Right) => (Axis::Row, false),
-            Some(DropEdge::Up) => (Axis::Col, true),
-            Some(DropEdge::Down) => (Axis::Col, false),
-            None => (Axis::Row, true), // center: move beside the target
-        };
-        self.arrange.remove(source);
-        self.arrange.split(target, axis, source, before);
-        self.selected_column = source;
-        // Keep the sync source aligned with the just-moved/selected pane (as
-        // goto_hunk / jump_to_file do), so the lockstep offset is sourced from the
-        // pane the user acted on rather than whichever column last received a
-        // scroll-wheel event.
-        self.scroll_driver = source;
-        cx.notify();
-    }
-}
-
-impl Focusable for DiffView {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
-impl EventEmitter<DiffViewEvent> for DiffView {}
-
-impl Render for DiffView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui = crate::theme::ui_colors();
-        let root = div()
-            .id(self.element_id.clone())
-            .key_context("DiffView")
-            .track_focus(&self.focus_handle)
-            // US-003: Ctrl+Shift+C copies the hunk under the cursor (scoped to the
-            // DiffView context so it does not collide with the markdown / terminal
-            // copy bindings).
-            .on_action(cx.listener(|this, _: &crate::CopyDiffHunk, window, cx| {
-                this.copy_hovered_hunk(window, cx);
-            }))
-            // Review-region resize: while a divider drag is active, the pointer is
-            // tracked at the root so the drag survives leaving the 6px handle.
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
-                if let Some((col_idx, start_y, start_h)) = this.review_resizing
-                    && let Some(col) = this.columns.get_mut(col_idx)
-                {
-                    let dy = start_y - f32::from(ev.position.y); // drag up = taller
-                    col.review_height = (start_h + dy).clamp(REVIEW_MIN_HEIGHT, REVIEW_MAX_HEIGHT);
-                    cx.notify();
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _w, cx| {
-                    if this.review_resizing.take().is_some() {
-                        cx.notify();
-                    }
-                }),
-            )
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(ui.base)
-            .text_color(ui.text);
-
-        if self.columns.is_empty() {
-            return root.child(centered(ui.muted, "No sibling worktrees to diff".into()));
-        }
-
-        let mode = self.effective_mode(window);
-        // Cross-column scroll sync: re-anchor the driver column's top file across
-        // the others before building them, so all render at the synced offset
-        // this frame (each clamps to its own content height).
-        self.broadcast_scroll(mode);
-        // Inc 5: reconcile the arrangement tree with the live (visible) columns,
-        // then render it — panes split beside/under one another, rearrangeable
-        // by drag. The `Vec<Column>` and its index-based logic are untouched.
-        let visible: Vec<bool> = self.columns.iter().map(|c| c.visible).collect();
-        self.arrange.reconcile(&visible);
-        let body = self.render_arrange(&self.arrange, mode, cx);
-
-        let root = root.child(self.render_toolbar(mode, cx));
-        let mut root = root.child(div().flex_1().min_h_0().flex().child(body));
-        // US-003 overlays: the right-click copy menu and the transient flash.
-        if let Some(menu) = &self.body_menu {
-            root = root.child(self.render_body_menu(menu, ui, cx));
-        }
-        if let Some(flash) = &self.flash {
-            root = root.child(self.render_flash(flash.clone(), ui));
-        }
-        root
     }
 }

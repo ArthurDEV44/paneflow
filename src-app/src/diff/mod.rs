@@ -19,7 +19,7 @@ mod extract;
 mod git;
 mod highlighter;
 mod multi_view;
-mod review;
+mod review_terminal;
 mod rows;
 mod scope;
 mod scope_header;

@@ -1,12 +1,20 @@
-//! Diff "Review" launch model (prd-ai-in-diff-2026-Q3.md, revised 2026-06-01).
+//! Diff review-terminal model (prd-ai-in-diff-2026-Q3.md, revised 2026-06-01).
 //!
 //! Human-in-the-loop by design: clicking Review picks one or more CLIs and opens
 //! a REAL terminal pane per CLI in the branch's worktree, launches the CLI, and
 //! PRE-FILLS its input with a compact review prompt (the user submits). No
 //! headless ACP session — you see exactly what the agent does, in a real
-//! terminal. See [[feedback-human-in-loop-no-headless]]. This module is the
-//! GPUI-free, unit-tested core: the CLI table, the prompt builder, and the
-//! launch request the diff view hands to `PaneFlowApp`.
+//! terminal. See [[feedback-human-in-loop-no-headless]]. This module owns the
+//! embedded terminal entity, CLI table, prompt builder, and shell-aware launch
+//! request used by `DiffView`.
+
+use gpui::{Entity, SharedString};
+
+/// A review CLI running in a real terminal embedded under a diff column.
+pub(crate) struct ReviewTerminal {
+    pub(crate) label: SharedString,
+    pub(crate) terminal: Entity<crate::terminal::TerminalView>,
+}
 
 /// A CLI coding agent Paneflow can launch in a terminal for a review. Unlike the
 /// ACP layer (Claude Code + Codex only), the terminal path supports every CLI —
@@ -34,15 +42,19 @@ impl ReviewCli {
         }
     }
 
-    /// Shell command that clears the pane and launches the interactive CLI.
-    /// Mirrors the existing pane launch buttons (`pane.rs`).
-    pub(crate) fn launch_command(self) -> &'static str {
+    fn command(self) -> &'static str {
         match self {
-            Self::ClaudeCode => "clear && claude",
-            Self::Codex => "clear && codex",
-            Self::OpenCode => "clear && opencode",
-            Self::Pi => "clear && pi",
+            Self::ClaudeCode => "claude",
+            Self::Codex => "codex",
+            Self::OpenCode => "opencode",
+            Self::Pi => "pi",
         }
+    }
+
+    /// Shell-aware command that clears the pane and launches the interactive
+    /// CLI. Mirrors the existing pane launch buttons (`pane.rs`).
+    pub(crate) fn launch_command(self, config: &paneflow_config::schema::PaneFlowConfig) -> String {
+        crate::terminal::shell::clear_then(self.command(), config.default_shell.as_deref())
     }
 }
 
@@ -77,15 +89,12 @@ mod tests {
 
     #[test]
     fn launch_commands_are_distinct_and_bare() {
-        let cmds: Vec<&str> = ReviewCli::all()
-            .iter()
-            .map(|c| c.launch_command())
-            .collect();
+        let cmds: Vec<&str> = ReviewCli::all().iter().map(|cli| cli.command()).collect();
         assert_eq!(cmds.len(), 4);
-        assert!(cmds.contains(&"clear && claude"));
-        assert!(cmds.contains(&"clear && codex"));
-        assert!(cmds.contains(&"clear && opencode"));
-        assert!(cmds.contains(&"clear && pi"));
+        assert!(cmds.contains(&"claude"));
+        assert!(cmds.contains(&"codex"));
+        assert!(cmds.contains(&"opencode"));
+        assert!(cmds.contains(&"pi"));
     }
 
     #[test]
