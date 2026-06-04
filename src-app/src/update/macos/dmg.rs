@@ -1,13 +1,15 @@
 //! macOS DMG self-update pipeline (US-009).
 //!
 //! Flow:
-//!   1. Fetch the release asset's `.sha256` sibling (US-011 convention —
-//!      every Phase 1+ artifact ships one). If the sibling is absent we
-//!      refuse to install an unverified bundle.
-//!   2. Download the `.dmg` to `$HOME/.cache/paneflow/update-<pid>.dmg`
+//!   1. Download the `.dmg` to `$HOME/.cache/paneflow/update-<pid>.dmg`
 //!      via ureq with the 30-second per-call timeout (US-001).
-//!   3. Verify the SHA-256 against the parsed sibling; mismatch deletes
-//!      the partial and bails with [`IntegrityMismatch`].
+//!   2. Verify the asset's detached **minisign** signature (`.minisig`
+//!      sibling) against a key baked into this binary (US-001) **before
+//!      mounting**. A missing/invalid signature deletes the partial and
+//!      bails — replaces the old same-host `.sha256`, which a compromised
+//!      mirror could swap alongside the bundle.
+//!   3. macOS belt-and-braces: `codesign --verify` + `spctl --assess` on
+//!      the extracted `.app` before promotion (US-004).
 //!   4. `hdiutil attach -nobrowse -readonly -mountpoint <tmp>` to a
 //!      deterministic mount point under `/private/tmp/` so later detach
 //!      is trivially scoped and two concurrent updates can't collide.
@@ -42,9 +44,8 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use sha2::{Digest, Sha256};
 
-use super::super::error::{IntegrityMismatch, UpdateError};
+use super::super::error::UpdateError;
 
 /// Upper bound on any single HTTP call (US-001).
 const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -132,49 +133,15 @@ fn install_in(
     swap_result
 }
 
-/// Fetch the `.sha256` sidecar, download the DMG, verify the digest,
+/// Download the DMG, verify its detached **minisign** signature (US-001),
 /// and persist at `dest` on success. Mirrors the `targz.rs` pattern —
 /// see it for the detailed rationale on each guard (partial→rename,
-/// 500 MB cap, RO body stream).
+/// 500 MB cap, RO body stream). The signature, not a same-host `.sha256`,
+/// is the trust anchor and is checked **before** the DMG is ever mounted.
 fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
     log::info!("self-update/dmg: downloading {asset_url}");
 
-    // 1. Fetch the sibling checksum. Missing `.sha256` is a hard abort —
-    // we refuse to install a DMG without an integrity anchor.
-    let sha_url = format!("{asset_url}.sha256");
-    let mut sha_response = ureq::get(&sha_url)
-        .config()
-        .timeout_global(Some(UPDATE_HTTP_TIMEOUT))
-        .build()
-        .header(
-            "User-Agent",
-            &format!("paneflow/{}", env!("CARGO_PKG_VERSION")),
-        )
-        .call()
-        .with_context(|| {
-            "Could not fetch integrity checksum. Try again when online.".to_string()
-        })?;
-    let sha_status = sha_response.status();
-    if !sha_status.is_success() {
-        if sha_status.as_u16() == 404 {
-            bail!(
-                "This release has no SHA-256 checksum published. Download the latest version from the releases page."
-            );
-        }
-        bail!("Could not fetch integrity checksum (HTTP {sha_status}). Try again later.");
-    }
-    let sha_body = sha_response
-        .body_mut()
-        .read_to_string()
-        .context("read .sha256 body")?;
-    let expected_hex = parse_sha256_file(&sha_body).with_context(|| {
-        format!(
-            "parse .sha256 body (first 80 bytes: {:?})",
-            &sha_body.chars().take(80).collect::<String>()
-        )
-    })?;
-
-    // 2. Stream the DMG to `.partial` so a crashed download doesn't
+    // 1. Stream the DMG to `.partial` so a crashed download doesn't
     // poison the cache. Same scope-for-handle-close discipline as
     // `targz.rs` / `appimage.rs` (Windows `DeleteFile` sharing violation).
     let partial = append_suffix(dest, ".partial")?;
@@ -219,9 +186,11 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
         );
     }
 
-    // 3. Verify the digest. Mismatch deletes the partial and bails with
-    // the typed `IntegrityMismatch` tag so the UX toast is specific.
-    if let Err(e) = verify_sha256_of_file(&partial, &expected_hex) {
+    // 2. Verify the detached minisign signature BEFORE mounting. Fail-closed:
+    // a missing/invalid signature deletes the partial and bails with the
+    // typed `IntegrityMismatch` tag so the UX toast is specific. This is the
+    // US-001 root-of-trust check that replaces the old same-host `.sha256`.
+    if let Err(e) = super::super::signature::fetch_and_verify(&partial, asset_url) {
         let _ = std::fs::remove_file(&partial);
         return Err(e);
     }
@@ -360,54 +329,6 @@ fn append_suffix(path: &Path, suffix: &str) -> Result<PathBuf> {
     Ok(path.with_file_name(name))
 }
 
-/// Parse a `.sha256` file's contents and return the hex digest. Kept
-/// lenient for coreutils / sha256sum / bare-hex formats (same set as
-/// `targz.rs::parse_sha256_file`).
-fn parse_sha256_file(body: &str) -> Result<String> {
-    let first_line = body.lines().next().context("empty .sha256 file")?;
-    let token = first_line
-        .split_whitespace()
-        .next()
-        .context("no token in .sha256 file")?;
-    let lower = token.to_ascii_lowercase();
-    if lower.len() != 64 || !lower.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("invalid SHA-256 digest (expected 64 hex chars, got {token:?})");
-    }
-    Ok(lower)
-}
-
-fn verify_sha256_of_file(file: &Path, expected_hex: &str) -> Result<()> {
-    let mut f = std::fs::File::open(file)
-        .with_context(|| format!("open {} for hashing", file.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = f.read(&mut buf).context("read chunk for hashing")?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let got = hex_lower(&hasher.finalize());
-    if got != expected_hex {
-        return Err(anyhow::Error::new(IntegrityMismatch {
-            expected: expected_hex.to_string(),
-            got,
-        }));
-    }
-    Ok(())
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
-}
-
 /// Map a filesystem error message (from either an `io::Error` or a
 /// subprocess stderr) onto the right `UpdateError` variant. Permission
 /// denied routes to `InstallDeclined` per US-009 AC8; everything else
@@ -514,40 +435,10 @@ mod tests {
     // ── Pure helpers ─────────────────────────────────────────────────
 
     #[test]
-    fn parse_sha256_file_accepts_bare_hex() {
-        let body = format!("{}\n", "a".repeat(64));
-        assert_eq!(parse_sha256_file(&body).unwrap(), "a".repeat(64));
-    }
-
-    #[test]
-    fn parse_sha256_file_rejects_short_digest() {
-        assert!(parse_sha256_file("abcd\n").is_err());
-    }
-
-    #[test]
     fn staging_dirs_derives_sibling_paths() {
         let (old, new) = staging_dirs(Path::new("/Applications/PaneFlow.app")).unwrap();
         assert_eq!(old, PathBuf::from("/Applications/PaneFlow.app.old"));
         assert_eq!(new, PathBuf::from("/Applications/PaneFlow.app.new"));
-    }
-
-    #[test]
-    fn verify_sha256_rejects_mismatched_digest() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("payload.bin");
-        std::fs::write(&path, b"tampered").unwrap();
-        let err = verify_sha256_of_file(&path, &"0".repeat(64)).unwrap_err();
-        assert!(err.downcast_ref::<IntegrityMismatch>().is_some());
-    }
-
-    #[test]
-    fn verify_sha256_accepts_matching_digest() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("payload.bin");
-        std::fs::write(&path, b"hello").unwrap();
-        // sha256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
-        let expected = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
-        assert!(verify_sha256_of_file(&path, expected).is_ok());
     }
 
     // ── Error classification ─────────────────────────────────────────
