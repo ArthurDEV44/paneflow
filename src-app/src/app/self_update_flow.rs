@@ -397,10 +397,14 @@ impl PaneFlowApp {
             self.self_update_status = update::SelfUpdateStatus::Downloading;
             cx.notify();
 
+            let asset_url_for_verify = asset_url.clone();
             cx.spawn(async move |this, cx| {
                 let result = smol::unblock({
                     let source_path = source_path.clone();
-                    move || update::linux::appimage::run_update(&source_path)
+                    let asset_url = asset_url_for_verify.clone();
+                    // US-006: pass the new asset URL so run_update can fetch
+                    // its `.minisig` and re-verify the rewritten AppImage.
+                    move || update::linux::appimage::run_update(&source_path, &asset_url)
                 })
                 .await;
 
