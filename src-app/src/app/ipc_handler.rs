@@ -233,6 +233,9 @@ impl PaneFlowApp {
             for ws in &self.workspaces {
                 ws.propagate_config(&self.cached_config, cx);
             }
+            // US-016: push to the open Settings window so its render cache +
+            // shortcut list reflect this external change (fixes désync).
+            Self::push_config_to_settings_window(&self.cached_config, cx);
             cx.notify();
         }
 
@@ -246,6 +249,23 @@ impl PaneFlowApp {
             .swap(false, std::sync::atomic::Ordering::AcqRel)
         {
             cx.notify();
+        }
+    }
+
+    /// US-016: push a refreshed config to the open Settings window (if any).
+    /// The window handle isn't stored anywhere, so we locate it among the
+    /// open windows by downcast — leak-free, no second `ConfigWatcher`.
+    fn push_config_to_settings_window(
+        config: &paneflow_config::schema::PaneFlowConfig,
+        cx: &mut Context<Self>,
+    ) {
+        for handle in cx.windows() {
+            if let Some(settings) = handle.downcast::<crate::settings::SettingsWindow>() {
+                let cfg = config.clone();
+                let _ = settings.update(cx, |settings, _window, cx| {
+                    settings.apply_external_config(cfg, cx);
+                });
+            }
         }
     }
 

@@ -156,6 +156,31 @@ fn apply_terminal_field(json: &mut serde_json::Value, key: &str, value: serde_js
     }
 }
 
+/// US-016: return a copy of `config` with a single field updated *in memory*,
+/// mirroring the on-disk merge of [`save_config_value`] / [`save_terminal_field`]
+/// without touching disk. A settings handler uses this to refresh its render
+/// cache instantly, then persists asynchronously. `nested` routes the field
+/// into the `terminal` block; a `Null` value clears it. The config is the typed
+/// view (no unknown fields), so the JSON round-trip is lossless for it.
+pub fn with_field(
+    config: &paneflow_config::schema::PaneFlowConfig,
+    nested: bool,
+    key: &str,
+    value: serde_json::Value,
+) -> paneflow_config::schema::PaneFlowConfig {
+    let mut json = serde_json::to_value(config).unwrap_or_else(|_| serde_json::json!({}));
+    if nested {
+        apply_terminal_field(&mut json, key, value);
+    } else if let Some(root) = json.as_object_mut() {
+        if value.is_null() {
+            root.remove(key);
+        } else {
+            root.insert(key.to_string(), value);
+        }
+    }
+    serde_json::from_value(json).unwrap_or_else(|_| config.clone())
+}
+
 /// Save a single field inside the `"terminal": { ... }` block in `paneflow.json`
 /// (US-016 Terminal settings tab). A `Null` value removes the key (restoring
 /// the schema default on next load); the `"terminal"` object itself is left in
