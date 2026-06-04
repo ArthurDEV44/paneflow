@@ -152,9 +152,14 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
         let mut reader = Read::take(reader, MAX_MSI_BYTES + 1);
         let mut file = std::fs::File::create(&partial)
             .with_context(|| format!("create {}", partial.display()))?;
-        let written = std::io::copy(&mut reader, &mut file).context("stream MSI to disk");
-        file.sync_all().ok();
-        written
+        std::io::copy(&mut reader, &mut file)
+            .context("stream MSI to disk")
+            .and_then(|written| {
+                // US-010: propagate a flush failure (ENOSPC) so the
+                // classifier renders DiskFull, not a downstream mismatch.
+                file.sync_all().context("flush MSI to disk")?;
+                Ok(written)
+            })
     };
     let written = match stream_result {
         Ok(n) => n,

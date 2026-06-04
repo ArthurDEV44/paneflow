@@ -232,9 +232,14 @@ fn download_tool(url: &str, expected: &[u8; 32], dest: &Path) -> Result<()> {
         let mut reader = Read::take(reader, MAX_TOOL_BYTES + 1);
         let mut file =
             std::fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
-        let written = std::io::copy(&mut reader, &mut file).context("stream download to disk");
-        file.sync_all().ok();
-        written
+        std::io::copy(&mut reader, &mut file)
+            .context("stream download to disk")
+            .and_then(|written| {
+                // US-010: propagate a flush failure (ENOSPC) so the
+                // classifier renders DiskFull, not a downstream mismatch.
+                file.sync_all().context("flush download to disk")?;
+                Ok(written)
+            })
     };
     let written = match stream_result {
         Ok(n) => n,

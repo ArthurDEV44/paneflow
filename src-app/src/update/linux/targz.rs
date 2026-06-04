@@ -49,7 +49,13 @@ pub fn run_update(asset_url: &str) -> Result<PathBuf> {
         .map(PathBuf::from)
         .context("HOME environment variable is not set")?;
     let app_dir = home.join(".local").join("paneflow.app");
-    let cache_dir = home.join(".cache").join("paneflow");
+    // US-010: honour `XDG_CACHE_HOME` (mirrors `appimage::cache_path_for`)
+    // so a user who redirects their cache dir isn't forced back to
+    // `~/.cache`. Falls back to `$HOME/.cache` when unset.
+    let cache_base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".cache"));
+    let cache_dir = cache_base.join(crate::runtime_paths::APP_SUBDIR);
     run_update_in(asset_url, &app_dir, &cache_dir)?;
     Ok(app_dir.join("bin").join("paneflow"))
 }
@@ -153,9 +159,16 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
         let mut reader = Read::take(reader, MAX_TARBALL_BYTES + 1);
         let mut file = std::fs::File::create(&partial)
             .with_context(|| format!("create {}", partial.display()))?;
-        let written = std::io::copy(&mut reader, &mut file).context("stream tarball to disk");
-        file.sync_all().ok();
-        written
+        std::io::copy(&mut reader, &mut file)
+            .context("stream tarball to disk")
+            .and_then(|written| {
+                // US-010: propagate a sync failure (e.g. ENOSPC surfacing
+                // only on flush) instead of swallowing it — the classifier
+                // needs the real io::Error to render DiskFull rather than a
+                // downstream "corrupt/tampered" misdiagnosis.
+                file.sync_all().context("flush tarball to disk")?;
+                Ok(written)
+            })
     };
     let written = match stream_result {
         Ok(n) => n,

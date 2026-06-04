@@ -439,7 +439,13 @@ pub(crate) fn check_github_release(
     };
     let local = match Version::parse(CURRENT_VERSION) {
         Ok(v) => v,
-        Err(_) => return UpdateStatus::Failed,
+        Err(e) => {
+            // US-010: symmetric with the remote-parse arm above. A malformed
+            // CARGO_PKG_VERSION is a build misconfiguration worth surfacing,
+            // not a silent "update failed".
+            log::warn!("update check: invalid local version '{CURRENT_VERSION}': {e}");
+            return UpdateStatus::Failed;
+        }
     };
 
     if remote > local {
