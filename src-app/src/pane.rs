@@ -1263,12 +1263,10 @@ impl Pane {
             );
 
         // Built-in agent launcher buttons (the 15 CLI coding agents).
-        // Each is opt-out via Settings → AI Agent; `TerminalAgent::visible`
-        // applies the per-agent `*_button_visible` gate (absent/true =>
-        // shown) and is the same single source of truth the Agents-view
-        // picker iterates. The launch command (always prefixed with
-        // `clear &&`) is read fresh on click so Claude Code's bypass toggle
-        // takes effect without forcing a re-render.
+        // `TerminalAgent::visible` applies the per-agent `*_button_visible`
+        // gate and is the same source of truth the Agents-view picker iterates.
+        // The shell-aware launch command is read fresh on click so Claude Code's
+        // bypass toggle takes effect without forcing a re-render.
         let config = paneflow_config::loader::load_config();
         for agent in crate::agent_launcher::TerminalAgent::visible(&config) {
             let tint: Hsla = match agent.accent() {
@@ -1285,7 +1283,7 @@ impl Pane {
                         return;
                     };
                     let cmd = agent.launch_command(&paneflow_config::loader::load_config());
-                    terminal.read(cx).send_command(cmd);
+                    terminal.read(cx).send_command(&cmd);
                 }),
             ));
         }
