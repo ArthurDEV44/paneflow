@@ -693,6 +693,8 @@ impl PaneFlowApp {
             rename_text: String::new(),
             pending_config,
             save_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            // US-014: hydrate the render-path config cache once at startup.
+            cached_config: paneflow_config::loader::load_config(),
             ipc_rx,
             ipc_status,
             title_bar,

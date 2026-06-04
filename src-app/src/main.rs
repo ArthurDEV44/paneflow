@@ -148,6 +148,13 @@ struct PaneFlowApp {
     /// been scheduled meanwhile, collapsing a burst (e.g. closing 20
     /// workspaces) into a single write — none of it on the render thread.
     save_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// US-014: parsed `paneflow.json` cached on the main thread so render paths
+    /// never call the blocking `load_config()` (fs read + JSON parse) per frame.
+    /// Hydrated at startup, invalidated in [`Self::process_config_changes`] when
+    /// the background `ConfigWatcher` reports a reload. Render code reads this;
+    /// click handlers that must observe a config write *they just made* still
+    /// read fresh from disk (the cache lags the write by the watcher debounce).
+    cached_config: paneflow_config::schema::PaneFlowConfig,
     ipc_rx: std::sync::mpsc::Receiver<ipc::IpcRequest>,
     ipc_status: ipc::IpcStatus,
     title_bar: Entity<title_bar::TitleBar>,

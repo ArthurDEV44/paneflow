@@ -316,7 +316,8 @@ impl PaneFlowApp {
     }
 
     pub(crate) fn render_appearance_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let config = paneflow_config::loader::load_config();
+        // US-014: read the cached config instead of a per-frame `load_config()`.
+        let config = &self.cached_config;
         let ui = crate::theme::ui_colors();
         let current_font =
             crate::terminal::element::resolve_font_family(config.font_family.as_deref());
