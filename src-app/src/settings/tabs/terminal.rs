@@ -44,7 +44,7 @@ impl SettingsWindow {
         let ligatures_on = terminal.ligatures.unwrap_or(false);
         let meta_on = config.option_as_meta.unwrap_or(true);
         let font_size = config.font_size.unwrap_or(14.0) as f64;
-        let line_height = config.line_height.unwrap_or(1.4) as f64;
+        let line_height = config.line_height.unwrap_or(1.3) as f64;
 
         let shape_label = match shape {
             CursorShapeConfig::Block => "Block",

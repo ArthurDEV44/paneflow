@@ -20,7 +20,7 @@ pub struct PaneFlowConfig {
     pub commands: Vec<CommandDefinition>,
     /// Window decoration mode: `"client"` (CSD, default) or `"server"` (SSD).
     pub window_decorations: Option<String>,
-    /// Terminal line height multiplier (default: 1.4, valid range: 1.0–2.5).
+    /// Terminal line height multiplier (default: 1.3, valid range: 1.0–2.5).
     pub line_height: Option<f32>,
     /// Terminal font family (default: platform-specific monospace fallback).
     pub font_family: Option<String>,
@@ -45,15 +45,15 @@ pub struct PaneFlowConfig {
     /// all four support that suffix natively to jump to the target
     /// position.
     pub external_editor: Option<String>,
-    /// When `Some(true)` *or* `None` (the default), every permission
-    /// gate is disabled:
+    /// When `Some(true)`, every permission gate is disabled:
     /// 1. The "Claude Code" tab-bar terminal launcher adds
     ///    `--permission-mode bypassPermissions` to the spawned CLI.
     /// 2. The Agents view auto-approves every ACP `RequestPermission`
     ///    for both Claude Code and Codex sessions (any tool kind:
     ///    Read / Edit / Delete / Move / Execute / Search / Fetch).
     ///
-    /// `Some(false)` re-enables the per-tool confirmation prompts.
+    /// `Some(false)` or `None` (the default) keeps the per-tool confirmation
+    /// prompts enabled.
     /// Per Anthropic's docs bypass mode offers no protection against
     /// prompt injection — opt out (toggle off in Settings -> AI Agent)
     /// if you want explicit confirmation for every tool call. The key
@@ -62,9 +62,8 @@ pub struct PaneFlowConfig {
     /// Codex too.
     pub claude_code_bypass_permissions: Option<bool>,
     /// Show the built-in "Claude Code" command button in the tab bar.
-    /// `None` and `Some(true)` render the button (default behavior);
-    /// `Some(false)` hides it. The config can be flipped from the
-    /// Settings → AI Agent tab or by editing this file.
+    /// `Some(true)` always renders the button, `Some(false)` hides it, and
+    /// `None` (default) renders it only when the CLI binary is installed.
     pub claude_code_button_visible: Option<bool>,
     /// Show the built-in "Codex" command button in the tab bar.
     /// Same semantics as `claude_code_button_visible`.
@@ -963,6 +962,126 @@ pub struct SurfaceDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeSet, HashMap};
+
+    fn object_keys(value: &serde_json::Value) -> BTreeSet<String> {
+        value
+            .as_object()
+            .expect("expected JSON object")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn public_json_schema_covers_every_config_field() {
+        let mut permissions = HashMap::new();
+        permissions.insert(
+            "read".to_string(),
+            ToolPermissionsEntry {
+                always_allow: vec!["src/".to_string()],
+                always_deny: vec!["secrets/".to_string()],
+            },
+        );
+        let mut profiles = HashMap::new();
+        profiles.insert(
+            "Write".to_string(),
+            ProfileConfig {
+                agent: Some("codex".to_string()),
+                model: Some("default".to_string()),
+                mode: Some("default".to_string()),
+                effort: Some("medium".to_string()),
+                tools: vec!["read".to_string()],
+            },
+        );
+
+        // Deliberately exhaustive struct literals: adding a Rust config field
+        // fails this test at compile time until the public schema is updated.
+        let config = PaneFlowConfig {
+            shortcuts: HashMap::new(),
+            default_shell: Some("sh".to_string()),
+            theme: Some("One Dark".to_string()),
+            commands: Vec::new(),
+            window_decorations: Some("client".to_string()),
+            line_height: Some(1.3),
+            font_family: Some("Lilex".to_string()),
+            font_size: Some(14.0),
+            option_as_meta: Some(true),
+            external_editor: Some("auto".to_string()),
+            claude_code_bypass_permissions: Some(false),
+            claude_code_button_visible: Some(true),
+            codex_button_visible: Some(true),
+            opencode_button_visible: Some(true),
+            pi_button_visible: Some(true),
+            hermes_agent_button_visible: Some(true),
+            grok_button_visible: Some(true),
+            amp_button_visible: Some(true),
+            cursor_button_visible: Some(true),
+            gemini_button_visible: Some(true),
+            kiro_button_visible: Some(true),
+            antigravity_button_visible: Some(true),
+            copilot_button_visible: Some(true),
+            codebuddy_button_visible: Some(true),
+            factory_button_visible: Some(true),
+            qoder_button_visible: Some(true),
+            openclaw_button_visible: Some(true),
+            telemetry: Some(TelemetryConfig {
+                enabled: Some(false),
+            }),
+            terminal: Some(TerminalConfig {
+                ligatures: Some(false),
+                scrollback_lines: Some(10_000),
+                bell: Some(TerminalBellMode::Visual),
+                cursor_shape: Some(CursorShapeConfig::Block),
+                cursor_blink: Some(CursorBlinkConfig::TerminalControlled),
+                env: Some(HashMap::new()),
+                scroll_multiplier: Some(1.0),
+            }),
+            agent_panel: Some(AgentPanelConfig {
+                max_content_width: Some(760),
+                thinking_display: Some(ThinkingDisplayMode::Auto),
+                profiles,
+                default_profile: Some("Write".to_string()),
+                notify_when_agent_waiting: Some(NotifyWhenAgentWaiting::PrimaryScreen),
+            }),
+            tool_permissions: permissions,
+        };
+
+        let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../schemas/paneflow.schema.json");
+        let schema: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(schema_path).unwrap()).unwrap();
+        let serialized = serde_json::to_value(config).unwrap();
+        let mut schema_top_level = object_keys(&schema["properties"]);
+        schema_top_level.remove("$schema");
+        schema_top_level.remove("$schemaVersion");
+
+        assert_eq!(
+            object_keys(&serialized),
+            schema_top_level,
+            "top-level PaneFlowConfig and public JSON Schema drifted"
+        );
+        assert_eq!(
+            object_keys(&serialized["terminal"]),
+            object_keys(&schema["properties"]["terminal"]["properties"]),
+            "TerminalConfig and public JSON Schema drifted"
+        );
+        assert_eq!(
+            object_keys(&serialized["agent_panel"]),
+            object_keys(&schema["properties"]["agent_panel"]["properties"]),
+            "AgentPanelConfig and public JSON Schema drifted"
+        );
+        assert_eq!(
+            object_keys(&serialized["agent_panel"]["profiles"]["Write"]),
+            object_keys(&schema["definitions"]["profileConfig"]["properties"]),
+            "ProfileConfig and public JSON Schema drifted"
+        );
+        assert_eq!(
+            object_keys(&serialized["tool_permissions"]["read"]),
+            object_keys(&schema["definitions"]["toolPermissionsEntry"]["properties"]),
+            "ToolPermissionsEntry and public JSON Schema drifted"
+        );
+    }
 
     #[test]
     fn agent_panel_thinking_display_pascal_case_roundtrip() {

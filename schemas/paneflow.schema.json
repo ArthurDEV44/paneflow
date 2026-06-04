@@ -53,6 +53,12 @@
       "description": "Treat Alt/Option as Meta and send an ESC prefix. Default true on Linux and Windows. On macOS, set to false if you rely on Option to produce Unicode characters.",
       "default": true
     },
+    "external_editor": {
+      "type": ["string", "null"],
+      "description": "Editor used to open file links. 'auto' probes zed, cursor, windsurf, then code; 'system' always uses the OS opener.",
+      "enum": ["auto", "system", "zed", "cursor", "windsurf", "code", null],
+      "default": "auto"
+    },
     "shortcuts": {
       "type": "object",
       "description": "Custom keybindings overriding the defaults. Format: { 'ctrl+t': 'new_tab' }. The full list of action names is defined in src-app/src/app/actions.rs.",
@@ -68,6 +74,43 @@
           "type": ["boolean", "null"],
           "description": "Render programming-font ligatures (FiraCode '=>', '!=', JetBrains Mono, Cascadia Code). Hot-reloaded.",
           "default": false
+        },
+        "scrollback_lines": {
+          "type": ["integer", "null"],
+          "description": "Maximum scrollback history in lines. Applied to newly-created terminals.",
+          "minimum": 100,
+          "maximum": 100000,
+          "default": 10000
+        },
+        "bell": {
+          "type": ["string", "null"],
+          "description": "How BEL is surfaced.",
+          "enum": ["visual", "audible", "both", "off", null],
+          "default": "visual"
+        },
+        "cursor_shape": {
+          "type": ["string", "null"],
+          "description": "Default cursor shape before an application overrides it.",
+          "enum": ["block", "beam", "underline", "hollow", null],
+          "default": "block"
+        },
+        "cursor_blink": {
+          "type": ["string", "null"],
+          "description": "Cursor blink override.",
+          "enum": ["on", "off", "terminal_controlled", null],
+          "default": "terminal_controlled"
+        },
+        "env": {
+          "type": ["object", "null"],
+          "description": "Environment variables injected into every new terminal. Per-surface values win on collision.",
+          "additionalProperties": { "type": "string" }
+        },
+        "scroll_multiplier": {
+          "type": ["number", "null"],
+          "description": "Scroll-wheel multiplier outside mouse-reporting and alternate-screen modes.",
+          "minimum": 0.1,
+          "maximum": 10.0,
+          "default": 1.0
         }
       }
     },
@@ -84,28 +127,120 @@
     },
     "claude_code_button_visible": {
       "type": ["boolean", "null"],
-      "description": "Show the built-in 'Claude Code' command button in the tab bar.",
-      "default": true
+      "description": "Show the built-in 'Claude Code' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
     },
     "codex_button_visible": {
       "type": ["boolean", "null"],
-      "description": "Show the built-in 'Codex' command button in the tab bar.",
-      "default": true
+      "description": "Show the built-in 'Codex' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
     },
     "opencode_button_visible": {
       "type": ["boolean", "null"],
-      "description": "Show the built-in 'Opencode' command button in the tab bar.",
-      "default": true
+      "description": "Show the built-in 'Opencode' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
     },
     "pi_button_visible": {
       "type": ["boolean", "null"],
-      "description": "Show the built-in 'Pi' command button in the tab bar.",
-      "default": true
+      "description": "Show the built-in 'Pi' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
     },
     "hermes_agent_button_visible": {
       "type": ["boolean", "null"],
-      "description": "Show the built-in 'Hermes Agent' command button in the tab bar.",
-      "default": true
+      "description": "Show the built-in 'Hermes Agent' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
+    },
+    "grok_button_visible": {
+      "type": ["boolean", "null"],
+      "description": "Show the built-in 'Grok' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
+    },
+    "amp_button_visible": {
+      "type": ["boolean", "null"],
+      "description": "Show the built-in 'Amp' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
+    },
+    "cursor_button_visible": {
+      "type": ["boolean", "null"],
+      "description": "Show the built-in 'Cursor' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
+    },
+    "gemini_button_visible": {
+      "type": ["boolean", "null"],
+      "description": "Show the built-in 'Gemini' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
+    },
+    "kiro_button_visible": {
+      "type": ["boolean", "null"],
+      "description": "Show the built-in 'Kiro' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
+    },
+    "antigravity_button_visible": {
+      "type": ["boolean", "null"],
+      "description": "Show the built-in 'Antigravity' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
+    },
+    "copilot_button_visible": {
+      "type": ["boolean", "null"],
+      "description": "Show the built-in 'Copilot' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
+    },
+    "codebuddy_button_visible": {
+      "type": ["boolean", "null"],
+      "description": "Show the built-in 'CodeBuddy' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
+    },
+    "factory_button_visible": {
+      "type": ["boolean", "null"],
+      "description": "Show the built-in 'Factory' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
+    },
+    "qoder_button_visible": {
+      "type": ["boolean", "null"],
+      "description": "Show the built-in 'Qoder' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
+    },
+    "openclaw_button_visible": {
+      "type": ["boolean", "null"],
+      "description": "Show the built-in 'Openclaw' command button. Null/omitted auto-detects the CLI binary.",
+      "default": null
+    },
+    "agent_panel": {
+      "type": ["object", "null"],
+      "description": "Agents-view display, profile, and notification settings.",
+      "additionalProperties": false,
+      "properties": {
+        "max_content_width": {
+          "type": ["integer", "null"],
+          "minimum": 320,
+          "maximum": 4000,
+          "default": 760
+        },
+        "thinking_display": {
+          "type": ["string", "null"],
+          "enum": ["Auto", "Preview", "AlwaysExpanded", "AlwaysCollapsed", null],
+          "default": "Auto"
+        },
+        "profiles": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/profileConfig" },
+          "default": {}
+        },
+        "default_profile": {
+          "type": ["string", "null"]
+        },
+        "notify_when_agent_waiting": {
+          "type": ["string", "null"],
+          "enum": ["PrimaryScreen", "AllScreens", "Never", null],
+          "default": "PrimaryScreen"
+        }
+      }
+    },
+    "tool_permissions": {
+      "type": "object",
+      "description": "Per-tool always-allow and always-deny input patterns.",
+      "additionalProperties": { "$ref": "#/definitions/toolPermissionsEntry" },
+      "default": {}
     },
     "telemetry": {
       "type": ["object", "null"],
@@ -120,6 +255,37 @@
     }
   },
   "definitions": {
+    "profileConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agent": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "mode": { "type": ["string", "null"] },
+        "effort": { "type": ["string", "null"] },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+    "toolPermissionsEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "always_allow": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "always_deny": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
     "commandDefinition": {
       "type": "object",
       "required": ["name"],
