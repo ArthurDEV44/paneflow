@@ -275,19 +275,45 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
 
     // Atomic swap: two renames. The window where `install_dir` doesn't
     // exist is vanishingly small and bracketed by the rollback below.
+    //
+    // US-008: discriminate the first rename's error. `NotFound` means a fresh
+    // install into an empty `/Applications/` — expected, fall through. ANY
+    // other error (permission denied, SIP, bundle busy) is a hard abort:
+    // proceeding would risk a half-installed state.
     if let Err(e) = std::fs::rename(install_dir, &old_dir) {
-        // Rare — `install_dir` didn't exist yet (fresh install into an
-        // empty /Applications/). Fall through to the second rename.
-        log::debug!(
-            "self-update/dmg: no pre-existing {}: {e}",
-            install_dir.display()
-        );
+        if e.kind() == std::io::ErrorKind::NotFound {
+            log::debug!(
+                "self-update/dmg: no pre-existing {} (fresh install)",
+                install_dir.display()
+            );
+        } else {
+            let _ = std::fs::remove_dir_all(&new_dir);
+            return Err(classify_filesystem_error(
+                &e.to_string(),
+                &format!("move aside {}", install_dir.display()),
+            ));
+        }
     }
     if let Err(e) = std::fs::rename(&new_dir, install_dir) {
-        // Second rename failed — restore the live bundle so the user
-        // isn't left without `/Applications/PaneFlow.app`.
-        if old_dir.exists() {
-            let _ = std::fs::rename(&old_dir, install_dir);
+        // Second rename failed — restore the live bundle so the user isn't
+        // left without `/Applications/PaneFlow.app`. US-008: verify the
+        // rollback. If it ALSO fails, the user has no live bundle at all —
+        // surface that as a hard `InstallFailed` (catastrophic), not the
+        // recoverable filesystem-error classification, so the toast tells
+        // them to reinstall rather than implying a transient retry.
+        if old_dir.exists()
+            && let Err(rb) = std::fs::rename(&old_dir, install_dir)
+        {
+            let _ = std::fs::remove_dir_all(&new_dir);
+            return Err(anyhow::Error::new(UpdateError::InstallFailed {
+                log_path: PathBuf::new(),
+            })
+            .context(format!(
+                "promote {} → {} failed ({e}); rollback from {} also failed ({rb}) — no live install remains, reinstall PaneFlow manually",
+                new_dir.display(),
+                install_dir.display(),
+                old_dir.display()
+            )));
         }
         let _ = std::fs::remove_dir_all(&new_dir);
         return Err(classify_filesystem_error(
@@ -583,6 +609,31 @@ mod tests {
         let install_dir = tmp.path().join("Applications").join("PaneFlow.app");
         let err = copy_and_swap(&empty_mount, &install_dir).unwrap_err();
         assert!(err.to_string().contains("PaneFlow.app"), "got: {err}");
+    }
+
+    /// US-008: a fresh install (no pre-existing bundle at `install_dir`)
+    /// must succeed — the first rename fails with `NotFound`, which is the
+    /// one error the swap is allowed to ignore.
+    #[test]
+    fn copy_and_swap_fresh_install_no_existing_bundle() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let source_root = tmp.path().join("mount");
+        std::fs::create_dir_all(&source_root).unwrap();
+        fake_bundle_at(&source_root);
+
+        // Parent exists but the bundle itself does not (empty /Applications).
+        let install_parent = tmp.path().join("Applications");
+        std::fs::create_dir_all(&install_parent).unwrap();
+        let install_dir = install_parent.join("PaneFlow.app");
+        assert!(!install_dir.exists());
+
+        copy_and_swap(&source_root, &install_dir).unwrap();
+
+        assert!(install_dir.join("Contents/MacOS/paneflow").exists());
+        assert!(
+            !install_parent.join("PaneFlow.app.old").exists(),
+            "no .old should be created on a fresh install"
+        );
     }
 
     #[test]
