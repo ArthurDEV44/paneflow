@@ -28,30 +28,99 @@ const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_FEED_URL: &str = "https://api.github.com/repos/ArthurDEV44/paneflow/releases/latest";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Hosts the update flow is allowed to talk to (US-007). GitHub serves the
+/// release JSON from `api.github.com` and the asset bytes from `github.com`
+/// (which 302-redirects to `objects.githubusercontent.com`, followed
+/// transparently by ureq — we only validate the URL we were handed). A feed
+/// override or an asset URL pointing anywhere else is rejected so a tampered
+/// release JSON can't redirect the downloader off-domain.
+const ALLOWED_UPDATE_HOSTS: &[&str] = &[
+    "api.github.com",
+    "github.com",
+    "objects.githubusercontent.com",
+];
+
 /// Resolve the URL the update checker fetches `<release>` JSON from.
 ///
-/// Honours the `PANEFLOW_UPDATE_FEED_URL` env var (US-005 e2e harness)
-/// when it parses as a valid http(s) URL, else returns [`DEFAULT_FEED_URL`].
-/// The env override is intentionally *not* gated on `cfg(debug_assertions)`
-/// because the release-time CI job that runs the e2e against a freshly
-/// produced binary needs to use it; release builds simply ignore an unset
-/// var. Bad input falls through to the default with a warn so a typo
-/// can't silently break update checks for a user who set the var by
-/// accident.
+/// Honours the `PANEFLOW_UPDATE_FEED_URL` env var (US-005 e2e harness) only
+/// when it passes [`is_allowed_update_url`]: `https://` to an allow-listed
+/// host (any build), or loopback `http(s)://127.0.0.1` (the e2e fixture).
+/// Plain `http://` to a non-loopback host is accepted only in debug builds
+/// (US-007) — a release binary never trusts a cleartext, off-host feed.
+/// Bad input falls through to the default with a warn so a typo can't
+/// silently break update checks for a user who set the var by accident.
 pub(crate) fn update_feed_url() -> String {
     match std::env::var("PANEFLOW_UPDATE_FEED_URL") {
-        Ok(v) if v.starts_with("http://") || v.starts_with("https://") => {
+        Ok(v) if is_allowed_update_url(&v) => {
             log::warn!("update check: PANEFLOW_UPDATE_FEED_URL active → {v}");
             v
         }
         Ok(v) => {
             log::warn!(
-                "update check: ignoring PANEFLOW_UPDATE_FEED_URL='{v}' (must start with http(s)://)"
+                "update check: ignoring PANEFLOW_UPDATE_FEED_URL='{v}' (must be https:// to an allow-listed host, or loopback)"
             );
             DEFAULT_FEED_URL.to_string()
         }
         Err(_) => DEFAULT_FEED_URL.to_string(),
     }
+}
+
+/// Validate a URL the update flow is about to fetch from (feed override or
+/// asset download). Delegates to the pure [`is_allowed_update_url_impl`] with
+/// the build's debug-assertion flag so the loosened "plain http to any host"
+/// rule is dev-only and the security-relevant logic stays unit-testable.
+fn is_allowed_update_url(url: &str) -> bool {
+    is_allowed_update_url_impl(url, cfg!(debug_assertions))
+}
+
+/// Pure URL policy (US-007), testable independently of the build profile:
+///
+/// - `https://` to an allow-listed host (or loopback) → always allowed.
+/// - `http(s)://` loopback (`127.0.0.0/8`, `localhost`, `::1`) → always
+///   allowed; loopback has no MITM surface and the e2e harness serves the
+///   fixture over `http://127.0.0.1`.
+/// - `http://` to a non-loopback host → allowed only when
+///   `allow_insecure_http` (i.e. debug builds); release builds reject it.
+/// - anything else (other schemes, no scheme) → rejected.
+fn is_allowed_update_url_impl(url: &str, allow_insecure_http: bool) -> bool {
+    if let Some(rest) = url.strip_prefix("https://") {
+        let host = url_host(rest);
+        return is_loopback_host(host) || ALLOWED_UPDATE_HOSTS.contains(&host);
+    }
+    if let Some(rest) = url.strip_prefix("http://") {
+        let host = url_host(rest);
+        return is_loopback_host(host) || allow_insecure_http;
+    }
+    false
+}
+
+/// Extract the host from a URL whose scheme prefix has been stripped.
+/// Defends against the `https://api.github.com@evil.com/` userinfo trick
+/// (returns `evil.com`) and strips ports / IPv6 brackets so the allow-list
+/// comparison sees the real authority.
+fn url_host(after_scheme: &str) -> &str {
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    // The real host is after the LAST '@' (userinfo is everything before it).
+    let host_port = match authority.rsplit_once('@') {
+        Some((_userinfo, host)) => host,
+        None => authority,
+    };
+    if let Some(after_bracket) = host_port.strip_prefix('[') {
+        // [ipv6]:port → the address up to the closing bracket.
+        after_bracket.split(']').next().unwrap_or(after_bracket)
+    } else {
+        // host:port → strip the port.
+        host_port.split(':').next().unwrap_or(host_port)
+    }
+}
+
+/// Loopback host check covering `localhost`, the whole `127.0.0.0/8` block,
+/// and IPv6 `::1`.
+fn is_loopback_host(host: &str) -> bool {
+    host == "localhost" || host == "::1" || host == "127.0.0.1" || host.starts_with("127.")
 }
 
 /// Release-asset format the update checker advertises to the UI.
@@ -284,9 +353,23 @@ pub fn pick_asset<'a>(
         format.filename_suffix()
     )
     .to_ascii_lowercase();
-    assets
+    let picked = assets
         .iter()
-        .find(|a| a.name.to_ascii_lowercase().ends_with(&expected))
+        .find(|a| a.name.to_ascii_lowercase().ends_with(&expected))?;
+    // US-007: validate the selected asset's download URL before handing it
+    // to the installer — https to an allow-listed host (or loopback for the
+    // e2e fixture). A release JSON whose asset URL points off-domain is
+    // dropped so the title bar falls back to the release page instead of
+    // streaming an artifact from an attacker-chosen host.
+    if !is_allowed_update_url(&picked.browser_download_url) {
+        log::warn!(
+            "update check: asset '{}' has a disallowed download URL ({}) — ignoring",
+            picked.name,
+            picked.browser_download_url
+        );
+        return None;
+    }
+    Some(picked)
 }
 
 /// Blocking entry point used by both the background `spawn_check` thread
@@ -406,7 +489,12 @@ mod tests {
     fn make_asset(name: &str) -> GitHubAsset {
         GitHubAsset {
             name: name.to_string(),
-            browser_download_url: format!("https://example.com/{name}"),
+            // US-007: an allow-listed host so `pick_asset`'s URL guard
+            // accepts these fixtures (real release assets live under
+            // github.com/.../releases/download/).
+            browser_download_url: format!(
+                "https://github.com/ArthurDEV44/paneflow/releases/download/v0/{name}"
+            ),
         }
     }
 
@@ -444,6 +532,97 @@ mod tests {
         InstallMethod::WindowsMsi {
             install_path: PathBuf::from("C:/Program Files/PaneFlow"),
         }
+    }
+
+    // ─── US-007: feed override + asset URL validation ─────────────────────
+
+    #[test]
+    fn url_host_extracts_authority() {
+        assert_eq!(url_host("api.github.com/repos/x"), "api.github.com");
+        assert_eq!(url_host("api.github.com:443/x"), "api.github.com");
+        assert_eq!(url_host("127.0.0.1:8080/latest"), "127.0.0.1");
+        assert_eq!(url_host("[::1]:9000/latest"), "::1");
+        // userinfo trick: the real host is after the '@'.
+        assert_eq!(url_host("api.github.com@evil.com/x"), "evil.com");
+        assert_eq!(url_host("github.com"), "github.com");
+    }
+
+    #[test]
+    fn https_allowlisted_host_allowed_in_release() {
+        // `false` == release build (no debug assertions).
+        assert!(is_allowed_update_url_impl(
+            "https://api.github.com/repos/ArthurDEV44/paneflow/releases/latest",
+            false
+        ));
+        assert!(is_allowed_update_url_impl(
+            "https://github.com/ArthurDEV44/paneflow/releases/download/v1/x.tar.gz",
+            false
+        ));
+    }
+
+    #[test]
+    fn https_offdomain_host_rejected() {
+        assert!(!is_allowed_update_url_impl(
+            "https://evil.com/latest",
+            false
+        ));
+        // Suffix attack: `api.github.com.evil.com` must NOT match.
+        assert!(!is_allowed_update_url_impl(
+            "https://api.github.com.evil.com/latest",
+            false
+        ));
+        // userinfo attack: real host is evil.com.
+        assert!(!is_allowed_update_url_impl(
+            "https://api.github.com@evil.com/latest",
+            false
+        ));
+    }
+
+    #[test]
+    fn plain_http_nonloopback_is_release_rejected_debug_allowed() {
+        // Release build rejects cleartext http to an arbitrary host …
+        assert!(!is_allowed_update_url_impl("http://evil.com/latest", false));
+        // … but a dev build accepts it (local mirror convenience).
+        assert!(is_allowed_update_url_impl("http://evil.com/latest", true));
+    }
+
+    #[test]
+    fn loopback_http_allowed_in_all_builds() {
+        // The e2e harness serves the fixture over http://127.0.0.1 and runs
+        // a release binary, so loopback http must pass even with
+        // `allow_insecure_http == false`.
+        for url in [
+            "http://127.0.0.1:8080/latest",
+            "http://localhost:9000/latest",
+            "http://127.0.0.1:1/latest",
+        ] {
+            assert!(
+                is_allowed_update_url_impl(url, false),
+                "loopback must be allowed: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_http_scheme_rejected() {
+        assert!(!is_allowed_update_url_impl("ftp://api.github.com/x", true));
+        assert!(!is_allowed_update_url_impl("file:///etc/passwd", true));
+        assert!(!is_allowed_update_url_impl("api.github.com/x", true));
+    }
+
+    #[test]
+    fn pick_asset_drops_offdomain_download_url() {
+        // A release JSON whose asset URL points off-domain must yield None
+        // (title bar falls back to the release page) rather than streaming
+        // from an attacker-chosen host.
+        let assets = vec![GitHubAsset {
+            name: "paneflow-0.3.9-x86_64.tar.gz".to_string(),
+            browser_download_url: "https://evil.example/paneflow-0.3.9-x86_64.tar.gz".to_string(),
+        }];
+        assert!(
+            pick_asset(&assets, "x86_64", tar_gz()).is_none(),
+            "off-domain asset URL must be rejected"
+        );
     }
 
     #[test]
