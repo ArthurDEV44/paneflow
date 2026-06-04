@@ -275,6 +275,11 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics",
     "Win32_System_Diagnostics_ToolHelp",
+    # US-009 (prd-audit-remediation): IsWow64Process2 + IMAGE_FILE_MACHINE_*
+    # for native-host arch detection (see past WOW64 emulation on ARM64
+    # Windows). IsWow64Process2/GetCurrentProcess live in _Threading above;
+    # the IMAGE_FILE_MACHINE_* constants live here.
+    "Win32_System_SystemInformation",
 ] }
 # US-003: process-wide Job Object with KILL_ON_JOB_CLOSE so a kill -9
 # of Paneflow (or any uncaught crash) takes all spawned agent CLIs and
