@@ -1098,7 +1098,7 @@ fn run_update_and_exit() -> i32 {
             // the same regression surface (download + SHA verify + atomic
             // swap + restart-path). Leaving the wiring in place so a
             // follow-up can opt in by installing the tool.
-            match crate::update::linux::appimage::run_update(&source_path) {
+            match crate::update::linux::appimage::run_update(&source_path, &asset_url) {
                 Ok(new_bin) => {
                     println!("paneflow-update: ok new={}", new_bin.display());
                     0
