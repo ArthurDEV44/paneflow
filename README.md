@@ -532,7 +532,7 @@ Paneflow reads `paneflow.json` from a platform-appropriate config directory:
 
 ### AI agent buttons
 
-The tab bar can launch the [Claude Code](https://claude.com/claude-code), [Codex](https://github.com/openai/codex), and [opencode](https://github.com/sst/opencode) CLIs. Each button is gated by a `*_button_visible` flag (all default `true`). `claude_code_bypass_permissions` (default `false`) controls whether the Claude Code button launches with `--permission-mode bypassPermissions`; that flag disables every permission prompt and offers no protection against prompt injection; opt in only on machines where that risk is acceptable.
+The tab bar can launch supported coding-agent CLIs. Each button is gated by a `*_button_visible` flag: omitted/null auto-detects the CLI binary, `true` always shows it, and `false` hides it. `claude_code_bypass_permissions` (default `false`) controls whether the Claude Code button launches with `--permission-mode bypassPermissions`; that flag disables every permission prompt and offers no protection against prompt injection; opt in only on machines where that risk is acceptable.
 
 ### Telemetry
 
