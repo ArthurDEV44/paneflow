@@ -170,6 +170,13 @@ impl PaneFlowApp {
     /// exits or is replaced. Drains scrollback inline on the calling thread —
     /// acceptable because these paths are terminal and rare (one final save).
     pub(crate) fn save_session_blocking(&self, cx: &App) {
+        // Cancel any in-flight deferred save: bump the coalescing token so a
+        // background task still sleeping in its debounce wakes to a stale `seq`
+        // and no-ops. Without this, a `save_session` fired moments before quit
+        // could land its (older) snapshot *after* this final synchronous write,
+        // resurrecting pre-quit state (e.g. a just-closed workspace).
+        self.save_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let state = self.build_session_state(cx, &mut None);
         let Some(path) = paneflow_config::loader::session_path() else {
             return;
