@@ -93,6 +93,20 @@ impl PaneFlowApp {
         cx.notify();
     }
 
+    /// US-017: shared completion for every pre-installed update path. Flips to
+    /// `ReadyToRestart`, persists the session (blocking — the next event is a
+    /// process-replacing restart), and queues the `update_installed` analytics
+    /// event WITHOUT a blocking flush (the background `poll_flush` loop drains
+    /// it; the restart click stays zero-I/O). Dedups the six identical blocks
+    /// that previously inlined this — and that previously called
+    /// `flush_blocking` on the render thread, the `[HIGH]` finding.
+    fn on_preinstall_success(&mut self, cx: &mut Context<Self>) {
+        self.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
+        self.save_session_blocking(cx);
+        self.emit_update_success();
+        cx.notify();
+    }
+
     /// Kick off the in-app self-update flow. See the module-level doc for the
     /// branch matrix; on any failure a toast surfaces and the update pill
     /// returns to "Update failed".
@@ -268,11 +282,7 @@ impl PaneFlowApp {
                                 // analytics flush + session save still run
                                 // here (now, while the user is busy), not at
                                 // click time.
-                                app.self_update_status =
-                                    update::SelfUpdateStatus::ReadyToRestart;
-                                app.save_session_blocking(cx);
-                                app.emit_update_success_and_flush();
-                                cx.notify();
+                                app.on_preinstall_success(cx);
                             });
                             cx.update(|cx| {
                                 log::info!(
@@ -411,10 +421,7 @@ impl PaneFlowApp {
                 match result {
                     Ok(updated_path) => {
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session_blocking(cx);
-                            app.emit_update_success_and_flush();
-                            cx.notify();
+                            app.on_preinstall_success(cx);
                         });
                         cx.update(|cx| {
                             log::info!(
@@ -472,10 +479,7 @@ impl PaneFlowApp {
                 match result {
                     Ok(restart_path) => {
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session_blocking(cx);
-                            app.emit_update_success_and_flush();
-                            cx.notify();
+                            app.on_preinstall_success(cx);
                         });
                         cx.update(|cx| {
                             log::info!(
@@ -512,10 +516,7 @@ impl PaneFlowApp {
                 match result {
                     Ok(restart_path) => {
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session_blocking(cx);
-                            app.emit_update_success_and_flush();
-                            cx.notify();
+                            app.on_preinstall_success(cx);
                         });
                         cx.update(|cx| {
                             log::info!(
@@ -557,10 +558,7 @@ impl PaneFlowApp {
                 match result {
                     Ok(restart_path) => {
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session_blocking(cx);
-                            app.emit_update_success_and_flush();
-                            cx.notify();
+                            app.on_preinstall_success(cx);
                         });
                         cx.update(|cx| {
                             log::info!(
@@ -643,10 +641,7 @@ impl PaneFlowApp {
                 match update::installed_binary_path() {
                     Ok(path) => {
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session_blocking(cx);
-                            app.emit_update_success_and_flush();
-                            cx.notify();
+                            app.on_preinstall_success(cx);
                         });
                         cx.update(|cx| {
                             log::info!(
