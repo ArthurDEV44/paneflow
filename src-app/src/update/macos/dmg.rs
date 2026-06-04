@@ -55,27 +55,81 @@ const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// `$HOME/.cache`.
 const MAX_DMG_BYTES: u64 = 500 * 1024 * 1024;
 
-/// Canonical macOS install location of the PaneFlow bundle. The DMG
-/// updater always replaces at this path — a user who dragged the bundle
-/// to `$HOME/Applications` is detected as `InstallMethod::AppBundle`
-/// with a non-`/Applications` `bundle_path`, and (today) falls through
-/// to the generic "no updater wired" error rather than silently writing
-/// to `/Applications`.
-const INSTALL_DIR: &str = "/Applications/PaneFlow.app";
-
-/// Post-install restart target — passed to `cx.set_restart_path()`.
-const INSTALLED_BINARY: &str = "/Applications/PaneFlow.app/Contents/MacOS/paneflow";
-
-/// Run the DMG self-update end-to-end. Resolves `$HOME`, delegates to
-/// [`install_in`], and returns the post-swap restart target on success.
-pub fn install(asset_url: &str) -> Result<PathBuf> {
+/// Run the DMG self-update end-to-end. Replaces the bundle **at its detected
+/// location** (`bundle_path`, from `InstallMethod::AppBundle`) rather than a
+/// hardcoded `/Applications/PaneFlow.app` (US-004) — so a user who installed
+/// into `~/Applications` is updated in place. A bundle outside an expected
+/// location is refused: writing into an arbitrary path the user dragged the
+/// app to would be surprising and unsafe.
+pub fn install(asset_url: &str, bundle_path: &Path) -> Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .context("HOME environment variable is not set")?;
+
+    if !is_expected_bundle_location(bundle_path, &home) {
+        return Err(anyhow::Error::new(UpdateError::InstallDeclined {
+            message: format!(
+                "PaneFlow is installed at an unexpected location ({}); reinstall from the DMG into /Applications or ~/Applications to enable in-app updates.",
+                bundle_path.display()
+            ),
+        }));
+    }
+
     let cache_dir = home.join(".cache").join("paneflow");
-    let install_dir = PathBuf::from(INSTALL_DIR);
-    install_in(asset_url, &install_dir, &cache_dir, &HdiutilProcessRunner)?;
-    Ok(PathBuf::from(INSTALLED_BINARY))
+    install_in(asset_url, bundle_path, &cache_dir, &HdiutilProcessRunner)?;
+    Ok(bundle_path.join("Contents").join("MacOS").join("paneflow"))
+}
+
+/// True when `bundle_path` sits directly under `/Applications` or
+/// `$HOME/Applications` — the two locations the DMG updater is allowed to
+/// replace in place (US-004). Pure path logic, unit-tested on Linux CI.
+fn is_expected_bundle_location(bundle_path: &Path, home: &Path) -> bool {
+    let Some(parent) = bundle_path.parent() else {
+        return false;
+    };
+    parent == Path::new("/Applications") || parent == home.join("Applications")
+}
+
+/// Gatekeeper / code-signature verification of `bundle` (US-004), fail-closed.
+/// `codesign --verify --strict --deep` proves the signature is intact and
+/// covers every nested item; `spctl --assess --type execute` proves the
+/// bundle is notarised / accepted by the system policy. Either tool exiting
+/// nonzero rejects the update with a tagged `IntegrityMismatch`.
+///
+/// macOS-only; untestable on the Linux CI leg (no `codesign`/`spctl`, no
+/// notarised fixture) — exercised by the macOS release leg against the real
+/// signed bundle.
+#[cfg(target_os = "macos")]
+fn verify_macos_bundle(bundle: &Path) -> Result<()> {
+    run_gatekeeper_tool(
+        "codesign",
+        &["--verify", "--strict", "--deep", "--verbose=2"],
+        bundle,
+    )?;
+    run_gatekeeper_tool("spctl", &["--assess", "--type", "execute"], bundle)?;
+    Ok(())
+}
+
+/// Spawn a single Gatekeeper tool (`codesign` / `spctl`) against `bundle` and
+/// map a nonzero exit to a fail-closed `IntegrityMismatch`.
+#[cfg(target_os = "macos")]
+fn run_gatekeeper_tool(tool: &str, args: &[&str], bundle: &Path) -> Result<()> {
+    let out = Command::new(tool)
+        .args(args)
+        .arg(bundle)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("spawn {tool} for bundle verification"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    Err(anyhow::Error::new(super::super::error::IntegrityMismatch {
+        expected: "valid macOS code signature".to_string(),
+        got: format!("{tool} rejected the bundle: {}", stderr.trim()),
+    }))
 }
 
 /// Testable core. Parameterised on:
@@ -122,6 +176,17 @@ fn install_in(
         runner,
         mount: mounted.clone(),
     };
+
+    // US-004: OS-native gatekeeper check on the bundle inside the (read-only,
+    // signature-verified) mounted DMG before we copy it into place —
+    // fail-closed, a second layer over the minisign verification of the DMG
+    // bytes. cfg(macos) so the Linux/Windows compile-closure and the
+    // platform-neutral copy/swap unit tests stay free of `codesign`/`spctl`.
+    #[cfg(target_os = "macos")]
+    if let Err(e) = verify_macos_bundle(&mounted.join("PaneFlow.app")) {
+        let _ = std::fs::remove_file(&dmg);
+        return Err(e);
+    }
 
     let swap_result = copy_and_swap(&mounted, install_dir);
 
@@ -470,6 +535,38 @@ mod tests {
         let (old, new) = staging_dirs(Path::new("/Applications/PaneFlow.app")).unwrap();
         assert_eq!(old, PathBuf::from("/Applications/PaneFlow.app.old"));
         assert_eq!(new, PathBuf::from("/Applications/PaneFlow.app.new"));
+    }
+
+    #[test]
+    fn expected_bundle_location_accepts_applications_dirs() {
+        let home = Path::new("/Users/alice");
+        assert!(is_expected_bundle_location(
+            Path::new("/Applications/PaneFlow.app"),
+            home
+        ));
+        assert!(is_expected_bundle_location(
+            Path::new("/Users/alice/Applications/PaneFlow.app"),
+            home
+        ));
+    }
+
+    #[test]
+    fn expected_bundle_location_rejects_arbitrary_paths() {
+        let home = Path::new("/Users/alice");
+        // US-004: a drag-install to an unexpected location is refused.
+        assert!(!is_expected_bundle_location(
+            Path::new("/opt/third-party/PaneFlow.app"),
+            home
+        ));
+        assert!(!is_expected_bundle_location(
+            Path::new("/Users/alice/Downloads/PaneFlow.app"),
+            home
+        ));
+        // Another user's Applications dir is not ours.
+        assert!(!is_expected_bundle_location(
+            Path::new("/Users/bob/Applications/PaneFlow.app"),
+            home
+        ));
     }
 
     // ── Error classification ─────────────────────────────────────────

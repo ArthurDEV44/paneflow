@@ -539,13 +539,17 @@ impl PaneFlowApp {
         // `InstallMethod::AppBundle` variant is only produced on macOS
         // by `install_method::detect()`, so on Linux / Windows this
         // branch is runtime-dead without needing a `#[cfg(target_os)]`.
-        if let update::install_method::InstallMethod::AppBundle { .. } = &method {
+        if let update::install_method::InstallMethod::AppBundle { bundle_path } = &method {
             let url = asset_url.clone();
+            // US-004: replace the bundle at its detected location, not a
+            // hardcoded /Applications path.
+            let bundle = bundle_path.clone();
             self.self_update_status = update::SelfUpdateStatus::Downloading;
             cx.notify();
 
             cx.spawn(async move |this, cx| {
-                let result = smol::unblock(move || update::macos::dmg::install(&url)).await;
+                let result =
+                    smol::unblock(move || update::macos::dmg::install(&url, &bundle)).await;
                 match result {
                     Ok(restart_path) => {
                         let _ = this.update(cx, |app, cx| {
