@@ -102,6 +102,18 @@ fn install_with(
         return Err(e);
     }
 
+    // US-005: OS-native Authenticode check as a second, independent layer on
+    // top of the minisign verification above. Fail-closed — an unsigned or
+    // untrusted MSI is deleted and aborted before msiexec ever sees it. No
+    // publisher-name string compare (forgeable); we trust the result of
+    // `WinVerifyTrust` chaining to a trusted root. Compiled out on non-Windows
+    // (the MSI path is unreachable there).
+    #[cfg(target_os = "windows")]
+    if let Err(e) = windows_verify_trust(msi_path) {
+        let _ = std::fs::remove_file(msi_path);
+        return Err(e);
+    }
+
     match runner.run_installer(msi_path, log_path) {
         Ok(()) => Ok(()),
         Err(MsiexecError::NotFound) => Err(anyhow::Error::new(UpdateError::EnvironmentBroken {
@@ -114,6 +126,93 @@ fn install_with(
         }
         Err(MsiexecError::NonZeroExit { code }) => Err(map_exit_code(code, log_path)),
     }
+}
+
+/// Verify the Authenticode signature chain of `msi` with `WinVerifyTrust`
+/// (US-005). Fail-closed: any result other than "trusted" returns a tagged
+/// `IntegrityMismatch` so the toast reads "corrupt or tampered".
+///
+/// This is defense-in-depth on top of US-001's minisign check — it validates
+/// the Microsoft Authenticode chain (our signing certificate → a trusted
+/// root), which minisign does not cover. We trust `WinVerifyTrust`'s chain
+/// result, never a forgeable publisher-name string compare.
+///
+/// Two-pass `VERIFY` then `CLOSE` is the documented usage (the second call
+/// frees `hWVTStateData`). Untestable on the Linux/macOS CI legs (no
+/// `wintrust.dll`, no signed-MSI fixture); the Windows release leg exercises
+/// it against the real signed artifact. Struct/const names pinned against
+/// windows-sys 0.59.
+#[cfg(target_os = "windows")]
+fn windows_verify_trust(msi: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Security::WinTrust::{
+        WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_FILE_INFO, WTD_CHOICE_FILE,
+        WTD_REVOKE_NONE, WTD_SAFER_FLAG, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY,
+        WTD_UI_NONE, WinVerifyTrust,
+    };
+
+    // Wide, NUL-terminated path. Must outlive the WinVerifyTrust call (it
+    // backs the `pcwszFilePath` pointer below).
+    let wide: Vec<u16> = msi
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // No parent window — WTD_UI_NONE means WinVerifyTrust never shows UI.
+    let hwnd: windows_sys::Win32::Foundation::HWND = std::ptr::null_mut();
+
+    // SAFETY: zero-init is a valid bit pattern for these `repr(C)` structs
+    // (null pointers, zero enums); we then set every field WinVerifyTrust
+    // reads for a file check.
+    let mut file_info: WINTRUST_FILE_INFO = unsafe { std::mem::zeroed() };
+    file_info.cbStruct = std::mem::size_of::<WINTRUST_FILE_INFO>() as u32;
+    file_info.pcwszFilePath = wide.as_ptr();
+
+    let mut data: WINTRUST_DATA = unsafe { std::mem::zeroed() };
+    data.cbStruct = std::mem::size_of::<WINTRUST_DATA>() as u32;
+    data.dwUIChoice = WTD_UI_NONE;
+    data.fdwRevocationChecks = WTD_REVOKE_NONE;
+    data.dwUnionChoice = WTD_CHOICE_FILE;
+    // Writing a union field is safe (only reads are unsafe).
+    data.Anonymous.pFile = &mut file_info;
+    data.dwStateAction = WTD_STATEACTION_VERIFY;
+    data.dwProvFlags = WTD_SAFER_FLAG;
+
+    let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    // SAFETY: standard WinVerifyTrust FFI. `action`/`data` outlive the call;
+    // `wide` + `file_info` back the pointers reachable through `data`.
+    let status = unsafe {
+        WinVerifyTrust(
+            hwnd,
+            &mut action,
+            &mut data as *mut WINTRUST_DATA as *mut core::ffi::c_void,
+        )
+    };
+
+    // Always run the CLOSE pass to free the provider state, regardless of
+    // the verify result.
+    data.dwStateAction = WTD_STATEACTION_CLOSE;
+    // SAFETY: same data block; CLOSE frees `hWVTStateData`.
+    unsafe {
+        WinVerifyTrust(
+            hwnd,
+            &mut action,
+            &mut data as *mut WINTRUST_DATA as *mut core::ffi::c_void,
+        );
+    }
+
+    if status == 0 {
+        // ERROR_SUCCESS / S_OK → the signature chains to a trusted root.
+        return Ok(());
+    }
+
+    // Any nonzero HRESULT (TRUST_E_NOSIGNATURE, TRUST_E_SUBJECT_NOT_TRUSTED,
+    // CERT_E_UNTRUSTEDROOT, …) is a fail-closed rejection.
+    Err(anyhow::Error::new(super::super::error::IntegrityMismatch {
+        expected: "trusted Authenticode signature".to_string(),
+        got: format!("WinVerifyTrust returned 0x{:08X}", status as u32),
+    }))
 }
 
 /// Download the MSI, verify its detached **minisign** signature (US-001),
@@ -250,6 +349,13 @@ impl Msiexec for MsiexecProcessRunner {
             Err(_) => return Err(MsiexecError::NotFound),
         };
 
+        // US-005: stdout/stderr go to `Stdio::null()`, NOT `piped()`. With
+        // `.status()` (which never reads the pipes) a `piped()` child that
+        // writes enough to fill the OS pipe buffer would block forever —
+        // a latent deadlock. msiexec under `/qb` shows its own progress UI
+        // and writes everything we need to the `/l*v` verbose log file, so
+        // its console streams carry no information we consume. Discarding
+        // them removes the deadlock with zero diagnostic loss.
         let out = Command::new(&msiexec)
             .arg("/i")
             .arg(msi)
@@ -258,8 +364,8 @@ impl Msiexec for MsiexecProcessRunner {
             .arg("/l*v")
             .arg(log)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .map_err(|e| MsiexecError::SpawnFailed(anyhow::Error::new(e)))?;
 

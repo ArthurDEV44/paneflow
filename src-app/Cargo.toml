@@ -280,6 +280,12 @@ windows-sys = { version = "0.59", features = [
     # Windows). IsWow64Process2/GetCurrentProcess live in _Threading above;
     # the IMAGE_FILE_MACHINE_* constants live here.
     "Win32_System_SystemInformation",
+    # US-005 (prd-audit-remediation): WinVerifyTrust Authenticode check on the
+    # downloaded MSI before msiexec (defense-in-depth over minisign). The
+    # WINTRUST_DATA struct is gated on _Cryptography, so both features are
+    # required; WINTRUST_FILE_INFO + the WTD_* consts live under _WinTrust.
+    "Win32_Security_WinTrust",
+    "Win32_Security_Cryptography",
 ] }
 # US-003: process-wide Job Object with KILL_ON_JOB_CLOSE so a kill -9
 # of Paneflow (or any uncaught crash) takes all spawned agent CLIs and
