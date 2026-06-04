@@ -65,21 +65,29 @@ pub fn run_update(asset_url: &str) -> Result<PathBuf> {
 /// `$HOME`.
 fn run_update_in(asset_url: &str, app_dir: &Path, cache_dir: &Path) -> Result<()> {
     let (old_dir, new_dir) = staging_dirs(app_dir)?;
+    let parent = app_dir
+        .parent()
+        .context("app_dir has no parent directory — refusing to swap at filesystem root")?;
 
-    // Fail fast if a crashed prior update left `.old` behind — silently
-    // overwriting it could blow away files the user might need to
-    // recover.
-    if old_dir.exists() {
-        bail!(
-            "Previous update did not clean up. Delete `{}` and retry.",
-            old_dir.display()
-        );
-    }
+    // US-008: serialise concurrent updates. Two PaneFlow instances both
+    // triggering an update would otherwise race on the fixed-name `.old` /
+    // `.new` staging dirs and the two-rename swap. The lock is an OS-advisory
+    // flock that auto-releases when the handle drops — including on process
+    // death — so a crash never leaves a stale lock behind. Held for the whole
+    // staging+swap below.
+    let _update_lock = acquire_update_lock(parent)?;
+
+    // US-008: crash recovery + stale-`.old` cleanup. Replaces the old hard
+    // `bail!` on any `.old`: if a prior update died mid-swap (live `app_dir`
+    // renamed to `.old`, but `.new → app_dir` never ran) the live install is
+    // restored; an otherwise-leftover `.old` (failed housekeeping, live
+    // install intact) is removed so we don't bail forever.
+    recover_and_clean_staging(app_dir, &old_dir)?;
+
     // And if `.new` survived a crash, clean it up so extract() doesn't
-    // merge into a stale tree. Unlike `.old` (hard abort because it may
-    // hold recoverable state), `.new` is pure scratch — safe to remove,
-    // but log a warning if the cleanup itself fails so the downstream
-    // extract error isn't misdiagnosed as a tarball problem.
+    // merge into a stale tree. `.new` is pure scratch — safe to remove, but
+    // log a warning if the cleanup itself fails so the downstream extract
+    // error isn't misdiagnosed as a tarball problem.
     if new_dir.exists()
         && let Err(e) = std::fs::remove_dir_all(&new_dir)
     {
@@ -118,6 +126,84 @@ fn staging_dirs(app_dir: &Path) -> Result<(PathBuf, PathBuf)> {
         parent.join(format!("{name}.old")),
         parent.join(format!("{name}.new")),
     ))
+}
+
+/// Acquire an exclusive, OS-advisory lock so two PaneFlow instances can't
+/// stage+swap concurrently (US-008). The lock auto-releases when the returned
+/// handle drops — including on process death — so a crash never leaves a
+/// stale lock that would block future updates.
+///
+/// Unix-only (`flock`). The tar.gz install method is Linux-only at runtime
+/// (the dispatcher routes only `InstallMethod::TarGz` here, and that is never
+/// produced on Windows), so the non-Unix arm is a compile-only no-op.
+fn acquire_update_lock(parent: &Path) -> Result<Option<std::fs::File>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let lock_path = parent.join(".paneflow-update.lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .with_context(|| format!("open update lock {}", lock_path.display()))?;
+        // SAFETY: `flock` on a freshly opened, owned fd. `LOCK_NB` makes it
+        // non-blocking — it returns `EWOULDBLOCK` if another instance holds
+        // the lock rather than hanging the update thread.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+                bail!(
+                    "Another PaneFlow update is already in progress. Wait for it to finish, then retry."
+                );
+            }
+            return Err(err).context("flock update lock");
+        }
+        Ok(Some(file))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        Ok(None)
+    }
+}
+
+/// Recover from a crash mid-swap and clean a stale `.old` (US-008). Replaces
+/// the old hard `bail!` on any pre-existing `.old`:
+///
+/// - `.old` present, live `app_dir` **missing** → the prior update died
+///   between the two swap renames; restore the live install by renaming
+///   `.old` back to `app_dir`.
+/// - `.old` present, live `app_dir` intact → leftover from a failed
+///   housekeeping `rm` (the previous version); remove it best-effort so we
+///   don't bail forever.
+/// - neither → no-op.
+fn recover_and_clean_staging(app_dir: &Path, old_dir: &Path) -> Result<()> {
+    if !old_dir.exists() {
+        return Ok(());
+    }
+    if !app_dir.exists() {
+        std::fs::rename(old_dir, app_dir).with_context(|| {
+            format!(
+                "recover live install {} ← {}",
+                app_dir.display(),
+                old_dir.display()
+            )
+        })?;
+        log::warn!(
+            "self-update/targz: recovered live install from a crashed prior update ({})",
+            app_dir.display()
+        );
+        return Ok(());
+    }
+    if let Err(e) = std::fs::remove_dir_all(old_dir) {
+        log::warn!(
+            "self-update/targz: could not remove stale {}: {e}",
+            old_dir.display()
+        );
+    }
+    Ok(())
 }
 
 /// Download the asset, verify its detached **minisign** signature, and
@@ -560,23 +646,75 @@ mod tests {
         assert!(!old_dir.exists(), ".old must not exist on failure");
     }
 
-    #[test]
-    fn run_update_in_aborts_when_dot_old_preexists() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let root = tmp.path();
-        let app_dir = root.join("home/.local/paneflow.app");
-        std::fs::create_dir_all(&app_dir).unwrap();
-        let (old_dir, _new_dir) = staging_dirs(&app_dir).unwrap();
-        std::fs::create_dir_all(&old_dir).unwrap();
+    // ── US-008: crash recovery + concurrency lock ──────────────────────
 
-        let cache_dir = root.join("home/.cache/paneflow");
-        // Bogus URL — we must bail BEFORE any network call.
-        let r = run_update_in("http://127.0.0.1:1/should-never-hit", &app_dir, &cache_dir);
-        let err = r.unwrap_err().to_string();
-        assert!(
-            err.contains("Previous update did not clean up"),
-            "got: {err}"
+    #[test]
+    fn recover_restores_live_install_when_app_dir_missing() {
+        // Crash mid-swap: `.old` holds the only copy, live `app_dir` is gone.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let app_dir = tmp.path().join(".local/paneflow.app");
+        let (old_dir, _new) = staging_dirs(&app_dir).unwrap();
+        std::fs::create_dir_all(old_dir.join("bin")).unwrap();
+        std::fs::write(old_dir.join("bin/paneflow"), b"prev-version").unwrap();
+
+        recover_and_clean_staging(&app_dir, &old_dir).unwrap();
+
+        assert!(app_dir.exists(), "live install must be restored from .old");
+        assert_eq!(
+            std::fs::read(app_dir.join("bin/paneflow")).unwrap(),
+            b"prev-version"
         );
+        assert!(!old_dir.exists(), ".old must be consumed by the recovery");
+    }
+
+    #[test]
+    fn recover_removes_stale_old_when_app_dir_intact() {
+        // Leftover `.old` (failed housekeeping) coexisting with a live
+        // install: clean it up and proceed, never bail forever.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let app_dir = tmp.path().join(".local/paneflow.app");
+        std::fs::create_dir_all(app_dir.join("bin")).unwrap();
+        std::fs::write(app_dir.join("bin/paneflow"), b"live").unwrap();
+        let (old_dir, _new) = staging_dirs(&app_dir).unwrap();
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::write(old_dir.join("junk"), b"x").unwrap();
+
+        recover_and_clean_staging(&app_dir, &old_dir).unwrap();
+
+        assert!(!old_dir.exists(), "stale .old must be removed");
+        assert_eq!(
+            std::fs::read(app_dir.join("bin/paneflow")).unwrap(),
+            b"live",
+            "live install must be untouched"
+        );
+    }
+
+    #[test]
+    fn recover_is_noop_when_no_old_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let app_dir = tmp.path().join(".local/paneflow.app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let (old_dir, _new) = staging_dirs(&app_dir).unwrap();
+        // No `.old` — nothing to do, must succeed.
+        recover_and_clean_staging(&app_dir, &old_dir).unwrap();
+        assert!(app_dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_lock_is_exclusive_then_released_on_drop() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let parent = tmp.path();
+        // First holder succeeds.
+        let guard = acquire_update_lock(parent).unwrap();
+        assert!(guard.is_some());
+        // A second concurrent acquisition must fail (lock held).
+        let second = acquire_update_lock(parent);
+        assert!(second.is_err(), "second concurrent lock must be refused");
+        // Dropping the first releases the flock; a fresh acquisition succeeds.
+        drop(guard);
+        let third = acquire_update_lock(parent).unwrap();
+        assert!(third.is_some(), "lock must be re-acquirable after release");
     }
 
     #[test]
