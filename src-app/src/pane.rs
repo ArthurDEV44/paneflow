@@ -213,6 +213,13 @@ pub struct Pane {
     /// Workspace-specific command buttons rendered in the tab bar after the
     /// built-in defaults. Populated/updated by `Workspace::propagate_custom_buttons`.
     pub custom_buttons: Vec<ButtonCommand>,
+    /// US-015: cached `paneflow.json` so `render_tab_bar` never calls the
+    /// blocking `load_config()` per frame (the agent-button visibility gate and
+    /// the launch command read it). Hydrated at creation, refreshed by
+    /// `PaneFlowApp::process_config_changes` → `Workspace::propagate_config` on
+    /// every `ConfigWatcher` reload, so a Settings flip (e.g. the Claude bypass
+    /// toggle) takes effect on the next click without a per-frame disk read.
+    pub cached_config: paneflow_config::schema::PaneFlowConfig,
     /// Inline tab-rename state (US-013). `None` when not renaming.
     rename: Option<TabRename>,
     /// Focus target for the inline rename input, so keystrokes route to the
@@ -262,6 +269,9 @@ impl Pane {
             zoomed: false,
             workspace_id,
             custom_buttons: Vec::new(),
+            // US-015: hydrate the tab-bar config cache once at creation (not
+            // per frame); refreshed on ConfigWatcher reload via propagation.
+            cached_config: paneflow_config::loader::load_config(),
             rename: None,
             rename_focus: cx.focus_handle(),
             drag_split_direction: None,
@@ -290,6 +300,8 @@ impl Pane {
             zoomed: false,
             workspace_id,
             custom_buttons: Vec::new(),
+            // US-015: see `Pane::new`.
+            cached_config: paneflow_config::loader::load_config(),
             rename: None,
             rename_focus: cx.focus_handle(),
             drag_split_direction: None,
@@ -1265,10 +1277,12 @@ impl Pane {
         // Built-in agent launcher buttons (the 15 CLI coding agents).
         // `TerminalAgent::visible` applies the per-agent `*_button_visible`
         // gate and is the same source of truth the Agents-view picker iterates.
-        // The shell-aware launch command is read fresh on click so Claude Code's
-        // bypass toggle takes effect without forcing a re-render.
-        let config = paneflow_config::loader::load_config();
-        for agent in crate::agent_launcher::TerminalAgent::visible(&config) {
+        // US-015: read the cached config (no per-frame `load_config()`); the
+        // click handler reads `this.cached_config` live so the Claude bypass
+        // toggle still takes effect on the next click (the cache is refreshed
+        // by the ConfigWatcher propagation).
+        let config = &self.cached_config;
+        for agent in crate::agent_launcher::TerminalAgent::visible(config) {
             let tint: Hsla = match agent.accent() {
                 Some(c) => rgb(c).into(),
                 None => tab_colors().text,
@@ -1282,7 +1296,9 @@ impl Pane {
                     let Some(terminal) = this.active_terminal_opt() else {
                         return;
                     };
-                    let cmd = agent.launch_command(&paneflow_config::loader::load_config());
+                    // US-015: read the bypass field from the pane's cache (kept
+                    // fresh by ConfigWatcher propagation) instead of a disk read.
+                    let cmd = agent.launch_command(&this.cached_config);
                     terminal.read(cx).send_command(&cmd);
                 }),
             ));

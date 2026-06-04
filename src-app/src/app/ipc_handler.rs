@@ -229,6 +229,10 @@ impl PaneFlowApp {
             // pick up the reload without a per-frame `load_config()`. Last use
             // of `config` — move it in.
             self.cached_config = config;
+            // US-015: push the refreshed config to every pane's tab-bar cache.
+            for ws in &self.workspaces {
+                ws.propagate_config(&self.cached_config, cx);
+            }
             cx.notify();
         }
 

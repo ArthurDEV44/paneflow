@@ -237,3 +237,38 @@ fn walk_and_push_buttons(node: &LayoutTree, buttons: &[ButtonCommand], cx: &mut 
         }
     }
 }
+
+impl Workspace {
+    /// US-015: push a refreshed [`PaneFlowConfig`] to every `Pane` in the
+    /// workspace's layout so the tab bar re-renders against the new config
+    /// without a per-frame `load_config()`. Called from
+    /// `PaneFlowApp::process_config_changes` on every ConfigWatcher reload.
+    pub fn propagate_config(&self, config: &paneflow_config::schema::PaneFlowConfig, cx: &mut App) {
+        if let Some(root) = &self.root {
+            walk_and_push_config(root, config, cx);
+        }
+        if let Some(saved) = &self.saved_layout {
+            walk_and_push_config(saved, config, cx);
+        }
+    }
+}
+
+fn walk_and_push_config(
+    node: &LayoutTree,
+    config: &paneflow_config::schema::PaneFlowConfig,
+    cx: &mut App,
+) {
+    match node {
+        LayoutTree::Leaf(pane) => {
+            pane.update(cx, |p, cx| {
+                p.cached_config = config.clone();
+                cx.notify();
+            });
+        }
+        LayoutTree::Container { children, .. } => {
+            for child in children {
+                walk_and_push_config(&child.node, config, cx);
+            }
+        }
+    }
+}
