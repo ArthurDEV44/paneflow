@@ -296,6 +296,15 @@ jobs:
       - name: Build release binary
         env:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          # US-002 (prd-audit-remediation): bake the minisign public key(s)
+          # into the binary so the self-updater can verify downloaded
+          # artifacts (option_env! in update/signature.rs). PUBLIC keys →
+          # repository *variables*, never secrets. Two slots (current + next)
+          # for zero-downtime rotation; an unset var resolves to "" which
+          # the verifier treats as "no key in this slot". See
+          # docs/self-update-signing.md.
+          PANEFLOW_MINISIGN_PUBKEY: ${{ vars.PANEFLOW_MINISIGN_PUBKEY }}
+          PANEFLOW_MINISIGN_PUBKEY_NEXT: ${{ vars.PANEFLOW_MINISIGN_PUBKEY_NEXT }}
         run: cargo build --release -p paneflow-app --target ${{ matrix.target }}
 
       # --- Phase 1 artifacts ---
@@ -1381,6 +1390,13 @@ jobs:
       - smoke-test-ubuntu
       - smoke-test-fedora
     runs-on: ubuntu-22.04
+    # US-002 (prd-audit-remediation): gate the publish job (which holds the
+    # minisign signing key) behind the `release` environment, so the private
+    # key can be an *environment* secret with optional required-reviewer
+    # protection rather than a bare repo secret. GitHub auto-creates the
+    # environment unprotected on first run; add reviewers in repo settings to
+    # require manual approval before a tag is signed + published.
+    environment: release
     permissions:
       contents: write
     steps:
@@ -1394,6 +1410,43 @@ jobs:
           path: release-assets
           pattern: release-assets-*
           merge-multiple: true
+
+      # US-002: sign every shipped artifact with the project minisign key so
+      # clients can verify downloads against the public key baked into their
+      # binary (update/signature.rs). The detached `.minisig` siblings are
+      # picked up by `files: release-assets/*` below. No-op (with a CI warning)
+      # when the key is not yet provisioned — see docs/self-update-signing.md.
+      - name: Sign release artifacts (minisign)
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
+            echo "::warning::MINISIGN_SECRET_KEY not set — release artifacts will be UNSIGNED. Clients with an embedded key will refuse to self-update from this release. Provision the key per docs/self-update-signing.md."
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          # Unencrypted secret key (generated with `minisign -G -W`) written to
+          # a private temp file; the GitHub secret is the only protection.
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "${MINISIGN_SECRET_KEY}" > "$key_file"
+          chmod 600 "$key_file"
+          shopt -s nullglob
+          for f in release-assets/*; do
+            # Skip checksum / signature / zsync siblings — only the primary
+            # artifacts (.tar.gz/.deb/.rpm/.AppImage/.dmg/.msi) are signed.
+            case "$f" in
+              *.sha256|*.minisig|*.zsync) continue ;;
+            esac
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            # Trusted comment binds the artifact name into the signed payload.
+            minisign -S -s "$key_file" -m "$f" \
+              -t "paneflow release artifact ${base}" >/dev/null
+            echo "signed: ${base} -> ${base}.minisig"
+          done
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
