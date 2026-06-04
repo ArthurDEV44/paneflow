@@ -6018,6 +6018,7 @@ name = "paneflow-shim"
 version = "0.3.8"
 dependencies = [
  "libc",
+ "same-file",
  "serde_json",
  "tempfile",
 ]

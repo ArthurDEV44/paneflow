@@ -113,8 +113,7 @@ where
     // PATH is walked in full — safer than silently skipping nothing).
     let self_canon = self_dir.and_then(|d| std::fs::canonicalize(d).ok());
     // US-017 (cli-hardening-followup-2026-Q3): capture the shim's
-    // own file identity (Unix: `(st_dev, st_ino)`; Windows: dir-only
-    // fallback, see `is_same_file_as_shim`). A candidate matching
+    // own file identity. A candidate matching
     // this identity is the shim itself reached via a hardlink and
     // must be skipped to break the recursive-spawn loop.
     let self_identity = self_exe.and_then(file_identity);
@@ -147,47 +146,20 @@ where
 }
 
 /// US-017 (cli-hardening-followup-2026-Q3): capture a file's
-/// cross-path identity tuple.
+/// cross-platform identity. `same_file::Handle` uses the native
+/// file identity on Unix and Windows, so hardlinks compare equal
+/// without relying on unstable standard-library APIs.
 ///
-/// - **Unix**: `(st_dev, st_ino)` from `stat(2)`. Two paths return
-///   the same tuple iff they refer to the same on-disk inode --
-///   the canonical hardlink detection on POSIX.
-/// - **Windows**: `(volume_serial_number, file_index)` from
-///   `BY_HANDLE_FILE_INFORMATION` (stable in std since Rust 1.75
-///   via `std::os::windows::fs::MetadataExt`). NTFS hardlinks share
-///   the same file index on the same volume, so this catches the
-///   `mklink /H` attack the same way POSIX inodes do. Returns
-///   `None` when either field is unavailable (rare -- happens on
-///   FAT32 / exFAT volumes where Windows simulates `file_index`
-///   as 0; the comparison then degrades to dir-only via
-///   `same_canonical_dir`).
-///
-/// Returns `None` when the path cannot be stat'd, in which case
+/// Returns `None` when the path cannot be opened, in which case
 /// the comparison degrades to a no-op and the dir-canonicalize
 /// path remains the residual defense.
-#[cfg(unix)]
-fn file_identity(path: &Path) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    let m = std::fs::metadata(path).ok()?;
-    Some((m.dev(), m.ino()))
+fn file_identity(path: &Path) -> Option<same_file::Handle> {
+    same_file::Handle::from_path(path).ok()
 }
 
-#[cfg(windows)]
-fn file_identity(path: &Path) -> Option<(u64, u64)> {
-    use std::os::windows::fs::MetadataExt;
-    let m = std::fs::metadata(path).ok()?;
-    // Both are Option<...> since Rust 1.75 -- they require the
-    // metadata to have been produced through a handle that supports
-    // `GetFileInformationByHandle`. Hand-rolling the FFI would just
-    // duplicate what std already exposes.
-    let vol = m.volume_serial_number()? as u64;
-    let idx = m.file_index()?;
-    Some((vol, idx))
-}
-
-fn is_same_file_as_shim(self_identity: &Option<(u64, u64)>, candidate: &Path) -> bool {
-    match (self_identity, file_identity(candidate)) {
-        (Some(a), Some(b)) => *a == b,
+fn is_same_file_as_shim(self_identity: &Option<same_file::Handle>, candidate: &Path) -> bool {
+    match (self_identity.as_ref(), file_identity(candidate)) {
+        (Some(a), Some(b)) => a == &b,
         _ => false,
     }
 }
@@ -1672,10 +1644,9 @@ mod tests {
 
     /// US-017 (cli-hardening-followup-2026-Q3): a hardlink of the
     /// shim binary planted in a DIFFERENT `$PATH` directory must be
-    /// detected by inode and skipped. The previous dir-only check
+    /// detected by file identity and skipped. The previous dir-only check
     /// let this through, recursively re-invoking the shim every
     /// time the user typed `claude` -- a single-user fork-bomb.
-    #[cfg(unix)]
     #[test]
     fn shim_refuses_hardlink_loop() {
         let shim_dir = tempfile::TempDir::new().unwrap();
@@ -1686,8 +1657,8 @@ mod tests {
         // Hardlink it into the attacker-controlled `$PATH` dir as
         // `claude` -- the dir-canonicalize check at the head of
         // `find_real_binary_in` would NOT catch this, but the
-        // inode comparison must.
-        let attack_link = attacker_dir.path().join("claude");
+        // file-identity comparison must.
+        let attack_link = attacker_dir.path().join(&candidate_names("claude")[0]);
         std::fs::hard_link(&real_shim, &attack_link).expect("hard_link");
 
         // `current_exe` analog: pretend the shim binary is at `real_shim`.

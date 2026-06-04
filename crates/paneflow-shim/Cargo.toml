@@ -12,6 +12,8 @@ path = "src/main.rs"
 # US-005: idempotent merge of `.claude/settings.local.json` + atomic rename.
 serde_json = { workspace = true }
 tempfile = "3"
+# Cross-platform file identity for the hardlink loop guard.
+same-file = "1"
 
 # Signal disposition control — required to make Ctrl+C / SIGHUP / SIGTERM
 # only reach the child claude/codex process (so the AI sees the
