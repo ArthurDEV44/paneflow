@@ -909,6 +909,54 @@ mod tests {
     }
 
     #[test]
+    fn test_resolved_ratios_rejects_nan_and_negative() {
+        // US-056: a corrupt session.json can carry NaN/negative/out-of-range
+        // ratios. They must be clamped, normalized, and never propagate.
+        let node = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: None,
+            ratios: Some(vec![f64::NAN, -0.5, 2.0]),
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        let rs = node.resolved_ratios();
+        assert_eq!(rs.len(), 3);
+        assert!(rs.iter().all(|r| r.is_finite() && *r > 0.0));
+        let sum: f64 = rs.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-9, "ratios must normalize to 1.0");
+    }
+
+    #[test]
+    fn test_resolved_ratios_length_mismatch_falls_back() {
+        // US-056: a ratios array whose length disagrees with the child count
+        // is unrecoverable -> equal shares, never a panic or stale mapping.
+        let node = LayoutNode::Split {
+            direction: "horizontal".to_string(),
+            ratio: None,
+            ratios: Some(vec![0.9]), // 1 ratio, 2 children
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        let rs = node.resolved_ratios();
+        assert_eq!(rs, vec![0.5, 0.5]);
+    }
+
+    #[test]
     fn test_resolved_ratios_fallback_equal() {
         let node = LayoutNode::Split {
             direction: "vertical".to_string(),
