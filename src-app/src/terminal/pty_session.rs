@@ -555,7 +555,17 @@ impl TerminalState {
         #[cfg(target_os = "macos")]
         let pty_master_fd = {
             use std::os::unix::io::AsRawFd;
-            Some(pty.file().as_raw_fd())
+            // US-034: `dup()` the master fd so we own a copy whose lifetime we
+            // control (closed in `Drop`). The borrowed `pty.file().as_raw_fd()`
+            // is closed when the EventLoop (which takes ownership of `pty`
+            // below) tears the PTY down on child exit, and the OS may reuse
+            // that fd number — `tcgetpgrp(stale_fd)` would then report an
+            // unrelated process group, defeating the `p > 0` filter.
+            let raw = pty.file().as_raw_fd();
+            // SAFETY: `raw` is a valid open fd for the PTY master; `dup`
+            // returns a fresh owned fd or -1 on error (filtered out).
+            let dup = unsafe { libc::dup(raw) };
+            (dup >= 0).then_some(dup)
         };
 
         let event_loop = EventLoop::new(
@@ -862,6 +872,12 @@ impl TerminalState {
     /// Fallback for shells that don't emit OSC 7 — used at split time.
     #[cfg(target_os = "linux")]
     pub fn cwd_now(&self) -> Option<std::path::PathBuf> {
+        // US-034: once the child has exited, `child_pid` is stale and the OS
+        // may have reused it for an unrelated process — reading
+        // `/proc/<pid>/cwd` would silently return a third party's CWD. Bail.
+        if self.exited.is_some() {
+            return None;
+        }
         let proc_path = format!("/proc/{}/cwd", self.child_pid);
         std::fs::read_link(&proc_path).ok()
     }
@@ -874,6 +890,12 @@ impl TerminalState {
         use std::ffi::CStr;
         use std::mem::MaybeUninit;
         use std::os::raw::c_void;
+
+        // US-034: after exit, `child_pid` may have been reused — `proc_pidinfo`
+        // would return an unrelated process's CWD. Bail.
+        if self.exited.is_some() {
+            return None;
+        }
 
         let pid = self.child_pid as libc::c_int;
         let mut info = MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
@@ -1090,6 +1112,10 @@ impl TerminalState {
     /// platforms without a cheap lookup — callers fall back to the OSC title.
     #[cfg(target_os = "linux")]
     pub fn foreground_command(&self) -> Option<String> {
+        // US-034: stale `child_pid` after exit may name an unrelated process.
+        if self.exited.is_some() {
+            return None;
+        }
         // The most-recently-spawned child of the shell approximates the
         // foreground job for the common interactive case (one job at a time).
         // With no children the shell is idle → report its own comm so naming
@@ -1113,6 +1139,11 @@ impl TerminalState {
     /// `None` on any failure → caller falls back to the OSC title (US-019).
     #[cfg(target_os = "macos")]
     pub fn foreground_command(&self) -> Option<String> {
+        // US-034: stale `child_pid`/master fd after exit may name an unrelated
+        // process (or a reused fd reports an arbitrary pgid). Bail.
+        if self.exited.is_some() {
+            return None;
+        }
         let pgid = self
             .pty_master_fd
             // SAFETY: `tcgetpgrp` is a pure query on a valid fd; returns -1 on
@@ -1489,6 +1520,18 @@ impl Drop for TerminalState {
     fn drop(&mut self) {
         self.notifier.0.shutdown();
 
+        // US-034: close the dup'd PTY master fd we own (macOS). Done exactly
+        // once here — the fd was duplicated at spawn so `tcgetpgrp` stayed
+        // valid for this session's lifetime independent of the EventLoop's
+        // own copy.
+        #[cfg(target_os = "macos")]
+        if let Some(fd) = self.pty_master_fd.take() {
+            // SAFETY: `fd` is our owned dup; close it once.
+            unsafe {
+                libc::close(fd);
+            }
+        }
+
         // Grace period + force-kill: if the child process ignores the PTY
         // master close signal (SIGHUP on Unix, ClosePseudoConsole on Windows),
         // force-kill it after 100ms.
@@ -1503,7 +1546,12 @@ impl Drop for TerminalState {
         #[cfg(unix)]
         {
             let pid = self.child_pid as i32;
-            if pid > 0 {
+            // US-034: skip the kill ladder entirely once the child has exited.
+            // `child_pid` may have been reused by the OS by now, and signaling
+            // a reused PGID would terminate an unrelated process group — the
+            // synchronous SIGTERM below has the same PID-reuse window as the
+            // delayed SIGKILL. An already-exited child has nothing to kill.
+            if pid > 0 && self.exited.is_none() {
                 // US-001: graceful shutdown ladder — send SIGTERM to the group
                 // synchronously FIRST so agents/shells run their TERM handlers
                 // (state checkpoint, HISTFILE flush) before the 100ms-grace
