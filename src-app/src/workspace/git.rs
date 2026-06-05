@@ -117,6 +117,37 @@ fn canonicalize_or(path: &std::path::Path) -> std::path::PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Lexically collapse `.`/`..` components without touching the filesystem.
+///
+/// US-056: a relative `commondir` (`../..`) joined onto a worktree git dir
+/// yields a path littered with `..`. When the target exists `canonicalize_or`
+/// resolves them, but on a missing/unresolvable path it returns the raw form —
+/// so two sibling worktrees would *not* collapse to the same `repo_root`.
+/// Normalizing first guarantees the best-effort fallback still collapses them.
+/// This mirrors the component walk `canonicalize` performs, minus symlink
+/// resolution (a leading `..` with nothing to pop is preserved verbatim).
+fn normalize_lexically(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut stack: Vec<Component> = Vec::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => match stack.last() {
+                Some(Component::Normal(_)) => {
+                    stack.pop();
+                }
+                _ => stack.push(comp),
+            },
+            other => stack.push(other),
+        }
+    }
+    let mut out = std::path::PathBuf::new();
+    for comp in stack {
+        out.push(comp.as_os_str());
+    }
+    out
+}
+
 /// Resolve the shared (main) `.git` directory for a given worktree git dir.
 ///
 /// For a linked worktree, `git_dir` is `<main>/.git/worktrees/<name>` and holds
@@ -137,7 +168,7 @@ pub fn resolve_main_git_dir(git_dir: &std::path::Path) -> Option<std::path::Path
         if p.is_absolute() {
             p.to_path_buf()
         } else {
-            git_dir.join(p)
+            normalize_lexically(&git_dir.join(p))
         }
     } else {
         git_dir.to_path_buf()
@@ -460,6 +491,23 @@ mod tests {
         let (root_b, _) = resolve_repo_root(&wt_b);
         assert!(root_a.is_some());
         assert_eq!(root_a, root_b);
+    }
+
+    #[test]
+    fn normalize_lexically_collapses_dotdot() {
+        // US-056: a relative commondir on a non-existent worktree must still
+        // collapse `..` lexically so sibling worktrees resolve to the same
+        // repo_root even when canonicalize can't (target missing on disk).
+        let wt_git = std::path::Path::new("/nonexistent/main/.git/worktrees/wt1");
+        assert_eq!(
+            normalize_lexically(&wt_git.join("../..")),
+            std::path::PathBuf::from("/nonexistent/main/.git")
+        );
+        // A leading `..` with nothing to pop is preserved verbatim.
+        assert_eq!(
+            normalize_lexically(std::path::Path::new("../foo/./bar")),
+            std::path::PathBuf::from("../foo/bar")
+        );
     }
 
     #[test]
