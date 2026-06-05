@@ -130,18 +130,21 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
     let payload = first_value.get("payload")?;
     let session_id = payload.get("id").and_then(|v| v.as_str())?.to_string();
     let cwd = payload.get("cwd").and_then(|v| v.as_str())?.to_string();
-    if session_id.is_empty() || cwd.is_empty() {
+    if cwd.is_empty() {
         return None;
     }
-    // Reject any field that flows into a PTY command if it carries
-    // control characters. session_id lands verbatim in `codex resume
-    // <id>` -- a `\r` or `\n` would submit injected text as a separate
-    // shell command. cwd is display-only today but a future `cd <cwd>`
-    // prefix would inherit the gap; guard both at the gate. Mirrors
-    // (and extends) the guard in `opencode_sessions::record_to_session`.
-    if session_id.chars().any(|c| c.is_control()) || cwd.chars().any(|c| c.is_control()) {
+    // session_id lands verbatim in `codex resume <id>`, so hold it to the
+    // strict `^[A-Za-z0-9_-]+$` allow-list (Codex ids are UUIDs): rejects a
+    // `\r`/`\n` that would submit injected text and a `;`/space that would
+    // chain a second shell command. cwd is display-only today but a future
+    // `cd <cwd>` prefix would inherit the gap, and a path legitimately carries
+    // `/` + spaces, so keep the control-char guard for it. Mirrors (and
+    // tightens) the guard in `opencode_sessions::record_to_session`.
+    if !crate::agent_sessions::is_valid_session_id(&session_id)
+        || cwd.chars().any(|c| c.is_control())
+    {
         log::warn!(
-            "codex_sessions: dropped {} -- payload carries control chars in id or cwd",
+            "codex_sessions: dropped {} -- payload carries an invalid id or control chars in cwd",
             path.display(),
         );
         return None;
