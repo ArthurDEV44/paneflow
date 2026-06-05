@@ -704,7 +704,13 @@ impl PaneFlowApp {
             settings_section: None,
             settings_scroll: gpui::ScrollHandle::new(),
             settings_drag: None,
-            home_dir: std::env::var("HOME").unwrap_or_default(),
+            // US-040: `$HOME` is unset by default on Windows (canonical home is
+            // `%USERPROFILE%`), so the raw `var("HOME")` produced an empty
+            // string and the sidebar never collapsed any cwd to `~`. `dirs`
+            // resolves the home dir on all three platforms.
+            home_dir: dirs::home_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             sidebar_scroll: gpui::ScrollHandle::new(),
             effective_shortcuts: keybindings::effective_shortcuts(
                 &paneflow_config::loader::load_config().shortcuts,

@@ -20,6 +20,25 @@ use crate::{
     WorkspaceDrag, WorkspaceDragPreview, ai_types,
 };
 
+/// Collapse a `home`-rooted absolute path to a `~`-prefixed display string.
+///
+/// US-040: uses [`std::path::Path::strip_prefix`] (component-boundary match,
+/// OS-native separator) instead of a raw `str::starts_with` + byte slice. The
+/// old form false-positived on a partial component (`/home/arth` vs
+/// `/home/arthur`) and assumed `/` separators. Returns `cwd` verbatim when it
+/// isn't under `home` (or `home` is empty), so a Windows casing mismatch
+/// degrades to the full path rather than a wrong collapse.
+fn collapse_home(cwd: &str, home: &str) -> String {
+    if home.is_empty() {
+        return cwd.to_string();
+    }
+    match std::path::Path::new(cwd).strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Ok(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        Err(_) => cwd.to_string(),
+    }
+}
+
 impl PaneFlowApp {
     pub(crate) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
@@ -175,13 +194,7 @@ impl PaneFlowApp {
 
             let title = ws.title.clone();
             // Format cwd as ~/... (collapse home dir)
-            let cwd_display = {
-                if !self.home_dir.is_empty() && ws.cwd.starts_with(&self.home_dir) {
-                    format!("~{}", &ws.cwd[self.home_dir.len()..])
-                } else {
-                    ws.cwd.clone()
-                }
-            };
+            let cwd_display = collapse_home(&ws.cwd, &self.home_dir);
 
             let idx = i;
             let ws_id = ws.id;
@@ -877,5 +890,47 @@ impl Render for WorkspaceCwdTooltip {
             .text_size(px(11.))
             .font_family("monospace")
             .child(self.path.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collapse_home;
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn collapses_nested_path_under_home() {
+        assert_eq!(
+            collapse_home("/home/arthur/dev/x", "/home/arthur"),
+            "~/dev/x"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn exact_home_collapses_to_tilde() {
+        assert_eq!(collapse_home("/home/arthur", "/home/arthur"), "~");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn partial_component_is_not_a_prefix() {
+        // US-040 regression: `/home/arth` must NOT match `/home/arthur` — the
+        // old `starts_with` + byte slice produced the bogus "~ur/proj".
+        assert_eq!(
+            collapse_home("/home/arthur/proj", "/home/arth"),
+            "/home/arthur/proj"
+        );
+    }
+
+    #[test]
+    fn empty_home_returns_cwd_verbatim() {
+        assert_eq!(collapse_home("/some/path", ""), "/some/path");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn cwd_outside_home_is_unchanged() {
+        assert_eq!(collapse_home("/etc/hosts", "/home/arthur"), "/etc/hosts");
     }
 }
