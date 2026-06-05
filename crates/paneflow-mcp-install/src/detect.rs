@@ -5,7 +5,7 @@
 //! pure decision core [`Presence::from_signals`] is unit-tested; the impure
 //! wrapper [`detect`] layers `which::which` + filesystem existence on top.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Whether an agent looks installed on this machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,13 +46,6 @@ pub fn detect(cli: Option<&str>, config_paths: &[PathBuf]) -> Presence {
     let cli_on_path = cli.is_some_and(|c| which::which(c).is_ok());
     let config_exists = config_paths.iter().any(|p| p.exists());
     Presence::from_signals(cli_on_path, config_exists)
-}
-
-/// Convenience: does `path` (file or dir) exist? Thin wrapper kept here so
-/// writers express detection declaratively against this module.
-#[must_use]
-pub fn path_exists(path: &Path) -> bool {
-    path.exists()
 }
 
 #[cfg(test)]

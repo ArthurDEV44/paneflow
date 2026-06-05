@@ -87,11 +87,15 @@ pub fn remove_json_entry(
 
 /// Serialize a JSON config back to bytes: pretty-printed, trailing newline
 /// (matches what editors and `claude mcp add` leave behind).
-#[must_use]
-pub fn json_to_bytes(root: &serde_json::Value) -> Vec<u8> {
-    let mut s = serde_json::to_string_pretty(root).unwrap_or_else(|_| "{}".to_string());
+///
+/// US-038: returns `Result` and propagates a serialization error instead of
+/// the old `unwrap_or_else(|_| "{}")` fallback, which would have silently
+/// written an empty object over the user's real MCP servers (a no-clobber
+/// violation) if a parsed `Value` ever failed to re-serialize.
+pub fn json_to_bytes(root: &serde_json::Value) -> Result<Vec<u8>, serde_json::Error> {
+    let mut s = serde_json::to_string_pretty(root)?;
     s.push('\n');
-    s.into_bytes()
+    Ok(s.into_bytes())
 }
 
 // ---------------------------------------------------------------------------

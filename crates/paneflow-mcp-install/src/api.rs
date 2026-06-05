@@ -84,7 +84,13 @@ pub(crate) fn install_with(
     bridge: Option<&Path>,
     writers: &[Box<dyn AgentConfigWriter>],
 ) -> Result<Vec<AgentResult<InstallKind>>, String> {
-    let any_present = writers.iter().any(|w| w.presence().is_present());
+    // US-038: resolve each writer's presence EXACTLY ONCE. `presence()` does a
+    // PATH scan (via `which::which`, heavier on Windows `PATH × PATHEXT`); the
+    // old code called it twice per writer — both wasteful and a benign TOCTOU
+    // (the two non-atomic reads could disagree within one pass). Compute up
+    // front, derive `any_present`, and iterate the cached booleans.
+    let presences: Vec<bool> = writers.iter().map(|w| w.presence().is_present()).collect();
+    let any_present = presences.iter().any(|&p| p);
     // Only require the bridge binary when there is at least one agent to
     // write to — a machine with no agents is "nothing to do", not an error.
     let bridge = if any_present {
@@ -108,8 +114,8 @@ pub(crate) fn install_with(
     };
 
     let mut out = Vec::with_capacity(writers.len());
-    for w in writers {
-        let kind = match (w.presence().is_present(), bridge) {
+    for (w, &present) in writers.iter().zip(&presences) {
+        let kind = match (present, bridge) {
             (false, _) => InstallKind::SkippedAbsent,
             (true, Some(b)) => match w.install(b) {
                 Ok(InstallOutcome::Installed) => InstallKind::Installed,
