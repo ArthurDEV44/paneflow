@@ -18,7 +18,6 @@
 use gpui::{Bounds, Pixels, Point, Window, fill, px};
 
 use super::super::LayoutState;
-use super::super::geometry::CellGeometry;
 
 /// Paint the terminal background fill + optional bell-flash overlay.
 pub fn paint_base_fill(
@@ -40,7 +39,7 @@ pub fn paint_base_fill(
 /// adjacent runs of cells share the boundary at their join, so the right
 /// edge of run `[a, b)` (i.e. `boundaries[b]`) equals the left edge of
 /// run `[b, c)` exactly. See module doc for the full rationale.
-pub(super) fn cell_x_boundaries(
+pub(crate) fn cell_x_boundaries(
     origin_x: Pixels,
     cell_width: Pixels,
     col_count: usize,
@@ -51,7 +50,7 @@ pub(super) fn cell_x_boundaries(
 }
 
 /// Y-axis counterpart to [`cell_x_boundaries`]. Indexed `0..=row_count`.
-pub(super) fn cell_y_boundaries(
+pub(crate) fn cell_y_boundaries(
     origin_y: Pixels,
     line_height: Pixels,
     row_count: usize,
@@ -65,30 +64,25 @@ pub(super) fn cell_y_boundaries(
 /// EXTEND_LEFT/RIGHT/UP/DOWN for neverExtendBg).
 pub fn paint_cell_backgrounds(
     layout: &LayoutState,
-    geom: &CellGeometry,
     bounds: Bounds<Pixels>,
+    x_boundaries: &[Pixels],
+    y_boundaries: &[Pixels],
     window: &mut Window,
 ) {
-    let CellGeometry {
-        origin,
-        cell_width,
-        line_height,
-    } = *geom;
-
     let widget_top = bounds.origin.y;
     let widget_bottom = bounds.origin.y + bounds.size.height;
 
     let col_count = layout.desired_cols;
     let row_count = layout.desired_rows;
 
-    // Empty viewport (window minimised, mid-resize) — nothing to paint.
+    // Empty viewport (window minimised, mid-resize) — nothing to paint. The
+    // caller passes empty boundary slices in that case (US-047), so guard
+    // before indexing them.
     if col_count == 0 || row_count == 0 {
         return;
     }
 
     let last_row = row_count.saturating_sub(1) as i32;
-    let x_boundaries = cell_x_boundaries(origin.x, cell_width, col_count);
-    let y_boundaries = cell_y_boundaries(origin.y, line_height, row_count);
 
     for rect in &layout.rects {
         let col_end = rect.col + rect.num_cols;
@@ -170,20 +164,17 @@ pub fn paint_cell_backgrounds(
 /// up exactly with the cell background underneath — no sub-pixel seam.
 /// Partial-block coverage applies floor on both inner edges to preserve
 /// the same shared-boundary property between adjacent block cells.
-pub fn paint_block_quads(layout: &LayoutState, geom: &CellGeometry, window: &mut Window) {
-    let CellGeometry {
-        origin,
-        cell_width,
-        line_height,
-    } = *geom;
-
+pub fn paint_block_quads(
+    layout: &LayoutState,
+    x_boundaries: &[Pixels],
+    y_boundaries: &[Pixels],
+    window: &mut Window,
+) {
     let col_count = layout.desired_cols;
     let row_count = layout.desired_rows;
     if col_count == 0 || row_count == 0 {
         return;
     }
-    let x_boundaries = cell_x_boundaries(origin.x, cell_width, col_count);
-    let y_boundaries = cell_y_boundaries(origin.y, line_height, row_count);
 
     for bq in &layout.block_quads {
         let col_end = bq.col + bq.num_cols;
