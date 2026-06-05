@@ -95,8 +95,9 @@ pub fn sgr_mouse_report(point: Point, button: u8, pressed: bool) -> String {
 /// Generate a Normal (X10) mouse report: `\e[M{cb}{cx}{cy}`.
 ///
 /// Each coordinate is encoded as `position + 33`. Without UTF-8, values are
-/// single bytes (max position 223). With UTF-8, values are multi-byte encoded
-/// (max position 2015). Returns `None` if any coordinate exceeds the limit.
+/// single bytes, so `position + 33 <= 255` ⇒ max position 222. With UTF-8,
+/// values are multi-byte encoded (max position 2015). Returns `None` if any
+/// coordinate exceeds the limit.
 ///
 /// `button` should be the pre-encoded button code from [`mouse_button_code`].
 pub fn normal_mouse_report(point: Point, button: u8, utf8: bool) -> Option<Vec<u8>> {

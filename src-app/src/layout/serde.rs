@@ -178,7 +178,6 @@ impl LayoutTree {
                         LayoutChild {
                             node: LayoutTree::from_layout_node(child_node, panes, spawn),
                             ratio: Rc::new(Cell::new(ratio as f32)),
-                            computed_size: Rc::new(Cell::new(0.0)),
                         }
                     })
                     .collect();
