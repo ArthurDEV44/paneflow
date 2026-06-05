@@ -128,32 +128,16 @@ fn parse_env_editor(value: &str) -> Option<(String, Vec<String>)> {
     Some((bin, iter.collect()))
 }
 
-/// Best-effort `which`-style PATH probe. Walks `PATH` from left to right,
-/// returns the first existing executable matching `name`. On Windows also
-/// tries `{name}.exe` and `{name}.cmd` extensions. No dependency on the
-/// `which` crate to keep this module self-contained.
+/// Resolve `name` to an executable on `PATH`.
+///
+/// US-042: delegates to the `which` crate — the same resolver
+/// `workspace_ops::resolve_editor_binary_in` uses — so editor probing behaves
+/// identically across the codebase. On Windows this honors the full `PATHEXT`
+/// (`.com`, `.ps1`, … — not just a hardcoded `.exe`/`.cmd`/`.bat` list, which
+/// let a `$VISUAL`/`$EDITOR` in an uncommon extension escape the probe); on
+/// Unix it checks the executable bit (a plain `is_file()` did not).
 fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path_env = std::env::var_os("PATH")?;
-    let candidates_exts: &[&str] = if cfg!(windows) {
-        &["", ".exe", ".cmd", ".bat"]
-    } else {
-        &[""]
-    };
-    for dir in std::env::split_paths(&path_env) {
-        if dir.as_os_str().is_empty() {
-            continue;
-        }
-        for ext in candidates_exts {
-            let mut candidate = dir.join(name);
-            if !ext.is_empty() {
-                candidate.set_extension(ext.trim_start_matches('.'));
-            }
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
+    which::which(name).ok()
 }
 
 /// Ordered probe list for the fallback chain when no `$VISUAL`/`$EDITOR`
