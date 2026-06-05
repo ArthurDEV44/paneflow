@@ -72,9 +72,15 @@ pub fn search_term(
     let bottom = term.bottommost_line();
     let cols = term.columns();
 
+    // US-036: reuse one `String` across every scrollback line instead of
+    // allocating a fresh `String::with_capacity(cols)` per line while the
+    // `Term` `FairMutex` is held. The lock is contended with the PTY threads,
+    // so trimming O(lines) allocations under it keeps real-time output smooth
+    // during an agent's burst.
+    let mut line_text = String::with_capacity(cols);
     let mut line = top;
     while line <= bottom {
-        let mut line_text = String::with_capacity(cols);
+        line_text.clear();
         for col in 0..cols {
             let cell = &term.grid()[AlacPoint::new(line, GridCol(col))];
             let c = cell.c;
