@@ -90,10 +90,23 @@ pub(super) fn redistribute_equal(children: &[LayoutChild], removed_ratio: f32) {
 /// Panics in debug builds if `idx >= children.len()`.
 pub(super) fn insert_sibling(children: &mut Vec<LayoutChild>, idx: usize, new_pane: Entity<Pane>) {
     debug_assert!(idx < children.len(), "insert_sibling: idx out of bounds");
-    let old_ratio = children[idx].ratio.get();
-    debug_assert!(old_ratio.is_finite(), "insert_sibling: ratio is NaN/inf");
-    let half = old_ratio / 2.0;
-    children[idx].ratio.set(half);
+    // US-058: fail-safe on a stale index — `.get()` instead of `children[idx]`,
+    // which would panic in release. Halve the target's ratio inside a scoped
+    // borrow so the borrow drops before the `children.insert` below.
+    let half = {
+        let Some(target) = children.get(idx) else {
+            return;
+        };
+        let old_ratio = target.ratio.get();
+        debug_assert!(old_ratio.is_finite(), "insert_sibling: ratio is NaN/inf");
+        let half = if old_ratio.is_finite() {
+            old_ratio / 2.0
+        } else {
+            0.5
+        };
+        target.ratio.set(half);
+        half
+    };
     children.insert(
         idx + 1,
         LayoutChild {

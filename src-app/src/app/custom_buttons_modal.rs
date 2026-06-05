@@ -58,7 +58,13 @@ pub(crate) const AVAILABLE_ICONS: &[&str] = &[
 ];
 
 fn default_icon() -> String {
-    AVAILABLE_ICONS[0].to_string()
+    // US-058: `.first()` instead of `[0]` — the const is non-empty today, but a
+    // future trim of the list must degrade gracefully, not panic.
+    AVAILABLE_ICONS
+        .first()
+        .copied()
+        .unwrap_or("icons/player-play.svg")
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------

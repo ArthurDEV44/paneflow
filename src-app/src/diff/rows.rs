@@ -614,15 +614,24 @@ pub fn build_split_rows(files: &[FileDiff], syntax: Option<&DiffSyntax>) -> (Vec
                     CONTEXT_LINES.min(run - lead)
                 };
                 let hidden = run - lead - trail;
+                // US-058: lead/hidden/trail partition `run = j - i`, so every
+                // `i + off` below is < j <= total. The `.get()` guards make that
+                // fail-safe (no release panic) if the arithmetic ever drifts.
                 for k in 0..lead as usize {
-                    emit_pair(&aligned[i + k], &mut rows, &mut dropped);
+                    debug_assert!(i + k < total, "lead index out of bounds");
+                    if let Some(a) = aligned.get(i + k) {
+                        emit_pair(a, &mut rows, &mut dropped);
+                    }
                 }
                 if hidden > 0 {
                     emit_fold(hidden, &mut rows, &mut dropped);
                 }
                 for k in 0..trail as usize {
                     let off = lead as usize + hidden as usize + k;
-                    emit_pair(&aligned[i + off], &mut rows, &mut dropped);
+                    debug_assert!(i + off < total, "trail index out of bounds");
+                    if let Some(a) = aligned.get(i + off) {
+                        emit_pair(a, &mut rows, &mut dropped);
+                    }
                 }
                 i = j;
             } else {

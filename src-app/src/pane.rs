@@ -341,7 +341,7 @@ impl Pane {
     pub fn add_tab(&mut self, terminal: Entity<TerminalView>, cx: &mut Context<Self>) {
         Self::subscribe_terminal(&terminal, cx);
         self.tabs.push(TabContent::Terminal(terminal));
-        self.selected_idx = self.tabs.len() - 1;
+        self.selected_idx = self.tabs.len().saturating_sub(1);
     }
 
     /// Append a markdown viewer tab and focus it. Used by the doc-button
@@ -354,7 +354,7 @@ impl Pane {
     /// close button drops the entity, which in turn drops its file watcher.
     pub fn add_markdown_tab(&mut self, markdown: Entity<MarkdownView>, _cx: &mut Context<Self>) {
         self.tabs.push(TabContent::Markdown(markdown));
-        self.selected_idx = self.tabs.len() - 1;
+        self.selected_idx = self.tabs.len().saturating_sub(1);
     }
 
     /// Append a multi-worktree diff tab and select it. Like markdown tabs,
@@ -362,7 +362,7 @@ impl Pane {
     /// closing the tab drops the entity (and any future watchers it owns).
     pub fn add_diff_tab(&mut self, diff: Entity<DiffView>, _cx: &mut Context<Self>) {
         self.tabs.push(TabContent::Diff(diff));
-        self.selected_idx = self.tabs.len() - 1;
+        self.selected_idx = self.tabs.len().saturating_sub(1);
     }
 
     /// Subscribe to a terminal's events — close tab on exit, repaint on title change.
@@ -563,7 +563,7 @@ impl Pane {
             return;
         }
         if self.selected_idx >= self.tabs.len() {
-            self.selected_idx = self.tabs.len() - 1;
+            self.selected_idx = self.tabs.len().saturating_sub(1);
         }
         cx.notify();
     }
@@ -602,7 +602,7 @@ impl Pane {
         }
         let tab = self.tabs.remove(idx);
         if !self.tabs.is_empty() && self.selected_idx >= self.tabs.len() {
-            self.selected_idx = self.tabs.len() - 1;
+            self.selected_idx = self.tabs.len().saturating_sub(1);
         }
         Some(tab)
     }
