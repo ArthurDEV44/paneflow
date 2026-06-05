@@ -400,13 +400,26 @@ impl PaneFlowApp {
                 .collect()
         };
 
-        let first = terminals[0].clone();
+        // Both branches above yield >= 1 terminal, so `.first()` is never None
+        // in practice. Guard it anyway (US-058): a future refactor that empties
+        // `terminals` degrades to a fresh fallback pane instead of panicking on
+        // `terminals[0]`.
+        let Some(first) = terminals.first().cloned() else {
+            log::error!("spawn_pane_from_surfaces: no terminals built (bug); using fallback");
+            let t = cx.new(|cx| {
+                TerminalView::with_cwd(workspace_id, Some(fallback_cwd.to_path_buf()), None, cx)
+            });
+            cx.subscribe(&t, Self::handle_terminal_event).detach();
+            let pane = cx.new(|cx| Pane::new(t, workspace_id, cx));
+            cx.subscribe(&pane, Self::handle_pane_event).detach();
+            return pane;
+        };
         let pane = cx.new(|cx| {
             let mut p = Pane::new(first, workspace_id, cx);
-            for tab in &terminals[1..] {
+            for tab in terminals.iter().skip(1) {
                 p.add_tab(tab.clone(), cx);
             }
-            p.selected_idx = focus_idx.min(terminals.len() - 1);
+            p.selected_idx = focus_idx.min(terminals.len().saturating_sub(1));
             p
         });
         cx.subscribe(&pane, Self::handle_pane_event).detach();
