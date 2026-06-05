@@ -30,16 +30,43 @@ fn write_config_checked(path: &PathBuf, value: &serde_json::Value) -> bool {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    match serde_json::to_string_pretty(value) {
-        Ok(json_str) => match std::fs::write(path, json_str) {
-            Ok(()) => true,
-            Err(e) => {
-                log::warn!("config: failed to write: {e}");
-                false
-            }
-        },
+    let json_str = match serde_json::to_string_pretty(value) {
+        Ok(s) => s,
         Err(e) => {
             log::warn!("config: failed to serialize: {e}");
+            return false;
+        }
+    };
+
+    // US-031: write atomically (tmp + rename) so a crash mid-write can't
+    // truncate `paneflow.json`. A truncated file parses as invalid JSON, which
+    // `load_raw_config` silently swallows as an empty object — discarding the
+    // user's entire config. The temp file is PID-suffixed and lives in the
+    // target's own directory so the rename stays on one filesystem (a
+    // cross-FS rename is neither atomic nor, on some platforms, permitted).
+    // `std::fs::rename` replaces the destination atomically on all three OSes.
+    let Some(parent) = path.parent() else {
+        // No parent component (not expected for a real config path): fall back
+        // to a best-effort direct write rather than refusing outright.
+        return std::fs::write(path, &json_str)
+            .inspect_err(|e| log::warn!("config: failed to write: {e}"))
+            .is_ok();
+    };
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("paneflow.json");
+    let tmp = parent.join(format!(".{file_name}.tmp.{}", std::process::id()));
+    if let Err(e) = std::fs::write(&tmp, &json_str) {
+        log::warn!("config: failed to write temp file: {e}");
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("config: failed to promote temp file: {e}");
+            let _ = std::fs::remove_file(&tmp);
             false
         }
     }
@@ -217,8 +244,39 @@ pub fn save_terminal_field(key: &str, value: serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_terminal_field, merge_shortcut};
+    use super::{apply_terminal_field, merge_shortcut, write_config_checked};
     use serde_json::{Value, json};
+
+    #[test]
+    fn write_config_is_atomic_and_leaves_no_temp() {
+        // US-031: the write goes through tmp+rename, the target ends up with
+        // the full content, and no temp file is left behind in the directory.
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("paneflow.json");
+        assert!(write_config_checked(
+            &p,
+            &json!({"theme": "One Dark", "font_size": 14.0})
+        ));
+        let got: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(got["theme"], "One Dark");
+        let leftovers = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .count();
+        assert_eq!(leftovers, 0, "the temp file must be renamed away");
+    }
+
+    #[test]
+    fn write_config_does_not_truncate_on_repeated_writes() {
+        // A second write fully replaces the first (no partial/truncated file).
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("paneflow.json");
+        assert!(write_config_checked(&p, &json!({"a": 1})));
+        assert!(write_config_checked(&p, &json!({"b": 2})));
+        let got: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert!(got.get("a").is_none() && got["b"] == 2);
+    }
 
     fn shortcuts(pairs: &[(&str, &str)]) -> serde_json::Map<String, Value> {
         pairs
