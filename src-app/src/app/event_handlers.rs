@@ -10,7 +10,7 @@
 use gpui::{App, AppContext, Context, Entity, Window};
 use notify::Watcher;
 
-use crate::layout::LayoutTree;
+use crate::layout::{LayoutTree, MAX_PANES};
 use crate::pane::{self, Pane};
 use crate::terminal::{self, TerminalView};
 use crate::window_chrome::title_bar;
@@ -331,14 +331,11 @@ impl PaneFlowApp {
                 source_idx,
                 duplicate,
             } => {
-                use crate::pane_drag::DropEdge;
                 let edge = *edge;
                 let source_idx = *source_idx;
                 let duplicate = *duplicate;
                 let source_pane = source_pane.clone();
                 let target = &pane; // the emitting pane is the split target
-
-                const MAX_PANES: usize = 32;
 
                 // Resolve the workspace owning the target pane.
                 let Some(ws_idx) = self
@@ -392,15 +389,7 @@ impl PaneFlowApp {
                     p
                 };
 
-                // `split_at_pane` always inserts the new pane *after* the
-                // target, so the leading edges (Up/Left) additionally swap so
-                // the moved/duplicated pane ends up on the correct side.
-                let (direction, swap) = match edge {
-                    DropEdge::Up => (crate::layout::SplitDirection::Horizontal, true),
-                    DropEdge::Down => (crate::layout::SplitDirection::Horizontal, false),
-                    DropEdge::Left => (crate::layout::SplitDirection::Vertical, true),
-                    DropEdge::Right => (crate::layout::SplitDirection::Vertical, false),
-                };
+                let (direction, swap) = edge.to_split();
                 if let Some(root) = &mut self.workspaces[ws_idx].root {
                     root.split_at_pane(target, direction, new_pane.clone());
                     if swap {
@@ -488,14 +477,11 @@ impl PaneFlowApp {
                 // Spawn a fresh terminal at the session's cwd running the
                 // agent's resume command, then split the target pane toward the
                 // previewed edge (or append it here as a tab for center).
-                use crate::pane_drag::DropEdge;
                 let edge = *edge;
                 let agent = *agent;
                 let session_id = session_id.clone();
                 let cwd = cwd.clone();
                 let target = pane.clone(); // the emitting pane is the target
-
-                const MAX_PANES: usize = 32;
 
                 let Some(ws_idx) = self
                     .workspaces
@@ -536,12 +522,7 @@ impl PaneFlowApp {
                         // `create_pane` wires the app-level CWD/port subscription
                         // and the pane-event subscription (mirrors `DropSplit`).
                         let new_pane = self.create_pane(term, ws_id, cx);
-                        let (direction, swap) = match edge {
-                            DropEdge::Up => (crate::layout::SplitDirection::Horizontal, true),
-                            DropEdge::Down => (crate::layout::SplitDirection::Horizontal, false),
-                            DropEdge::Left => (crate::layout::SplitDirection::Vertical, true),
-                            DropEdge::Right => (crate::layout::SplitDirection::Vertical, false),
-                        };
+                        let (direction, swap) = edge.to_split();
                         if let Some(root) = &mut self.workspaces[ws_idx].root {
                             root.split_at_pane(&target, direction, new_pane.clone());
                             if swap {
@@ -576,12 +557,9 @@ impl PaneFlowApp {
                 // API, then split the target toward the previewed edge or append
                 // it here as a tab (center). Mirrors `DropSessionSplit`, minus
                 // the terminal spawn.
-                use crate::pane_drag::DropEdge;
                 let edge = *edge;
                 let path = path.clone();
                 let target = pane.clone(); // the emitting pane is the target
-
-                const MAX_PANES: usize = 32;
 
                 let Some(ws_idx) = self
                     .workspaces
@@ -617,12 +595,7 @@ impl PaneFlowApp {
                             )
                         });
                         cx.subscribe(&new_pane, Self::handle_pane_event).detach();
-                        let (direction, swap) = match edge {
-                            DropEdge::Up => (crate::layout::SplitDirection::Horizontal, true),
-                            DropEdge::Down => (crate::layout::SplitDirection::Horizontal, false),
-                            DropEdge::Left => (crate::layout::SplitDirection::Vertical, true),
-                            DropEdge::Right => (crate::layout::SplitDirection::Vertical, false),
-                        };
+                        let (direction, swap) = edge.to_split();
                         if let Some(root) = &mut self.workspaces[ws_idx].root {
                             root.split_at_pane(&target, direction, new_pane.clone());
                             if swap {
@@ -646,7 +619,6 @@ impl PaneFlowApp {
             }
             pane::PaneEvent::Split(direction) => {
                 let direction = *direction;
-                const MAX_PANES: usize = 32;
                 if let Some(ws) = self.active_workspace()
                     && let Some(root) = &ws.root
                     && root.leaf_count() >= MAX_PANES

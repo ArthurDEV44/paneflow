@@ -35,8 +35,10 @@ fn install_method_label(method: &update::install_method::InstallMethod) -> &'sta
 /// (`PackageManager::Other` clipboard fallback, non-Linux targets,
 /// and the `EnvironmentBroken` clipboard fallback). Keeping the rule
 /// in two places is a deliberate trade for keeping `validate_version`
-/// private to its Linux-only module.
-fn is_strict_semver(raw: &str) -> bool {
+/// private to its Linux-only module; US-054 adds
+/// `system_package::tests::version_validators_agree` to guard the two
+/// implementations against drifting apart.
+pub(crate) fn is_strict_semver(raw: &str) -> bool {
     let rest = raw.strip_prefix('v').unwrap_or(raw);
     let mut completed_parts: usize = 0;
     let mut segment_len: usize = 0;

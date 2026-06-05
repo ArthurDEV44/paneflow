@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use gpui::{AppContext, Context, Entity, Focusable, Window};
 use paneflow_config::schema::LayoutNode;
 
-use crate::layout::{LayoutTree, SplitDirection};
+use crate::layout::{LayoutTree, MAX_PANES, SplitDirection};
 use crate::pane::Pane;
 use crate::terminal::TerminalView;
 use crate::{
@@ -106,8 +106,6 @@ impl PaneFlowApp {
         layout: &mut LayoutNode,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        const MAX_PANES: usize = 32;
-
         // Validate the layout (clamps ratios, pads children, etc.)
         paneflow_config::loader::validate_layout(layout);
 

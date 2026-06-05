@@ -15,6 +15,10 @@ pub mod surface_naming;
 pub use git::{GitDiffStats, detect_branch, find_git_dir, resolve_repo_root};
 pub use ports::{detect_ai_processes, detect_ports};
 
+/// Hard cap on open workspaces (US-054: single source for the bound previously
+/// re-declared as a local `const` at every create/IPC site).
+pub(crate) const MAX_WORKSPACES: usize = 20;
+
 use std::cell::Cell;
 use std::rc::Rc;
 

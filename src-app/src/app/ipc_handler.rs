@@ -17,9 +17,9 @@ use gpui::{App, AppContext, Context};
 use paneflow_config::schema::LayoutNode;
 
 use crate::layout::LayoutTree;
-use crate::layout::SplitDirection;
+use crate::layout::{MAX_PANES, SplitDirection};
 use crate::terminal::TerminalView;
-use crate::workspace::{Workspace, next_workspace_id};
+use crate::workspace::{MAX_WORKSPACES, Workspace, next_workspace_id};
 use crate::{PaneFlowApp, ai_types, keybindings, update};
 
 // ---------------------------------------------------------------------------
@@ -494,7 +494,6 @@ impl PaneFlowApp {
                 // Cap workspace count to prevent unbounded growth from malicious
                 // or buggy IPC clients (CWE-400). Matches the keyboard-action cap
                 // in `workspace_ops::create_workspace`.
-                const MAX_WORKSPACES: usize = 20;
                 if self.workspaces.len() >= MAX_WORKSPACES {
                     return serde_json::json!({"error": "Workspace limit reached"});
                 }
@@ -825,7 +824,6 @@ impl PaneFlowApp {
                         return serde_json::json!({"error": "Missing or invalid 'direction' parameter (use \"horizontal\" or \"vertical\")"});
                     }
                 };
-                const MAX_PANES: usize = 32;
                 let Some(ws) = self.active_workspace() else {
                     return serde_json::json!({"error": "No active workspace"});
                 };
