@@ -221,7 +221,33 @@ fn clear_then_for_shell(command: &str, shell: &str) -> String {
     match key {
         "cmd" => format!("cls && {command}"),
         "pwsh" | "powershell" => format!("Clear-Host; {command}"),
-        _ => format!("clear && {command}"),
+        // Known POSIX shells: `clear` + `&&` sequencing is universally
+        // supported (fish ≥3.0 included).
+        "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "ash" | "mksh" => {
+            format!("clear && {command}")
+        }
+        // US-042: unknown shell (nushell, elvish, xonsh, …) — don't assume
+        // `&&`/`clear` exist. Launch the command bare so an exotic shell
+        // doesn't eat a syntax error on the very first line.
+        _ => command.to_string(),
+    }
+}
+
+/// Render a filesystem path for a POSIX shell's rcfile/init argument.
+///
+/// US-042: on Windows, bash and fish run under an MSYS / Git-Bash / WSL
+/// environment that expects forward-slash paths, even though the host
+/// filesystem reports `\`. Converting here keeps `--rcfile` / `source` from
+/// receiving an unparseable backslash path. No-op on Unix.
+fn to_shell_path(p: &std::path::Path) -> String {
+    let s = p.display().to_string();
+    #[cfg(windows)]
+    {
+        s.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        s
     }
 }
 
@@ -282,7 +308,7 @@ pub(super) fn setup_shell_integration(
             }
             let rcfile = dir.join("bashrc");
             let _ = std::fs::write(&rcfile, BASH_OSC7);
-            vec!["--rcfile".into(), rcfile.display().to_string()]
+            vec!["--rcfile".into(), to_shell_path(&rcfile)]
         }
         "fish" => {
             let dir = base.join("fish");
@@ -293,7 +319,7 @@ pub(super) fn setup_shell_integration(
             let _ = std::fs::write(&initfile, FISH_OSC7);
             vec![
                 "--init-command".into(),
-                format!("source {}", initfile.display()),
+                format!("source {}", to_shell_path(&initfile)),
             ]
         }
         // US-012 — PowerShell 7 (pwsh) and Windows PowerShell 5.1 share
@@ -363,5 +389,20 @@ mod tests {
             clear_then_for_shell("opencode", "/bin/zsh"),
             "clear && opencode"
         );
+    }
+
+    #[test]
+    fn clear_then_known_posix_shells_keep_clear() {
+        for sh in ["/bin/bash", "/usr/bin/fish", "dash", "ksh", "/bin/sh"] {
+            assert_eq!(clear_then_for_shell("x", sh), "clear && x", "shell {sh}");
+        }
+    }
+
+    #[test]
+    fn clear_then_unknown_shell_launches_bare() {
+        // US-042: an unknown shell gets no clear prefix — we can't assume `&&`
+        // or `clear` exist (nushell, elvish, xonsh, …).
+        assert_eq!(clear_then_for_shell("opencode", "/usr/bin/nu"), "opencode");
+        assert_eq!(clear_then_for_shell("claude", "elvish"), "claude");
     }
 }
