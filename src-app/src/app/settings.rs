@@ -577,7 +577,6 @@ impl PaneFlowApp {
             let config = paneflow_config::loader::load_config();
             keybindings::apply_keybindings(cx, &config.shortcuts);
         }
-        crate::terminal::SUPPRESS_REPAINTS.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub(crate) fn open_settings_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
