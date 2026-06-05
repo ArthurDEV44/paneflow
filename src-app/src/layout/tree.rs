@@ -42,7 +42,6 @@ pub(crate) struct DragState {
 pub struct LayoutChild {
     pub node: LayoutTree,
     pub ratio: Rc<Cell<f32>>,
-    pub computed_size: Rc<Cell<f32>>,
 }
 
 pub enum LayoutTree {
@@ -112,7 +111,6 @@ pub(super) fn insert_sibling(children: &mut Vec<LayoutChild>, idx: usize, new_pa
         LayoutChild {
             node: LayoutTree::Leaf(new_pane),
             ratio: Rc::new(Cell::new(half)),
-            computed_size: Rc::new(Cell::new(0.0)),
         },
     );
 }
@@ -130,12 +128,10 @@ impl LayoutTree {
                 LayoutChild {
                     node: first,
                     ratio: Rc::new(Cell::new(0.5)),
-                    computed_size: Rc::new(Cell::new(0.0)),
                 },
                 LayoutChild {
                     node: second,
                     ratio: Rc::new(Cell::new(0.5)),
-                    computed_size: Rc::new(Cell::new(0.0)),
                 },
             ],
             drag: Rc::new(Cell::new(None)),

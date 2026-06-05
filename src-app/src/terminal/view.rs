@@ -817,11 +817,12 @@ pub enum TerminalEvent {
     TitleChanged,
     /// The shell's working directory changed (detected via OSC 7 escape sequence).
     CwdChanged(String),
-    /// Terminal output activity detected — triggers port scanning via `/proc/net/tcp`.
+    /// Terminal output activity detected — triggers an OS port scan
+    /// (`workspace::ports`; Linux `/proc/net/tcp`, macOS libproc, Windows stub).
     /// Emitted alongside `ServiceDetected` during output scan ticks.
     ActivityBurst,
     /// A server/service was detected in PTY output (e.g. "Listening on :3000").
-    /// Enriches the bare port from `/proc/net/tcp` with label and URL.
+    /// Enriches the bare port from the OS port scan with label and URL.
     ServiceDetected(ServiceInfo),
     /// Terminal bell (\a) was triggered — visual flash notification.
     Bell,

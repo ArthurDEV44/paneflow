@@ -25,7 +25,6 @@ impl LayoutTree {
                     .map(|pane| LayoutChild {
                         node: LayoutTree::Leaf(pane),
                         ratio: Rc::new(Cell::new(ratio)),
-                        computed_size: Rc::new(Cell::new(0.0)),
                     })
                     .collect();
                 Some(LayoutTree::Container {
@@ -57,12 +56,10 @@ impl LayoutTree {
                 LayoutChild {
                     node: LayoutTree::Leaf(main_pane),
                     ratio: Rc::new(Cell::new(0.6)),
-                    computed_size: Rc::new(Cell::new(0.0)),
                 },
                 LayoutChild {
                     node: right,
                     ratio: Rc::new(Cell::new(0.4)),
-                    computed_size: Rc::new(Cell::new(0.0)),
                 },
             ],
             drag: Rc::new(Cell::new(None)),
@@ -113,7 +110,6 @@ impl LayoutTree {
             row_children.push(LayoutChild {
                 node: row_tree,
                 ratio: Rc::new(Cell::new(row_ratio)),
-                computed_size: Rc::new(Cell::new(0.0)),
             });
         }
 

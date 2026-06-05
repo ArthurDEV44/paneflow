@@ -22,20 +22,21 @@ use super::CellDimensions;
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.3;
 
-/// Embedded monospace family. Files: `assets/fonts/Lilex-{Regular,Bold,Italic,BoldItalic}.ttf`.
-/// Registered with GPUI at startup (`main.rs` → `cx.text_system().add_fonts`).
+/// Embedded monospace family — the **default** terminal/code font on every
+/// platform. Files: `assets/fonts/IBMPlexMono-{Regular,SemiBold,Italic,SemiBoldItalic}.ttf`,
+/// registered with GPUI at startup (`main.rs` → `Assets::load_fonts` →
+/// `cx.text_system().add_fonts`).
 ///
-/// Used as the **default** terminal/code font on every platform — same
-/// strategy Zed uses with `.ZedMono` (alias → "Lilex") in
-/// `crates/gpui/src/text_system.rs:1170`. Picking an embedded family as
-/// the primary instead of a system family (Menlo / Cascadia Mono /
-/// DejaVu) sidesteps the failure mode behind commit c3e2331: Core Text
-/// inside a signed .app bundle can return valid glyph_ids for a system
-/// family while rasterizing them as empty bitmaps, and GPUI's
-/// per-`Font` fallback chain only walks on missing-glyph not on
-/// empty-raster — so the system primary "renders" zero glyphs and
-/// nothing falls through. With Lilex as primary, GPUI's text system
-/// owns the font tables end-to-end and rasterization always works.
+/// Picking an *embedded* family as the primary instead of a system family
+/// (Menlo / Cascadia Mono / DejaVu) sidesteps the failure mode behind commit
+/// c3e2331: Core Text inside a signed .app bundle can return valid glyph_ids
+/// for a system family while rasterizing them as empty bitmaps, and GPUI's
+/// per-`Font` fallback chain only walks on missing-glyph not on empty-raster —
+/// so the system primary "renders" zero glyphs and nothing falls through. With
+/// an embedded family as primary, GPUI's text system owns the font tables
+/// end-to-end and rasterization always works. (Same embedded-primary strategy
+/// Zed uses with `.ZedMono` → "Lilex"; Lilex also ships as an opt-in ligature
+/// alternate — see `resolve_font_family` — but is no longer the default.)
 pub(crate) const EMBEDDED_MONO_FAMILY: &str = "IBM Plex Mono";
 
 /// Embedded UI/sans family. Files:
@@ -133,10 +134,11 @@ static FONT_CONFIG_CACHE: std::sync::Mutex<Option<CachedFontConfig>> = std::sync
 
 /// The default monospace family Paneflow ships out of the box.
 ///
-/// Returns the **embedded** Lilex family on every platform — same
-/// strategy Zed uses (`.ZedMono` → "Lilex" hardcoded in
-/// `assets/settings/default.json:29` and resolved by GPUI at
-/// `crates/gpui/src/text_system.rs:1170`). System fonts (Menlo /
+/// Returns the **embedded** IBM Plex Mono family on every platform (see
+/// [`EMBEDDED_MONO_FAMILY`]) — the same embedded-primary strategy Zed uses
+/// with `.ZedMono` → "Lilex" (hardcoded in `assets/settings/default.json:29`
+/// and resolved by GPUI at `crates/gpui/src/text_system.rs:1170`). System
+/// fonts (Menlo /
 /// Cascadia Mono / DejaVu) used to be the per-OS default but were
 /// dropped after commit c3e2331 proved that Core Text on a signed
 /// macOS .app could resolve "Menlo" yet rasterize empty glyphs in
