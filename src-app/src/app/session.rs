@@ -111,7 +111,7 @@ impl PaneFlowApp {
             mode: self.mode,
             // US-015 (prd-git-diff-mode-2026-Q3.md): persist the diff scope so
             // a session that quit in Diff mode reopens on the same scope.
-            diff_scope: Some(self.diff_scope.as_persisted().to_string()),
+            diff_scope: Some(self.diff_mode.diff_scope.as_persisted().to_string()),
         }
     }
 

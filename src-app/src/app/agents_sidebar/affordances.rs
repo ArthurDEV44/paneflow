@@ -33,7 +33,7 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) {
         self.cancel_agents_rename(cx);
-        self.agents_menu_open = Some(AgentsContextMenu::Project {
+        self.agents_view.agents_menu_open = Some(AgentsContextMenu::Project {
             project_idx,
             position,
         });
@@ -49,7 +49,7 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) {
         self.cancel_agents_rename(cx);
-        self.agents_menu_open = Some(AgentsContextMenu::Thread {
+        self.agents_view.agents_menu_open = Some(AgentsContextMenu::Thread {
             project_idx,
             thread_idx,
             position,
@@ -58,7 +58,7 @@ impl PaneFlowApp {
     }
 
     pub(crate) fn close_agents_menu(&mut self, cx: &mut Context<Self>) {
-        if self.agents_menu_open.take().is_some() {
+        if self.agents_view.agents_menu_open.take().is_some() {
             cx.notify();
         }
     }
@@ -70,13 +70,13 @@ impl PaneFlowApp {
         target: AgentsDeleteTarget,
         cx: &mut Context<Self>,
     ) {
-        self.agents_menu_open = None;
-        self.agents_confirm_delete = Some(target);
+        self.agents_view.agents_menu_open = None;
+        self.agents_view.agents_confirm_delete = Some(target);
         cx.notify();
     }
 
     pub(crate) fn cancel_agents_confirm_delete(&mut self, cx: &mut Context<Self>) {
-        if self.agents_confirm_delete.take().is_some() {
+        if self.agents_view.agents_confirm_delete.take().is_some() {
             cx.notify();
         }
     }
@@ -145,12 +145,12 @@ impl PaneFlowApp {
         });
         let focus = textarea.read(cx).focus_handle.clone();
         window.focus(&focus, cx);
-        self.agents_renaming = Some(target);
-        self.agents_rename_input = Some(textarea);
+        self.agents_view.agents_renaming = Some(target);
+        self.agents_view.agents_rename_input = Some(textarea);
         // `agents_rename_text` is kept only as a legacy bridge for
         // call sites that haven't been migrated to read from the
         // TextArea entity yet; left empty on purpose.
-        self.agents_rename_text.clear();
+        self.agents_view.agents_rename_text.clear();
         cx.notify();
     }
 
@@ -163,7 +163,7 @@ impl PaneFlowApp {
     /// [`Self::apply_agents_rename`] instead (it receives the text
     /// via the callback parameter and avoids re-entering the entity).
     pub(crate) fn commit_agents_rename(&mut self, cx: &mut Context<Self>) {
-        if self.agents_renaming.is_none() {
+        if self.agents_view.agents_renaming.is_none() {
             return;
         }
         // Re-entrancy guardrail: `commit_agents_rename` reads the
@@ -175,10 +175,11 @@ impl PaneFlowApp {
         // contract in debug builds so a future caller misuse trips
         // here loudly rather than corrupting GPUI's RefCell state.
         debug_assert!(
-            self.agents_rename_input.is_some(),
+            self.agents_view.agents_rename_input.is_some(),
             "commit_agents_rename invariant: rename input must exist when renaming is active",
         );
         let text = self
+            .agents_view
             .agents_rename_input
             .as_ref()
             .map(|ta| ta.read(cx).value())
@@ -197,7 +198,7 @@ impl PaneFlowApp {
     /// the next event-loop tick via `cx.defer` so we never re-enter
     /// the in-flight update.
     pub(crate) fn apply_agents_rename(&mut self, text: String, cx: &mut Context<Self>) {
-        let Some(target) = self.agents_renaming.take() else {
+        let Some(target) = self.agents_view.agents_renaming.take() else {
             return;
         };
         // Drop the TextArea entity on the next tick to avoid any
@@ -206,8 +207,8 @@ impl PaneFlowApp {
         let weak = cx.weak_entity();
         cx.defer(move |cx| {
             let _ = weak.update(cx, |app, cx| {
-                app.agents_rename_input = None;
-                app.agents_rename_text.clear();
+                app.agents_view.agents_rename_input = None;
+                app.agents_view.agents_rename_text.clear();
                 cx.notify();
             });
         });
@@ -246,12 +247,12 @@ impl PaneFlowApp {
     /// TextArea's `on_escape` callback never re-enters the in-flight
     /// entity update.
     pub(crate) fn cancel_agents_rename(&mut self, cx: &mut Context<Self>) {
-        if self.agents_renaming.take().is_some() {
+        if self.agents_view.agents_renaming.take().is_some() {
             let weak = cx.weak_entity();
             cx.defer(move |cx| {
                 let _ = weak.update(cx, |app, cx| {
-                    app.agents_rename_input = None;
-                    app.agents_rename_text.clear();
+                    app.agents_view.agents_rename_input = None;
+                    app.agents_view.agents_rename_text.clear();
                     cx.notify();
                 });
             });
@@ -326,7 +327,7 @@ impl PaneFlowApp {
         if project_idx >= self.projects.len() {
             return;
         }
-        self.agents_skills_visible = false;
+        self.agents_view.agents_skills_visible = false;
         self.active_thread_idx = None;
         self.active_project_idx = project_idx;
         cx.notify();
@@ -413,7 +414,7 @@ impl PaneFlowApp {
     /// caches are cascaded by `close_project` / `remove_thread`; Terminal
     /// Threads have no durable rows to clean up.
     pub(crate) fn execute_agents_confirm_delete(&mut self, cx: &mut Context<Self>) {
-        let Some(target) = self.agents_confirm_delete.take() else {
+        let Some(target) = self.agents_view.agents_confirm_delete.take() else {
             return;
         };
         match target {
@@ -459,7 +460,7 @@ impl PaneFlowApp {
             return;
         };
         let cwd = project.cwd.clone();
-        self.agents_menu_open = None;
+        self.agents_view.agents_menu_open = None;
         if let Err(msg) = reveal_in_file_manager(std::path::Path::new(&cwd)) {
             log::warn!("agents-sidebar: reveal failed: {msg}");
             self.show_toast(msg, cx);
@@ -487,7 +488,7 @@ impl PaneFlowApp {
             log::warn!("agents-sidebar: open in {label} failed: {err}");
             self.show_toast(format!("Couldn't open in {label}: {err}"), cx);
         }
-        self.agents_menu_open = None;
+        self.agents_view.agents_menu_open = None;
         cx.notify();
     }
 }

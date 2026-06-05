@@ -57,7 +57,7 @@ impl PaneFlowApp {
     /// "Skills" affordance.
     pub(crate) fn show_agents_skills(&mut self, cx: &mut Context<Self>) {
         self.active_thread_idx = None;
-        self.agents_skills_visible = true;
+        self.agents_view.agents_skills_visible = true;
         cx.notify();
     }
 
@@ -66,14 +66,14 @@ impl PaneFlowApp {
     /// still holds the same name — back-to-back copies of different
     /// skills don't cancel each other's feedback.
     pub(crate) fn mark_skill_copied(&mut self, name: String, cx: &mut Context<Self>) {
-        self.agents_skills_copied = Some(name.clone());
+        self.agents_view.agents_skills_copied = Some(name.clone());
         cx.notify();
         cx.spawn(async move |this, cx| {
             smol::Timer::after(std::time::Duration::from_millis(1500)).await;
             let _ = cx.update(|cx| {
                 this.update(cx, |app, cx| {
-                    if app.agents_skills_copied.as_deref() == Some(name.as_str()) {
-                        app.agents_skills_copied = None;
+                    if app.agents_view.agents_skills_copied.as_deref() == Some(name.as_str()) {
+                        app.agents_view.agents_skills_copied = None;
                         cx.notify();
                     }
                 })
@@ -137,10 +137,10 @@ impl PaneFlowApp {
     fn render_agents_main_body(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         // Sidebar "Skills" affordance takes precedence over the thread /
         // picker surfaces.
-        if self.agents_skills_visible {
+        if self.agents_view.agents_skills_visible {
             return crate::agents_view::render_skills_page(
-                self.agents_skills_tab,
-                self.agents_skills_copied.clone(),
+                self.agents_view.agents_skills_tab,
+                self.agents_view.agents_skills_copied.clone(),
                 cx,
             );
         }
@@ -345,7 +345,7 @@ impl PaneFlowApp {
             .get(p_idx)
             .and_then(|p| p.threads.get(t_idx))?;
         let thread_id = thread.id;
-        if let Some(cached) = self.agents_terminal_view_cache.get(&thread_id) {
+        if let Some(cached) = self.agents_view.agents_terminal_view_cache.get(&thread_id) {
             return Some(cached.clone());
         }
         let cwd = std::path::PathBuf::from(&thread.cwd);
@@ -394,7 +394,8 @@ impl PaneFlowApp {
             },
         )
         .detach();
-        self.agents_terminal_view_cache
+        self.agents_view
+            .agents_terminal_view_cache
             .insert(thread_id, view.clone());
         Some(view)
     }

@@ -61,7 +61,7 @@ impl PaneFlowApp {
                 "os": std::env::consts::OS,
                 "arch": std::env::consts::ARCH,
                 "app_version": env!("CARGO_PKG_VERSION"),
-                "install_method": install_method_tag(&self.install_method),
+                "install_method": install_method_tag(&self.self_update.install_method),
                 "is_first_run": is_first_run,
             }),
         );
@@ -97,11 +97,11 @@ impl PaneFlowApp {
     /// `flush_blocking` stays reserved for the real exit path
     /// ([`Self::emit_app_exited_and_flush`]).
     ///
-    /// `to_version` is read from `self.update_status` (populated during the
+    /// `to_version` is read from `self.self_update.update_status` (populated during the
     /// update check); an unknown state still emits `to_version: "unknown"`
     /// rather than silently dropping.
     pub(crate) fn emit_update_success(&self) {
-        let to_version = match self.update_status.as_ref() {
+        let to_version = match self.self_update.update_status.as_ref() {
             Some(update::checker::UpdateStatus::Available { version, .. }) => version.clone(),
             _ => "unknown".to_string(),
         };
@@ -110,7 +110,7 @@ impl PaneFlowApp {
             json!({
                 "from_version": env!("CARGO_PKG_VERSION"),
                 "to_version": to_version,
-                "install_method": install_method_tag(&self.install_method),
+                "install_method": install_method_tag(&self.self_update.install_method),
                 "success": true,
             }),
         );
@@ -125,7 +125,7 @@ impl PaneFlowApp {
     /// `error_category` label is sent — never the error message
     /// (PRD AC #4: "no error message details — just category").
     pub(crate) fn emit_update_failure(&self, err: &UpdateError) {
-        let to_version = match self.update_status.as_ref() {
+        let to_version = match self.self_update.update_status.as_ref() {
             Some(update::checker::UpdateStatus::Available { version, .. }) => version.clone(),
             _ => "unknown".to_string(),
         };
@@ -134,7 +134,7 @@ impl PaneFlowApp {
             json!({
                 "from_version": env!("CARGO_PKG_VERSION"),
                 "to_version": to_version,
-                "install_method": install_method_tag(&self.install_method),
+                "install_method": install_method_tag(&self.self_update.install_method),
                 "success": false,
                 "error_category": error_category_tag(err),
             }),
@@ -146,7 +146,7 @@ impl PaneFlowApp {
     /// emitters so the funnel ties cleanly to `update_available`.
     /// Consent gating is inherited from the `TelemetryClient`.
     pub(crate) fn emit_update_dismissed(&self, reason: UpdateDismissReason) {
-        let to_version = match self.update_status.as_ref() {
+        let to_version = match self.self_update.update_status.as_ref() {
             Some(update::checker::UpdateStatus::Available { version, .. }) => version.clone(),
             _ => "unknown".to_string(),
         };

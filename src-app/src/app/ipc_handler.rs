@@ -321,10 +321,11 @@ impl PaneFlowApp {
 
     /// Pick up the background update check result (runs once, then stops polling).
     pub(crate) fn process_update_check(&mut self, cx: &mut Context<Self>) {
-        if self.update_status.is_some() {
+        if self.self_update.update_status.is_some() {
             return; // Already resolved
         }
         let status = self
+            .self_update
             .pending_update
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -332,7 +333,7 @@ impl PaneFlowApp {
         if let Some(status) = status
             && !matches!(status, update::checker::UpdateStatus::Checking)
         {
-            self.update_status = Some(status);
+            self.self_update.update_status = Some(status);
             cx.notify();
             // Zed-style silent pre-install: as soon as we know there's
             // a new release and the install method supports an in-app

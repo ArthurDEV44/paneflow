@@ -26,7 +26,7 @@ impl PaneFlowApp {
     ) -> AnyElement {
         let ui = crate::theme::ui_colors();
         let theme = crate::theme::active_theme();
-        let is_open = self.sidebar_actions_menu_open;
+        let is_open = self.agents_view.sidebar_actions_menu_open;
 
         let trigger = div()
             .id("sidebar-settings-trigger")
@@ -45,7 +45,8 @@ impl PaneFlowApp {
                 s.bg(ui.subtle)
             })
             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                this.sidebar_actions_menu_open = !this.sidebar_actions_menu_open;
+                this.agents_view.sidebar_actions_menu_open =
+                    !this.agents_view.sidebar_actions_menu_open;
                 cx.notify();
             }))
             .child(
@@ -97,8 +98,8 @@ impl PaneFlowApp {
                 // Click anywhere outside the popover (or its trigger)
                 // dismisses it. Same pattern as `profile_menu.rs:128`.
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    if this.sidebar_actions_menu_open {
-                        this.sidebar_actions_menu_open = false;
+                    if this.agents_view.sidebar_actions_menu_open {
+                        this.agents_view.sidebar_actions_menu_open = false;
                         cx.notify();
                     }
                 }));
@@ -243,7 +244,7 @@ fn render_menu_item(
         })
         .on_click(cx.listener(move |this, _: &ClickEvent, w, cx| {
             handler(this, w, cx);
-            this.sidebar_actions_menu_open = false;
+            this.agents_view.sidebar_actions_menu_open = false;
             cx.notify();
         }))
         .child(

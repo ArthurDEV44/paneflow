@@ -194,8 +194,8 @@ fn render_tab_bar(
             });
         }
         row.on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-            if this.agents_skills_tab != this_tab {
-                this.agents_skills_tab = this_tab;
+            if this.agents_view.agents_skills_tab != this_tab {
+                this.agents_view.agents_skills_tab = this_tab;
                 cx.notify();
             }
         }))

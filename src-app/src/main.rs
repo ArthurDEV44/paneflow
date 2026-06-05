@@ -133,75 +133,38 @@ pub(crate) struct ClosedPaneRecord {
     pub(crate) workspace_idx: usize,
 }
 
-struct PaneFlowApp {
-    workspaces: Vec<Workspace>,
-    active_idx: usize,
-    renaming_idx: Option<usize>,
-    rename_text: String,
-    /// Shared slot for config changes from the background `ConfigWatcher` thread.
-    /// The watcher writes `Some(config)` on every successful reload; the main
-    /// thread `take()`s it in the 50ms poll loop to apply keybindings + theme.
-    pending_config:
-        std::sync::Arc<std::sync::Mutex<Option<paneflow_config::schema::PaneFlowConfig>>>,
-    /// US-011: monotonic save-coalescing token. Every `save_session` bumps it
-    /// and the off-thread writer skips its disk write when a newer save has
-    /// been scheduled meanwhile, collapsing a burst (e.g. closing 20
-    /// workspaces) into a single write — none of it on the render thread.
-    save_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// US-014: parsed `paneflow.json` cached on the main thread so render paths
-    /// never call the blocking `load_config()` (fs read + JSON parse) per frame.
-    /// Hydrated at startup, invalidated in [`Self::process_config_changes`] when
-    /// the background `ConfigWatcher` reports a reload. Render code reads this;
-    /// click handlers that must observe a config write *they just made* still
-    /// read fresh from disk (the cache lags the write by the watcher debounce).
-    cached_config: paneflow_config::schema::PaneFlowConfig,
-    ipc_rx: std::sync::mpsc::Receiver<ipc::IpcRequest>,
-    ipc_status: ipc::IpcStatus,
-    title_bar: Entity<title_bar::TitleBar>,
-    /// File watcher for `.git/HEAD` and `.git/index` across all workspaces.
-    /// `None` if the OS watcher could not be created (graceful degradation).
-    git_watcher: Option<notify::RecommendedWatcher>,
-    /// Receiver for raw notify events from the git file watcher.
-    git_event_rx: std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
-    /// Refcount for watched `.git` directories (multiple workspaces may share a repo).
-    git_watch_counts: std::collections::HashMap<std::path::PathBuf, usize>,
-    /// Active settings section, or `None` if settings is closed.
-    settings_section: Option<SettingsSection>,
-    /// Scroll state for the inline settings page.
-    settings_scroll: gpui::ScrollHandle,
-    settings_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
-    /// Cached HOME directory for sidebar display (avoids per-render syscall).
-    home_dir: String,
-    /// Scroll state for the persistent sidebar workspace list.
-    /// Driven by GPUI's `overflow_y_scroll + track_scroll`; the
-    /// visible scroll bar has been removed but the handle is still
-    /// useful so the list keeps a stable wheel-scroll offset across
-    /// re-renders.
-    sidebar_scroll: gpui::ScrollHandle,
-    /// Effective keybindings (defaults merged with user overrides) for settings display.
-    effective_shortcuts: Vec<keybindings::ShortcutEntry>,
-    /// Index of the shortcut row currently being recorded (`None` = not recording).
-    recording_shortcut_idx: Option<usize>,
-    /// Focus handle for the settings page (receives key events during recording/font search).
-    settings_focus: FocusHandle,
-    /// Cached list of monospace font family names from the system.
-    mono_font_names: Vec<String>,
-    /// Whether the font family dropdown is open.
-    font_dropdown_open: bool,
-    /// Filter text for the font dropdown.
-    font_search: String,
-    /// Workflow action menu currently open in the sidebar (`None` = closed).
-    workspace_menu_open: Option<WorkspaceContextMenu>,
-    /// "Move to pane…" tab context menu (EP-002 US-006), or `None` when closed.
-    tab_menu_open: Option<TabContextMenu>,
-    /// Pane to focus on the next render (EP-003 US-009). Set by the
-    /// `DropSplit` handler — which runs in a subscription callback without a
-    /// `Window` — and consumed in `render`, which has one. One-shot.
-    pending_pane_focus: Option<Entity<Pane>>,
-    /// Profile menu currently open at the right of the title bar.
-    /// Stores the click position so the menu can anchor near the profile
-    /// button. `None` = closed.
-    profile_menu_open: Option<Point<Pixels>>,
+/// US-053: in-app self-update flow state, extracted from the `PaneFlowApp`
+/// god-struct. Grouped: the background-check slot/result, the live flow
+/// status, the detected install method, and the consecutive-failure counter.
+struct SelfUpdateState {
+    /// Shared slot for the background update checker result.
+    pending_update: update::checker::SharedUpdateSlot,
+    /// Resolved update status (set once the background check completes).
+    update_status: Option<update::checker::UpdateStatus>,
+    /// Live state of the in-app self-update flow (download → install → restart).
+    self_update_status: update::SelfUpdateStatus,
+    /// How the running binary was installed. Detected once at startup —
+    /// drives the update pill's label/click behaviour (US-012) and the
+    /// in-app updater's branch selection.
+    install_method: update::install_method::InstallMethod,
+    /// Count of consecutive in-app update failures since process start
+    /// (US-013). Bumped on every classified error; after 3 failures the
+    /// 4th click skips the network and shows the "download manually"
+    /// escape hatch toast.
+    ///
+    /// Never decremented. The only success path for an update calls
+    /// `cx.restart()`, which replaces this process — the fresh
+    /// `PaneFlowApp::new` initializes the counter back to 0. So "failures
+    /// since last success" and "failures since process start" coincide by
+    /// construction; the PRD's "three consecutive failures" requirement
+    /// holds without an explicit reset.
+    update_attempt_count: u32,
+}
+
+/// US-053: docked agent-sessions sidebar state (visibility, per-agent
+/// scanned session lists, the originating pane/cwd, and group UI flags),
+/// extracted from the `PaneFlowApp` god-struct.
+struct AgentSessionsState {
     /// Whether the docked agent-sessions right sidebar is visible
     /// (PRD `prd-agent-sessions-sidebar-2026-Q3`, EP-001). Toggled by the
     /// tab-bar sessions button; the sidebar renders as a layout child of the
@@ -237,94 +200,12 @@ struct PaneFlowApp {
     /// `scanning`: a background scan for this agent is in flight, so an empty
     /// list should read as "loading" not "none" (US-004).
     sessions_scanning: [bool; 3],
-    /// Whether the docked Files right sidebar is visible (PRD
-    /// `prd-files-tree-sidebar-2026-Q3`, EP-001). Mutually exclusive with
-    /// `sessions_sidebar_open`. Never persisted — always `false` on launch.
-    files_sidebar_open: bool,
-    /// In-memory tree state for the open Files sidebar (root + expanded set +
-    /// lazily-cached directory listings). Empty when the sidebar is closed.
-    files_tree: app::files_tree::FilesTreeState,
-    /// Scroll state for the Files tree body. Re-created on every open so a
-    /// fresh sidebar starts at offset 0.
-    files_tree_scroll: gpui::ScrollHandle,
-    /// Recursive `notify` watcher on the Files tree root (EP-002 US-005).
-    /// `None` when the sidebar is closed or the watch could not be installed
-    /// (US-006 graceful degradation — the tree then refreshes on expand).
-    files_watcher: Option<notify::RecommendedWatcher>,
-    /// Receiver for raw watch events, drained + debounced by the background
-    /// loop in `bootstrap`. `Some` only while a watcher is installed.
-    files_event_rx: Option<std::sync::mpsc::Receiver<notify::Result<notify::Event>>>,
-    /// Open right-click context menu for a Files-sidebar row (EP-003 US-009),
-    /// or `None` when closed. Mutually exclusive with the other popovers.
-    files_menu_open: Option<FilesContextMenu>,
-    /// Ephemeral bottom-right toast.
-    toast: Option<Toast>,
-    /// Dismiss timer for the active toast — dropped on new toast to cancel the old timer.
-    _toast_task: Option<gpui::Task<()>>,
-    /// Whether the loader animation spawn is currently running.
-    loader_anim_running: bool,
-    /// Source pane for swap mode, or `None` if not in swap mode.
-    swap_source: Option<Entity<crate::pane::Pane>>,
-    /// LIFO stack of recently closed panes for undo-close (US-014).
-    closed_panes: Vec<ClosedPaneRecord>,
-    /// Whether the "About PaneFlow" dialog is visible.
-    show_about_dialog: bool,
-    /// Whether the command-palette-style theme picker is visible.
-    show_theme_picker: bool,
-    /// Typeahead filter for the theme picker (case-insensitive substring).
-    theme_picker_query: String,
-    /// Index into the *filtered* theme list for the currently highlighted row.
-    theme_picker_selected_idx: usize,
-    /// Focus handle routing key events to the theme picker while it's open.
-    theme_picker_focus: FocusHandle,
-    /// Scroll state for the theme picker list (visible scrollbar overlay).
-    theme_picker_scroll: gpui::ScrollHandle,
-    theme_picker_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
-    /// Shared slot for the background update checker result.
-    pending_update: update::checker::SharedUpdateSlot,
-    /// Resolved update status (set once the background check completes).
-    update_status: Option<update::checker::UpdateStatus>,
-    /// Live state of the in-app self-update flow (download → install → restart).
-    self_update_status: update::SelfUpdateStatus,
-    /// How the running binary was installed. Detected once at startup —
-    /// drives the update pill's label/click behaviour (US-012) and the
-    /// in-app updater's branch selection.
-    install_method: update::install_method::InstallMethod,
-    /// Count of consecutive in-app update failures since process start
-    /// (US-013). Bumped on every classified error; after 3 failures the
-    /// 4th click skips the network and shows the "download manually"
-    /// escape hatch toast.
-    ///
-    /// Never decremented. The only success path for an update calls
-    /// `cx.restart()`, which replaces this process — the fresh
-    /// `PaneFlowApp::new` initializes the counter back to 0. So "failures
-    /// since last success" and "failures since process start" coincide by
-    /// construction; the PRD's "three consecutive failures" requirement
-    /// holds without an explicit reset.
-    update_attempt_count: u32,
-    /// State of the "Custom Buttons" management modal opened from the
-    /// workspace context menu. `None` = closed.
-    custom_buttons_modal: Option<app::custom_buttons_modal::CustomButtonsModal>,
-    /// Focus handle routing key events to the custom-buttons modal while open.
-    custom_buttons_modal_focus: FocusHandle,
-    /// Live telemetry handle (US-012/US-013). `Null` when consent is missing
-    /// or `PANEFLOW_NO_TELEMETRY` is set — every `capture`/`flush` call is a
-    /// no-op in that state, so callers never branch on consent.
-    telemetry: std::sync::Arc<crate::telemetry::client::TelemetryClient>,
-    /// Monotonic clock at process start, used to compute
-    /// `session_duration_seconds` for the `app_exited` event. Wall-clock-change
-    /// proof — a system clock jump mid-session never produces a negative value.
-    launch_instant: std::time::Instant,
-    /// Last observed `config.telemetry.enabled` value, cached so the config
-    /// watcher's reconcile path can detect a transition (US-014) without
-    /// re-reading the file.
-    telemetry_enabled_last: Option<bool>,
-    /// US-006: shared "theme file changed" signal flipped by the theme
-    /// watcher's debounce thread (event-driven invalidation). The 50 ms
-    /// IPC poll loop in `process_config_changes` drains this flag and
-    /// calls `cx.notify()` so the next render picks up the new theme.
-    /// `Arc<AtomicBool>` — Send + Sync, lock-free.
-    theme_changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// US-053: Git Diff mode state (mounted single/multi-repo views + their
+/// caches, the worktree/scope/project pickers, and the file-tree filter),
+/// extracted from the `PaneFlowApp` god-struct.
+struct DiffModeState {
     /// US-005 (prd-git-diff-mode-2026-Q3.md): the mounted Git Diff mode
     /// view, when `mode == AppMode::Diff`. Lazily (re)built by
     /// `rebuild_diff_view` on mode entry and on workspace switch;
@@ -408,26 +289,12 @@ struct PaneFlowApp {
     /// panel. Observed at construction so each keystroke re-renders the
     /// sidebar (which recomputes the visible matches by path substring).
     diff_file_filter: gpui::Entity<crate::widgets::text_input::TextInput>,
-    /// US-008 (prd-agents-view.md): top-level UI mode. `Cli` = the
-    /// traditional terminal multiplexer; `Agents` = the projects +
-    /// threads sidebar and chat thread view. Toggled by the
-    /// `OpenAgentsView` action (Ctrl/Cmd+Shift+A) and by the title-bar
-    /// icon (US-009). Persisted to / restored from `session.json`
-    /// (US-009 wires the restore branch).
-    pub(crate) mode: paneflow_config::schema::AppMode,
-    /// US-007 (prd-agents-view.md): in-memory list of Agents-view
-    /// projects, persisted to `session.json` via [`save_session`].
-    /// Empty until the user creates their first project (US-011).
-    pub(crate) projects: Vec<crate::project::Project>,
-    /// US-007 (prd-agents-view.md): index into [`Self::projects`] of
-    /// the currently active project. `0` when no projects exist
-    /// (the sidebar reads `projects.is_empty()` to decide whether
-    /// to render anything).
-    pub(crate) active_project_idx: usize,
-    /// US-007 (prd-agents-view.md): index into the active project's
-    /// thread list. `None` when no thread is selected (e.g. the
-    /// user just opened the project and hasn't picked a thread yet).
-    pub(crate) active_thread_idx: Option<usize>,
+}
+
+/// US-053: Agents-view sidebar state extracted from the `PaneFlowApp`
+/// god-struct (terminal-only Agents view: rename, context menu, skills
+/// page, search filter, and the per-thread terminal cache).
+struct AgentsViewState {
     /// US-011 (prd-agents-view.md): which sidebar row is currently in
     /// inline-rename mode (mirrors [`Self::renaming_idx`] but for the
     /// Agents domain). `None` when no rename is active.
@@ -448,11 +315,6 @@ struct PaneFlowApp {
     /// US-011: pending delete confirmation. The actual mutation
     /// happens only after the user confirms in the dialog.
     pub(crate) agents_confirm_delete: Option<crate::app::agents_sidebar::AgentsDeleteTarget>,
-    /// "Close all workspaces" guard. `true` while the confirmation
-    /// dialog is up; flipped back to `false` on cancel/confirm. Cheap
-    /// `bool` instead of `Option<()>` because the action is global --
-    /// there's only ever one pending confirm at a time.
-    pub(crate) confirm_close_all_workspaces: bool,
     /// US-012 (prd-agents-view.md): live search/filter query for the
     /// Agents sidebar. Empty string == "no filter, show full list".
     /// Case-insensitive substring match is applied at render time.
@@ -488,6 +350,177 @@ struct PaneFlowApp {
     /// cleanup) or on app shutdown.
     pub(crate) agents_terminal_view_cache:
         std::collections::HashMap<u64, gpui::Entity<crate::terminal::view::TerminalView>>,
+}
+
+struct PaneFlowApp {
+    workspaces: Vec<Workspace>,
+    active_idx: usize,
+    renaming_idx: Option<usize>,
+    rename_text: String,
+    /// Shared slot for config changes from the background `ConfigWatcher` thread.
+    /// The watcher writes `Some(config)` on every successful reload; the main
+    /// thread `take()`s it in the 50ms poll loop to apply keybindings + theme.
+    pending_config:
+        std::sync::Arc<std::sync::Mutex<Option<paneflow_config::schema::PaneFlowConfig>>>,
+    /// US-011: monotonic save-coalescing token. Every `save_session` bumps it
+    /// and the off-thread writer skips its disk write when a newer save has
+    /// been scheduled meanwhile, collapsing a burst (e.g. closing 20
+    /// workspaces) into a single write — none of it on the render thread.
+    save_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// US-014: parsed `paneflow.json` cached on the main thread so render paths
+    /// never call the blocking `load_config()` (fs read + JSON parse) per frame.
+    /// Hydrated at startup, invalidated in [`Self::process_config_changes`] when
+    /// the background `ConfigWatcher` reports a reload. Render code reads this;
+    /// click handlers that must observe a config write *they just made* still
+    /// read fresh from disk (the cache lags the write by the watcher debounce).
+    cached_config: paneflow_config::schema::PaneFlowConfig,
+    ipc_rx: std::sync::mpsc::Receiver<ipc::IpcRequest>,
+    ipc_status: ipc::IpcStatus,
+    title_bar: Entity<title_bar::TitleBar>,
+    /// File watcher for `.git/HEAD` and `.git/index` across all workspaces.
+    /// `None` if the OS watcher could not be created (graceful degradation).
+    git_watcher: Option<notify::RecommendedWatcher>,
+    /// Receiver for raw notify events from the git file watcher.
+    git_event_rx: std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
+    /// Refcount for watched `.git` directories (multiple workspaces may share a repo).
+    git_watch_counts: std::collections::HashMap<std::path::PathBuf, usize>,
+    /// Active settings section, or `None` if settings is closed.
+    settings_section: Option<SettingsSection>,
+    /// Scroll state for the inline settings page.
+    settings_scroll: gpui::ScrollHandle,
+    settings_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
+    /// Cached HOME directory for sidebar display (avoids per-render syscall).
+    home_dir: String,
+    /// Scroll state for the persistent sidebar workspace list.
+    /// Driven by GPUI's `overflow_y_scroll + track_scroll`; the
+    /// visible scroll bar has been removed but the handle is still
+    /// useful so the list keeps a stable wheel-scroll offset across
+    /// re-renders.
+    sidebar_scroll: gpui::ScrollHandle,
+    /// Effective keybindings (defaults merged with user overrides) for settings display.
+    effective_shortcuts: Vec<keybindings::ShortcutEntry>,
+    /// Index of the shortcut row currently being recorded (`None` = not recording).
+    recording_shortcut_idx: Option<usize>,
+    /// Focus handle for the settings page (receives key events during recording/font search).
+    settings_focus: FocusHandle,
+    /// Cached list of monospace font family names from the system.
+    mono_font_names: Vec<String>,
+    /// Whether the font family dropdown is open.
+    font_dropdown_open: bool,
+    /// Filter text for the font dropdown.
+    font_search: String,
+    /// Workflow action menu currently open in the sidebar (`None` = closed).
+    workspace_menu_open: Option<WorkspaceContextMenu>,
+    /// "Move to pane…" tab context menu (EP-002 US-006), or `None` when closed.
+    tab_menu_open: Option<TabContextMenu>,
+    /// Pane to focus on the next render (EP-003 US-009). Set by the
+    /// `DropSplit` handler — which runs in a subscription callback without a
+    /// `Window` — and consumed in `render`, which has one. One-shot.
+    pending_pane_focus: Option<Entity<Pane>>,
+    /// Profile menu currently open at the right of the title bar.
+    /// Stores the click position so the menu can anchor near the profile
+    /// button. `None` = closed.
+    profile_menu_open: Option<Point<Pixels>>,
+    /// US-053: agent-sessions sidebar state (see `AgentSessionsState`).
+    agent_sessions: AgentSessionsState,
+    /// Whether the docked Files right sidebar is visible (PRD
+    /// `prd-files-tree-sidebar-2026-Q3`, EP-001). Mutually exclusive with
+    /// `sessions_sidebar_open`. Never persisted — always `false` on launch.
+    files_sidebar_open: bool,
+    /// In-memory tree state for the open Files sidebar (root + expanded set +
+    /// lazily-cached directory listings). Empty when the sidebar is closed.
+    files_tree: app::files_tree::FilesTreeState,
+    /// Scroll state for the Files tree body. Re-created on every open so a
+    /// fresh sidebar starts at offset 0.
+    files_tree_scroll: gpui::ScrollHandle,
+    /// Recursive `notify` watcher on the Files tree root (EP-002 US-005).
+    /// `None` when the sidebar is closed or the watch could not be installed
+    /// (US-006 graceful degradation — the tree then refreshes on expand).
+    files_watcher: Option<notify::RecommendedWatcher>,
+    /// Receiver for raw watch events, drained + debounced by the background
+    /// loop in `bootstrap`. `Some` only while a watcher is installed.
+    files_event_rx: Option<std::sync::mpsc::Receiver<notify::Result<notify::Event>>>,
+    /// Open right-click context menu for a Files-sidebar row (EP-003 US-009),
+    /// or `None` when closed. Mutually exclusive with the other popovers.
+    files_menu_open: Option<FilesContextMenu>,
+    /// Ephemeral bottom-right toast.
+    toast: Option<Toast>,
+    /// Dismiss timer for the active toast — dropped on new toast to cancel the old timer.
+    _toast_task: Option<gpui::Task<()>>,
+    /// Whether the loader animation spawn is currently running.
+    loader_anim_running: bool,
+    /// Source pane for swap mode, or `None` if not in swap mode.
+    swap_source: Option<Entity<crate::pane::Pane>>,
+    /// LIFO stack of recently closed panes for undo-close (US-014).
+    closed_panes: Vec<ClosedPaneRecord>,
+    /// Whether the "About PaneFlow" dialog is visible.
+    show_about_dialog: bool,
+    /// Whether the command-palette-style theme picker is visible.
+    show_theme_picker: bool,
+    /// Typeahead filter for the theme picker (case-insensitive substring).
+    theme_picker_query: String,
+    /// Index into the *filtered* theme list for the currently highlighted row.
+    theme_picker_selected_idx: usize,
+    /// Focus handle routing key events to the theme picker while it's open.
+    theme_picker_focus: FocusHandle,
+    /// Scroll state for the theme picker list (visible scrollbar overlay).
+    theme_picker_scroll: gpui::ScrollHandle,
+    theme_picker_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
+    /// US-053: self-update flow state (see `SelfUpdateState`).
+    self_update: SelfUpdateState,
+    /// State of the "Custom Buttons" management modal opened from the
+    /// workspace context menu. `None` = closed.
+    custom_buttons_modal: Option<app::custom_buttons_modal::CustomButtonsModal>,
+    /// Focus handle routing key events to the custom-buttons modal while open.
+    custom_buttons_modal_focus: FocusHandle,
+    /// Live telemetry handle (US-012/US-013). `Null` when consent is missing
+    /// or `PANEFLOW_NO_TELEMETRY` is set — every `capture`/`flush` call is a
+    /// no-op in that state, so callers never branch on consent.
+    telemetry: std::sync::Arc<crate::telemetry::client::TelemetryClient>,
+    /// Monotonic clock at process start, used to compute
+    /// `session_duration_seconds` for the `app_exited` event. Wall-clock-change
+    /// proof — a system clock jump mid-session never produces a negative value.
+    launch_instant: std::time::Instant,
+    /// Last observed `config.telemetry.enabled` value, cached so the config
+    /// watcher's reconcile path can detect a transition (US-014) without
+    /// re-reading the file.
+    telemetry_enabled_last: Option<bool>,
+    /// US-006: shared "theme file changed" signal flipped by the theme
+    /// watcher's debounce thread (event-driven invalidation). The 50 ms
+    /// IPC poll loop in `process_config_changes` drains this flag and
+    /// calls `cx.notify()` so the next render picks up the new theme.
+    /// `Arc<AtomicBool>` — Send + Sync, lock-free.
+    theme_changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// US-053: Git Diff mode state (see `DiffModeState`).
+    diff_mode: DiffModeState,
+    /// US-008 (prd-agents-view.md): top-level UI mode. `Cli` = the
+    /// traditional terminal multiplexer; `Agents` = the projects +
+    /// threads sidebar and chat thread view. Toggled by the
+    /// `OpenAgentsView` action (Ctrl/Cmd+Shift+A) and by the title-bar
+    /// icon (US-009). Persisted to / restored from `session.json`
+    /// (US-009 wires the restore branch).
+    pub(crate) mode: paneflow_config::schema::AppMode,
+    /// US-007 (prd-agents-view.md): in-memory list of Agents-view
+    /// projects, persisted to `session.json` via [`save_session`].
+    /// Empty until the user creates their first project (US-011).
+    pub(crate) projects: Vec<crate::project::Project>,
+    /// US-007 (prd-agents-view.md): index into [`Self::projects`] of
+    /// the currently active project. `0` when no projects exist
+    /// (the sidebar reads `projects.is_empty()` to decide whether
+    /// to render anything).
+    pub(crate) active_project_idx: usize,
+    /// US-007 (prd-agents-view.md): index into the active project's
+    /// thread list. `None` when no thread is selected (e.g. the
+    /// user just opened the project and hasn't picked a thread yet).
+    pub(crate) active_thread_idx: Option<usize>,
+    /// US-053: Agents-view sidebar state (rename/menu/skills/filter +
+    /// the terminal-thread cache), extracted from the god-struct.
+    pub(crate) agents_view: AgentsViewState,
+    /// "Close all workspaces" guard. `true` while the confirmation
+    /// dialog is up; flipped back to `false` on cancel/confirm. Cheap
+    /// `bool` instead of `Option<()>` because the action is global --
+    /// there's only ever one pending confirm at a time.
+    pub(crate) confirm_close_all_workspaces: bool,
     /// US-048: memoized sidebar display order (worktree grouping). Recomputed
     /// only when the workspace set / order / repo roots change, keyed by a
     /// cheap content signature — `render_sidebar` runs on every app `notify()`,
@@ -568,8 +601,9 @@ impl PaneFlowApp {
         // machine. Called before `show_update_error_toast` so the event is
         // queued even if toast rendering panics.
         self.emit_update_failure(&tag);
-        self.self_update_status = update::SelfUpdateStatus::Errored(tag.clone());
-        self.update_attempt_count = self.update_attempt_count.saturating_add(1);
+        self.self_update.self_update_status = update::SelfUpdateStatus::Errored(tag.clone());
+        self.self_update.update_attempt_count =
+            self.self_update.update_attempt_count.saturating_add(1);
         self.show_update_error_toast(&tag, cx);
         cx.notify();
     }
@@ -673,7 +707,7 @@ impl Render for PaneFlowApp {
         // the SystemPackage branch ignored this, the pkexec dnf/apt path
         // would render "Update via dnf" frozen for the entire install while
         // is_busy() silently dropped clicks.
-        let in_app_state = match &self.self_update_status {
+        let in_app_state = match &self.self_update.self_update_status {
             update::SelfUpdateStatus::Idle => title_bar::SelfUpdatePillState::Idle,
             update::SelfUpdateStatus::Downloading => title_bar::SelfUpdatePillState::Downloading,
             update::SelfUpdateStatus::Installing => title_bar::SelfUpdatePillState::Installing,
@@ -682,9 +716,9 @@ impl Render for PaneFlowApp {
             }
             update::SelfUpdateStatus::Errored(_) => title_bar::SelfUpdatePillState::Errored,
         };
-        let update_info = match &self.update_status {
+        let update_info = match &self.self_update.update_status {
             Some(update::checker::UpdateStatus::Available { version, .. }) => {
-                let kind = match &self.install_method {
+                let kind = match &self.self_update.install_method {
                     update::install_method::InstallMethod::SystemPackage { manager } => {
                         match manager {
                             // Dnf / Apt: in-app pkexec install. Pill follows
@@ -892,7 +926,7 @@ impl Render for PaneFlowApp {
                     // Docked agent-sessions sidebar (right edge). A layout child
                     // — not an overlay — so it reflows the content and persists
                     // while the user works (PRD agent-sessions-sidebar EP-001).
-                    .when(self.sessions_sidebar_open, |row| {
+                    .when(self.agent_sessions.sessions_sidebar_open, |row| {
                         row.child(self.render_sessions_sidebar(cx))
                     })
                     // Docked Files sidebar (right edge) — same layout child as
@@ -944,13 +978,13 @@ impl Render for PaneFlowApp {
         // menu (project header or thread row) + delete-confirmation
         // dialog. Both render only when the corresponding state field
         // is `Some`; the dispatcher fns guard against stale indices.
-        if let Some(menu) = self.agents_menu_open
+        if let Some(menu) = self.agents_view.agents_menu_open
             && let Some(el) =
                 crate::app::agents_sidebar::render_open_agents_menu(self, menu, ui, window, cx)
         {
             app_content = app_content.child(el);
         }
-        if let Some(target) = self.agents_confirm_delete {
+        if let Some(target) = self.agents_view.agents_confirm_delete {
             app_content =
                 app_content.child(self.render_agents_confirm_delete_dialog(target, ui, cx));
         }

@@ -108,7 +108,7 @@ impl PaneFlowApp {
         ui: crate::theme::UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if self.claude_sessions_cwd.is_none() {
+        if self.agent_sessions.claude_sessions_cwd.is_none() {
             return div()
                 .flex()
                 .flex_col()
@@ -153,7 +153,7 @@ impl PaneFlowApp {
             // panel into horizontal scrolling.
             .overflow_x_hidden()
             .overflow_y_scroll()
-            .track_scroll(&self.claude_sessions_scroll);
+            .track_scroll(&self.agent_sessions.claude_sessions_scroll);
 
         for agent in enabled {
             body = body.child(self.sessions_group(agent, ui, cx));
@@ -168,9 +168,9 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let idx = agent_index(agent);
-        let collapsed = self.sessions_group_collapsed[idx];
-        let show_all = self.sessions_group_show_all[idx];
-        let scanning = self.sessions_scanning[idx];
+        let collapsed = self.agent_sessions.sessions_group_collapsed[idx];
+        let show_all = self.agent_sessions.sessions_group_show_all[idx];
+        let scanning = self.agent_sessions.sessions_scanning[idx];
         let sessions = self.sessions_for(agent);
         // Distinct chevron per state (US-006): right = collapsed, down =
         // expanded — a static swap, not a tween, so it reads under reduced
@@ -196,7 +196,8 @@ impl PaneFlowApp {
             .pb(px(4.))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                this.sessions_group_collapsed[idx] = !this.sessions_group_collapsed[idx];
+                this.agent_sessions.sessions_group_collapsed[idx] =
+                    !this.agent_sessions.sessions_group_collapsed[idx];
                 cx.notify();
             }))
             // Brand glyph in its native accent so each tool reads at a glance.
@@ -277,7 +278,8 @@ impl PaneFlowApp {
                             s.bg(ui.subtle).text_color(ui.text)
                         })
                         .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                            this.sessions_group_show_all[idx] = !this.sessions_group_show_all[idx];
+                            this.agent_sessions.sessions_group_show_all[idx] =
+                                !this.agent_sessions.sessions_group_show_all[idx];
                             cx.notify();
                         }))
                         .child(label),
@@ -290,9 +292,9 @@ impl PaneFlowApp {
 
     fn sessions_for(&self, agent: SessionAgent) -> &[SessionMeta] {
         match agent {
-            SessionAgent::Claude => &self.claude_sessions,
-            SessionAgent::Codex => &self.codex_sessions,
-            SessionAgent::OpenCode => &self.opencode_sessions,
+            SessionAgent::Claude => &self.agent_sessions.claude_sessions,
+            SessionAgent::Codex => &self.agent_sessions.codex_sessions,
+            SessionAgent::OpenCode => &self.agent_sessions.opencode_sessions,
         }
     }
 
@@ -391,7 +393,7 @@ impl PaneFlowApp {
     /// no-ops when that pane was dropped (closed/replaced while the sidebar was
     /// open) or no longer has a terminal tab.
     fn send_command_to_sessions_pane(&self, command: &str, cx: &mut Context<Self>) {
-        let Some(pane_handle) = self.claude_sessions_pane.as_ref() else {
+        let Some(pane_handle) = self.agent_sessions.claude_sessions_pane.as_ref() else {
             return;
         };
         let Some(pane) = pane_handle.upgrade() else {
@@ -406,17 +408,17 @@ impl PaneFlowApp {
     /// Tear down all sidebar state in one place — used by the header close
     /// button and the tab-bar toggle (in `event_handlers`).
     pub(crate) fn close_sessions_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.sessions_sidebar_open = false;
-        self.claude_sessions.clear();
-        self.codex_sessions.clear();
-        self.opencode_sessions.clear();
-        self.claude_sessions_cwd = None;
-        self.claude_sessions_pane = None;
+        self.agent_sessions.sessions_sidebar_open = false;
+        self.agent_sessions.claude_sessions.clear();
+        self.agent_sessions.codex_sessions.clear();
+        self.agent_sessions.opencode_sessions.clear();
+        self.agent_sessions.claude_sessions_cwd = None;
+        self.agent_sessions.claude_sessions_pane = None;
         // US-006: per-group state is in-memory only — reset so a reopen starts
         // expanded and capped, never stale.
-        self.sessions_group_collapsed = [false; 3];
-        self.sessions_group_show_all = [false; 3];
-        self.sessions_scanning = [false; 3];
+        self.agent_sessions.sessions_group_collapsed = [false; 3];
+        self.agent_sessions.sessions_group_show_all = [false; 3];
+        self.agent_sessions.sessions_scanning = [false; 3];
         cx.notify();
     }
 }

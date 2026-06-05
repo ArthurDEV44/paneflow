@@ -52,7 +52,8 @@ impl PaneFlowApp {
         } else {
             ui.text
         };
-        let selected = is_active && self.diff_selected_file.as_deref() == Some(entry.path.as_str());
+        let selected =
+            is_active && self.diff_mode.diff_selected_file.as_deref() == Some(entry.path.as_str());
         let path = entry.path.clone();
         let show_counts = !entry.is_binary && (entry.added > 0 || entry.removed > 0);
 
@@ -83,20 +84,20 @@ impl PaneFlowApp {
             .when(selected, |d| d.bg(ui.accent.opacity(0.12)))
             .hover(|s| s.bg(ui.subtle))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.diff_selected_file = Some(path.clone());
+                this.diff_mode.diff_selected_file = Some(path.clone());
                 // Select that branch's column AND scroll its body to this file.
                 // Multi-project routes through the selected repo tab; the other
                 // scopes through the single mounted DiffView.
-                match this.diff_scope {
+                match this.diff_mode.diff_scope {
                     crate::diff::DiffScope::MultiProject => {
-                        if let Some(mv) = this.multi_diff_view.clone() {
+                        if let Some(mv) = this.diff_mode.multi_diff_view.clone() {
                             mv.update(cx, |mv, cx| {
                                 mv.active_select_and_jump(col_idx, &path, window, cx)
                             });
                         }
                     }
                     _ => {
-                        if let Some(dv) = this.diff_view.clone() {
+                        if let Some(dv) = this.diff_mode.diff_view.clone() {
                             dv.update(cx, |dv, cx| dv.select_and_jump(col_idx, &path, window, cx));
                         }
                     }
