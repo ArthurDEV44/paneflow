@@ -1161,6 +1161,15 @@ impl PaneFlowApp {
             return;
         }
 
+        // US-019: capture the stable workspace id, NOT the positional index.
+        // The git probe below awaits (long on big repos / network FS); during
+        // that await the main loop can run close/reorder/IPC-close and compact
+        // the `Vec`, so a reused `ws_idx` would point at a *different*
+        // workspace (silent git-state corruption + watch refcount desync).
+        // Re-resolve the index by identity after the await — model:
+        // `run_port_scan` / `spawn_initial_git_stats`.
+        let ws_id = self.workspaces[ws_idx].id;
+
         let new_cwd_owned = new_cwd.to_string();
 
         // Run git probe off main thread
@@ -1180,9 +1189,12 @@ impl PaneFlowApp {
 
                 let _ = cx.update(|cx| {
                     this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
-                        if ws_idx >= app.workspaces.len() {
+                        // Re-resolve by identity: the workspace may have been
+                        // closed or reordered during the await.
+                        let Some(ws_idx) = app.workspaces.iter().position(|ws| ws.id == ws_id)
+                        else {
                             return;
-                        }
+                        };
                         // Unwatch old git dir
                         let old_git_dir = app.workspaces[ws_idx].git_dir.clone();
                         if let Some(ref dir) = old_git_dir {
