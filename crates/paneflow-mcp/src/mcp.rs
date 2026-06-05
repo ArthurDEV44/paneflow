@@ -35,16 +35,36 @@ pub fn serve<R: BufRead, W: Write, T: IpcTransport>(
     mut writer: W,
     transport: &T,
 ) -> io::Result<()> {
+    let write_response = |writer: &mut W, response: &Value| -> io::Result<()> {
+        let mut serialized = serde_json::to_string(response).unwrap_or_default();
+        serialized.push('\n');
+        writer.write_all(serialized.as_bytes())?;
+        writer.flush()
+    };
+
     for line in reader.lines() {
-        let line = line?;
+        let line = match line {
+            Ok(l) => l,
+            // US-024: a non-UTF-8 byte on stdin surfaces here as InvalidData.
+            // Don't propagate — that would tear down the whole bridge over one
+            // malformed frame. Emit a parse error and keep serving. A genuine
+            // I/O failure (broken pipe, etc.) is still fatal.
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                let response = error_response(
+                    Value::Null,
+                    -32700,
+                    &format!("invalid (non-UTF-8) input: {e}"),
+                );
+                write_response(&mut writer, &response)?;
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         if line.trim().is_empty() {
             continue;
         }
         if let Some(response) = handle_message(&line, transport) {
-            let mut serialized = serde_json::to_string(&response).unwrap_or_default();
-            serialized.push('\n');
-            writer.write_all(serialized.as_bytes())?;
-            writer.flush()?;
+            write_response(&mut writer, &response)?;
         }
     }
     Ok(())
@@ -282,5 +302,27 @@ mod tests {
         assert_eq!(lines.len(), 2, "got: {text}");
         assert!(lines[0].contains("\"id\":1"));
         assert!(lines[1].contains("\"id\":2"));
+    }
+
+    #[test]
+    fn serve_survives_non_utf8_line() {
+        // US-024 negative test: a non-UTF-8 frame must NOT tear down the
+        // bridge. It yields a -32700 and serving continues for the next
+        // (valid) line.
+        let mut input: Vec<u8> = vec![0xff, 0xfe, 0x00, b'\n'];
+        input.extend_from_slice(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#);
+        input.push(b'\n');
+
+        let mut output: Vec<u8> = Vec::new();
+        serve(std::io::Cursor::new(input), &mut output, &StubTransport)
+            .expect("a non-UTF-8 line must not propagate as a fatal error");
+        let text = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "bad line + good line each produce a reply");
+        assert!(lines[0].contains("-32700"), "non-UTF-8 line → parse error");
+        assert!(
+            lines[1].contains("protocolVersion"),
+            "the following valid line is still served"
+        );
     }
 }
