@@ -18,6 +18,7 @@ mod engine;
 mod extract;
 mod git;
 mod highlighter;
+mod hit_test;
 mod multi_view;
 mod review_terminal;
 mod rows;

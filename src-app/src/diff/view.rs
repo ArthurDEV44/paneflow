@@ -30,6 +30,7 @@ use crate::widgets::text_input::TextInput;
 
 use super::arrange::{Arrange, Axis};
 use super::element::{DiffBody, DiffElement};
+use super::hit_test;
 use super::review_terminal::ReviewTerminal;
 
 mod base_branch;
@@ -49,8 +50,8 @@ pub struct DiffColumnDrag {
 }
 use super::rows::{
     DisplayRow, RowKind, RowPalette, SplitRow, build_display_rows, build_split_rows,
-    display_row_height, split_hunk_tops, split_max_line_no, split_offsets, split_row_height,
-    unified_hunk_tops, unified_max_line_no, unified_offsets,
+    split_hunk_tops, split_max_line_no, split_offsets, unified_hunk_tops, unified_max_line_no,
+    unified_offsets,
 };
 
 /// When jumping to a hunk, leave this much room above its first changed line so
@@ -1022,20 +1023,12 @@ impl DiffView {
                     ViewMode::Split => &col.disp_anchors_split,
                 };
                 let idx = anchors.iter().find(|(p, _)| p == path).map(|(_, i)| *i)?;
-                // Cumulative top offset of the header row — rows have variable
-                // heights (taller file-header cards), so summing is exact.
-                let y = match mode {
-                    ViewMode::Unified => col
-                        .disp_unified
-                        .get(..idx)
-                        .map(|s| s.iter().map(display_row_height).sum::<f32>())
-                        .unwrap_or(0.0),
-                    ViewMode::Split => col
-                        .disp_split
-                        .get(..idx)
-                        .map(|s| s.iter().map(split_row_height).sum::<f32>())
-                        .unwrap_or(0.0),
+                // US-050: O(1) prefix-sum lookup of the header row's top offset.
+                let offsets = match mode {
+                    ViewMode::Unified => &col.disp_unified_offsets,
+                    ViewMode::Split => &col.disp_split_offsets,
                 };
+                let y = hit_test::row_top(offsets, idx);
                 Some((col.el_scroll.clone(), y))
             });
         let Some((handle, y)) = target else {
@@ -1134,33 +1127,13 @@ impl DiffView {
                 return;
             }
             let target = f32::from(y - bounds.top() - col.el_scroll.offset().y).max(0.0);
-            // Variable row heights (taller file-header cards): walk cumulative
-            // heights to find the clicked row.
-            let mut acc = 0.0f32;
-            let mut hit = None;
-            match mode {
-                ViewMode::Unified => {
-                    for (i, r) in col.disp_unified.iter().enumerate() {
-                        let h = display_row_height(r);
-                        if target < acc + h {
-                            hit = Some(i);
-                            break;
-                        }
-                        acc += h;
-                    }
-                }
-                ViewMode::Split => {
-                    for (i, r) in col.disp_split.iter().enumerate() {
-                        let h = split_row_height(r);
-                        if target < acc + h {
-                            hit = Some(i);
-                            break;
-                        }
-                        acc += h;
-                    }
-                }
-            }
-            match hit {
+            // US-050: variable row heights (taller file-header cards) make this a
+            // band lookup — shared with `row_at_point` / `jump_to_file`.
+            let offsets = match mode {
+                ViewMode::Unified => &col.disp_unified_offsets,
+                ViewMode::Split => &col.disp_split_offsets,
+            };
+            match hit_test::row_at_offset(offsets, target) {
                 Some(r) => r,
                 None => return, // click past the last row
             }
@@ -1199,28 +1172,11 @@ impl DiffView {
             return None;
         }
         let target = f32::from(point.y - bounds.top() - col.el_scroll.offset().y).max(0.0);
-        let mut acc = 0.0f32;
-        match mode {
-            ViewMode::Unified => {
-                for (i, r) in col.disp_unified.iter().enumerate() {
-                    let h = display_row_height(r);
-                    if target < acc + h {
-                        return Some(i);
-                    }
-                    acc += h;
-                }
-            }
-            ViewMode::Split => {
-                for (i, r) in col.disp_split.iter().enumerate() {
-                    let h = split_row_height(r);
-                    if target < acc + h {
-                        return Some(i);
-                    }
-                    acc += h;
-                }
-            }
-        }
-        None
+        let offsets = match mode {
+            ViewMode::Unified => &col.disp_unified_offsets,
+            ViewMode::Split => &col.disp_split_offsets,
+        };
+        hit_test::row_at_offset(offsets, target)
     }
 
     /// US-002: resolve a body point to the file (+ optional enclosing hunk) under
