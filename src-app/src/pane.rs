@@ -379,11 +379,7 @@ impl Pane {
                     }
                 }
                 TerminalEvent::TitleChanged => {
-                    if !crate::terminal::SUPPRESS_REPAINTS
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        cx.notify();
-                    }
+                    cx.notify();
                 }
                 // CwdChanged, ActivityBurst, ServiceDetected, SelectionCopied are
                 // handled by PaneFlowApp's direct subscription to each TerminalView.

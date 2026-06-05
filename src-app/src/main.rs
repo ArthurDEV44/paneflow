@@ -491,7 +491,8 @@ struct PaneFlowApp {
 }
 
 /// Global flag for swap mode, checked by TerminalView to intercept Escape.
-/// Follows the same AtomicBool pattern as `SUPPRESS_REPAINTS`.
+/// A process-global `AtomicBool` (rather than threading state through every
+/// `TerminalView`) because the check sits on the keystroke hot path.
 pub static SWAP_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl PaneFlowApp {
