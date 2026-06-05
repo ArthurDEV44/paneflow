@@ -134,10 +134,14 @@ pub fn parse_and_validate(json: &str) -> PaneFlowConfig {
     parse_and_validate_with_path(json, Path::new("<config>"))
 }
 
-/// Parse + validate. `path` is currently used only for warning messages.
-pub fn parse_and_validate_with_path(json: &str, _path: &Path) -> PaneFlowConfig {
+/// Parse + validate. `path` is threaded into the warning so a malformed save
+/// names the offending file instead of an anonymous "config".
+pub fn parse_and_validate_with_path(json: &str, path: &Path) -> PaneFlowConfig {
     try_parse_and_validate(json).unwrap_or_else(|e| {
-        warn!("invalid JSON in config: {e}; using defaults");
+        warn!(
+            "invalid JSON in config {}: {e}; using defaults",
+            path.display()
+        );
         PaneFlowConfig::default()
     })
 }
@@ -248,12 +252,20 @@ pub fn validate_layout(node: &mut LayoutNode) {
                 for r in rs.iter_mut() {
                     *r = r.clamp(0.01, 1.0);
                 }
-                // Normalize to sum ~1.0.
+                // Normalize to sum ~1.0. `1e-6` (not `f64::EPSILON`, ~2.2e-16)
+                // so trivial float drift does not trigger a needless rescale.
                 let sum: f64 = rs.iter().sum();
-                if sum > 0.0 && (sum - 1.0).abs() > f64::EPSILON {
+                if sum > 0.0 && (sum - 1.0).abs() > 1e-6 {
                     for r in rs.iter_mut() {
                         *r /= sum;
                     }
+                }
+                // Re-clamp: normalization can push a value back below the 0.01
+                // floor (e.g. one near-1.0 ratio among many children). The floor
+                // is the invariant we guarantee; the renderer re-normalizes
+                // proportionally at paint time.
+                for r in rs.iter_mut() {
+                    *r = r.clamp(0.01, 1.0);
                 }
             }
 
@@ -517,6 +529,37 @@ mod tests {
         match ws.layout.as_ref().unwrap() {
             LayoutNode::Split { ratio, .. } => {
                 assert!((ratio.unwrap() - 0.9).abs() < f64::EPSILON);
+            }
+            _ => panic!("expected split"),
+        }
+    }
+
+    #[test]
+    fn test_per_child_ratios_floor_respected_after_normalize() {
+        // US-057: clamp -> normalize can push a value back below the 0.01 floor.
+        // The re-clamp must restore it. ratios [100.0, 0.001] -> clamp
+        // [1.0, 0.01] -> normalize ~[0.990, 0.0099] (2nd below floor) -> re-clamp.
+        let mut node = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: None,
+            ratios: Some(vec![100.0, 0.001]),
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        validate_layout(&mut node);
+        match node {
+            LayoutNode::Split { ratios, .. } => {
+                let rs = ratios.unwrap();
+                assert!(
+                    rs.iter().all(|r| *r >= 0.01),
+                    "every ratio must respect the 0.01 floor after normalize: {rs:?}"
+                );
             }
             _ => panic!("expected split"),
         }
