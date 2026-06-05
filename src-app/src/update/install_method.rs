@@ -155,14 +155,30 @@ pub fn detect() -> InstallMethod {
     // fall back to the raw exe path.
     let canonical = std::fs::canonicalize(&exe).unwrap_or(exe);
 
+    // US-039 — Windows MSI install detection. The env var is `LOCALAPPDATA`
+    // (canonical uppercase); reading `LocalAppData` returned `None` on real
+    // Windows hosts, silently disabling in-app updates for every per-user
+    // (non-admin) install at `%LOCALAPPDATA%\Programs\PaneFlow`.
+    //
+    // B.2 — type-gate the WindowsMsi arm to the Windows target: on non-Windows
+    // we feed `None` regardless of any leaked `ProgramFiles`/`LOCALAPPDATA`
+    // (Wine, cross-build, CI), so a Linux binary can never be misclassified as
+    // WindowsMsi. The pure `classify` keeps its logic so its tests still run on
+    // Linux CI.
+    #[cfg(target_os = "windows")]
+    let (program_files, local_app_data) = (
+        std::env::var_os("ProgramFiles"),
+        std::env::var_os("LOCALAPPDATA"),
+    );
+    #[cfg(not(target_os = "windows"))]
+    let (program_files, local_app_data): (Option<OsString>, Option<OsString>) = (None, None);
+
     let result = classify(
         &canonical,
         std::env::var_os("HOME"),
         std::env::var_os("APPIMAGE"),
-        // US-010 — Windows MSI install detection. On non-Windows these two
-        // env vars are None and the classifier's Windows branch short-circuits.
-        std::env::var_os("ProgramFiles"),
-        std::env::var_os("LocalAppData"),
+        program_files,
+        local_app_data,
     );
 
     // US-007 AC3 — on macOS, a binary that is NOT inside a .app bundle means
