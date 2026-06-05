@@ -73,19 +73,25 @@ pub fn load_config() -> PaneFlowConfig {
     load_config_from_path(&path)
 }
 
-/// Load and validate configuration from a specific file path.
-///
-/// This is the core loading function, also useful for testing.
-pub fn load_config_from_path(path: &std::path::Path) -> PaneFlowConfig {
-    if !path.exists() {
-        return PaneFlowConfig::default();
-    }
+/// US-029: outcome of reading the config file with the oversize guard applied.
+pub enum ConfigRead {
+    /// File read successfully.
+    Contents(String),
+    /// File does not exist (normal at cold start; a deletion at runtime).
+    Absent,
+    /// File exists but was rejected — over the size cap or unreadable. The
+    /// reason was already logged.
+    Rejected,
+}
 
-    // US-005 hardening: reject oversized files BEFORE allocating a String.
-    // `metadata` is a cheap stat; `read_to_string` would allocate the full
-    // buffer up-front. Without this guard a hostile or accidental large
-    // file would freeze the GPUI main thread and double-allocate during
-    // the source-map line-scan (see Phase 7 security audit, MEDIUM #1).
+/// US-029: read the config file to a string with the oversize guard applied
+/// BEFORE allocating (cheap `metadata` stat first). Shared by the cold loader
+/// and the hot watcher reload so the DoS guard can never be missing on either
+/// path — the watcher's `attempt_reload` previously read with no cap at all.
+pub fn read_config_string(path: &Path) -> ConfigRead {
+    if !path.exists() {
+        return ConfigRead::Absent;
+    }
     match std::fs::metadata(path) {
         Ok(meta) if meta.len() > MAX_CONFIG_SIZE_BYTES => {
             warn!(
@@ -94,30 +100,30 @@ pub fn load_config_from_path(path: &std::path::Path) -> PaneFlowConfig {
                 meta.len(),
                 MAX_CONFIG_SIZE_BYTES
             );
-            return PaneFlowConfig::default();
+            ConfigRead::Rejected
         }
-        Ok(_) => {}
+        Ok(_) => match std::fs::read_to_string(path) {
+            Ok(c) => ConfigRead::Contents(c),
+            Err(e) => {
+                warn!("failed to read config file {}: {e}", path.display());
+                ConfigRead::Rejected
+            }
+        },
         Err(e) => {
-            warn!(
-                "failed to stat config file {}: {e}; using defaults",
-                path.display()
-            );
-            return PaneFlowConfig::default();
+            warn!("failed to stat config file {}: {e}", path.display());
+            ConfigRead::Rejected
         }
     }
+}
 
-    let contents = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(
-                "failed to read config file {}: {e}; using defaults",
-                path.display()
-            );
-            return PaneFlowConfig::default();
-        }
-    };
-
-    parse_and_validate_with_path(&contents, path)
+/// Load and validate configuration from a specific file path.
+///
+/// This is the core loading function, also useful for testing.
+pub fn load_config_from_path(path: &std::path::Path) -> PaneFlowConfig {
+    match read_config_string(path) {
+        ConfigRead::Contents(contents) => parse_and_validate_with_path(&contents, path),
+        ConfigRead::Absent | ConfigRead::Rejected => PaneFlowConfig::default(),
+    }
 }
 
 /// Parse a JSON string into a validated `PaneFlowConfig`.
@@ -130,13 +136,21 @@ pub fn parse_and_validate(json: &str) -> PaneFlowConfig {
 
 /// Parse + validate. `path` is currently used only for warning messages.
 pub fn parse_and_validate_with_path(json: &str, _path: &Path) -> PaneFlowConfig {
-    let mut config: PaneFlowConfig = match serde_json::from_str(json) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("invalid JSON in config: {e}; using defaults");
-            return PaneFlowConfig::default();
-        }
-    };
+    try_parse_and_validate(json).unwrap_or_else(|e| {
+        warn!("invalid JSON in config: {e}; using defaults");
+        PaneFlowConfig::default()
+    })
+}
+
+/// US-029: parse + validate, parsing the JSON exactly once and surfacing a
+/// syntax error as `Err` instead of silently returning defaults. The hot
+/// reload path uses this so it can keep the previous config on a malformed
+/// save (never broadcasting defaults) AND avoid the old double-parse (a
+/// syntax-guard `from_str` followed by a second parse inside
+/// `parse_and_validate_with_path`). Command filtering + layout fixups are
+/// applied on the success path, unchanged.
+pub fn try_parse_and_validate(json: &str) -> Result<PaneFlowConfig, serde_json::Error> {
+    let mut config: PaneFlowConfig = serde_json::from_str(json)?;
 
     // Validate and filter commands.
     let validated: Vec<CommandDefinition> = config
@@ -161,7 +175,7 @@ pub fn parse_and_validate_with_path(json: &str, _path: &Path) -> PaneFlowConfig 
         }
     }
 
-    config
+    Ok(config)
 }
 
 /// Validate a single command definition. Returns `false` if it should be skipped.

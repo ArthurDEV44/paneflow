@@ -1,6 +1,8 @@
 // US-018: Hot-reload via file watcher
 
-use crate::loader::{config_path, load_config_from_path, parse_and_validate_with_path};
+use crate::loader::{
+    config_path, load_config_from_path, read_config_string, try_parse_and_validate, ConfigRead,
+};
 use crate::schema::PaneFlowConfig;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
@@ -12,6 +14,14 @@ use tracing::{info, warn};
 
 /// Debounce window: accumulate file events for this duration before reloading.
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(300);
+
+/// US-029: hard ceiling on how long the debounce may keep postponing a reload.
+/// Each event pushes the 300ms deadline forward; a source touching the watched
+/// directory faster than 300ms (FSEvents batches on macOS, multi-event saves on
+/// Windows) would otherwise starve the reload indefinitely. Once events have
+/// been arriving for this long, the reload fires regardless (leading+trailing
+/// debounce with a max-wait).
+const MAX_DEBOUNCE: Duration = Duration::from_secs(1);
 
 /// Watches the PaneFlow config file for changes and triggers hot-reload.
 ///
@@ -143,13 +153,17 @@ fn event_targets_config(event: &Event, config_path: &Path) -> bool {
 /// stop the OS-level file watch.
 fn event_loop(
     rx: mpsc::Receiver<notify::Result<Event>>,
-    config_path: &PathBuf,
+    config_path: &Path,
     callback: &Arc<dyn Fn(PaneFlowConfig) + Send + Sync>,
     _watcher: &RecommendedWatcher,
 ) {
     // The last config that was successfully loaded (starts as the current one).
     let mut current_config = load_config_from_path(config_path);
     let mut pending_reload: Option<Instant> = None;
+    // US-029: timestamp of the first event in the current debounce burst, used
+    // to cap the trailing debounce so a continuous event stream can't starve
+    // the reload forever.
+    let mut first_event_at: Option<Instant> = None;
 
     loop {
         // If we have a pending reload, wait only until the debounce window expires.
@@ -159,6 +173,7 @@ fn event_loop(
             if remaining.is_zero() {
                 // Debounce window expired — do the reload.
                 pending_reload = None;
+                first_event_at = None;
                 attempt_reload(config_path, &mut current_config, callback);
                 continue;
             }
@@ -174,8 +189,12 @@ fn event_loop(
         match event_result {
             Ok(Ok(event)) => {
                 if is_relevant_event(&event.kind) && event_targets_config(&event, config_path) {
-                    // Start (or extend) the debounce window.
-                    pending_reload = Some(Instant::now() + DEBOUNCE_DURATION);
+                    let now = Instant::now();
+                    let burst_start = *first_event_at.get_or_insert(now);
+                    // Trailing debounce, but never pushed past the max-wait cap
+                    // measured from the first event of the burst.
+                    let deadline = (now + DEBOUNCE_DURATION).min(burst_start + MAX_DEBOUNCE);
+                    pending_reload = Some(deadline);
                 }
             }
             Ok(Err(e)) => {
@@ -184,6 +203,7 @@ fn event_loop(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Debounce window expired.
                 pending_reload = None;
+                first_event_at = None;
                 attempt_reload(config_path, &mut current_config, callback);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -197,40 +217,48 @@ fn event_loop(
 /// `current_config`. On failure (file deleted or invalid), log a warning and
 /// keep the old config.
 fn attempt_reload(
-    config_path: &PathBuf,
+    config_path: &Path,
     current_config: &mut PaneFlowConfig,
     callback: &Arc<dyn Fn(PaneFlowConfig) + Send + Sync>,
 ) {
-    if !config_path.exists() {
-        warn!(
-            path = %config_path.display(),
-            "config file was deleted; keeping previous config and continuing to watch"
-        );
-        return;
-    }
+    // US-029: read through the shared helper so the oversize guard (cheap stat
+    // before allocating) applies on this hot path too — it previously read
+    // with no cap, the only path a hostile/runaway file could freeze.
+    let contents = match read_config_string(config_path) {
+        ConfigRead::Contents(c) => c,
+        ConfigRead::Absent => {
+            warn!(
+                path = %config_path.display(),
+                "config file was deleted; keeping previous config and continuing to watch"
+            );
+            return;
+        }
+        // Over-cap / unreadable already logged by the helper; keep previous.
+        ConfigRead::Rejected => return,
+    };
 
-    let contents = match std::fs::read_to_string(config_path) {
+    // US-029: parse exactly once. A syntax error keeps the previous config
+    // (never broadcast defaults on a malformed save); the old code parsed the
+    // JSON twice — a syntax-guard `from_str` plus a second parse inside
+    // `parse_and_validate_with_path`.
+    let new_config = match try_parse_and_validate(&contents) {
         Ok(c) => c,
         Err(e) => {
             warn!(
-                path = %config_path.display(),
                 error = %e,
-                "failed to read config file during reload; keeping previous config"
+                "config file has validation errors; keeping previous config"
             );
             return;
         }
     };
 
-    // First, surface any JSON syntax error visibly so the watcher does not
-    // broadcast a defaulted config on every save of a malformed file.
-    if let Err(e) = serde_json::from_str::<PaneFlowConfig>(&contents) {
-        warn!(
-            error = %e,
-            "config file has validation errors; keeping previous config"
-        );
+    // US-029: a save that didn't actually change the parsed config (whitespace,
+    // a `touch`, an unrelated key) shouldn't fire the callback and re-apply on
+    // the GPUI thread.
+    if new_config == *current_config {
         return;
     }
-    let new_config = parse_and_validate_with_path(&contents, config_path);
+
     info!("config reloaded successfully");
     *current_config = new_config.clone();
     callback(new_config);
@@ -390,6 +418,61 @@ mod tests {
             .expect("callback should be called");
         assert_eq!(received_cfg.default_shell, Some("/bin/bash".to_string()));
         assert_eq!(current.default_shell, Some("/bin/bash".to_string()));
+    }
+
+    #[test]
+    fn test_attempt_reload_unchanged_config_skips_callback() {
+        // US-029: a reload whose parsed result equals the current config must
+        // NOT fire the callback (a touch / whitespace-only save).
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("paneflow.json");
+        write_valid_config(&path);
+        let mut current = load_config_from_path(&path);
+
+        let called = Arc::new(Mutex::new(false));
+        let called_clone = Arc::clone(&called);
+        let cb: Arc<dyn Fn(PaneFlowConfig) + Send + Sync> =
+            Arc::new(move |_| *called_clone.lock().unwrap() = true);
+
+        attempt_reload(&path, &mut current, &cb);
+        assert!(
+            !*called.lock().unwrap(),
+            "an unchanged config must not fire the callback"
+        );
+    }
+
+    #[test]
+    fn test_attempt_reload_oversize_file_rejected() {
+        // US-029 negative test: the hot reload path now applies the same
+        // oversize guard as the cold loader (previously absent), so a runaway
+        // file is rejected before allocating and the previous config is kept.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("paneflow.json");
+        let big = format!(
+            r#"{{"default_shell": "/bin/zsh", "_pad": "{}"}}"#,
+            "x".repeat(1_100_000) // > MAX_CONFIG_SIZE_BYTES (1 MiB)
+        );
+        fs::write(&path, big).unwrap();
+
+        let mut current = PaneFlowConfig {
+            default_shell: Some("/bin/bash".to_string()),
+            ..Default::default()
+        };
+        let called = Arc::new(Mutex::new(false));
+        let called_clone = Arc::clone(&called);
+        let cb: Arc<dyn Fn(PaneFlowConfig) + Send + Sync> =
+            Arc::new(move |_| *called_clone.lock().unwrap() = true);
+
+        attempt_reload(&path, &mut current, &cb);
+        assert!(
+            !*called.lock().unwrap(),
+            "an oversize file must be rejected without firing the callback"
+        );
+        assert_eq!(
+            current.default_shell,
+            Some("/bin/bash".to_string()),
+            "previous config kept"
+        );
     }
 
     #[test]
