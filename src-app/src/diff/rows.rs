@@ -113,6 +113,47 @@ pub fn split_offsets(rows: &[SplitRow]) -> Vec<f32> {
     out
 }
 
+/// Cumulative top offsets (px) of each hunk's first changed row in a unified row
+/// set. A "hunk start" is a change row (Added/Removed) whose predecessor is not
+/// a change, so consecutive removed+added lines count as one hunk. Precomputed
+/// in `Column::recompute_display` (US-046) so the toolbar's hunk counter and
+/// hunk-nav read it per frame instead of re-walking every row.
+pub fn unified_hunk_tops(rows: &[DisplayRow]) -> Vec<f32> {
+    let mut tops = Vec::new();
+    let mut acc = 0.0f32;
+    let mut prev_change = false;
+    for r in rows {
+        let is_change = matches!(r.kind, RowKind::Added | RowKind::Removed);
+        if is_change && !prev_change {
+            tops.push(acc);
+        }
+        prev_change = is_change;
+        acc += display_row_height(r);
+    }
+    tops
+}
+
+/// Side-by-side analog of [`unified_hunk_tops`].
+pub fn split_hunk_tops(rows: &[SplitRow]) -> Vec<f32> {
+    let mut tops = Vec::new();
+    let mut acc = 0.0f32;
+    let mut prev_change = false;
+    for r in rows {
+        let is_change = matches!(
+            r,
+            SplitRow::Pair { left, right }
+                if matches!(left.kind, CellKind::Added | CellKind::Removed)
+                    || matches!(right.kind, CellKind::Added | CellKind::Removed)
+        );
+        if is_change && !prev_change {
+            tops.push(acc);
+        }
+        prev_change = is_change;
+        acc += split_row_height(r);
+    }
+    tops
+}
+
 /// Widest line number across a unified row set (both sides); `0` when empty.
 /// Used to size the line-number gutter once at build time.
 pub fn unified_max_line_no(rows: &[DisplayRow]) -> u32 {
@@ -640,6 +681,40 @@ mod tests {
 
         // 30-line file → folded output is a handful of rows, not 1 + 30.
         assert!(rows.len() < 10, "folded row count {} too large", rows.len());
+    }
+
+    #[test]
+    fn unified_hunk_tops_marks_each_hunk_start_at_its_row_offset() {
+        // US-046: the cached hunk tops MUST equal the precomputed row offset of
+        // every hunk-start row (a change row whose predecessor is not a change).
+        // Guards against the offsets and hunk_tops computations drifting apart.
+        let base = "a\nb\nc\nd\ne\n".to_string();
+        let new = "a\nB\nc\nd\nE\n".to_string(); // two separate single-line edits
+        let hunks = crate::diff::engine::compute_hunks(&base, &new);
+        let file = FileDiff {
+            path: "a.txt".into(),
+            change: FileChange::Modified,
+            old_path: None,
+            base_text: base,
+            new_text: new,
+            hunks,
+            is_binary: false,
+        };
+        let (rows, _) = build_display_rows(&[file], None);
+        let offsets = unified_offsets(&rows);
+
+        let mut expected = Vec::new();
+        let mut prev_change = false;
+        for (i, r) in rows.iter().enumerate() {
+            let is_change = matches!(r.kind, RowKind::Added | RowKind::Removed);
+            if is_change && !prev_change {
+                expected.push(offsets[i]);
+            }
+            prev_change = is_change;
+        }
+
+        assert_eq!(unified_hunk_tops(&rows), expected);
+        assert_eq!(expected.len(), 2, "fixture has two distinct hunks");
     }
 
     #[test]
