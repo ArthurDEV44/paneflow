@@ -74,9 +74,42 @@ pub fn save_config_value_checked(key: &str, value: serde_json::Value) -> bool {
     write_config_checked(&path, &json)
 }
 
+/// Pure read-modify-write of the `shortcuts` map. Extracted from
+/// [`save_shortcut`] so the dedupe + collision semantics can be unit-tested
+/// without touching the real config path (mirrors [`apply_terminal_field`]).
+///
+/// Removes (a) any prior binding for `action_name` (so a remap doesn't leave
+/// the old key live) and (b) any binding whose key collides with `new_key`
+/// (US-021: `new_key` now belongs to `action_name`, so its previous owner
+/// loses it — otherwise two user entries on the same physical chord would
+/// produce a GPUI-ambiguous double binding). The collision test is
+/// normalization-aware (`ctrl+shift+f` stored vs `ctrl-shift-f` recorded).
+fn merge_shortcut(
+    shortcuts_obj: &mut serde_json::Map<String, serde_json::Value>,
+    new_key: &str,
+    action_name: &str,
+) {
+    let keys_to_remove: Vec<String> = shortcuts_obj
+        .iter()
+        .filter(|(k, v)| {
+            v.as_str() == Some(action_name) || crate::keybindings::keystrokes_conflict(k, new_key)
+        })
+        .map(|(k, _)| k.clone())
+        .collect();
+    for k in keys_to_remove {
+        shortcuts_obj.remove(&k);
+    }
+
+    shortcuts_obj.insert(
+        new_key.to_string(),
+        serde_json::Value::String(action_name.to_string()),
+    );
+}
+
 /// Save a single shortcut override to `paneflow.json`.
 ///
-/// Merges the new binding into `shortcuts`, removing any previous key for the same action.
+/// Merges the new binding into `shortcuts`, removing any previous key for the
+/// same action and any other action that already held `new_key`.
 pub fn save_shortcut(new_key: &str, action_name: &str) {
     let Some(path) = paneflow_config::loader::config_path() else {
         log::warn!("config: cannot determine config path, not saving");
@@ -103,20 +136,7 @@ pub fn save_shortcut(new_key: &str, action_name: &str) {
         return;
     };
 
-    // Remove any existing binding for this action (avoid duplicate keys for same action)
-    let keys_to_remove: Vec<String> = shortcuts_obj
-        .iter()
-        .filter(|(_, v)| v.as_str() == Some(action_name))
-        .map(|(k, _)| k.clone())
-        .collect();
-    for k in keys_to_remove {
-        shortcuts_obj.remove(&k);
-    }
-
-    shortcuts_obj.insert(
-        new_key.to_string(),
-        serde_json::Value::String(action_name.to_string()),
-    );
+    merge_shortcut(shortcuts_obj, new_key, action_name);
 
     write_config(&path, &json);
 }
@@ -197,8 +217,49 @@ pub fn save_terminal_field(key: &str, value: serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::apply_terminal_field;
+    use super::{apply_terminal_field, merge_shortcut};
     use serde_json::{Value, json};
+
+    fn shortcuts(pairs: &[(&str, &str)]) -> serde_json::Map<String, Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn merge_shortcut_dedupes_prior_key_for_same_action() {
+        // Rebinding an action moves its key: the old key must not stay live.
+        let mut m = shortcuts(&[("ctrl-alt-h", "split_horizontally")]);
+        merge_shortcut(&mut m, "ctrl-alt-j", "split_horizontally");
+        assert!(!m.contains_key("ctrl-alt-h"), "old key should be removed");
+        assert_eq!(m["ctrl-alt-j"], json!("split_horizontally"));
+        assert_eq!(m.len(), 1);
+    }
+
+    #[test]
+    fn merge_shortcut_collision_evicts_other_action() {
+        // US-021: binding a key already owned by another action must evict the
+        // previous owner, not leave both entries live (GPUI double binding).
+        let mut m = shortcuts(&[("ctrl-shift-f", "toggle_search")]);
+        merge_shortcut(&mut m, "ctrl-shift-f", "close_pane");
+        assert_eq!(m["ctrl-shift-f"], json!("close_pane"));
+        assert_eq!(m.len(), 1, "no leftover binding for the evicted action");
+    }
+
+    #[test]
+    fn merge_shortcut_collision_is_normalization_aware() {
+        // A stored "+"-separated key and a recorded "-"-separated key denote
+        // the same chord; the collision filter must collapse them.
+        let mut m = shortcuts(&[("ctrl+shift+f", "toggle_search")]);
+        merge_shortcut(&mut m, "ctrl-shift-f", "close_pane");
+        assert!(
+            !m.contains_key("ctrl+shift+f"),
+            "the '+'-separated variant must be evicted"
+        );
+        assert_eq!(m["ctrl-shift-f"], json!("close_pane"));
+        assert_eq!(m.len(), 1);
+    }
 
     #[test]
     fn upserts_into_terminal_block_creating_it() {

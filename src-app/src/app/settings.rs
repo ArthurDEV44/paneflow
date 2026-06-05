@@ -611,8 +611,11 @@ impl PaneFlowApp {
             return;
         }
 
-        // Get the action name for this shortcut index
-        let Some(action_name) = keybindings::action_name_at(idx) else {
+        // US-021: resolve the action by the row's stable identity, NOT by
+        // indexing `DEFAULTS` (the displayed list chains macOS-only defaults,
+        // skips unbound rows, and appends user-only actions, so a positional
+        // index would rebind the wrong action and corrupt `paneflow.json`).
+        let Some(action_name) = self.effective_shortcuts.get(idx).map(|e| e.action_name) else {
             self.recording_shortcut_idx = None;
             let config = paneflow_config::loader::load_config();
             keybindings::apply_keybindings(cx, &config.shortcuts);
