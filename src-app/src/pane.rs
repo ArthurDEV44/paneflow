@@ -54,6 +54,18 @@ impl TabContent {
             TabContent::Markdown(_) | TabContent::Diff(_) => None,
         }
     }
+
+    /// Stable identity of the tab's backing entity, regardless of variant.
+    /// US-020: lets per-tab click closures re-resolve their live index by
+    /// identity (the `Vec` can mutate between render and click), mirroring the
+    /// `bell_pending` set which is keyed by `EntityId` for the same reason.
+    pub fn entity_id(&self) -> gpui::EntityId {
+        match self {
+            TabContent::Terminal(t) => t.entity_id(),
+            TabContent::Markdown(m) => m.entity_id(),
+            TabContent::Diff(d) => d.entity_id(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -865,6 +877,9 @@ impl Pane {
         for i in 0..tab_count {
             let is_selected = i == self.selected_idx;
             let tab_idx = i;
+            // US-020: stable identity for the close button's click closure, so
+            // it survives a vec mutation between render and click.
+            let tab_id = self.tabs[i].entity_id();
             let group_name = SharedString::from(format!("tab-{i}"));
 
             // US-006: a small accent dot when this tab's terminal has an
@@ -1032,7 +1047,14 @@ impl Pane {
                     s.bg(ui.subtle).text_color(rgb(0xf38ba8))
                 })
                 .on_click(cx.listener(move |this, _, _window, cx| {
-                    this.close_tab_at(tab_idx, cx);
+                    // US-020: resolve the live index by identity, not by the
+                    // stale render-time `tab_idx`. A `ChildExited` on another
+                    // terminal (pane.rs:348) can shift the vec between render
+                    // and this click; closing by position would silently close
+                    // the neighbour that slid into this slot (data loss).
+                    if let Some(idx) = this.tabs.iter().position(|t| t.entity_id() == tab_id) {
+                        this.close_tab_at(idx, cx);
+                    }
                     cx.stop_propagation();
                 }))
                 .opacity(0.)
