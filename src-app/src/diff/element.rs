@@ -732,8 +732,16 @@ impl Element for DiffElement {
         // line numbers in large files never clip past the gutter's left edge.
         // One shaped digit gives the exact monospace advance.
         let digits = {
-            let max_no = self.body.max_line_no().max(1);
-            ((max_no as f64).log10().floor() as usize + 1).max(2)
+            // Count decimal digits by integer division — robust across libm
+            // implementations, unlike `log10().floor()` whose rounding can be
+            // off-by-one at exact powers of ten (log10(1000) may be 2.9999998).
+            let mut n = self.body.max_line_no().max(1);
+            let mut count = 0usize;
+            while n > 0 {
+                count += 1;
+                n /= 10;
+            }
+            count.max(2)
         };
         let digit_w = f32::from(
             self.shape_plain(window, "0".into(), self.palette.muted)

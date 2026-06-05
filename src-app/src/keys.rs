@@ -23,6 +23,66 @@ pub fn to_esc_str(
     let ctrl = keystroke.modifiers.control;
     let shift = keystroke.modifiers.shift;
     let alt = keystroke.modifiers.alt && option_as_meta;
+    // Physical Alt, independent of the macOS Option-as-Meta toggle. `alt` (above)
+    // gates the ESC-prefix paths for printable keys; `alt_phys` is what a CSI 1;N
+    // cursor/function-key sequence must report, so Alt+Arrow works regardless of
+    // `option_as_meta`. The config key is not macOS-only, so a Linux/Windows user
+    // with `option_as_meta: false` would otherwise lose Alt+Arrow entirely.
+    let alt_phys = keystroke.modifiers.alt;
+
+    // Modifier+cursor/function combos (CSI 1;N) — resolved first so a modified
+    // nav/fn key is never swallowed by the unmodified-key fast path below. Only
+    // nav/fn keys match here; letters, enter, tab, escape, backspace fall
+    // through to the modifier-gated logic unchanged.
+    let modifier_code = match (shift, alt_phys, ctrl) {
+        (true, false, false) => Some(2),
+        (false, true, false) => Some(3),
+        (true, true, false) => Some(4),
+        (false, false, true) => Some(5),
+        (true, false, true) => Some(6),
+        (false, true, true) => Some(7),
+        (true, true, true) => Some(8),
+        _ => None,
+    };
+    if let Some(m) = modifier_code {
+        // Modifier+cursor/F1-F4 → \x1b[1;{m}{letter}
+        let base = match key {
+            "up" => Some("A"),
+            "down" => Some("B"),
+            "right" => Some("C"),
+            "left" => Some("D"),
+            "home" => Some("H"),
+            "end" => Some("F"),
+            "f1" => Some("P"),
+            "f2" => Some("Q"),
+            "f3" => Some("R"),
+            "f4" => Some("S"),
+            _ => None,
+        };
+        if let Some(b) = base {
+            return Some(Cow::Owned(format!("\x1b[1;{m}{b}")));
+        }
+
+        // Modifier+Delete/F5-F12/Insert/PageUp/PageDown → \x1b[{num};{m}~
+        let num = match key {
+            "insert" => Some(2),
+            "delete" => Some(3),
+            "pageup" => Some(5),
+            "pagedown" => Some(6),
+            "f5" => Some(15),
+            "f6" => Some(17),
+            "f7" => Some(18),
+            "f8" => Some(19),
+            "f9" => Some(20),
+            "f10" => Some(21),
+            "f11" => Some(23),
+            "f12" => Some(24),
+            _ => None,
+        };
+        if let Some(n) = num {
+            return Some(Cow::Owned(format!("\x1b[{n};{m}~")));
+        }
+    }
 
     // Ctrl+letter → control byte (zero alloc via static strings)
     // Shift is allowed through: Ctrl+Shift+A produces the same byte as Ctrl+A
@@ -148,69 +208,23 @@ pub fn to_esc_str(
         }
     }
 
-    // Alt+Shift+letter → ESC + uppercase letter
-    if alt && !ctrl && shift && key.len() == 1 {
-        let ch = key.chars().next().unwrap();
-        if ch.is_ascii_alphabetic() {
-            return Some(Cow::Owned(format!("\x1b{}", ch.to_ascii_uppercase())));
-        }
+    // Alt+Shift+letter → ESC + uppercase letter. `chars().count() == 1` (not
+    // `key.len()`, which is byte length) so a single accented key on a non-US
+    // layout (AZERTY "é" is 2 UTF-8 bytes) isn't wrongly rejected.
+    if alt
+        && !ctrl
+        && shift
+        && key.chars().count() == 1
+        && let Some(ch) = key.chars().next()
+        && ch.is_ascii_alphabetic()
+    {
+        return Some(Cow::Owned(format!("\x1b{}", ch.to_ascii_uppercase())));
     }
 
-    // Alt+key → ESC prefix
-    if alt && !ctrl && !shift && key.len() == 1 {
+    // Alt+key → ESC prefix. Same `chars().count()` guard so Alt+<accented> on
+    // AZERTY/QWERTZ sends `ESC <char>` instead of falling through unhandled.
+    if alt && !ctrl && !shift && key.chars().count() == 1 {
         return Some(Cow::Owned(format!("\x1b{key}")));
-    }
-
-    // Modifier+cursor combos (CSI 1;N sequences) — one allocation
-    let modifier_code = match (shift, alt, ctrl) {
-        (true, false, false) => Some(2),
-        (false, true, false) => Some(3),
-        (true, true, false) => Some(4),
-        (false, false, true) => Some(5),
-        (true, false, true) => Some(6),
-        (false, true, true) => Some(7),
-        (true, true, true) => Some(8),
-        _ => None,
-    };
-
-    if let Some(m) = modifier_code {
-        // Modifier+cursor/F1-F4 → \x1b[1;{m}{letter}
-        let base = match key {
-            "up" => Some("A"),
-            "down" => Some("B"),
-            "right" => Some("C"),
-            "left" => Some("D"),
-            "home" => Some("H"),
-            "end" => Some("F"),
-            "f1" => Some("P"),
-            "f2" => Some("Q"),
-            "f3" => Some("R"),
-            "f4" => Some("S"),
-            _ => None,
-        };
-        if let Some(b) = base {
-            return Some(Cow::Owned(format!("\x1b[1;{m}{b}")));
-        }
-
-        // Modifier+Delete/F5-F12/Insert/PageUp/PageDown → \x1b[{num};{m}~
-        let num = match key {
-            "insert" => Some(2),
-            "delete" => Some(3),
-            "pageup" => Some(5),
-            "pagedown" => Some(6),
-            "f5" => Some(15),
-            "f6" => Some(17),
-            "f7" => Some(18),
-            "f8" => Some(19),
-            "f9" => Some(20),
-            "f10" => Some(21),
-            "f11" => Some(23),
-            "f12" => Some(24),
-            _ => None,
-        };
-        if let Some(n) = num {
-            return Some(Cow::Owned(format!("\x1b[{n};{m}~")));
-        }
     }
 
     // Not a special key — caller should handle as printable character input
@@ -235,5 +249,26 @@ mod tests {
             to_esc_str(&pagedown, &mode, true).as_deref(),
             Some("\x1b[6~")
         );
+    }
+
+    #[test]
+    fn alt_arrow_reports_modifier_regardless_of_option_as_meta() {
+        // US-060: `option_as_meta` gates only the ESC-prefix paths, never the
+        // CSI 1;N modifier code for cursor keys. Alt+Up emits `\x1b[1;3A` with
+        // option_as_meta both off and on.
+        let mode = Modes::empty();
+        let up = Keystroke::parse("alt-up").expect("valid keystroke");
+        assert_eq!(to_esc_str(&up, &mode, false).as_deref(), Some("\x1b[1;3A"));
+        assert_eq!(to_esc_str(&up, &mode, true).as_deref(), Some("\x1b[1;3A"));
+    }
+
+    #[test]
+    fn alt_accented_letter_sends_esc_prefix() {
+        // US-060: a single multi-byte key (AZERTY "é" = 2 UTF-8 bytes) must take
+        // the Alt -> ESC-prefix path; the old `key.len() == 1` byte check
+        // wrongly rejected it.
+        let mode = Modes::empty();
+        let e_acute = Keystroke::parse("alt-é").expect("valid keystroke");
+        assert_eq!(to_esc_str(&e_acute, &mode, true).as_deref(), Some("\x1bé"));
     }
 }
