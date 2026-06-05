@@ -658,6 +658,16 @@ impl PaneFlowApp {
                     .extract_scrollback()
                     .unwrap_or_default();
                 let (text, returned, total, eof) = paginate_scrollback(&full, lines, offset);
+                // US-025: an offset past the oldest retained line is a client
+                // error, not a silent empty read. The old `saturating_sub`
+                // path returned `("", 0, total, true)`, indistinguishable from
+                // "you legitimately scrolled to the very top" (offset == total).
+                if offset > total {
+                    return JsonRpcError::invalid_params(format!(
+                        "offset {offset} out of range (total_lines={total})"
+                    ))
+                    .into_value();
+                }
                 serde_json::json!({
                     "text": text,
                     "lines": returned,
@@ -1117,6 +1127,12 @@ fn read_tool(params: &serde_json::Value) -> ai_types::AiTool {
     ai_types::AiTool::from_name(tool_str)
 }
 
+/// US-026: floor of the reserved synthetic-PID namespace. Legacy `ai.*` frames
+/// that carry no real `pid` get a placeholder key in `[BASE, u32::MAX]`, a band
+/// no real OS PID reaches on any supported platform, so the two keyspaces never
+/// overlap.
+const SYNTHETIC_SESSION_PID_BASE: u32 = 0xFFFF_0000;
+
 /// Insert or update a session in `ws.agent_sessions`. When `pid` is
 /// known, the session is keyed by PID (the desired path — supports
 /// many concurrent sessions of the same tool). When `pid` is `None`
@@ -1139,14 +1155,17 @@ fn upsert_session_state(
             {
                 *existing_pid
             } else {
-                // Synthesize a fake PID for back-compat tracking. Uses
-                // the high half of u32 to avoid collision with real
-                // OS-assigned PIDs (Linux default pid_max = 4194304;
-                // macOS = 99999; Windows = 2^31). A value above 2^31
-                // is safe on every supported platform.
+                // US-026: allocate from a reserved high band that is disjoint
+                // from every supported platform's real PID range (Linux pid_max
+                // 4 194 304; macOS 99 999; Windows DWORDs are multiples of 4 and
+                // never approach this in practice). Treating this band as a
+                // separate synthetic namespace keeps a legacy placeholder from
+                // being confused with — or clobbered by — a real OS PID. The
+                // walk stops at the band floor instead of descending into the
+                // real-PID range.
                 let mut k: u32 = u32::MAX;
-                while ws.agent_sessions.contains_key(&k) {
-                    k = k.saturating_sub(1);
+                while k > SYNTHETIC_SESSION_PID_BASE && ws.agent_sessions.contains_key(&k) {
+                    k -= 1;
                 }
                 k
             }
@@ -1239,13 +1258,17 @@ pub(crate) fn promote_response(
 /// US-014 (cli-hardening-followup-2026-Q3): validate and canonicalize the
 /// `cwd` field of a `workspace.create` IPC request.
 ///
-/// A same-UID client could otherwise pass a relative path that walks outside
-/// the intended workspace (`"../../etc"`), a path containing NUL bytes (which
-/// most OSes truncate silently on PTY spawn), or a path to a regular file
-/// (creating a PTY whose cwd resolution then fails at the first chdir). This
-/// helper resolves symlinks + relatives, rejects non-existence, and rejects
-/// non-directories upfront with structured `-32602` errors so the client
-/// knows the request was refused.
+/// US-026: this is **not** a confinement jail. A same-UID client may
+/// legitimately open a workspace at any directory it can already reach, and
+/// `canonicalize` resolves `../` and symlinks to wherever they actually point
+/// (`"../../etc"` → `/etc`) without restricting the result to any root — so it
+/// does not, and cannot, prevent "walking outside the workspace". Its job is
+/// narrower: turn a relative or symlinked path into a concrete absolute one and
+/// reject upfront the inputs that would otherwise fail confusingly at PTY
+/// spawn — a path that does not exist or is unreadable, a path containing NUL
+/// bytes (rejected by `canonicalize` itself; most OSes would silently truncate
+/// it), or a path to a regular file (the first chdir would fail) — each with a
+/// structured `-32602` so the client knows the request was refused.
 ///
 /// Successful canonicalization is logged at `info!` for audit trail
 /// (relative-path resolution and symlink traversal visibility).
@@ -1669,6 +1692,25 @@ mod tests {
         assert_eq!(returned, 0);
         assert_eq!(total, 3);
         assert!(eof);
+    }
+
+    #[test]
+    fn paginate_total_drives_us025_offset_guard() {
+        // US-025: the surface.read handler rejects `offset > total` with a
+        // structured -32602. `offset == total` is the valid "scrolled to the
+        // very top" boundary (empty window, eof) and must NOT be rejected.
+        // paginate exposes the true `total` either way, so the guard can fire.
+        let (_, _, total_at_top, eof_at_top) = super::paginate_scrollback("a\nb\nc", 2, 3);
+        assert_eq!(total_at_top, 3);
+        assert!(eof_at_top);
+        assert!(3 <= total_at_top, "offset == total is in range (boundary)");
+
+        let (_, _, total_past, _) = super::paginate_scrollback("a\nb\nc", 2, 4);
+        assert_eq!(total_past, 3);
+        assert!(
+            4 > total_past,
+            "offset > total is out of range → handler returns -32602"
+        );
     }
 
     // -----------------------------------------------------------------
