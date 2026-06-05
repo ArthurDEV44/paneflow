@@ -68,7 +68,11 @@ impl SettingsWindow {
             return;
         }
 
-        let Some(action_name) = keybindings::action_name_at(idx) else {
+        // US-021: resolve the action by the row's stable identity, NOT by
+        // indexing `DEFAULTS` (which diverges from the displayed list once
+        // unbinds / macOS-only / user-only entries exist → silent rebind of
+        // the wrong action).
+        let Some(action_name) = self.effective_shortcuts.get(idx).map(|e| e.action_name) else {
             self.recording_shortcut_idx = None;
             let config = paneflow_config::loader::load_config();
             keybindings::apply_keybindings(cx, &config.shortcuts);

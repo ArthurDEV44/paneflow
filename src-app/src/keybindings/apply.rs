@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate};
+use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, Keystroke};
 
 use super::defaults::{DEFAULTS, MACOS_ONLY_DEFAULTS};
 use super::registry::{action_from_name, context_for_action};
@@ -13,6 +13,30 @@ use super::registry::{action_from_name, context_for_action};
 /// but GPUI expects `"ctrl-shift-d"` (dash separators).
 pub(super) fn normalize_keystroke(keystrokes: &str) -> String {
     keystrokes.replace('+', "-")
+}
+
+/// Canonical form of a keystroke string for *physical chord* comparison.
+///
+/// US-021: parsing through GPUI resolves `+`/`-` separators, modifier order,
+/// and the `secondary` platform shorthand (→ `cmd` on macOS, `ctrl`
+/// elsewhere) into the same `Keystroke` value, so `"ctrl+shift+d"`,
+/// `"shift-ctrl-d"`, and `"secondary-shift-d"` all compare equal on Linux.
+/// Returns `None` for unparseable input (which then only matches by raw
+/// equality at the call site).
+fn canonical(keystrokes: &str) -> Option<Keystroke> {
+    Keystroke::parse(&normalize_keystroke(keystrokes)).ok()
+}
+
+/// True if two keystroke strings denote the same physical chord, normalization
+/// applied (see [`canonical`]). Unparseable strings only match by exact
+/// equality. Used by the settings writer to collapse a rebind onto a key that
+/// is already taken instead of leaving two live entries (GPUI would resolve
+/// the conflict order-dependently).
+pub fn keystrokes_conflict(a: &str, b: &str) -> bool {
+    match (canonical(a), canonical(b)) {
+        (Some(ka), Some(kb)) => ka == kb,
+        _ => a == b,
+    }
 }
 
 /// Build a `KeyBinding` from a boxed action, using `KeyBinding::load` to avoid
@@ -57,14 +81,18 @@ pub(super) fn make_binding(
 pub fn apply_keybindings(cx: &mut App, user_shortcuts: &HashMap<String, String>) {
     cx.clear_key_bindings();
 
-    // Collect keys that user has explicitly unbound via "none"
-    let unbound_keys: std::collections::HashSet<&str> = user_shortcuts
+    // Keys the user explicitly unbound via "none". US-021: canonicalized so
+    // that an unbind written as "ctrl+shift+d" or "secondary-shift-d" actually
+    // suppresses the matching default (whose key string uses the `secondary`
+    // shorthand), instead of failing the raw `==` comparison and leaving the
+    // default live.
+    let unbound_canonical: std::collections::HashSet<Keystroke> = user_shortcuts
         .iter()
         .filter(|(_, v)| v.as_str() == "none")
-        .map(|(k, _)| k.as_str())
+        .filter_map(|(k, _)| canonical(k))
         .collect();
 
-    // Collect actions that user has remapped to a different key
+    // Actions the user remapped to a different key (drop their default key).
     let remapped_actions: std::collections::HashSet<&str> = user_shortcuts
         .iter()
         .filter(|(_, v)| v.as_str() != "none")
@@ -77,13 +105,32 @@ pub fn apply_keybindings(cx: &mut App, user_shortcuts: &HashMap<String, String>)
         })
         .collect();
 
-    // Register defaults, skipping unbound keys and remapped actions.
+    // Keys the user bound to some real action. US-021: a default that shares
+    // one of these keys (for a *different* action) would otherwise stay active
+    // alongside the override → GPUI-ambiguous double binding (the root cause at
+    // the old `apply.rs:86`, e.g. a default `ctrl-shift-f → toggle_search`
+    // surviving next to a user `ctrl-shift-f → close_pane`). Drop it: a chord
+    // belongs to exactly one action, last writer wins.
+    let user_bound_canonical: std::collections::HashSet<Keystroke> = user_shortcuts
+        .iter()
+        .filter(|(_, v)| v.as_str() != "none")
+        .filter(|(_, action_name)| action_from_name(action_name).is_some())
+        .filter_map(|(k, _)| canonical(k))
+        .collect();
+
+    let is_unbound = |key: &str| canonical(key).is_some_and(|k| unbound_canonical.contains(&k));
+    let is_user_claimed =
+        |key: &str| canonical(key).is_some_and(|k| user_bound_canonical.contains(&k));
+
+    // Register defaults, skipping unbound keys, remapped actions, and keys the
+    // user reassigned to another action.
     // US-010: chain macOS-only defaults (cmd-c/cmd-v in Terminal context).
     let default_bindings: Vec<KeyBinding> = DEFAULTS
         .iter()
         .chain(MACOS_ONLY_DEFAULTS.iter())
-        .filter(|d| !unbound_keys.contains(d.key))
+        .filter(|d| !is_unbound(d.key))
         .filter(|d| !remapped_actions.contains(d.action_name))
+        .filter(|d| !is_user_claimed(d.key))
         .filter_map(|d| {
             let action = action_from_name(d.action_name)?;
             make_binding(d.key, action, d.context)
@@ -131,6 +178,31 @@ mod tests {
     #[test]
     fn normalize_keystroke_already_dashed_unchanged() {
         assert_eq!(normalize_keystroke("ctrl-shift-d"), "ctrl-shift-d");
+    }
+
+    #[test]
+    fn keystrokes_conflict_ignores_separator_and_order() {
+        // US-021: `+`/`-` separators and modifier order are normalized away.
+        assert!(keystrokes_conflict("ctrl+shift+f", "ctrl-shift-f"));
+        assert!(keystrokes_conflict("shift-ctrl-f", "ctrl-shift-f"));
+        assert!(!keystrokes_conflict("ctrl-shift-f", "ctrl-shift-g"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn keystrokes_conflict_resolves_secondary_on_linux() {
+        // `secondary` resolves to ctrl on Linux, so a default written with the
+        // shorthand collides with a concrete ctrl chord.
+        assert!(keystrokes_conflict("secondary-shift-d", "ctrl-shift-d"));
+        assert!(!keystrokes_conflict("secondary-shift-d", "alt-shift-d"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keystrokes_conflict_resolves_secondary_on_macos() {
+        // `secondary` resolves to cmd (platform) on macOS.
+        assert!(keystrokes_conflict("secondary-shift-d", "cmd-shift-d"));
+        assert!(!keystrokes_conflict("secondary-shift-d", "ctrl-shift-d"));
     }
 
     #[test]
