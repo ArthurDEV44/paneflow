@@ -870,266 +870,9 @@ impl Pane {
             .h_full()
             .overflow_x_scroll();
 
+        let selected_bg = theme.background;
         for i in 0..tab_count {
-            let is_selected = i == self.selected_idx;
-            let tab_idx = i;
-            // US-020: stable identity for the close button's click closure, so
-            // it survives a vec mutation between render and click.
-            let tab_id = self.tabs[i].entity_id();
-            let group_name = SharedString::from(format!("tab-{i}"));
-
-            // US-006: a small accent dot when this tab's terminal has an
-            // unacknowledged bell. Zero-size placeholder otherwise so tab
-            // layout/truncation is unaffected.
-            let has_bell = self
-                .tabs
-                .get(i)
-                .and_then(|t| t.as_terminal())
-                .is_some_and(|t| self.bell_pending.contains(&t.entity_id()));
-            let bell_dot = if has_bell {
-                div()
-                    .flex_none()
-                    .w(px(6.0))
-                    .h(px(6.0))
-                    .ml_1()
-                    .rounded_full()
-                    .bg(ui.accent)
-                    .into_any_element()
-            } else {
-                div().into_any_element()
-            };
-
-            let mut tab = div()
-                .id(SharedString::from(format!("pane-tab-{i}")))
-                .group(group_name.clone())
-                .relative()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h_full()
-                .flex_shrink_0()
-                .max_w(px(TAB_MAX_WIDTH))
-                // Belt-and-suspenders against text-ellipsis miss: even if
-                // the inner `content` div fails to honour `min_w_0()` and
-                // grows past `max_w`, the visual paint is clipped here so
-                // the title never bleeds into the next tab. CSS flex with
-                // `max-width` on the parent doesn't always propagate a
-                // definite size to flex_1 children — and GPUI inherits
-                // that quirk from Taffy.
-                .overflow_x_hidden()
-                .cursor_pointer()
-                .text_size(px(14.));
-
-            if is_selected {
-                tab = tab
-                    .bg(theme.background)
-                    .text_color(ui.text)
-                    .border_r_1()
-                    .border_color(chrome_border);
-            } else {
-                tab = tab
-                    .bg(bar_bg)
-                    .text_color(ui.muted)
-                    .border_r_1()
-                    .border_b_1()
-                    .border_color(chrome_border);
-            }
-
-            // EP-001 drag wiring. GPUI's managed drag applies its own movement
-            // threshold before firing `on_drag`, so a plain click (select) and
-            // a double-click (rename) on the inner `content` div are unaffected.
-            // Title/icon are snapshotted into the payload so the floating ghost
-            // renders without re-reading the entity.
-            {
-                let drag_title: SharedString = Self::tab_title(&self.tabs[i], cx).into();
-                let drag_icon: SharedString = Self::tab_icon(&self.tabs[i]).into();
-                let drag_content = self.tabs[i].clone();
-                let pane_entity = self_entity.clone();
-                tab = tab
-                    .on_drag(
-                        TabDrag {
-                            source_pane: pane_entity.clone(),
-                            source_idx: tab_idx,
-                            content: drag_content,
-                            title: drag_title.clone(),
-                            icon: drag_icon.clone(),
-                        },
-                        |drag, _offset, _window, cx| {
-                            cx.new(|_| TabDragPreview {
-                                title: drag.title.clone(),
-                                icon: drag.icon.clone(),
-                            })
-                        },
-                    )
-                    // Insertion indicator: 2px border on the side the tab will
-                    // land. Same-pane only — a cross-pane hover shows nothing
-                    // in the strip (EP-002 adds the pane-level highlight); the
-                    // drag's own origin slot shows nothing either.
-                    .drag_over::<TabDrag>(move |style, drag, _window, _cx| {
-                        if drag.source_pane != pane_entity {
-                            return style;
-                        }
-                        match insertion_side(drag.source_idx, tab_idx) {
-                            Some(InsertSide::Left) => style.border_l_2().border_color(accent),
-                            Some(InsertSide::Right) => style.border_r_2().border_color(accent),
-                            None => style,
-                        }
-                    })
-                    .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
-                        if crate::pane_drag::duplicate_modifier_held(window) {
-                            // US-010: modifier held → spawn a fresh terminal at
-                            // the dragged tab's CWD into this pane at the dropped
-                            // slot; the original stays put. Routed to PaneFlowApp
-                            // (it wires the app-level CWD/port subscription).
-                            cx.emit(PaneEvent::DuplicateTabInto {
-                                source_pane: drag.source_pane.clone(),
-                                source_idx: drag.source_idx,
-                                dest_idx: tab_idx,
-                            });
-                        } else if drag.source_pane == cx.entity() {
-                            // Same pane: reorder in place (EP-001 US-002).
-                            this.reorder_tab(drag.source_idx, tab_idx, cx);
-                        } else {
-                            // Cross-pane: migrate the terminal into this pane at
-                            // the dropped slot, preserving its PTY (EP-002 US-004).
-                            crate::pane_drag::move_tab_into(
-                                this,
-                                cx,
-                                &drag.source_pane,
-                                drag.source_idx,
-                                tab_idx,
-                                window,
-                            );
-                        }
-                    }))
-                    // Right-click opens the "Move to pane…" menu (EP-002 US-006,
-                    // the WCAG 2.5.7 non-drag alternative). The pane emits its
-                    // index + anchor; `PaneFlowApp` resolves the sibling panes
-                    // and paints the menu at the app layer.
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |_this, e: &MouseDownEvent, _window, cx| {
-                            cx.emit(PaneEvent::OpenTabMenu {
-                                tab_idx,
-                                position: e.position,
-                            });
-                            cx.stop_propagation();
-                        }),
-                    );
-            }
-
-            // Close button — always visible on active tab, hover-only on inactive.
-            // The close button container is always present (to reserve space), but
-            // the SVG icon inside uses group_hover to control visibility.
-            let close_icon = svg()
-                .size(px(12.))
-                .flex_none()
-                .path("icons/close.svg")
-                .text_color(ui.muted);
-
-            let close_btn = div()
-                .id(SharedString::from(format!("pane-tab-close-{i}")))
-                .flex()
-                .flex_shrink_0()
-                .ml(px(6.))
-                .items_center()
-                .justify_center()
-                .w(px(CLOSE_SIZE))
-                .h(px(CLOSE_SIZE))
-                .rounded(px(3.))
-                .cursor_pointer()
-                .hover(|s| {
-                    let ui = tab_colors();
-                    s.bg(ui.subtle).text_color(rgb(0xf38ba8))
-                })
-                .on_click(cx.listener(move |this, _, _window, cx| {
-                    // US-020: resolve the live index by identity, not by the
-                    // stale render-time `tab_idx`. A `ChildExited` on another
-                    // terminal (pane.rs:348) can shift the vec between render
-                    // and this click; closing by position would silently close
-                    // the neighbour that slid into this slot (data loss).
-                    if let Some(idx) = this.tabs.iter().position(|t| t.entity_id() == tab_id) {
-                        this.close_tab_at(idx, cx);
-                    }
-                    cx.stop_propagation();
-                }))
-                .opacity(0.)
-                .group_hover(group_name, |s| s.opacity(1.))
-                .child(close_icon);
-
-            // Inner content row: [icon] [centered label] [close button]
-            // The icon (terminal vs markdown) lives in the left slot — its
-            // 14px footprint plus the 6px gap mirrors the close button +
-            // its 6px ml on the right, so the label stays visually centered.
-            let icon_path = Self::tab_icon(&self.tabs[i]);
-            let leading_icon = div()
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .justify_center()
-                .w(px(CLOSE_SIZE))
-                .h(px(CLOSE_SIZE))
-                .child(
-                    svg()
-                        .size(px(12.))
-                        .flex_none()
-                        .path(icon_path)
-                        .text_color(if is_selected { ui.text } else { ui.muted }),
-                );
-            let content = div()
-                .id(SharedString::from(format!("pane-tab-content-{i}")))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(TAB_GAP))
-                .h(px(TAB_CONTENT_HEIGHT))
-                .px(px(TAB_PX))
-                // Critical: as the only flex child of `tab` (which uses
-                // `max_w(TAB_MAX_WIDTH)`), `content` defaults to
-                // `min-width: auto` and refuses to shrink below its
-                // natural size — which for a 24-char title is ~270px,
-                // overflowing the tab's 200px cap and pushing the title
-                // visibly past the close-button slot. `min_w_0()` opts
-                // into the "can shrink to anything" mode so the flex
-                // engine actually clamps `content` to the tab's effective
-                // width, which in turn lets the title's
-                // `flex_1 + min_w_0 + text_ellipsis` chain ellipsize.
-                // See Zed `crates/markdown/src/markdown.rs:1291` for the
-                // same `flex_1().w_0()` workaround in their list-item
-                // path.
-                .min_w_0()
-                .w_full()
-                .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-                    if tab_idx >= this.tabs.len() {
-                        cx.stop_propagation();
-                        return;
-                    }
-                    let is_double = matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2);
-                    if is_double {
-                        // US-013: double-click a terminal tab to rename it.
-                        if let Some(TabContent::Terminal(t)) = this.tabs.get(tab_idx) {
-                            let buffer =
-                                t.read(cx).terminal.custom_name.clone().unwrap_or_default();
-                            this.rename = Some(TabRename {
-                                idx: tab_idx,
-                                buffer,
-                            });
-                            this.rename_focus.focus(window, cx);
-                        }
-                    } else {
-                        this.selected_idx = tab_idx;
-                        this.focus_handle(cx).focus(window, cx);
-                    }
-                    cx.notify();
-                    cx.stop_propagation();
-                }))
-                .child(bell_dot)
-                .child(leading_icon)
-                .child(self.render_tab_title(i, cx))
-                .child(close_btn);
-
-            tab = tab.child(content);
-            tabs_row = tabs_row.child(tab);
+            tabs_row = tabs_row.child(self.render_tab(i, ui, selected_bg, bar_bg, cx));
         }
 
         // Trailing drop zone (EP-001 US-002): the leftover strip space after
@@ -1182,6 +925,290 @@ impl Pane {
             )
             .child(tabs_row);
 
+        bar.child(tabs_area).child(self.render_end_section(cx))
+    }
+
+    /// Render a single tab chip (US-051: code-motion out of `render_tab_bar`).
+    /// `selected_bg` / `bar_bg` are the bar's resolved background slots; the
+    /// palette-derived `chrome_border` / `accent` and the pane handle are
+    /// recomputed here so the loop call site stays a one-liner.
+    fn render_tab(
+        &self,
+        i: usize,
+        ui: crate::theme::UiColors,
+        selected_bg: Hsla,
+        bar_bg: Hsla,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let chrome_border = ui.border;
+        let accent = ui.accent;
+        let self_entity = cx.entity();
+        let is_selected = i == self.selected_idx;
+        let tab_idx = i;
+        // US-020: stable identity for the close button's click closure, so
+        // it survives a vec mutation between render and click.
+        let tab_id = self.tabs[i].entity_id();
+        let group_name = SharedString::from(format!("tab-{i}"));
+
+        // US-006: a small accent dot when this tab's terminal has an
+        // unacknowledged bell. Zero-size placeholder otherwise so tab
+        // layout/truncation is unaffected.
+        let has_bell = self
+            .tabs
+            .get(i)
+            .and_then(|t| t.as_terminal())
+            .is_some_and(|t| self.bell_pending.contains(&t.entity_id()));
+        let bell_dot = if has_bell {
+            div()
+                .flex_none()
+                .w(px(6.0))
+                .h(px(6.0))
+                .ml_1()
+                .rounded_full()
+                .bg(ui.accent)
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+
+        let mut tab = div()
+            .id(SharedString::from(format!("pane-tab-{i}")))
+            .group(group_name.clone())
+            .relative()
+            .flex()
+            .flex_row()
+            .items_center()
+            .h_full()
+            .flex_shrink_0()
+            .max_w(px(TAB_MAX_WIDTH))
+            // Belt-and-suspenders against text-ellipsis miss: even if
+            // the inner `content` div fails to honour `min_w_0()` and
+            // grows past `max_w`, the visual paint is clipped here so
+            // the title never bleeds into the next tab. CSS flex with
+            // `max-width` on the parent doesn't always propagate a
+            // definite size to flex_1 children — and GPUI inherits
+            // that quirk from Taffy.
+            .overflow_x_hidden()
+            .cursor_pointer()
+            .text_size(px(14.));
+
+        if is_selected {
+            tab = tab
+                .bg(selected_bg)
+                .text_color(ui.text)
+                .border_r_1()
+                .border_color(chrome_border);
+        } else {
+            tab = tab
+                .bg(bar_bg)
+                .text_color(ui.muted)
+                .border_r_1()
+                .border_b_1()
+                .border_color(chrome_border);
+        }
+
+        // EP-001 drag wiring. GPUI's managed drag applies its own movement
+        // threshold before firing `on_drag`, so a plain click (select) and
+        // a double-click (rename) on the inner `content` div are unaffected.
+        // Title/icon are snapshotted into the payload so the floating ghost
+        // renders without re-reading the entity.
+        {
+            let drag_title: SharedString = Self::tab_title(&self.tabs[i], cx).into();
+            let drag_icon: SharedString = Self::tab_icon(&self.tabs[i]).into();
+            let drag_content = self.tabs[i].clone();
+            let pane_entity = self_entity.clone();
+            tab = tab
+                .on_drag(
+                    TabDrag {
+                        source_pane: pane_entity.clone(),
+                        source_idx: tab_idx,
+                        content: drag_content,
+                        title: drag_title.clone(),
+                        icon: drag_icon.clone(),
+                    },
+                    |drag, _offset, _window, cx| {
+                        cx.new(|_| TabDragPreview {
+                            title: drag.title.clone(),
+                            icon: drag.icon.clone(),
+                        })
+                    },
+                )
+                // Insertion indicator: 2px border on the side the tab will
+                // land. Same-pane only — a cross-pane hover shows nothing
+                // in the strip (EP-002 adds the pane-level highlight); the
+                // drag's own origin slot shows nothing either.
+                .drag_over::<TabDrag>(move |style, drag, _window, _cx| {
+                    if drag.source_pane != pane_entity {
+                        return style;
+                    }
+                    match insertion_side(drag.source_idx, tab_idx) {
+                        Some(InsertSide::Left) => style.border_l_2().border_color(accent),
+                        Some(InsertSide::Right) => style.border_r_2().border_color(accent),
+                        None => style,
+                    }
+                })
+                .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
+                    if crate::pane_drag::duplicate_modifier_held(window) {
+                        // US-010: modifier held → spawn a fresh terminal at
+                        // the dragged tab's CWD into this pane at the dropped
+                        // slot; the original stays put. Routed to PaneFlowApp
+                        // (it wires the app-level CWD/port subscription).
+                        cx.emit(PaneEvent::DuplicateTabInto {
+                            source_pane: drag.source_pane.clone(),
+                            source_idx: drag.source_idx,
+                            dest_idx: tab_idx,
+                        });
+                    } else if drag.source_pane == cx.entity() {
+                        // Same pane: reorder in place (EP-001 US-002).
+                        this.reorder_tab(drag.source_idx, tab_idx, cx);
+                    } else {
+                        // Cross-pane: migrate the terminal into this pane at
+                        // the dropped slot, preserving its PTY (EP-002 US-004).
+                        crate::pane_drag::move_tab_into(
+                            this,
+                            cx,
+                            &drag.source_pane,
+                            drag.source_idx,
+                            tab_idx,
+                            window,
+                        );
+                    }
+                }))
+                // Right-click opens the "Move to pane…" menu (EP-002 US-006,
+                // the WCAG 2.5.7 non-drag alternative). The pane emits its
+                // index + anchor; `PaneFlowApp` resolves the sibling panes
+                // and paints the menu at the app layer.
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |_this, e: &MouseDownEvent, _window, cx| {
+                        cx.emit(PaneEvent::OpenTabMenu {
+                            tab_idx,
+                            position: e.position,
+                        });
+                        cx.stop_propagation();
+                    }),
+                );
+        }
+
+        // Close button — always visible on active tab, hover-only on inactive.
+        // The close button container is always present (to reserve space), but
+        // the SVG icon inside uses group_hover to control visibility.
+        let close_icon = svg()
+            .size(px(12.))
+            .flex_none()
+            .path("icons/close.svg")
+            .text_color(ui.muted);
+
+        let close_btn = div()
+            .id(SharedString::from(format!("pane-tab-close-{i}")))
+            .flex()
+            .flex_shrink_0()
+            .ml(px(6.))
+            .items_center()
+            .justify_center()
+            .w(px(CLOSE_SIZE))
+            .h(px(CLOSE_SIZE))
+            .rounded(px(3.))
+            .cursor_pointer()
+            .hover(|s| {
+                let ui = tab_colors();
+                s.bg(ui.subtle).text_color(rgb(0xf38ba8))
+            })
+            .on_click(cx.listener(move |this, _, _window, cx| {
+                // US-020: resolve the live index by identity, not by the
+                // stale render-time `tab_idx`. A `ChildExited` on another
+                // terminal (pane.rs:348) can shift the vec between render
+                // and this click; closing by position would silently close
+                // the neighbour that slid into this slot (data loss).
+                if let Some(idx) = this.tabs.iter().position(|t| t.entity_id() == tab_id) {
+                    this.close_tab_at(idx, cx);
+                }
+                cx.stop_propagation();
+            }))
+            .opacity(0.)
+            .group_hover(group_name, |s| s.opacity(1.))
+            .child(close_icon);
+
+        // Inner content row: [icon] [centered label] [close button]
+        // The icon (terminal vs markdown) lives in the left slot — its
+        // 14px footprint plus the 6px gap mirrors the close button +
+        // its 6px ml on the right, so the label stays visually centered.
+        let icon_path = Self::tab_icon(&self.tabs[i]);
+        let leading_icon = div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .w(px(CLOSE_SIZE))
+            .h(px(CLOSE_SIZE))
+            .child(
+                svg()
+                    .size(px(12.))
+                    .flex_none()
+                    .path(icon_path)
+                    .text_color(if is_selected { ui.text } else { ui.muted }),
+            );
+        let content = div()
+            .id(SharedString::from(format!("pane-tab-content-{i}")))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(TAB_GAP))
+            .h(px(TAB_CONTENT_HEIGHT))
+            .px(px(TAB_PX))
+            // Critical: as the only flex child of `tab` (which uses
+            // `max_w(TAB_MAX_WIDTH)`), `content` defaults to
+            // `min-width: auto` and refuses to shrink below its
+            // natural size — which for a 24-char title is ~270px,
+            // overflowing the tab's 200px cap and pushing the title
+            // visibly past the close-button slot. `min_w_0()` opts
+            // into the "can shrink to anything" mode so the flex
+            // engine actually clamps `content` to the tab's effective
+            // width, which in turn lets the title's
+            // `flex_1 + min_w_0 + text_ellipsis` chain ellipsize.
+            // See Zed `crates/markdown/src/markdown.rs:1291` for the
+            // same `flex_1().w_0()` workaround in their list-item
+            // path.
+            .min_w_0()
+            .w_full()
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                if tab_idx >= this.tabs.len() {
+                    cx.stop_propagation();
+                    return;
+                }
+                let is_double = matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2);
+                if is_double {
+                    // US-013: double-click a terminal tab to rename it.
+                    if let Some(TabContent::Terminal(t)) = this.tabs.get(tab_idx) {
+                        let buffer = t.read(cx).terminal.custom_name.clone().unwrap_or_default();
+                        this.rename = Some(TabRename {
+                            idx: tab_idx,
+                            buffer,
+                        });
+                        this.rename_focus.focus(window, cx);
+                    }
+                } else {
+                    this.selected_idx = tab_idx;
+                    this.focus_handle(cx).focus(window, cx);
+                }
+                cx.notify();
+                cx.stop_propagation();
+            }))
+            .child(bell_dot)
+            .child(leading_icon)
+            .child(self.render_tab_title(i, cx))
+            .child(close_btn);
+
+        tab.child(content).into_any_element()
+    }
+
+    /// Trailing action-button cluster of the tab bar (US-051: code-motion out
+    /// of `render_tab_bar`). Zoom badge + surface-ref / new-tab / split / files
+    /// / sessions buttons, the built-in agent launchers, and the per-workspace
+    /// custom buttons. Self-contained — recomputes the palette it needs.
+    fn render_end_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = tab_colors();
+        let chrome_border = ui.border;
         // End section: action buttons
         let mut end_section = div()
             .flex()
@@ -1341,7 +1368,7 @@ impl Pane {
             ));
         }
 
-        bar.child(tabs_area).child(end_section)
+        end_section
     }
 }
 
