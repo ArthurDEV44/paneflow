@@ -50,6 +50,33 @@ impl LayoutTree {
         }
     }
 
+    /// Zero-alloc short-circuiting `any` over leaf panes — replaces
+    /// `collect_leaves().iter().any(pred)`, which allocates a
+    /// `Vec<Entity<Pane>>` (cloning every leaf) before scanning. The `&mut`
+    /// predicate is reborrowed across recursion so a capturing closure (e.g.
+    /// reading each pane via `cx`) composes naturally.
+    pub fn any_leaf(&self, pred: &mut impl FnMut(&Entity<Pane>) -> bool) -> bool {
+        match self {
+            LayoutTree::Leaf(p) => pred(p),
+            LayoutTree::Container { children, .. } => {
+                for c in children {
+                    if c.node.any_leaf(pred) {
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    /// True iff `pane` is a leaf anywhere in this tree. Zero-alloc membership
+    /// test that short-circuits on the first match — replaces
+    /// `collect_leaves().contains(&pane)`. Hot on the pane-event path where the
+    /// owning workspace is resolved by membership.
+    pub fn contains_leaf(&self, pane: &Entity<Pane>) -> bool {
+        self.any_leaf(&mut |p| p == pane)
+    }
+
     /// Set all split ratios to equal values at every level of the tree.
     /// Each container's children get `1.0 / n` where `n` is the child count.
     /// The last child absorbs floating-point remainder to ensure exact sum of 1.0.

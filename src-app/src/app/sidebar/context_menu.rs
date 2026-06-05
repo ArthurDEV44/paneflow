@@ -271,7 +271,7 @@ impl PaneFlowApp {
             .find_map(|ws| {
                 ws.root
                     .as_ref()
-                    .filter(|r| r.collect_leaves().contains(&source))
+                    .filter(|r| r.contains_leaf(&source))
                     .map(|r| r.collect_leaves())
             })
             .unwrap_or_default()
