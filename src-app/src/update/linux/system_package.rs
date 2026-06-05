@@ -764,6 +764,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn version_validators_agree() {
+        // US-054: `validate_version` (here, Linux-only) and
+        // `app::self_update_flow::is_strict_semver` (cross-platform) hand-roll
+        // the SAME `^v?\d+\.\d+\.\d+$` grammar in two places. They cannot share
+        // an impl without coupling the Linux module to the app module, so this
+        // parity test guards them against drifting apart instead.
+        use crate::app::self_update_flow::is_strict_semver;
+        for case in [
+            "v0.2.3",
+            "0.2.3",
+            "v99.100.42",
+            "",
+            "0.2",
+            "0.2.3.4",
+            "0.2.3-rc1",
+            "v0.2.3 && reboot",
+            "latest",
+            " 0.2.3",
+            "0.2.3 ",
+            "v.2.3",
+            ".0.2.3",
+            "0..2.3",
+            "v0.2.3;rm -rf /",
+        ] {
+            assert_eq!(
+                is_strict_semver(case),
+                validate_version(case).is_ok(),
+                "validators disagree on {case:?}"
+            );
+        }
+    }
+
     // ─── build_argv: dnf ──────────────────────────────────────
 
     #[test]

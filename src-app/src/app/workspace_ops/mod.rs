@@ -21,9 +21,9 @@ mod tab;
 
 use gpui::{App, AppContext, ClipboardItem, Context, Focusable, PathPromptOptions, Window};
 
-use crate::layout::{LayoutTree, SplitDirection};
+use crate::layout::{LayoutTree, MAX_PANES, SplitDirection};
 use crate::terminal::TerminalView;
-use crate::workspace::{Workspace, next_workspace_id};
+use crate::workspace::{MAX_WORKSPACES, Workspace, next_workspace_id};
 use crate::{
     ClosePane, CloseWorkspace, ClosedPaneRecord, CopyWorkspacePath, MAX_CLOSED_PANES, NewWorkspace,
     NextWorkspace, OpenWorkspaceInCursor, OpenWorkspaceInVsCode, OpenWorkspaceInWindsurf,
@@ -84,7 +84,6 @@ impl PaneFlowApp {
 
     #[allow(dead_code)]
     pub(crate) fn create_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        const MAX_WORKSPACES: usize = 20;
         if self.workspaces.len() >= MAX_WORKSPACES {
             return;
         }
@@ -108,7 +107,6 @@ impl PaneFlowApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        const MAX_WORKSPACES: usize = 20;
         if self.workspaces.len() >= MAX_WORKSPACES {
             return;
         }
@@ -171,7 +169,6 @@ impl PaneFlowApp {
         {
             return;
         }
-        const MAX_PANES: usize = 32;
         if let Some(ws) = self.active_workspace()
             && let Some(root) = &ws.root
             && root.leaf_count() >= MAX_PANES
