@@ -1142,7 +1142,14 @@ fn run_update_and_exit() -> i32 {
 fn main() {
     // Handle --help and --version before initializing GPUI
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") {
+    // US-038: detect the `mcp` subcommand BEFORE the global flag scans. Those
+    // scans look at *every* arg, so `paneflow mcp install --help` would
+    // otherwise match the global `--help` and print the top-level help instead
+    // of routing to the `mcp` handler (which forwards `--help` to its own
+    // subcommand parser). Gating the global scans on `!is_mcp_subcommand`
+    // hands `paneflow mcp …` straight to the dispatcher below.
+    let is_mcp_subcommand = args.get(1).map(String::as_str) == Some("mcp");
+    if !is_mcp_subcommand && args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
             "PaneFlow {version} — native terminal workspace for coding agents\n\
              \n\
@@ -1172,7 +1179,7 @@ fn main() {
         );
         return;
     }
-    if args.iter().any(|a| a == "--version" || a == "-v") {
+    if !is_mcp_subcommand && args.iter().any(|a| a == "--version" || a == "-v") {
         println!("paneflow {}", env!("CARGO_PKG_VERSION"));
         return;
     }
@@ -1224,7 +1231,7 @@ fn main() {
     // 4 on integrity / hash mismatch, 5 on unsupported install method,
     // 1 on any other error. Pair with `PANEFLOW_UPDATE_FEED_URL` to
     // point the checker at a localhost fixture.
-    if args.iter().any(|a| a == "--update-and-exit") {
+    if !is_mcp_subcommand && args.iter().any(|a| a == "--update-and-exit") {
         std::process::exit(run_update_and_exit());
     }
 

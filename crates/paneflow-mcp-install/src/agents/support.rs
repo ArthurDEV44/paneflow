@@ -119,7 +119,7 @@ pub(crate) fn json_install(
     if !changed {
         return Ok(InstallOutcome::AlreadyCurrent);
     }
-    io::write_if_changed(path, &merge::json_to_bytes(&root))?;
+    io::write_if_changed(path, &merge::json_to_bytes(&root)?)?;
     Ok(if had_prior {
         InstallOutcome::Updated
     } else {
@@ -137,7 +137,7 @@ pub(crate) fn json_uninstall(path: &Path, container: &str) -> Result<UninstallOu
     if !merge::remove_json_entry(&mut root, container, ENTRY) {
         return Ok(UninstallOutcome::NothingToRemove);
     }
-    io::write_if_changed(path, &merge::json_to_bytes(&root))?;
+    io::write_if_changed(path, &merge::json_to_bytes(&root)?)?;
     Ok(UninstallOutcome::Removed)
 }
 
