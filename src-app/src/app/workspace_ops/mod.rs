@@ -304,8 +304,11 @@ impl PaneFlowApp {
             let ws_id = ws.id;
             let cwd = std::path::PathBuf::from(&ws.cwd);
             let terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, Some(cwd), None, cx));
-            cx.subscribe(&terminal, Self::handle_terminal_event)
-                .detach();
+            // US-028: do NOT subscribe here — `create_pane` already wires
+            // `handle_terminal_event` (main.rs:539). The duplicate subscription
+            // fired every terminal event twice (double toast / port-scan /
+            // mutation) and leaked the extra subscription. `split()` and
+            // `create_workspace` prove the correct pattern (no manual subscribe).
             let new_pane = self.create_pane(terminal, ws_id, cx);
             if let Some(ws) = self.active_workspace_mut() {
                 ws.root = Some(LayoutTree::Leaf(new_pane));
