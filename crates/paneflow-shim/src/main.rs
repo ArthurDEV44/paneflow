@@ -128,6 +128,22 @@ where
             if !candidate.is_file() {
                 continue;
             }
+            // US-037: on Unix, require the executable bit too. A non-executable
+            // homonym (e.g. a `0644` data file named like the tool) earlier in
+            // `$PATH` would otherwise be returned, and the subsequent spawn
+            // fails `EACCES`/`ENOEXEC` *without* continuing the walk (unlike
+            // `execvp`, which skips it). Skip it here so the real binary later
+            // in `$PATH` is found.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let executable = std::fs::metadata(&candidate)
+                    .map(|m| m.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false);
+                if !executable {
+                    continue;
+                }
+            }
             if is_same_file_as_shim(&self_identity, &candidate) {
                 // US-017: hardlink-loop guard. The shim has no `log`
                 // dep (would bloat the small binary); stderr is
@@ -288,6 +304,16 @@ fn run_real(tool: &str, path: &Path, args: &[OsString]) -> ExitCode {
                     0,
                     0,
                 );
+                // US-037: close the fork↔prctl race. PDEATHSIG only fires on
+                // a parent death that happens AFTER it's armed; if the shim
+                // (our parent) already died in the window between fork() and
+                // this prctl, the kernel never delivers the signal. getppid()
+                // == 1 means we were already reparented to init, so
+                // self-terminate rather than leaking a token-burning orphan.
+                // Both calls are async-signal-safe.
+                if libc::getppid() == 1 {
+                    libc::raise(libc::SIGKILL);
+                }
             }
             Ok(())
         });
@@ -311,20 +337,35 @@ fn run_real(tool: &str, path: &Path, args: &[OsString]) -> ExitCode {
     };
 
     match child.wait() {
-        Ok(status) => {
-            // `status.code()` is `None` only when the child was terminated
-            // by a signal (Unix). The bash convention is `128 + signum`;
-            // we can't faithfully reproduce that portably, so `1` is the
-            // sentinel. u8::try_from rejects negative / out-of-range codes.
-            let raw = status.code().unwrap_or(1);
-            let byte = u8::try_from(raw).unwrap_or(1);
-            ExitCode::from(byte)
-        }
+        Ok(status) => exit_code_from_status(&status),
         Err(e) => {
             eprintln!("paneflow-shim: wait on '{}' failed: {e}", path.display());
             ExitCode::from(1)
         }
     }
+}
+
+/// US-037: map a child `ExitStatus` to this process's `ExitCode`.
+///
+/// `status.code()` is `None` only when the child was terminated by a signal
+/// (Unix). The shell convention `128 + signum` (used by bash, `time(1)`, etc.)
+/// lets the parent terminal see the real cause (e.g. 130 for SIGINT, 139 for
+/// SIGSEGV) instead of an opaque `1`. Extracted to one place so the three
+/// `wait()` call sites stay consistent. `u8::try_from` clamps out-of-range
+/// codes to `1`.
+fn exit_code_from_status(status: &std::process::ExitStatus) -> ExitCode {
+    if let Some(code) = status.code() {
+        return ExitCode::from(u8::try_from(code).unwrap_or(1));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            let code = 128i32.saturating_add(sig);
+            return ExitCode::from(u8::try_from(code).unwrap_or(1));
+        }
+    }
+    ExitCode::from(1)
 }
 
 /// Make the shim survive PTY-close + kill signals so the child
@@ -1077,8 +1118,58 @@ fn remove_codex_hooks(root: &mut serde_json::Value) {
 /// Returns `Some(true)` if we modified the file, `Some(false)` if the flag
 /// was already present (no-op), `None` if we aborted due to a conflict or
 /// I/O error.
+/// US-027: RAII advisory `flock` guard. Serializes the codex `[features]`
+/// read-modify-write across concurrent shims so two near-simultaneous `codex`
+/// launches can't both append `[features]` (→ duplicate-section invalid TOML).
+#[cfg(unix)]
+struct FlockGuard {
+    file: std::fs::File,
+}
+
+#[cfg(unix)]
+impl FlockGuard {
+    /// Acquire an exclusive advisory lock on `lock_path` (creating it),
+    /// blocking until granted. Returns `None` if the lock file can't be opened
+    /// or locked — callers then proceed best-effort (no worse than no lock).
+    fn acquire(lock_path: &Path) -> Option<Self> {
+        use std::os::unix::io::AsRawFd;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .ok()?;
+        // SAFETY: `flock` on a valid owned fd; `LOCK_EX` blocks until the lock
+        // is exclusively held. The lock is released in `Drop`.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        (rc == 0).then_some(Self { file })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for FlockGuard {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: releasing our own advisory lock; ignore teardown errors.
+        unsafe {
+            libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
 #[cfg(unix)]
 fn enable_codex_feature_flag(path: &Path) -> Option<bool> {
+    // US-027: hold an exclusive flock across the whole read-modify-write.
+    // `write_text_atomic` guarantees byte-atomicity but NOT serialization, so
+    // without this two concurrent shims both read a config lacking
+    // `[features]`, both pass the guard below, and both append the section.
+    // A failed lock acquisition degrades to the prior (unserialized) behavior.
+    let _lock = path.parent().and_then(|dir| {
+        let _ = std::fs::create_dir_all(dir);
+        FlockGuard::acquire(&dir.join(".paneflow-codex.lock"))
+    });
+
     let existing = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -1423,10 +1514,7 @@ fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> ExitCode {
         let status = child.wait();
         let _ = tee_handle.join();
         match status {
-            Ok(s) => {
-                let code = s.code().unwrap_or(1);
-                ExitCode::from(u8::try_from(code).unwrap_or(1))
-            }
+            Ok(s) => exit_code_from_status(&s),
             Err(e) => {
                 eprintln!(
                     "paneflow-shim: wait on '{}' failed: {e}",
@@ -1437,10 +1525,7 @@ fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> ExitCode {
         }
     } else {
         match child.wait() {
-            Ok(s) => {
-                let code = s.code().unwrap_or(1);
-                ExitCode::from(u8::try_from(code).unwrap_or(1))
-            }
+            Ok(s) => exit_code_from_status(&s),
             Err(e) => {
                 eprintln!(
                     "paneflow-shim: wait on '{}' failed: {e}",
@@ -1606,15 +1691,53 @@ mod tests {
         );
     }
 
+    /// US-037: a real binary on `$PATH` carries the executable bit; the walk
+    /// now requires it (a non-executable homonym must be skipped). Test fakes
+    /// must therefore be made executable to stand in for real binaries.
+    #[cfg(unix)]
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn find_real_binary_in_locates_tempdir_binary() {
         let dir = tempfile::TempDir::new().unwrap();
         let fake = dir.path().join("claude");
         std::fs::File::create(&fake).unwrap();
+        make_executable(&fake);
 
         let found = find_real_binary_in("claude", vec![dir.path().to_owned()], None, None);
         assert_eq!(found.as_deref(), Some(fake.as_path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_real_binary_in_skips_non_executable_homonym() {
+        // US-037 negative test: a non-executable file named like the tool
+        // earlier in $PATH must be skipped so the real (executable) binary
+        // later in $PATH is returned, mirroring execvp.
+        let early = tempfile::TempDir::new().unwrap();
+        let late = tempfile::TempDir::new().unwrap();
+        std::fs::File::create(early.path().join("claude")).unwrap(); // 0644, no x
+        let real = late.path().join("claude");
+        std::fs::File::create(&real).unwrap();
+        make_executable(&real);
+
+        let found = find_real_binary_in(
+            "claude",
+            vec![early.path().to_owned(), late.path().to_owned()],
+            None,
+            None,
+        );
+        assert_eq!(
+            found.as_deref(),
+            Some(real.as_path()),
+            "non-executable homonym must be skipped for the executable one"
+        );
     }
 
     /// Windows counterpart: Claude Code ships as `claude.cmd` (a Node.js
@@ -1654,6 +1777,10 @@ mod tests {
         // Stand-in for the shim binary itself.
         let real_shim = shim_dir.path().join("paneflow-shim");
         std::fs::File::create(&real_shim).unwrap();
+        // The hardlink shares the inode, so this also makes `attack_link`
+        // executable — required now that the walk filters on the exec bit.
+        #[cfg(unix)]
+        make_executable(&real_shim);
         // Hardlink it into the attacker-controlled `$PATH` dir as
         // `claude` -- the dir-canonicalize check at the head of
         // `find_real_binary_in` would NOT catch this, but the
@@ -1719,6 +1846,7 @@ mod tests {
         std::fs::File::create(shim_dir.path().join("claude")).unwrap();
         let real_fake = real_dir.path().join("claude");
         std::fs::File::create(&real_fake).unwrap();
+        make_executable(&real_fake);
 
         let found = find_real_binary_in(
             "claude",
@@ -2169,6 +2297,33 @@ mod tests {
         // File unchanged.
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(!content.contains(CODEX_TOML_MARKER));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enable_codex_feature_flag_concurrent_no_duplicate_features() {
+        // US-027: two concurrent shims racing to enable the flag must not
+        // produce a duplicate `[features]` section (invalid TOML). The flock
+        // serializes the read-modify-write, so the second caller re-reads the
+        // now-updated config and no-ops.
+        let td = tempfile::TempDir::new().unwrap();
+        let path = td.path().join("config.toml");
+        std::fs::write(&path, "model = \"gpt-5\"\n").unwrap();
+
+        let p1 = path.clone();
+        let p2 = path.clone();
+        let t1 = std::thread::spawn(move || enable_codex_feature_flag(&p1));
+        let t2 = std::thread::spawn(move || enable_codex_feature_flag(&p2));
+        let _ = t1.join();
+        let _ = t2.join();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let features = content.lines().filter(|l| l.trim() == "[features]").count();
+        assert_eq!(
+            features, 1,
+            "exactly one [features] section after a concurrent enable, got:\n{content}"
+        );
+        assert!(content.contains("hooks = true"));
     }
 
     #[cfg(unix)]
