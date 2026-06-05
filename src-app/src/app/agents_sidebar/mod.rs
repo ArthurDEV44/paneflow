@@ -173,7 +173,7 @@ impl PaneFlowApp {
         // keystroke. `query` is kept around for the user-facing
         // empty-state hint (case preserved); `query_lower` is fed
         // into every matcher below.
-        let query = self.agents_filter.clone();
+        let query = self.agents_view.agents_filter.clone();
         let query_lower = query.to_lowercase();
         if filter::nothing_matches(&self.projects, &query_lower) {
             list = list.child(no_matches_hint(&query, ui));
@@ -184,8 +184,8 @@ impl PaneFlowApp {
         let now_ms = now_unix_millis();
         let active_project_idx = self.active_project_idx;
         let active_thread_idx = self.active_thread_idx;
-        let renaming = self.agents_renaming;
-        let rename_input = self.agents_rename_input.clone();
+        let renaming = self.agents_view.agents_renaming;
+        let rename_input = self.agents_view.agents_rename_input.clone();
 
         let projects_len = self.projects.len();
         let filtering = !query.is_empty();
@@ -753,8 +753,8 @@ impl PaneFlowApp {
         window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let has_focus = self.agents_filter_focus.is_focused(window);
-        let query = self.agents_filter.clone();
+        let has_focus = self.agents_view.agents_filter_focus.is_focused(window);
+        let query = self.agents_view.agents_filter.clone();
         let is_empty = query.is_empty();
 
         // What the user sees in the input area: placeholder when
@@ -778,7 +778,7 @@ impl PaneFlowApp {
         // the input without double-spacing.
         let mut input = div()
             .id("agents-sidebar-filter")
-            .track_focus(&self.agents_filter_focus)
+            .track_focus(&self.agents_view.agents_filter_focus)
             .px(px(8.))
             .py(px(5.))
             .rounded(px(6.))
@@ -804,7 +804,7 @@ impl PaneFlowApp {
         // pops; printable chars push.
         input = input
             .on_click(cx.listener(|this, _: &ClickEvent, w, cx| {
-                this.agents_filter_focus.focus(w, cx);
+                this.agents_view.agents_filter_focus.focus(w, cx);
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, _w, cx| {
@@ -851,7 +851,7 @@ impl PaneFlowApp {
                         s.bg(ui.subtle).text_color(ui.text)
                     })
                     .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                        this.agents_filter.clear();
+                        this.agents_view.agents_filter.clear();
                         cx.notify();
                     }))
                     .child(
@@ -918,7 +918,7 @@ fn handle_filter_key(this: &mut PaneFlowApp, e: &KeyDownEvent, cx: &mut Context<
             // "the list" today, so we clear the filter + drop the
             // input's focus by sending a global cx.notify (the next
             // click on any row takes focus naturally).
-            this.agents_filter.clear();
+            this.agents_view.agents_filter.clear();
             cx.notify();
         }
         "down" => {
@@ -927,7 +927,7 @@ fn handle_filter_key(this: &mut PaneFlowApp, e: &KeyDownEvent, cx: &mut Context<
             // currently visible representation of which thread is in
             // the spotlight. If the filter matches nothing, do not
             // mutate selection.
-            let query_lower = this.agents_filter.to_lowercase();
+            let query_lower = this.agents_view.agents_filter.to_lowercase();
             if let Some((p_idx, t_idx)) =
                 filter::first_matching_thread(&this.projects, &query_lower)
             {
@@ -935,7 +935,7 @@ fn handle_filter_key(this: &mut PaneFlowApp, e: &KeyDownEvent, cx: &mut Context<
             }
         }
         "backspace" => {
-            this.agents_filter.pop();
+            this.agents_view.agents_filter.pop();
             cx.notify();
         }
         _ => {
@@ -944,7 +944,7 @@ fn handle_filter_key(this: &mut PaneFlowApp, e: &KeyDownEvent, cx: &mut Context<
                 && !e.keystroke.modifiers.control
                 && !e.keystroke.modifiers.platform
             {
-                this.agents_filter.push_str(ch);
+                this.agents_view.agents_filter.push_str(ch);
                 cx.notify();
             }
         }

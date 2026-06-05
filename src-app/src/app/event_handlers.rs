@@ -137,7 +137,7 @@ impl PaneFlowApp {
             }
             pane::PaneEvent::ToggleAgentSessions => {
                 // Toggle: clicking the icon again with the sidebar open closes it.
-                if self.sessions_sidebar_open {
+                if self.agent_sessions.sessions_sidebar_open {
                     self.close_sessions_sidebar(cx);
                     return;
                 }
@@ -167,21 +167,21 @@ impl PaneFlowApp {
                 self.workspace_menu_open = None;
                 self.profile_menu_open = None;
 
-                self.sessions_sidebar_open = true;
-                self.claude_sessions_cwd = cwd_str.clone();
-                self.claude_sessions_pane = Some(pane.downgrade());
-                self.claude_sessions.clear();
-                self.codex_sessions.clear();
-                self.opencode_sessions.clear();
+                self.agent_sessions.sessions_sidebar_open = true;
+                self.agent_sessions.claude_sessions_cwd = cwd_str.clone();
+                self.agent_sessions.claude_sessions_pane = Some(pane.downgrade());
+                self.agent_sessions.claude_sessions.clear();
+                self.agent_sessions.codex_sessions.clear();
+                self.agent_sessions.opencode_sessions.clear();
                 // Fresh per-group state for this open: all expanded, capped at 5,
                 // not-yet-scanning (each spawned scan flips its own flag below).
-                self.sessions_group_collapsed = [false; 3];
-                self.sessions_group_show_all = [false; 3];
-                self.sessions_scanning = [false; 3];
+                self.agent_sessions.sessions_group_collapsed = [false; 3];
+                self.agent_sessions.sessions_group_show_all = [false; 3];
+                self.agent_sessions.sessions_scanning = [false; 3];
                 let enabled_agents = crate::agent_sessions::enabled_session_agents();
                 // Fresh handle so a previous scroll offset doesn't bleed into
                 // the new sidebar.
-                self.claude_sessions_scroll = gpui::ScrollHandle::new();
+                self.agent_sessions.claude_sessions_scroll = gpui::ScrollHandle::new();
 
                 if let Some(cwd) = cwd_str {
                     // Parallel scans — Claude Code under
@@ -210,7 +210,7 @@ impl PaneFlowApp {
                         let idx = crate::app::sessions_sidebar::agent_index(
                             crate::agent_sessions::SessionAgent::Claude,
                         );
-                        self.sessions_scanning[idx] = true;
+                        self.agent_sessions.sessions_scanning[idx] = true;
                         let claude_cwd_scan = cwd.clone();
                         let claude_cwd_match = cwd.clone();
                         cx.spawn(async move |this, cx| {
@@ -219,12 +219,12 @@ impl PaneFlowApp {
                             })
                             .await;
                             let _ = this.update(cx, |app, cx| {
-                                if app.sessions_sidebar_open
-                                    && app.claude_sessions_cwd.as_deref()
+                                if app.agent_sessions.sessions_sidebar_open
+                                    && app.agent_sessions.claude_sessions_cwd.as_deref()
                                         == Some(claude_cwd_match.as_str())
                                 {
-                                    app.claude_sessions = sessions;
-                                    app.sessions_scanning[idx] = false;
+                                    app.agent_sessions.claude_sessions = sessions;
+                                    app.agent_sessions.sessions_scanning[idx] = false;
                                     cx.notify();
                                 }
                             });
@@ -236,7 +236,7 @@ impl PaneFlowApp {
                         let idx = crate::app::sessions_sidebar::agent_index(
                             crate::agent_sessions::SessionAgent::Codex,
                         );
-                        self.sessions_scanning[idx] = true;
+                        self.agent_sessions.sessions_scanning[idx] = true;
                         let codex_cwd_scan = cwd.clone();
                         let codex_cwd_match = cwd.clone();
                         cx.spawn(async move |this, cx| {
@@ -245,12 +245,12 @@ impl PaneFlowApp {
                             })
                             .await;
                             let _ = this.update(cx, |app, cx| {
-                                if app.sessions_sidebar_open
-                                    && app.claude_sessions_cwd.as_deref()
+                                if app.agent_sessions.sessions_sidebar_open
+                                    && app.agent_sessions.claude_sessions_cwd.as_deref()
                                         == Some(codex_cwd_match.as_str())
                                 {
-                                    app.codex_sessions = sessions;
-                                    app.sessions_scanning[idx] = false;
+                                    app.agent_sessions.codex_sessions = sessions;
+                                    app.agent_sessions.sessions_scanning[idx] = false;
                                     cx.notify();
                                 }
                             });
@@ -262,7 +262,7 @@ impl PaneFlowApp {
                         let idx = crate::app::sessions_sidebar::agent_index(
                             crate::agent_sessions::SessionAgent::OpenCode,
                         );
-                        self.sessions_scanning[idx] = true;
+                        self.agent_sessions.sessions_scanning[idx] = true;
                         let opencode_cwd_scan = cwd.clone();
                         let opencode_cwd_match = cwd;
                         cx.spawn(async move |this, cx| {
@@ -271,12 +271,12 @@ impl PaneFlowApp {
                             })
                             .await;
                             let _ = this.update(cx, |app, cx| {
-                                if app.sessions_sidebar_open
-                                    && app.claude_sessions_cwd.as_deref()
+                                if app.agent_sessions.sessions_sidebar_open
+                                    && app.agent_sessions.claude_sessions_cwd.as_deref()
                                         == Some(opencode_cwd_match.as_str())
                                 {
-                                    app.opencode_sessions = sessions;
-                                    app.sessions_scanning[idx] = false;
+                                    app.agent_sessions.opencode_sessions = sessions;
+                                    app.agent_sessions.sessions_scanning[idx] = false;
                                     cx.notify();
                                 }
                             });
