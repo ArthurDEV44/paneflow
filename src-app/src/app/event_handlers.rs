@@ -524,9 +524,13 @@ impl PaneFlowApp {
                 let cwd_path = (!cwd.is_empty()).then(|| std::path::PathBuf::from(&cwd));
                 let term = cx.new(|cx| TerminalView::with_cwd(ws_id, cwd_path, None, cx));
                 // Resume the picked session in the new terminal. Honors the
-                // Claude bypass flag exactly like a tab-bar launch.
-                let resume = crate::app::sessions_sidebar::resume_command(agent, &session_id);
-                term.read(cx).send_command(&resume);
+                // Claude bypass flag exactly like a tab-bar launch. Skips the
+                // send if the id fails the allow-list (defence-in-depth).
+                if let Some(resume) =
+                    crate::app::sessions_sidebar::resume_command(agent, &session_id)
+                {
+                    term.read(cx).send_command(&resume);
+                }
 
                 match edge {
                     Some(edge) => {

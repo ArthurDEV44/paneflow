@@ -349,8 +349,9 @@ impl PaneFlowApp {
             // US-007 (partial): resume into the bound pane; the docked sidebar
             // stays open (unlike the old popover).
             .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                let cmd = resume_command(agent, &session_id);
-                this.send_command_to_sessions_pane(&cmd, cx);
+                if let Some(cmd) = resume_command(agent, &session_id) {
+                    this.send_command_to_sessions_pane(&cmd, cx);
+                }
                 cx.stop_propagation();
             }))
             // Per-session agent glyph in its brand accent — a touch smaller
@@ -510,8 +511,17 @@ fn claude_bypass_enabled() -> bool {
 /// Build the command sent to the bound terminal when a session row is clicked.
 /// For Claude, honor `claude_code_bypass_permissions` so resumed sessions match
 /// a fresh launch from the tab-bar button.
-pub(crate) fn resume_command(agent: SessionAgent, session_id: &str) -> String {
-    match agent {
+///
+/// Returns `None` when `session_id` fails the strict allow-list — a last gate
+/// before interpolation so a tampered record that somehow bypassed the scanner
+/// filter (`*_sessions.rs`) can never inject a second shell command. Callers
+/// skip the send on `None`.
+pub(crate) fn resume_command(agent: SessionAgent, session_id: &str) -> Option<String> {
+    if !crate::agent_sessions::is_valid_session_id(session_id) {
+        log::warn!("resume_command: refused invalid session id, not sending to PTY");
+        return None;
+    }
+    Some(match agent {
         SessionAgent::Claude => {
             if claude_bypass_enabled() {
                 format!("claude --resume {session_id} --permission-mode bypassPermissions")
@@ -521,7 +531,7 @@ pub(crate) fn resume_command(agent: SessionAgent, session_id: &str) -> String {
         }
         SessionAgent::Codex => format!("codex resume {session_id}"),
         SessionAgent::OpenCode => format!("opencode --session {session_id}"),
-    }
+    })
 }
 
 #[cfg(test)]
