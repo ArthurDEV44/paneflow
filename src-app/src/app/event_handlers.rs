@@ -104,11 +104,10 @@ impl PaneFlowApp {
             pane::PaneEvent::Remove => {
                 // Find the workspace that owns this pane (not necessarily the
                 // active one — shells can exit in background workspaces).
-                let ws_idx = self.workspaces.iter().position(|ws| {
-                    ws.root
-                        .as_ref()
-                        .is_some_and(|r| r.collect_leaves().contains(&pane))
-                });
+                let ws_idx = self
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.root.as_ref().is_some_and(|r| r.contains_leaf(&pane)));
                 let Some(ws_idx) = ws_idx else {
                     return;
                 };
@@ -342,11 +341,11 @@ impl PaneFlowApp {
                 const MAX_PANES: usize = 32;
 
                 // Resolve the workspace owning the target pane.
-                let Some(ws_idx) = self.workspaces.iter().position(|ws| {
-                    ws.root
-                        .as_ref()
-                        .is_some_and(|r| r.collect_leaves().contains(target))
-                }) else {
+                let Some(ws_idx) = self
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.root.as_ref().is_some_and(|r| r.contains_leaf(target)))
+                else {
                     return;
                 };
 
@@ -445,11 +444,11 @@ impl PaneFlowApp {
                 // Resolve the workspace owning the destination pane (for ws_id).
                 // A bail here also covers the race where `dest` was removed from
                 // the tree between the drop emit and this handler.
-                let Some(ws_idx) = self.workspaces.iter().position(|ws| {
-                    ws.root
-                        .as_ref()
-                        .is_some_and(|r| r.collect_leaves().contains(&dest))
-                }) else {
+                let Some(ws_idx) = self
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.root.as_ref().is_some_and(|r| r.contains_leaf(&dest)))
+                else {
                     return;
                 };
                 let ws_id = self.workspaces[ws_idx].id;
@@ -498,11 +497,11 @@ impl PaneFlowApp {
 
                 const MAX_PANES: usize = 32;
 
-                let Some(ws_idx) = self.workspaces.iter().position(|ws| {
-                    ws.root
-                        .as_ref()
-                        .is_some_and(|r| r.collect_leaves().contains(&target))
-                }) else {
+                let Some(ws_idx) = self
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.root.as_ref().is_some_and(|r| r.contains_leaf(&target)))
+                else {
                     return;
                 };
 
@@ -584,11 +583,11 @@ impl PaneFlowApp {
 
                 const MAX_PANES: usize = 32;
 
-                let Some(ws_idx) = self.workspaces.iter().position(|ws| {
-                    ws.root
-                        .as_ref()
-                        .is_some_and(|r| r.collect_leaves().contains(&target))
-                }) else {
+                let Some(ws_idx) = self
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.root.as_ref().is_some_and(|r| r.contains_leaf(&target)))
+                else {
                     return;
                 };
 
@@ -1152,7 +1151,7 @@ impl PaneFlowApp {
         // identity check via `active_terminal_opt` returns None for them.
         let ws_idx = self.workspaces.iter().position(|ws| {
             ws.root.as_ref().is_some_and(|root| {
-                root.collect_leaves().iter().any(|pane| {
+                root.any_leaf(&mut |pane| {
                     pane.read(cx)
                         .active_terminal_opt()
                         .is_some_and(|t| *t == *terminal)

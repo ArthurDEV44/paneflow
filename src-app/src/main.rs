@@ -488,6 +488,12 @@ struct PaneFlowApp {
     /// cleanup) or on app shutdown.
     pub(crate) agents_terminal_view_cache:
         std::collections::HashMap<u64, gpui::Entity<crate::terminal::view::TerminalView>>,
+    /// US-048: memoized sidebar display order (worktree grouping). Recomputed
+    /// only when the workspace set / order / repo roots change, keyed by a
+    /// cheap content signature — `render_sidebar` runs on every app `notify()`,
+    /// so the old per-frame `HashMap` + `Vec` rebuild was pure waste. Interior
+    /// mutability because the render fn borrows `&self`.
+    pub(crate) sidebar_order_cache: std::cell::RefCell<crate::app::sidebar::SidebarOrderCache>,
 }
 
 /// Global flag for swap mode, checked by TerminalView to intercept Escape.

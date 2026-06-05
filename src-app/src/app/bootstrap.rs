@@ -816,6 +816,7 @@ impl PaneFlowApp {
             agents_skills_copied: None,
             sidebar_actions_menu_open: false,
             agents_terminal_view_cache: std::collections::HashMap::new(),
+            sidebar_order_cache: std::cell::RefCell::new(Default::default()),
         };
 
         // US-015 (prd-git-diff-mode-2026-Q3.md): restore Diff mode only when
