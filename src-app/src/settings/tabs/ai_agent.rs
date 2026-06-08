@@ -6,9 +6,10 @@
 //! toggle, separated by `hairline()` dividers. Each row is fully
 //! clickable; the switch is purely visual.
 //!
-//! Persistence uses `config_writer::save_config_value_checked`, and
-//! `pane.rs` re-reads the config on the next render so the tab bar reflects changes
-//! without a restart.
+//! US-016: persistence goes through `SettingsWindow::persist_setting` — it
+//! mutates the cached config for instant feedback and writes `paneflow.json`
+//! off the main thread; `pane.rs` picks up the new state via the ConfigWatcher
+//! propagation so the tab bar reflects changes without a restart.
 
 use gpui::{
     AnyElement, ClickEvent, Context, CursorStyle, Hsla, InteractiveElement, IntoElement,
@@ -17,7 +18,6 @@ use gpui::{
 
 use paneflow_mcp_install::{InstallKind, OverallState, StatusKind};
 
-use crate::config_writer;
 use crate::settings::components::{
     hairline, section_header, setting_card, setting_text, toggle_pill, with_alpha,
 };
@@ -27,29 +27,30 @@ use crate::agent_launcher::TerminalAgent;
 
 impl SettingsWindow {
     pub(crate) fn render_ai_agent_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let config = paneflow_config::loader::load_config();
+        // US-016: read the cached config (no per-frame `load_config()`).
+        let config = &self.cached_config;
         let ui = crate::theme::ui_colors();
 
         // Effective state, not the raw key: an absent key defaults to
         // "shown only if the agent's CLI is installed" (see
         // `TerminalAgent::is_visible`). Toggling writes an explicit
         // `Some(..)` that pins the choice regardless of install state.
-        let claude_visible = TerminalAgent::ClaudeCode.is_visible(&config);
-        let codex_visible = TerminalAgent::Codex.is_visible(&config);
-        let opencode_visible = TerminalAgent::OpenCode.is_visible(&config);
-        let pi_visible = TerminalAgent::Pi.is_visible(&config);
-        let hermes_agent_visible = TerminalAgent::Hermes.is_visible(&config);
-        let grok_visible = TerminalAgent::Grok.is_visible(&config);
-        let amp_visible = TerminalAgent::Amp.is_visible(&config);
-        let cursor_visible = TerminalAgent::Cursor.is_visible(&config);
-        let gemini_visible = TerminalAgent::Gemini.is_visible(&config);
-        let kiro_visible = TerminalAgent::Kiro.is_visible(&config);
-        let antigravity_visible = TerminalAgent::Antigravity.is_visible(&config);
-        let copilot_visible = TerminalAgent::Copilot.is_visible(&config);
-        let codebuddy_visible = TerminalAgent::CodeBuddy.is_visible(&config);
-        let factory_visible = TerminalAgent::Factory.is_visible(&config);
-        let qoder_visible = TerminalAgent::Qoder.is_visible(&config);
-        let openclaw_visible = TerminalAgent::Openclaw.is_visible(&config);
+        let claude_visible = TerminalAgent::ClaudeCode.is_visible(config);
+        let codex_visible = TerminalAgent::Codex.is_visible(config);
+        let opencode_visible = TerminalAgent::OpenCode.is_visible(config);
+        let pi_visible = TerminalAgent::Pi.is_visible(config);
+        let hermes_agent_visible = TerminalAgent::Hermes.is_visible(config);
+        let grok_visible = TerminalAgent::Grok.is_visible(config);
+        let amp_visible = TerminalAgent::Amp.is_visible(config);
+        let cursor_visible = TerminalAgent::Cursor.is_visible(config);
+        let gemini_visible = TerminalAgent::Gemini.is_visible(config);
+        let kiro_visible = TerminalAgent::Kiro.is_visible(config);
+        let antigravity_visible = TerminalAgent::Antigravity.is_visible(config);
+        let copilot_visible = TerminalAgent::Copilot.is_visible(config);
+        let codebuddy_visible = TerminalAgent::CodeBuddy.is_visible(config);
+        let factory_visible = TerminalAgent::Factory.is_visible(config);
+        let qoder_visible = TerminalAgent::Qoder.is_visible(config);
+        let openclaw_visible = TerminalAgent::Openclaw.is_visible(config);
         let bypass = config.claude_code_bypass_permissions.unwrap_or(false);
 
         let buttons_card = setting_card(ui)
@@ -523,16 +524,8 @@ fn setting_row(
         .when_some(icon, |d, agent| d.child(agent_icon_el(agent, ui)))
         .child(setting_text(ui, title, description))
         .child(toggle_pill(current, ui))
-        .on_click(cx.listener(move |_this, _: &ClickEvent, _window, cx| {
-            let ok = config_writer::save_config_value_checked(
-                config_key,
-                serde_json::Value::Bool(target_value),
-            );
-            if !ok {
-                log::warn!(
-                    "settings/ai_agent: failed to persist {config_key} = {target_value}; choice is in-memory only for this session"
-                );
-            }
-            cx.notify();
+        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+            // US-016: cache-mutate + notify + off-thread persist.
+            this.persist_setting(false, config_key, serde_json::Value::Bool(target_value), cx);
         }))
 }

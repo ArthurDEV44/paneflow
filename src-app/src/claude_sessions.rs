@@ -211,19 +211,21 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
                 .and_then(|v| v.as_str())
                 .is_some_and(|s| !s.is_empty())
             && let Ok(parsed) = serde_json::from_value::<FirstLineEnvelope>(value.clone())
-            && !parsed.session_id.is_empty()
             && !parsed.cwd.is_empty()
         {
-            // Reject any field that flows into a PTY command if it carries
-            // control characters. session_id lands in `claude --resume
-            // <id>`; cwd lands in display chrome today but a future `cd
-            // <cwd>` prefix would inherit the gap without any git blame
-            // signal -- guard both at the gate, not at the consumer.
-            if parsed.session_id.chars().any(|c| c.is_control())
+            // session_id lands in `claude --resume <id>`, so hold it to the
+            // strict `^[A-Za-z0-9_-]+$` allow-list (Claude ids are UUIDs):
+            // rejects a `\r`/`\n` that would submit injected text and a
+            // `;`/space that would chain a second shell command. cwd lands in
+            // display chrome today but a future `cd <cwd>` prefix would inherit
+            // the gap; a path legitimately carries `/` + spaces, so keep the
+            // control-char guard for it. Guard both at the gate, not the
+            // consumer.
+            if !crate::agent_sessions::is_valid_session_id(&parsed.session_id)
                 || parsed.cwd.chars().any(|c| c.is_control())
             {
                 log::warn!(
-                    "claude_sessions: dropped {} -- envelope carries control chars in session_id or cwd",
+                    "claude_sessions: dropped {} -- envelope carries an invalid session_id or control chars in cwd",
                     path.display(),
                 );
                 continue;

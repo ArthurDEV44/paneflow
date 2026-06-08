@@ -8,7 +8,8 @@
 //! terminal write batch, on the GPUI main thread.
 
 /// Metadata about a detected service (server listening on a port).
-/// Enriches the bare port number from `/proc/net/tcp` with human-readable info.
+/// Enriches the bare port number from the OS port scan (`workspace::ports`;
+/// Linux `/proc/net/tcp`, macOS libproc, Windows stub) with human-readable info.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServiceInfo {
     pub port: u16,

@@ -437,18 +437,20 @@ const MAX_STDIN_BYTES: u64 = 16 * 1024 * 1024;
 /// `serde_json::from_slice` does its own validation.
 fn read_stdin_json(event: &str) -> Option<serde_json::Value> {
     let mut buf = Vec::new();
+    // US-026: read ONE byte past the cap so a payload of *exactly*
+    // MAX_STDIN_BYTES at true EOF is accepted, while a genuine overflow
+    // (> MAX_STDIN_BYTES) is still rejected. `take(MAX_STDIN_BYTES)` made the
+    // two indistinguishable (both stop at N bytes), so a legitimate
+    // exactly-N-byte frame was wrongly dropped.
     if std::io::stdin()
-        .take(MAX_STDIN_BYTES)
+        .take(MAX_STDIN_BYTES + 1)
         .read_to_end(&mut buf)
         .is_err()
     {
         diagnose(&format!("{event}: stdin read error"));
         return None;
     }
-    // `take(N)` returns `Ok` with up to N bytes. If we hit exactly N, the
-    // payload was probably truncated; treat as invalid to avoid dispatching
-    // a partial frame that the server would reject as malformed JSON.
-    if buf.len() as u64 == MAX_STDIN_BYTES {
+    if buf.len() as u64 > MAX_STDIN_BYTES {
         diagnose(&format!("{event}: stdin exceeds {MAX_STDIN_BYTES} bytes"));
         return None;
     }

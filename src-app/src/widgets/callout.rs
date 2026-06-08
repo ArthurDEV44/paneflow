@@ -13,7 +13,7 @@
 use crate::theme::ui_colors;
 use gpui::{
     AnyElement, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Styled, div, hsla, px,
-    rgb, svg,
+    svg,
 };
 
 /// Severity tier driving the icon tint and the accent border colour.
@@ -158,7 +158,7 @@ impl Callout {
             .rounded(px(8.))
             .border_1()
             .border_color(accent)
-            .bg(rgb(0x181825));
+            .bg(ui.surface);
         if let Some(icon) = icon_element {
             row = row.child(div().mt(px(2.)).child(icon));
         }

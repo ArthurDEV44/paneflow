@@ -18,7 +18,7 @@ pub mod view;
 pub use listener::{SpikeTermSize, ZedListener};
 pub use pty_session::{PtyNotifier, TerminalState};
 pub use service_detector::ServiceInfo;
-pub use view::{SUPPRESS_REPAINTS, TerminalEvent, TerminalView};
+pub use view::{TerminalEvent, TerminalView};
 
 #[cfg(debug_assertions)]
 pub(crate) use view::probe_enabled;

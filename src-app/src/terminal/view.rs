@@ -25,11 +25,6 @@ use super::service_detector::ServiceInfo;
 use super::types::{CopyModeCursorState, HyperlinkZone, Modes, SearchHighlight};
 use super::{PtyNotifier, TerminalState};
 
-/// Global flag: when true, terminals skip `cx.notify()` to avoid repaints
-/// while a non-terminal page (e.g. settings) is displayed.
-pub static SUPPRESS_REPAINTS: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
 // ---------------------------------------------------------------------------
 // Debug latency probes — zero overhead in release builds
 // ---------------------------------------------------------------------------
@@ -460,41 +455,36 @@ impl TerminalView {
 
                             if view.terminal.dirty {
                                 view.terminal.dirty = false;
-                                let suppress =
-                                    SUPPRESS_REPAINTS.load(std::sync::atomic::Ordering::Relaxed);
-
-                                if !suppress {
-                                    view.terminal.output_scan_ticks =
-                                        view.terminal.output_scan_ticks.wrapping_add(1);
-                                    // Scan every Nth dirty tick. A service that
-                                    // boots between ticks is picked up at the
-                                    // next multiple instead of being missed by
-                                    // the previous "1..=10 then 50+" heuristic.
-                                    const SCAN_INTERVAL: u32 = 10;
-                                    if view
-                                        .terminal
-                                        .output_scan_ticks
-                                        .is_multiple_of(SCAN_INTERVAL)
-                                    {
-                                        for service in view.terminal.scan_output() {
-                                            cx.emit(TerminalEvent::ServiceDetected(service));
-                                        }
-                                        cx.emit(TerminalEvent::ActivityBurst);
+                                view.terminal.output_scan_ticks =
+                                    view.terminal.output_scan_ticks.wrapping_add(1);
+                                // Scan every Nth dirty tick. A service that
+                                // boots between ticks is picked up at the
+                                // next multiple instead of being missed by
+                                // the previous "1..=10 then 50+" heuristic.
+                                const SCAN_INTERVAL: u32 = 10;
+                                if view
+                                    .terminal
+                                    .output_scan_ticks
+                                    .is_multiple_of(SCAN_INTERVAL)
+                                {
+                                    for service in view.terminal.scan_output() {
+                                        cx.emit(TerminalEvent::ServiceDetected(service));
                                     }
-
-                                    // Copy mode: restore frozen display offset
-                                    if view.copy_mode_active {
-                                        let mut term = view.terminal.term.lock();
-                                        let current = term.grid().display_offset();
-                                        let frozen = view.copy_mode_frozen_offset;
-                                        if current != frozen {
-                                            let delta = frozen as i32 - current as i32;
-                                            term.scroll_display(AlacScroll::Delta(delta));
-                                        }
-                                    }
-
-                                    cx.notify();
+                                    cx.emit(TerminalEvent::ActivityBurst);
                                 }
+
+                                // Copy mode: restore frozen display offset
+                                if view.copy_mode_active {
+                                    let mut term = view.terminal.term.lock();
+                                    let current = term.grid().display_offset();
+                                    let frozen = view.copy_mode_frozen_offset;
+                                    if current != frozen {
+                                        let delta = frozen as i32 - current as i32;
+                                        term.scroll_display(AlacScroll::Delta(delta));
+                                    }
+                                }
+
+                                cx.notify();
                             }
                         })
                     });
@@ -512,9 +502,8 @@ impl TerminalView {
         // US-006: subscribe to the app-scoped `BlinkPhase` so this terminal's
         // cursor visibility tracks the shared toggle. Replaces the
         // per-terminal `smol::Timer` loop that previously lived here.
-        // Short-circuits preserved: skip when the PTY has exited or repaints
-        // are suppressed; force visible when alacritty disabled blinking
-        // (DECSCUSR / VT100 cursor style).
+        // Short-circuit preserved: skip when the PTY has exited; force visible
+        // when alacritty disabled blinking (DECSCUSR / VT100 cursor style).
         //
         // `try_global` rather than `global` so a future code path that
         // constructs a TerminalView outside `PaneFlowApp::new` (test
@@ -527,9 +516,7 @@ impl TerminalView {
             cx.observe(
                 &blink_phase,
                 |view: &mut Self, phase, cx: &mut Context<Self>| {
-                    if view.terminal.exited.is_some()
-                        || SUPPRESS_REPAINTS.load(std::sync::atomic::Ordering::Relaxed)
-                    {
+                    if view.terminal.exited.is_some() {
                         return;
                     }
                     let new_visible = resolve_cursor_visible(
@@ -830,11 +817,12 @@ pub enum TerminalEvent {
     TitleChanged,
     /// The shell's working directory changed (detected via OSC 7 escape sequence).
     CwdChanged(String),
-    /// Terminal output activity detected — triggers port scanning via `/proc/net/tcp`.
+    /// Terminal output activity detected — triggers an OS port scan
+    /// (`workspace::ports`; Linux `/proc/net/tcp`, macOS libproc, Windows stub).
     /// Emitted alongside `ServiceDetected` during output scan ticks.
     ActivityBurst,
     /// A server/service was detected in PTY output (e.g. "Listening on :3000").
-    /// Enriches the bare port from `/proc/net/tcp` with label and URL.
+    /// Enriches the bare port from the OS port scan with label and URL.
     ServiceDetected(ServiceInfo),
     /// Terminal bell (\a) was triggered — visual flash notification.
     Bell,

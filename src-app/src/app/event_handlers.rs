@@ -7,10 +7,10 @@
 //! Extracted from `main.rs` per US-026 of the src-app refactor PRD — pure
 //! code-motion, behaviour unchanged.
 
-use gpui::{App, AppContext, Context, Entity, Window};
+use gpui::{App, AppContext, Context, Entity};
 use notify::Watcher;
 
-use crate::layout::LayoutTree;
+use crate::layout::{LayoutTree, MAX_PANES};
 use crate::pane::{self, Pane};
 use crate::terminal::{self, TerminalView};
 use crate::window_chrome::title_bar;
@@ -104,11 +104,10 @@ impl PaneFlowApp {
             pane::PaneEvent::Remove => {
                 // Find the workspace that owns this pane (not necessarily the
                 // active one — shells can exit in background workspaces).
-                let ws_idx = self.workspaces.iter().position(|ws| {
-                    ws.root
-                        .as_ref()
-                        .is_some_and(|r| r.collect_leaves().contains(&pane))
-                });
+                let ws_idx = self
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.root.as_ref().is_some_and(|r| r.contains_leaf(&pane)));
                 let Some(ws_idx) = ws_idx else {
                     return;
                 };
@@ -138,7 +137,7 @@ impl PaneFlowApp {
             }
             pane::PaneEvent::ToggleAgentSessions => {
                 // Toggle: clicking the icon again with the sidebar open closes it.
-                if self.sessions_sidebar_open {
+                if self.agent_sessions.sessions_sidebar_open {
                     self.close_sessions_sidebar(cx);
                     return;
                 }
@@ -168,21 +167,21 @@ impl PaneFlowApp {
                 self.workspace_menu_open = None;
                 self.profile_menu_open = None;
 
-                self.sessions_sidebar_open = true;
-                self.claude_sessions_cwd = cwd_str.clone();
-                self.claude_sessions_pane = Some(pane.downgrade());
-                self.claude_sessions.clear();
-                self.codex_sessions.clear();
-                self.opencode_sessions.clear();
+                self.agent_sessions.sessions_sidebar_open = true;
+                self.agent_sessions.claude_sessions_cwd = cwd_str.clone();
+                self.agent_sessions.claude_sessions_pane = Some(pane.downgrade());
+                self.agent_sessions.claude_sessions.clear();
+                self.agent_sessions.codex_sessions.clear();
+                self.agent_sessions.opencode_sessions.clear();
                 // Fresh per-group state for this open: all expanded, capped at 5,
                 // not-yet-scanning (each spawned scan flips its own flag below).
-                self.sessions_group_collapsed = [false; 3];
-                self.sessions_group_show_all = [false; 3];
-                self.sessions_scanning = [false; 3];
+                self.agent_sessions.sessions_group_collapsed = [false; 3];
+                self.agent_sessions.sessions_group_show_all = [false; 3];
+                self.agent_sessions.sessions_scanning = [false; 3];
                 let enabled_agents = crate::agent_sessions::enabled_session_agents();
                 // Fresh handle so a previous scroll offset doesn't bleed into
                 // the new sidebar.
-                self.claude_sessions_scroll = gpui::ScrollHandle::new();
+                self.agent_sessions.claude_sessions_scroll = gpui::ScrollHandle::new();
 
                 if let Some(cwd) = cwd_str {
                     // Parallel scans — Claude Code under
@@ -211,7 +210,7 @@ impl PaneFlowApp {
                         let idx = crate::app::sessions_sidebar::agent_index(
                             crate::agent_sessions::SessionAgent::Claude,
                         );
-                        self.sessions_scanning[idx] = true;
+                        self.agent_sessions.sessions_scanning[idx] = true;
                         let claude_cwd_scan = cwd.clone();
                         let claude_cwd_match = cwd.clone();
                         cx.spawn(async move |this, cx| {
@@ -220,12 +219,12 @@ impl PaneFlowApp {
                             })
                             .await;
                             let _ = this.update(cx, |app, cx| {
-                                if app.sessions_sidebar_open
-                                    && app.claude_sessions_cwd.as_deref()
+                                if app.agent_sessions.sessions_sidebar_open
+                                    && app.agent_sessions.claude_sessions_cwd.as_deref()
                                         == Some(claude_cwd_match.as_str())
                                 {
-                                    app.claude_sessions = sessions;
-                                    app.sessions_scanning[idx] = false;
+                                    app.agent_sessions.claude_sessions = sessions;
+                                    app.agent_sessions.sessions_scanning[idx] = false;
                                     cx.notify();
                                 }
                             });
@@ -237,7 +236,7 @@ impl PaneFlowApp {
                         let idx = crate::app::sessions_sidebar::agent_index(
                             crate::agent_sessions::SessionAgent::Codex,
                         );
-                        self.sessions_scanning[idx] = true;
+                        self.agent_sessions.sessions_scanning[idx] = true;
                         let codex_cwd_scan = cwd.clone();
                         let codex_cwd_match = cwd.clone();
                         cx.spawn(async move |this, cx| {
@@ -246,12 +245,12 @@ impl PaneFlowApp {
                             })
                             .await;
                             let _ = this.update(cx, |app, cx| {
-                                if app.sessions_sidebar_open
-                                    && app.claude_sessions_cwd.as_deref()
+                                if app.agent_sessions.sessions_sidebar_open
+                                    && app.agent_sessions.claude_sessions_cwd.as_deref()
                                         == Some(codex_cwd_match.as_str())
                                 {
-                                    app.codex_sessions = sessions;
-                                    app.sessions_scanning[idx] = false;
+                                    app.agent_sessions.codex_sessions = sessions;
+                                    app.agent_sessions.sessions_scanning[idx] = false;
                                     cx.notify();
                                 }
                             });
@@ -263,7 +262,7 @@ impl PaneFlowApp {
                         let idx = crate::app::sessions_sidebar::agent_index(
                             crate::agent_sessions::SessionAgent::OpenCode,
                         );
-                        self.sessions_scanning[idx] = true;
+                        self.agent_sessions.sessions_scanning[idx] = true;
                         let opencode_cwd_scan = cwd.clone();
                         let opencode_cwd_match = cwd;
                         cx.spawn(async move |this, cx| {
@@ -272,12 +271,12 @@ impl PaneFlowApp {
                             })
                             .await;
                             let _ = this.update(cx, |app, cx| {
-                                if app.sessions_sidebar_open
-                                    && app.claude_sessions_cwd.as_deref()
+                                if app.agent_sessions.sessions_sidebar_open
+                                    && app.agent_sessions.claude_sessions_cwd.as_deref()
                                         == Some(opencode_cwd_match.as_str())
                                 {
-                                    app.opencode_sessions = sessions;
-                                    app.sessions_scanning[idx] = false;
+                                    app.agent_sessions.opencode_sessions = sessions;
+                                    app.agent_sessions.sessions_scanning[idx] = false;
                                     cx.notify();
                                 }
                             });
@@ -332,21 +331,18 @@ impl PaneFlowApp {
                 source_idx,
                 duplicate,
             } => {
-                use crate::pane_drag::DropEdge;
                 let edge = *edge;
                 let source_idx = *source_idx;
                 let duplicate = *duplicate;
                 let source_pane = source_pane.clone();
                 let target = &pane; // the emitting pane is the split target
 
-                const MAX_PANES: usize = 32;
-
                 // Resolve the workspace owning the target pane.
-                let Some(ws_idx) = self.workspaces.iter().position(|ws| {
-                    ws.root
-                        .as_ref()
-                        .is_some_and(|r| r.collect_leaves().contains(target))
-                }) else {
+                let Some(ws_idx) = self
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.root.as_ref().is_some_and(|r| r.contains_leaf(target)))
+                else {
                     return;
                 };
 
@@ -393,15 +389,7 @@ impl PaneFlowApp {
                     p
                 };
 
-                // `split_at_pane` always inserts the new pane *after* the
-                // target, so the leading edges (Up/Left) additionally swap so
-                // the moved/duplicated pane ends up on the correct side.
-                let (direction, swap) = match edge {
-                    DropEdge::Up => (crate::layout::SplitDirection::Horizontal, true),
-                    DropEdge::Down => (crate::layout::SplitDirection::Horizontal, false),
-                    DropEdge::Left => (crate::layout::SplitDirection::Vertical, true),
-                    DropEdge::Right => (crate::layout::SplitDirection::Vertical, false),
-                };
+                let (direction, swap) = edge.to_split();
                 if let Some(root) = &mut self.workspaces[ws_idx].root {
                     root.split_at_pane(target, direction, new_pane.clone());
                     if swap {
@@ -445,11 +433,11 @@ impl PaneFlowApp {
                 // Resolve the workspace owning the destination pane (for ws_id).
                 // A bail here also covers the race where `dest` was removed from
                 // the tree between the drop emit and this handler.
-                let Some(ws_idx) = self.workspaces.iter().position(|ws| {
-                    ws.root
-                        .as_ref()
-                        .is_some_and(|r| r.collect_leaves().contains(&dest))
-                }) else {
+                let Some(ws_idx) = self
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.root.as_ref().is_some_and(|r| r.contains_leaf(&dest)))
+                else {
                     return;
                 };
                 let ws_id = self.workspaces[ws_idx].id;
@@ -489,20 +477,17 @@ impl PaneFlowApp {
                 // Spawn a fresh terminal at the session's cwd running the
                 // agent's resume command, then split the target pane toward the
                 // previewed edge (or append it here as a tab for center).
-                use crate::pane_drag::DropEdge;
                 let edge = *edge;
                 let agent = *agent;
                 let session_id = session_id.clone();
                 let cwd = cwd.clone();
                 let target = pane.clone(); // the emitting pane is the target
 
-                const MAX_PANES: usize = 32;
-
-                let Some(ws_idx) = self.workspaces.iter().position(|ws| {
-                    ws.root
-                        .as_ref()
-                        .is_some_and(|r| r.collect_leaves().contains(&target))
-                }) else {
+                let Some(ws_idx) = self
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.root.as_ref().is_some_and(|r| r.contains_leaf(&target)))
+                else {
                     return;
                 };
 
@@ -524,21 +509,20 @@ impl PaneFlowApp {
                 let cwd_path = (!cwd.is_empty()).then(|| std::path::PathBuf::from(&cwd));
                 let term = cx.new(|cx| TerminalView::with_cwd(ws_id, cwd_path, None, cx));
                 // Resume the picked session in the new terminal. Honors the
-                // Claude bypass flag exactly like a tab-bar launch.
-                let resume = crate::app::sessions_sidebar::resume_command(agent, &session_id);
-                term.read(cx).send_command(&resume);
+                // Claude bypass flag exactly like a tab-bar launch. Skips the
+                // send if the id fails the allow-list (defence-in-depth).
+                if let Some(resume) =
+                    crate::app::sessions_sidebar::resume_command(agent, &session_id)
+                {
+                    term.read(cx).send_command(&resume);
+                }
 
                 match edge {
                     Some(edge) => {
                         // `create_pane` wires the app-level CWD/port subscription
                         // and the pane-event subscription (mirrors `DropSplit`).
                         let new_pane = self.create_pane(term, ws_id, cx);
-                        let (direction, swap) = match edge {
-                            DropEdge::Up => (crate::layout::SplitDirection::Horizontal, true),
-                            DropEdge::Down => (crate::layout::SplitDirection::Horizontal, false),
-                            DropEdge::Left => (crate::layout::SplitDirection::Vertical, true),
-                            DropEdge::Right => (crate::layout::SplitDirection::Vertical, false),
-                        };
+                        let (direction, swap) = edge.to_split();
                         if let Some(root) = &mut self.workspaces[ws_idx].root {
                             root.split_at_pane(&target, direction, new_pane.clone());
                             if swap {
@@ -573,18 +557,15 @@ impl PaneFlowApp {
                 // API, then split the target toward the previewed edge or append
                 // it here as a tab (center). Mirrors `DropSessionSplit`, minus
                 // the terminal spawn.
-                use crate::pane_drag::DropEdge;
                 let edge = *edge;
                 let path = path.clone();
                 let target = pane.clone(); // the emitting pane is the target
 
-                const MAX_PANES: usize = 32;
-
-                let Some(ws_idx) = self.workspaces.iter().position(|ws| {
-                    ws.root
-                        .as_ref()
-                        .is_some_and(|r| r.collect_leaves().contains(&target))
-                }) else {
+                let Some(ws_idx) = self
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.root.as_ref().is_some_and(|r| r.contains_leaf(&target)))
+                else {
                     return;
                 };
 
@@ -614,12 +595,7 @@ impl PaneFlowApp {
                             )
                         });
                         cx.subscribe(&new_pane, Self::handle_pane_event).detach();
-                        let (direction, swap) = match edge {
-                            DropEdge::Up => (crate::layout::SplitDirection::Horizontal, true),
-                            DropEdge::Down => (crate::layout::SplitDirection::Horizontal, false),
-                            DropEdge::Left => (crate::layout::SplitDirection::Vertical, true),
-                            DropEdge::Right => (crate::layout::SplitDirection::Vertical, false),
-                        };
+                        let (direction, swap) = edge.to_split();
                         if let Some(root) = &mut self.workspaces[ws_idx].root {
                             root.split_at_pane(&target, direction, new_pane.clone());
                             if swap {
@@ -643,7 +619,6 @@ impl PaneFlowApp {
             }
             pane::PaneEvent::Split(direction) => {
                 let direction = *direction;
-                const MAX_PANES: usize = 32;
                 if let Some(ws) = self.active_workspace()
                     && let Some(root) = &ws.root
                     && root.leaf_count() >= MAX_PANES
@@ -797,129 +772,6 @@ impl PaneFlowApp {
             cx.notify();
         });
         self.save_session(cx);
-        cx.notify();
-    }
-
-    /// US-003 (prd-multi-worktree-diff) — action handler: open the
-    /// multi-worktree diff view for the *active* workspace's repo. A no-op
-    /// when the active workspace has no resolved `repo_root` (not a git repo).
-    pub(crate) fn handle_open_multi_diff(
-        &mut self,
-        _: &crate::app::actions::OpenMultiDiff,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(repo_root) = self
-            .workspaces
-            .get(self.active_idx)
-            .and_then(|ws| ws.repo_root.clone())
-        else {
-            return;
-        };
-        self.open_multi_diff_for_repo(repo_root, window, cx);
-    }
-
-    /// Open a `DiffView` tab seeded with every sibling worktree sharing
-    /// `repo_root`. The tab is hosted in the active workspace's focused pane
-    /// (falling back to its first leaf); the diff content itself is
-    /// repo-scoped, independent of which pane hosts it. Ephemeral — not
-    /// persisted to the session. EP-002+ fills the seeded worktrees with
-    /// real diff columns.
-    /// Gather the sibling-worktree seed for a repo: one [`crate::diff::DiffWorktree`]
-    /// per open workspace whose `repo_root` matches. US-005 of
-    /// prd-git-diff-mode-2026-Q3.md extracted this from `open_multi_diff_for_repo`
-    /// so the dedicated Diff mode (`rebuild_diff_view`) and the legacy tab path
-    /// share one source of truth. Pure in-memory read — no git subprocess, safe
-    /// to call on the main thread.
-    pub(crate) fn collect_diff_worktrees(
-        &self,
-        repo_root: &std::path::Path,
-    ) -> Vec<crate::diff::DiffWorktree> {
-        self.workspaces
-            .iter()
-            .filter(|ws| ws.repo_root.as_deref() == Some(repo_root))
-            .map(|ws| crate::diff::DiffWorktree {
-                path: std::path::PathBuf::from(&ws.cwd),
-                branch: ws.git_branch.clone(),
-                workspace_id: Some(ws.id),
-            })
-            .collect()
-    }
-
-    /// US-011: the active workspace as a single-element worktree seed (Project
-    /// scope). Empty when there is no active workspace. Pure in-memory read.
-    pub(crate) fn collect_project_worktrees(&self) -> Vec<crate::diff::DiffWorktree> {
-        self.workspaces
-            .get(self.active_idx)
-            .map(|ws| {
-                vec![crate::diff::DiffWorktree {
-                    path: std::path::PathBuf::from(&ws.cwd),
-                    branch: ws.git_branch.clone(),
-                    workspace_id: Some(ws.id),
-                }]
-            })
-            .unwrap_or_default()
-    }
-
-    /// US-014: every open workspace grouped by canonicalized `repo_root`
-    /// (Multi-project scope). `BTreeMap` keying gives stable repo ordering;
-    /// workspaces with no resolved repo are skipped. Pure in-memory read.
-    pub(crate) fn collect_multiproject_groups(&self) -> Vec<crate::diff::RepoGroup> {
-        use std::collections::BTreeMap;
-        let mut map: BTreeMap<std::path::PathBuf, crate::diff::RepoGroup> = BTreeMap::new();
-        for ws in &self.workspaces {
-            let Some(root) = ws.repo_root.clone() else {
-                continue;
-            };
-            let name = root
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| root.display().to_string());
-            map.entry(root.clone())
-                .or_insert_with(|| crate::diff::RepoGroup {
-                    repo_root: root.clone(),
-                    repo_name: name,
-                    worktrees: Vec::new(),
-                })
-                .worktrees
-                .push(crate::diff::DiffWorktree {
-                    path: std::path::PathBuf::from(&ws.cwd),
-                    branch: ws.git_branch.clone(),
-                    workspace_id: Some(ws.id),
-                });
-        }
-        map.into_values().collect()
-    }
-
-    pub(crate) fn open_multi_diff_for_repo(
-        &mut self,
-        repo_root: std::path::PathBuf,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // Gather sibling worktrees across all workspaces sharing this repo.
-        let worktrees = self.collect_diff_worktrees(&repo_root);
-
-        // Resolve a host pane from the active workspace (focused, else first leaf).
-        let target_pane = {
-            let Some(ws) = self.workspaces.get(self.active_idx) else {
-                return;
-            };
-            let Some(root) = ws.root.as_ref() else {
-                return;
-            };
-            root.focused_pane(window, cx)
-                .or_else(|| root.collect_leaves().into_iter().next())
-        };
-        let Some(target_pane) = target_pane else {
-            return;
-        };
-
-        let diff = cx.new(|cx| crate::diff::DiffView::new(repo_root, worktrees, cx));
-        target_pane.update(cx, |pane, cx| {
-            pane.add_diff_tab(diff, cx);
-            cx.notify();
-        });
         cx.notify();
     }
 
@@ -1148,7 +1000,7 @@ impl PaneFlowApp {
         // identity check via `active_terminal_opt` returns None for them.
         let ws_idx = self.workspaces.iter().position(|ws| {
             ws.root.as_ref().is_some_and(|root| {
-                root.collect_leaves().iter().any(|pane| {
+                root.any_leaf(&mut |pane| {
                     pane.read(cx)
                         .active_terminal_opt()
                         .is_some_and(|t| *t == *terminal)
@@ -1160,6 +1012,15 @@ impl PaneFlowApp {
         if self.workspaces[ws_idx].cwd == new_cwd {
             return;
         }
+
+        // US-019: capture the stable workspace id, NOT the positional index.
+        // The git probe below awaits (long on big repos / network FS); during
+        // that await the main loop can run close/reorder/IPC-close and compact
+        // the `Vec`, so a reused `ws_idx` would point at a *different*
+        // workspace (silent git-state corruption + watch refcount desync).
+        // Re-resolve the index by identity after the await — model:
+        // `run_port_scan` / `spawn_initial_git_stats`.
+        let ws_id = self.workspaces[ws_idx].id;
 
         let new_cwd_owned = new_cwd.to_string();
 
@@ -1180,9 +1041,12 @@ impl PaneFlowApp {
 
                 let _ = cx.update(|cx| {
                     this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
-                        if ws_idx >= app.workspaces.len() {
+                        // Re-resolve by identity: the workspace may have been
+                        // closed or reordered during the await.
+                        let Some(ws_idx) = app.workspaces.iter().position(|ws| ws.id == ws_id)
+                        else {
                             return;
-                        }
+                        };
                         // Unwatch old git dir
                         let old_git_dir = app.workspaces[ws_idx].git_dir.clone();
                         if let Some(ref dir) = old_git_dir {
@@ -1214,6 +1078,33 @@ impl PaneFlowApp {
                 });
             }
         })
+        .detach();
+    }
+
+    /// US-013: populate a freshly-created workspace's `git diff --shortstat`
+    /// stats off the GPUI main thread. The constructors build with
+    /// `git_stats: default()` (0/0) so the blocking `git` subprocess never runs
+    /// on the render thread; this spawns it via `smol::unblock` and re-injects
+    /// the result, keyed by the stable `ws_id` (another workspace may be
+    /// created/closed during the await — EP-003 identity model). Mirrors
+    /// [`handle_cwd_change`].
+    pub(crate) fn spawn_initial_git_stats(ws_id: u64, cwd: String, cx: &mut Context<Self>) {
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let stats =
+                    smol::unblock(move || crate::workspace::GitDiffStats::from_cwd(&cwd)).await;
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
+                        if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.id == ws_id)
+                            && ws.git_stats != stats
+                        {
+                            ws.git_stats = stats;
+                            cx.notify();
+                        }
+                    })
+                });
+            },
+        )
         .detach();
     }
 }

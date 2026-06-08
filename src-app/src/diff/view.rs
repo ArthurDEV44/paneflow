@@ -28,9 +28,9 @@ use notify::RecommendedWatcher;
 use crate::pane_drag::{DropEdge, SPLIT_EDGE_BAND, TabDragPreview, compute_drop_edge};
 use crate::widgets::text_input::TextInput;
 
-use super::align::CellKind;
 use super::arrange::{Arrange, Axis};
 use super::element::{DiffBody, DiffElement};
+use super::hit_test;
 use super::review_terminal::ReviewTerminal;
 
 mod base_branch;
@@ -50,7 +50,7 @@ pub struct DiffColumnDrag {
 }
 use super::rows::{
     DisplayRow, RowKind, RowPalette, SplitRow, build_display_rows, build_split_rows,
-    display_row_height, split_max_line_no, split_offsets, split_row_height, unified_max_line_no,
+    split_hunk_tops, split_max_line_no, split_offsets, unified_hunk_tops, unified_max_line_no,
     unified_offsets,
 };
 
@@ -92,7 +92,16 @@ const SYNTAX_HIGHLIGHT_ENABLED: bool = true;
 
 /// Delay before pre-filling a freshly-launched embedded review CLI's input (tmux
 /// send-keys style). Long enough for `claude` / `codex` / `opencode` / `pi` to
-/// boot their readline; the clipboard fallback covers a missed window.
+/// boot their readline.
+///
+/// US-049: a grid-scan "prompt ready?" detector was considered to replace this
+/// fixed delay, but rejected — a false-early detection (firing on the shell's
+/// echo of the launch command before the CLI readline exists) would send the
+/// prefill into a not-ready buffer and LOSE it, a regression that is impossible
+/// to verify on Windows ConPTY cold-start from here. Instead the prompt is
+/// always copied to the clipboard and that fallback is now surfaced visibly in
+/// the review-terminal header (`render_review_terminals`), so a missed window
+/// degrades to a one-keystroke paste rather than silent failure.
 const REVIEW_PREFILL_DELAY_MS: u64 = 1800;
 
 /// Embedded review-terminal region height (px): default + drag clamp bounds.
@@ -215,6 +224,12 @@ struct Column {
     disp_split_offsets: Rc<Vec<f32>>,
     disp_unified_max_no: u32,
     disp_split_max_no: u32,
+    /// US-046: cumulative top offsets of each hunk's first changed row, cached
+    /// in lockstep with the row sets (recomputed only in `recompute_display`).
+    /// The toolbar's hunk counter renders every frame, so deriving these per
+    /// frame was an O(rows) walk + allocation each repaint.
+    disp_hunk_tops_unified: Rc<Vec<f32>>,
+    disp_hunk_tops_split: Rc<Vec<f32>>,
     /// US-016 warm-resume: the git fingerprint (HEAD + base + status hash) this
     /// column's rows were built against, captured off-thread at load time.
     /// `DiffView::revalidate` compares a fresh fingerprint on diff-mode re-entry
@@ -260,6 +275,8 @@ impl Column {
             disp_split_offsets: Rc::new(vec![0.0]),
             disp_unified_max_no: 0,
             disp_split_max_no: 0,
+            disp_hunk_tops_unified: Rc::new(Vec::new()),
+            disp_hunk_tops_split: Rc::new(Vec::new()),
             fingerprint: None,
             base_override: None,
             generation: 0,
@@ -309,6 +326,19 @@ impl Column {
             self.disp_split_offsets = Rc::new(split_offsets(&self.disp_split));
             self.disp_unified_max_no = unified_max_line_no(&self.disp_unified);
             self.disp_split_max_no = split_max_line_no(&self.disp_split);
+            // US-046: hunk-start offsets cached alongside the row offsets so the
+            // toolbar counter and hunk-nav never re-walk the rows per frame.
+            self.disp_hunk_tops_unified = Rc::new(unified_hunk_tops(&self.disp_unified));
+            self.disp_hunk_tops_split = Rc::new(split_hunk_tops(&self.disp_split));
+        }
+    }
+
+    /// Cached hunk-start offsets for `mode` (US-046). Lockstep with the display
+    /// rows — see [`Column::recompute_display`].
+    fn hunk_tops(&self, mode: ViewMode) -> &Rc<Vec<f32>> {
+        match mode {
+            ViewMode::Unified => &self.disp_hunk_tops_unified,
+            ViewMode::Split => &self.disp_hunk_tops_split,
         }
     }
 }
@@ -993,20 +1023,12 @@ impl DiffView {
                     ViewMode::Split => &col.disp_anchors_split,
                 };
                 let idx = anchors.iter().find(|(p, _)| p == path).map(|(_, i)| *i)?;
-                // Cumulative top offset of the header row — rows have variable
-                // heights (taller file-header cards), so summing is exact.
-                let y = match mode {
-                    ViewMode::Unified => col
-                        .disp_unified
-                        .get(..idx)
-                        .map(|s| s.iter().map(display_row_height).sum::<f32>())
-                        .unwrap_or(0.0),
-                    ViewMode::Split => col
-                        .disp_split
-                        .get(..idx)
-                        .map(|s| s.iter().map(split_row_height).sum::<f32>())
-                        .unwrap_or(0.0),
+                // US-050: O(1) prefix-sum lookup of the header row's top offset.
+                let offsets = match mode {
+                    ViewMode::Unified => &col.disp_unified_offsets,
+                    ViewMode::Split => &col.disp_split_offsets,
                 };
+                let y = hit_test::row_top(offsets, idx);
                 Some((col.el_scroll.clone(), y))
             });
         let Some((handle, y)) = target else {
@@ -1033,44 +1055,6 @@ impl DiffView {
         }
     }
 
-    /// Cumulative top offsets (px) of each hunk's first changed row in a
-    /// column's displayed rows. A "hunk start" is a change row (Added/Removed)
-    /// whose predecessor is not a change — so consecutive removed+added lines
-    /// count as one hunk. Computed on demand (nav is user-driven, not per-frame).
-    fn hunk_tops(col: &Column, mode: ViewMode) -> Vec<f32> {
-        let mut tops = Vec::new();
-        let mut acc = 0.0f32;
-        let mut prev_change = false;
-        match mode {
-            ViewMode::Unified => {
-                for r in col.disp_unified.iter() {
-                    let is_change = matches!(r.kind, RowKind::Added | RowKind::Removed);
-                    if is_change && !prev_change {
-                        tops.push(acc);
-                    }
-                    prev_change = is_change;
-                    acc += display_row_height(r);
-                }
-            }
-            ViewMode::Split => {
-                for r in col.disp_split.iter() {
-                    let is_change = matches!(
-                        r,
-                        SplitRow::Pair { left, right }
-                            if matches!(left.kind, CellKind::Added | CellKind::Removed)
-                                || matches!(right.kind, CellKind::Added | CellKind::Removed)
-                    );
-                    if is_change && !prev_change {
-                        tops.push(acc);
-                    }
-                    prev_change = is_change;
-                    acc += split_row_height(r);
-                }
-            }
-        }
-        tops
-    }
-
     /// Jump the selected column to the next/previous hunk relative to its
     /// current scroll position (cycles at the ends). Stateless: the target is
     /// derived from where the viewport is, so it stays correct after manual
@@ -1082,7 +1066,7 @@ impl DiffView {
         };
         let Some((handle, tops, cur_y)) = self.columns.get(ci).map(|col| {
             let cur_y = f32::from(-col.el_scroll.offset().y).max(0.0);
-            (col.el_scroll.clone(), Self::hunk_tops(col, mode), cur_y)
+            (col.el_scroll.clone(), col.hunk_tops(mode).clone(), cur_y)
         }) else {
             return;
         };
@@ -1143,33 +1127,13 @@ impl DiffView {
                 return;
             }
             let target = f32::from(y - bounds.top() - col.el_scroll.offset().y).max(0.0);
-            // Variable row heights (taller file-header cards): walk cumulative
-            // heights to find the clicked row.
-            let mut acc = 0.0f32;
-            let mut hit = None;
-            match mode {
-                ViewMode::Unified => {
-                    for (i, r) in col.disp_unified.iter().enumerate() {
-                        let h = display_row_height(r);
-                        if target < acc + h {
-                            hit = Some(i);
-                            break;
-                        }
-                        acc += h;
-                    }
-                }
-                ViewMode::Split => {
-                    for (i, r) in col.disp_split.iter().enumerate() {
-                        let h = split_row_height(r);
-                        if target < acc + h {
-                            hit = Some(i);
-                            break;
-                        }
-                        acc += h;
-                    }
-                }
-            }
-            match hit {
+            // US-050: variable row heights (taller file-header cards) make this a
+            // band lookup — shared with `row_at_point` / `jump_to_file`.
+            let offsets = match mode {
+                ViewMode::Unified => &col.disp_unified_offsets,
+                ViewMode::Split => &col.disp_split_offsets,
+            };
+            match hit_test::row_at_offset(offsets, target) {
                 Some(r) => r,
                 None => return, // click past the last row
             }
@@ -1208,28 +1172,11 @@ impl DiffView {
             return None;
         }
         let target = f32::from(point.y - bounds.top() - col.el_scroll.offset().y).max(0.0);
-        let mut acc = 0.0f32;
-        match mode {
-            ViewMode::Unified => {
-                for (i, r) in col.disp_unified.iter().enumerate() {
-                    let h = display_row_height(r);
-                    if target < acc + h {
-                        return Some(i);
-                    }
-                    acc += h;
-                }
-            }
-            ViewMode::Split => {
-                for (i, r) in col.disp_split.iter().enumerate() {
-                    let h = split_row_height(r);
-                    if target < acc + h {
-                        return Some(i);
-                    }
-                    acc += h;
-                }
-            }
-        }
-        None
+        let offsets = match mode {
+            ViewMode::Unified => &col.disp_unified_offsets,
+            ViewMode::Split => &col.disp_split_offsets,
+        };
+        hit_test::row_at_offset(offsets, target)
     }
 
     /// US-002: resolve a body point to the file (+ optional enclosing hunk) under
@@ -1820,6 +1767,17 @@ impl DiffView {
         if col.review_terminals.is_empty() {
             return None;
         }
+        // US-049: the review prompt is pre-filled after a fixed delay, but on a
+        // slow CLI cold-start (notably Windows ConPTY) the auto-fill can miss
+        // its window. The prompt is always copied to the clipboard as a fallback
+        // — surface that explicitly so the user can paste it instead of staring
+        // at an empty input. Shown on the first terminal only, since the
+        // clipboard holds the first CLI's prompt (2nd-opinion prompts differ).
+        let paste_key = if cfg!(target_os = "macos") {
+            "⌘V"
+        } else {
+            "Ctrl+V"
+        };
         let terminals = div().flex_1().min_h_0().flex().flex_row().children(
             col.review_terminals.iter().enumerate().map(|(ti, rt)| {
                 let header = div()
@@ -1849,6 +1807,15 @@ impl DiffView {
                             .text_color(ui.text)
                             .child(rt.label.clone()),
                     )
+                    .when(ti == 0, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .text_size(px(9.))
+                                .text_color(ui.muted)
+                                .child(format!("prompt copied · {paste_key} to fill")),
+                        )
+                    })
                     .child(
                         div()
                             .id(SharedString::from(format!(
@@ -2173,42 +2140,27 @@ impl DiffView {
     /// header, stopping once the accumulated height passes `y`. `(None, y)` when
     /// the column has no file header at/above `y` (empty / pre-first-header).
     fn file_at_offset(&self, col: &Column, mode: ViewMode, y: f32) -> (Option<String>, f32) {
-        let mut acc = 0.0f32;
-        let mut current: Option<(String, f32)> = None;
-        match mode {
-            ViewMode::Unified => {
-                let anchors = &col.disp_anchors_unified;
-                let mut ai = 0usize;
-                for (ri, row) in col.disp_unified.iter().enumerate() {
-                    while ai < anchors.len() && anchors[ai].1 == ri {
-                        current = Some((anchors[ai].0.clone(), acc));
-                        ai += 1;
-                    }
-                    let h = display_row_height(row);
-                    if acc + h > y {
-                        break;
-                    }
-                    acc += h;
-                }
+        // US-046: binary-search the precomputed prefix-sum offsets + the
+        // row-sorted anchors instead of re-walking every row. `broadcast_scroll`
+        // calls this per scroll-sync event, so the old O(rows) walk ran on every
+        // wheel tick of a large diff.
+        let (offsets, anchors) = match mode {
+            ViewMode::Unified => (&col.disp_unified_offsets, &col.disp_anchors_unified),
+            ViewMode::Split => (&col.disp_split_offsets, &col.disp_anchors_split),
+        };
+        // Row whose vertical band [offsets[r], offsets[r+1]) contains `y` — the
+        // last offset that is still ≤ y (offsets is a len+1 prefix sum).
+        let row = offsets.partition_point(|&o| o <= y).saturating_sub(1);
+        // Most recent file header at or above that row (anchors sorted by row).
+        match anchors
+            .partition_point(|(_, ri)| *ri <= row)
+            .checked_sub(1)
+            .and_then(|i| anchors.get(i))
+        {
+            Some((path, anchor_row)) => {
+                let top = offsets.get(*anchor_row).copied().unwrap_or(0.0);
+                (Some(path.clone()), (y - top).max(0.0))
             }
-            ViewMode::Split => {
-                let anchors = &col.disp_anchors_split;
-                let mut ai = 0usize;
-                for (ri, row) in col.disp_split.iter().enumerate() {
-                    while ai < anchors.len() && anchors[ai].1 == ri {
-                        current = Some((anchors[ai].0.clone(), acc));
-                        ai += 1;
-                    }
-                    let h = split_row_height(row);
-                    if acc + h > y {
-                        break;
-                    }
-                    acc += h;
-                }
-            }
-        }
-        match current {
-            Some((path, top)) => (Some(path), (y - top).max(0.0)),
             None => (None, y),
         }
     }
@@ -2216,36 +2168,15 @@ impl DiffView {
     /// Cumulative top offset (px) of `path`'s file header in `col`, or `None` if
     /// that column doesn't contain the file. Mirrors `jump_to_file`'s sum.
     fn file_top_offset(&self, col: &Column, mode: ViewMode, path: &str) -> Option<f32> {
-        match mode {
-            ViewMode::Unified => {
-                let idx = col
-                    .disp_anchors_unified
-                    .iter()
-                    .find(|(p, _)| p == path)
-                    .map(|(_, i)| *i)?;
-                Some(
-                    col.disp_unified
-                        .get(..idx)?
-                        .iter()
-                        .map(display_row_height)
-                        .sum(),
-                )
-            }
-            ViewMode::Split => {
-                let idx = col
-                    .disp_anchors_split
-                    .iter()
-                    .find(|(p, _)| p == path)
-                    .map(|(_, i)| *i)?;
-                Some(
-                    col.disp_split
-                        .get(..idx)?
-                        .iter()
-                        .map(split_row_height)
-                        .sum(),
-                )
-            }
-        }
+        // US-046: O(1) prefix-sum lookup of the anchor row's top instead of
+        // re-summing every preceding row's height. The anchor lookup stays a
+        // linear scan over file headers (few, and not row-sorted by path).
+        let (offsets, anchors) = match mode {
+            ViewMode::Unified => (&col.disp_unified_offsets, &col.disp_anchors_unified),
+            ViewMode::Split => (&col.disp_split_offsets, &col.disp_anchors_split),
+        };
+        let idx = anchors.iter().find(|(p, _)| p == path).map(|(_, i)| *i)?;
+        offsets.get(idx).copied()
     }
 
     fn render_column(
@@ -2608,7 +2539,7 @@ impl DiffView {
             .selected_or_first_visible()
             .and_then(|i| self.columns.get(i))
             .map(|col| {
-                let tops = Self::hunk_tops(col, effective);
+                let tops = col.hunk_tops(effective);
                 let cur_y = f32::from(-col.el_scroll.offset().y).max(0.0);
                 let current = tops.iter().filter(|&&t| t <= cur_y + 4.0).count();
                 (tops.len(), current)

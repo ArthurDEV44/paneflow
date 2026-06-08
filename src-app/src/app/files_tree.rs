@@ -44,6 +44,21 @@ pub(crate) struct FilesTreeState {
 }
 
 impl FilesTreeState {
+    /// US-018: a root-only shell — the root marked expanded but with no
+    /// directory listings read yet. Shown synchronously the instant the sidebar
+    /// opens so the panel renders without blocking, while
+    /// [`crate::PaneFlowApp::spawn_files_hydration`] fills the listings + installs
+    /// the recursive watcher on a background task.
+    pub(crate) fn root_shell(root: PathBuf) -> Self {
+        let mut expanded = HashSet::new();
+        expanded.insert(root.clone());
+        Self {
+            root,
+            expanded,
+            children: HashMap::new(),
+        }
+    }
+
     /// Build a state rooted at `root`, restoring `persisted` expanded
     /// directories (US-007). The root is always expanded; each persisted path
     /// is restored only if it still resolves to a directory under the root —

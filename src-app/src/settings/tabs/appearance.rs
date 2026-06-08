@@ -9,7 +9,6 @@ use gpui::{
     deferred, div, prelude::*, px, svg,
 };
 
-use crate::config_writer;
 use crate::settings::components::{
     secondary_button, section_header_with_action, setting_card, setting_text,
 };
@@ -18,7 +17,8 @@ use super::super::window::SettingsWindow;
 
 impl SettingsWindow {
     pub(crate) fn render_appearance_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let config = paneflow_config::loader::load_config();
+        // US-016: read the cached config (no per-frame `load_config()`).
+        let config = &self.cached_config;
         let ui = crate::theme::ui_colors();
         let current_font =
             crate::terminal::element::resolve_font_family(config.font_family.as_deref());
@@ -28,12 +28,12 @@ impl SettingsWindow {
             "Reset to defaults",
             ui,
             cx.listener(|this, _: &ClickEvent, _w, cx| {
-                config_writer::save_config_value("font_family", serde_json::Value::Null);
-                config_writer::save_config_value("theme", serde_json::Value::Null);
-                crate::theme::invalidate_theme_cache();
                 this.font_dropdown_open = false;
                 this.font_search.clear();
-                cx.notify();
+                // US-016: clear both fields in the cache + persist off-thread.
+                this.persist_setting(false, "font_family", serde_json::Value::Null, cx);
+                this.persist_setting(false, "theme", serde_json::Value::Null, cx);
+                crate::theme::invalidate_theme_cache();
             }),
         );
 
@@ -78,7 +78,17 @@ impl SettingsWindow {
                 this.font_dropdown_open = !this.font_dropdown_open;
                 this.font_search.clear();
                 if this.font_dropdown_open && this.mono_font_names.is_empty() {
-                    this.mono_font_names = crate::fonts::load_mono_fonts();
+                    // US-016: enumerate fonts (the `fc-list` subprocess on
+                    // Linux/macOS) off the main thread; the dropdown opens
+                    // empty and fills in when the scan lands.
+                    cx.spawn(async move |this, cx| {
+                        let fonts = smol::unblock(crate::fonts::load_mono_fonts).await;
+                        let _ = this.update(cx, |this, cx| {
+                            this.mono_font_names = fonts;
+                            cx.notify();
+                        });
+                    })
+                    .detach();
                 }
                 this.settings_focus.focus(window, cx);
                 cx.notify();
@@ -148,13 +158,15 @@ impl SettingsWindow {
                             d.text_color(ui.text).hover(|s| s.bg(ui.subtle))
                         })
                         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                            config_writer::save_config_value(
-                                "font_family",
-                                serde_json::Value::String(name_owned.clone()),
-                            );
                             this.font_dropdown_open = false;
                             this.font_search.clear();
-                            cx.notify();
+                            // US-016: cache-mutate + notify + off-thread persist.
+                            this.persist_setting(
+                                false,
+                                "font_family",
+                                serde_json::Value::String(name_owned.clone()),
+                                cx,
+                            );
                         }))
                         .child(div().flex_1().min_w_0().truncate().child((*name).clone()))
                         .when(is_current, |d| {

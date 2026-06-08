@@ -58,6 +58,12 @@ pub(crate) enum TerminalDropdown {
 
 pub struct SettingsWindow {
     pub(super) section: SettingsSection,
+    /// US-016: cached `paneflow.json` so the tab renders never call the
+    /// blocking `load_config()` per frame. Hydrated at creation, mutated
+    /// in-memory by the control handlers (see [`Self::persist_setting`]) for
+    /// instant feedback, and pushed fresh by `PaneFlowApp::process_config_changes`
+    /// on any external ConfigWatcher reload (fixes the Shortcuts désync).
+    pub(super) cached_config: paneflow_config::schema::PaneFlowConfig,
     pub(super) effective_shortcuts: Vec<keybindings::ShortcutEntry>,
     pub(super) recording_shortcut_idx: Option<usize>,
     pub(super) settings_focus: FocusHandle,
@@ -90,6 +96,8 @@ impl SettingsWindow {
 
         let window = Self {
             section: SettingsSection::Shortcuts,
+            // US-016: seed the render cache from the config loaded above.
+            cached_config: config.clone(),
             effective_shortcuts: keybindings::effective_shortcuts(&config.shortcuts),
             recording_shortcut_idx: None,
             settings_focus: cx.focus_handle(),
@@ -200,6 +208,55 @@ impl SettingsWindow {
             let config = paneflow_config::loader::load_config();
             keybindings::apply_keybindings(cx, &config.shortcuts);
         }
+    }
+
+    /// US-016: apply a settings-tab control change. Mutates the render cache in
+    /// memory for instant feedback, repaints, then persists the field to disk
+    /// off the GPUI main thread (`smol::unblock`). `nested` routes into the
+    /// `terminal` block; a `Null` value clears the field. Model: the off-thread
+    /// MCP refresh in `settings/tabs/ai_agent.rs`.
+    pub(super) fn persist_setting(
+        &mut self,
+        nested: bool,
+        key: &'static str,
+        value: serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        self.cached_config =
+            crate::config_writer::with_field(&self.cached_config, nested, key, value.clone());
+        cx.notify();
+        cx.background_spawn(async move {
+            smol::unblock(move || {
+                let ok = if nested {
+                    crate::config_writer::save_terminal_field(key, value);
+                    true
+                } else {
+                    crate::config_writer::save_config_value_checked(key, value)
+                };
+                if !ok {
+                    log::warn!(
+                        "settings: failed to persist {key}; choice is in-memory only this session"
+                    );
+                }
+            })
+            .await;
+        })
+        .detach();
+    }
+
+    /// US-016: adopt a config pushed by `PaneFlowApp::process_config_changes`
+    /// when the background `ConfigWatcher` reports an *external* reload (the
+    /// user edited `paneflow.json` directly, or another surface changed it).
+    /// Refreshes the render cache and the displayed shortcut list, fixing the
+    /// Shortcuts-tab désync without a second per-window watcher.
+    pub(crate) fn apply_external_config(
+        &mut self,
+        config: paneflow_config::schema::PaneFlowConfig,
+        cx: &mut Context<Self>,
+    ) {
+        self.effective_shortcuts = keybindings::effective_shortcuts(&config.shortcuts);
+        self.cached_config = config;
+        cx.notify();
     }
 }
 

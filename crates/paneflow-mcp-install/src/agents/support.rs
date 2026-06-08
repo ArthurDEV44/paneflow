@@ -67,7 +67,22 @@ pub(crate) fn cli_on_path(cli: &str) -> bool {
 /// Run `program args...`, capturing output. `Ok(())` iff it exits 0;
 /// otherwise an error carrying the trimmed stderr (for `log`/report).
 pub(crate) fn shell_out(program: &str, args: &[&str]) -> Result<()> {
-    let output = Command::new(program)
+    // US-042 (Windows): a bare `Command::new("claude")` goes through
+    // `CreateProcessW`, which ignores `PATHEXT` and so cannot launch the
+    // `claude.cmd` shim that npm/bun install — even though `cli_on_path`
+    // (via `which::which`) resolved it, so the "preferred CLI path" was
+    // entered and then died with `NotFound`. Resolve the full `.cmd`/`.exe`
+    // path first; Rust std ≥1.77 wraps `.cmd`/`.bat` through `cmd.exe`
+    // automatically. On Unix `execvp` honors PATH for a bare name, so the
+    // original behavior is kept there.
+    #[cfg(windows)]
+    let resolved = which::which(program).unwrap_or_else(|_| PathBuf::from(program));
+    #[cfg(windows)]
+    let mut command = Command::new(resolved);
+    #[cfg(not(windows))]
+    let mut command = Command::new(program);
+
+    let output = command
         .args(args)
         .output()
         .with_context(|| format!("failed to spawn `{program}`"))?;
@@ -104,7 +119,7 @@ pub(crate) fn json_install(
     if !changed {
         return Ok(InstallOutcome::AlreadyCurrent);
     }
-    io::write_if_changed(path, &merge::json_to_bytes(&root))?;
+    io::write_if_changed(path, &merge::json_to_bytes(&root)?)?;
     Ok(if had_prior {
         InstallOutcome::Updated
     } else {
@@ -122,7 +137,7 @@ pub(crate) fn json_uninstall(path: &Path, container: &str) -> Result<UninstallOu
     if !merge::remove_json_entry(&mut root, container, ENTRY) {
         return Ok(UninstallOutcome::NothingToRemove);
     }
-    io::write_if_changed(path, &merge::json_to_bytes(&root))?;
+    io::write_if_changed(path, &merge::json_to_bytes(&root)?)?;
     Ok(UninstallOutcome::Removed)
 }
 

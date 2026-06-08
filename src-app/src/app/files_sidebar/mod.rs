@@ -55,21 +55,21 @@ impl PaneFlowApp {
         let persisted = ws.files_expanded.clone();
 
         // Mutual exclusion: only one right column is ever visible.
-        if self.sessions_sidebar_open {
+        if self.agent_sessions.sessions_sidebar_open {
             self.close_sessions_sidebar(cx);
         }
         // Floating dropdowns would paint over the docked panel.
         self.workspace_menu_open = None;
         self.profile_menu_open = None;
 
-        self.files_tree = FilesTreeState::hydrated(root.clone(), &persisted);
         self.files_sidebar_open = true;
         self.files_tree_scroll = gpui::ScrollHandle::new();
-        // US-005: live recursive watch on the root (graceful no-op on failure).
-        self.install_files_watcher(&root);
-        // Stale persisted paths may have been dropped during hydration — write
-        // the reconciled set back so `session.json` self-heals.
-        self.sync_files_expansion();
+        // US-018: hydrate the tree + install the recursive watcher OFF the
+        // render thread — a recursive `notify` walk over a repo carrying a
+        // `target/` (~23k dirs) otherwise froze Wayland. A root shell paints
+        // this frame; `sync_files_expansion` runs (and reconciles stale
+        // persisted paths back into `session.json`) once hydration lands.
+        self.spawn_files_hydration(root, persisted, cx);
         cx.notify();
     }
 
@@ -91,7 +91,7 @@ impl PaneFlowApp {
     /// the sidebar is open (US-002 workspace-switch). No-op when closed or when
     /// the root is unchanged. Restores the new workspace's expansion (US-007)
     /// and re-targets the watcher (US-005).
-    pub(crate) fn reroot_files_tree(&mut self) {
+    pub(crate) fn reroot_files_tree(&mut self, cx: &mut Context<Self>) {
         if !self.files_sidebar_open {
             return;
         }
@@ -103,9 +103,8 @@ impl PaneFlowApp {
             return;
         }
         let persisted = ws.files_expanded.clone();
-        self.files_tree = FilesTreeState::hydrated(root.clone(), &persisted);
-        self.install_files_watcher(&root);
-        self.sync_files_expansion();
+        // US-018: re-root off the render thread (the recursive watch walk).
+        self.spawn_files_hydration(root, persisted, cx);
     }
 
     /// Expand or collapse a directory. First expand reads its listing (lazy,

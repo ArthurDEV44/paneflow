@@ -1,13 +1,15 @@
 //! macOS DMG self-update pipeline (US-009).
 //!
 //! Flow:
-//!   1. Fetch the release asset's `.sha256` sibling (US-011 convention —
-//!      every Phase 1+ artifact ships one). If the sibling is absent we
-//!      refuse to install an unverified bundle.
-//!   2. Download the `.dmg` to `$HOME/.cache/paneflow/update-<pid>.dmg`
+//!   1. Download the `.dmg` to `$HOME/.cache/paneflow/update-<pid>.dmg`
 //!      via ureq with the 30-second per-call timeout (US-001).
-//!   3. Verify the SHA-256 against the parsed sibling; mismatch deletes
-//!      the partial and bails with [`IntegrityMismatch`].
+//!   2. Verify the asset's detached **minisign** signature (`.minisig`
+//!      sibling) against a key baked into this binary (US-001) **before
+//!      mounting**. A missing/invalid signature deletes the partial and
+//!      bails — replaces the old same-host `.sha256`, which a compromised
+//!      mirror could swap alongside the bundle.
+//!   3. macOS belt-and-braces: `codesign --verify` + `spctl --assess` on
+//!      the extracted `.app` before promotion (US-004).
 //!   4. `hdiutil attach -nobrowse -readonly -mountpoint <tmp>` to a
 //!      deterministic mount point under `/private/tmp/` so later detach
 //!      is trivially scoped and two concurrent updates can't collide.
@@ -42,9 +44,8 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use sha2::{Digest, Sha256};
 
-use super::super::error::{IntegrityMismatch, UpdateError};
+use super::super::error::UpdateError;
 
 /// Upper bound on any single HTTP call (US-001).
 const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -54,27 +55,81 @@ const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// `$HOME/.cache`.
 const MAX_DMG_BYTES: u64 = 500 * 1024 * 1024;
 
-/// Canonical macOS install location of the PaneFlow bundle. The DMG
-/// updater always replaces at this path — a user who dragged the bundle
-/// to `$HOME/Applications` is detected as `InstallMethod::AppBundle`
-/// with a non-`/Applications` `bundle_path`, and (today) falls through
-/// to the generic "no updater wired" error rather than silently writing
-/// to `/Applications`.
-const INSTALL_DIR: &str = "/Applications/PaneFlow.app";
-
-/// Post-install restart target — passed to `cx.set_restart_path()`.
-const INSTALLED_BINARY: &str = "/Applications/PaneFlow.app/Contents/MacOS/paneflow";
-
-/// Run the DMG self-update end-to-end. Resolves `$HOME`, delegates to
-/// [`install_in`], and returns the post-swap restart target on success.
-pub fn install(asset_url: &str) -> Result<PathBuf> {
+/// Run the DMG self-update end-to-end. Replaces the bundle **at its detected
+/// location** (`bundle_path`, from `InstallMethod::AppBundle`) rather than a
+/// hardcoded `/Applications/PaneFlow.app` (US-004) — so a user who installed
+/// into `~/Applications` is updated in place. A bundle outside an expected
+/// location is refused: writing into an arbitrary path the user dragged the
+/// app to would be surprising and unsafe.
+pub fn install(asset_url: &str, bundle_path: &Path) -> Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .context("HOME environment variable is not set")?;
+
+    if !is_expected_bundle_location(bundle_path, &home) {
+        return Err(anyhow::Error::new(UpdateError::InstallDeclined {
+            message: format!(
+                "PaneFlow is installed at an unexpected location ({}); reinstall from the DMG into /Applications or ~/Applications to enable in-app updates.",
+                bundle_path.display()
+            ),
+        }));
+    }
+
     let cache_dir = home.join(".cache").join("paneflow");
-    let install_dir = PathBuf::from(INSTALL_DIR);
-    install_in(asset_url, &install_dir, &cache_dir, &HdiutilProcessRunner)?;
-    Ok(PathBuf::from(INSTALLED_BINARY))
+    install_in(asset_url, bundle_path, &cache_dir, &HdiutilProcessRunner)?;
+    Ok(bundle_path.join("Contents").join("MacOS").join("paneflow"))
+}
+
+/// True when `bundle_path` sits directly under `/Applications` or
+/// `$HOME/Applications` — the two locations the DMG updater is allowed to
+/// replace in place (US-004). Pure path logic, unit-tested on Linux CI.
+fn is_expected_bundle_location(bundle_path: &Path, home: &Path) -> bool {
+    let Some(parent) = bundle_path.parent() else {
+        return false;
+    };
+    parent == Path::new("/Applications") || parent == home.join("Applications")
+}
+
+/// Gatekeeper / code-signature verification of `bundle` (US-004), fail-closed.
+/// `codesign --verify --strict --deep` proves the signature is intact and
+/// covers every nested item; `spctl --assess --type execute` proves the
+/// bundle is notarised / accepted by the system policy. Either tool exiting
+/// nonzero rejects the update with a tagged `IntegrityMismatch`.
+///
+/// macOS-only; untestable on the Linux CI leg (no `codesign`/`spctl`, no
+/// notarised fixture) — exercised by the macOS release leg against the real
+/// signed bundle.
+#[cfg(target_os = "macos")]
+fn verify_macos_bundle(bundle: &Path) -> Result<()> {
+    run_gatekeeper_tool(
+        "codesign",
+        &["--verify", "--strict", "--deep", "--verbose=2"],
+        bundle,
+    )?;
+    run_gatekeeper_tool("spctl", &["--assess", "--type", "execute"], bundle)?;
+    Ok(())
+}
+
+/// Spawn a single Gatekeeper tool (`codesign` / `spctl`) against `bundle` and
+/// map a nonzero exit to a fail-closed `IntegrityMismatch`.
+#[cfg(target_os = "macos")]
+fn run_gatekeeper_tool(tool: &str, args: &[&str], bundle: &Path) -> Result<()> {
+    let out = Command::new(tool)
+        .args(args)
+        .arg(bundle)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("spawn {tool} for bundle verification"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    Err(anyhow::Error::new(super::super::error::IntegrityMismatch {
+        expected: "valid macOS code signature".to_string(),
+        got: format!("{tool} rejected the bundle: {}", stderr.trim()),
+    }))
 }
 
 /// Testable core. Parameterised on:
@@ -122,6 +177,17 @@ fn install_in(
         mount: mounted.clone(),
     };
 
+    // US-004: OS-native gatekeeper check on the bundle inside the (read-only,
+    // signature-verified) mounted DMG before we copy it into place —
+    // fail-closed, a second layer over the minisign verification of the DMG
+    // bytes. cfg(macos) so the Linux/Windows compile-closure and the
+    // platform-neutral copy/swap unit tests stay free of `codesign`/`spctl`.
+    #[cfg(target_os = "macos")]
+    if let Err(e) = verify_macos_bundle(&mounted.join("PaneFlow.app")) {
+        let _ = std::fs::remove_file(&dmg);
+        return Err(e);
+    }
+
     let swap_result = copy_and_swap(&mounted, install_dir);
 
     // Regardless of swap outcome, the downloaded tarball is a ~80 MB
@@ -132,49 +198,15 @@ fn install_in(
     swap_result
 }
 
-/// Fetch the `.sha256` sidecar, download the DMG, verify the digest,
+/// Download the DMG, verify its detached **minisign** signature (US-001),
 /// and persist at `dest` on success. Mirrors the `targz.rs` pattern —
 /// see it for the detailed rationale on each guard (partial→rename,
-/// 500 MB cap, RO body stream).
+/// 500 MB cap, RO body stream). The signature, not a same-host `.sha256`,
+/// is the trust anchor and is checked **before** the DMG is ever mounted.
 fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
     log::info!("self-update/dmg: downloading {asset_url}");
 
-    // 1. Fetch the sibling checksum. Missing `.sha256` is a hard abort —
-    // we refuse to install a DMG without an integrity anchor.
-    let sha_url = format!("{asset_url}.sha256");
-    let mut sha_response = ureq::get(&sha_url)
-        .config()
-        .timeout_global(Some(UPDATE_HTTP_TIMEOUT))
-        .build()
-        .header(
-            "User-Agent",
-            &format!("paneflow/{}", env!("CARGO_PKG_VERSION")),
-        )
-        .call()
-        .with_context(|| {
-            "Could not fetch integrity checksum. Try again when online.".to_string()
-        })?;
-    let sha_status = sha_response.status();
-    if !sha_status.is_success() {
-        if sha_status.as_u16() == 404 {
-            bail!(
-                "This release has no SHA-256 checksum published. Download the latest version from the releases page."
-            );
-        }
-        bail!("Could not fetch integrity checksum (HTTP {sha_status}). Try again later.");
-    }
-    let sha_body = sha_response
-        .body_mut()
-        .read_to_string()
-        .context("read .sha256 body")?;
-    let expected_hex = parse_sha256_file(&sha_body).with_context(|| {
-        format!(
-            "parse .sha256 body (first 80 bytes: {:?})",
-            &sha_body.chars().take(80).collect::<String>()
-        )
-    })?;
-
-    // 2. Stream the DMG to `.partial` so a crashed download doesn't
+    // 1. Stream the DMG to `.partial` so a crashed download doesn't
     // poison the cache. Same scope-for-handle-close discipline as
     // `targz.rs` / `appimage.rs` (Windows `DeleteFile` sharing violation).
     let partial = append_suffix(dest, ".partial")?;
@@ -200,9 +232,14 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
         let mut reader = Read::take(reader, MAX_DMG_BYTES + 1);
         let mut file = std::fs::File::create(&partial)
             .with_context(|| format!("create {}", partial.display()))?;
-        let written = std::io::copy(&mut reader, &mut file).context("stream DMG to disk");
-        file.sync_all().ok();
-        written
+        std::io::copy(&mut reader, &mut file)
+            .context("stream DMG to disk")
+            .and_then(|written| {
+                // US-010: propagate a flush failure (ENOSPC) so the
+                // classifier renders DiskFull, not a downstream mismatch.
+                file.sync_all().context("flush DMG to disk")?;
+                Ok(written)
+            })
     };
     let written = match stream_result {
         Ok(n) => n,
@@ -219,9 +256,11 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
         );
     }
 
-    // 3. Verify the digest. Mismatch deletes the partial and bails with
-    // the typed `IntegrityMismatch` tag so the UX toast is specific.
-    if let Err(e) = verify_sha256_of_file(&partial, &expected_hex) {
+    // 2. Verify the detached minisign signature BEFORE mounting. Fail-closed:
+    // a missing/invalid signature deletes the partial and bails with the
+    // typed `IntegrityMismatch` tag so the UX toast is specific. This is the
+    // US-001 root-of-trust check that replaces the old same-host `.sha256`.
+    if let Err(e) = super::super::signature::fetch_and_verify(&partial, asset_url) {
         let _ = std::fs::remove_file(&partial);
         return Err(e);
     }
@@ -301,19 +340,45 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
 
     // Atomic swap: two renames. The window where `install_dir` doesn't
     // exist is vanishingly small and bracketed by the rollback below.
+    //
+    // US-008: discriminate the first rename's error. `NotFound` means a fresh
+    // install into an empty `/Applications/` — expected, fall through. ANY
+    // other error (permission denied, SIP, bundle busy) is a hard abort:
+    // proceeding would risk a half-installed state.
     if let Err(e) = std::fs::rename(install_dir, &old_dir) {
-        // Rare — `install_dir` didn't exist yet (fresh install into an
-        // empty /Applications/). Fall through to the second rename.
-        log::debug!(
-            "self-update/dmg: no pre-existing {}: {e}",
-            install_dir.display()
-        );
+        if e.kind() == std::io::ErrorKind::NotFound {
+            log::debug!(
+                "self-update/dmg: no pre-existing {} (fresh install)",
+                install_dir.display()
+            );
+        } else {
+            let _ = std::fs::remove_dir_all(&new_dir);
+            return Err(classify_filesystem_error(
+                &e.to_string(),
+                &format!("move aside {}", install_dir.display()),
+            ));
+        }
     }
     if let Err(e) = std::fs::rename(&new_dir, install_dir) {
-        // Second rename failed — restore the live bundle so the user
-        // isn't left without `/Applications/PaneFlow.app`.
-        if old_dir.exists() {
-            let _ = std::fs::rename(&old_dir, install_dir);
+        // Second rename failed — restore the live bundle so the user isn't
+        // left without `/Applications/PaneFlow.app`. US-008: verify the
+        // rollback. If it ALSO fails, the user has no live bundle at all —
+        // surface that as a hard `InstallFailed` (catastrophic), not the
+        // recoverable filesystem-error classification, so the toast tells
+        // them to reinstall rather than implying a transient retry.
+        if old_dir.exists()
+            && let Err(rb) = std::fs::rename(&old_dir, install_dir)
+        {
+            let _ = std::fs::remove_dir_all(&new_dir);
+            return Err(anyhow::Error::new(UpdateError::InstallFailed {
+                log_path: PathBuf::new(),
+            })
+            .context(format!(
+                "promote {} → {} failed ({e}); rollback from {} also failed ({rb}) — no live install remains, reinstall PaneFlow manually",
+                new_dir.display(),
+                install_dir.display(),
+                old_dir.display()
+            )));
         }
         let _ = std::fs::remove_dir_all(&new_dir);
         return Err(classify_filesystem_error(
@@ -358,54 +423,6 @@ fn append_suffix(path: &Path, suffix: &str) -> Result<PathBuf> {
     let mut name = name.to_os_string();
     name.push(suffix);
     Ok(path.with_file_name(name))
-}
-
-/// Parse a `.sha256` file's contents and return the hex digest. Kept
-/// lenient for coreutils / sha256sum / bare-hex formats (same set as
-/// `targz.rs::parse_sha256_file`).
-fn parse_sha256_file(body: &str) -> Result<String> {
-    let first_line = body.lines().next().context("empty .sha256 file")?;
-    let token = first_line
-        .split_whitespace()
-        .next()
-        .context("no token in .sha256 file")?;
-    let lower = token.to_ascii_lowercase();
-    if lower.len() != 64 || !lower.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("invalid SHA-256 digest (expected 64 hex chars, got {token:?})");
-    }
-    Ok(lower)
-}
-
-fn verify_sha256_of_file(file: &Path, expected_hex: &str) -> Result<()> {
-    let mut f = std::fs::File::open(file)
-        .with_context(|| format!("open {} for hashing", file.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = f.read(&mut buf).context("read chunk for hashing")?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let got = hex_lower(&hasher.finalize());
-    if got != expected_hex {
-        return Err(anyhow::Error::new(IntegrityMismatch {
-            expected: expected_hex.to_string(),
-            got,
-        }));
-    }
-    Ok(())
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
 }
 
 /// Map a filesystem error message (from either an `io::Error` or a
@@ -514,17 +531,6 @@ mod tests {
     // ── Pure helpers ─────────────────────────────────────────────────
 
     #[test]
-    fn parse_sha256_file_accepts_bare_hex() {
-        let body = format!("{}\n", "a".repeat(64));
-        assert_eq!(parse_sha256_file(&body).unwrap(), "a".repeat(64));
-    }
-
-    #[test]
-    fn parse_sha256_file_rejects_short_digest() {
-        assert!(parse_sha256_file("abcd\n").is_err());
-    }
-
-    #[test]
     fn staging_dirs_derives_sibling_paths() {
         let (old, new) = staging_dirs(Path::new("/Applications/PaneFlow.app")).unwrap();
         assert_eq!(old, PathBuf::from("/Applications/PaneFlow.app.old"));
@@ -532,22 +538,35 @@ mod tests {
     }
 
     #[test]
-    fn verify_sha256_rejects_mismatched_digest() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("payload.bin");
-        std::fs::write(&path, b"tampered").unwrap();
-        let err = verify_sha256_of_file(&path, &"0".repeat(64)).unwrap_err();
-        assert!(err.downcast_ref::<IntegrityMismatch>().is_some());
+    fn expected_bundle_location_accepts_applications_dirs() {
+        let home = Path::new("/Users/alice");
+        assert!(is_expected_bundle_location(
+            Path::new("/Applications/PaneFlow.app"),
+            home
+        ));
+        assert!(is_expected_bundle_location(
+            Path::new("/Users/alice/Applications/PaneFlow.app"),
+            home
+        ));
     }
 
     #[test]
-    fn verify_sha256_accepts_matching_digest() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("payload.bin");
-        std::fs::write(&path, b"hello").unwrap();
-        // sha256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
-        let expected = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
-        assert!(verify_sha256_of_file(&path, expected).is_ok());
+    fn expected_bundle_location_rejects_arbitrary_paths() {
+        let home = Path::new("/Users/alice");
+        // US-004: a drag-install to an unexpected location is refused.
+        assert!(!is_expected_bundle_location(
+            Path::new("/opt/third-party/PaneFlow.app"),
+            home
+        ));
+        assert!(!is_expected_bundle_location(
+            Path::new("/Users/alice/Downloads/PaneFlow.app"),
+            home
+        ));
+        // Another user's Applications dir is not ours.
+        assert!(!is_expected_bundle_location(
+            Path::new("/Users/bob/Applications/PaneFlow.app"),
+            home
+        ));
     }
 
     // ── Error classification ─────────────────────────────────────────
@@ -687,6 +706,31 @@ mod tests {
         let install_dir = tmp.path().join("Applications").join("PaneFlow.app");
         let err = copy_and_swap(&empty_mount, &install_dir).unwrap_err();
         assert!(err.to_string().contains("PaneFlow.app"), "got: {err}");
+    }
+
+    /// US-008: a fresh install (no pre-existing bundle at `install_dir`)
+    /// must succeed — the first rename fails with `NotFound`, which is the
+    /// one error the swap is allowed to ignore.
+    #[test]
+    fn copy_and_swap_fresh_install_no_existing_bundle() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let source_root = tmp.path().join("mount");
+        std::fs::create_dir_all(&source_root).unwrap();
+        fake_bundle_at(&source_root);
+
+        // Parent exists but the bundle itself does not (empty /Applications).
+        let install_parent = tmp.path().join("Applications");
+        std::fs::create_dir_all(&install_parent).unwrap();
+        let install_dir = install_parent.join("PaneFlow.app");
+        assert!(!install_dir.exists());
+
+        copy_and_swap(&source_root, &install_dir).unwrap();
+
+        assert!(install_dir.join("Contents/MacOS/paneflow").exists());
+        assert!(
+            !install_parent.join("PaneFlow.app.old").exists(),
+            "no .old should be created on a fresh install"
+        );
     }
 
     #[test]

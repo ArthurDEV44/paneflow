@@ -11,8 +11,24 @@ use gpui::{App, Entity};
 use paneflow_config::schema::{LayoutNode, SurfaceDefinition};
 
 use crate::pane::Pane;
+use crate::terminal::types::SharedTerm;
 
 use super::tree::{LayoutChild, LayoutTree, SplitDirection};
+
+/// US-011: scrollback-capture strategy threaded through
+/// [`LayoutTree::serialize_with`]. The drain of a terminal's scrollback holds
+/// the term mutex and walks up to `MAX_LINES` grid rows — too heavy for the
+/// GPUI render thread, which is where every `save_session` call originates.
+pub(crate) enum ScrollbackCapture<'a> {
+    /// Drain scrollback synchronously on the calling thread. Used by the IPC
+    /// `workspace.current` reply, which already runs off a hot render path.
+    Inline,
+    /// Defer the drain: every terminal surface emits `scrollback: None` and
+    /// pushes its [`SharedTerm`] handle into the out vec — in the exact
+    /// surface-emission order — so `save_session` can drain them off-thread and
+    /// splice them back with [`fill_scrollback`].
+    Deferred(&'a mut Vec<SharedTerm>),
+}
 
 impl LayoutTree {
     /// Serialize the layout tree to a `LayoutNode` (config schema type).
@@ -22,6 +38,20 @@ impl LayoutTree {
     /// with `focus: true`. Each container produces a `LayoutNode::Split` with
     /// per-child `ratios` and recursive children.
     pub fn serialize(&self, cx: &App) -> LayoutNode {
+        self.serialize_with(cx, &mut ScrollbackCapture::Inline)
+    }
+
+    /// US-011: serialize the layout while *deferring* the per-terminal
+    /// scrollback drain. Each terminal surface emits `scrollback: None` and its
+    /// [`SharedTerm`] handle is pushed into `terms` in surface-emission order,
+    /// so `save_session` can drain them off the GPUI main thread and re-inject
+    /// via [`fill_scrollback`].
+    pub fn serialize_deferred(&self, cx: &App, terms: &mut Vec<SharedTerm>) -> LayoutNode {
+        self.serialize_with(cx, &mut ScrollbackCapture::Deferred(terms))
+    }
+
+    /// Inner serializer parametrised by the [`ScrollbackCapture`] strategy.
+    fn serialize_with(&self, cx: &App, capture: &mut ScrollbackCapture) -> LayoutNode {
         match self {
             LayoutTree::Leaf(pane) => {
                 let pane_ref = pane.read(cx);
@@ -56,7 +86,15 @@ impl LayoutTree {
                             tv_ref.terminal.current_cwd.clone().or_else(|| {
                                 tv_ref.terminal.cwd_now().map(|p| p.display().to_string())
                             });
-                        let scrollback = tv_ref.terminal.extract_scrollback();
+                        let scrollback = match capture {
+                            ScrollbackCapture::Inline => tv_ref.terminal.extract_scrollback(),
+                            ScrollbackCapture::Deferred(terms) => {
+                                // Clone the term mutex handle (cheap Arc bump) and
+                                // drain it off-thread later; emit None for now.
+                                terms.push(tv_ref.terminal.term.clone());
+                                None
+                            }
+                        };
                         SurfaceDefinition {
                             surface_type: Some("terminal".to_string()),
                             name,
@@ -88,8 +126,12 @@ impl LayoutTree {
                     SplitDirection::Vertical => "vertical",
                 };
                 let ratios: Vec<f64> = children.iter().map(|c| c.ratio.get() as f64).collect();
-                let child_nodes: Vec<LayoutNode> =
-                    children.iter().map(|c| c.node.serialize(cx)).collect();
+                // Sequential loop (not `.map()`): the `&mut capture` can't be
+                // reborrowed across closure invocations.
+                let mut child_nodes: Vec<LayoutNode> = Vec::with_capacity(children.len());
+                for c in children.iter() {
+                    child_nodes.push(c.node.serialize_with(cx, capture));
+                }
                 LayoutNode::Split {
                     direction: dir_str.to_string(),
                     ratio: None,
@@ -136,7 +178,6 @@ impl LayoutTree {
                         LayoutChild {
                             node: LayoutTree::from_layout_node(child_node, panes, spawn),
                             ratio: Rc::new(Cell::new(ratio as f32)),
-                            computed_size: Rc::new(Cell::new(0.0)),
                         }
                     })
                     .collect();
@@ -146,6 +187,31 @@ impl LayoutTree {
                     drag: Rc::new(Cell::new(None)),
                     container_size: Rc::new(Cell::new(0.0)),
                 }
+            }
+        }
+    }
+}
+
+/// US-011: splice deferred scrollback back into a serialized layout tree.
+///
+/// Walks the tree in the SAME depth-first / left-to-right / surface order as
+/// [`LayoutTree::serialize_with`] under [`ScrollbackCapture::Deferred`], so the
+/// Nth handle drained corresponds to the Nth surface emitted. Consumes one
+/// handle per surface from `terms`; surfaces past the end of the iterator keep
+/// their `None` scrollback (defensive — counts always match in practice). The
+/// drain runs on the caller's thread, so callers must invoke this off the GPUI
+/// main thread (see `save_session`).
+pub(crate) fn fill_scrollback(node: &mut LayoutNode, terms: &mut impl Iterator<Item = SharedTerm>) {
+    match node {
+        LayoutNode::Pane { surfaces } => {
+            for surface in surfaces.iter_mut() {
+                let Some(term) = terms.next() else { break };
+                surface.scrollback = crate::terminal::TerminalState::extract_scrollback_from(&term);
+            }
+        }
+        LayoutNode::Split { children, .. } => {
+            for child in children.iter_mut() {
+                fill_scrollback(child, terms);
             }
         }
     }

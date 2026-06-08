@@ -89,11 +89,11 @@
 //! application errors returned as `{"error": "string"}` continue to flow
 //! through the `result` field for backward compatibility.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
-    atomic::{AtomicU8, Ordering},
+    atomic::{AtomicU8, AtomicUsize, Ordering},
     mpsc,
 };
 use std::time::Duration;
@@ -123,6 +123,27 @@ pub(crate) enum IpcState {
 
 const IPC_STATE_ONLINE: u8 = 0;
 const IPC_STATE_DISABLED: u8 = 1;
+
+/// US-022: hard cap on the bytes a single newline-delimited request may
+/// occupy. `BufRead::lines()`/`read_line()` otherwise accumulate until `\n`
+/// with no bound, so one same-UID peer streaming a multi-GB line with no
+/// newline OOM-kills the GPUI process (every agent pane dies). 256 KiB sits
+/// well above the 64 KiB `send_text` ceiling plus JSON overhead; anything
+/// larger is rejected (`-32600`) and the connection closed.
+const MAX_REQUEST_LEN: u64 = 256 * 1024;
+
+/// US-022: ceiling on concurrently-served IPC connections. The accept loop
+/// spawns one blocking thread per connection; without a cap a same-UID peer
+/// opening connections in a loop fans out unbounded OS threads. Beyond this,
+/// new connections are refused with backpressure (`-32000`) and closed.
+const MAX_CONCURRENT_CONNECTIONS: usize = 16;
+
+/// US-022: idle read deadline per connection. A peer that opens a connection
+/// and then sends nothing (or stops mid-stream) otherwise pins its handler
+/// thread forever. Enforced at the OS level via `set_recv_timeout`. Generous
+/// enough never to cut a real request (clients send immediately on connect
+/// and use one connection per request).
+const IPC_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub(crate) struct IpcStatus {
@@ -268,11 +289,56 @@ pub fn start_server() -> (mpsc::Receiver<IpcRequest>, IpcStatus) {
                 .set_nonblocking(ListenerNonblockingMode::Accept)
                 .ok();
 
+            // US-022: bound the number of concurrently-served connections so a
+            // peer opening sockets in a loop can't fan out unbounded threads.
+            // Only this (single) accept thread increments; handler threads
+            // decrement via the RAII guard below, so the load is exact.
+            let active_connections = Arc::new(AtomicUsize::new(0));
+
+            // Decrement the live-connection count on any handler exit path
+            // (return, EOF, panic-unwind). Hoisted out of the spawn closure so
+            // it can be constructed BEFORE the spawn and moved in: if the spawn
+            // itself fails, the closure (and this guard) is dropped, running the
+            // decrement and restoring the slot the `fetch_add` below claimed.
+            struct ActiveGuard(Arc<AtomicUsize>);
+            impl Drop for ActiveGuard {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+
             loop {
                 match listener.accept() {
                     Ok(stream) => {
+                        if active_connections.load(Ordering::Acquire) >= MAX_CONCURRENT_CONNECTIONS
+                        {
+                            reject_overloaded(stream);
+                            continue;
+                        }
+                        active_connections.fetch_add(1, Ordering::AcqRel);
+                        let guard = ActiveGuard(Arc::clone(&active_connections));
                         let tx = tx.clone();
-                        std::thread::spawn(move || handle_connection(stream, tx));
+                        // EP-001 US-005 parity: use the fallible `Builder::spawn`,
+                        // never the panicking `thread::spawn`. Under
+                        // RLIMIT_NPROC / EAGAIN the latter panics and unwinds
+                        // this accept thread, silently killing the IPC server
+                        // (AI-hook status + MCP bridge go dark while the status
+                        // flag still reads Online). On the `Err` path the moved
+                        // `guard` and `stream` are dropped here -- the count is
+                        // restored and the connection closed -- and the loop
+                        // keeps accepting.
+                        if let Err(e) = std::thread::Builder::new()
+                            .name("paneflow-ipc-conn".into())
+                            .spawn(move || {
+                                let _guard = guard;
+                                handle_connection(stream, tx);
+                            })
+                        {
+                            log::warn!(
+                                "IPC: handler thread spawn failed ({e}); dropping this \
+                                 connection. Check `ulimit -u` / container thread limits."
+                            );
+                        }
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         // No pending connection — brief sleep to avoid busy-spin
@@ -439,6 +505,20 @@ fn detect_existing_instance(socket_path: &std::path::Path) -> Option<String> {
             continue;
         };
 
+        // US-022: bound the probe at the OS level (`set_recv_timeout`, same
+        // mechanism as the bridge client) instead of a scratch thread that
+        // leaked on every timeout. 300 ms is generous for a stateless
+        // socket-thread handler; a live but unresponsive process within that
+        // budget is functionally indistinguishable from "no peer" and we
+        // proceed to bind. A hostile squatter on the path can neither stall us
+        // (the deadline) nor feed us an unbounded line (the `take` cap).
+        if stream
+            .set_recv_timeout(Some(Duration::from_millis(300)))
+            .is_err()
+        {
+            continue;
+        }
+
         // Stateless ping handled directly on the peer's socket thread
         // (see `handle_connection`), so a live instance responds in
         // microseconds without any GPUI round-trip.
@@ -450,26 +530,14 @@ fn detect_existing_instance(socket_path: &std::path::Path) -> Option<String> {
         }
         let _ = stream.flush();
 
-        // `interprocess::Stream` does not expose a uniform cross-platform
-        // read timeout, so we read on a scratch thread and bound the
-        // wait with `recv_timeout`. 300 ms is generous for a stateless
-        // socket-thread handler; a live but unresponsive process within
-        // that budget is functionally indistinguishable from "no peer"
-        // and we proceed to bind (a hung peer that resumes after we've
-        // bound will detect the clobber on its next tick — the original
-        // failure mode, but now bounded to one stuck-instance edge case
-        // rather than recurring every 5 s by design).
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            let _ = reader.read_line(&mut line);
-            let _ = tx.send(line);
-        });
-
-        let Ok(line) = rx.recv_timeout(Duration::from_millis(300)) else {
+        let mut line = String::new();
+        if BufReader::new(stream)
+            .take(MAX_REQUEST_LEN)
+            .read_line(&mut line)
+            .is_err()
+        {
             continue;
-        };
+        }
 
         // The `system.identify` result includes `"name":"PaneFlow"` (see
         // `handle_connection`). Match on the literal so a non-Paneflow
@@ -481,6 +549,49 @@ fn detect_existing_instance(socket_path: &std::path::Path) -> Option<String> {
     }
 
     None
+}
+
+/// Outcome of one capped request read (US-022).
+#[derive(Debug, PartialEq, Eq)]
+enum LineRead {
+    /// Clean end of stream.
+    Eof,
+    /// The line reached `MAX_REQUEST_LEN` without a newline — oversized.
+    TooLong,
+    /// A complete (or trailing) line was read into the buffer.
+    Got,
+}
+
+/// Read one newline-delimited request into `line`, capped at
+/// [`MAX_REQUEST_LEN`]. `Take` is rebuilt per call so the limit is per-line;
+/// a line that hits the cap without a terminating newline is reported as
+/// [`LineRead::TooLong`] rather than allocated unboundedly (the DoS the cap
+/// exists to stop). Pure framing logic, unit-tested below.
+fn read_capped_line(reader: &mut impl BufRead, line: &mut String) -> std::io::Result<LineRead> {
+    line.clear();
+    // `by_ref()` reborrows so `Take` owns a `&mut reader`, not `reader` itself
+    // (the cap is per-call, and the caller keeps the reader for the next line).
+    let n = reader.by_ref().take(MAX_REQUEST_LEN).read_line(line)?;
+    if n == 0 {
+        return Ok(LineRead::Eof);
+    }
+    if n as u64 >= MAX_REQUEST_LEN && !line.ends_with('\n') {
+        return Ok(LineRead::TooLong);
+    }
+    Ok(LineRead::Got)
+}
+
+/// US-022 backpressure: refuse a connection once the concurrency cap is hit.
+/// Writes one JSON-RPC error envelope and drops the stream (closing it) so the
+/// peer gets a structured rejection rather than a silent hang.
+fn reject_overloaded(mut stream: Stream) {
+    let envelope = json!({
+        "jsonrpc": "2.0",
+        "error": {"code": -32000, "message": "server busy: too many concurrent connections"},
+        "id": Value::Null,
+    });
+    let _ = writeln!(&mut stream, "{}", envelope);
+    let _ = stream.flush();
 }
 
 fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
@@ -539,16 +650,41 @@ fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
         }
     }
 
-    let reader = BufReader::new(stream);
+    // US-022: drop a peer that opens a connection and then goes mute, so it
+    // can't pin this handler thread forever. Enforced at the OS level; a
+    // best-effort failure leaves the previous (blocking) behavior.
+    let _ = stream.set_recv_timeout(Some(IPC_IDLE_TIMEOUT));
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) if l.is_empty() => continue,
-            Ok(l) => l,
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+
+    loop {
+        match read_capped_line(&mut reader, &mut line) {
+            Ok(LineRead::Eof) => break,
+            Ok(LineRead::TooLong) => {
+                // US-022: oversized request → structured rejection + close,
+                // never an unbounded allocation.
+                let envelope = json!({
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32600, "message": "request exceeds maximum length"},
+                    "id": Value::Null,
+                });
+                let _ = writeln!(&mut writer, "{}", envelope);
+                let _ = writer.flush();
+                break;
+            }
+            Ok(LineRead::Got) => {}
+            // Idle timeout (WouldBlock on Unix, TimedOut on Windows) or any
+            // other read error → drop the connection.
             Err(_) => break,
-        };
+        }
 
-        let response = match serde_json::from_str::<Value>(&line) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let response = match serde_json::from_str::<Value>(line) {
             Ok(req) => {
                 let id = req.get("id").cloned().unwrap_or(Value::Null);
                 let method = req
@@ -801,5 +937,54 @@ mod auth {
                 }
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::{LineRead, MAX_REQUEST_LEN, read_capped_line};
+    use std::io::Cursor;
+
+    #[test]
+    fn capped_line_rejects_oversized_unterminated() {
+        // US-022 negative test: a line that reaches the cap without a newline
+        // is reported TooLong, never accumulated past the bound.
+        let huge = vec![b'x'; MAX_REQUEST_LEN as usize + 64];
+        let mut cur = Cursor::new(huge);
+        let mut line = String::new();
+        assert_eq!(
+            read_capped_line(&mut cur, &mut line).unwrap(),
+            LineRead::TooLong
+        );
+        assert!(line.len() as u64 <= MAX_REQUEST_LEN, "buffer stays bounded");
+    }
+
+    #[test]
+    fn capped_line_accepts_normal_then_eof() {
+        let mut cur = Cursor::new(b"{\"jsonrpc\":\"2.0\"}\n".to_vec());
+        let mut line = String::new();
+        assert_eq!(
+            read_capped_line(&mut cur, &mut line).unwrap(),
+            LineRead::Got
+        );
+        assert_eq!(line, "{\"jsonrpc\":\"2.0\"}\n");
+        assert_eq!(
+            read_capped_line(&mut cur, &mut line).unwrap(),
+            LineRead::Eof
+        );
+    }
+
+    #[test]
+    fn capped_line_accepts_exactly_at_cap_with_newline() {
+        // Boundary: a line of exactly MAX_REQUEST_LEN bytes whose final byte
+        // is the newline is accepted (not a truncation).
+        let mut body = vec![b'a'; MAX_REQUEST_LEN as usize - 1];
+        body.push(b'\n');
+        let mut cur = Cursor::new(body);
+        let mut line = String::new();
+        assert_eq!(
+            read_capped_line(&mut cur, &mut line).unwrap(),
+            LineRead::Got
+        );
     }
 }

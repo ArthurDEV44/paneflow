@@ -25,3 +25,10 @@ mod tree;
 
 pub use navigation::FocusDirection;
 pub use tree::{LayoutTree, SplitDirection};
+// US-011: off-thread scrollback re-injection helper for `save_session`.
+pub(crate) use serde::fill_scrollback;
+
+/// Hard cap on leaf panes in a single workspace's layout tree (US-054: single
+/// source for the bound previously re-declared as a local `const` at every
+/// split/insert site — split handlers, IPC `surface.split`, layout presets).
+pub(crate) const MAX_PANES: usize = 32;

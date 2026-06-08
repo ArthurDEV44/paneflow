@@ -149,6 +149,22 @@ pub enum DropEdge {
     Right,
 }
 
+impl DropEdge {
+    /// Map a drop edge to the 2-way [`crate::layout::SplitDirection`] plus
+    /// whether the new pane swaps to the "before" position. `split_at_pane`
+    /// always inserts *after* the target, so the leading edges (Up/Left) swap
+    /// the moved/duplicated pane onto the correct side. Single source for the
+    /// three drop-to-split handlers (DropSplit / dropped tab / dropped session).
+    pub fn to_split(self) -> (crate::layout::SplitDirection, bool) {
+        match self {
+            DropEdge::Up => (crate::layout::SplitDirection::Horizontal, true),
+            DropEdge::Down => (crate::layout::SplitDirection::Horizontal, false),
+            DropEdge::Left => (crate::layout::SplitDirection::Vertical, true),
+            DropEdge::Right => (crate::layout::SplitDirection::Vertical, false),
+        }
+    }
+}
+
 /// Fraction of a pane's *smaller* dimension that counts as an edge band for
 /// drop-to-split (Zed's `drop_target_size` default). Cursor inside any edge
 /// band → split toward the nearest edge; the center 60% → move-into-pane.

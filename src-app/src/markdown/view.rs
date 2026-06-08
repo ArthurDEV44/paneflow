@@ -962,6 +962,12 @@ fn render_node(node: &MdNode, palette: MarkdownPalette) -> AnyElement {
 /// in `crates/markdown/src/markdown.rs` — `RenderedText` + `LinkAndRange`).
 /// Tracked as follow-up work; until then `Cmd/Ctrl-click` on a `.md` path
 /// from a terminal pane remains the supported way to open another markdown.
+///
+/// SECURITY (US-044): when that rewire lands, the resolved `span.link_url`
+/// MUST be passed through `crate::markdown::security::validate_link_url(url)?`
+/// before reaching `open::that`. `.md` content is potentially hostile, so a
+/// raw `file://`/`javascript:`/`data:` URL must never hit `xdg-open`. The
+/// allow-list is regression-tested by `security::tests::allowlist_is_http_https_only`.
 fn build_styled_text(
     spans: &[Span],
     palette: MarkdownPalette,

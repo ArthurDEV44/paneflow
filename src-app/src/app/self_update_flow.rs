@@ -35,8 +35,10 @@ fn install_method_label(method: &update::install_method::InstallMethod) -> &'sta
 /// (`PackageManager::Other` clipboard fallback, non-Linux targets,
 /// and the `EnvironmentBroken` clipboard fallback). Keeping the rule
 /// in two places is a deliberate trade for keeping `validate_version`
-/// private to its Linux-only module.
-fn is_strict_semver(raw: &str) -> bool {
+/// private to its Linux-only module; US-054 adds
+/// `system_package::tests::version_validators_agree` to guard the two
+/// implementations against drifting apart.
+pub(crate) fn is_strict_semver(raw: &str) -> bool {
     let rest = raw.strip_prefix('v').unwrap_or(raw);
     let mut completed_parts: usize = 0;
     let mut segment_len: usize = 0;
@@ -89,7 +91,21 @@ impl PaneFlowApp {
         // Capture the to_version BEFORE we drop update_status so the
         // emit helper can reference it.
         self.emit_update_dismissed(UpdateDismissReason::UserDismissed);
-        self.update_status = None;
+        self.self_update.update_status = None;
+        cx.notify();
+    }
+
+    /// US-017: shared completion for every pre-installed update path. Flips to
+    /// `ReadyToRestart`, persists the session (blocking — the next event is a
+    /// process-replacing restart), and queues the `update_installed` analytics
+    /// event WITHOUT a blocking flush (the background `poll_flush` loop drains
+    /// it; the restart click stays zero-I/O). Dedups the six identical blocks
+    /// that previously inlined this — and that previously called
+    /// `flush_blocking` on the render thread, the `[HIGH]` finding.
+    fn on_preinstall_success(&mut self, cx: &mut Context<Self>) {
+        self.self_update.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
+        self.save_session_blocking(cx);
+        self.emit_update_success();
         cx.notify();
     }
 
@@ -106,7 +122,7 @@ impl PaneFlowApp {
         // (download + install + analytics flush) to GPUI's
         // ~100 ms `kill -0` polling interval.
         if matches!(
-            self.self_update_status,
+            self.self_update.self_update_status,
             update::SelfUpdateStatus::ReadyToRestart
         ) {
             log::info!("self-update: ReadyToRestart click — invoking cx.restart()");
@@ -120,14 +136,14 @@ impl PaneFlowApp {
         // the upgrade command to the clipboard so the user has a one-click
         // path forward. Mirrors how Zed handles `ZED_UPDATE_EXPLANATION`.
         if let update::install_method::InstallMethod::ExternallyManaged { explanation } =
-            &self.install_method
+            &self.self_update.install_method
         {
             cx.write_to_clipboard(ClipboardItem::new_string(explanation.clone()));
             self.push_toast(explanation.clone(), Vec::new(), TOAST_HOLD_MS * 4, cx);
             return;
         }
 
-        if self.self_update_status.is_busy() {
+        if self.self_update.self_update_status.is_busy() {
             return;
         }
 
@@ -146,9 +162,9 @@ impl PaneFlowApp {
         // `install_method::detect()` only produces `SystemPackage` on
         // Linux, so the non-Linux path is compile-only ballast.
         if let update::install_method::InstallMethod::SystemPackage { manager } =
-            &self.install_method
+            &self.self_update.install_method
         {
-            let version = match &self.update_status {
+            let version = match &self.self_update.update_status {
                 Some(update::checker::UpdateStatus::Available { version, .. }) => version.clone(),
                 _ => return,
             };
@@ -240,7 +256,7 @@ impl PaneFlowApp {
                     update::install_method::PackageManager::Other => "system-package",
                     update::install_method::PackageManager::RpmOstree => "rpm-ostree",
                 };
-                self.self_update_status = update::SelfUpdateStatus::Downloading;
+                self.self_update.self_update_status = update::SelfUpdateStatus::Downloading;
                 cx.notify();
 
                 cx.spawn(async move |this, cx| {
@@ -268,11 +284,7 @@ impl PaneFlowApp {
                                 // analytics flush + session save still run
                                 // here (now, while the user is busy), not at
                                 // click time.
-                                app.self_update_status =
-                                    update::SelfUpdateStatus::ReadyToRestart;
-                                app.save_session(cx);
-                                app.emit_update_success_and_flush();
-                                cx.notify();
+                                app.on_preinstall_success(cx);
                             });
                             cx.update(|cx| {
                                 log::info!(
@@ -293,7 +305,7 @@ impl PaneFlowApp {
                                 // retry counter (user intent, not a
                                 // failure).
                                 update::UpdateError::InstallDeclined { .. } => {
-                                    app.self_update_status = update::SelfUpdateStatus::Idle;
+                                    app.self_update.self_update_status = update::SelfUpdateStatus::Idle;
                                     app.show_toast("Update cancelled".to_string(), cx);
                                     cx.notify();
                                 }
@@ -311,7 +323,7 @@ impl PaneFlowApp {
                                     cx.write_to_clipboard(ClipboardItem::new_string(
                                         command.clone(),
                                     ));
-                                    app.self_update_status = update::SelfUpdateStatus::Idle;
+                                    app.self_update.self_update_status = update::SelfUpdateStatus::Idle;
                                     app.show_toast(format!("Copied: {command}"), cx);
                                     cx.notify();
                                 }
@@ -328,7 +340,7 @@ impl PaneFlowApp {
                                 update::UpdateError::Other(ref msg)
                                     if msg == update::linux::system_package::BUSY_MESSAGE =>
                                 {
-                                    app.self_update_status = update::SelfUpdateStatus::Idle;
+                                    app.self_update.self_update_status = update::SelfUpdateStatus::Idle;
                                     app.push_toast(
                                         update::linux::system_package::BUSY_MESSAGE.to_string(),
                                         Vec::new(),
@@ -357,8 +369,8 @@ impl PaneFlowApp {
         // points the user at the releases page (US-013). Skipping the
         // network here is important — repeated fast retries against a
         // flaky mirror are never the right answer.
-        if self.update_attempt_count >= 3 {
-            let releases_url = match &self.update_status {
+        if self.self_update.update_attempt_count >= 3 {
+            let releases_url = match &self.self_update.update_status {
                 Some(update::checker::UpdateStatus::Available { url, .. }) => url.clone(),
                 _ => "https://github.com/ArthurDEV44/paneflow/releases".to_string(),
             };
@@ -371,7 +383,7 @@ impl PaneFlowApp {
             return;
         }
 
-        let asset_url = match &self.update_status {
+        let asset_url = match &self.self_update.update_status {
             Some(update::checker::UpdateStatus::Available {
                 asset_url: Some(url),
                 ..
@@ -385,32 +397,53 @@ impl PaneFlowApp {
             _ => return,
         };
 
+        // No trust anchor baked into this build (a dev build, or a release cut
+        // before the US-002 signing keys were provisioned). Refuse to start ANY
+        // installer before touching disk. `fetch_and_verify` already fails
+        // closed on a keyless build (signature.rs), but for AppImage that
+        // rejection only fires *after* `appimageupdatetool -O` has rewritten the
+        // live binary in place — mutating a binary we can never verify. Bailing
+        // here keeps every install path verify-before-side-effect and shows a
+        // clear message instead of a silently corrupted AppImage.
+        if !update::signature::has_embedded_key() {
+            self.push_toast(
+                "This build can't self-update (unsigned). Download the latest version from the releases page.".to_string(),
+                vec![ToastAction::OpenReleasesPage(
+                    "https://github.com/ArthurDEV44/paneflow/releases".to_string(),
+                )],
+                TOAST_HOLD_MS * 4,
+                cx,
+            );
+            return;
+        }
+
         // Use the cached install method. The install location never changes
         // at runtime, so one probe at startup is enough.
-        let method = self.install_method.clone();
+        let method = self.self_update.install_method.clone();
         if let update::install_method::InstallMethod::AppImage { source_path, .. } = &method {
             let source_path = source_path.clone();
             // `appimageupdatetool` does one opaque call that covers both the
             // zsync download and the in-place rewrite. Most of the
             // wall-clock time is spent fetching delta blocks, so `Downloading`
             // matches what the user actually sees on a slow link.
-            self.self_update_status = update::SelfUpdateStatus::Downloading;
+            self.self_update.self_update_status = update::SelfUpdateStatus::Downloading;
             cx.notify();
 
+            let asset_url_for_verify = asset_url.clone();
             cx.spawn(async move |this, cx| {
                 let result = smol::unblock({
                     let source_path = source_path.clone();
-                    move || update::linux::appimage::run_update(&source_path)
+                    let asset_url = asset_url_for_verify.clone();
+                    // US-006: pass the new asset URL so run_update can fetch
+                    // its `.minisig` and re-verify the rewritten AppImage.
+                    move || update::linux::appimage::run_update(&source_path, &asset_url)
                 })
                 .await;
 
                 match result {
                     Ok(updated_path) => {
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session(cx);
-                            app.emit_update_success_and_flush();
-                            cx.notify();
+                            app.on_preinstall_success(cx);
                         });
                         cx.update(|cx| {
                             log::info!(
@@ -459,7 +492,7 @@ impl PaneFlowApp {
                 );
             }
             let url = asset_url.clone();
-            self.self_update_status = update::SelfUpdateStatus::Downloading;
+            self.self_update.self_update_status = update::SelfUpdateStatus::Downloading;
             cx.notify();
 
             cx.spawn(async move |this, cx| {
@@ -468,10 +501,7 @@ impl PaneFlowApp {
                 match result {
                     Ok(restart_path) => {
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session(cx);
-                            app.emit_update_success_and_flush();
-                            cx.notify();
+                            app.on_preinstall_success(cx);
                         });
                         cx.update(|cx| {
                             log::info!(
@@ -500,7 +530,7 @@ impl PaneFlowApp {
         // fail there, but the branch guard prevents ever reaching it.
         if let update::install_method::InstallMethod::WindowsMsi { .. } = &method {
             let url = asset_url.clone();
-            self.self_update_status = update::SelfUpdateStatus::Downloading;
+            self.self_update.self_update_status = update::SelfUpdateStatus::Downloading;
             cx.notify();
 
             cx.spawn(async move |this, cx| {
@@ -508,10 +538,7 @@ impl PaneFlowApp {
                 match result {
                     Ok(restart_path) => {
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session(cx);
-                            app.emit_update_success_and_flush();
-                            cx.notify();
+                            app.on_preinstall_success(cx);
                         });
                         cx.update(|cx| {
                             log::info!(
@@ -539,20 +566,21 @@ impl PaneFlowApp {
         // `InstallMethod::AppBundle` variant is only produced on macOS
         // by `install_method::detect()`, so on Linux / Windows this
         // branch is runtime-dead without needing a `#[cfg(target_os)]`.
-        if let update::install_method::InstallMethod::AppBundle { .. } = &method {
+        if let update::install_method::InstallMethod::AppBundle { bundle_path } = &method {
             let url = asset_url.clone();
-            self.self_update_status = update::SelfUpdateStatus::Downloading;
+            // US-004: replace the bundle at its detected location, not a
+            // hardcoded /Applications path.
+            let bundle = bundle_path.clone();
+            self.self_update.self_update_status = update::SelfUpdateStatus::Downloading;
             cx.notify();
 
             cx.spawn(async move |this, cx| {
-                let result = smol::unblock(move || update::macos::dmg::install(&url)).await;
+                let result =
+                    smol::unblock(move || update::macos::dmg::install(&url, &bundle)).await;
                 match result {
                     Ok(restart_path) => {
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session(cx);
-                            app.emit_update_success_and_flush();
-                            cx.notify();
+                            app.on_preinstall_success(cx);
                         });
                         cx.update(|cx| {
                             log::info!(
@@ -588,7 +616,7 @@ impl PaneFlowApp {
         // "no updater wired" runtime failure.
         #[cfg(unix)]
         {
-            self.self_update_status = update::SelfUpdateStatus::Downloading;
+            self.self_update.self_update_status = update::SelfUpdateStatus::Downloading;
             cx.notify();
 
             cx.spawn(async move |this, cx| {
@@ -610,7 +638,7 @@ impl PaneFlowApp {
                 };
 
                 let _ = this.update(cx, |app, cx| {
-                    app.self_update_status = update::SelfUpdateStatus::Installing;
+                    app.self_update.self_update_status = update::SelfUpdateStatus::Installing;
                     cx.notify();
                 });
 
@@ -635,10 +663,7 @@ impl PaneFlowApp {
                 match update::installed_binary_path() {
                     Ok(path) => {
                         let _ = this.update(cx, |app, cx| {
-                            app.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
-                            app.save_session(cx);
-                            app.emit_update_success_and_flush();
-                            cx.notify();
+                            app.on_preinstall_success(cx);
                         });
                         cx.update(|cx| {
                             log::info!(
@@ -699,19 +724,22 @@ impl PaneFlowApp {
     ///   defers to the host package manager.
     pub(crate) fn try_auto_kickoff_install(&mut self, cx: &mut Context<Self>) {
         if !matches!(
-            self.update_status,
+            self.self_update.update_status,
             Some(update::checker::UpdateStatus::Available { .. })
         ) {
             return;
         }
-        if !matches!(self.self_update_status, update::SelfUpdateStatus::Idle) {
+        if !matches!(
+            self.self_update.self_update_status,
+            update::SelfUpdateStatus::Idle
+        ) {
             return;
         }
-        if self.update_attempt_count >= 3 {
+        if self.self_update.update_attempt_count >= 3 {
             return;
         }
         let auto_eligible = matches!(
-            self.install_method,
+            self.self_update.install_method,
             update::install_method::InstallMethod::AppImage { .. }
                 | update::install_method::InstallMethod::TarGz { .. }
                 | update::install_method::InstallMethod::AppBundle { .. }
@@ -721,14 +749,14 @@ impl PaneFlowApp {
         if !auto_eligible {
             log::debug!(
                 "self-update/auto-kickoff: skipped (install_method={})",
-                install_method_label(&self.install_method)
+                install_method_label(&self.self_update.install_method)
             );
             return;
         }
 
         log::info!(
             "self-update/auto-kickoff: starting background pre-install (install_method={})",
-            install_method_label(&self.install_method)
+            install_method_label(&self.self_update.install_method)
         );
         self.kickoff_self_update_install(cx);
     }

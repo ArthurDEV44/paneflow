@@ -318,7 +318,17 @@ impl TerminalAgent {
     /// configured shell (`clear`, `cls`, or `Clear-Host`) so the agent TUI owns
     /// the viewport from the first frame on every platform.
     pub fn launch_command(self, config: &PaneFlowConfig) -> String {
-        crate::terminal::shell::clear_then(self.command(config), config.default_shell.as_deref())
+        // US-042: trim + drop-empty exactly like the PTY session does when it
+        // resolves the shell (`pty_session.rs:442`). A config such as
+        // `"default_shell": "  pwsh  "` otherwise reaches `clear_then`
+        // untrimmed, fails the `which::which` probe, falls back to `cmd.exe`,
+        // and emits the wrong clear arm (`cls && claude` for a POSIX command).
+        let shell = config
+            .default_shell
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        crate::terminal::shell::clear_then(self.command(config), shell)
     }
 
     /// Visible variants for the given config, in display order. Drives

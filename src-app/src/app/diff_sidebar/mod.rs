@@ -75,9 +75,9 @@ impl PaneFlowApp {
                 .into_any_element()
         };
 
-        let mounted = match self.diff_scope {
-            crate::diff::DiffScope::MultiProject => self.multi_diff_view.is_some(),
-            _ => self.diff_view.is_some(),
+        let mounted = match self.diff_mode.diff_scope {
+            crate::diff::DiffScope::MultiProject => self.diff_mode.multi_diff_view.is_some(),
+            _ => self.diff_mode.diff_view.is_some(),
         };
         if !mounted {
             return centered("No git repository in the active workspace".into());
@@ -89,8 +89,9 @@ impl PaneFlowApp {
         let (lists, selected_col): (
             Vec<(String, usize, std::path::PathBuf, FileListState)>,
             usize,
-        ) = match self.diff_scope {
+        ) = match self.diff_mode.diff_scope {
             crate::diff::DiffScope::MultiProject => self
+                .diff_mode
                 .multi_diff_view
                 .as_ref()
                 .map(|v| {
@@ -99,6 +100,7 @@ impl PaneFlowApp {
                 })
                 .unwrap_or_default(),
             _ => self
+                .diff_mode
                 .diff_view
                 .as_ref()
                 .map(|v| {
@@ -111,7 +113,7 @@ impl PaneFlowApp {
         if lists.is_empty() {
             // Mounted but no columns yet — the brief cold-mount / discovery window.
             return centered(
-                if self.diff_discovering {
+                if self.diff_mode.diff_discovering {
                     "Discovering worktrees…"
                 } else {
                     "Computing diff…"
@@ -120,7 +122,7 @@ impl PaneFlowApp {
             );
         }
 
-        let collapsed = self.diff_files_collapsed;
+        let collapsed = self.diff_mode.diff_files_collapsed;
 
         // Aggregate diffstat across every branch's files — an at-a-glance sense
         // of the total changeset, shown in the header even when collapsed. Same
@@ -130,7 +132,12 @@ impl PaneFlowApp {
 
         // Live path filter (case-insensitive substring) driven by the
         // always-visible filter field below the header. Empty ⇒ all match.
-        let filter_lc = self.diff_file_filter.read(cx).value().to_lowercase();
+        let filter_lc = self
+            .diff_mode
+            .diff_file_filter
+            .read(cx)
+            .value()
+            .to_lowercase();
         let filtering = !filter_lc.is_empty();
 
         let header = div()
@@ -146,7 +153,7 @@ impl PaneFlowApp {
             .cursor_pointer()
             .hover(|s| s.bg(ui.subtle))
             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                this.diff_files_collapsed = !this.diff_files_collapsed;
+                this.diff_mode.diff_files_collapsed = !this.diff_mode.diff_files_collapsed;
                 cx.notify();
             }))
             .child(
@@ -179,7 +186,7 @@ impl PaneFlowApp {
                     .cursor_pointer()
                     .hover(|s| s.bg(ui.subtle))
                     .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                        this.diff_files_tree = !this.diff_files_tree;
+                        this.diff_mode.diff_files_tree = !this.diff_mode.diff_files_tree;
                         cx.stop_propagation();
                         cx.notify();
                     }))
@@ -187,7 +194,7 @@ impl PaneFlowApp {
                         gpui::svg()
                             .size(px(13.))
                             .flex_none()
-                            .path(if self.diff_files_tree {
+                            .path(if self.diff_mode.diff_files_tree {
                                 "icons/list.svg"
                             } else {
                                 "icons/file_tree.svg"
@@ -235,7 +242,7 @@ impl PaneFlowApp {
             .border_color(ui.border)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _w, cx| {
                 if ev.keystroke.key.as_str() == "escape" {
-                    this.diff_file_filter.update(cx, |inp, cx| {
+                    this.diff_mode.diff_file_filter.update(cx, |inp, cx| {
                         inp.content = SharedString::default();
                         inp.selected_range = 0..0;
                         cx.notify();
@@ -256,7 +263,7 @@ impl PaneFlowApp {
                     .min_w_0()
                     .text_size(px(12.))
                     .text_color(ui.text)
-                    .child(self.diff_file_filter.clone()),
+                    .child(self.diff_mode.diff_file_filter.clone()),
             )
             .when(filtering, |d| {
                 d.child(
@@ -272,7 +279,7 @@ impl PaneFlowApp {
                         .cursor_pointer()
                         .hover(|s| s.bg(ui.subtle))
                         .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                            this.diff_file_filter.update(cx, |inp, cx| {
+                            this.diff_mode.diff_file_filter.update(cx, |inp, cx| {
                                 inp.content = SharedString::default();
                                 inp.selected_range = 0..0;
                                 cx.notify();
@@ -383,7 +390,7 @@ impl PaneFlowApp {
                         }
                         .into(),
                     )]
-                } else if self.diff_files_tree {
+                } else if self.diff_mode.diff_files_tree {
                     self.render_diff_file_tree(col_idx, is_active, &visible, ui, cx)
                 } else {
                     visible
@@ -457,7 +464,7 @@ impl PaneFlowApp {
                 cur = sc;
             }
             let key = format!("{col_idx}\u{0}{full}");
-            let collapsed = self.diff_collapsed_dirs.contains(&key);
+            let collapsed = self.diff_mode.diff_collapsed_dirs.contains(&key);
             out.push(self.render_dir_header_row(col_idx, &disp, &full, collapsed, depth, ui, cx));
             if !collapsed {
                 self.render_dir_node(
@@ -515,8 +522,8 @@ impl PaneFlowApp {
             .cursor_pointer()
             .hover(|s| s.bg(ui.subtle))
             .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                if !this.diff_collapsed_dirs.remove(&key) {
-                    this.diff_collapsed_dirs.insert(key.clone());
+                if !this.diff_mode.diff_collapsed_dirs.remove(&key) {
+                    this.diff_mode.diff_collapsed_dirs.insert(key.clone());
                 }
                 cx.notify();
             }))
@@ -567,7 +574,10 @@ impl PaneFlowApp {
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let section_collapsed = self.diff_collapsed_branches.contains(collapse_key);
+        let section_collapsed = self
+            .diff_mode
+            .diff_collapsed_branches
+            .contains(collapse_key);
         let (added, removed, count) = match state {
             FileListState::Loaded(files) => {
                 let (a, r) = files
@@ -598,8 +608,10 @@ impl PaneFlowApp {
             .cursor_pointer()
             .hover(|s| s.bg(ui.subtle))
             .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                if !this.diff_collapsed_branches.remove(&key_owned) {
-                    this.diff_collapsed_branches.insert(key_owned.clone());
+                if !this.diff_mode.diff_collapsed_branches.remove(&key_owned) {
+                    this.diff_mode
+                        .diff_collapsed_branches
+                        .insert(key_owned.clone());
                 }
                 cx.notify();
             }))

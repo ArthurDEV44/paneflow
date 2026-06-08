@@ -1,10 +1,12 @@
 //! tar.gz self-update via atomic directory swap (US-011).
 //!
 //! Flow:
-//!   1. Download the tar.gz asset (and its `.sha256` sibling) to
-//!      `$HOME/.cache/paneflow/update-<pid>.tar.gz`.
-//!   2. Verify SHA-256 against the sibling file. A mismatch deletes the
-//!      download and aborts — users never get an unverified install.
+//!   1. Download the tar.gz asset to `$HOME/.cache/paneflow/update-<pid>.tar.gz`.
+//!   2. Verify the asset's detached **minisign** signature (`.minisig`
+//!      sibling) against a public key baked into this binary (US-001).
+//!      A missing or invalid signature deletes the download and aborts —
+//!      the same-host `.sha256` it replaced gave no real trust (a mirror
+//!      that swaps the tarball swaps the checksum too).
 //!   3. Extract into `<parent>/paneflow.app.new/` (a sibling of the live
 //!      install dir; same filesystem so the swap rename is atomic).
 //!   4. Atomic swap via two `rename(2)` calls:
@@ -28,9 +30,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use sha2::{Digest, Sha256};
-
-use super::super::error::IntegrityMismatch;
 
 /// 500 MB ceiling on the downloaded tarball. The real release is ~30 MB;
 /// a malicious mirror returning an unbounded stream would otherwise fill
@@ -50,7 +49,13 @@ pub fn run_update(asset_url: &str) -> Result<PathBuf> {
         .map(PathBuf::from)
         .context("HOME environment variable is not set")?;
     let app_dir = home.join(".local").join("paneflow.app");
-    let cache_dir = home.join(".cache").join("paneflow");
+    // US-010: honour `XDG_CACHE_HOME` (mirrors `appimage::cache_path_for`)
+    // so a user who redirects their cache dir isn't forced back to
+    // `~/.cache`. Falls back to `$HOME/.cache` when unset.
+    let cache_base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".cache"));
+    let cache_dir = cache_base.join(crate::runtime_paths::APP_SUBDIR);
     run_update_in(asset_url, &app_dir, &cache_dir)?;
     Ok(app_dir.join("bin").join("paneflow"))
 }
@@ -60,21 +65,29 @@ pub fn run_update(asset_url: &str) -> Result<PathBuf> {
 /// `$HOME`.
 fn run_update_in(asset_url: &str, app_dir: &Path, cache_dir: &Path) -> Result<()> {
     let (old_dir, new_dir) = staging_dirs(app_dir)?;
+    let parent = app_dir
+        .parent()
+        .context("app_dir has no parent directory — refusing to swap at filesystem root")?;
 
-    // Fail fast if a crashed prior update left `.old` behind — silently
-    // overwriting it could blow away files the user might need to
-    // recover.
-    if old_dir.exists() {
-        bail!(
-            "Previous update did not clean up. Delete `{}` and retry.",
-            old_dir.display()
-        );
-    }
+    // US-008: serialise concurrent updates. Two PaneFlow instances both
+    // triggering an update would otherwise race on the fixed-name `.old` /
+    // `.new` staging dirs and the two-rename swap. The lock is an OS-advisory
+    // flock that auto-releases when the handle drops — including on process
+    // death — so a crash never leaves a stale lock behind. Held for the whole
+    // staging+swap below.
+    let _update_lock = acquire_update_lock(parent)?;
+
+    // US-008: crash recovery + stale-`.old` cleanup. Replaces the old hard
+    // `bail!` on any `.old`: if a prior update died mid-swap (live `app_dir`
+    // renamed to `.old`, but `.new → app_dir` never ran) the live install is
+    // restored; an otherwise-leftover `.old` (failed housekeeping, live
+    // install intact) is removed so we don't bail forever.
+    recover_and_clean_staging(app_dir, &old_dir)?;
+
     // And if `.new` survived a crash, clean it up so extract() doesn't
-    // merge into a stale tree. Unlike `.old` (hard abort because it may
-    // hold recoverable state), `.new` is pure scratch — safe to remove,
-    // but log a warning if the cleanup itself fails so the downstream
-    // extract error isn't misdiagnosed as a tarball problem.
+    // merge into a stale tree. `.new` is pure scratch — safe to remove, but
+    // log a warning if the cleanup itself fails so the downstream extract
+    // error isn't misdiagnosed as a tarball problem.
     if new_dir.exists()
         && let Err(e) = std::fs::remove_dir_all(&new_dir)
     {
@@ -115,7 +128,89 @@ fn staging_dirs(app_dir: &Path) -> Result<(PathBuf, PathBuf)> {
     ))
 }
 
-/// Download the asset + its `.sha256` sibling, verify, persist to `dest`.
+/// Acquire an exclusive, OS-advisory lock so two PaneFlow instances can't
+/// stage+swap concurrently (US-008). The lock auto-releases when the returned
+/// handle drops — including on process death — so a crash never leaves a
+/// stale lock that would block future updates.
+///
+/// Unix-only (`flock`). The tar.gz install method is Linux-only at runtime
+/// (the dispatcher routes only `InstallMethod::TarGz` here, and that is never
+/// produced on Windows), so the non-Unix arm is a compile-only no-op.
+fn acquire_update_lock(parent: &Path) -> Result<Option<std::fs::File>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let lock_path = parent.join(".paneflow-update.lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .with_context(|| format!("open update lock {}", lock_path.display()))?;
+        // SAFETY: `flock` on a freshly opened, owned fd. `LOCK_NB` makes it
+        // non-blocking — it returns `EWOULDBLOCK` if another instance holds
+        // the lock rather than hanging the update thread.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+                bail!(
+                    "Another PaneFlow update is already in progress. Wait for it to finish, then retry."
+                );
+            }
+            return Err(err).context("flock update lock");
+        }
+        Ok(Some(file))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        Ok(None)
+    }
+}
+
+/// Recover from a crash mid-swap and clean a stale `.old` (US-008). Replaces
+/// the old hard `bail!` on any pre-existing `.old`:
+///
+/// - `.old` present, live `app_dir` **missing** → the prior update died
+///   between the two swap renames; restore the live install by renaming
+///   `.old` back to `app_dir`.
+/// - `.old` present, live `app_dir` intact → leftover from a failed
+///   housekeeping `rm` (the previous version); remove it best-effort so we
+///   don't bail forever.
+/// - neither → no-op.
+fn recover_and_clean_staging(app_dir: &Path, old_dir: &Path) -> Result<()> {
+    if !old_dir.exists() {
+        return Ok(());
+    }
+    if !app_dir.exists() {
+        std::fs::rename(old_dir, app_dir).with_context(|| {
+            format!(
+                "recover live install {} ← {}",
+                app_dir.display(),
+                old_dir.display()
+            )
+        })?;
+        log::warn!(
+            "self-update/targz: recovered live install from a crashed prior update ({})",
+            app_dir.display()
+        );
+        return Ok(());
+    }
+    if let Err(e) = std::fs::remove_dir_all(old_dir) {
+        log::warn!(
+            "self-update/targz: could not remove stale {}: {e}",
+            old_dir.display()
+        );
+    }
+    Ok(())
+}
+
+/// Download the asset, verify its detached **minisign** signature, and
+/// persist to `dest`. The signature — not a same-host `.sha256` — is the
+/// trust anchor (US-001): verification runs against a public key baked into
+/// this binary, so a compromised mirror or MITM cannot make us extract a
+/// tampered tarball.
 ///
 /// On any failure the partial download is removed by the caller — we
 /// don't want a half-written tarball to masquerade as a cached update on
@@ -123,47 +218,10 @@ fn staging_dirs(app_dir: &Path) -> Result<(PathBuf, PathBuf)> {
 fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
     log::info!("self-update/targz: downloading {asset_url}");
 
-    // 1. Fetch the sibling checksum first. If the server has no
-    // `.sha256`, we refuse to install an unverified binary — fail-safe.
-    // A 404 here usually means the release predates US-011's CI (when
-    // the `.sha256` sibling started being emitted), so give it a
-    // distinct, actionable message rather than lumping it in with a
-    // network failure.
-    let sha_url = format!("{asset_url}.sha256");
-    let mut sha_response = ureq::get(&sha_url)
-        .config()
-        .timeout_global(Some(UPDATE_HTTP_TIMEOUT))
-        .build()
-        .header(
-            "User-Agent",
-            &format!("paneflow/{}", env!("CARGO_PKG_VERSION")),
-        )
-        .call()
-        .with_context(|| {
-            "Could not fetch integrity checksum. Try again when online.".to_string()
-        })?;
-    let sha_status = sha_response.status();
-    if !sha_status.is_success() {
-        if sha_status.as_u16() == 404 {
-            bail!(
-                "This release has no SHA-256 checksum published. Download the latest version from the releases page."
-            );
-        }
-        bail!("Could not fetch integrity checksum (HTTP {sha_status}). Try again later.");
-    }
-    let sha_body = sha_response
-        .body_mut()
-        .read_to_string()
-        .context("read .sha256 body")?;
-    let expected_hex = parse_sha256_file(&sha_body).with_context(|| {
-        format!(
-            "parse .sha256 body (first 80 bytes: {:?})",
-            &sha_body.chars().take(80).collect::<String>()
-        )
-    })?;
-
-    // 2. Stream the tarball to disk. Reuse the `.partial` → rename trick
-    // from US-010 so a crashed download doesn't poison the cache.
+    // 1. Stream the tarball to a `.partial` sibling so a crashed download
+    // doesn't poison the cache. `file` is scoped to this block so its handle
+    // is closed before any `remove_file` — on Windows `DeleteFile` fails with
+    // ERROR_SHARING_VIOLATION while a handle is open. US-001 AC7.
     let partial = append_suffix(dest, ".partial")?;
     let mut response = ureq::get(asset_url)
         .config()
@@ -182,18 +240,21 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
         );
     }
 
-    // Stream to `.partial`. `file` is scoped to this block so its handle is
-    // closed before the caller attempts any `remove_file` — on Windows,
-    // `DeleteFile` fails with ERROR_SHARING_VIOLATION while a handle is open,
-    // so keeping this scope tight is a cross-platform requirement. US-001 AC7.
     let stream_result = {
         let reader = response.body_mut().as_reader();
         let mut reader = Read::take(reader, MAX_TARBALL_BYTES + 1);
         let mut file = std::fs::File::create(&partial)
             .with_context(|| format!("create {}", partial.display()))?;
-        let written = std::io::copy(&mut reader, &mut file).context("stream tarball to disk");
-        file.sync_all().ok();
-        written
+        std::io::copy(&mut reader, &mut file)
+            .context("stream tarball to disk")
+            .and_then(|written| {
+                // US-010: propagate a sync failure (e.g. ENOSPC surfacing
+                // only on flush) instead of swallowing it — the classifier
+                // needs the real io::Error to render DiskFull rather than a
+                // downstream "corrupt/tampered" misdiagnosis.
+                file.sync_all().context("flush tarball to disk")?;
+                Ok(written)
+            })
     };
     let written = match stream_result {
         Ok(n) => n,
@@ -210,9 +271,12 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
         );
     }
 
-    // 3. Verify SHA-256. Mismatch → delete and bail with the unhappy-path
-    // message mandated by US-011's acceptance criteria.
-    if let Err(e) = verify_sha256_of_file(&partial, &expected_hex) {
+    // 2. Verify the detached minisign signature BEFORE the tarball is
+    // promoted to `dest` (and long before `extract_and_swap` touches it).
+    // Fail-closed: a missing/invalid signature deletes the partial and
+    // aborts. This is the US-001 root-of-trust check that replaces the old
+    // same-host `.sha256` sibling.
+    if let Err(e) = super::super::signature::fetch_and_verify(&partial, asset_url) {
         let _ = std::fs::remove_file(&partial);
         return Err(e);
     }
@@ -237,11 +301,10 @@ fn extract_and_swap(tarball: &Path, app_dir: &Path, new_dir: &Path, old_dir: &Pa
 
     // Extract into a fresh scratch directory (not `parent` directly) so
     // we can't clobber an unrelated sibling if the tarball's top-level
-    // entry name ever changes. The `tar` crate's `unpack` method rejects
-    // entries with absolute paths or `..` traversal by default, protecting
-    // against zip-slip even if a malicious archive slipped past CI. It
-    // does NOT sanitize symlinks — we walk the tree post-extract and
-    // reject any symlink outright (see `reject_symlinks_recursively`).
+    // entry name ever changes, then promote the result with an atomic
+    // rename (below). The extraction itself is hardened in
+    // [`extract_hardened`] (US-003): every entry is filtered *during*
+    // iteration, not after.
     //
     // `.paneflow-extract-<pid>` makes two PaneFlow instances updating at
     // once work: same-parent but distinct scratch dirs.
@@ -253,21 +316,14 @@ fn extract_and_swap(tarball: &Path, app_dir: &Path, new_dir: &Path, old_dir: &Pa
         .with_context(|| format!("create scratch {}", scratch.display()))?;
 
     let extract_result = (|| -> Result<()> {
-        let f =
-            std::fs::File::open(tarball).with_context(|| format!("open {}", tarball.display()))?;
-        let gz = flate2::read::GzDecoder::new(f);
-        let mut archive = tar::Archive::new(gz);
-        archive
-            .unpack(&scratch)
-            .context("extract tar.gz into scratch dir")?;
-
-        // Reject symlinks anywhere in the extracted tree before the swap.
-        // Our bundler produces a symlink-free layout; anything else is
-        // either a CI regression or a tampered archive. Blocking here
-        // prevents a symlink like `bin/paneflow → /home/u/.ssh/id_rsa`
-        // from ending up at the live install path (which the restarter
-        // would then exec or follow).
-        reject_symlinks_recursively(&scratch)?;
+        // US-003: hardened extraction. Filters every entry as it is read
+        // (reject `..`, absolute paths, drive prefixes, and any symlink /
+        // hardlink), with permissions and xattrs disabled, plus a per-entry
+        // containment check against the canonical scratch root. This replaces
+        // the old `archive.unpack()` + post-extract symlink sweep with a
+        // single pass that never writes an unsafe entry to disk at all
+        // (TARmageddon-class, CVE-2025-59825).
+        extract_hardened(tarball, &scratch)?;
 
         // Move the top-level extracted directory into place as `new_dir`.
         // Strict "exactly one top-level directory" — the bundler writes
@@ -357,33 +413,90 @@ fn extract_and_swap(tarball: &Path, app_dir: &Path, new_dir: &Path, old_dir: &Pa
     Ok(())
 }
 
-/// Walk `dir` recursively and fail if any entry is a symlink. The
-/// `tar` crate preserves symlink entries by default, so this is the
-/// only defense against a tampered archive that embeds a link like
-/// `bin/paneflow → /home/u/.ssh/authorized_keys`. Called AFTER
-/// `unpack` so broken symlinks still count — they'd otherwise vanish
-/// from `exists()` checks and survive past the swap.
-fn reject_symlinks_recursively(dir: &Path) -> Result<()> {
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(p) = stack.pop() {
-        let entries = std::fs::read_dir(&p).with_context(|| format!("read_dir {}", p.display()))?;
-        for entry in entries {
-            let entry = entry.with_context(|| format!("iterate {}", p.display()))?;
-            // `symlink_metadata` does NOT follow symlinks — the file-type
-            // probe here sees the link itself, not its target.
-            let meta = entry.path();
-            let lt = std::fs::symlink_metadata(&meta)
-                .with_context(|| format!("symlink_metadata {}", meta.display()))?
-                .file_type();
-            if lt.is_symlink() {
-                bail!(
-                    "Update archive contains a symlink at {}, which PaneFlow refuses to install. Download the release manually from the releases page.",
-                    meta.display()
-                );
-            }
-            if lt.is_dir() {
-                stack.push(meta);
-            }
+/// Extract `tarball` into `scratch`, filtering every entry as it is read
+/// (US-003). Unlike `tar::Archive::unpack`, this:
+///
+/// - **Disables permission and xattr preservation** — a tampered archive
+///   must not be able to set setuid / world-writable bits or attach
+///   quarantine-bypassing xattrs. The restart binary's mode is forced back
+///   to `0o755` by the caller after extraction.
+/// - **Rejects link entries** (symlink *and* hardlink) outright. Our
+///   bundler produces a link-free layout; a link is either a CI regression
+///   or a tampered archive pointing `bin/paneflow` at `/etc/passwd` or
+///   hardlinking a file outside the root (TARmageddon-class,
+///   CVE-2025-59825). Rejecting during iteration means the link is never
+///   materialised, closing the post-extract-walk race entirely.
+/// - **Validates path components** before extraction (no absolute path, no
+///   root/drive prefix, no `..` traversal) and relies on `unpack_in`'s own
+///   containment check against the canonicalised root as a second layer.
+///
+/// `sync` `tar` only (never `tokio-tar`/`async-tar`, whose streaming
+/// extractors are the ones the TARmageddon advisory implicates).
+fn extract_hardened(tarball: &Path, scratch: &Path) -> Result<()> {
+    let f = std::fs::File::open(tarball).with_context(|| format!("open {}", tarball.display()))?;
+    let gz = flate2::read::GzDecoder::new(f);
+    let mut archive = tar::Archive::new(gz);
+    archive.set_preserve_permissions(false);
+    archive.set_unpack_xattrs(false);
+    archive.set_preserve_mtime(false);
+
+    // Canonical root for the per-entry containment check. `scratch` was just
+    // created by the caller, so canonicalisation resolves any symlinked
+    // ancestor (e.g. `/tmp` → `/private/tmp` on macOS) to a real prefix.
+    let canonical_root = std::fs::canonicalize(scratch)
+        .with_context(|| format!("canonicalize scratch root {}", scratch.display()))?;
+
+    for entry in archive.entries().context("read tar entries")? {
+        let mut entry = entry.context("read tar entry")?;
+        let entry_type = entry.header().entry_type();
+
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            let where_at = entry
+                .path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "<unreadable path>".to_string());
+            bail!(
+                "Update archive contains a link entry at {where_at}, which PaneFlow refuses to install. Download the release manually from the releases page."
+            );
+        }
+
+        let path = entry.path().context("read tar entry path")?.into_owned();
+        validate_extract_path(&path)?;
+
+        // `unpack_in` performs its own containment check against
+        // `canonical_root` and returns `false` if it refused the entry —
+        // belt-and-braces against anything `validate_extract_path` missed.
+        // It only ever writes under `canonical_root`.
+        let unpacked = entry
+            .unpack_in(&canonical_root)
+            .with_context(|| format!("unpack entry {}", path.display()))?;
+        if !unpacked {
+            bail!(
+                "Update archive entry {} escapes the extraction root — refusing to install. Download the release manually from the releases page.",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Reject a tar entry path that is absolute, carries a Windows drive/root
+/// prefix, or contains a `..` traversal component. Pure (no I/O) so it is
+/// trivially unit-testable; the filesystem-level containment check lives in
+/// `unpack_in`.
+fn validate_extract_path(path: &Path) -> Result<()> {
+    use std::path::Component;
+    for comp in path.components() {
+        match comp {
+            Component::Prefix(_) | Component::RootDir => bail!(
+                "Update archive contains an absolute path ({}) — refusing to install.",
+                path.display()
+            ),
+            Component::ParentDir => bail!(
+                "Update archive contains a `..` traversal ({}) — refusing to install.",
+                path.display()
+            ),
+            Component::CurDir | Component::Normal(_) => {}
         }
     }
     Ok(())
@@ -425,155 +538,11 @@ fn append_suffix(path: &Path, suffix: &str) -> Result<PathBuf> {
     Ok(path.with_file_name(name))
 }
 
-/// Parse a `.sha256` file's contents and return the hex digest.
-///
-/// Accepts both coreutils styles — `<hex>  <filename>\n` and
-/// `<hex> *<filename>\n` — and the bare-hex form (`<hex>\n`). Returns the
-/// first whitespace-separated token if it is a valid 64-char lowercase
-/// hex string; errors otherwise.
-fn parse_sha256_file(body: &str) -> Result<String> {
-    let first_line = body.lines().next().context("empty .sha256 file")?;
-    let token = first_line
-        .split_whitespace()
-        .next()
-        .context("no token in .sha256 file")?;
-    let lower = token.to_ascii_lowercase();
-    if lower.len() != 64 || !lower.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("invalid SHA-256 digest (expected 64 hex chars, got {token:?})");
-    }
-    Ok(lower)
-}
-
-/// Compute the SHA-256 of `file` and compare against `expected_hex` (the
-/// output of [`parse_sha256_file`]). Errors with a stable, user-visible
-/// "failed integrity check" message on mismatch.
-fn verify_sha256_of_file(file: &Path, expected_hex: &str) -> Result<()> {
-    let mut f = std::fs::File::open(file)
-        .with_context(|| format!("open {} for hashing", file.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = f.read(&mut buf).context("read chunk for hashing")?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let got = hex_lower(&hasher.finalize());
-    if got != expected_hex {
-        // Bail with a structured tag instead of a formatted string so the
-        // top-level classifier (UpdateError::classify) can downcast and
-        // recover the exact digests for the toast + logs.
-        return Err(anyhow::Error::new(IntegrityMismatch {
-            expected: expected_hex.to_string(),
-            got,
-        }));
-    }
-    Ok(())
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     // ── Pure helpers ───────────────────────────────────────────────────
-
-    #[test]
-    fn parse_sha256_file_accepts_coreutils_format() {
-        let body = format!("{}  paneflow-v0.2.0-x86_64.tar.gz\n", "a".repeat(64));
-        assert_eq!(parse_sha256_file(&body).unwrap(), "a".repeat(64));
-    }
-
-    #[test]
-    fn parse_sha256_file_accepts_binary_mode() {
-        let body = format!("{} *paneflow.tar.gz\n", "b".repeat(64));
-        assert_eq!(parse_sha256_file(&body).unwrap(), "b".repeat(64));
-    }
-
-    #[test]
-    fn parse_sha256_file_accepts_bare_hex() {
-        let body = format!("{}\n", "c".repeat(64));
-        assert_eq!(parse_sha256_file(&body).unwrap(), "c".repeat(64));
-    }
-
-    #[test]
-    fn parse_sha256_file_is_case_insensitive() {
-        let body = format!("{}\n", "DEADBEEF".repeat(8));
-        assert_eq!(parse_sha256_file(&body).unwrap(), "deadbeef".repeat(8));
-    }
-
-    #[test]
-    fn parse_sha256_file_rejects_short_digest() {
-        let err = parse_sha256_file("abc\n").unwrap_err().to_string();
-        assert!(err.contains("64 hex chars"), "got: {err}");
-    }
-
-    #[test]
-    fn parse_sha256_file_rejects_non_hex() {
-        let body = format!("{}\n", "z".repeat(64));
-        assert!(parse_sha256_file(&body).is_err());
-    }
-
-    #[test]
-    fn parse_sha256_file_rejects_empty() {
-        assert!(parse_sha256_file("").is_err());
-        assert!(parse_sha256_file("\n").is_err());
-    }
-
-    #[test]
-    fn verify_sha256_accepts_matching_digest() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let p = tmp.path().join("x");
-        std::fs::write(&p, b"hello world").unwrap();
-        // sha256("hello world") = b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
-        verify_sha256_of_file(
-            &p,
-            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn verify_sha256_rejects_mismatched_digest() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let p = tmp.path().join("x");
-        std::fs::write(&p, b"hello world").unwrap();
-        let err = verify_sha256_of_file(&p, &"0".repeat(64))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("failed integrity check"), "got: {err}");
-    }
-
-    /// The mismatch error must carry the actual digests as a downcastable
-    /// tag so the top-level classifier (`UpdateError::classify`) can
-    /// recover them for the toast — not just format them into a string.
-    #[test]
-    fn verify_sha256_mismatch_is_downcastable() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let p = tmp.path().join("x");
-        std::fs::write(&p, b"hello world").unwrap();
-        let err = verify_sha256_of_file(&p, &"0".repeat(64)).unwrap_err();
-        let mm = err
-            .downcast_ref::<IntegrityMismatch>()
-            .expect("expected IntegrityMismatch tag");
-        assert_eq!(mm.expected, "0".repeat(64));
-        // sha256("hello world") = b94d27b9...
-        assert_eq!(
-            mm.got,
-            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
-        );
-    }
 
     #[test]
     fn append_suffix_preserves_full_name() {
@@ -677,23 +646,75 @@ mod tests {
         assert!(!old_dir.exists(), ".old must not exist on failure");
     }
 
-    #[test]
-    fn run_update_in_aborts_when_dot_old_preexists() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let root = tmp.path();
-        let app_dir = root.join("home/.local/paneflow.app");
-        std::fs::create_dir_all(&app_dir).unwrap();
-        let (old_dir, _new_dir) = staging_dirs(&app_dir).unwrap();
-        std::fs::create_dir_all(&old_dir).unwrap();
+    // ── US-008: crash recovery + concurrency lock ──────────────────────
 
-        let cache_dir = root.join("home/.cache/paneflow");
-        // Bogus URL — we must bail BEFORE any network call.
-        let r = run_update_in("http://127.0.0.1:1/should-never-hit", &app_dir, &cache_dir);
-        let err = r.unwrap_err().to_string();
-        assert!(
-            err.contains("Previous update did not clean up"),
-            "got: {err}"
+    #[test]
+    fn recover_restores_live_install_when_app_dir_missing() {
+        // Crash mid-swap: `.old` holds the only copy, live `app_dir` is gone.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let app_dir = tmp.path().join(".local/paneflow.app");
+        let (old_dir, _new) = staging_dirs(&app_dir).unwrap();
+        std::fs::create_dir_all(old_dir.join("bin")).unwrap();
+        std::fs::write(old_dir.join("bin/paneflow"), b"prev-version").unwrap();
+
+        recover_and_clean_staging(&app_dir, &old_dir).unwrap();
+
+        assert!(app_dir.exists(), "live install must be restored from .old");
+        assert_eq!(
+            std::fs::read(app_dir.join("bin/paneflow")).unwrap(),
+            b"prev-version"
         );
+        assert!(!old_dir.exists(), ".old must be consumed by the recovery");
+    }
+
+    #[test]
+    fn recover_removes_stale_old_when_app_dir_intact() {
+        // Leftover `.old` (failed housekeeping) coexisting with a live
+        // install: clean it up and proceed, never bail forever.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let app_dir = tmp.path().join(".local/paneflow.app");
+        std::fs::create_dir_all(app_dir.join("bin")).unwrap();
+        std::fs::write(app_dir.join("bin/paneflow"), b"live").unwrap();
+        let (old_dir, _new) = staging_dirs(&app_dir).unwrap();
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::write(old_dir.join("junk"), b"x").unwrap();
+
+        recover_and_clean_staging(&app_dir, &old_dir).unwrap();
+
+        assert!(!old_dir.exists(), "stale .old must be removed");
+        assert_eq!(
+            std::fs::read(app_dir.join("bin/paneflow")).unwrap(),
+            b"live",
+            "live install must be untouched"
+        );
+    }
+
+    #[test]
+    fn recover_is_noop_when_no_old_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let app_dir = tmp.path().join(".local/paneflow.app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let (old_dir, _new) = staging_dirs(&app_dir).unwrap();
+        // No `.old` — nothing to do, must succeed.
+        recover_and_clean_staging(&app_dir, &old_dir).unwrap();
+        assert!(app_dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_lock_is_exclusive_then_released_on_drop() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let parent = tmp.path();
+        // First holder succeeds.
+        let guard = acquire_update_lock(parent).unwrap();
+        assert!(guard.is_some());
+        // A second concurrent acquisition must fail (lock held).
+        let second = acquire_update_lock(parent);
+        assert!(second.is_err(), "second concurrent lock must be refused");
+        // Dropping the first releases the flock; a fresh acquisition succeeds.
+        drop(guard);
+        let third = acquire_update_lock(parent).unwrap();
+        assert!(third.is_some(), "lock must be re-acquirable after release");
     }
 
     #[test]
@@ -752,16 +773,76 @@ mod tests {
         out
     }
 
-    // US-007 (prd-windows-port.md) — Unix-only. The test fixture calls
-    // `std::os::unix::fs::symlink` to inject an "evil symlink" entry into
-    // a tarball. Creating that entry on Windows would require
-    // `std::os::windows::fs::symlink_file` plus `SeCreateSymbolicLinkPrivilege`,
-    // which GH Actions non-admin runs lack. The property under test — that
-    // `reject_symlinks_recursively` refuses any symlink in an extracted
-    // update payload — is platform-neutral at runtime, but exercising it
-    // requires constructing a malicious tarball, which itself is a
-    // Unix-only fixture. Windows gets the same safety via the same
-    // post-extract walker; this fixture just can't be built there.
+    // ── US-003: hardened extraction ────────────────────────────────────
+
+    #[test]
+    fn validate_extract_path_accepts_normal_relative_paths() {
+        assert!(validate_extract_path(Path::new("paneflow.app/bin/paneflow")).is_ok());
+        assert!(validate_extract_path(Path::new("./paneflow.app/lib/x.so")).is_ok());
+    }
+
+    #[test]
+    fn validate_extract_path_rejects_traversal_and_absolute() {
+        assert!(validate_extract_path(Path::new("../evil")).is_err());
+        assert!(validate_extract_path(Path::new("paneflow.app/../../etc/passwd")).is_err());
+        assert!(validate_extract_path(Path::new("/etc/passwd")).is_err());
+        // A Windows drive-prefixed absolute path (rejected via Component::Prefix
+        // on Windows; on Linux `C:\…` is one Normal component and is harmless
+        // because it can't escape the root, so only assert the cross-platform
+        // cases above).
+    }
+
+    /// US-003 AC4: an entry whose path traverses out of the root via `..`
+    /// is rejected *during* extraction — it never lands on disk and the
+    /// live install is untouched.
+    #[test]
+    fn extract_rejects_path_traversal_entry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Craft a tarball with a single `../evil` entry. `append_data` /
+        // `set_path` sanitise `..` away, so write the unsanitised name
+        // straight into the GNU header's name field (offset 0..100) — this
+        // is exactly what a hostile, hand-rolled archive looks like.
+        let out = root.join("evil.tar.gz");
+        let f = std::fs::File::create(&out).unwrap();
+        let gz = flate2::write::GzEncoder::new(f, flate2::Compression::fast());
+        let mut builder = tar::Builder::new(gz);
+        let payload = b"pwned";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(payload.len() as u64);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_mode(0o644);
+        {
+            let name = b"../evil";
+            let bytes = header.as_mut_bytes();
+            bytes[..name.len()].copy_from_slice(name);
+        }
+        header.set_cksum();
+        builder.append(&header, &payload[..]).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let scratch = root.join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let err = extract_hardened(&out, &scratch).unwrap_err().to_string();
+        assert!(
+            err.contains("traversal") || err.contains("escapes"),
+            "expected traversal rejection, got: {err}"
+        );
+        // The escaping target must never have been written.
+        assert!(
+            !root.join("evil").exists(),
+            "traversal entry must not write outside the scratch root"
+        );
+    }
+
+    // US-003 — Unix-only fixture. The test injects a real symlink entry into
+    // a tarball via `std::os::unix::fs::symlink`; building that entry on
+    // Windows needs `SeCreateSymbolicLinkPrivilege`, which non-admin GH
+    // Actions runs lack. The runtime property — `extract_hardened` refuses
+    // any link entry — is platform-neutral (it checks the tar header's entry
+    // type, not the host filesystem), so Windows gets the same guard; only
+    // the malicious-fixture construction is Unix-only.
     #[cfg(unix)]
     #[test]
     fn extract_rejects_tarball_with_symlink() {
@@ -800,26 +881,10 @@ mod tests {
         let r = extract_and_swap(&out, &app_dir, &new_dir, &old_dir);
         let err = r.unwrap_err().to_string();
         assert!(
-            err.contains("symlink"),
-            "expected symlink rejection, got: {err}"
+            err.contains("link entry"),
+            "expected link rejection, got: {err}"
         );
         assert!(!app_dir.exists(), "a failed update must not leave app_dir");
         assert!(!new_dir.exists(), ".new must be cleaned up");
-    }
-
-    #[test]
-    fn fixture_roundtrip_matches_known_sha256() {
-        // Sanity: the pure hash helpers agree with a pre-computed digest.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let p = tmp.path().join("f");
-        let mut f = std::fs::File::create(&p).unwrap();
-        f.write_all(b"abc").unwrap();
-        drop(f);
-        // sha256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
-        verify_sha256_of_file(
-            &p,
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-        )
-        .unwrap();
     }
 }

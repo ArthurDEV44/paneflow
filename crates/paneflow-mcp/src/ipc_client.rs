@@ -13,11 +13,15 @@
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
 use std::time::Duration;
 
 use interprocess::local_socket::{prelude::*, GenericFilePath, Stream};
 use serde_json::{json, Value};
+
+/// Wire timeout for a single request/response round-trip. The server always
+/// writes a response (it even synthesizes a `-32001 Request timeout`
+/// envelope), so a stall this long means the process is wedged.
+const IPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Abstraction over "send a JSON-RPC request to Paneflow, get the `result`".
 /// Lets the MCP layer and tools be unit-tested against a fake transport with
@@ -87,14 +91,23 @@ pub(crate) fn parse_response(line: &str) -> Result<Value, String> {
 }
 
 /// Open a connection, write the newline-terminated request, and read back one
-/// newline-delimited response line. The read is bounded by a scratch-thread
-/// timeout because `interprocess::Stream` exposes no cross-platform read
-/// deadline; the server always writes a response (it even synthesizes a
-/// `-32001 Request timeout` envelope), so a stall here means the process is
-/// wedged.
+/// newline-delimited response line.
+///
+/// US-023: the read deadline is enforced at the OS level via
+/// `set_recv_timeout` (Unix `SO_RCVTIMEO`, Windows named-pipe read timeout).
+/// The previous scratch-thread + `recv_timeout` pattern leaked one OS thread
+/// and one socket FD on every timeout — the spawned reader owned `stream` and
+/// stayed blocked in `read_line` forever (no deadline ever reached it), so an
+/// agent retrying `read_pane` against a wedged Paneflow exhausted the
+/// long-lived bridge's threads/FDs. With an OS deadline, `read_line` returns
+/// the error itself, the owning `BufReader` drops, and the FD is released.
 fn send_and_receive(socket: &Path, request: &Value) -> io::Result<String> {
     let name = socket.to_fs_name::<GenericFilePath>()?;
     let mut stream = Stream::connect(name)?;
+    // Bound both directions on the same deadline: a peer that never drains our
+    // write could otherwise wedge `write_all`.
+    stream.set_recv_timeout(Some(IPC_TIMEOUT))?;
+    stream.set_send_timeout(Some(IPC_TIMEOUT))?;
 
     let mut payload =
         serde_json::to_vec(request).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -102,21 +115,24 @@ fn send_and_receive(socket: &Path, request: &Value) -> io::Result<String> {
     stream.write_all(&payload)?;
     stream.flush()?;
 
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        let outcome = reader.read_line(&mut line).map(|_| line);
-        let _ = tx.send(outcome);
-    });
-
-    match rx.recv_timeout(Duration::from_secs(10)) {
-        Ok(Ok(line)) => Ok(line),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "paneflow did not respond within 10s",
-        )),
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(_) => Ok(line),
+        // SO_RCVTIMEO surfaces as EAGAIN/`WouldBlock` on Unix and `TimedOut`
+        // on Windows — normalize both to a friendly timeout message.
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) =>
+        {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "paneflow did not respond within 10s",
+            ))
+        }
+        Err(e) => Err(e),
     }
 }
 

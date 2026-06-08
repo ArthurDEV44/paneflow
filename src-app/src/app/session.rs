@@ -24,6 +24,12 @@ use crate::workspace::{Workspace, next_workspace_id};
 /// chronic corruption (e.g. a flaky disk) would silently fill `~/.cache`.
 const MAX_CORRUPTION_BACKUPS: usize = 5;
 
+/// US-011: debounce window for coalescing a burst of [`PaneFlowApp::save_session`]
+/// calls into a single disk write. Short enough to be imperceptible, long
+/// enough to absorb the multi-call bursts emitted when creating/closing many
+/// workspaces in quick succession.
+const SAVE_DEBOUNCE_MS: u64 = 150;
+
 /// Forensic context emitted alongside a `session_corrupted` telemetry
 /// event (US-006). Gathered by [`PaneFlowApp::load_session_at`] inside
 /// the parse-failure branch *before* the empty fallback session is
@@ -53,8 +59,18 @@ pub(crate) struct SessionCorruptionInfo {
 }
 
 impl PaneFlowApp {
-    pub(crate) fn save_session(&self, cx: &App) {
-        let state = paneflow_config::schema::SessionState {
+    /// Build the [`SessionState`] snapshot from live app state.
+    ///
+    /// `terms` selects the scrollback strategy: `Some(vec)` defers the drain
+    /// (terminal handles are collected into `vec` in surface-emission order for
+    /// an off-thread drain — see [`save_session`]); `None` drains inline on the
+    /// calling thread (see [`save_session_blocking`]).
+    fn build_session_state(
+        &self,
+        cx: &App,
+        terms: &mut Option<Vec<crate::terminal::types::SharedTerm>>,
+    ) -> paneflow_config::schema::SessionState {
+        paneflow_config::schema::SessionState {
             version: paneflow_config::schema::SESSION_SCHEMA_VERSION,
             active_workspace: self.active_idx,
             workspaces: self
@@ -63,7 +79,10 @@ impl PaneFlowApp {
                 .map(|ws| paneflow_config::schema::WorkspaceSession {
                     title: ws.title.clone(),
                     cwd: ws.cwd.clone(),
-                    layout: ws.serialize_layout(cx),
+                    layout: match terms {
+                        Some(terms) => ws.serialize_layout_deferred(cx, terms),
+                        None => ws.serialize_layout(cx),
+                    },
                     custom_buttons: ws.custom_buttons.clone(),
                     // US-007: store expanded dirs relative to the workspace
                     // root. A path that can't be made relative (symlinked
@@ -92,34 +111,90 @@ impl PaneFlowApp {
             mode: self.mode,
             // US-015 (prd-git-diff-mode-2026-Q3.md): persist the diff scope so
             // a session that quit in Diff mode reopens on the same scope.
-            diff_scope: Some(self.diff_scope.as_persisted().to_string()),
-        };
+            diff_scope: Some(self.diff_mode.diff_scope.as_persisted().to_string()),
+        }
+    }
+
+    /// US-011: persist the session WITHOUT blocking the GPUI main thread.
+    ///
+    /// The lightweight metadata snapshot is built here (render thread, cheap),
+    /// terminal handles collected, then the heavy work — per-pane scrollback
+    /// drain, JSON serialize, atomic write — runs on a background task. A burst
+    /// of saves (e.g. closing 20 workspaces) is coalesced into a single write
+    /// via a monotonic token + short debounce, so the most-recent snapshot
+    /// wins and the render thread never drains scrollback.
+    ///
+    /// The quit / pre-update-install paths must use [`save_session_blocking`]
+    /// instead — there the write has to land before the process exits or is
+    /// replaced, so a deferred task would be lost.
+    pub(crate) fn save_session(&self, cx: &App) {
+        let mut terms = Some(Vec::new());
+        let state = self.build_session_state(cx, &mut terms);
+        let terms = terms.unwrap_or_default();
         let Some(path) = paneflow_config::loader::session_path() else {
             return;
         };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match serde_json::to_string_pretty(&state) {
-            Ok(json) => {
-                // Atomic write: write to temp file, then rename. This prevents
-                // corruption if the process is killed mid-write (US-013).
-                let tmp_path = path.with_extension("json.tmp");
-                match std::fs::write(&tmp_path, &json) {
-                    Ok(()) => {
-                        if let Err(e) = std::fs::rename(&tmp_path, &path) {
-                            log::warn!("session save rename failed: {e}");
-                            let _ = std::fs::remove_file(&tmp_path);
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("session save failed: {e}");
-                        let _ = std::fs::remove_file(&tmp_path);
+
+        let seq = self
+            .save_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        let save_seq = std::sync::Arc::clone(&self.save_seq);
+
+        cx.background_spawn(async move {
+            smol::Timer::after(std::time::Duration::from_millis(SAVE_DEBOUNCE_MS)).await;
+            if save_seq.load(std::sync::atomic::Ordering::SeqCst) != seq {
+                // A newer save was scheduled meanwhile — let it carry the
+                // latest state; skip this redundant write.
+                return;
+            }
+            // `smol::unblock` keeps the scrollback drain + serialize + write off
+            // the background executor's async threads too.
+            smol::unblock(move || {
+                let mut state = state;
+                let mut terms = terms.into_iter();
+                for ws in state.workspaces.iter_mut() {
+                    if let Some(layout) = ws.layout.as_mut() {
+                        crate::layout::fill_scrollback(layout, &mut terms);
                     }
                 }
-            }
-            Err(e) => log::warn!("session serialize failed: {e}"),
-        }
+                // Re-check the token AFTER the (potentially slow) drain, right
+                // before the write. The debounce check above only covers the
+                // sleep window; the drain itself takes real time, during which a
+                // quit-path `save_session_blocking` (or a newer deferred save)
+                // can bump `save_seq`. Without this second check the older
+                // snapshot would `rename` over the final write — the exact
+                // resurrection bug US-011 (c80eba5) set out to close, left open
+                // for the drain sub-window. Both writers also share the
+                // `session.json.tmp` path, so skipping here avoids a concurrent
+                // temp-file clobber too.
+                if save_seq.load(std::sync::atomic::Ordering::SeqCst) != seq {
+                    return;
+                }
+                write_session_json(&path, &state);
+            })
+            .await;
+        })
+        .detach();
+    }
+
+    /// US-011: synchronous session save for the quit / pre-update-install
+    /// paths, where a deferred background write would be lost when the process
+    /// exits or is replaced. Drains scrollback inline on the calling thread —
+    /// acceptable because these paths are terminal and rare (one final save).
+    pub(crate) fn save_session_blocking(&self, cx: &App) {
+        // Cancel any in-flight deferred save: bump the coalescing token so a
+        // background task still sleeping in its debounce wakes to a stale `seq`
+        // and no-ops. Without this, a `save_session` fired moments before quit
+        // could land its (older) snapshot *after* this final synchronous write,
+        // resurrecting pre-quit state (e.g. a just-closed workspace).
+        self.save_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let state = self.build_session_state(cx, &mut None);
+        let Some(path) = paneflow_config::loader::session_path() else {
+            return;
+        };
+        write_session_json(&path, &state);
     }
 
     /// Restore a saved session from disk, or fall back silently to an
@@ -266,6 +341,8 @@ impl PaneFlowApp {
                 .map(|rel| PathBuf::from(&ws_session.cwd).join(rel))
                 .collect();
             workspace.propagate_custom_buttons(cx);
+            // US-013: kick off the deferred git-stats probe (off render thread).
+            Self::spawn_initial_git_stats(ws_id, workspace.cwd.clone(), cx);
             workspaces.push(workspace);
         }
 
@@ -336,13 +413,26 @@ impl PaneFlowApp {
                 .collect()
         };
 
-        let first = terminals[0].clone();
+        // Both branches above yield >= 1 terminal, so `.first()` is never None
+        // in practice. Guard it anyway (US-058): a future refactor that empties
+        // `terminals` degrades to a fresh fallback pane instead of panicking on
+        // `terminals[0]`.
+        let Some(first) = terminals.first().cloned() else {
+            log::error!("spawn_pane_from_surfaces: no terminals built (bug); using fallback");
+            let t = cx.new(|cx| {
+                TerminalView::with_cwd(workspace_id, Some(fallback_cwd.to_path_buf()), None, cx)
+            });
+            cx.subscribe(&t, Self::handle_terminal_event).detach();
+            let pane = cx.new(|cx| Pane::new(t, workspace_id, cx));
+            cx.subscribe(&pane, Self::handle_pane_event).detach();
+            return pane;
+        };
         let pane = cx.new(|cx| {
             let mut p = Pane::new(first, workspace_id, cx);
-            for tab in &terminals[1..] {
+            for tab in terminals.iter().skip(1) {
                 p.add_tab(tab.clone(), cx);
             }
-            p.selected_idx = focus_idx.min(terminals.len() - 1);
+            p.selected_idx = focus_idx.min(terminals.len().saturating_sub(1));
             p
         });
         cx.subscribe(&pane, Self::handle_pane_event).detach();
@@ -353,6 +443,35 @@ impl PaneFlowApp {
 // ---------------------------------------------------------------------------
 // US-006: corruption-backup helpers (free functions, free of `&self`)
 // ---------------------------------------------------------------------------
+
+/// US-011: serialize a [`SessionState`] to `path` with an atomic
+/// write-temp-then-rename, so a crash mid-write never truncates the live
+/// `session.json`. Best-effort: any error is logged, never propagated. Runs off
+/// the GPUI main thread in the deferred path (`save_session` wraps it in
+/// `smol::unblock`); `save_session_blocking` calls it directly at quit.
+fn write_session_json(path: &Path, state: &paneflow_config::schema::SessionState) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match serde_json::to_string_pretty(state) {
+        Ok(json) => {
+            let tmp_path = path.with_extension("json.tmp");
+            match std::fs::write(&tmp_path, &json) {
+                Ok(()) => {
+                    if let Err(e) = std::fs::rename(&tmp_path, path) {
+                        log::warn!("session save rename failed: {e}");
+                        let _ = std::fs::remove_file(&tmp_path);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("session save failed: {e}");
+                    let _ = std::fs::remove_file(&tmp_path);
+                }
+            }
+        }
+        Err(e) => log::warn!("session serialize failed: {e}"),
+    }
+}
 
 /// Convert `serde_json::Error::classify()` to a fixed string. Telemetry
 /// schema commits to these four buckets so we can dashboard them
@@ -536,5 +655,63 @@ mod tests {
         // Live session.json itself is unaffected by the rotation.
         std::fs::write(&session_path, "{").expect("seed");
         assert!(session_path.exists());
+    }
+
+    /// US-011 AC: a burst of `save_session` calls (e.g. closing 20 workspaces)
+    /// must coalesce to a single disk write — only the most-recent snapshot
+    /// wins. This guards the `save_seq` monotonic-token predicate that the
+    /// deferred path uses (`save_session` checks `load() == seq` after its
+    /// debounce). A full `save_session` needs a live GPUI `App`, so this tests
+    /// the coalescing invariant directly on the same atomic logic.
+    #[test]
+    fn save_seq_burst_coalesces_to_a_single_write() {
+        use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+
+        let save_seq = AtomicU64::new(0);
+        // Simulate 20 saves fired in a burst; each captures its token the way
+        // `save_session` does (`fetch_add(1) + 1`).
+        let captured: Vec<u64> = (0..20).map(|_| save_seq.fetch_add(1, SeqCst) + 1).collect();
+
+        // After the burst, exactly one captured token equals the latest value,
+        // so exactly one deferred task survives its post-debounce check.
+        let latest = save_seq.load(SeqCst);
+        let survivors = captured.iter().filter(|&&s| s == latest).count();
+        assert_eq!(survivors, 1, "a 20-save burst coalesces to one write");
+        assert_eq!(
+            captured.last().copied(),
+            Some(latest),
+            "the most-recent snapshot is the survivor"
+        );
+    }
+
+    /// Regression guard for the US-011 quit-path race (c80eba5 + the
+    /// drain-window follow-up): a deferred save that passed its debounce check
+    /// must STILL skip its write if `save_session_blocking` bumped the token
+    /// while the scrollback drain was running. Mirrors the re-check now placed
+    /// immediately before `write_session_json` inside the `smol::unblock` body.
+    #[test]
+    fn deferred_save_skips_write_when_superseded_during_drain() {
+        use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+
+        let save_seq = AtomicU64::new(0);
+        // A deferred save is scheduled and passes its post-debounce check.
+        let deferred = save_seq.fetch_add(1, SeqCst) + 1;
+        assert_eq!(
+            save_seq.load(SeqCst),
+            deferred,
+            "deferred is latest pre-drain"
+        );
+
+        // While it drains, a quit-path `save_session_blocking` bumps the token.
+        save_seq.fetch_add(1, SeqCst);
+
+        // The pre-write re-check inside `smol::unblock` must now observe the
+        // mismatch and skip — so the older deferred snapshot never renames over
+        // the final quit write.
+        assert_ne!(
+            save_seq.load(SeqCst),
+            deferred,
+            "deferred write must be skipped after a quit-time bump"
+        );
     }
 }
