@@ -84,6 +84,26 @@ pub(crate) fn paneflow_ipc_reachable() -> bool {
     Path::new(&raw).exists()
 }
 
+/// Returns `true` iff `dir` exists and is a symlink (i.e. `dir` itself is a
+/// symbolic link, not the entry it points at). Uses `fs::symlink_metadata`
+/// which — unlike `is_dir()` / `metadata()` — does NOT follow the final
+/// component, so a repo-committed `.claude`/`.codex` directory symlink
+/// (git mode 120000, materialized on checkout) is detected before we treat
+/// it as a usable config dir. A symlinked intermediate dir would let
+/// `write_atomic`'s `NamedTempFile::new_in(parent).persist(...)` create and
+/// rename a file through the link, planting Paneflow-owned JSON outside the
+/// project boundary (CWE-59 TOCTOU file-plant). A `NotFound`/IO error means
+/// "not a symlink we need to refuse" — the caller then creates the dir
+/// itself. Cross-platform: `FileType::is_symlink()` is correct on Unix,
+/// macOS, and Windows (where it reports directory/file symlinks and
+/// mount-point reparse points).
+pub(crate) fn config_dir_is_symlink(dir: &Path) -> bool {
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) => meta.file_type().is_symlink(),
+        Err(_) => false,
+    }
+}
+
 /// Best-effort removal of PaneFlow-managed entries from an existing hook
 /// config file when no active IPC channel is reachable. Reads, runs
 /// `remove_fn`, writes back (or deletes if the file is now empty). All
@@ -94,6 +114,14 @@ pub(crate) fn sweep_orphan_hook_config(
     settings_path: &Path,
     remove_fn: fn(&mut serde_json::Value),
 ) {
+    // Refuse to sweep through a symlinked config dir: `settings_path`'s parent
+    // is the untrusted `.claude`/`.codex` directory taken from the project
+    // CWD, and `write_atomic` below would create + rename the temp file
+    // through it, planting (or removing) a file outside the project boundary.
+    // Same guard as `install_hook_config_file` (CWE-59).
+    if settings_path.parent().is_some_and(config_dir_is_symlink) {
+        return;
+    }
     let Ok(content) = std::fs::read_to_string(settings_path) else {
         return;
     };
@@ -135,6 +163,21 @@ pub(crate) fn install_hook_config_file(
     merge_fn: fn(&mut serde_json::Value),
 ) -> Option<(PathBuf, bool)> {
     let settings_path = config_dir.join(config_filename);
+    // Refuse a symlinked config dir BEFORE the `is_dir()` gate: `is_dir()`
+    // follows symlinks, so a repo-committed `.claude -> D` directory symlink
+    // would pass the gate and `write_atomic` (NamedTempFile::new_in(parent)
+    // .persist) would create + rename the settings file inside `D`, crossing
+    // the project boundary (CWE-59 TOCTOU file-plant). The rename-replaces
+    // -symlink defense only covers a symlinked final-target file, not a
+    // symlinked intermediate dir.
+    if config_dir_is_symlink(config_dir) {
+        eprintln!(
+            "paneflow-shim: {} is a symlink; refusing to write {tool_label} \
+             hooks through it (potential file-plant outside the project)",
+            safe_path_display(config_dir)
+        );
+        return None;
+    }
     // `exists()` returns true for both files and directories; we need to
     // distinguish so a stale `.claude`/`.codex` regular file (e.g. left
     // behind by an earlier tool) doesn't masquerade as a usable directory

@@ -491,6 +491,33 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn install_at_refuses_symlinked_config_dir() {
+        use std::os::unix::fs::symlink;
+
+        // Attacker plants `.claude` as a DIRECTORY symlink (as git does on
+        // checkout) pointing at a sibling dir OUTSIDE the project. `is_dir()`
+        // follows it, so without the symlink_metadata guard `install_at`
+        // would write `settings.local.json` into the target dir, crossing the
+        // project boundary (CWE-59 / f004).
+        let td = tempfile::TempDir::new().unwrap();
+        let outside = td.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let claude_dir = td.path().join(".claude");
+        symlink(&outside, &claude_dir).unwrap();
+
+        let guard = HookConfigGuard::install_at(&claude_dir);
+        assert!(
+            guard.is_none(),
+            "install_at must refuse a symlinked config dir"
+        );
+        assert!(
+            !outside.join("settings.local.json").exists(),
+            "no file may be planted through the symlink into the outside dir"
+        );
+    }
+
+    #[test]
     fn install_at_preserves_existing_user_hooks_and_permissions() {
         let td = tempfile::TempDir::new().unwrap();
         let claude_dir = td.path().join(".claude");
