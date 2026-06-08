@@ -3,6 +3,34 @@
 //! All functions operate on raw JSON to preserve unknown fields and formatting.
 
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+/// US-016: serialize every read-modify-write of `paneflow.json`.
+///
+/// Settings-tab control handlers persist off the GPUI main thread — each
+/// `persist_setting` spawns its own `cx.background_spawn → smol::unblock` task
+/// (`settings/window.rs`). Without this lock two rapid toggles run two
+/// independent `load_raw_config → mutate → write_config_checked` cycles on the
+/// blocking pool: they read the same pre-change file and the later `rename`
+/// wins, silently dropping the other key's update (CWE-362 lost update). They
+/// also share the PID-suffixed temp path, so concurrent writes can clobber it.
+/// Holding this guard across the whole load→write of each writer makes the RMW
+/// atomic w.r.t. other writers, so each one observes the previous one's result.
+///
+/// (It does NOT order two writes of the *same* key — the last task to acquire
+/// wins regardless of spawn order — but `cached_config` in memory stays the
+/// source of truth for the live session, so a same-key reorder only matters
+/// across a restart, and is self-healed by the next write or external reload.)
+static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire the config-write lock, recovering from a poisoned mutex (the guarded
+/// value is `()`, so a prior panic-while-held left nothing to corrupt). Avoids
+/// an `.unwrap()` on the lock per the repo's prod-unwrap lint.
+fn config_write_guard() -> MutexGuard<'static, ()> {
+    CONFIG_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Load the raw JSON config, or an empty object if missing/invalid.
 fn load_raw_config(path: &PathBuf) -> serde_json::Value {
@@ -90,6 +118,7 @@ pub fn save_config_value_checked(key: &str, value: serde_json::Value) -> bool {
         log::warn!("config: cannot determine config path, not saving");
         return false;
     };
+    let _guard = config_write_guard();
     let mut json = load_raw_config(&path);
     if let Some(root) = json.as_object_mut() {
         if value.is_null() {
@@ -142,6 +171,7 @@ pub fn save_shortcut(new_key: &str, action_name: &str) {
         log::warn!("config: cannot determine config path, not saving");
         return;
     };
+    let _guard = config_write_guard();
     let mut json = load_raw_config(&path);
 
     // A user's paneflow.json can be valid JSON but not an object (`[]`, `"x"`,
@@ -173,6 +203,7 @@ pub fn reset_shortcuts() {
     let Some(path) = paneflow_config::loader::config_path() else {
         return;
     };
+    let _guard = config_write_guard();
     let mut json = load_raw_config(&path);
     if let Some(root) = json.as_object_mut() {
         root.remove("shortcuts");
@@ -237,6 +268,7 @@ pub fn save_terminal_field(key: &str, value: serde_json::Value) {
         log::warn!("config: cannot determine config path, not saving");
         return;
     };
+    let _guard = config_write_guard();
     let mut json = load_raw_config(&path);
     apply_terminal_field(&mut json, key, value);
     write_config(&path, &json);
