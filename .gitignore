@@ -64,3 +64,10 @@ LOG_*.text
 /PATCHES.json
 /PATCHES.md
 /.patch-state/
+
+# Local-only /ultron deep-audit reports (finding details, same class as the
+# security pipeline output above) — never publish to the OSS repo.
+/ULTRON/
+
+# Local-only LinkedIn post drafts (personal marketing, not project source).
+/linkedin/
