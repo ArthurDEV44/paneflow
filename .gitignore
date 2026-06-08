@@ -53,3 +53,14 @@ LOG_*.text
 # Local Claude Code agent state (memory, scheduled tasks) — never share publicly
 **/.claude/
 .vercel
+
+# Local-only security pipeline artifacts (vuln-scan/triage/patch). Contain
+# exploit recipes for live findings — never publish to the OSS repo.
+/VULN-FINDINGS.json
+/VULN-FINDINGS.md
+/TRIAGE.json
+/TRIAGE.md
+/PATCHES/
+/PATCHES.json
+/PATCHES.md
+/.patch-state/
