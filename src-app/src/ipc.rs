@@ -295,6 +295,18 @@ pub fn start_server() -> (mpsc::Receiver<IpcRequest>, IpcStatus) {
             // decrement via the RAII guard below, so the load is exact.
             let active_connections = Arc::new(AtomicUsize::new(0));
 
+            // Decrement the live-connection count on any handler exit path
+            // (return, EOF, panic-unwind). Hoisted out of the spawn closure so
+            // it can be constructed BEFORE the spawn and moved in: if the spawn
+            // itself fails, the closure (and this guard) is dropped, running the
+            // decrement and restoring the slot the `fetch_add` below claimed.
+            struct ActiveGuard(Arc<AtomicUsize>);
+            impl Drop for ActiveGuard {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+
             loop {
                 match listener.accept() {
                     Ok(stream) => {
@@ -304,19 +316,29 @@ pub fn start_server() -> (mpsc::Receiver<IpcRequest>, IpcStatus) {
                             continue;
                         }
                         active_connections.fetch_add(1, Ordering::AcqRel);
+                        let guard = ActiveGuard(Arc::clone(&active_connections));
                         let tx = tx.clone();
-                        let active = Arc::clone(&active_connections);
-                        std::thread::spawn(move || {
-                            // Decrement on any exit path (return, panic, EOF).
-                            struct ActiveGuard(Arc<AtomicUsize>);
-                            impl Drop for ActiveGuard {
-                                fn drop(&mut self) {
-                                    self.0.fetch_sub(1, Ordering::AcqRel);
-                                }
-                            }
-                            let _guard = ActiveGuard(active);
-                            handle_connection(stream, tx);
-                        });
+                        // EP-001 US-005 parity: use the fallible `Builder::spawn`,
+                        // never the panicking `thread::spawn`. Under
+                        // RLIMIT_NPROC / EAGAIN the latter panics and unwinds
+                        // this accept thread, silently killing the IPC server
+                        // (AI-hook status + MCP bridge go dark while the status
+                        // flag still reads Online). On the `Err` path the moved
+                        // `guard` and `stream` are dropped here -- the count is
+                        // restored and the connection closed -- and the loop
+                        // keeps accepting.
+                        if let Err(e) = std::thread::Builder::new()
+                            .name("paneflow-ipc-conn".into())
+                            .spawn(move || {
+                                let _guard = guard;
+                                handle_connection(stream, tx);
+                            })
+                        {
+                            log::warn!(
+                                "IPC: handler thread spawn failed ({e}); dropping this \
+                                 connection. Check `ulimit -u` / container thread limits."
+                            );
+                        }
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         // No pending connection — brief sleep to avoid busy-spin
