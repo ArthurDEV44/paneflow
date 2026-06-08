@@ -415,11 +415,19 @@ pub fn enabled_session_agents() -> Vec<SessionAgent> {
 /// (and dropping the record at scan time) is defence-in-depth: a crafted
 /// `ses_x; rm -rf ~` would pass a control-char-only check but never the
 /// allow-list, so it can never reach the shell.
+///
+/// The **first** character is additionally required to be alphanumeric or `_`:
+/// the allow-list above permits `-`, so without this a tampered record carrying
+/// `--dangerously-skip-permissions` (a single token, no shell metachar) would
+/// pass and be interpolated as `codex resume --dangerously-skip-permissions` /
+/// `opencode --session --foo` / `claude --resume --foo`, i.e. argument
+/// injection (CWE-88) flipping the agent CLI into an unexpected mode. Real ids
+/// never lead with `-` (UUIDs start hex, OpenCode with `ses_`), so the
+/// constraint has zero false-positive cost.
 pub(crate) fn is_valid_session_id(id: &str) -> bool {
-    !id.is_empty()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    let mut chars = id.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Unified session metadata. Anything the UI needs to render a row +
@@ -601,6 +609,22 @@ mod tests {
         assert!(!is_valid_session_id("`id`"));
         // Control chars (the case the old guard already covered) stay rejected.
         assert!(!is_valid_session_id("abc\r\nrm -rf ~"));
+    }
+
+    #[test]
+    fn valid_session_id_rejects_leading_dash_argument_injection() {
+        // US-044 (EP-007 review): a leading `-` passes the `[A-Za-z0-9_-]`
+        // char-set but turns the id into a FLAG once interpolated into
+        // `codex resume <id>` / `opencode --session <id>` / `claude --resume
+        // <id>` (argument injection, CWE-88). The first char must be
+        // alphanumeric or `_`.
+        assert!(!is_valid_session_id("--dangerously-skip-permissions"));
+        assert!(!is_valid_session_id("-x"));
+        assert!(!is_valid_session_id("-"));
+        // An interior dash is still fine (UUIDs rely on it).
+        assert!(is_valid_session_id("a-b-c"));
+        // A leading underscore stays valid (no flag confusion).
+        assert!(is_valid_session_id("_internal"));
     }
 
     #[test]
