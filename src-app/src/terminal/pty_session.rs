@@ -1225,6 +1225,32 @@ impl TerminalState {
         (out, hit_cap)
     }
 
+    /// Strip every byte that could re-introduce a live escape/CSI/OSC/DCS
+    /// sequence (or C1 control) from a single restored-scrollback line, so the
+    /// documented "plain, ANSI stripped" invariant (schema.rs `scrollback`
+    /// field) is *enforced* on the restore path — not merely assumed.
+    ///
+    /// A tampered/imported `session.json` can carry raw VT bytes in
+    /// `surface.scrollback`; feeding them verbatim into the VTE processor
+    /// allows single-line title-spoof / OSC8 clickable-link injection into the
+    /// restored grid (phishing primitive). We drop the ESC introducer
+    /// (`0x1b`), all other C0 control code points (keeping only `\t` — `\n`
+    /// has already been consumed by the line split and `\r\n` is re-added by
+    /// the caller), and the C1 control range (U+0080..=U+009F, which alacritty
+    /// also treats as escape introducers). Pure string op: cross-platform, no
+    /// OS/`libc` calls, no fallible step.
+    fn sanitize_scrollback_line(line: &str) -> String {
+        line.chars()
+            .filter(|&c| {
+                c == '\t'
+                    || (!c.is_control()
+                        // Reject C1 controls (0x80..=0x9f); `is_control`
+                        // already covers them, but spell it out for intent.
+                        && !('\u{80}'..='\u{9f}').contains(&c))
+            })
+            .collect()
+    }
+
     /// Feed saved scrollback text into the terminal grid via VTE processor.
     /// Called during session restore, before the shell has produced output.
     /// Prepends `\x1b[0m` (SGR reset) to clear any dangling style state from
@@ -1238,7 +1264,12 @@ impl TerminalState {
         processor.advance(&mut *term, b"\x1b[0m");
         // Feed each line with \r\n to advance the cursor
         for line in text.split('\n') {
-            let bytes = line.as_bytes();
+            // Enforce the "plain, ANSI stripped" invariant: untrusted bytes
+            // from a deserialized session must never reach the VTE parser as
+            // live escape/CSI/OSC sequences (title-spoof / OSC8 link
+            // injection). Sanitize before advancing.
+            let sanitized = Self::sanitize_scrollback_line(line);
+            let bytes = sanitized.as_bytes();
             if !bytes.is_empty() {
                 processor.advance(&mut *term, bytes);
             }
@@ -1394,6 +1425,30 @@ fn prepend_bin_dir_to_path(
     }
 }
 
+/// True if `key` names a dynamic-loader-influencing environment variable that
+/// an untrusted source (an imported `session.json` surface env, or the global
+/// `terminal.env` config) must NOT be allowed to inject into a spawned child:
+/// `LD_PRELOAD` / `LD_LIBRARY_PATH` / `LD_AUDIT` and any `LD_*` on Linux, plus
+/// any `DYLD_*` on macOS. Letting these through is an RCE vector — the operator
+/// treats imported sessions as untrusted, and the child is always the
+/// configured shell. The match is case-sensitive on purpose: the unix loaders
+/// only honour the exact upper-case spelling, so a lower-case `ld_preload` is
+/// inert and need not be dropped. On Windows these names are meaningless, so the
+/// check is a harmless no-op there (the caller has already upper-cased `key`).
+fn is_loader_influencing_env_key(key: &str) -> bool {
+    key.starts_with("LD_") || key.starts_with("DYLD_")
+}
+
+/// True if `key` is a well-formed environment variable name safe to insert into
+/// a child env block: non-empty and free of `=` and NUL, which would otherwise
+/// corrupt the name/value framing. Charset is intentionally NOT restricted to a
+/// strict POSIX set — legitimate user vars (e.g. `ANTHROPIC_API_KEY`) are
+/// already all-caps `[A-Z0-9_]`, and over-restricting would silently drop valid
+/// keys.
+fn is_valid_env_name(key: &str) -> bool {
+    !key.is_empty() && !key.contains('=') && !key.contains('\0')
+}
+
 /// Assemble the child PTY environment: PaneFlow identity vars, explicit TERM /
 /// locale / terminal-program identification, the AI-hook PATH prepend, and the
 /// user-env merge (a user var wins on collision EXCEPT the protected keys
@@ -1462,6 +1517,17 @@ fn assemble_pty_env(
             // is not bypassed by casing.
             #[cfg(windows)]
             let k = k.to_uppercase();
+            // Reject malformed env names (empty / `=` / NUL) and drop
+            // dynamic-loader-influencing keys (LD_* / DYLD_*) outright: an
+            // imported `session.json` surface env or the global `terminal.env`
+            // is untrusted, and these inject a bundled `.so` into the spawned
+            // shell (RCE). `PATH` is deliberately still overridable here (a
+            // documented US-014 use case) — it shadows the AI-hook prepend but
+            // is not a loader-preload vector; revisit if untrusted import flows
+            // widen.
+            if !is_valid_env_name(&k) || is_loader_influencing_env_key(&k) {
+                continue;
+            }
             if PROTECTED.contains(&k.as_str()) {
                 continue;
             }
@@ -2251,6 +2317,49 @@ mod tests {
         );
     }
 
+    // f010: dynamic-loader env vars from an untrusted source (imported
+    // session.json surface env / global config env) must never reach the child
+    // shell — letting LD_PRELOAD/LD_*/DYLD_* through is an RCE vector.
+    #[test]
+    fn loader_influencing_env_vars_are_dropped() {
+        let mut user = HashMap::new();
+        user.insert("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string());
+        user.insert("LD_LIBRARY_PATH".to_string(), "/tmp/evil".to_string());
+        user.insert("LD_AUDIT".to_string(), "/tmp/audit.so".to_string());
+        user.insert(
+            "DYLD_INSERT_LIBRARIES".to_string(),
+            "/tmp/e.dylib".to_string(),
+        );
+        user.insert("KEEP_ME".to_string(), "yes".to_string());
+        let env = assemble_pty_env(HashMap::new(), 1, 1, Some(user));
+
+        assert_eq!(
+            env.get("LD_PRELOAD"),
+            None,
+            "f010: LD_PRELOAD from untrusted env must be dropped"
+        );
+        assert_eq!(
+            env.get("LD_LIBRARY_PATH"),
+            None,
+            "f010: LD_LIBRARY_PATH from untrusted env must be dropped"
+        );
+        assert_eq!(
+            env.get("LD_AUDIT"),
+            None,
+            "f010: LD_AUDIT from untrusted env must be dropped"
+        );
+        assert_eq!(
+            env.get("DYLD_INSERT_LIBRARIES"),
+            None,
+            "f010: DYLD_* from untrusted env must be dropped"
+        );
+        assert_eq!(
+            env.get("KEEP_ME").map(String::as_str),
+            Some("yes"),
+            "f010: a benign var alongside loader vars must still pass through"
+        );
+    }
+
     // US-001 (prd-pane-context-bridge): /proc cmdline parsing.
     #[cfg(target_os = "linux")]
     #[test]
@@ -2277,6 +2386,48 @@ mod tests {
         assert!(
             state.foreground_command().is_none(),
             "display-only terminal has no foreground process to resolve"
+        );
+    }
+
+    #[test]
+    fn restore_scrollback_strips_escape_and_osc_injection() {
+        // A tampered session.json line carrying live VT bytes: an OSC8
+        // clickable-link injection, an OSC0 title-spoof, a raw CSI, an ESC
+        // introducer, a NUL, and a C1 control. None may survive sanitization.
+        let hostile = "\x1b]8;;https://evil.example/\x07click\x1b]8;;\x07\
+                       \x1b]0;PWNED\x07\x1b[31mred\x00\u{9b}38m";
+        let cleaned = TerminalState::sanitize_scrollback_line(hostile);
+
+        // No control byte that could start a VT sequence survives.
+        assert!(
+            !cleaned.contains('\x1b'),
+            "ESC introducer must be stripped; got {cleaned:?}"
+        );
+        assert!(
+            !cleaned.contains('\x07'),
+            "BEL (OSC terminator) must be stripped; got {cleaned:?}"
+        );
+        assert!(
+            !cleaned.contains('\x00'),
+            "NUL / C0 controls must be stripped; got {cleaned:?}"
+        );
+        assert!(
+            !cleaned.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c)),
+            "C1 controls must be stripped; got {cleaned:?}"
+        );
+        // Visible glyphs are preserved verbatim (no live sequence remains, so
+        // these read as plain text rather than executing).
+        for marker in ["https://evil.example/", "click", "PWNED", "red", "38m"] {
+            assert!(
+                cleaned.contains(marker),
+                "plain glyphs must survive; {marker:?} missing from {cleaned:?}"
+            );
+        }
+        // A tab is the one C0 byte we intentionally keep.
+        assert_eq!(
+            TerminalState::sanitize_scrollback_line("a\tb"),
+            "a\tb",
+            "tab must be preserved"
         );
     }
 
