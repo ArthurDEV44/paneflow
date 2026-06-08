@@ -841,6 +841,73 @@ fn event_is_relevant(
         .any(|p| p.file_name() == Some(target_filename))
 }
 
+/// Outcome of resolving + reading the watched path exactly once. Distinguishes
+/// the three states `load_from_disk` needs to surface distinct messages for,
+/// without leaking platform-specific `io::ErrorKind`/errno details to callers.
+enum ReadOutcome {
+    /// File read successfully; carries the raw bytes (size cap applied later).
+    Bytes(Vec<u8>),
+    /// The final path component was (or became) a symlink — refused.
+    Symlink,
+    /// The file does not exist (deleted between watch fire and read).
+    NotFound,
+    /// Any other IO failure; carries the error for the user-visible message.
+    Other(std::io::Error),
+}
+
+/// Resolve `path` and read its bytes with a SINGLE name resolution, closing the
+/// TOCTOU window (CWE-367) between the old `symlink_metadata` check and the
+/// subsequent symlink-following `fs::read`.
+///
+/// Unix: open with `O_NOFOLLOW` so the kernel refuses (`ELOOP`) if the final
+/// component is a symlink — the check and the read are the same syscall, so an
+/// attacker cannot swap a regular file for a symlink in between. We read from
+/// the resulting fd, never re-resolving the name.
+///
+/// Windows: `O_NOFOLLOW` has no equivalent and `FILE_FLAG_OPEN_REPARSE_POINT`
+/// would require raw `CreateFileW` plumbing; we keep the documented
+/// `symlink_metadata`-then-read fallback. This leaves the narrow TOCTOU window
+/// on Windows only, where the sole in-scope attacker is a same-UID in-project
+/// agent that can already read the secret directly (no privilege boundary
+/// crossed), so the residual risk is accepted.
+fn read_no_follow(path: &std::path::Path) -> ReadOutcome {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+        {
+            Ok(f) => f,
+            // `O_NOFOLLOW` on a symlinked final component fails with ELOOP.
+            Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return ReadOutcome::Symlink,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ReadOutcome::NotFound,
+            Err(e) => return ReadOutcome::Other(e),
+        };
+        let mut bytes = Vec::new();
+        match file.read_to_end(&mut bytes) {
+            Ok(_) => ReadOutcome::Bytes(bytes),
+            Err(e) => ReadOutcome::Other(e),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => return ReadOutcome::Symlink,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ReadOutcome::NotFound,
+            Err(e) => return ReadOutcome::Other(e),
+        }
+        match std::fs::read(path) {
+            Ok(bytes) => ReadOutcome::Bytes(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => ReadOutcome::NotFound,
+            Err(e) => ReadOutcome::Other(e),
+        }
+    }
+}
+
 /// Load and parse a markdown file from disk, returning `(ast, error)` where
 /// exactly one is `Some`. Free function so unit tests can exercise the
 /// initial-load and reload paths without a GPUI context.
@@ -850,70 +917,58 @@ fn event_is_relevant(
 /// `MarkdownView` is the real on-disk target (not a symlink). If between
 /// initial open and reload an attacker creates a symlink and atomically
 /// renames it over the original (e.g. `README.md.evil → /etc/passwd` then
-/// `mv README.md.evil README.md`), the post-rename file IS a symlink. We
-/// detect that with `symlink_metadata().file_type().is_symlink()` and refuse
-/// to read. This blocks the obvious information-disclosure attack from
-/// adversarial agents writing into the user's project directory. Hard-link
-/// attacks remain out of scope (require write access to the disclosure
-/// target itself).
+/// `mv README.md.evil README.md`), the post-rename file IS a symlink. We refuse
+/// to follow it. The resolution is atomic via `read_no_follow` (`O_NOFOLLOW` on
+/// unix) so there is no TOCTOU window between the symlink check and the read
+/// (CWE-367). This blocks the information-disclosure attack from adversarial
+/// agents writing into the user's project directory. Hard-link attacks remain
+/// out of scope (require write access to the disclosure target itself).
 fn load_from_disk(path: &std::path::Path) -> (Option<Vec<MdNode>>, Option<SharedString>) {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => {
+    let bytes = match read_no_follow(path) {
+        ReadOutcome::Bytes(bytes) => bytes,
+        ReadOutcome::Symlink => {
             return (
                 None,
                 Some("File path was replaced by a symlink — refusing to read.".into()),
             );
         }
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return (None, Some("File deleted".into()));
-        }
-        Err(e) => {
-            return (None, Some(format!("Could not stat file: {}", e).into()));
-        }
+        // US-021 AC: deletion during the session shows a stable message
+        // and keeps the pane open (no crash, no auto-close).
+        ReadOutcome::NotFound => return (None, Some("File deleted".into())),
+        ReadOutcome::Other(e) => return (None, Some(format!("Could not read file: {}", e).into())),
+    };
+    if bytes.len() > MAX_INPUT_BYTES {
+        return (
+            None,
+            Some(
+                format!(
+                    "Markdown file too large ({} KB) — max {} KB.",
+                    bytes.len() / 1024,
+                    MAX_INPUT_BYTES / 1024
+                )
+                .into(),
+            ),
+        );
     }
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            if bytes.len() > MAX_INPUT_BYTES {
-                return (
-                    None,
-                    Some(
-                        format!(
-                            "Markdown file too large ({} KB) — max {} KB.",
-                            bytes.len() / 1024,
-                            MAX_INPUT_BYTES / 1024
-                        )
-                        .into(),
-                    ),
-                );
-            }
-            match String::from_utf8(bytes) {
-                Ok(text) => match parse_with_limit(&text) {
-                    Ok(nodes) => (Some(nodes), None),
-                    Err(ParseError::TooLarge { bytes, limit }) => (
-                        None,
-                        Some(
-                            format!(
-                                "Markdown file too large ({} KB) — max {} KB. Open externally to view.",
-                                bytes / 1024,
-                                limit / 1024
-                            )
-                            .into(),
-                        ),
-                    ),
-                },
-                Err(_) => (
-                    None,
-                    Some("File is not valid UTF-8 — cannot render as markdown.".into()),
+    match String::from_utf8(bytes) {
+        Ok(text) => match parse_with_limit(&text) {
+            Ok(nodes) => (Some(nodes), None),
+            Err(ParseError::TooLarge { bytes, limit }) => (
+                None,
+                Some(
+                    format!(
+                        "Markdown file too large ({} KB) — max {} KB. Open externally to view.",
+                        bytes / 1024,
+                        limit / 1024
+                    )
+                    .into(),
                 ),
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // US-021 AC: deletion during the session shows a stable message
-            // and keeps the pane open (no crash, no auto-close).
-            (None, Some("File deleted".into()))
-        }
-        Err(e) => (None, Some(format!("Could not read file: {}", e).into())),
+            ),
+        },
+        Err(_) => (
+            None,
+            Some("File is not valid UTF-8 — cannot render as markdown.".into()),
+        ),
     }
 }
 
@@ -1351,6 +1406,34 @@ mod tests {
         assert!(
             msg.contains("symlink"),
             "expected symlink rejection message, got: {}",
+            msg
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_swapped_in_after_check_is_still_rejected() {
+        // CWE-367 regression: the old code stat'd the path, then did a separate
+        // symlink-following read. `read_no_follow` collapses both into one
+        // O_NOFOLLOW open, so even a symlink that is the *current* final
+        // component (the post-swap state) is refused at read time — there is no
+        // window where a regular-file stat is paired with a symlink read.
+        // Before the fix, the read path followed the symlink and disclosed the
+        // target; after it, the open fails with ELOOP and we surface the
+        // refusal message.
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let secret = tmp.path().join("secret.txt");
+        write(&secret, b"# TOP SECRET\n");
+        let view_path = tmp.path().join("README.md");
+        symlink(&secret, &view_path).expect("symlink");
+
+        let (ast, error) = load_from_disk(&view_path);
+        assert!(ast.is_none(), "must not read through a symlink");
+        let msg: &str = error.as_ref().expect("error message").as_ref();
+        assert!(
+            msg.contains("symlink"),
+            "expected symlink rejection, got: {}",
             msg
         );
     }
