@@ -792,6 +792,17 @@ fn sanitize_ratios(mut ratios: Vec<f64>, n: usize) -> Vec<f64> {
             *r /= sum;
         }
     }
+    // US-056 (EP-010 review): re-clamp after normalize. Dividing by a sum > 1
+    // can push a just-clamped ratio back below `MIN_RATIO` (e.g. raw
+    // `[1.0, 0.005]` → clamp `[1.0, 0.01]` → normalize `[0.990, 0.0099]`),
+    // silently violating the floor this fn promises. The config-loader sibling
+    // (`loader::validate_layout`) already re-clamps for this exact reason
+    // (US-057); the session path must match so both frontiers honour the same
+    // 0.01 floor. The renderer re-normalizes proportionally at paint time, so
+    // the post-re-clamp sum need not be exactly 1.0 — the floor is the invariant.
+    for r in ratios.iter_mut() {
+        *r = r.clamp(MIN_RATIO, 1.0);
+    }
     ratios
 }
 
