@@ -70,17 +70,38 @@ pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
     sessions
 }
 
+/// Codex's layout is `YYYY/MM/DD/*.jsonl` — three levels below the root — so
+/// a depth bound of 8 leaves generous slack while making a pathologically deep
+/// tree (or any symlink cycle that slips past the `file_type` guard) terminate
+/// instead of overflowing the stack (U-003).
+const MAX_WALK_DEPTH: u32 = 8;
+
 /// Walk Codex's `YYYY/MM/DD/*.jsonl` layout depth-first and invoke
 /// `visit` on every `.jsonl` leaf.
 fn walk_jsonl_files(dir: &Path, visit: &mut impl FnMut(&Path)) {
+    walk_jsonl_files_bounded(dir, MAX_WALK_DEPTH, visit);
+}
+
+fn walk_jsonl_files_bounded(dir: &Path, depth_left: u32, visit: &mut impl FnMut(&Path)) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
+        // U-003: `DirEntry::file_type()` reports the entry's *own* type (from
+        // the readdir record, or an lstat) and does NOT follow symlinks —
+        // unlike `Path::is_dir()`, which dereferences. A symlinked directory
+        // therefore reports as neither dir nor file and is skipped, so a
+        // planted cycle (`sessions/loop -> ../../sessions`) can never be
+        // descended. Entries whose type can't be read are skipped.
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         let path = entry.path();
-        if path.is_dir() {
-            walk_jsonl_files(&path, visit);
-        } else if is_jsonl_file(&path) {
+        if file_type.is_dir() {
+            if depth_left > 0 {
+                walk_jsonl_files_bounded(&path, depth_left - 1, visit);
+            }
+        } else if file_type.is_file() && is_jsonl_file(&path) {
             visit(&path);
         }
     }
@@ -374,5 +395,71 @@ mod tests {
             read_session_meta(&path).is_none(),
             "session with control chars in cwd must be dropped"
         );
+    }
+
+    /// U-003: a deep-but-acyclic tree within the depth bound still yields every
+    /// real `.jsonl` leaf — the guard must not drop legitimate sessions.
+    #[test]
+    fn walk_discovers_jsonl_in_deep_acyclic_tree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Codex's real shape is 3 levels (YYYY/MM/DD); go a little deeper to
+        // prove the bound (8) leaves slack.
+        let leaf_dir = dir.path().join("2026/06/08/extra");
+        std::fs::create_dir_all(&leaf_dir).expect("mkdir -p");
+        let jsonl = leaf_dir.join("rollout.jsonl");
+        std::fs::write(&jsonl, b"{}\n").expect("write");
+        std::fs::write(leaf_dir.join("not-a-session.txt"), b"ignore me").expect("write");
+
+        let mut found = Vec::new();
+        walk_jsonl_files(dir.path(), &mut |p| found.push(p.to_path_buf()));
+        assert_eq!(found, vec![jsonl], "the one real .jsonl must be discovered");
+    }
+
+    /// U-003: the depth bound stops recursion past `MAX_WALK_DEPTH`, so an
+    /// arbitrarily deep tree terminates rather than overflowing the stack.
+    #[test]
+    fn walk_stops_past_depth_bound() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Build MAX_WALK_DEPTH + 4 nested dirs, with a .jsonl just past the
+        // bound. The walk must terminate and must NOT visit the too-deep file.
+        let mut deep = dir.path().to_path_buf();
+        for i in 0..(MAX_WALK_DEPTH + 4) {
+            deep = deep.join(format!("d{i}"));
+        }
+        std::fs::create_dir_all(&deep).expect("mkdir -p");
+        std::fs::write(deep.join("too-deep.jsonl"), b"{}\n").expect("write");
+
+        let mut count = 0usize;
+        walk_jsonl_files(dir.path(), &mut |_| count += 1);
+        assert_eq!(count, 0, "a leaf past the depth bound must not be visited");
+    }
+
+    /// U-003: a symlink cycle pointing back at an ancestor must not be
+    /// descended (it would otherwise recurse forever and stack-overflow).
+    /// Unix-only because creating a symlink on Windows needs elevation/dev
+    /// mode. The Windows equivalent (NTFS junction / `IO_REPARSE_TAG_*`) is
+    /// reported by `DirEntry::file_type()` on the pinned toolchain (Rust 1.95)
+    /// with `is_symlink() = true` and `is_dir() = false` for native Win10/11
+    /// volumes — so the same `is_dir()` guard skips it. Treated as
+    /// inspection-only per US-002 AC4 (no Win symlink CI leg yet); a junction
+    /// on a CIFS/remote-mapped volume is the residual gap to revisit if a
+    /// Windows integration test lands.
+    #[cfg(unix)]
+    #[test]
+    fn walk_does_not_follow_symlink_cycle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("2026/06/08");
+        std::fs::create_dir_all(&real).expect("mkdir -p");
+        let jsonl = real.join("rollout.jsonl");
+        std::fs::write(&jsonl, b"{}\n").expect("write");
+        // sessions/2026/loop -> sessions (points at an ancestor: a cycle).
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("2026/loop"))
+            .expect("create symlink cycle");
+
+        let mut found = Vec::new();
+        walk_jsonl_files(dir.path(), &mut |p| found.push(p.to_path_buf()));
+        // Terminates (no stack overflow) and still finds the one real file
+        // exactly once — the symlinked directory was never descended.
+        assert_eq!(found, vec![jsonl]);
     }
 }

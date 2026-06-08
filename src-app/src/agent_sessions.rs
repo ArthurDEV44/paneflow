@@ -547,14 +547,47 @@ fn parse_iso8601_to_unix_secs(iso: &str) -> Option<i64> {
     let minute: i64 = time_parts.next()?.parse().ok()?;
     let second: i64 = time_parts.next().unwrap_or("0").parse().ok()?;
 
-    let y = if month <= 2 { year - 1 } else { year };
+    // U-011: year/month/day/hour/minute/second are parsed verbatim from
+    // agent-written JSONL with NO range clamp, so the civil-days math below can
+    // overflow i64 well before the trailing `era * 146_097` / `days * 86_400` /
+    // `hour * 3_600` multiplies that were guarded first. The fields reach here
+    // as non-negative i64 (the `split('-')` parse can't yield a signed value),
+    // but each can be enormous: a huge `month` overflows `153 * month_adj`, a
+    // huge `day` overflows the `+ day` step, and a huge `year` overflows the
+    // later `era * 146_097`. A debug build panics; a release build silently
+    // wraps and returns `Some(garbage)`, bypassing the fallback. So every op
+    // that can overflow is checked and falls through to `iso8601_safe_fallback`
+    // (the date-prefix render) on overflow. The `year - 1` / `era * 400` checks
+    // are defensive (unreachable while years stay non-negative, but cheap and
+    // they keep the path correct if a signed-year parse is ever added);
+    // `month_adj` and `yoe*365 + yoe/4 - yoe/100` are provably in-range
+    // (`yoe ∈ [0, 399]`) so they stay unchecked.
+    let y = if month <= 2 {
+        year.checked_sub(1)?
+    } else {
+        year
+    };
     let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days_since_epoch = era * 146_097 + doe - 719_468;
+    let yoe = y.checked_sub(era.checked_mul(400)?)?; // y - era*400, lands in [0,399]
+    let month_adj = if month > 2 { month - 3 } else { month + 9 };
+    let doy = 153_i64
+        .checked_mul(month_adj)?
+        .checked_add(2)?
+        .checked_div(5)?
+        .checked_add(day)?
+        .checked_sub(1)?;
+    let doe = (yoe * 365 + yoe / 4 - yoe / 100).checked_add(doy)?;
+    let days_since_epoch = era
+        .checked_mul(146_097)?
+        .checked_add(doe)?
+        .checked_sub(719_468)?;
 
-    Some(days_since_epoch * 86_400 + hour * 3_600 + minute * 60 + second)
+    let hms = hour
+        .checked_mul(3_600)?
+        .checked_add(minute.checked_mul(60)?)?
+        .checked_add(second)?;
+
+    days_since_epoch.checked_mul(86_400)?.checked_add(hms)
 }
 
 #[cfg(test)]
@@ -585,6 +618,48 @@ mod tests {
     fn iso8601_parses_z() {
         let secs = parse_iso8601_to_unix_secs("2025-01-15T12:30:45Z").unwrap();
         assert_eq!(secs, 1_736_944_245);
+    }
+
+    #[test]
+    fn iso8601_absurd_year_returns_none_not_panic() {
+        // U-011: a parseable-but-absurd year (well within i64's digit budget)
+        // overflows the day/second multiplies. Checked arithmetic must yield
+        // None so the caller falls back to the date-prefix render — in debug
+        // builds this would otherwise panic, in release it would silently wrap.
+        assert_eq!(
+            parse_iso8601_to_unix_secs("999999999999-01-01T00:00:00Z"),
+            None
+        );
+    }
+
+    #[test]
+    fn iso8601_absurd_time_field_returns_none_not_panic() {
+        // U-011: hour/minute/second are equally unbounded in the source JSONL,
+        // so the `hour * 3_600` multiply must be checked too — a valid date
+        // with an absurd hour would otherwise overflow before the day math.
+        assert_eq!(
+            parse_iso8601_to_unix_secs("2025-01-15T9999999999999999:00:00Z"),
+            None
+        );
+    }
+
+    #[test]
+    fn iso8601_absurd_month_or_day_returns_none_not_panic() {
+        // U-011: `month` and `day` are equally unbounded in the source JSONL.
+        // An absurd month overflows the `153 * month_adj` multiply, and an
+        // absurd day overflows the `+ day` step — both BEFORE the trailing
+        // checked path, so they must be checked too. In debug these would
+        // otherwise panic; in release they would wrap and return Some(garbage).
+        assert_eq!(
+            parse_iso8601_to_unix_secs("2025-99999999999999999-01T00:00:00Z"),
+            None,
+            "absurd month must overflow-guard to None"
+        );
+        assert_eq!(
+            parse_iso8601_to_unix_secs("2025-01-9223372036854775807T00:00:00Z"),
+            None,
+            "absurd day (i64::MAX) must overflow-guard to None"
+        );
     }
 
     #[test]

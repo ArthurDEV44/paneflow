@@ -146,7 +146,9 @@ fn merge_background_regions(mut rects: Vec<LayoutRect>) -> Vec<LayoutRect> {
 
     let mut merged: Vec<LayoutRect> = Vec::with_capacity(rects.len());
     let mut iter = rects.into_iter();
-    let mut current = iter.next().unwrap();
+    let mut current = iter.next().expect(
+        "merge_background_regions: rects.len() >= 2 guaranteed by the len() <= 1 early return",
+    );
 
     for next in iter {
         if next.col == current.col
@@ -488,7 +490,13 @@ impl TerminalElement {
             .next_up()
             .floor()
             .max(1.0) as usize;
-        let desired_rows = (bounds.size.height / dims.line_height).next_up().floor() as usize;
+        // `.max(1.0)` mirrors `desired_cols` above (U-046): on a zero/near-zero
+        // -height pane this keeps the row count ≥ 1 so no downstream consumer
+        // can underflow a `desired_rows - 1` or index a 0-len boundary array.
+        let desired_rows = (bounds.size.height / dims.line_height)
+            .next_up()
+            .floor()
+            .max(1.0) as usize;
 
         // Snapshot the grid into a neutral `Content` under lock (resize first so
         // the snapshot reflects the resized grid), minimizing FairMutex hold
@@ -1040,12 +1048,14 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
                 });
                 line += 1;
             }
-            // Last line from col 0 to end.col
+            // Last line from col 0 to end.col. `saturating_add` matches the
+            // defensive arithmetic of the sibling rects (U-047): a stale
+            // `end_col` from a pre-resize selection can't overflow the count.
             selection_rects.push(LayoutRect {
                 line: end_line,
                 num_lines: 1,
                 col: 0,
-                num_cols: end_col + 1,
+                num_cols: end_col.saturating_add(1),
                 color: selection_color,
             });
         }

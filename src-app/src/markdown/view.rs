@@ -1195,6 +1195,22 @@ fn render_list(
     col.into_any_element()
 }
 
+/// Column count for a markdown table: the max of header arity and the longest
+/// data row, saturated to `u16::MAX`.
+///
+/// U-050: the input is untrusted file content (MAX_INPUT_BYTES = 10 MB admits
+/// a multi-million-column delimiter row), and a raw `as u16` cast wraps the
+/// count modulo 65536 — feeding `grid_cols` a garbage value (and, for exact
+/// multiples of 65536, wrapping to 0 so the table silently vanishes).
+/// `try_from(..).unwrap_or(u16::MAX)` saturates instead, and a genuine 0-column
+/// table still reports 0 so the `cols == 0` bail in `render_table` holds.
+fn table_col_count(header: &[Vec<Span>], rows: &[Vec<Vec<Span>>]) -> u16 {
+    let cols = header
+        .len()
+        .max(rows.iter().map(|r| r.len()).max().unwrap_or(0));
+    u16::try_from(cols).unwrap_or(u16::MAX)
+}
+
 fn render_table(
     _alignments: &[Alignment],
     header: &[Vec<Span>],
@@ -1204,9 +1220,7 @@ fn render_table(
     // Column count: max of header arity and the longest data row. Empty
     // tables (zero header + zero rows, or rows with zero cells) bail out
     // before invoking grid_cols(0) which would be a runtime no-op.
-    let cols: u16 = header
-        .len()
-        .max(rows.iter().map(|r| r.len()).max().unwrap_or(0)) as u16;
+    let cols = table_col_count(header, rows);
     if cols == 0 {
         return div().into_any_element();
     }
@@ -1304,6 +1318,24 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::Path;
+
+    /// U-050: a `> u16::MAX`-column table must saturate, not wrap modulo 65536
+    /// (which would feed grid_cols a garbage count, or vanish the table at
+    /// exact multiples). A genuinely empty table still reports 0.
+    #[test]
+    fn table_col_count_saturates_past_u16() {
+        // One data row with u16::MAX + 2 cells — past the wrap point.
+        let huge: Vec<Vec<Span>> = vec![Vec::new(); u16::MAX as usize + 2];
+        assert_eq!(table_col_count(&[], std::slice::from_ref(&huge)), u16::MAX);
+        // Exactly u16::MAX + 1 cells would wrap to 0 under `as u16`; saturate.
+        let exact_wrap: Vec<Vec<Span>> = vec![Vec::new(); u16::MAX as usize + 1];
+        assert_eq!(table_col_count(&[], &[exact_wrap]), u16::MAX);
+        // Empty table reports 0 so the `cols == 0` bail still fires.
+        assert_eq!(table_col_count(&[], &[]), 0);
+        // Header arity counts too, and a normal small table is unchanged.
+        let header: Vec<Vec<Span>> = vec![Vec::new(); 3];
+        assert_eq!(table_col_count(&header, &[]), 3);
+    }
 
     fn write(path: &Path, contents: &[u8]) {
         if let Some(parent) = path.parent() {
