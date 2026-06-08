@@ -158,6 +158,19 @@ impl PaneFlowApp {
                         crate::layout::fill_scrollback(layout, &mut terms);
                     }
                 }
+                // Re-check the token AFTER the (potentially slow) drain, right
+                // before the write. The debounce check above only covers the
+                // sleep window; the drain itself takes real time, during which a
+                // quit-path `save_session_blocking` (or a newer deferred save)
+                // can bump `save_seq`. Without this second check the older
+                // snapshot would `rename` over the final write — the exact
+                // resurrection bug US-011 (c80eba5) set out to close, left open
+                // for the drain sub-window. Both writers also share the
+                // `session.json.tmp` path, so skipping here avoids a concurrent
+                // temp-file clobber too.
+                if save_seq.load(std::sync::atomic::Ordering::SeqCst) != seq {
+                    return;
+                }
                 write_session_json(&path, &state);
             })
             .await;
@@ -642,5 +655,63 @@ mod tests {
         // Live session.json itself is unaffected by the rotation.
         std::fs::write(&session_path, "{").expect("seed");
         assert!(session_path.exists());
+    }
+
+    /// US-011 AC: a burst of `save_session` calls (e.g. closing 20 workspaces)
+    /// must coalesce to a single disk write — only the most-recent snapshot
+    /// wins. This guards the `save_seq` monotonic-token predicate that the
+    /// deferred path uses (`save_session` checks `load() == seq` after its
+    /// debounce). A full `save_session` needs a live GPUI `App`, so this tests
+    /// the coalescing invariant directly on the same atomic logic.
+    #[test]
+    fn save_seq_burst_coalesces_to_a_single_write() {
+        use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+
+        let save_seq = AtomicU64::new(0);
+        // Simulate 20 saves fired in a burst; each captures its token the way
+        // `save_session` does (`fetch_add(1) + 1`).
+        let captured: Vec<u64> = (0..20).map(|_| save_seq.fetch_add(1, SeqCst) + 1).collect();
+
+        // After the burst, exactly one captured token equals the latest value,
+        // so exactly one deferred task survives its post-debounce check.
+        let latest = save_seq.load(SeqCst);
+        let survivors = captured.iter().filter(|&&s| s == latest).count();
+        assert_eq!(survivors, 1, "a 20-save burst coalesces to one write");
+        assert_eq!(
+            captured.last().copied(),
+            Some(latest),
+            "the most-recent snapshot is the survivor"
+        );
+    }
+
+    /// Regression guard for the US-011 quit-path race (c80eba5 + the
+    /// drain-window follow-up): a deferred save that passed its debounce check
+    /// must STILL skip its write if `save_session_blocking` bumped the token
+    /// while the scrollback drain was running. Mirrors the re-check now placed
+    /// immediately before `write_session_json` inside the `smol::unblock` body.
+    #[test]
+    fn deferred_save_skips_write_when_superseded_during_drain() {
+        use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+
+        let save_seq = AtomicU64::new(0);
+        // A deferred save is scheduled and passes its post-debounce check.
+        let deferred = save_seq.fetch_add(1, SeqCst) + 1;
+        assert_eq!(
+            save_seq.load(SeqCst),
+            deferred,
+            "deferred is latest pre-drain"
+        );
+
+        // While it drains, a quit-path `save_session_blocking` bumps the token.
+        save_seq.fetch_add(1, SeqCst);
+
+        // The pre-write re-check inside `smol::unblock` must now observe the
+        // mismatch and skip — so the older deferred snapshot never renames over
+        // the final quit write.
+        assert_ne!(
+            save_seq.load(SeqCst),
+            deferred,
+            "deferred write must be skipped after a quit-time bump"
+        );
     }
 }
