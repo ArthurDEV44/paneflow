@@ -727,6 +727,51 @@ mod tests {
     }
 
     #[test]
+    fn split_hunk_tops_marks_each_hunk_start_at_its_row_offset() {
+        // US-046 (EP-008 review): the split analog of the unified drift guard.
+        // `split_hunk_tops` walks the rows with its own accumulator; it MUST
+        // agree with the `split_offsets` prefix sum at every hunk-start row, or
+        // side-by-side hunk-nav jumps to the wrong pixel. Catches a future
+        // divergence between `split_row_height` and the hunk-tops walk that the
+        // unified guard would NOT surface (the two heights are separate fns).
+        let base = "a\nb\nc\nd\ne\n".to_string();
+        let new = "a\nB\nc\nd\nE\n".to_string(); // two separate single-line edits
+        let hunks = crate::diff::engine::compute_hunks(&base, &new);
+        let file = FileDiff {
+            path: "a.txt".into(),
+            change: FileChange::Modified,
+            old_path: None,
+            base_text: base,
+            new_text: new,
+            hunks,
+            is_binary: false,
+        };
+        let (rows, _) = build_split_rows(&[file], None);
+        let offsets = split_offsets(&rows);
+
+        let mut expected = Vec::new();
+        let mut prev_change = false;
+        for (i, r) in rows.iter().enumerate() {
+            let is_change = matches!(
+                r,
+                SplitRow::Pair { left, right }
+                    if matches!(left.kind, CellKind::Added | CellKind::Removed)
+                        || matches!(right.kind, CellKind::Added | CellKind::Removed)
+            );
+            if is_change && !prev_change {
+                expected.push(offsets[i]);
+            }
+            prev_change = is_change;
+        }
+
+        assert_eq!(split_hunk_tops(&rows), expected);
+        assert!(
+            !expected.is_empty(),
+            "fixture must produce at least one split hunk for the guard to be meaningful"
+        );
+    }
+
+    #[test]
     fn split_collapses_distant_context_into_fold() {
         // Same fixture as the unified test: side-by-side must collapse the
         // unchanged tail too, instead of dumping every aligned row.
