@@ -29,14 +29,8 @@ use crate::agent_sessions::{SessionAgent, SessionMeta};
 /// to the user.
 const TITLE_SCAN_LIMIT: usize = 256;
 
-/// US-010 (cli-hardening-followup-2026-Q3): per-line byte cap for the
-/// session JSONL reader. 64 KiB is comfortably above the largest
-/// well-formed line we observe in the wild (Claude Code's
-/// `ai-title` and first-user-message records sit < 16 KiB even
-/// with embedded slash-command boilerplate) and small enough that
-/// a malicious file cannot exhaust process address space before
-/// the outer `TITLE_SCAN_LIMIT` line-count guard fires.
-const MAX_LINE_BYTES: u64 = 64 * 1024;
+// US-013: per-line JSONL read cap, centralized (see `crate::limits`).
+use crate::limits::MAX_LINE_BYTES;
 
 /// Cap rendered first-user-message labels at this character count to keep
 /// the popover row from overflowing horizontally.

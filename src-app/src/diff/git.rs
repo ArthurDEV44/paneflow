@@ -403,11 +403,31 @@ fn load_base_text(worktree_dir: &Path, merge_base: &str, rel_path: &str) -> (Str
 /// error (permission denied, device error) is logged and rendered as an
 /// unreadable (binary) stub rather than masquerading as a deletion.
 fn load_working_text(worktree_dir: &Path, rel_path: &str) -> (String, bool) {
-    match std::fs::read(worktree_dir.join(rel_path)) {
-        Ok(bytes) => classify(bytes),
+    let path = worktree_dir.join(rel_path);
+    // U-041: lstat first. A tracked/untracked symlink in a crafted repo could
+    // point outside the worktree; `fs::read` would dereference it and pull an
+    // out-of-tree file into `new_text`. Render the LINK TARGET instead of
+    // following it — this also matches git's own symlink-blob semantics (the
+    // base side via `git show` returns the target path, not the pointee's
+    // content), so an unchanged symlink produces no spurious diff.
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let target = std::fs::read_link(&path)
+                .map(|t| t.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (target, false)
+        }
+        Ok(_) => match std::fs::read(&path) {
+            Ok(bytes) => classify(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
+            Err(e) => {
+                log::warn!("git: failed to read working-tree file {rel_path}: {e}");
+                (String::new(), true)
+            }
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
         Err(e) => {
-            log::warn!("git: failed to read working-tree file {rel_path}: {e}");
+            log::warn!("git: failed to lstat working-tree file {rel_path}: {e}");
             (String::new(), true)
         }
     }

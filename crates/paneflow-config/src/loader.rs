@@ -93,6 +93,17 @@ pub fn read_config_string(path: &Path) -> ConfigRead {
         return ConfigRead::Absent;
     }
     match std::fs::metadata(path) {
+        // U-028: a FIFO/character device reports len 0 (passing the size cap)
+        // but `read_to_string` would then block indefinitely or stream unbounded
+        // bytes. `metadata` follows symlinks, so this also rejects a symlink that
+        // points at /dev/zero or a named pipe. Reject any non-regular file.
+        Ok(meta) if !meta.file_type().is_file() => {
+            warn!(
+                "config file {} is not a regular file; using defaults",
+                path.display()
+            );
+            ConfigRead::Rejected
+        }
         Ok(meta) if meta.len() > MAX_CONFIG_SIZE_BYTES => {
             warn!(
                 "config file {} is {} bytes (over {}-byte cap); using defaults",
@@ -191,12 +202,36 @@ fn validate_command(cmd: &CommandDefinition) -> bool {
     true
 }
 
-/// Recursively validate and fix a layout node.
+/// US-011: total pane (leaf) budget for a single restored layout. Mirrors
+/// src-app's `MAX_PANES` — defined locally because `paneflow-config` is a leaf
+/// crate that cannot import the src-app constant (US-013 documents the pairing).
+const MAX_LAYOUT_LEAVES: usize = 32;
+
+/// US-011: max direct children of one `Split` node at the schema boundary.
+const MAX_SPLIT_CHILDREN: usize = 32;
+
+/// US-011: max surfaces (tabs) in one `Pane` at the schema boundary.
+const MAX_PANE_SURFACES: usize = 64;
+
+/// Recursively validate and fix a layout node, bounding its breadth and total
+/// leaf count at the schema boundary (U-008/U-016).
 ///
-/// - Split nodes: must have >= 2 children; legacy `ratio` clamped to [0.1, 0.9];
-///   per-child `ratios` clamped to [0.01, 1.0].
-/// - Pane nodes: must have >= 1 surface.
+/// - Attacker-driven panes (leaves) are capped to [`MAX_LAYOUT_LEAVES`]: a wide
+///   OR deep tree can never restore more terminals than that from session.json
+///   content, so a hand-edited / agent-written file can't spawn unbounded PTYs.
+///   (A pruned split may gain ≤1 app-synthesized pad pane to stay structurally
+///   valid; that is bounded and not attacker-amplified — see the pad note.)
+/// - Split nodes: direct children bounded to [`MAX_SPLIT_CHILDREN`]; must have
+///   at least 2 children; legacy `ratio` clamped to [0.1, 0.9] and (for a
+///   2-child split) converted to an explicit `ratios` pair (U-007); per-child
+///   `ratios` clamped to [0.01, 1.0].
+/// - Pane nodes: surfaces bounded to [`MAX_PANE_SURFACES`]; must have at least 1.
 pub fn validate_layout(node: &mut LayoutNode) {
+    let mut leaf_budget = MAX_LAYOUT_LEAVES;
+    validate_node(node, &mut leaf_budget);
+}
+
+fn validate_node(node: &mut LayoutNode, leaf_budget: &mut usize) {
     match node {
         LayoutNode::Split {
             ref mut ratio,
@@ -204,6 +239,53 @@ pub fn validate_layout(node: &mut LayoutNode) {
             ref mut children,
             ..
         } => {
+            // U-008: bound a single Split's direct breadth before anything else
+            // touches the (possibly huge) children vec.
+            if children.len() > MAX_SPLIT_CHILDREN {
+                warn!(
+                    "split has {} children (cap {MAX_SPLIT_CHILDREN}); truncating",
+                    children.len()
+                );
+                children.truncate(MAX_SPLIT_CHILDREN);
+            }
+
+            // U-008/U-016: recurse under a shared leaf budget and drop whole
+            // subtrees once it is spent, so the total pane count across the tree
+            // can never exceed MAX_LAYOUT_LEAVES.
+            let mut kept = 0usize;
+            for child in children.iter_mut() {
+                if *leaf_budget == 0 {
+                    break;
+                }
+                validate_node(child, leaf_budget);
+                kept += 1;
+            }
+            if kept < children.len() {
+                warn!(
+                    "layout exceeds {MAX_LAYOUT_LEAVES} panes; dropping {} subtree(s)",
+                    children.len() - kept
+                );
+                children.truncate(kept);
+            }
+
+            // Must have at least 2 children; pad if fewer (malformed input, or
+            // an over-pruned split when earlier siblings spent the budget).
+            // The DoS guarantee is about ATTACKER-DRIVEN leaves: those are hard
+            // capped at MAX_LAYOUT_LEAVES above. These pad panes are
+            // app-synthesized to keep a split structurally valid (>= 2
+            // children) and add at most one per pruned split — a bounded
+            // structural overshoot, never attacker-amplified PTY spawning.
+            while children.len() < 2 {
+                warn!(
+                    "split node has {} children (need >= 2); padding",
+                    children.len()
+                );
+                children.push(LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                });
+                *leaf_budget = leaf_budget.saturating_sub(1);
+            }
+
             // Clamp legacy ratio to [0.1, 0.9]; reject non-finite values.
             if let Some(r) = ratio {
                 if !r.is_finite() {
@@ -218,15 +300,22 @@ pub fn validate_layout(node: &mut LayoutNode) {
                 }
             }
 
-            // Must have at least 2 children; pad if fewer.
-            while children.len() < 2 {
-                warn!(
-                    "split node has {} children (need >= 2); padding",
-                    children.len()
-                );
-                children.push(LayoutNode::Pane {
-                    surfaces: vec![Default::default()],
-                });
+            // U-007: a legacy single `ratio` is only meaningful for a 2-child
+            // split — convert it to an explicit `ratios` pair so it survives
+            // restore (resolved_ratios only honors it transiently). For an
+            // N-ary split it is ambiguous, so warn that it is ignored rather
+            // than silently returning equal shares.
+            if ratios.is_none() {
+                if let Some(r) = ratio {
+                    if children.len() == 2 {
+                        *ratios = Some(vec![*r, 1.0 - *r]);
+                    } else {
+                        warn!(
+                            "legacy ratio ignored on N-ary split ({} children)",
+                            children.len()
+                        );
+                    }
+                }
             }
 
             // Validate per-child ratios: reject non-finite, fix length mismatch, normalize.
@@ -268,19 +357,27 @@ pub fn validate_layout(node: &mut LayoutNode) {
                     *r = r.clamp(0.01, 1.0);
                 }
             }
-
-            // Recurse into children.
-            for child in children.iter_mut() {
-                validate_layout(child);
-            }
+            // Note: children were already validated in the budget-bounded
+            // recursion above, so there is no separate recurse pass here.
         }
         LayoutNode::Pane {
             ref mut surfaces, ..
         } => {
+            // U-008: bound tabs per pane — a pane is one leaf in the tree (so
+            // the leaf budget does not catch it), but each surface still spawns
+            // a real terminal on restore.
+            if surfaces.len() > MAX_PANE_SURFACES {
+                warn!(
+                    "pane has {} surfaces (cap {MAX_PANE_SURFACES}); truncating",
+                    surfaces.len()
+                );
+                surfaces.truncate(MAX_PANE_SURFACES);
+            }
             if surfaces.is_empty() {
                 warn!("pane has no surfaces; adding a default surface");
                 surfaces.push(Default::default());
             }
+            *leaf_budget = leaf_budget.saturating_sub(1);
         }
     }
 }
@@ -1663,5 +1760,97 @@ mod tests {
         }"#;
         let restored: ProjectSession = serde_json::from_str(json).unwrap();
         assert!(restored.is_expanded);
+    }
+
+    #[test]
+    fn validate_layout_converts_legacy_2child_ratio_to_explicit_pair() {
+        // U-007: a 2-child split's legacy `ratio` is promoted to an explicit
+        // `ratios` pair so it survives restore instead of being dropped.
+        let mut node = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: Some(0.3),
+            ratios: None,
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        validate_layout(&mut node);
+        match node {
+            LayoutNode::Split { ratios, .. } => {
+                let rs = ratios.expect("legacy ratio should be promoted to ratios");
+                assert_eq!(rs.len(), 2);
+                assert!((rs[0] - 0.3).abs() < 1e-6, "first ratio preserved: {rs:?}");
+                assert!((rs[1] - 0.7).abs() < 1e-6, "second ratio = 1 - r: {rs:?}");
+            }
+            _ => panic!("expected split"),
+        }
+    }
+
+    #[test]
+    fn validate_layout_drops_legacy_ratio_on_nary_split() {
+        // U-007: an N-ary split's legacy `ratio` is ambiguous; it stays unset
+        // (a warn is logged) rather than being silently honored.
+        let mut node = LayoutNode::Split {
+            direction: "horizontal".to_string(),
+            ratio: Some(0.3),
+            ratios: None,
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        validate_layout(&mut node);
+        match node {
+            LayoutNode::Split { ratios, .. } => {
+                assert!(ratios.is_none(), "N-ary legacy ratio must not be converted")
+            }
+            _ => panic!("expected split"),
+        }
+    }
+
+    #[test]
+    fn validate_layout_caps_total_leaves() {
+        // U-008/U-016: an over-broad layout is trimmed to MAX_LAYOUT_LEAVES.
+        let mut node = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: None,
+            ratios: None,
+            children: (0..100)
+                .map(|_| LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                })
+                .collect(),
+        };
+        validate_layout(&mut node);
+        assert!(
+            node.leaf_count() <= MAX_LAYOUT_LEAVES,
+            "got {} leaves",
+            node.leaf_count()
+        );
+    }
+
+    #[test]
+    fn validate_layout_caps_surfaces_per_pane() {
+        // U-008: a pane is one leaf, but each surface spawns a terminal — cap it.
+        let mut node = LayoutNode::Pane {
+            surfaces: (0..200).map(|_| Default::default()).collect(),
+        };
+        validate_layout(&mut node);
+        match node {
+            LayoutNode::Pane { surfaces, .. } => assert!(surfaces.len() <= MAX_PANE_SURFACES),
+            _ => panic!("expected pane"),
+        }
     }
 }

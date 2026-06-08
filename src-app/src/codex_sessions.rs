@@ -25,13 +25,8 @@ use crate::agent_sessions::{SessionAgent, SessionMeta};
 /// generous so unusual prelude sequences still produce a label.
 const TITLE_SCAN_LIMIT: usize = 256;
 
-/// US-010 (cli-hardening-followup-2026-Q3): per-line byte cap for
-/// `read_line`. Same rationale and value as in
-/// `claude_sessions::MAX_LINE_BYTES` -- the Codex rollout store
-/// (`~/.codex/sessions/YYYY/MM/DD/`) is agent-writable, so a
-/// malicious 500 MB single-line JSONL would otherwise allocate
-/// fully before the outer scan-count guard fires.
-const MAX_LINE_BYTES: u64 = 64 * 1024;
+// US-013: per-line JSONL read cap, centralized (see `crate::limits`).
+use crate::limits::MAX_LINE_BYTES;
 
 /// Cap rendered first-user-message labels at this character count.
 const LABEL_MAX_CHARS: usize = 80;

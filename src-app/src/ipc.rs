@@ -125,12 +125,9 @@ const IPC_STATE_ONLINE: u8 = 0;
 const IPC_STATE_DISABLED: u8 = 1;
 
 /// US-022: hard cap on the bytes a single newline-delimited request may
-/// occupy. `BufRead::lines()`/`read_line()` otherwise accumulate until `\n`
-/// with no bound, so one same-UID peer streaming a multi-GB line with no
-/// newline OOM-kills the GPUI process (every agent pane dies). 256 KiB sits
-/// well above the 64 KiB `send_text` ceiling plus JSON overhead; anything
-/// larger is rejected (`-32600`) and the connection closed.
-const MAX_REQUEST_LEN: u64 = 256 * 1024;
+// US-013: JSON-RPC framing ceiling, centralized (see `crate::limits`). Still
+// accessible as `super::MAX_REQUEST_LEN` from the tests submodule via this use.
+use crate::limits::MAX_REQUEST_LEN;
 
 /// US-022: ceiling on concurrently-served IPC connections. The accept loop
 /// spawns one blocking thread per connection; without a cap a same-UID peer
@@ -449,7 +446,20 @@ fn bind_socket(socket_path: &std::path::Path) -> Option<Listener> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600));
+        // U-031: the 0600 mode is the PRIMARY trust boundary (peer-UID is
+        // defence-in-depth). If chmod fails, the socket keeps its umask-derived
+        // creation mode — possibly group/world-connectable — so fail closed:
+        // remove the socket and refuse to serve rather than expose it.
+        if let Err(e) =
+            std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
+        {
+            log::error!(
+                "IPC server: failed to chmod socket {} to 0600 ({e}); refusing to serve",
+                socket_path.display()
+            );
+            let _ = std::fs::remove_file(socket_path);
+            return None;
+        }
     }
     log::info!("IPC server listening on {}", socket_path.display());
     Some(listener)
