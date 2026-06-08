@@ -973,9 +973,48 @@ mod tests {
         };
         let rs = node.resolved_ratios();
         assert_eq!(rs.len(), 3);
-        assert!(rs.iter().all(|r| r.is_finite() && *r > 0.0));
+        // EP-010 review: post-US-057-parity invariant. NaN/negative are floored,
+        // 2.0 is clamped to 1.0; every ratio is finite and in `[0.01, 1.0]`. The
+        // post-normalize re-clamp (matching `validate_layout`) keeps the floor,
+        // so the sum is ~1.0 but not exactly — the renderer re-normalizes at
+        // paint. Assert the floor + a sane sum band, not `== 1.0`.
+        assert!(rs
+            .iter()
+            .all(|&r| r.is_finite() && (0.01 - 1e-9..=1.0).contains(&r)));
         let sum: f64 = rs.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-9, "ratios must normalize to 1.0");
+        assert!(
+            (sum - 1.0).abs() < 0.05,
+            "ratios must stay near 1.0, got {sum}"
+        );
+    }
+
+    #[test]
+    fn test_resolved_ratios_floor_respected_after_normalize() {
+        // EP-010 review: the SESSION path (`resolved_ratios` -> `sanitize_ratios`)
+        // must honour the 0.01 floor AFTER normalize, matching the config path
+        // (`validate_layout`, see `test_per_child_ratios_floor_respected_after_normalize`).
+        // `[1.0, 0.005]` clamps to `[1.0, 0.01]` (sum 1.01); normalizing alone
+        // would push the second child to ~0.0099 — below the floor. The
+        // post-normalize re-clamp must pull it back to 0.01.
+        let node = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: None,
+            ratios: Some(vec![1.0, 0.005]),
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        let rs = node.resolved_ratios();
+        assert_eq!(rs.len(), 2);
+        assert!(
+            rs.iter().all(|&r| r >= 0.01 - 1e-9),
+            "every ratio must stay at/above the 0.01 floor after normalize, got {rs:?}"
+        );
     }
 
     #[test]
