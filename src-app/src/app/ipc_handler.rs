@@ -203,6 +203,17 @@ pub(crate) fn parse_rename_name(params: &serde_json::Value) -> Option<String> {
 impl PaneFlowApp {
     pub(crate) fn process_ipc_requests(&mut self, cx: &mut Context<Self>) {
         while let Ok(req) = self.ipc_rx.try_recv() {
+            // U-053: the socket thread bounds each request at 5 s. If it
+            // already timed out it set `cancelled` and returned an error to
+            // the client; skip the request entirely so a slow non-idempotent
+            // mutation (workspace.create, surface.split) doesn't run after the
+            // client gave up — a retry would otherwise create duplicate
+            // workspaces/panes. The dropped response channel makes a late
+            // result a no-op regardless, so skipping only avoids wasted work
+            // and the duplicate side effect.
+            if req.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                continue;
+            }
             let result = self.handle_ipc(&req.method, &req.params, cx);
             let _ = req.response_tx.send(result);
         }
@@ -1003,15 +1014,21 @@ impl PaneFlowApp {
                 let tool = read_tool(params);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
-                    upsert_session_state(ws, pid, tool, ai_types::AgentState::Finished, None);
+                    // U-014: key the auto-clear on the RESOLVED session key, not
+                    // the raw `pid`. A legacy no-pid frame is stored under a
+                    // fallback/synthetic key by `upsert_session_state`; the old
+                    // code captured `pid` (None) and the `let Some(pid_key)`
+                    // guard short-circuited, so that session's Finished state
+                    // never auto-cleared and leaked into the sidebar forever.
+                    let session_key =
+                        upsert_session_state(ws, pid, tool, ai_types::AgentState::Finished, None);
                     cx.notify();
 
                     // Auto-clear the session 5 s after stop unless something
                     // else (new prompt_submit, tool_use) bumps it back to
-                    // Thinking. Targets the exact (workspace_id, pid) so
+                    // Thinking. Targets the exact (workspace_id, session_key) so
                     // sibling sessions in the same workspace are untouched.
                     let ws_id = workspace_id;
-                    let target_pid = pid;
                     cx.spawn(
                         async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                             smol::Timer::after(std::time::Duration::from_secs(5)).await;
@@ -1019,13 +1036,12 @@ impl PaneFlowApp {
                                 let _ = this.update(cx, |app, cx| {
                                     if let Some(ws) =
                                         app.workspaces.iter_mut().find(|ws| ws.id == ws_id)
-                                        && let Some(pid_key) = target_pid
                                         && matches!(
-                                            ws.agent_sessions.get(&pid_key).map(|s| &s.state),
+                                            ws.agent_sessions.get(&session_key).map(|s| &s.state),
                                             Some(ai_types::AgentState::Finished)
                                         )
                                     {
-                                        ws.agent_sessions.remove(&pid_key);
+                                        ws.agent_sessions.remove(&session_key);
                                         cx.notify();
                                     }
                                 });
@@ -1140,13 +1156,18 @@ const SYNTHETIC_SESSION_PID_BASE: u32 = 0xFFFF_0000;
 /// PID slot is allocated from the negative u32 space so the row is
 /// still tracked. This keeps the UI consistent during a rolling shim
 /// upgrade where some frames carry `pid` and others don't.
+/// Returns the resolved session key the entry was stored under — the real
+/// `pid` when known, or the fallback/synthetic key chosen for a legacy
+/// no-pid frame. Callers that need to act on the same row later (e.g. the
+/// `ai.stop` auto-clear, U-014) must use THIS key, not the raw `pid`, or a
+/// no-pid session is stored under a synthetic key yet never cleared.
 fn upsert_session_state(
     ws: &mut crate::workspace::Workspace,
     pid: Option<u32>,
     tool: ai_types::AiTool,
     state: ai_types::AgentState,
     active_tool_name: Option<String>,
-) {
+) -> u32 {
     let key = match pid {
         Some(p) => p,
         None => {
@@ -1183,6 +1204,7 @@ fn upsert_session_state(
             session.active_tool_name = active_tool_name;
             session
         });
+    key
 }
 
 // ---------------------------------------------------------------------------

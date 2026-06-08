@@ -294,7 +294,13 @@ pub(super) fn setup_shell_integration(
             if std::fs::create_dir_all(&dir).is_err() {
                 return vec![];
             }
-            let _ = std::fs::write(dir.join(".zshenv"), ZSH_OSC7);
+            // U-022: if the rc write fails, abort activation rather than
+            // hijacking ZDOTDIR to point at a dir with no `.zshenv` — that
+            // would suppress the user's real zsh startup AND give no
+            // integration. Bail before touching `env`.
+            if std::fs::write(dir.join(".zshenv"), ZSH_OSC7).is_err() {
+                return vec![];
+            }
             if let Ok(orig) = std::env::var("ZDOTDIR") {
                 env.insert("PANEFLOW_ORIG_ZDOTDIR".into(), orig);
             }
@@ -307,7 +313,12 @@ pub(super) fn setup_shell_integration(
                 return vec![];
             }
             let rcfile = dir.join("bashrc");
-            let _ = std::fs::write(&rcfile, BASH_OSC7);
+            // U-022: abort if the write fails — handing bash `--rcfile <path>`
+            // for a file that doesn't exist breaks startup instead of
+            // gracefully falling back to the user's normal `.bashrc`.
+            if std::fs::write(&rcfile, BASH_OSC7).is_err() {
+                return vec![];
+            }
             vec!["--rcfile".into(), to_shell_path(&rcfile)]
         }
         "fish" => {
@@ -316,7 +327,11 @@ pub(super) fn setup_shell_integration(
                 return vec![];
             }
             let initfile = dir.join("osc7.fish");
-            let _ = std::fs::write(&initfile, FISH_OSC7);
+            // U-022: abort if the write fails — sourcing a missing init file
+            // errors fish startup rather than degrading cleanly.
+            if std::fs::write(&initfile, FISH_OSC7).is_err() {
+                return vec![];
+            }
             vec![
                 "--init-command".into(),
                 format!("source {}", to_shell_path(&initfile)),
@@ -334,7 +349,11 @@ pub(super) fn setup_shell_integration(
                 return vec![];
             }
             let initfile = dir.join("osc7.ps1");
-            let _ = std::fs::write(&initfile, PWSH_OSC7);
+            // U-022: abort if the write fails — dot-sourcing a missing script
+            // breaks the pwsh session rather than degrading cleanly.
+            if std::fs::write(&initfile, PWSH_OSC7).is_err() {
+                return vec![];
+            }
             // Single-quote the path and escape any embedded single
             // quotes ('' is the literal single-quote inside a single-
             // quoted PowerShell string). Guards against pathological

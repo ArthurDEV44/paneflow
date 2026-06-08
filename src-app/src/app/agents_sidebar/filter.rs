@@ -103,24 +103,44 @@ pub(crate) fn nothing_matches(projects: &[Project], lowered_needle: &str) -> boo
 /// `&haystack[end..]`). The lowered haystack/needle are only used to
 /// locate the hit -- the slices returned point into the original.
 pub(crate) fn match_positions(haystack: &str, lowered_needle: &str) -> Option<(usize, usize)> {
-    if lowered_needle.is_empty() || lowered_needle.len() > haystack.len() {
+    if lowered_needle.is_empty() {
         return None;
     }
-    let lower_haystack = haystack.to_lowercase();
-    let start = lower_haystack.find(lowered_needle)?;
-    // to_lowercase can change byte length for non-ASCII text. For ASCII
-    // it is a no-op, so the byte index transfers directly. For
-    // non-ASCII titles the start byte still maps because to_lowercase
-    // is per-grapheme and preserves the position of each grapheme's
-    // first byte in practice for Latin scripts. Worst case the slice
-    // is off-by-one and we render no highlight -- never panic.
-    if !haystack.is_char_boundary(start) {
-        return None;
+    // U-012: `to_lowercase()` can change byte length and even char count for
+    // non-ASCII text (İ→i̇ is 1→2 chars, ß→ss is 1→2 bytes), so locating the
+    // hit in the lowered string and transferring that byte offset to the
+    // ORIGINAL drifts on non-ASCII titles (the old form fell back to "no
+    // highlight" via char-boundary guards). Build the lowered haystack while
+    // recording, at each original char start, the (lowered_offset,
+    // original_offset) pair, then map the hit back to a valid original
+    // boundary. For ASCII this is identical to the original byte indices.
+    let mut lowered = String::with_capacity(haystack.len());
+    let mut map: Vec<(usize, usize)> = Vec::with_capacity(haystack.len());
+    for (orig_idx, ch) in haystack.char_indices() {
+        map.push((lowered.len(), orig_idx));
+        for lc in ch.to_lowercase() {
+            lowered.push(lc);
+        }
     }
-    let end = start + lowered_needle.len();
-    if end > haystack.len() || !haystack.is_char_boundary(end) {
-        return None;
-    }
+    // Sentinel so a match ending exactly at end-of-string maps cleanly.
+    map.push((lowered.len(), haystack.len()));
+
+    let lo_start = lowered.find(lowered_needle)?;
+    let lo_end = lo_start + lowered_needle.len();
+
+    // Map lowered byte offsets back to original byte offsets. A hit that
+    // begins or ends in the MIDDLE of a lowered multi-byte expansion (e.g.
+    // inside the "ss" a lowered ß produced) has no clean original boundary —
+    // render no highlight rather than slice mid-codepoint. `map` is sorted by
+    // lowered offset, so binary-search it.
+    let start = map
+        .binary_search_by_key(&lo_start, |&(lo, _)| lo)
+        .ok()
+        .map(|i| map[i].1)?;
+    let end = map
+        .binary_search_by_key(&lo_end, |&(lo, _)| lo)
+        .ok()
+        .map(|i| map[i].1)?;
     Some((start, end))
 }
 
@@ -214,6 +234,33 @@ mod tests {
         assert_eq!(&title[..s], "Refactor ");
         assert_eq!(&title[s..e], "side");
         assert_eq!(&title[e..], "bar");
+    }
+
+    #[test]
+    fn match_positions_maps_non_ascii_offsets_to_original() {
+        // U-012: the hit's byte range must index the ORIGINAL string, even
+        // when `to_lowercase()` changed byte lengths before the match.
+        // "Café" — the needle "fé" follows the multi-byte 'é' position.
+        let title = "Café au lait";
+        let (s, e) = match_positions(title, "fé").expect("match");
+        assert_eq!(&title[s..e], "fé", "range must slice the original cleanly");
+        assert_eq!(&title[..s], "Ca");
+
+        // A leading uppercase multi-byte char: needle "é" against "Éclair".
+        let title2 = "Éclair";
+        let (s2, e2) = match_positions(title2, "é").expect("match");
+        assert_eq!(
+            &title2[s2..e2],
+            "É",
+            "lowered 'é' maps back to original 'É'"
+        );
+        assert_eq!(s2, 0);
+
+        // German ß lowercases to itself (already lowercase) — a plain
+        // multi-byte match still slices the original safely.
+        let title3 = "straße";
+        let (s3, e3) = match_positions(title3, "ße").expect("match");
+        assert_eq!(&title3[s3..e3], "ße");
     }
 
     #[test]

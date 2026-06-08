@@ -783,9 +783,9 @@ impl PaneFlowApp {
     ) -> Option<usize> {
         self.workspaces.iter().position(|ws| {
             ws.root.as_ref().is_some_and(|root| {
-                root.collect_leaves()
-                    .iter()
-                    .any(|pane| pane.read(cx).contains_terminal(terminal))
+                // U-013: zero-alloc — `any_leaf` short-circuits without the
+                // `collect_leaves()` Vec<Entity<Pane>> clone the old form built.
+                root.any_leaf(&mut |pane| pane.read(cx).contains_terminal(terminal))
             })
         })
     }
