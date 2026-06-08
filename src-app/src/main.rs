@@ -546,16 +546,24 @@ impl PaneFlowApp {
     /// Silently skipped if the workspace is not in a git repo or watcher is unavailable.
     fn watch_git_dir(&mut self, ws: &Workspace) {
         if let Some(ref git_dir) = ws.git_dir {
-            let count = self.git_watch_counts.entry(git_dir.clone()).or_insert(0);
-            *count += 1;
-            if *count == 1 {
-                // First workspace watching this git dir — register with OS
+            let current = self.git_watch_counts.get(git_dir).copied().unwrap_or(0);
+            if current == 0 {
+                // First workspace watching this git dir — register with OS.
+                // U-018: only commit the refcount when `watch()` succeeds. The
+                // old form incremented to 1 before checking, so a transient
+                // failure pinned the count at 1 and every later workspace
+                // sharing the repo saw count>1 and never retried the
+                // registration — the dir stayed permanently unwatched. On
+                // failure we return without recording the entry so a later
+                // workspace re-attempts the watch.
                 if let Some(ref mut watcher) = self.git_watcher
                     && let Err(e) = watcher.watch(git_dir, notify::RecursiveMode::NonRecursive)
                 {
                     log::warn!("git watcher: failed to watch {}: {e}", git_dir.display());
+                    return;
                 }
             }
+            *self.git_watch_counts.entry(git_dir.clone()).or_insert(0) += 1;
         }
     }
 

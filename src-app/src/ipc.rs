@@ -93,7 +93,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
-    atomic::{AtomicU8, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     mpsc,
 };
 use std::time::Duration;
@@ -113,6 +113,13 @@ pub struct IpcRequest {
     pub params: Value,
     pub _id: Value,
     pub response_tx: mpsc::Sender<Value>,
+    /// U-053: set by the socket thread when it gives up waiting (the 5 s
+    /// dispatch timeout fired and the client already got an error). The GPUI
+    /// consumer checks this before running the handler so a slow non-idempotent
+    /// mutation (workspace.create, surface.split) can't execute after the
+    /// client gave up — otherwise a client retry would create duplicate
+    /// workspaces/panes.
+    pub cancelled: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -760,25 +767,44 @@ fn dispatch_to_gpui(
     id: Value,
 ) -> Value {
     let (resp_tx, resp_rx) = mpsc::channel();
+    // U-053: shared cancel flag — set if we time out below so the GPUI
+    // consumer skips a request the client already gave up on.
+    let cancelled = Arc::new(AtomicBool::new(false));
     let ipc_req = IpcRequest {
         method: method.clone(),
         params,
         _id: id.clone(),
         response_tx: resp_tx,
+        cancelled: Arc::clone(&cancelled),
     };
 
     if request_tx.send(ipc_req).is_err() {
         return json!({"jsonrpc": "2.0", "error": {"code": -32000, "message": "App shutting down"}, "id": id});
     }
 
-    // Wait for GPUI thread to process (timeout 5s)
-    match resp_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+    // Wait for GPUI thread to process (timeout 5s).
+    await_or_cancel(&resp_rx, &cancelled, std::time::Duration::from_secs(5), id)
+}
+
+/// Wait up to `timeout` for the GPUI handler's response. On timeout, set
+/// `cancelled` so the GPUI consumer skips the (possibly not-yet-run) handler
+/// — U-053: prevents a non-idempotent mutation from executing after the
+/// client received a timeout error and (likely) retried. Split out so the
+/// timeout/cancel contract is unit-testable without a 5 s wait.
+fn await_or_cancel(
+    resp_rx: &mpsc::Receiver<Value>,
+    cancelled: &AtomicBool,
+    timeout: Duration,
+    id: Value,
+) -> Value {
+    match resp_rx.recv_timeout(timeout) {
         // US-001: handlers may return a structured JSON-RPC error via the
         // `_jsonrpc_error` sentinel. `promote_response` rewrites those into
         // the proper `error` envelope and leaves all other shapes wrapped
         // under `result`.
         Ok(result) => crate::app::ipc_handler::promote_response(result, id),
         Err(_) => {
+            cancelled.store(true, Ordering::SeqCst);
             json!({"jsonrpc": "2.0", "error": {"code": -32001, "message": "Request timeout"}, "id": id})
         }
     }
@@ -996,5 +1022,51 @@ mod framing_tests {
             read_capped_line(&mut cur, &mut line).unwrap(),
             LineRead::Got
         );
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::await_or_cancel;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn await_or_cancel_sets_flag_and_errors_on_timeout() {
+        // U-053: when the GPUI handler doesn't respond within the deadline,
+        // await_or_cancel must (a) return a -32001 timeout envelope to the
+        // client AND (b) set the shared cancel flag so the GPUI consumer skips
+        // the not-yet-run handler — preventing a duplicate non-idempotent
+        // mutation on the client's retry. _tx is kept alive so we exercise the
+        // Timeout path (not Disconnected); a short deadline keeps the test fast.
+        let (_tx, rx) = mpsc::channel::<serde_json::Value>();
+        let cancelled = AtomicBool::new(false);
+        let resp = await_or_cancel(&rx, &cancelled, Duration::from_millis(20), json!(7));
+
+        assert!(
+            cancelled.load(Ordering::Acquire),
+            "timeout must set the cancel flag so the GPUI side skips the request"
+        );
+        assert_eq!(resp["error"]["code"], -32001);
+        assert_eq!(resp["id"], 7);
+    }
+
+    #[test]
+    fn await_or_cancel_passes_through_response_without_cancelling() {
+        // The happy path: a response arrives before the deadline → no cancel,
+        // result promoted under `result` (no `_jsonrpc_error` sentinel here).
+        let (tx, rx) = mpsc::channel::<serde_json::Value>();
+        tx.send(json!({"status": "ok"})).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let resp = await_or_cancel(&rx, &cancelled, Duration::from_secs(5), json!(3));
+
+        assert!(
+            !cancelled.load(Ordering::Acquire),
+            "a timely response must not set the cancel flag"
+        );
+        assert_eq!(resp["result"]["status"], "ok");
+        assert_eq!(resp["id"], 3);
     }
 }

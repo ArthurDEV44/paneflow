@@ -594,8 +594,8 @@ impl Render for MarkdownView {
             // soft-wrap. Without a bounded outer width those `w_full()` calls
             // resolve to the intrinsic content width and stop wrapping.
             let mut col = div().flex().flex_col().gap(px(12.)).p(px(16.)).w_full();
-            for node in ast {
-                col = col.child(render_node(node, palette));
+            for (idx, node) in ast.iter().enumerate() {
+                col = col.child(render_node(idx, node, palette));
             }
             col.into_any_element()
         } else {
@@ -976,11 +976,14 @@ fn load_from_disk(path: &std::path::Path) -> (Option<Vec<MdNode>>, Option<Shared
 // Render helpers — pure functions, no `&mut Context` needed.
 // ---------------------------------------------------------------------------
 
-fn render_node(node: &MdNode, palette: MarkdownPalette) -> AnyElement {
+fn render_node(idx: usize, node: &MdNode, palette: MarkdownPalette) -> AnyElement {
     match node {
         MdNode::Heading { level, spans } => render_heading(*level, spans, palette),
         MdNode::Paragraph { spans } => render_paragraph(spans, palette).into_any_element(),
-        MdNode::CodeBlock { lang: _, text } => render_code_block(text, palette),
+        // U-020: the sibling index disambiguates the scroll-state id of two
+        // code blocks with identical text — without it both get the same
+        // ElementId and their horizontal scroll positions couple.
+        MdNode::CodeBlock { lang: _, text } => render_code_block(idx, text, palette),
         MdNode::BlockQuote { children } => render_blockquote(children, palette),
         MdNode::List {
             ordered_start,
@@ -1117,7 +1120,7 @@ fn render_paragraph(spans: &[Span], palette: MarkdownPalette) -> impl IntoElemen
     row
 }
 
-fn render_code_block(text: &str, palette: MarkdownPalette) -> AnyElement {
+fn render_code_block(idx: usize, text: &str, palette: MarkdownPalette) -> AnyElement {
     // Code blocks contain pre-formatted content that must NOT soft-wrap
     // (preserves indentation + intent). Long lines previously clipped at the
     // pane edge; following Zed's `markdown.rs` pattern (`overflow_x_scroll`
@@ -1127,6 +1130,8 @@ fn render_code_block(text: &str, palette: MarkdownPalette) -> AnyElement {
     // sibling blocks.
     use std::hash::{DefaultHasher, Hash, Hasher};
     let mut hasher = DefaultHasher::new();
+    // U-020: hash (idx, text) so two identical code blocks get distinct ids.
+    idx.hash(&mut hasher);
     text.hash(&mut hasher);
     let id_hash = hasher.finish();
     div()
@@ -1154,8 +1159,8 @@ fn render_blockquote(children: &[MdNode], palette: MarkdownPalette) -> AnyElemen
         .pl(px(12.))
         .w_full()
         .text_color(palette.blockquote_text);
-    for child in children {
-        col = col.child(render_node(child, palette));
+    for (idx, child) in children.iter().enumerate() {
+        col = col.child(render_node(idx, child, palette));
     }
     col.into_any_element()
 }
@@ -1186,8 +1191,8 @@ fn render_list(
                 .child(marker),
         );
         let mut item_body = div().flex().flex_col().gap(px(4.)).flex_1().min_w(px(0.));
-        for child in item {
-            item_body = item_body.child(render_node(child, palette));
+        for (cidx, child) in item.iter().enumerate() {
+            item_body = item_body.child(render_node(cidx, child, palette));
         }
         item_row = item_row.child(item_body);
         col = col.child(item_row);
@@ -1301,8 +1306,8 @@ fn render_footnote(label: &str, children: &[MdNode], palette: MarkdownPalette) -
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .child(SharedString::from(format!("[^{}]", label))),
     );
-    for child in children {
-        col = col.child(render_node(child, palette));
+    for (idx, child) in children.iter().enumerate() {
+        col = col.child(render_node(idx, child, palette));
     }
     col.into_any_element()
 }
