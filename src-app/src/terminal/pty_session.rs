@@ -28,6 +28,7 @@ use super::listener::{SpikeTermSize, ZedListener};
 use super::service_detector::{ServiceInfo, detect_framework, parse_service_line};
 use super::shell::{resolve_default_shell, setup_shell_integration};
 use super::types::SharedTerm;
+use crate::limits::{MAX_CHARS, MAX_OSC52_BYTES};
 
 /// Default scrollback history length, in lines. Matches Zed's
 /// `DEFAULT_SCROLL_HISTORY_LINES`. `TermConfig::default()` is `0`, which
@@ -277,7 +278,10 @@ pub struct TerminalState {
     cwd_poll_ticks: u32,
     /// Ports already reported via ServiceDetected (dedup guard).
     /// Cleared on ChildExit so a restarted server is re-detected.
-    reported_ports: Vec<u16>,
+    /// U-052: a `HashSet` bounds membership to O(1) and the structure to a
+    /// flat per-distinct-port cost, vs. the old `Vec` whose linear `.contains`
+    /// and unbounded growth scaled with every detected service.
+    reported_ports: std::collections::HashSet<u16>,
     /// Timestamp of the most recent keystroke, used by latency probes
     /// to measure total keystroke-to-pixel time. Debug builds only.
     /// Note: on rapid keystrokes before a render frame, earlier timestamps are overwritten.
@@ -292,7 +296,24 @@ pub struct TerminalState {
     /// kill timer under the GPUI scheduler instead of leaking an
     /// orphan OS thread per closed pane.
     background_executor: Option<gpui::BackgroundExecutor>,
+    /// US-012: input written through `write_to_pty` while the terminal is
+    /// still display-only (the PTY opens on a background thread and is
+    /// installed later by [`promote`](Self::promote)). The display-only
+    /// notifier silently drops every write, so without this queue an
+    /// auto-launch command issued the instant a thread mounts (the
+    /// Agents-view "New thread" picker) — or a keystroke typed in the brief
+    /// pre-promotion window — would be lost. [`promote`](Self::promote)
+    /// flushes it in order. `Mutex` (not `RefCell`) keeps `TerminalState`
+    /// `Send` and matches the crate's interior-mutability idiom; the lock is
+    /// uncontended (main thread only).
+    pending_input: std::sync::Mutex<Vec<Cow<'static, [u8]>>>,
 }
+
+/// Cap on input buffered during the pre-promotion window. Generous for a
+/// launch command plus a burst of typing, tight enough that a terminal that
+/// never promotes (spawn failure — `promote` is never called) cannot
+/// accumulate input without bound.
+const MAX_PENDING_INPUT_BYTES: usize = 64 * 1024;
 
 /// The cheap, render-thread-safe half of a spawn: resolved shell, assembled
 /// child env, cwd, and grid size. Produced by
@@ -465,8 +486,16 @@ impl TerminalState {
         // contract stays unit-testable (the mockable `PtyBackend::spawn` seam is
         // gone — EP-002 US-004).
         let env = assemble_pty_env(env, workspace_id, surface_id, merged_env);
-        let cwd = working_directory
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+        // U-026: on `current_dir()` failure (deleted cwd, permission loss),
+        // fall back to the user's home dir rather than `/` — spawning a shell
+        // at the filesystem root is surprising and strands the user. `/` stays
+        // only as the absolute last resort if even the home dir is unknown.
+        let cwd = working_directory.unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|e| {
+                log::warn!("pty: current_dir() failed ({e}); falling back to home dir");
+                dirs::home_dir().unwrap_or_else(|| "/".into())
+            })
+        });
         let (cols, rows) = initial_size.unwrap_or((120, 40));
         SpawnParams {
             shell,
@@ -603,6 +632,15 @@ impl TerminalState {
         self.osc52_mode = Osc52Mode::CopyOnly;
         self.cursor_blinking = true;
         self.dirty = true;
+        // Flush input queued while display-only (US-012): the launch command
+        // an Agents-view thread issues the instant it mounts, plus any
+        // keystrokes typed before the off-thread fork resolved. Order is
+        // preserved; the now-live `Pty` notifier delivers each to the child.
+        if let Ok(mut pending) = self.pending_input.lock() {
+            for input in pending.drain(..) {
+                self.notifier.notify(input);
+            }
+        }
     }
 
     /// Wire a GPUI background executor for the grace-period force-kill
@@ -670,10 +708,11 @@ impl TerminalState {
             dirty: true,
             output_scan_ticks: 0,
             cwd_poll_ticks: 0,
-            reported_ports: Vec::new(),
+            reported_ports: std::collections::HashSet::new(),
             #[cfg(debug_assertions)]
             last_keystroke_at: None,
             background_executor: None,
+            pending_input: std::sync::Mutex::new(Vec::new()),
         };
         (state, events_tx)
     }
@@ -804,9 +843,10 @@ impl TerminalState {
                 self.notifier.notify(text.into_bytes());
             }
             AlacEvent::ClipboardStore(_selection, text) => {
-                // Cap at 100 KiB to prevent memory DoS from malicious programs
-                const MAX_OSC52_BYTES: usize = 100 * 1024;
-                if self.osc52_mode != Osc52Mode::Disabled && text.len() <= MAX_OSC52_BYTES {
+                // Cap to prevent memory DoS from malicious programs (crate::limits).
+                let within_cap =
+                    self.osc52_mode != Osc52Mode::Disabled && text.len() <= MAX_OSC52_BYTES;
+                if within_cap {
                     self.pending_clipboard_ops.push(ClipboardOp::Store(text));
                 }
             }
@@ -994,7 +1034,7 @@ impl TerminalState {
                     info.label = global_label.clone();
                     info.is_frontend = global_is_frontend;
                 }
-                self.reported_ports.push(info.port);
+                self.reported_ports.insert(info.port);
                 results.push(info);
             }
         }
@@ -1010,7 +1050,30 @@ impl TerminalState {
         // deliberately bypass this by calling `self.notifier.notify` directly.
         self.keyboard_input_sent
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        self.notifier.notify(input);
+        self.notify_or_buffer(input.into());
+    }
+
+    /// Send input to the live PTY, or queue it when the terminal is still
+    /// display-only (US-012 pre-promotion window). The display-only notifier
+    /// drops every write, so an auto-launch command (Agents view) or a
+    /// keystroke typed before the off-thread fork resolved would otherwise be
+    /// lost; [`promote`](Self::promote) flushes the queue in order. Bounded by
+    /// [`MAX_PENDING_INPUT_BYTES`] so a never-promoted terminal can't grow it
+    /// without bound.
+    fn notify_or_buffer(&self, input: Cow<'static, [u8]>) {
+        if self.notifier.0.is_pty() {
+            self.notifier.notify(input);
+            return;
+        }
+        if input.is_empty() {
+            return;
+        }
+        if let Ok(mut pending) = self.pending_input.lock() {
+            let queued: usize = pending.iter().map(|c| c.len()).sum();
+            if queued + input.len() <= MAX_PENDING_INPUT_BYTES {
+                pending.push(input);
+            }
+        }
     }
 
     /// US-002: write to the PTY WITHOUT marking the session user-initiated.
@@ -1045,7 +1108,6 @@ impl TerminalState {
     /// keeps the lock bounded to the most-recent `MAX_LINES` rows.
     pub fn extract_scrollback_from(term: &SharedTerm) -> Option<String> {
         const MAX_LINES: usize = 4000;
-        const MAX_CHARS: usize = 400_000;
 
         // Read-only scrollback drain for session persistence.
         let term = term.lock_unfair();
@@ -1928,6 +1990,80 @@ mod tests {
         let (state, _events_tx) = TerminalState::new_pending(80, 24);
         assert!(!state.notifier.0.is_pty());
         assert_eq!(state.child_pid, 0);
+    }
+
+    #[test]
+    fn write_to_pty_buffers_input_while_display_only() {
+        // US-012 regression: the Agents-view "New thread" picker writes the
+        // launch command the instant a thread mounts — before the off-thread
+        // fork promotes the PTY. The display-only notifier drops writes, so
+        // without this queue the command (e.g. `claude`) is lost and the
+        // terminal opens to a bare shell. `write_to_pty` must buffer instead.
+        let (state, _events_tx) = TerminalState::new_pending(80, 24);
+        assert!(!state.notifier.0.is_pty());
+        state.write_to_pty(b"claude\r".to_vec());
+        let queued = state
+            .pending_input
+            .lock()
+            .expect("pending_input lock")
+            .clone();
+        assert_eq!(queued, vec![Cow::from(b"claude\r".to_vec())]);
+    }
+
+    #[test]
+    fn pending_input_is_bounded() {
+        // A terminal that never promotes (spawn failure) must not accumulate
+        // input without bound: writes past the cap are dropped, not queued.
+        let (state, _events_tx) = TerminalState::new_pending(80, 24);
+        let chunk = vec![b'x'; 8 * 1024];
+        for _ in 0..16 {
+            state.write_to_pty(chunk.clone());
+        }
+        let queued: usize = state
+            .pending_input
+            .lock()
+            .expect("pending_input lock")
+            .iter()
+            .map(|c| c.len())
+            .sum();
+        assert!(
+            queued <= MAX_PENDING_INPUT_BYTES,
+            "buffered {queued} bytes exceeds the {MAX_PENDING_INPUT_BYTES} cap"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn promote_flushes_buffered_input_into_grid() {
+        // US-012 end-to-end: input written while display-only must reach the
+        // child after promotion. Mirrors the synchronous `new` composition
+        // (new_pending + open_pty_and_eventloop + promote) but injects a write
+        // *between* new_pending and promote — the exact Agents-view ordering.
+        let params = TerminalState::resolve_spawn_params(None, 1, 1, Some((80, 24)), None);
+        let (mut state, events_tx) = TerminalState::new_pending(params.cols, params.rows);
+        // Buffered while display-only — the live notifier does not exist yet.
+        state.write_to_pty(b"echo PANEFLOW_FLUSH_OK\n".to_vec());
+        assert!(!state.notifier.0.is_pty());
+
+        let term = state.term.clone();
+        let spawned = TerminalState::open_pty_and_eventloop(params, term, events_tx, None)
+            .expect("US-012: open a PTY-backed terminal via tty::new + EventLoop");
+        state.promote(spawned);
+        assert!(state.notifier.0.is_pty());
+
+        let mut found = false;
+        for _ in 0..60 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            state.sync();
+            if grid_to_string(&state.term).contains("PANEFLOW_FLUSH_OK") {
+                found = true;
+                break;
+            }
+        }
+        assert!(
+            found,
+            "US-012: input buffered before promotion never reached the shell"
+        );
     }
 
     #[test]

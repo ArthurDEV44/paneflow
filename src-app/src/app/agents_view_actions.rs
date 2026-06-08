@@ -367,8 +367,11 @@ impl PaneFlowApp {
         // a CLI agent, auto-run its launch command so opening the thread
         // drops the user straight into the agent. The command honors
         // `claude_code_bypass_permissions` via `launch_command`. Writing
-        // immediately is safe: the PTY buffers input until the shell is
-        // ready (same pattern as the discovery-view login terminal).
+        // immediately is safe even though `with_cwd` opens the PTY on a
+        // background thread (US-012): `send_command` → `write_to_pty`
+        // buffers into the display-only terminal's `pending_input` queue and
+        // `TerminalState::promote` flushes it the moment the PTY goes live,
+        // so the command is never dropped on the pre-promotion race.
         // Cache hits (in-session re-selection) skip this, so a running
         // agent is never relaunched on navigation.
         if let Some(agent) = terminal_agent {
