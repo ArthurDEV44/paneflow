@@ -160,6 +160,11 @@ struct SelfUpdateState {
     /// construction; the PRD's "three consecutive failures" requirement
     /// holds without an explicit reset.
     update_attempt_count: u32,
+    /// Monotonic token identifying the current `Downloading` attempt (EP-002,
+    /// U-015). Bumped each time the flow enters `Downloading`; the per-attempt
+    /// watchdog captures the value and only fires if it still matches — so a
+    /// stale watchdog from a superseded attempt can't reset a newer one.
+    download_generation: u64,
 }
 
 /// US-053: docked agent-sessions sidebar state (visibility, per-agent

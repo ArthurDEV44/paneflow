@@ -56,6 +56,9 @@ pub fn error_category_tag(err: &UpdateError) -> &'static str {
     match err {
         UpdateError::Network(_) => "network",
         UpdateError::ReleaseAssetMissing { .. } => "network",
+        // A stalled download/install buckets with network: the dominant cause
+        // is a half-open TCP or a mirror that accepts then stalls (U-002).
+        UpdateError::Timeout => "network",
         UpdateError::IntegrityMismatch { .. } => "signature",
         UpdateError::DiskFull { .. } => "disk",
         UpdateError::Fuse2Missing
@@ -179,6 +182,7 @@ mod tests {
             error_category_tag(&UpdateError::Other("x".into())),
             "unknown"
         );
+        assert_eq!(error_category_tag(&UpdateError::Timeout), "network");
     }
 
     #[test]

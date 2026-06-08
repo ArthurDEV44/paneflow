@@ -269,6 +269,18 @@ pub(crate) fn install_sigint_watcher(tool: &str) {
     });
 }
 
+/// Ceiling on concurrent detached reaper threads (U-025). A user mashing
+/// Ctrl+C while the IPC peer is wedged would otherwise leak one stuck thread +
+/// child per keypress with no bound. Past this many in-flight reapers we drop
+/// the stop (this one Ctrl+C just doesn't clear the loader) rather than grow
+/// threads unboundedly. 8 covers any realistic burst of legitimate, fast hooks.
+#[cfg(unix)]
+const MAX_INFLIGHT_REAPERS: usize = 8;
+
+/// Live count of detached reaper threads spawned by [`send_interrupt_stop`].
+#[cfg(unix)]
+static INFLIGHT_REAPERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Spawn `paneflow-ai-hook Stop` with `{}` piped to stdin. Best-effort;
 /// any failure is silent (worst case: this Ctrl+C doesn't clear the
 /// loader, but the shim and the child remain unaffected).
@@ -279,17 +291,35 @@ pub(crate) fn install_sigint_watcher(tool: &str) {
 /// thread stays responsive, so the next Ctrl+C lands as a fresh `ai.stop`
 /// rather than queuing behind the previous one. Without the helper, a
 /// dropped `Child` would leak a zombie until shim exit.
+///
+/// U-025: the reaper count is bounded by [`MAX_INFLIGHT_REAPERS`] — once that
+/// many hooks are simultaneously stuck, further Ctrl+C stops are dropped so a
+/// wedged peer can't drive unbounded thread/child growth. We deliberately keep
+/// the `{}`-on-stdin contract (so the hook reads a valid empty payload) and do
+/// NOT kill the hook on a deadline: a slow-but-progressing socket write is a
+/// legitimate stop we don't want to interrupt.
 #[cfg(unix)]
 pub(crate) fn send_interrupt_stop(hook_path: &Path, tool: &str) {
-    let Ok(mut child) = std::process::Command::new(hook_path)
+    use std::sync::atomic::Ordering;
+
+    // Reserve a reaper slot up front; back out (and drop this stop) if the
+    // ceiling is already reached. fetch_add returns the prior value.
+    if INFLIGHT_REAPERS.fetch_add(1, Ordering::AcqRel) >= MAX_INFLIGHT_REAPERS {
+        INFLIGHT_REAPERS.fetch_sub(1, Ordering::AcqRel);
+        return;
+    }
+
+    let spawned = std::process::Command::new(hook_path)
         .arg("Stop")
         .env("PANEFLOW_AI_TOOL", tool)
         .env("PANEFLOW_AI_PID", std::process::id().to_string())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()
-    else {
+        .spawn();
+    let Ok(mut child) = spawned else {
+        // Spawn failed: release the reserved slot.
+        INFLIGHT_REAPERS.fetch_sub(1, Ordering::AcqRel);
         return;
     };
     if let Some(mut stdin) = child.stdin.take() {
@@ -297,5 +327,6 @@ pub(crate) fn send_interrupt_stop(hook_path: &Path, tool: &str) {
     }
     std::thread::spawn(move || {
         let _ = child.wait();
+        INFLIGHT_REAPERS.fetch_sub(1, Ordering::AcqRel);
     });
 }
