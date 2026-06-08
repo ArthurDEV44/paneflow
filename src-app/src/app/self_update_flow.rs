@@ -397,6 +397,26 @@ impl PaneFlowApp {
             _ => return,
         };
 
+        // No trust anchor baked into this build (a dev build, or a release cut
+        // before the US-002 signing keys were provisioned). Refuse to start ANY
+        // installer before touching disk. `fetch_and_verify` already fails
+        // closed on a keyless build (signature.rs), but for AppImage that
+        // rejection only fires *after* `appimageupdatetool -O` has rewritten the
+        // live binary in place — mutating a binary we can never verify. Bailing
+        // here keeps every install path verify-before-side-effect and shows a
+        // clear message instead of a silently corrupted AppImage.
+        if !update::signature::has_embedded_key() {
+            self.push_toast(
+                "This build can't self-update (unsigned). Download the latest version from the releases page.".to_string(),
+                vec![ToastAction::OpenReleasesPage(
+                    "https://github.com/ArthurDEV44/paneflow/releases".to_string(),
+                )],
+                TOAST_HOLD_MS * 4,
+                cx,
+            );
+            return;
+        }
+
         // Use the cached install method. The install location never changes
         // at runtime, so one probe at startup is enough.
         let method = self.self_update.install_method.clone();
