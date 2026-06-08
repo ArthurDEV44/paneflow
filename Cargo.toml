@@ -6,6 +6,7 @@ members = [
     "crates/paneflow-config",
     "crates/paneflow-mcp",
     "crates/paneflow-mcp-install",
+    "crates/paneflow-process",
     "crates/paneflow-shim",
     "crates/paneflow-telemetry",
     "src-app",
@@ -38,6 +39,7 @@ anyhow = "1"
 
 # Internal crates
 paneflow-config = { path = "crates/paneflow-config" }
+paneflow-process = { path = "crates/paneflow-process" }
 paneflow-telemetry = { path = "crates/paneflow-telemetry" }
 
 # Workspace-wide clippy lint policy (US-007). Mirrors the mandatory
