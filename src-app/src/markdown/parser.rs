@@ -219,8 +219,12 @@ impl Walker {
             Event::Code(text) => {
                 let mut style = self.style;
                 style.code = true;
+                // U-019: inline code reaches the renderer via `push_span`, NOT
+                // `push_text`, so it must be bidi/zero-width-stripped here too —
+                // otherwise `` `\u{202E}txet.exe` `` renders reversed and the AC's
+                // "every rendered span" guarantee leaks through code spans.
                 self.push_span(Span {
-                    text: text.into_string(),
+                    text: strip_bidi_zero_width(text.into_string()),
                     style,
                     link_url: self.link_url.clone(),
                 });
@@ -446,6 +450,11 @@ impl Walker {
     /// content. CodeBlock frames receive raw text concatenated into `text`;
     /// table cells append into `current_cell`; everything else uses `push_span`.
     fn push_text(&mut self, text: String) {
+        // U-019: strip bidi-control / zero-width code points from ALL ingress
+        // text (paragraphs, headings, list items, table cells, code) so a
+        // hostile .md can't visually reorder or hide any rendered span — not
+        // just the `[image:]` placeholder.
+        let text = strip_bidi_zero_width(text);
         if text.is_empty() {
             return;
         }
@@ -536,6 +545,22 @@ impl Walker {
 /// defence-in-depth so a multi-kilobyte string can't bloat a one-line marker.
 const MAX_PLACEHOLDER_CHARS: usize = 256;
 
+/// Remove bidi-control / zero-width code points from `text` (U-019). Shared by
+/// `push_text` and the inline-`Event::Code` arm so EVERY rendered span — body,
+/// heading, list item, table cell, image placeholder, AND inline code — is
+/// sanitized, not just the `[image:]` placeholder. No length cap (unlike
+/// `sanitize_placeholder`); only re-allocates when such a char is actually
+/// present, so the common (clean) path is allocation-free.
+fn strip_bidi_zero_width(text: String) -> String {
+    if text.chars().any(is_bidi_or_zero_width) {
+        text.chars()
+            .filter(|&c| !is_bidi_or_zero_width(c))
+            .collect()
+    } else {
+        text
+    }
+}
+
 /// True for Unicode bidi-control and zero-width code points. These carry no
 /// legitimate meaning inside a `[image: …]` elision marker but let hostile
 /// `.md` content reorder the visible label (bidi overrides) or hide/inflate it
@@ -550,6 +575,13 @@ fn is_bidi_or_zero_width(c: char) -> bool {
         | '\u{202A}'..='\u{202E}'
         // Isolates: LRI, RLI, FSI, PDI.
         | '\u{2066}'..='\u{2069}'
+        // Deprecated bidi/shaping format chars (still processed by some text
+        // engines): inhibit/activate symmetric swapping + Arabic form shaping,
+        // national/nominal digit shapes.
+        | '\u{206A}'..='\u{206F}'
+        // Interlinear annotation anchor/separator/terminator — can hide/shift
+        // text in renderers that honour them.
+        | '\u{FFF9}'..='\u{FFFB}'
     )
 }
 
@@ -628,6 +660,50 @@ mod tests {
             !text.contains('\u{202E}'),
             "bidi override must be stripped: {text:?}"
         );
+    }
+
+    #[test]
+    fn body_text_strips_bidi_and_zero_width() {
+        // U-019: a U+202E (RLO) override or zero-width char embedded directly in
+        // BODY text — not just the [image:] placeholder — must be stripped
+        // before it reaches the renderer, so it can't visually reorder or hide
+        // the paragraph the user is reading.
+        let nodes = parse_with_limit("safe \u{202E}txet.exe\u{200B} end").expect("parse");
+        let MdNode::Paragraph { spans } = first(&nodes) else {
+            panic!("expected a paragraph");
+        };
+        let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert!(
+            !text.contains('\u{202E}'),
+            "RLO override stripped: {text:?}"
+        );
+        assert!(!text.contains('\u{200B}'), "ZWSP stripped: {text:?}");
+        assert!(
+            text.contains("txet.exe"),
+            "visible text preserved: {text:?}"
+        );
+    }
+
+    #[test]
+    fn inline_code_strips_bidi_and_zero_width() {
+        // U-019: inline code reaches the renderer via push_span (not push_text),
+        // so it must be stripped too — otherwise `` `\u{202E}txet.exe` `` renders
+        // visually reversed and the "every rendered span" guarantee leaks.
+        let nodes = parse_with_limit("run `\u{202E}txet.exe\u{200B}` now").expect("parse");
+        let MdNode::Paragraph { spans } = first(&nodes) else {
+            panic!("expected a paragraph");
+        };
+        let code: String = spans
+            .iter()
+            .filter(|s| s.style.code)
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(!code.is_empty(), "expected an inline code span: {spans:?}");
+        assert!(
+            !code.contains('\u{202E}') && !code.contains('\u{200B}'),
+            "bidi/zero-width must be stripped from inline code: {code:?}"
+        );
+        assert!(code.contains("txet.exe"), "code text preserved: {code:?}");
     }
 
     #[test]

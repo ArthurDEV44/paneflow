@@ -24,6 +24,7 @@ use super::pty_session::ClipboardOp;
 use super::service_detector::ServiceInfo;
 use super::types::{CopyModeCursorState, HyperlinkZone, Modes, SearchHighlight};
 use super::{PtyNotifier, TerminalState};
+use crate::limits::MAX_OSC52_BYTES;
 
 // ---------------------------------------------------------------------------
 // Debug latency probes — zero overhead in release builds
@@ -52,6 +53,19 @@ fn spawn_error_message(e: &anyhow::Error) -> String {
          \r\n\
          \x1b[2m{e:#}\x1b[0m\r\n",
     )
+}
+
+/// Strip control characters from an OSC 52 clipboard payload so a hostile PTY
+/// program can't plant a paste-injection (U-023). Keeps TAB and LF (legitimate
+/// in clipboard text); drops CR (the byte that commits a line on paste into a
+/// non-bracketed context), ESC (the ANSI intro), every other C0 control, DEL,
+/// and the C1 range (U+0080–U+009F). Applied symmetrically to the Store (write)
+/// and Load (read) paths so they can't drift apart again — `char::is_control()`
+/// already covers C0 + DEL + C1.
+pub(super) fn sanitize_osc52(text: &str) -> String {
+    text.chars()
+        .filter(|&c| c == '\t' || c == '\n' || !c.is_control())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -325,15 +339,21 @@ impl TerminalView {
                             for op in view.terminal.pending_clipboard_ops.drain(..) {
                                 match op {
                                     ClipboardOp::Store(text) => {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                        // U-023: sanitize untrusted PTY output before it
+                                        // reaches the system clipboard — symmetric with the
+                                        // Load path below, so an embedded CR/ESC can't commit
+                                        // a hidden command when the user later pastes it.
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            sanitize_osc52(&text),
+                                        ));
                                     }
                                     ClipboardOp::Load(format_fn) => {
                                         // Match the OSC 52 Store cap (100 KiB) on
                                         // Load responses too — without this, a
                                         // very large clipboard (multi-MB) would
                                         // be base64-encoded and streamed into
-                                        // the PTY in one shot.
-                                        const MAX_OSC52_BYTES: usize = 100 * 1024;
+                                        // the PTY in one shot. Cap centralized
+                                        // in `crate::limits` (US-013).
                                         let mut text = cx
                                             .read_from_clipboard()
                                             .and_then(|c| c.text())
@@ -347,15 +367,10 @@ impl TerminalView {
                                             }
                                             text.truncate(cut);
                                         }
-                                        // Strip ESC and C1 control chars to prevent injection
-                                        let sanitized: String = text
-                                            .chars()
-                                            .filter(|&c| {
-                                                c != '\x1b'
-                                                    && !(('\u{0080}'..='\u{009f}').contains(&c))
-                                            })
-                                            .collect();
-                                        let response = format_fn(&sanitized);
+                                        // U-023: same shared control-char filter as the Store
+                                        // path (now also strips CR / other C0 / DEL, not just
+                                        // ESC + C1).
+                                        let response = format_fn(&sanitize_osc52(&text));
                                         view.terminal.notifier.notify(response.into_bytes());
                                     }
                                 }
@@ -1254,6 +1269,23 @@ fn resolve_cursor_visible(
 mod tests {
     use super::*;
     use crate::terminal::pty_session::strip_partial_ansi_tail;
+
+    #[test]
+    fn sanitize_osc52_strips_injection_controls_keeps_tab_and_newline() {
+        // U-023: CR / ESC / other C0 / DEL / C1 are dropped; TAB and LF survive
+        // (legitimate clipboard text), and printable multibyte is untouched.
+        let dirty = "echo hi\r\x1b[31mX\x1b[0m\u{7f}\u{0085}\tcol\nnext — café 🦀";
+        let clean = sanitize_osc52(dirty);
+        assert_eq!(clean, "echo hi[31mX[0m\tcol\nnext — café 🦀");
+        assert!(
+            !clean.contains('\r'),
+            "CR (commits a line on paste) removed"
+        );
+        assert!(!clean.contains('\u{1b}'), "ESC removed");
+        assert!(!clean.contains('\u{7f}'), "DEL removed");
+        assert!(!clean.contains('\u{85}'), "C1 (NEL) removed");
+        assert!(clean.contains('\t') && clean.contains('\n'), "TAB/LF kept");
+    }
 
     // --- strip_partial_ansi_tail tests (US-012 / US-015) ---
 

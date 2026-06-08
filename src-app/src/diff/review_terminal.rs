@@ -65,14 +65,25 @@ impl ReviewCli {
 /// or `` x`id` ``, both legal git refs reachable via a crafted `.git/HEAD`) as a
 /// command on submit. `parse_head` already drops control bytes for every
 /// consumer; this is the prompt-context guard that additionally removes the
-/// shell metacharacters (`` ` ``, `$`, `;`, `|`, `&`, parens, quotes, ...) which
-/// are legitimate in the sidebar but dangerous here. Keeps the realistic ref
-/// charset: alphanumerics (incl. unicode letters, none of which are shell-active)
-/// plus `/._-+@`.
+/// shell metacharacters that are legitimate in the sidebar but dangerous here.
+///
+/// U-006: this is a DENYLIST, not an allowlist. The old allowlist (alphanumeric
+/// plus `/._-+@`) silently corrupted revspec operators the app itself emits:
+/// `HEAD~1` became `HEAD1` and `main^` became `main`, so the review ran against
+/// a nonexistent base. We instead drop only the shell-active set
+/// (`` ` `` `$ ; | & ( ) < > ' " \ * ? [ ] { }`) plus whitespace and control
+/// chars, so valid revspec characters (`~ ^ : @ / . - _ +`) pass through.
 fn sanitize_ref_for_prompt(reference: &str) -> String {
+    // `!` triggers bash history expansion (on by default in interactive bash),
+    // so it joins the set even though it isn't a classic metacharacter — it is
+    // not a revspec operator, so dropping it never corrupts an app-emitted ref.
+    const SHELL_ACTIVE: &[char] = &[
+        '`', '$', ';', '|', '&', '(', ')', '<', '>', '\'', '"', '\\', '*', '?', '[', ']', '{', '}',
+        '!',
+    ];
     reference
         .chars()
-        .filter(|c| c.is_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | '+' | '@'))
+        .filter(|c| !c.is_control() && !c.is_whitespace() && !SHELL_ACTIVE.contains(c))
         .collect()
 }
 
@@ -154,6 +165,22 @@ mod tests {
         // Shell-active characters are removed.
         assert_eq!(sanitize_ref_for_prompt("x`id`"), "xid");
         assert_eq!(sanitize_ref_for_prompt("a$(b);c|d&e"), "abcde");
+        // `!` (bash history expansion) is neutralized too.
+        assert_eq!(sanitize_ref_for_prompt("feat/x!ls"), "feat/xls");
+    }
+
+    #[test]
+    fn sanitize_ref_preserves_revspec_operators() {
+        // U-006: the app itself emits these (per-commit toggle `HEAD~1`, the
+        // free-text base picker `main^` / `v1.0~3`). The old allowlist dropped
+        // `~`/`^`, corrupting the base; the denylist must pass them through.
+        assert_eq!(sanitize_ref_for_prompt("HEAD~1"), "HEAD~1");
+        assert_eq!(sanitize_ref_for_prompt("main^"), "main^");
+        assert_eq!(sanitize_ref_for_prompt("v1.0~3"), "v1.0~3");
+        assert_eq!(sanitize_ref_for_prompt("HEAD~2^"), "HEAD~2^");
+        // A newline + shell metacharacters (e.g. from a crafted ref) are still
+        // neutralized; only the inert `~` survives.
+        assert_eq!(sanitize_ref_for_prompt("main\n; rm -rf ~"), "mainrm-rf~");
     }
 
     #[test]

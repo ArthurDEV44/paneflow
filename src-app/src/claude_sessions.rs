@@ -163,38 +163,54 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
             break;
         }
         if n as u64 == MAX_LINE_BYTES && !buf.ends_with('\n') {
-            // Newer Claude Code writes oversized records ahead of the
-            // envelope -- notably a `type:"queue-operation"` first line
-            // whose `content` blob can run to hundreds of KB and which
-            // carries no `cwd`. Abandoning the file here dropped the
-            // whole session from the sidebar (and logged a WARN per
-            // file on every open). Instead, discard the rest of this
-            // one overlong line in bounded chunks -- preserving the
-            // US-010 anti-OOM guard, since we never buffer the tail --
-            // and keep scanning: the envelope lands on a later,
-            // normal-sized line.
-            log::debug!(
-                target: "paneflow_app::claude_sessions",
-                "skipped an oversized (>{} B) line in {}; continuing scan for the envelope",
-                MAX_LINE_BYTES,
-                path.display(),
-            );
-            loop {
-                let chunk = match reader.fill_buf() {
-                    Ok(b) => b,
-                    Err(_) => return None,
-                };
-                if chunk.is_empty() {
-                    return None; // EOF mid-line: nothing more to find.
+            // U-017: an exactly-MAX_LINE_BYTES line with no trailing newline is
+            // ambiguous — it may be a genuinely TRUNCATED oversized line, or a
+            // COMPLETE final record written without a final EOL. Peek one byte
+            // to disambiguate: empty = EOF = the line is complete, fall through
+            // and parse it (don't drop a valid final session). Non-empty = more
+            // bytes follow = the cap truncated it mid-line → genuinely oversized.
+            let more_follows = match reader.fill_buf() {
+                Ok(b) => !b.is_empty(),
+                // I/O error mid-read: abort like the drain loop below (don't
+                // silently fall through and parse a possibly-truncated buf).
+                Err(_) => return None,
+            };
+            if more_follows {
+                // Newer Claude Code writes oversized records ahead of the
+                // envelope -- notably a `type:"queue-operation"` first line
+                // whose `content` blob can run to hundreds of KB and which
+                // carries no `cwd`. Abandoning the file here dropped the
+                // whole session from the sidebar (and logged a WARN per
+                // file on every open). Instead, discard the rest of this
+                // one overlong line in bounded chunks -- preserving the
+                // US-010 anti-OOM guard, since we never buffer the tail --
+                // and keep scanning: the envelope lands on a later,
+                // normal-sized line.
+                log::debug!(
+                    target: "paneflow_app::claude_sessions",
+                    "skipped an oversized (>{} B) line in {}; continuing scan for the envelope",
+                    MAX_LINE_BYTES,
+                    path.display(),
+                );
+                loop {
+                    let chunk = match reader.fill_buf() {
+                        Ok(b) => b,
+                        Err(_) => return None,
+                    };
+                    if chunk.is_empty() {
+                        return None; // EOF mid-line: nothing more to find.
+                    }
+                    if let Some(nl) = chunk.iter().position(|&b| b == b'\n') {
+                        reader.consume(nl + 1);
+                        break;
+                    }
+                    let consumed = chunk.len();
+                    reader.consume(consumed);
                 }
-                if let Some(nl) = chunk.iter().position(|&b| b == b'\n') {
-                    reader.consume(nl + 1);
-                    break;
-                }
-                let consumed = chunk.len();
-                reader.consume(consumed);
+                continue;
             }
-            continue;
+            // EOF after exactly MAX_LINE_BYTES: `buf` is a complete final
+            // record — fall through to the normal parse below.
         }
         let trimmed = buf.trim_end();
         if !trimmed.starts_with('{') {
@@ -590,6 +606,46 @@ mod tests {
         assert!(
             cache::lookup(SessionAgent::Claude, cwd, project_dir).is_none(),
             "mtime bump must invalidate the cached entry"
+        );
+    }
+
+    #[test]
+    fn exactly_max_final_line_is_parsed_not_dropped() {
+        // U-017: a complete envelope exactly MAX_LINE_BYTES long with no
+        // trailing newline (a final record written without a final EOL) must be
+        // parsed, not misclassified as oversized and dropped.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("exact.jsonl");
+        let prefix =
+            r#"{"sessionId":"550e8400-e29b-41d4-a716-446655440000","cwd":"/tmp/proj","p":""#;
+        let suffix = r#""}"#;
+        let pad = MAX_LINE_BYTES as usize - prefix.len() - suffix.len();
+        let line = format!("{prefix}{}{suffix}", "x".repeat(pad));
+        assert_eq!(
+            line.len() as u64,
+            MAX_LINE_BYTES,
+            "fixture must be exactly the cap"
+        );
+        std::fs::write(&path, &line).expect("write"); // no trailing newline
+        let meta = read_session_meta(&path).expect("exactly-MAX complete record must parse");
+        assert_eq!(meta.cwd, "/tmp/proj");
+    }
+
+    #[test]
+    fn genuinely_oversized_line_is_skipped() {
+        // U-017: a line longer than MAX_LINE_BYTES (the cap truncates it
+        // mid-line, more bytes follow) is still classified oversized and
+        // dropped — the peek sees a non-empty buffer, not EOF.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("oversized.jsonl");
+        let line = format!(
+            r#"{{"cwd":"/tmp/proj","p":"{}"#,
+            "x".repeat(MAX_LINE_BYTES as usize + 2000)
+        );
+        std::fs::write(&path, &line).expect("write"); // truncated, no close/newline
+        assert!(
+            read_session_meta(&path).is_none(),
+            "an oversized line must be skipped, not parsed"
         );
     }
 }
