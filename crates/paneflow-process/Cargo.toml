@@ -1,0 +1,15 @@
+[package]
+name = "paneflow-process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Bounded external-process execution (wall-clock deadline + stdout cap) shared across Paneflow crates"
+
+# Zero external dependencies on purpose: this crate is a dependency of the
+# embedded `paneflow-shim`, so anything pulled in here inflates the shim binary
+# that ships inside the main executable (EP-002, US-005).
+
+[lints]
+workspace = true

@@ -5960,6 +5960,7 @@ dependencies = [
  "paneflow-acp",
  "paneflow-config",
  "paneflow-mcp-install",
+ "paneflow-process",
  "paneflow-telemetry",
  "parking_lot",
  "pulldown-cmark 0.10.3",
@@ -6035,11 +6036,16 @@ dependencies = [
  "anyhow",
  "dirs 6.0.0",
  "log",
+ "paneflow-process",
  "serde_json",
  "tempfile",
  "toml_edit 0.22.27",
  "which 8.0.2",
 ]
+
+[[package]]
+name = "paneflow-process"
+version = "0.3.8"
 
 [[package]]
 name = "paneflow-shim"

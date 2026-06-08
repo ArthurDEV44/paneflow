@@ -30,6 +30,9 @@ log = "0.4"
 # Used by `io::write_atomic` for same-dir temp file + atomic rename (not
 # test-only), so it lives in [dependencies], not [dev-dependencies].
 tempfile = "3"
+# EP-002 (prd-ultron-remediation, U-032): bound `claude mcp add` / `codex mcp
+# add` shell-outs with a wall-clock deadline. std-only, no transitive build.
+paneflow-process = { workspace = true }
 
 [lints]
 workspace = true
