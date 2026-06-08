@@ -14,7 +14,7 @@
 //! - Each `TerminalView::with_cwd` calls `cx.global::<BlinkPhaseGlobal>()`
 //!   to grab the entity, then `cx.observe(&phase, …)` so its
 //!   `cursor_visible` mirrors `phase.visible` (subject to the per-pane
-//!   `cursor_blinking` / `exited` / `SUPPRESS_REPAINTS` short-circuits).
+//!   `cursor_blinking` / `exited` short-circuits).
 //!
 //! Using a GPUI global keeps the constructor signatures of `TerminalView`
 //! unchanged across all 18 call sites — adding a parameter would have

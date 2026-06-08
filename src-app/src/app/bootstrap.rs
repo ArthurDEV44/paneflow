@@ -186,6 +186,8 @@ impl PaneFlowApp {
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
                     .unwrap_or_else(|| "Terminal 1".into());
                 let ws = Workspace::with_id(ws_id, dir_name, pane);
+                // US-013: deferred git-stats probe off the render thread.
+                Self::spawn_initial_git_stats(ws_id, ws.cwd.clone(), cx);
                 (vec![ws], 0)
             }
         };
@@ -690,6 +692,9 @@ impl PaneFlowApp {
             renaming_idx: None,
             rename_text: String::new(),
             pending_config,
+            save_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            // US-014: hydrate the render-path config cache once at startup.
+            cached_config: paneflow_config::loader::load_config(),
             ipc_rx,
             ipc_status,
             title_bar,
@@ -699,7 +704,13 @@ impl PaneFlowApp {
             settings_section: None,
             settings_scroll: gpui::ScrollHandle::new(),
             settings_drag: None,
-            home_dir: std::env::var("HOME").unwrap_or_default(),
+            // US-040: `$HOME` is unset by default on Windows (canonical home is
+            // `%USERPROFILE%`), so the raw `var("HOME")` produced an empty
+            // string and the sidebar never collapsed any cwd to `~`. `dirs`
+            // resolves the home dir on all three platforms.
+            home_dir: dirs::home_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             sidebar_scroll: gpui::ScrollHandle::new(),
             effective_shortcuts: keybindings::effective_shortcuts(
                 &paneflow_config::loader::load_config().shortcuts,
@@ -713,16 +724,18 @@ impl PaneFlowApp {
             tab_menu_open: None,
             pending_pane_focus: None,
             profile_menu_open: None,
-            sessions_sidebar_open: false,
-            claude_sessions: Vec::new(),
-            codex_sessions: Vec::new(),
-            opencode_sessions: Vec::new(),
-            claude_sessions_cwd: None,
-            claude_sessions_pane: None,
-            claude_sessions_scroll: gpui::ScrollHandle::new(),
-            sessions_group_collapsed: [false; 3],
-            sessions_group_show_all: [false; 3],
-            sessions_scanning: [false; 3],
+            agent_sessions: crate::AgentSessionsState {
+                sessions_sidebar_open: false,
+                claude_sessions: Vec::new(),
+                codex_sessions: Vec::new(),
+                opencode_sessions: Vec::new(),
+                claude_sessions_cwd: None,
+                claude_sessions_pane: None,
+                claude_sessions_scroll: gpui::ScrollHandle::new(),
+                sessions_group_collapsed: [false; 3],
+                sessions_group_show_all: [false; 3],
+                sessions_scanning: [false; 3],
+            },
             files_sidebar_open: false,
             files_tree: crate::app::files_tree::FilesTreeState::default(),
             files_tree_scroll: gpui::ScrollHandle::new(),
@@ -741,11 +754,13 @@ impl PaneFlowApp {
             theme_picker_focus: cx.focus_handle(),
             theme_picker_scroll: gpui::ScrollHandle::new(),
             theme_picker_drag: None,
-            pending_update,
-            update_status: None,
-            self_update_status: update::SelfUpdateStatus::default(),
-            install_method,
-            update_attempt_count: 0,
+            self_update: crate::SelfUpdateState {
+                pending_update,
+                update_status: None,
+                self_update_status: update::SelfUpdateStatus::default(),
+                install_method,
+                update_attempt_count: 0,
+            },
             custom_buttons_modal: None,
             custom_buttons_modal_focus: cx.focus_handle(),
             telemetry,
@@ -754,25 +769,27 @@ impl PaneFlowApp {
             // US-006: shared signal flipped by the theme watcher's debounce
             // thread; drained by the 50 ms IPC loop to schedule a repaint.
             theme_changed,
-            diff_view: None,
-            multi_diff_view: None,
-            diff_view_cache: std::collections::HashMap::new(),
-            diff_view_key: None,
-            multi_diff_view_retained: None,
-            diff_collapsed_branches: std::collections::HashSet::new(),
-            diff_discovering: false,
-            diff_chosen_worktrees: std::collections::HashMap::new(),
-            diff_worktree_picker_open: false,
-            diff_available_worktrees: Vec::new(),
-            diff_available_repo: None,
-            diff_scope: restored_diff_scope,
-            diff_scope_picker_open: false,
-            diff_project_picker_open: false,
-            diff_selected_file: None,
-            diff_files_collapsed: false,
-            diff_files_tree: false,
-            diff_collapsed_dirs: std::collections::HashSet::new(),
-            diff_file_filter,
+            diff_mode: crate::DiffModeState {
+                diff_view: None,
+                multi_diff_view: None,
+                diff_view_cache: std::collections::HashMap::new(),
+                diff_view_key: None,
+                multi_diff_view_retained: None,
+                diff_collapsed_branches: std::collections::HashSet::new(),
+                diff_discovering: false,
+                diff_chosen_worktrees: std::collections::HashMap::new(),
+                diff_worktree_picker_open: false,
+                diff_available_worktrees: Vec::new(),
+                diff_available_repo: None,
+                diff_scope: restored_diff_scope,
+                diff_scope_picker_open: false,
+                diff_project_picker_open: false,
+                diff_selected_file: None,
+                diff_files_collapsed: false,
+                diff_files_tree: false,
+                diff_collapsed_dirs: std::collections::HashSet::new(),
+                diff_file_filter,
+            },
             // US-008 (prd-agents-view.md): start in the mode the user
             // left on quit. The Agents view is terminal-only and works
             // without any agent installed, so there is no agent-presence
@@ -788,23 +805,26 @@ impl PaneFlowApp {
             // US-011: rename / context-menu / confirm-delete state.
             // All start empty; the affordance handlers set them in
             // response to user actions.
-            agents_renaming: None,
-            agents_rename_text: String::new(),
-            agents_rename_input: None,
-            agents_menu_open: None,
-            agents_confirm_delete: None,
+            agents_view: crate::AgentsViewState {
+                agents_renaming: None,
+                agents_rename_text: String::new(),
+                agents_rename_input: None,
+                agents_menu_open: None,
+                agents_confirm_delete: None,
+                agents_filter: String::new(),
+                agents_filter_focus: cx.focus_handle(),
+                agents_skills_visible: false,
+                agents_skills_tab: crate::agents_view::SkillsTab::default(),
+                agents_skills_copied: None,
+                sidebar_actions_menu_open: false,
+                agents_terminal_view_cache: std::collections::HashMap::new(),
+            },
             confirm_close_all_workspaces: false,
             // US-012: sidebar search/filter. Empty filter == show
             // everything; the focus handle is held here so the input
             // captures Backspace/Escape/Down without conflicting with
             // the global app key chain.
-            agents_filter: String::new(),
-            agents_filter_focus: cx.focus_handle(),
-            agents_skills_visible: false,
-            agents_skills_tab: crate::agents_view::SkillsTab::default(),
-            agents_skills_copied: None,
-            sidebar_actions_menu_open: false,
-            agents_terminal_view_cache: std::collections::HashMap::new(),
+            sidebar_order_cache: std::cell::RefCell::new(Default::default()),
         };
 
         // US-015 (prd-git-diff-mode-2026-Q3.md): restore Diff mode only when
@@ -814,7 +834,7 @@ impl PaneFlowApp {
         // for the restored scope; otherwise collapse to CLI so the window never
         // opens onto an empty diff.
         if matches!(app.mode, paneflow_config::schema::AppMode::Diff) {
-            let viable = match app.diff_scope {
+            let viable = match app.diff_mode.diff_scope {
                 crate::diff::DiffScope::MultiProject => {
                     app.workspaces.iter().any(|ws| ws.repo_root.is_some())
                 }
@@ -844,7 +864,7 @@ impl PaneFlowApp {
         // (opt-out / unanswered consent / env kill-switch) no-op; only a
         // consenting user produces an HTTP call, batched on the flusher
         // above. Must happen after the struct literal so `self.telemetry`
-        // and `self.install_method` are both populated.
+        // and `self.self_update.install_method` are both populated.
         app.emit_app_started(is_first_run_for_telemetry);
         // US-006: emit the corruption event after the client is up.
         // `Null` clients (consent off / kill-switch active) make this

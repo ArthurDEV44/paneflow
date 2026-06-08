@@ -21,9 +21,9 @@ mod tab;
 
 use gpui::{App, AppContext, ClipboardItem, Context, Focusable, PathPromptOptions, Window};
 
-use crate::layout::{LayoutTree, SplitDirection};
+use crate::layout::{LayoutTree, MAX_PANES, SplitDirection};
 use crate::terminal::TerminalView;
-use crate::workspace::{Workspace, next_workspace_id};
+use crate::workspace::{MAX_WORKSPACES, Workspace, next_workspace_id};
 use crate::{
     ClosePane, CloseWorkspace, ClosedPaneRecord, CopyWorkspacePath, MAX_CLOSED_PANES, NewWorkspace,
     NextWorkspace, OpenWorkspaceInCursor, OpenWorkspaceInVsCode, OpenWorkspaceInWindsurf,
@@ -58,7 +58,7 @@ impl PaneFlowApp {
             self.active_idx = idx;
             // Re-root the Files tree to the new workspace's folder if it's open
             // (PRD files-tree US-002 workspace-switch). No-op when closed.
-            self.reroot_files_tree();
+            self.reroot_files_tree(cx);
             self.workspaces[idx].focus_first(window, cx);
             self.save_session(cx);
             cx.notify();
@@ -84,7 +84,6 @@ impl PaneFlowApp {
 
     #[allow(dead_code)]
     pub(crate) fn create_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        const MAX_WORKSPACES: usize = 20;
         if self.workspaces.len() >= MAX_WORKSPACES {
             return;
         }
@@ -93,6 +92,8 @@ impl PaneFlowApp {
         let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
         let pane = self.create_pane(terminal, ws_id, cx);
         let ws = Workspace::with_id(ws_id, format!("Terminal {n}"), pane);
+        // US-013: deferred git-stats probe off the render thread.
+        Self::spawn_initial_git_stats(ws_id, ws.cwd.clone(), cx);
         self.watch_git_dir(&ws);
         self.workspaces.push(ws);
         self.active_idx = self.workspaces.len() - 1;
@@ -106,7 +107,6 @@ impl PaneFlowApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        const MAX_WORKSPACES: usize = 20;
         if self.workspaces.len() >= MAX_WORKSPACES {
             return;
         }
@@ -136,6 +136,8 @@ impl PaneFlowApp {
                                     .new(|cx| TerminalView::with_cwd(ws_id, Some(path), None, cx));
                                 let pane = app.create_pane(terminal, ws_id, cx);
                                 let ws = Workspace::with_cwd_and_id(ws_id, title, dir, pane);
+                                // US-013: deferred git-stats probe off the render thread.
+                                Self::spawn_initial_git_stats(ws_id, ws.cwd.clone(), cx);
                                 app.watch_git_dir(&ws);
                                 app.workspaces.push(ws);
                             }
@@ -167,7 +169,6 @@ impl PaneFlowApp {
         {
             return;
         }
-        const MAX_PANES: usize = 32;
         if let Some(ws) = self.active_workspace()
             && let Some(root) = &ws.root
             && root.leaf_count() >= MAX_PANES
@@ -300,8 +301,11 @@ impl PaneFlowApp {
             let ws_id = ws.id;
             let cwd = std::path::PathBuf::from(&ws.cwd);
             let terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, Some(cwd), None, cx));
-            cx.subscribe(&terminal, Self::handle_terminal_event)
-                .detach();
+            // US-028: do NOT subscribe here — `create_pane` already wires
+            // `handle_terminal_event` (main.rs:539). The duplicate subscription
+            // fired every terminal event twice (double toast / port-scan /
+            // mutation) and leaked the extra subscription. `split()` and
+            // `create_workspace` prove the correct pattern (no manual subscribe).
             let new_pane = self.create_pane(terminal, ws_id, cx);
             if let Some(ws) = self.active_workspace_mut() {
                 ws.root = Some(LayoutTree::Leaf(new_pane));

@@ -73,19 +73,25 @@ pub fn load_config() -> PaneFlowConfig {
     load_config_from_path(&path)
 }
 
-/// Load and validate configuration from a specific file path.
-///
-/// This is the core loading function, also useful for testing.
-pub fn load_config_from_path(path: &std::path::Path) -> PaneFlowConfig {
-    if !path.exists() {
-        return PaneFlowConfig::default();
-    }
+/// US-029: outcome of reading the config file with the oversize guard applied.
+pub enum ConfigRead {
+    /// File read successfully.
+    Contents(String),
+    /// File does not exist (normal at cold start; a deletion at runtime).
+    Absent,
+    /// File exists but was rejected — over the size cap or unreadable. The
+    /// reason was already logged.
+    Rejected,
+}
 
-    // US-005 hardening: reject oversized files BEFORE allocating a String.
-    // `metadata` is a cheap stat; `read_to_string` would allocate the full
-    // buffer up-front. Without this guard a hostile or accidental large
-    // file would freeze the GPUI main thread and double-allocate during
-    // the source-map line-scan (see Phase 7 security audit, MEDIUM #1).
+/// US-029: read the config file to a string with the oversize guard applied
+/// BEFORE allocating (cheap `metadata` stat first). Shared by the cold loader
+/// and the hot watcher reload so the DoS guard can never be missing on either
+/// path — the watcher's `attempt_reload` previously read with no cap at all.
+pub fn read_config_string(path: &Path) -> ConfigRead {
+    if !path.exists() {
+        return ConfigRead::Absent;
+    }
     match std::fs::metadata(path) {
         Ok(meta) if meta.len() > MAX_CONFIG_SIZE_BYTES => {
             warn!(
@@ -94,30 +100,30 @@ pub fn load_config_from_path(path: &std::path::Path) -> PaneFlowConfig {
                 meta.len(),
                 MAX_CONFIG_SIZE_BYTES
             );
-            return PaneFlowConfig::default();
+            ConfigRead::Rejected
         }
-        Ok(_) => {}
+        Ok(_) => match std::fs::read_to_string(path) {
+            Ok(c) => ConfigRead::Contents(c),
+            Err(e) => {
+                warn!("failed to read config file {}: {e}", path.display());
+                ConfigRead::Rejected
+            }
+        },
         Err(e) => {
-            warn!(
-                "failed to stat config file {}: {e}; using defaults",
-                path.display()
-            );
-            return PaneFlowConfig::default();
+            warn!("failed to stat config file {}: {e}", path.display());
+            ConfigRead::Rejected
         }
     }
+}
 
-    let contents = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(
-                "failed to read config file {}: {e}; using defaults",
-                path.display()
-            );
-            return PaneFlowConfig::default();
-        }
-    };
-
-    parse_and_validate_with_path(&contents, path)
+/// Load and validate configuration from a specific file path.
+///
+/// This is the core loading function, also useful for testing.
+pub fn load_config_from_path(path: &std::path::Path) -> PaneFlowConfig {
+    match read_config_string(path) {
+        ConfigRead::Contents(contents) => parse_and_validate_with_path(&contents, path),
+        ConfigRead::Absent | ConfigRead::Rejected => PaneFlowConfig::default(),
+    }
 }
 
 /// Parse a JSON string into a validated `PaneFlowConfig`.
@@ -128,15 +134,27 @@ pub fn parse_and_validate(json: &str) -> PaneFlowConfig {
     parse_and_validate_with_path(json, Path::new("<config>"))
 }
 
-/// Parse + validate. `path` is currently used only for warning messages.
-pub fn parse_and_validate_with_path(json: &str, _path: &Path) -> PaneFlowConfig {
-    let mut config: PaneFlowConfig = match serde_json::from_str(json) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("invalid JSON in config: {e}; using defaults");
-            return PaneFlowConfig::default();
-        }
-    };
+/// Parse + validate. `path` is threaded into the warning so a malformed save
+/// names the offending file instead of an anonymous "config".
+pub fn parse_and_validate_with_path(json: &str, path: &Path) -> PaneFlowConfig {
+    try_parse_and_validate(json).unwrap_or_else(|e| {
+        warn!(
+            "invalid JSON in config {}: {e}; using defaults",
+            path.display()
+        );
+        PaneFlowConfig::default()
+    })
+}
+
+/// US-029: parse + validate, parsing the JSON exactly once and surfacing a
+/// syntax error as `Err` instead of silently returning defaults. The hot
+/// reload path uses this so it can keep the previous config on a malformed
+/// save (never broadcasting defaults) AND avoid the old double-parse (a
+/// syntax-guard `from_str` followed by a second parse inside
+/// `parse_and_validate_with_path`). Command filtering + layout fixups are
+/// applied on the success path, unchanged.
+pub fn try_parse_and_validate(json: &str) -> Result<PaneFlowConfig, serde_json::Error> {
+    let mut config: PaneFlowConfig = serde_json::from_str(json)?;
 
     // Validate and filter commands.
     let validated: Vec<CommandDefinition> = config
@@ -161,7 +179,7 @@ pub fn parse_and_validate_with_path(json: &str, _path: &Path) -> PaneFlowConfig 
         }
     }
 
-    config
+    Ok(config)
 }
 
 /// Validate a single command definition. Returns `false` if it should be skipped.
@@ -234,12 +252,20 @@ pub fn validate_layout(node: &mut LayoutNode) {
                 for r in rs.iter_mut() {
                     *r = r.clamp(0.01, 1.0);
                 }
-                // Normalize to sum ~1.0.
+                // Normalize to sum ~1.0. `1e-6` (not `f64::EPSILON`, ~2.2e-16)
+                // so trivial float drift does not trigger a needless rescale.
                 let sum: f64 = rs.iter().sum();
-                if sum > 0.0 && (sum - 1.0).abs() > f64::EPSILON {
+                if sum > 0.0 && (sum - 1.0).abs() > 1e-6 {
                     for r in rs.iter_mut() {
                         *r /= sum;
                     }
+                }
+                // Re-clamp: normalization can push a value back below the 0.01
+                // floor (e.g. one near-1.0 ratio among many children). The floor
+                // is the invariant we guarantee; the renderer re-normalizes
+                // proportionally at paint time.
+                for r in rs.iter_mut() {
+                    *r = r.clamp(0.01, 1.0);
                 }
             }
 
@@ -503,6 +529,37 @@ mod tests {
         match ws.layout.as_ref().unwrap() {
             LayoutNode::Split { ratio, .. } => {
                 assert!((ratio.unwrap() - 0.9).abs() < f64::EPSILON);
+            }
+            _ => panic!("expected split"),
+        }
+    }
+
+    #[test]
+    fn test_per_child_ratios_floor_respected_after_normalize() {
+        // US-057: clamp -> normalize can push a value back below the 0.01 floor.
+        // The re-clamp must restore it. ratios [100.0, 0.001] -> clamp
+        // [1.0, 0.01] -> normalize ~[0.990, 0.0099] (2nd below floor) -> re-clamp.
+        let mut node = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: None,
+            ratios: Some(vec![100.0, 0.001]),
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        validate_layout(&mut node);
+        match node {
+            LayoutNode::Split { ratios, .. } => {
+                let rs = ratios.unwrap();
+                assert!(
+                    rs.iter().all(|r| *r >= 0.01),
+                    "every ratio must respect the 0.01 floor after normalize: {rs:?}"
+                );
             }
             _ => panic!("expected split"),
         }
@@ -892,6 +949,93 @@ mod tests {
         assert_eq!(rs.len(), 2);
         assert!((rs[0] - 0.6).abs() < f64::EPSILON);
         assert!((rs[1] - 0.4).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_resolved_ratios_rejects_nan_and_negative() {
+        // US-056: a corrupt session.json can carry NaN/negative/out-of-range
+        // ratios. They must be clamped, normalized, and never propagate.
+        let node = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: None,
+            ratios: Some(vec![f64::NAN, -0.5, 2.0]),
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        let rs = node.resolved_ratios();
+        assert_eq!(rs.len(), 3);
+        // EP-010 review: post-US-057-parity invariant. NaN/negative are floored,
+        // 2.0 is clamped to 1.0; every ratio is finite and in `[0.01, 1.0]`. The
+        // post-normalize re-clamp (matching `validate_layout`) keeps the floor,
+        // so the sum is ~1.0 but not exactly — the renderer re-normalizes at
+        // paint. Assert the floor + a sane sum band, not `== 1.0`.
+        assert!(rs
+            .iter()
+            .all(|&r| r.is_finite() && (0.01 - 1e-9..=1.0).contains(&r)));
+        let sum: f64 = rs.iter().sum();
+        assert!(
+            (sum - 1.0).abs() < 0.05,
+            "ratios must stay near 1.0, got {sum}"
+        );
+    }
+
+    #[test]
+    fn test_resolved_ratios_floor_respected_after_normalize() {
+        // EP-010 review: the SESSION path (`resolved_ratios` -> `sanitize_ratios`)
+        // must honour the 0.01 floor AFTER normalize, matching the config path
+        // (`validate_layout`, see `test_per_child_ratios_floor_respected_after_normalize`).
+        // `[1.0, 0.005]` clamps to `[1.0, 0.01]` (sum 1.01); normalizing alone
+        // would push the second child to ~0.0099 — below the floor. The
+        // post-normalize re-clamp must pull it back to 0.01.
+        let node = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: None,
+            ratios: Some(vec![1.0, 0.005]),
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        let rs = node.resolved_ratios();
+        assert_eq!(rs.len(), 2);
+        assert!(
+            rs.iter().all(|&r| r >= 0.01 - 1e-9),
+            "every ratio must stay at/above the 0.01 floor after normalize, got {rs:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolved_ratios_length_mismatch_falls_back() {
+        // US-056: a ratios array whose length disagrees with the child count
+        // is unrecoverable -> equal shares, never a panic or stale mapping.
+        let node = LayoutNode::Split {
+            direction: "horizontal".to_string(),
+            ratio: None,
+            ratios: Some(vec![0.9]), // 1 ratio, 2 children
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        let rs = node.resolved_ratios();
+        assert_eq!(rs, vec![0.5, 0.5]);
     }
 
     #[test]

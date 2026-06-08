@@ -403,6 +403,33 @@ pub fn enabled_session_agents() -> Vec<SessionAgent> {
     agents
 }
 
+/// Strict allow-list guard for a session id before it is interpolated into a
+/// resume command (`claude --resume <id>`, `codex resume <id>`,
+/// `opencode --session <id>`) and sent to the user's PTY.
+///
+/// Every supported agent's id format fits `^[A-Za-z0-9_-]+$`: Claude/Codex use
+/// UUIDs (`550e8400-e29b-41d4-a716-446655440000`), OpenCode uses
+/// `ses_<base62>` (`ses_1f80d49aeffeaKV4Lq4mc0c3cu`). Anything outside that set
+/// — a space, `;`, `$(…)`, a path separator, a control char — means the source
+/// record is malformed or the agent binary was tampered with. Rejecting here
+/// (and dropping the record at scan time) is defence-in-depth: a crafted
+/// `ses_x; rm -rf ~` would pass a control-char-only check but never the
+/// allow-list, so it can never reach the shell.
+///
+/// The **first** character is additionally required to be alphanumeric or `_`:
+/// the allow-list above permits `-`, so without this a tampered record carrying
+/// `--dangerously-skip-permissions` (a single token, no shell metachar) would
+/// pass and be interpolated as `codex resume --dangerously-skip-permissions` /
+/// `opencode --session --foo` / `claude --resume --foo`, i.e. argument
+/// injection (CWE-88) flipping the agent CLI into an unexpected mode. Real ids
+/// never lead with `-` (UUIDs start hex, OpenCode with `ses_`), so the
+/// constraint has zero false-positive cost.
+pub(crate) fn is_valid_session_id(id: &str) -> bool {
+    let mut chars = id.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Unified session metadata. Anything the UI needs to render a row +
 /// resume the session is here; the heavier message payload stays on disk.
 #[derive(Debug, Clone)]
@@ -558,6 +585,46 @@ mod tests {
     fn iso8601_parses_z() {
         let secs = parse_iso8601_to_unix_secs("2025-01-15T12:30:45Z").unwrap();
         assert_eq!(secs, 1_736_944_245);
+    }
+
+    #[test]
+    fn valid_session_id_accepts_every_agent_format() {
+        // Claude / Codex UUIDs and OpenCode `ses_<base62>` all fit the
+        // allow-list so a legitimate resume is never dropped.
+        assert!(is_valid_session_id("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(is_valid_session_id("019dc9ea-38d7-7372-9cc4-253ce944d41b"));
+        assert!(is_valid_session_id("ses_1f80d49aeffeaKV4Lq4mc0c3cu"));
+        assert!(is_valid_session_id("s"));
+    }
+
+    #[test]
+    fn valid_session_id_rejects_injection_and_control_chars() {
+        // Each of these would pass a control-char-only check yet inject a
+        // second shell command once interpolated into `<agent> resume <id>`.
+        assert!(!is_valid_session_id(""));
+        assert!(!is_valid_session_id("ses_x; rm -rf ~"));
+        assert!(!is_valid_session_id("$(reboot)"));
+        assert!(!is_valid_session_id("id with space"));
+        assert!(!is_valid_session_id("a/b"));
+        assert!(!is_valid_session_id("`id`"));
+        // Control chars (the case the old guard already covered) stay rejected.
+        assert!(!is_valid_session_id("abc\r\nrm -rf ~"));
+    }
+
+    #[test]
+    fn valid_session_id_rejects_leading_dash_argument_injection() {
+        // US-044 (EP-007 review): a leading `-` passes the `[A-Za-z0-9_-]`
+        // char-set but turns the id into a FLAG once interpolated into
+        // `codex resume <id>` / `opencode --session <id>` / `claude --resume
+        // <id>` (argument injection, CWE-88). The first char must be
+        // alphanumeric or `_`.
+        assert!(!is_valid_session_id("--dangerously-skip-permissions"));
+        assert!(!is_valid_session_id("-x"));
+        assert!(!is_valid_session_id("-"));
+        // An interior dash is still fine (UUIDs rely on it).
+        assert!(is_valid_session_id("a-b-c"));
+        // A leading underscore stays valid (no flag confusion).
+        assert!(is_valid_session_id("_internal"));
     }
 
     #[test]

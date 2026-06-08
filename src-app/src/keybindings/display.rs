@@ -11,6 +11,14 @@ use super::registry::{ACTIONS, action_description};
 pub struct ShortcutEntry {
     pub key: String,
     pub description: String,
+    /// US-021: the action this row rebinds, as the canonical `&'static str`
+    /// from the registry. The settings editor MUST key its rebind off this,
+    /// not off the row's positional index: the displayed list chains
+    /// `MACOS_ONLY_DEFAULTS`, skips unbound rows, and appends user-only
+    /// actions, so `index → DEFAULTS[index]` is only correct in the trivial
+    /// (zero-override) case. Indexing `DEFAULTS` by row would silently rebind
+    /// the *wrong* action and corrupt `paneflow.json`.
+    pub action_name: &'static str,
 }
 
 /// Format a GPUI keystroke string for display.
@@ -121,6 +129,7 @@ pub fn effective_shortcuts(user_shortcuts: &HashMap<String, String>) -> Vec<Shor
         entries.push(ShortcutEntry {
             key,
             description: action_description(d.action_name).to_string(),
+            action_name: d.action_name,
         });
     }
 
@@ -133,10 +142,13 @@ pub fn effective_shortcuts(user_shortcuts: &HashMap<String, String>) -> Vec<Shor
             .iter()
             .chain(MACOS_ONLY_DEFAULTS.iter())
             .any(|d| d.action_name == action_name);
-        if !is_default_action && ACTIONS.iter().any(|a| a.name == action_name) {
+        // Resolve the registry's `&'static str` so the entry carries a stable
+        // action identity (not the borrowed config key).
+        if !is_default_action && let Some(meta) = ACTIONS.iter().find(|a| a.name == action_name) {
             entries.push(ShortcutEntry {
                 key: format_keystroke(key),
                 description: action_description(action_name).to_string(),
+                action_name: meta.name,
             });
         }
     }
@@ -150,14 +162,6 @@ pub fn is_bare_modifier(keystroke: &Keystroke) -> bool {
         keystroke.key.as_str(),
         "shift" | "control" | "alt" | "platform" | "function"
     )
-}
-
-/// Look up the action name for the binding at `index` in `DEFAULTS`.
-///
-/// Note: this indexes the platform-independent `DEFAULTS` slice only; it does
-/// not cover `MACOS_ONLY_DEFAULTS` (carried over from the pre-US-022 layout).
-pub fn action_name_at(index: usize) -> Option<&'static str> {
-    DEFAULTS.get(index).map(|d| d.action_name)
 }
 
 #[cfg(test)]
@@ -197,6 +201,40 @@ mod tests {
         assert_eq!(
             split_h.key, "Ctrl+Alt+H",
             "User override should replace the default key"
+        );
+    }
+
+    #[test]
+    fn effective_shortcuts_carry_matching_action_name() {
+        // US-021: every row knows the action it rebinds. The editor keys off
+        // this, so it must line up with the row's description.
+        let entries = effective_shortcuts(&HashMap::new());
+        for e in &entries {
+            assert_eq!(
+                e.description,
+                action_description(e.action_name),
+                "row description must match its action_name"
+            );
+        }
+    }
+
+    #[test]
+    fn effective_shortcuts_action_name_survives_unbind_shift() {
+        // Regression for the `action_name_at(idx) → DEFAULTS[idx]` bug: once a
+        // default is unbound the displayed list shifts, so the row at index 0
+        // is the SECOND default — not `DEFAULTS[0]`. Reading the carried
+        // `action_name` must reflect the shifted row, otherwise the editor
+        // rebinds the wrong action.
+        let mut overrides = HashMap::new();
+        overrides.insert("secondary-shift-d".to_string(), "none".to_string());
+        let entries = effective_shortcuts(&overrides);
+        assert_eq!(
+            entries[0].action_name, "split_vertically",
+            "first row should be the second default after the first is unbound"
+        );
+        assert_ne!(
+            entries[0].action_name, "split_horizontally",
+            "indexing DEFAULTS[0] here would rebind the wrong (unbound) action"
         );
     }
 

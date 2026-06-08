@@ -301,12 +301,16 @@ impl Walker {
             } => {
                 // We don't render images inline — show "[image: <title or url>]"
                 // as a placeholder span so the user knows something was elided.
-                let label = if title.is_empty() {
-                    format!("[image: {}]", dest_url)
+                // `title`/`dest_url` are attacker-controlled `.md` content, so
+                // sanitise before embedding: strip bidi/zero-width code points
+                // (a U+202E override could reorder the visible label to spoof a
+                // benign path) and cap the length (US-044).
+                let raw = if title.is_empty() {
+                    dest_url.as_ref()
                 } else {
-                    format!("[image: {}]", title)
+                    title.as_ref()
                 };
-                self.push_text(label);
+                self.push_text(format!("[image: {}]", sanitize_placeholder(raw)));
             }
             Tag::FootnoteDefinition(label) => self.stack.push(Frame::Footnote {
                 label: label.into_string(),
@@ -527,6 +531,38 @@ impl Walker {
     }
 }
 
+/// Max characters kept from an untrusted image `title`/`dest_url` in the
+/// `[image: …]` placeholder. A real caption/URL is short; the cap is
+/// defence-in-depth so a multi-kilobyte string can't bloat a one-line marker.
+const MAX_PLACEHOLDER_CHARS: usize = 256;
+
+/// True for Unicode bidi-control and zero-width code points. These carry no
+/// legitimate meaning inside a `[image: …]` elision marker but let hostile
+/// `.md` content reorder the visible label (bidi overrides) or hide/inflate it
+/// (zero-width). Stripped before the placeholder is built.
+fn is_bidi_or_zero_width(c: char) -> bool {
+    matches!(c,
+        // Zero-width: ZWSP, ZWNJ, ZWJ, word joiner, BOM/ZWNBSP.
+        '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}'
+        // Directional marks: LRM, RLM, ALM.
+        | '\u{200E}' | '\u{200F}' | '\u{061C}'
+        // Embeddings/overrides: LRE, RLE, PDF, LRO, RLO.
+        | '\u{202A}'..='\u{202E}'
+        // Isolates: LRI, RLI, FSI, PDI.
+        | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Sanitise untrusted text for the `[image: …]` placeholder: drop bidi/
+/// zero-width code points, then truncate to [`MAX_PLACEHOLDER_CHARS`]
+/// (char-counted, never splitting a UTF-8 sequence).
+fn sanitize_placeholder(raw: &str) -> String {
+    raw.chars()
+        .filter(|&c| !is_bidi_or_zero_width(c))
+        .take(MAX_PLACEHOLDER_CHARS)
+        .collect()
+}
+
 /// Append `span` to `spans`, merging into the previous span when both styles
 /// (and link state) match — keeps the AST compact for downstream rendering.
 fn merge_or_push(spans: &mut Vec<Span>, span: Span) {
@@ -566,6 +602,32 @@ mod tests {
 
     fn first(nodes: &[MdNode]) -> &MdNode {
         nodes.first().expect("expected at least one node")
+    }
+
+    #[test]
+    fn placeholder_sanitiser_strips_bidi_zero_width_and_truncates() {
+        let hostile = format!("a\u{202E}b\u{200B}c{}", "x".repeat(400));
+        let clean = sanitize_placeholder(&hostile);
+        assert!(!clean.contains('\u{202E}'), "bidi override stripped");
+        assert!(!clean.contains('\u{200B}'), "zero-width space stripped");
+        assert!(clean.starts_with("abc"));
+        assert_eq!(clean.chars().count(), MAX_PLACEHOLDER_CHARS, "capped");
+    }
+
+    #[test]
+    fn image_node_sanitises_untrusted_url() {
+        // A U+202E in the image URL would otherwise reorder the visible
+        // `[image: …]` label to spoof a benign-looking path.
+        let nodes = parse_with_limit("![](evil\u{202E}gnp.exe)").expect("parse");
+        let MdNode::Paragraph { spans } = first(&nodes) else {
+            panic!("expected a paragraph for a top-level image");
+        };
+        let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert!(text.starts_with("[image: "), "got {text:?}");
+        assert!(
+            !text.contains('\u{202E}'),
+            "bidi override must be stripped: {text:?}"
+        );
     }
 
     #[test]

@@ -55,7 +55,6 @@ impl LayoutTree {
                             new_children.push(LayoutChild {
                                 node,
                                 ratio: child.ratio,
-                                computed_size: child.computed_size,
                             });
                         } else {
                             // Direct child leaf was removed — record its ratio
@@ -66,7 +65,6 @@ impl LayoutTree {
                             node: new_node
                                 .expect("close_focused: non-closed child must return Some"),
                             ratio: child.ratio,
-                            computed_size: child.computed_size,
                         });
                     }
                 }
@@ -154,7 +152,6 @@ impl LayoutTree {
                         new_children.push(LayoutChild {
                             node,
                             ratio: child.ratio,
-                            computed_size: child.computed_size,
                         });
                     } else {
                         removed_ratio += child.ratio.get();

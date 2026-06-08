@@ -441,8 +441,11 @@ impl TextArea {
         let end = clamp_to_grapheme(&self.content, range.end.max(start));
         self.selected_range = start..end;
         self.selection_reversed = false;
+        // US-032: `replace_selection` already ends with `fire_change` (the two
+        // calls were sequential, not nested, so `try_borrow_mut` didn't guard
+        // them). The duplicate re-fired `on_change`, re-triggering the Composer
+        // `@`-mention file-walk / popup after a path was picked.
         self.replace_selection(replacement, cx);
-        self.fire_change(cx);
     }
 
     pub fn value(&self) -> String {
@@ -657,12 +660,33 @@ impl TextArea {
         find_decoration_starting_at(&self.decorations, offset)
     }
 
+    /// US-035: if `offset` would land STRICTLY inside a chip decoration, snap
+    /// to the chip boundary in the direction of travel. Chips are not
+    /// character-traversable (US-123); `Home`/`End`/`Up`/`Down` went straight
+    /// to `move_to(raw_offset)` and could park the cursor mid-chip, where a
+    /// following delete drops the `@path` token. The chip boundaries
+    /// themselves are valid stops, so only a strictly-interior offset snaps.
+    fn snap_out_of_chip(&self, offset: usize, toward_start: bool) -> usize {
+        match self.decoration_containing(offset) {
+            Some(range) if offset > range.start => {
+                if toward_start {
+                    range.start
+                } else {
+                    range.end
+                }
+            }
+            _ => offset,
+        }
+    }
+
     fn up(&mut self, _: &TaUp, _w: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(offset_one_line_up(&self.content, self.cursor()), cx);
+        let target = offset_one_line_up(&self.content, self.cursor());
+        self.move_to(self.snap_out_of_chip(target, true), cx);
     }
 
     fn down(&mut self, _: &TaDown, _w: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(offset_one_line_down(&self.content, self.cursor()), cx);
+        let target = offset_one_line_down(&self.content, self.cursor());
+        self.move_to(self.snap_out_of_chip(target, false), cx);
     }
 
     fn select_left(&mut self, _: &TaSelectLeft, _w: &mut Window, cx: &mut Context<Self>) {
@@ -690,11 +714,13 @@ impl TextArea {
     }
 
     fn home(&mut self, _: &TaHome, _w: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(line_start(&self.content, self.cursor()), cx);
+        let target = line_start(&self.content, self.cursor());
+        self.move_to(self.snap_out_of_chip(target, true), cx);
     }
 
     fn end(&mut self, _: &TaEnd, _w: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(line_end(&self.content, self.cursor()), cx);
+        let target = line_end(&self.content, self.cursor());
+        self.move_to(self.snap_out_of_chip(target, false), cx);
     }
 
     fn copy(&mut self, _: &TaCopy, _w: &mut Window, cx: &mut Context<Self>) {

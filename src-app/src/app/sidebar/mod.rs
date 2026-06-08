@@ -17,10 +17,92 @@ use gpui::{
 
 use crate::{
     CLAUDE_SPINNER_FRAMES, CODEX_SPINNER_FRAMES, PaneFlowApp, SIDEBAR_WIDTH, WorkspaceContextMenu,
-    WorkspaceDrag, WorkspaceDragPreview, ai_types,
+    WorkspaceDrag, WorkspaceDragPreview, ai_types, workspace::Workspace,
 };
 
+/// US-048: memoized result of the sidebar's sibling-worktree grouping. The
+/// `order` is a list of indices into `PaneFlowApp::workspaces`; `signature` is
+/// the cheap content hash it was computed for (`None` until the first render).
+/// Stored behind a `RefCell` on `PaneFlowApp` because `render_sidebar` borrows
+/// `&self`.
+#[derive(Default)]
+pub(crate) struct SidebarOrderCache {
+    signature: Option<u64>,
+    order: Vec<usize>,
+}
+
+/// Collapse a `home`-rooted absolute path to a `~`-prefixed display string.
+///
+/// US-040: uses [`std::path::Path::strip_prefix`] (component-boundary match,
+/// OS-native separator) instead of a raw `str::starts_with` + byte slice. The
+/// old form false-positived on a partial component (`/home/arth` vs
+/// `/home/arthur`) and assumed `/` separators. Returns `cwd` verbatim when it
+/// isn't under `home` (or `home` is empty), so a Windows casing mismatch
+/// degrades to the full path rather than a wrong collapse.
+fn collapse_home(cwd: &str, home: &str) -> String {
+    if home.is_empty() {
+        return cwd.to_string();
+    }
+    match std::path::Path::new(cwd).strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Ok(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        Err(_) => cwd.to_string(),
+    }
+}
+
 impl PaneFlowApp {
+    /// Cheap content signature for the sidebar display order (US-048). Hashes
+    /// the workspace count plus each `(id, repo_root)` in positional order, so
+    /// it changes on create / close / reorder / repo-root change — exactly the
+    /// inputs [`Self::compute_display_order`] reads. No allocation.
+    fn sidebar_order_signature(workspaces: &[Workspace]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        workspaces.len().hash(&mut hasher);
+        for ws in workspaces {
+            ws.id.hash(&mut hasher);
+            match &ws.repo_root {
+                Some(root) => root.hash(&mut hasher),
+                None => 0u8.hash(&mut hasher),
+            }
+        }
+        hasher.finish()
+    }
+
+    /// Sibling-worktree grouping (US-002): workspaces sharing a `repo_root`
+    /// render contiguously when ≥2 share it (group appears at the first
+    /// member's position); a lone workspace keeps its original position.
+    /// Returns indices into `workspaces`. Pure — memoized by the caller.
+    fn compute_display_order(workspaces: &[Workspace]) -> Vec<usize> {
+        let mut repo_members: std::collections::HashMap<&std::path::Path, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, ws) in workspaces.iter().enumerate() {
+            if let Some(root) = &ws.repo_root {
+                repo_members.entry(root.as_path()).or_default().push(i);
+            }
+        }
+        let mut order: Vec<usize> = Vec::with_capacity(workspaces.len());
+        let mut placed = vec![false; workspaces.len()];
+        for (i, ws) in workspaces.iter().enumerate() {
+            if placed[i] {
+                continue;
+            }
+            if let Some(root) = &ws.repo_root
+                && let Some(members) = repo_members.get(root.as_path())
+                && members.len() >= 2
+            {
+                for &m in members {
+                    order.push(m);
+                    placed[m] = true;
+                }
+                continue;
+            }
+            order.push(i);
+            placed[i] = true;
+        }
+        order
+    }
+
     pub(crate) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
         let theme = crate::theme::active_theme();
@@ -135,53 +217,28 @@ impl PaneFlowApp {
             return sidebar;
         }
 
-        // ── Sibling-worktree grouping (US-002) ──
-        // Workspaces sharing a `repo_root` are members of one repo. When ≥2
-        // share it, they render contiguously (no group header); a lone
-        // workspace (or one with no `repo_root`) keeps its original position.
-        // `idx` stays the workspace's real index in `self.workspaces`, so
-        // selection/drag/rename are unaffected by the display reordering.
-        let mut repo_members: std::collections::HashMap<&std::path::Path, Vec<usize>> =
-            std::collections::HashMap::new();
-        for (i, ws) in self.workspaces.iter().enumerate() {
-            if let Some(root) = &ws.repo_root {
-                repo_members.entry(root.as_path()).or_default().push(i);
-            }
+        // ── Sibling-worktree grouping (US-002), memoized (US-048) ──
+        // The display order depends only on the workspace set/order and each
+        // `repo_root`. `render_sidebar` runs on every app `notify()`, so the old
+        // per-frame `HashMap` + `Vec` rebuild was pure waste — recompute only
+        // when a cheap content signature changes. `idx` stays the workspace's
+        // real index in `self.workspaces`, so selection/drag/rename are
+        // unaffected by the display reordering.
+        let signature = Self::sidebar_order_signature(&self.workspaces);
+        if self.sidebar_order_cache.borrow().signature != Some(signature) {
+            let order = Self::compute_display_order(&self.workspaces);
+            let mut cache = self.sidebar_order_cache.borrow_mut();
+            cache.order = order;
+            cache.signature = Some(signature);
         }
-        // Display order: groups appear at their first member's position, members
-        // contiguous; standalone workspaces keep their original position.
-        let mut display_order: Vec<usize> = Vec::with_capacity(self.workspaces.len());
-        let mut placed = vec![false; self.workspaces.len()];
-        for (i, ws) in self.workspaces.iter().enumerate() {
-            if placed[i] {
-                continue;
-            }
-            if let Some(root) = &ws.repo_root
-                && let Some(members) = repo_members.get(root.as_path())
-                && members.len() >= 2
-            {
-                for &m in members {
-                    display_order.push(m);
-                    placed[m] = true;
-                }
-                continue;
-            }
-            display_order.push(i);
-            placed[i] = true;
-        }
-        for &i in &display_order {
+        let order_cache = self.sidebar_order_cache.borrow();
+        for &i in &order_cache.order {
             let ws = &self.workspaces[i];
             let is_active = i == self.active_idx;
 
             let title = ws.title.clone();
             // Format cwd as ~/... (collapse home dir)
-            let cwd_display = {
-                if !self.home_dir.is_empty() && ws.cwd.starts_with(&self.home_dir) {
-                    format!("~{}", &ws.cwd[self.home_dir.len()..])
-                } else {
-                    ws.cwd.clone()
-                }
-            };
+            let cwd_display = collapse_home(&ws.cwd, &self.home_dir);
 
             let idx = i;
             let ws_id = ws.id;
@@ -877,5 +934,47 @@ impl Render for WorkspaceCwdTooltip {
             .text_size(px(11.))
             .font_family("monospace")
             .child(self.path.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collapse_home;
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn collapses_nested_path_under_home() {
+        assert_eq!(
+            collapse_home("/home/arthur/dev/x", "/home/arthur"),
+            "~/dev/x"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn exact_home_collapses_to_tilde() {
+        assert_eq!(collapse_home("/home/arthur", "/home/arthur"), "~");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn partial_component_is_not_a_prefix() {
+        // US-040 regression: `/home/arth` must NOT match `/home/arthur` — the
+        // old `starts_with` + byte slice produced the bogus "~ur/proj".
+        assert_eq!(
+            collapse_home("/home/arthur/proj", "/home/arth"),
+            "/home/arthur/proj"
+        );
+    }
+
+    #[test]
+    fn empty_home_returns_cwd_verbatim() {
+        assert_eq!(collapse_home("/some/path", ""), "/some/path");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn cwd_outside_home_is_unchanged() {
+        assert_eq!(collapse_home("/etc/hosts", "/home/arthur"), "/etc/hosts");
     }
 }

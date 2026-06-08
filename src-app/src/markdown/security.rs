@@ -24,12 +24,22 @@
 //!   markdown is potentially-hostile file content whereas terminal
 //!   output is the user's own shell talking to them.
 //!
-//! State of the world: paneflow does not currently *load* images — the
-//! parser emits a `[image: <url>]` placeholder text span (`parser.rs:309`).
-//! `validate_image_ref` is therefore "armed but no load to gate" today;
-//! it ships with full tests so the boundary is in place when actual
-//! image rendering lands. `validate_link_url` IS active — it gates
-//! `open::that` for every clicked link (`view.rs`).
+//! State of the world: BOTH validators are "armed but nothing to gate" today.
+//! - paneflow does not *load* images — the parser emits a `[image: <url>]`
+//!   placeholder text span (`parser.rs`), so `validate_image_ref` has no load
+//!   path to gate yet.
+//! - paneflow does not *open* markdown links either — the StyledText render
+//!   path does not yet hit-test per-run clicks, so link spans are styled but
+//!   not clickable (`view.rs::build_styled_text`, and the `#[allow(dead_code)]`
+//!   on this module in `markdown/mod.rs`). There is no `open::that` call in the
+//!   markdown viewer, so `validate_link_url` has no caller in production.
+//!
+//! Both ship with full tests so the boundary is reviewed and in place: when
+//! click hit-testing is restored, the rewire MUST route every URL through
+//! `validate_link_url(...)?` before handing it to `open::that` — wiring it in
+//! is a one-line change at that point. The regression test
+//! `allowlist_is_http_https_only` pins the scheme allow-list so a later edit
+//! cannot silently widen it.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -300,6 +310,17 @@ mod tests {
         let huge = format!("https://x.com/{}", "a".repeat(MAX_LINK_URL_LEN));
         let err = validate_link_url(&huge).expect_err("oversized rejected");
         assert!(matches!(err, UrlError::TooLong));
+    }
+
+    #[test]
+    fn allowlist_is_http_https_only() {
+        // Regression guard (US-044): when markdown link click hit-testing is
+        // restored, the rewire MUST route `open::that` through
+        // `validate_link_url(...)?`. This test pins the scheme allow-list so a
+        // later edit cannot silently add `file`/`data`/`smb`/… and reopen the
+        // confused-deputy path into `xdg-open`. If you intentionally widen the
+        // allow-list, update this test in the same diff and justify it.
+        assert_eq!(ALLOWED_LINK_SCHEMES, &["http", "https"]);
     }
 
     // ─── AC3: image refs ────────────────────────────────────────────

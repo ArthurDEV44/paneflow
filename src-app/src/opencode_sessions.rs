@@ -145,16 +145,12 @@ fn parse_sessions(stdout: &[u8], cwd: &str) -> Vec<SessionMeta> {
 /// are present and non-empty.
 fn record_to_session(record: &Value, cwd: &str) -> Option<SessionMeta> {
     let session_id = record.get("id").and_then(|v| v.as_str())?.to_string();
-    if session_id.is_empty() {
-        return None;
-    }
-    // Reject session ids containing control characters. The id flows
-    // verbatim into `opencode --session <id>` and then to the user's
-    // PTY where `\r` / `\n` would auto-submit injected text as a
-    // separate shell command. The CLI's documented id format is
-    // `ses_<base62>` so a control character indicates a malformed
-    // record (or a tampered binary).
-    if session_id.chars().any(|c| c.is_control()) {
+    // Strict allow-list (`^[A-Za-z0-9_-]+$`) before the id flows verbatim into
+    // `opencode --session <id>` and then to the user's PTY. The CLI's
+    // documented id format is `ses_<base62>`, so anything else (a control char
+    // that would auto-submit injected text, or a `;`/space that would chain a
+    // second shell command) means a malformed record or a tampered binary.
+    if !crate::agent_sessions::is_valid_session_id(&session_id) {
         return None;
     }
     let record_cwd = record

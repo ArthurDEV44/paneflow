@@ -733,6 +733,13 @@ impl LayoutNode {
     ///
     /// Returns `ratios` if present, else converts legacy `ratio` to binary
     /// `[ratio, 1-ratio]`, else returns equal ratios for the child count.
+    ///
+    /// US-056: persisted ratios are untrusted input — a hand-edited or corrupt
+    /// `session.json` can carry NaN, negative, zero, or wrong-length values. Any
+    /// user-supplied set is run through [`sanitize_ratios`] (clamp into
+    /// `[MIN_RATIO, 1.0]`, reject non-finite/negative, normalize to sum 1.0)
+    /// before it reaches layout construction; the internally generated
+    /// equal-share fallback is already valid and returned verbatim.
     pub fn resolved_ratios(&self) -> Vec<f64> {
         match self {
             LayoutNode::Pane { .. } => vec![1.0],
@@ -742,19 +749,61 @@ impl LayoutNode {
                 children,
                 ..
             } => {
-                if let Some(rs) = ratios {
-                    return rs.clone();
-                }
-                if let Some(r) = ratio {
-                    if children.len() == 2 {
-                        return vec![*r, 1.0 - *r];
-                    }
-                }
                 let n = children.len().max(1);
-                vec![1.0 / n as f64; n]
+                let raw = if let Some(rs) = ratios {
+                    rs.clone()
+                } else if let Some(r) = ratio {
+                    if children.len() == 2 {
+                        vec![*r, 1.0 - *r]
+                    } else {
+                        return vec![1.0 / n as f64; n];
+                    }
+                } else {
+                    return vec![1.0 / n as f64; n];
+                };
+                sanitize_ratios(raw, n)
             }
         }
     }
+}
+
+/// Floor for any single persisted split ratio. Clamping to this keeps every
+/// pane visible and prevents a divide-by-zero when the set is normalized.
+const MIN_RATIO: f64 = 0.01;
+
+/// Clamp every ratio into `[MIN_RATIO, 1.0]` (mapping NaN/inf/negative to the
+/// floor), then normalize so the set sums to 1.0. A length mismatch with the
+/// child count is unrecoverable — we cannot know which child a stale ratio was
+/// meant for — so it degrades to equal shares.
+fn sanitize_ratios(mut ratios: Vec<f64>, n: usize) -> Vec<f64> {
+    if ratios.len() != n {
+        return vec![1.0 / n as f64; n];
+    }
+    for r in ratios.iter_mut() {
+        *r = if r.is_finite() {
+            r.clamp(MIN_RATIO, 1.0)
+        } else {
+            MIN_RATIO
+        };
+    }
+    let sum: f64 = ratios.iter().sum();
+    if sum > 0.0 && (sum - 1.0).abs() > 1e-9 {
+        for r in ratios.iter_mut() {
+            *r /= sum;
+        }
+    }
+    // US-056 (EP-010 review): re-clamp after normalize. Dividing by a sum > 1
+    // can push a just-clamped ratio back below `MIN_RATIO` (e.g. raw
+    // `[1.0, 0.005]` → clamp `[1.0, 0.01]` → normalize `[0.990, 0.0099]`),
+    // silently violating the floor this fn promises. The config-loader sibling
+    // (`loader::validate_layout`) already re-clamps for this exact reason
+    // (US-057); the session path must match so both frontiers honour the same
+    // 0.01 floor. The renderer re-normalizes proportionally at paint time, so
+    // the post-re-clamp sum need not be exactly 1.0 — the floor is the invariant.
+    for r in ratios.iter_mut() {
+        *r = r.clamp(MIN_RATIO, 1.0);
+    }
+    ratios
 }
 
 /// Top-level UI mode (US-007/US-008 of `prd-agents-view.md`;

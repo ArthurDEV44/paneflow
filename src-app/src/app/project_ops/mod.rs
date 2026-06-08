@@ -114,7 +114,9 @@ impl PaneFlowApp {
         // closed project don't keep their PTY entity alive until the
         // next restart.
         for thread in &removed.threads {
-            self.agents_terminal_view_cache.remove(&thread.id);
+            self.agents_view
+                .agents_terminal_view_cache
+                .remove(&thread.id);
         }
         // Keep active_project_idx valid: if we removed at or before
         // the active idx, shift it down (clamped to 0). If projects
@@ -272,7 +274,7 @@ impl PaneFlowApp {
         self.active_project_idx = project_idx;
         self.active_thread_idx = Some(thread_idx);
         // Picking a thread leaves the Skills page.
-        self.agents_skills_visible = false;
+        self.agents_view.agents_skills_visible = false;
         cx.notify();
         Ok(())
     }
@@ -297,7 +299,9 @@ impl PaneFlowApp {
         // Drop the cached Terminal Thread entity so its PTY is torn down
         // (the alacritty event loop sends `Msg::Shutdown` in `Drop`, see
         // `src/terminal/pty_session.rs`).
-        self.agents_terminal_view_cache.remove(&removed.id);
+        self.agents_view
+            .agents_terminal_view_cache
+            .remove(&removed.id);
         // Keep the active-thread selection in range. If we removed the
         // selected thread, clear it; if we removed something earlier,
         // shift it down.

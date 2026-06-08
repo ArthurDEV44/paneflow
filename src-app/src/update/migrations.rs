@@ -126,15 +126,27 @@ fn migrate_user_hicolor_icons(
         return Ok(());
     }
 
-    // Migration only matters if the user-local hicolor tree exists at all.
-    // `try_exists` distinguishes "missing" (Ok(false)) from "permission
-    // denied" (Err) — we only skip on missing.
-    if !user_icon_dir.try_exists().unwrap_or(false) {
-        write_marker(cache_dir, &marker_path);
-        return Ok(());
+    // US-030: distinguish "missing" (Ok(false) → nothing to migrate, mark
+    // done) from "cannot determine" (Err, e.g. permission denied on an
+    // ancestor). The old `unwrap_or(false)` collapsed Err into "absent" and
+    // wrote the marker — marking the migration done even though it never ran.
+    // On Err we return without writing the marker so it retries next boot.
+    match user_icon_dir.try_exists() {
+        Ok(false) => {
+            write_marker(cache_dir, &marker_path);
+            return Ok(());
+        }
+        Ok(true) => {}
+        Err(e) => return Err(e),
     }
 
     let mut deleted_any = false;
+    // US-030: remember the first deletion failure. A stale icon we couldn't
+    // remove means the migration did NOT reach its goal (MigrationOutcome
+    // `Failed`), so the marker is left unwritten and we retry next boot —
+    // rather than the old code that wrote the marker unconditionally even
+    // after a failed `remove_file`.
+    let mut remove_failed: Option<io::Error> = None;
 
     for &size in sizes {
         let rel = format!("{size}x{size}/apps/paneflow.png");
@@ -215,6 +227,9 @@ fn migrate_user_hicolor_icons(
                     "paneflow: cannot remove stale user-local icon {} ({err})",
                     user_file.display()
                 );
+                if remove_failed.is_none() {
+                    remove_failed = Some(err);
+                }
             }
         }
     }
@@ -223,6 +238,12 @@ fn migrate_user_hicolor_icons(
         maybe_remove_orphaned_cache(user_icon_dir);
     }
 
+    // US-030: write the marker only on a genuinely complete run (Completed /
+    // Skipped). A deletion failure propagates as `Err`, leaving the marker
+    // unset so the migration is retried.
+    if let Some(err) = remove_failed {
+        return Err(err);
+    }
     write_marker(cache_dir, &marker_path);
     Ok(())
 }

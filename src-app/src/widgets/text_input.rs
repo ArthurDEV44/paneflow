@@ -214,8 +214,12 @@ impl TextInput {
 
     fn paste(&mut self, _: &TextInputPaste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            // Single-line input: newlines in the paste are coerced to spaces.
-            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+            // US-035: single-line input — coerce newlines to spaces. Collapse
+            // CRLF to one space first, then any lone CR/LF, so a Windows-style
+            // paste doesn't leave a stray `\r` that snaps the cursor to column
+            // 0 and visually corrupts the field.
+            let sanitized = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
+            self.replace_text_in_range(None, &sanitized, window, cx);
         }
     }
 
@@ -449,7 +453,13 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
-        assert_eq!(last_layout.text, self.content);
+        // US-033: an empty field lays out the *placeholder* ("Filter files…"),
+        // so `last_layout.text` legitimately differs from `self.content`. The
+        // old `assert_eq!` turned an OS-driven IME/hit-test on an empty field
+        // into a SIGABRT. Bail gracefully instead.
+        if last_layout.text != self.content {
+            return None;
+        }
         let utf8_index = last_layout.index_for_x(point.x - line_point.x)?;
         Some(self.offset_to_utf16(utf8_index))
     }

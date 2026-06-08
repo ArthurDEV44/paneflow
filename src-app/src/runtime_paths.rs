@@ -148,8 +148,26 @@ pub fn augment_path_for_gui_launch() {
     }
 
     #[cfg(target_os = "windows")]
-    if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join(".bun").join("bin"));
+    {
+        if let Some(home) = dirs::home_dir() {
+            candidates.push(home.join(".bun").join("bin"));
+        }
+        // US-041: Git for Windows ships `git.exe` under `<install>\cmd`, but a
+        // GUI launch (Start Menu / Explorer) inherits a PATH that frequently
+        // omits it, so the diff viewer's `Command::new("git")` (`diff/git.rs`)
+        // fails with NotFound and the whole diff mode is dead on Windows. Add
+        // the standard system (`%ProgramFiles%`, `%ProgramFiles(x86)%`) and
+        // per-user (`%LOCALAPPDATA%\Programs`) Git locations; the `is_dir()`
+        // filter below drops whichever ones aren't present.
+        if let Some(program_files) = std::env::var_os("ProgramFiles") {
+            candidates.push(PathBuf::from(&program_files).join("Git").join("cmd"));
+        }
+        if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
+            candidates.push(PathBuf::from(&program_files_x86).join("Git").join("cmd"));
+        }
+        if let Some(local) = dirs::data_local_dir() {
+            candidates.push(local.join("Programs").join("Git").join("cmd"));
+        }
     }
 
     let current = std::env::var_os("PATH").unwrap_or_default();

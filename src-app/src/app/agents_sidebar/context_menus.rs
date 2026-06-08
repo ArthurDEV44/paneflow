@@ -18,7 +18,7 @@ use crate::PaneFlowApp;
 impl PaneFlowApp {
     /// Build the deferred element for the project-row right-click
     /// menu. Caller is responsible for the
-    /// `if let Some(AgentsContextMenu::Project { project_idx, position }) = self.agents_menu_open
+    /// `if let Some(AgentsContextMenu::Project { project_idx, position }) = self.agents_view.agents_menu_open
     ///   && project_idx < self.projects.len()`
     /// guard so the menu never points at a removed row.
     pub(crate) fn render_agents_project_context_menu(

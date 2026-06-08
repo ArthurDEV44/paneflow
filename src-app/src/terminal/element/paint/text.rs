@@ -1,6 +1,6 @@
 //! Batched-text paint pass — one `shape_line` per `BatchedTextRun`.
 
-use gpui::{App, Pixels, Point, SharedString, TextAlign, TextRun, Window};
+use gpui::{App, Pixels, Point, TextAlign, TextRun, Window};
 
 use super::super::LayoutState;
 use super::super::geometry::CellGeometry;
@@ -61,7 +61,7 @@ pub fn paint_text_runs(
             strikethrough: run.strikethrough,
         };
         let shaped = window.text_system().shape_line(
-            SharedString::from(run.text.clone()),
+            run.text.clone(),
             font_size,
             &[text_run],
             Some(cell_width),

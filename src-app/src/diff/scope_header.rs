@@ -19,8 +19,8 @@ use gpui::{
 impl PaneFlowApp {
     pub(crate) fn render_scope_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let ui = crate::theme::ui_colors();
-        let active = self.diff_scope;
-        let open = self.diff_scope_picker_open;
+        let active = self.diff_mode.diff_scope;
+        let open = self.diff_mode.diff_scope_picker_open;
 
         let trigger = div()
             .id("diff-scope-trigger")
@@ -41,9 +41,9 @@ impl PaneFlowApp {
                 s.bg(ui.subtle)
             })
             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                this.diff_scope_picker_open = !this.diff_scope_picker_open;
-                this.diff_project_picker_open = false;
-                this.diff_worktree_picker_open = false;
+                this.diff_mode.diff_scope_picker_open = !this.diff_mode.diff_scope_picker_open;
+                this.diff_mode.diff_project_picker_open = false;
+                this.diff_mode.diff_worktree_picker_open = false;
                 cx.notify();
             }))
             .child(
@@ -78,8 +78,8 @@ impl PaneFlowApp {
                 .border_1()
                 .border_color(ui.border)
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    if this.diff_scope_picker_open {
-                        this.diff_scope_picker_open = false;
+                    if this.diff_mode.diff_scope_picker_open {
+                        this.diff_mode.diff_scope_picker_open = false;
                         cx.notify();
                     }
                 }));
@@ -103,11 +103,11 @@ impl PaneFlowApp {
                             s.bg(ui.subtle)
                         })
                         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                            this.diff_scope_picker_open = false;
-                            this.diff_project_picker_open = false;
-                            this.diff_worktree_picker_open = false;
-                            if this.diff_scope != scope {
-                                this.diff_scope = scope;
+                            this.diff_mode.diff_scope_picker_open = false;
+                            this.diff_mode.diff_project_picker_open = false;
+                            this.diff_mode.diff_worktree_picker_open = false;
+                            if this.diff_mode.diff_scope != scope {
+                                this.diff_mode.diff_scope = scope;
                                 this.rebuild_diff_view(cx);
                             } else {
                                 cx.notify();
@@ -140,7 +140,7 @@ impl PaneFlowApp {
         // `select_workspace`, the same path `Ctrl+1-9` uses), instead of being
         // stuck on whatever workspace happened to be active on entry.
         let show_project = active != DiffScope::MultiProject;
-        let project_open = self.diff_project_picker_open;
+        let project_open = self.diff_mode.diff_project_picker_open;
         let project_label = self
             .workspaces
             .get(self.active_idx)
@@ -168,9 +168,9 @@ impl PaneFlowApp {
                 s.bg(ui.subtle)
             })
             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                this.diff_project_picker_open = !this.diff_project_picker_open;
-                this.diff_scope_picker_open = false;
-                this.diff_worktree_picker_open = false;
+                this.diff_mode.diff_project_picker_open = !this.diff_mode.diff_project_picker_open;
+                this.diff_mode.diff_scope_picker_open = false;
+                this.diff_mode.diff_worktree_picker_open = false;
                 cx.notify();
             }))
             .child(
@@ -205,8 +205,8 @@ impl PaneFlowApp {
                 .border_1()
                 .border_color(ui.border)
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    if this.diff_project_picker_open {
-                        this.diff_project_picker_open = false;
+                    if this.diff_mode.diff_project_picker_open {
+                        this.diff_mode.diff_project_picker_open = false;
                         cx.notify();
                     }
                 }));
@@ -255,7 +255,7 @@ impl PaneFlowApp {
                                 s.bg(ui.subtle)
                             })
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.diff_project_picker_open = false;
+                                this.diff_mode.diff_project_picker_open = false;
                                 // Routes through the standard workspace switch
                                 // (re-roots files tree, saves session, rebuilds
                                 // the diff via `reconcile_diff_after_workspace_change`).
@@ -300,11 +300,11 @@ impl PaneFlowApp {
             .get(self.active_idx)
             .and_then(|ws| ws.repo_root.clone());
         let show_branches = active == DiffScope::Worktree && repo_root.is_some();
-        let branches_open = self.diff_worktree_picker_open;
+        let branches_open = self.diff_mode.diff_worktree_picker_open;
         let (branches_trigger, branches_popover): (Option<AnyElement>, Option<AnyElement>) =
             match repo_root.clone().filter(|_| show_branches) {
                 Some(root) => {
-                    let label = match self.diff_chosen_worktrees.get(&root) {
+                    let label = match self.diff_mode.diff_chosen_worktrees.get(&root) {
                         Some(s) => format!("{} branches", s.len()),
                         None => "All branches".to_string(),
                     };
@@ -328,10 +328,11 @@ impl PaneFlowApp {
                             s.bg(ui.subtle)
                         })
                         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                            this.diff_worktree_picker_open = !this.diff_worktree_picker_open;
-                            this.diff_scope_picker_open = false;
-                            this.diff_project_picker_open = false;
-                            if this.diff_worktree_picker_open {
+                            this.diff_mode.diff_worktree_picker_open =
+                                !this.diff_mode.diff_worktree_picker_open;
+                            this.diff_mode.diff_scope_picker_open = false;
+                            this.diff_mode.diff_project_picker_open = false;
+                            if this.diff_mode.diff_worktree_picker_open {
                                 this.refresh_diff_available_worktrees(trig_root.clone(), cx);
                             }
                             cx.notify();
@@ -370,12 +371,12 @@ impl PaneFlowApp {
                             .border_1()
                             .border_color(ui.border)
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                if this.diff_worktree_picker_open {
-                                    this.diff_worktree_picker_open = false;
+                                if this.diff_mode.diff_worktree_picker_open {
+                                    this.diff_mode.diff_worktree_picker_open = false;
                                     cx.notify();
                                 }
                             }));
-                        if self.diff_available_worktrees.is_empty() {
+                        if self.diff_mode.diff_available_worktrees.is_empty() {
                             menu = menu.child(
                                 div()
                                     .px(px(8.))
@@ -385,7 +386,7 @@ impl PaneFlowApp {
                                     .child("Loading worktrees…"),
                             );
                         } else {
-                            for w in &self.diff_available_worktrees {
+                            for w in &self.diff_mode.diff_available_worktrees {
                                 let path_str = w.path.to_string_lossy().into_owned();
                                 let chosen = self.diff_worktree_is_chosen(&root, &path_str);
                                 let row_root = root.clone();

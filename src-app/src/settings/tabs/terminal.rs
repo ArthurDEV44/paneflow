@@ -23,7 +23,6 @@ use serde_json::{Value, json};
 
 use paneflow_config::schema::{CursorBlinkConfig, CursorShapeConfig, TerminalBellMode};
 
-use crate::config_writer;
 use crate::settings::components::{
     hairline, section_header, setting_card, setting_text, toggle_pill,
 };
@@ -32,7 +31,8 @@ use super::super::window::{SettingsWindow, TerminalDropdown};
 
 impl SettingsWindow {
     pub(crate) fn render_terminal_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let config = paneflow_config::loader::load_config();
+        // US-016: read the cached config (no per-frame `load_config()`).
+        let config = &self.cached_config;
         let ui = crate::theme::ui_colors();
         let terminal = config.terminal.clone().unwrap_or_default();
 
@@ -340,19 +340,9 @@ impl SettingsWindow {
                             d.text_color(ui.text).hover(|s| s.bg(ui.subtle))
                         })
                         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                            if nested {
-                                config_writer::save_terminal_field(
-                                    config_key,
-                                    value_for_click.clone(),
-                                );
-                            } else {
-                                config_writer::save_config_value(
-                                    config_key,
-                                    value_for_click.clone(),
-                                );
-                            }
                             this.terminal_dropdown = None;
-                            cx.notify();
+                            // US-016: cache-mutate + notify + off-thread persist.
+                            this.persist_setting(nested, config_key, value_for_click.clone(), cx);
                         }))
                         .child(div().flex_1().min_w_0().truncate().child(label))
                         .when(selected, |d| {
@@ -415,13 +405,12 @@ impl SettingsWindow {
         let at_min = value <= min + f64::EPSILON;
         let at_max = value >= max - f64::EPSILON;
 
-        let dec = cx.listener(move |_this, _: &ClickEvent, _w, cx| {
-            config_writer::save_config_value(config_key, json!(round(value - step)));
-            cx.notify();
+        let dec = cx.listener(move |this, _: &ClickEvent, _w, cx| {
+            // US-016: cache-mutate + notify + off-thread persist.
+            this.persist_setting(false, config_key, json!(round(value - step)), cx);
         });
-        let inc = cx.listener(move |_this, _: &ClickEvent, _w, cx| {
-            config_writer::save_config_value(config_key, json!(round(value + step)));
-            cx.notify();
+        let inc = cx.listener(move |this, _: &ClickEvent, _w, cx| {
+            this.persist_setting(false, config_key, json!(round(value + step)), cx);
         });
 
         let button = |btn_id: String, glyph: &'static str, disabled: bool| {
@@ -507,13 +496,9 @@ impl SettingsWindow {
             .hover(|s| s.bg(ui.subtle))
             .child(setting_text(ui, title, description))
             .child(toggle_pill(current, ui))
-            .on_click(cx.listener(move |_this, _: &ClickEvent, _w, cx| {
-                if nested {
-                    config_writer::save_terminal_field(config_key, Value::Bool(!current));
-                } else {
-                    config_writer::save_config_value(config_key, Value::Bool(!current));
-                }
-                cx.notify();
+            .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                // US-016: cache-mutate + notify + off-thread persist.
+                this.persist_setting(nested, config_key, Value::Bool(!current), cx);
             }))
     }
 }

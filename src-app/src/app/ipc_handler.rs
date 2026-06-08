@@ -17,9 +17,9 @@ use gpui::{App, AppContext, Context};
 use paneflow_config::schema::LayoutNode;
 
 use crate::layout::LayoutTree;
-use crate::layout::SplitDirection;
+use crate::layout::{MAX_PANES, SplitDirection};
 use crate::terminal::TerminalView;
-use crate::workspace::{Workspace, next_workspace_id};
+use crate::workspace::{MAX_WORKSPACES, Workspace, next_workspace_id};
 use crate::{PaneFlowApp, ai_types, keybindings, update};
 
 // ---------------------------------------------------------------------------
@@ -219,12 +219,23 @@ impl PaneFlowApp {
             keybindings::apply_keybindings(cx, &config.shortcuts);
             self.effective_shortcuts = keybindings::effective_shortcuts(&config.shortcuts);
             crate::theme::invalidate_theme_cache();
-            // US-014: reconcile the telemetry consent state. On any change,
-            // rebuild the `TelemetryClient` handle (Null ↔ Active) so future
-            // emissions reflect the new choice; show a confirmation toast;
-            // fire a one-time `telemetry_reenabled` breadcrumb on an explicit
-            // opted-out → opted-in transition (ROPA audit trail).
+            // US-014 (telemetry): reconcile the telemetry consent state. On any
+            // change, rebuild the `TelemetryClient` handle (Null ↔ Active) so
+            // future emissions reflect the new choice; show a confirmation
+            // toast; fire a one-time `telemetry_reenabled` breadcrumb on an
+            // explicit opted-out → opted-in transition (ROPA audit trail).
             self.reconcile_telemetry_consent(&config, cx);
+            // US-014 (render cache): refresh the cached config so render paths
+            // pick up the reload without a per-frame `load_config()`. Last use
+            // of `config` — move it in.
+            self.cached_config = config;
+            // US-015: push the refreshed config to every pane's tab-bar cache.
+            for ws in &self.workspaces {
+                ws.propagate_config(&self.cached_config, cx);
+            }
+            // US-016: push to the open Settings window so its render cache +
+            // shortcut list reflect this external change (fixes désync).
+            Self::push_config_to_settings_window(&self.cached_config, cx);
             cx.notify();
         }
 
@@ -238,6 +249,23 @@ impl PaneFlowApp {
             .swap(false, std::sync::atomic::Ordering::AcqRel)
         {
             cx.notify();
+        }
+    }
+
+    /// US-016: push a refreshed config to the open Settings window (if any).
+    /// The window handle isn't stored anywhere, so we locate it among the
+    /// open windows by downcast — leak-free, no second `ConfigWatcher`.
+    fn push_config_to_settings_window(
+        config: &paneflow_config::schema::PaneFlowConfig,
+        cx: &mut Context<Self>,
+    ) {
+        for handle in cx.windows() {
+            if let Some(settings) = handle.downcast::<crate::settings::SettingsWindow>() {
+                let cfg = config.clone();
+                let _ = settings.update(cx, |settings, _window, cx| {
+                    settings.apply_external_config(cfg, cx);
+                });
+            }
         }
     }
 
@@ -293,10 +321,11 @@ impl PaneFlowApp {
 
     /// Pick up the background update check result (runs once, then stops polling).
     pub(crate) fn process_update_check(&mut self, cx: &mut Context<Self>) {
-        if self.update_status.is_some() {
+        if self.self_update.update_status.is_some() {
             return; // Already resolved
         }
         let status = self
+            .self_update
             .pending_update
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -304,7 +333,7 @@ impl PaneFlowApp {
         if let Some(status) = status
             && !matches!(status, update::checker::UpdateStatus::Checking)
         {
-            self.update_status = Some(status);
+            self.self_update.update_status = Some(status);
             cx.notify();
             // Zed-style silent pre-install: as soon as we know there's
             // a new release and the install method supports an in-app
@@ -466,7 +495,6 @@ impl PaneFlowApp {
                 // Cap workspace count to prevent unbounded growth from malicious
                 // or buggy IPC clients (CWE-400). Matches the keyboard-action cap
                 // in `workspace_ops::create_workspace`.
-                const MAX_WORKSPACES: usize = 20;
                 if self.workspaces.len() >= MAX_WORKSPACES {
                     return serde_json::json!({"error": "Workspace limit reached"});
                 }
@@ -507,6 +535,8 @@ impl PaneFlowApp {
                     Workspace::with_id(ws_id, name, pane)
                 };
                 self.watch_git_dir(&ws);
+                // US-013: deferred git-stats probe off the render thread.
+                Self::spawn_initial_git_stats(ws_id, ws.cwd.clone(), cx);
                 self.workspaces.push(ws);
                 let idx = self.workspaces.len() - 1;
 
@@ -628,6 +658,16 @@ impl PaneFlowApp {
                     .extract_scrollback()
                     .unwrap_or_default();
                 let (text, returned, total, eof) = paginate_scrollback(&full, lines, offset);
+                // US-025: an offset past the oldest retained line is a client
+                // error, not a silent empty read. The old `saturating_sub`
+                // path returned `("", 0, total, true)`, indistinguishable from
+                // "you legitimately scrolled to the very top" (offset == total).
+                if offset > total {
+                    return JsonRpcError::invalid_params(format!(
+                        "offset {offset} out of range (total_lines={total})"
+                    ))
+                    .into_value();
+                }
                 serde_json::json!({
                     "text": text,
                     "lines": returned,
@@ -785,7 +825,6 @@ impl PaneFlowApp {
                         return serde_json::json!({"error": "Missing or invalid 'direction' parameter (use \"horizontal\" or \"vertical\")"});
                     }
                 };
-                const MAX_PANES: usize = 32;
                 let Some(ws) = self.active_workspace() else {
                     return serde_json::json!({"error": "No active workspace"});
                 };
@@ -1087,6 +1126,12 @@ fn read_tool(params: &serde_json::Value) -> ai_types::AiTool {
     ai_types::AiTool::from_name(tool_str)
 }
 
+/// US-026: floor of the reserved synthetic-PID namespace. Legacy `ai.*` frames
+/// that carry no real `pid` get a placeholder key in `[BASE, u32::MAX]`, a band
+/// no real OS PID reaches on any supported platform, so the two keyspaces never
+/// overlap.
+const SYNTHETIC_SESSION_PID_BASE: u32 = 0xFFFF_0000;
+
 /// Insert or update a session in `ws.agent_sessions`. When `pid` is
 /// known, the session is keyed by PID (the desired path — supports
 /// many concurrent sessions of the same tool). When `pid` is `None`
@@ -1109,14 +1154,17 @@ fn upsert_session_state(
             {
                 *existing_pid
             } else {
-                // Synthesize a fake PID for back-compat tracking. Uses
-                // the high half of u32 to avoid collision with real
-                // OS-assigned PIDs (Linux default pid_max = 4194304;
-                // macOS = 99999; Windows = 2^31). A value above 2^31
-                // is safe on every supported platform.
+                // US-026: allocate from a reserved high band that is disjoint
+                // from every supported platform's real PID range (Linux pid_max
+                // 4 194 304; macOS 99 999; Windows DWORDs are multiples of 4 and
+                // never approach this in practice). Treating this band as a
+                // separate synthetic namespace keeps a legacy placeholder from
+                // being confused with — or clobbered by — a real OS PID. The
+                // walk stops at the band floor instead of descending into the
+                // real-PID range.
                 let mut k: u32 = u32::MAX;
-                while ws.agent_sessions.contains_key(&k) {
-                    k = k.saturating_sub(1);
+                while k > SYNTHETIC_SESSION_PID_BASE && ws.agent_sessions.contains_key(&k) {
+                    k -= 1;
                 }
                 k
             }
@@ -1209,13 +1257,17 @@ pub(crate) fn promote_response(
 /// US-014 (cli-hardening-followup-2026-Q3): validate and canonicalize the
 /// `cwd` field of a `workspace.create` IPC request.
 ///
-/// A same-UID client could otherwise pass a relative path that walks outside
-/// the intended workspace (`"../../etc"`), a path containing NUL bytes (which
-/// most OSes truncate silently on PTY spawn), or a path to a regular file
-/// (creating a PTY whose cwd resolution then fails at the first chdir). This
-/// helper resolves symlinks + relatives, rejects non-existence, and rejects
-/// non-directories upfront with structured `-32602` errors so the client
-/// knows the request was refused.
+/// US-026: this is **not** a confinement jail. A same-UID client may
+/// legitimately open a workspace at any directory it can already reach, and
+/// `canonicalize` resolves `../` and symlinks to wherever they actually point
+/// (`"../../etc"` → `/etc`) without restricting the result to any root — so it
+/// does not, and cannot, prevent "walking outside the workspace". Its job is
+/// narrower: turn a relative or symlinked path into a concrete absolute one and
+/// reject upfront the inputs that would otherwise fail confusingly at PTY
+/// spawn — a path that does not exist or is unreadable, a path containing NUL
+/// bytes (rejected by `canonicalize` itself; most OSes would silently truncate
+/// it), or a path to a regular file (the first chdir would fail) — each with a
+/// structured `-32602` so the client knows the request was refused.
 ///
 /// Successful canonicalization is logged at `info!` for audit trail
 /// (relative-path resolution and symlink traversal visibility).
@@ -1639,6 +1691,25 @@ mod tests {
         assert_eq!(returned, 0);
         assert_eq!(total, 3);
         assert!(eof);
+    }
+
+    #[test]
+    fn paginate_total_drives_us025_offset_guard() {
+        // US-025: the surface.read handler rejects `offset > total` with a
+        // structured -32602. `offset == total` is the valid "scrolled to the
+        // very top" boundary (empty window, eof) and must NOT be rejected.
+        // paginate exposes the true `total` either way, so the guard can fire.
+        let (_, _, total_at_top, eof_at_top) = super::paginate_scrollback("a\nb\nc", 2, 3);
+        assert_eq!(total_at_top, 3);
+        assert!(eof_at_top);
+        assert!(3 <= total_at_top, "offset == total is in range (boundary)");
+
+        let (_, _, total_past, _) = super::paginate_scrollback("a\nb\nc", 2, 4);
+        assert_eq!(total_past, 3);
+        assert!(
+            4 > total_past,
+            "offset > total is out of range → handler returns -32602"
+        );
     }
 
     // -----------------------------------------------------------------

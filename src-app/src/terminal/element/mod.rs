@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use gpui::{
     App, Bounds, ContentMask, Element, ElementId, Font, FontStyle, FontWeight, GlobalElementId,
-    Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, StrikethroughStyle, Style,
-    UnderlineStyle, Window, px, relative,
+    Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, SharedString,
+    StrikethroughStyle, Style, UnderlineStyle, Window, px, relative,
 };
 
 use crate::terminal::PtyNotifier;
@@ -175,7 +175,10 @@ pub struct CellDimensions {
 }
 
 struct BatchedTextRun {
-    text: String,
+    /// US-047: `SharedString` (not `String`) so the per-frame paint pass
+    /// (`shape_line`) refcount-bumps the text instead of deep-copying it +
+    /// re-wrapping into an `Arc<str>` every frame. Built once per flush.
+    text: SharedString,
     font: Font,
     color: Hsla,
     underline: Option<UnderlineStyle>,
@@ -1214,7 +1217,7 @@ impl BatchAccumulator {
             return;
         }
         self.runs.push(BatchedTextRun {
-            text: std::mem::take(&mut self.text),
+            text: SharedString::from(std::mem::take(&mut self.text)),
             font: self.font.clone(),
             color: self.fg,
             underline: if self.underline {
@@ -1348,13 +1351,42 @@ impl Element for TerminalElement {
 
         let base_font = base_font();
 
+        // US-047: the shared integer pixel boundary arrays are derived purely
+        // from `geom` + the viewport size, so compute them ONCE here and lend
+        // them to both background passes instead of each pass rebuilding two
+        // `Vec<Pixels>` per frame. Empty viewport → empty slices (both passes
+        // early-return before indexing).
+        let (cell_x_bounds, cell_y_bounds) = if layout.desired_cols == 0 || layout.desired_rows == 0
+        {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                paint::background::cell_x_boundaries(
+                    geom.origin.x,
+                    geom.cell_width,
+                    layout.desired_cols,
+                ),
+                paint::background::cell_y_boundaries(
+                    geom.origin.y,
+                    geom.line_height,
+                    layout.desired_rows,
+                ),
+            )
+        };
+
         // Clip to element bounds
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             // 1. Terminal background + bell-flash overlay
             paint::background::paint_base_fill(&layout, bounds, self.bell_flash_active, window);
 
             // 2. Per-cell background rects with Ghostty-style edge extension.
-            paint::background::paint_cell_backgrounds(&layout, &geom, bounds, window);
+            paint::background::paint_cell_backgrounds(
+                &layout,
+                bounds,
+                &cell_x_bounds,
+                &cell_y_bounds,
+                window,
+            );
 
             // 2b. Selection highlight
             paint::selection::paint_selection(&layout, &geom, window);
@@ -1363,7 +1395,7 @@ impl Element for TerminalElement {
             paint::overlay::paint_search_highlights(&layout, &geom, window);
 
             // 2d. Block element quads (pixel-perfect, no font glyph gaps)
-            paint::background::paint_block_quads(&layout, &geom, window);
+            paint::background::paint_block_quads(&layout, &cell_x_bounds, &cell_y_bounds, window);
 
             // 3. Batched text runs
             paint::text::paint_text_runs(&layout, &geom, font_size, window, cx);

@@ -237,6 +237,13 @@ base64 = "0.22"
 # build dep that the legacy `d` feature pulls in.
 notify-rust = "4"
 
+# US-001 (prd-audit-remediation): detached minisign (Ed25519) signature
+# verification — the independent root of trust for the self-updater
+# (`update/signature.rs`). Verify-only and pure Rust (no libsodium / C dep),
+# so it adds no system build deps and compiles identically on the three
+# targets. The matching signing side runs in CI (US-002, `minisign`/`rsign2`).
+minisign-verify = "0.2.5"
+
 # Linux: enable Wayland + X11 display backends for gpui_platform
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_platform = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-append-fix", features = ["wayland", "x11"] }
@@ -268,6 +275,17 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics",
     "Win32_System_Diagnostics_ToolHelp",
+    # US-009 (prd-audit-remediation): IsWow64Process2 + IMAGE_FILE_MACHINE_*
+    # for native-host arch detection (see past WOW64 emulation on ARM64
+    # Windows). IsWow64Process2/GetCurrentProcess live in _Threading above;
+    # the IMAGE_FILE_MACHINE_* constants live here.
+    "Win32_System_SystemInformation",
+    # US-005 (prd-audit-remediation): WinVerifyTrust Authenticode check on the
+    # downloaded MSI before msiexec (defense-in-depth over minisign). The
+    # WINTRUST_DATA struct is gated on _Cryptography, so both features are
+    # required; WINTRUST_FILE_INFO + the WTD_* consts live under _WinTrust.
+    "Win32_Security_WinTrust",
+    "Win32_Security_Cryptography",
 ] }
 # US-003: process-wide Job Object with KILL_ON_JOB_CLOSE so a kill -9
 # of Paneflow (or any uncaught crash) takes all spawned agent CLIs and
@@ -280,6 +298,11 @@ win32job = "2.0.3"
 
 [dev-dependencies]
 gpui = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-append-fix", features = ["test-support"] }
+# US-001: the sign-capable counterpart to `minisign-verify`. Test-only — used
+# to generate ephemeral keypairs and sign fixtures so `update/signature.rs`
+# exercises a real verify round-trip (happy path + tampered/wrong-key/no-key
+# negatives) without baking a private key into the repo.
+minisign = "0.9.1"
 tracing-test = "0.2"
 
 # Clippy lint policy (US-007). Mirrors `[workspace.lints.clippy]` in the

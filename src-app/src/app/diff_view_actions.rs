@@ -142,41 +142,41 @@ impl PaneFlowApp {
             .get(self.active_idx)
             .and_then(|ws| ws.repo_root.clone());
 
-        match self.diff_scope {
+        match self.diff_mode.diff_scope {
             // US-014: one host with a tab per repo, lazy-mounting each repo's
             // DiffView. Retained across toggles while the project set is stable.
             DiffScope::MultiProject => {
-                self.diff_view_key = None;
+                self.diff_mode.diff_view_key = None;
                 let groups = self.collect_multiproject_groups();
                 if groups.is_empty() {
-                    self.multi_diff_view_retained = None;
+                    self.diff_mode.multi_diff_view_retained = None;
                     cx.notify();
                     return;
                 }
                 let sig = multiproject_signature(&groups);
-                if let Some((retained_sig, view)) = self.multi_diff_view_retained.clone()
+                if let Some((retained_sig, view)) = self.diff_mode.multi_diff_view_retained.clone()
                     && retained_sig == sig
                 {
                     view.update(cx, |v, cx| v.resume(cx));
-                    self.multi_diff_view = Some(view);
+                    self.diff_mode.multi_diff_view = Some(view);
                     cx.notify();
                     return;
                 }
                 let view = cx.new(|cx| crate::diff::MultiRepoDiffView::new(groups, cx));
-                self.multi_diff_view_retained = Some((sig, view.clone()));
-                self.multi_diff_view = Some(view);
+                self.diff_mode.multi_diff_view_retained = Some((sig, view.clone()));
+                self.diff_mode.multi_diff_view = Some(view);
             }
             // US-011: the active workspace only (one column).
             DiffScope::Project => {
                 let Some(root) = repo_root else {
-                    self.diff_view_key = None;
+                    self.diff_mode.diff_view_key = None;
                     cx.notify();
                     return;
                 };
                 let worktrees = self.collect_project_worktrees();
                 let key = DiffViewKey::new(&root, DiffScope::Project, &worktrees);
                 let (view, _miss) = self.mount_or_resume_diff(key, root, worktrees, cx);
-                self.diff_view = Some(view);
+                self.diff_mode.diff_view = Some(view);
             }
             // US-013: open worktrees of the active repo; on a COLD mount they are
             // augmented off-thread with on-disk worktrees not open as workspaces.
@@ -184,18 +184,18 @@ impl PaneFlowApp {
             // re-runs only on a miss.
             DiffScope::Worktree => {
                 let Some(root) = repo_root else {
-                    self.diff_view_key = None;
+                    self.diff_mode.diff_view_key = None;
                     cx.notify();
                     return;
                 };
                 // Curation: if the user chose a subset of branches for this repo,
                 // build columns for exactly those (unchosen branches are never
                 // diffed); no choice ⇒ all worktrees (the default).
-                let chosen = self.diff_chosen_worktrees.get(&root).cloned();
+                let chosen = self.diff_mode.diff_chosen_worktrees.get(&root).cloned();
                 let open = filter_chosen(self.collect_diff_worktrees(&root), chosen.as_ref());
                 let key = DiffViewKey::new(&root, DiffScope::Worktree, &open);
                 let (view, miss) = self.mount_or_resume_diff(key, root.clone(), open.clone(), cx);
-                self.diff_view = Some(view);
+                self.diff_mode.diff_view = Some(view);
                 if miss {
                     self.spawn_worktree_discovery(root, open, chosen, cx);
                 }
@@ -212,10 +212,10 @@ impl PaneFlowApp {
     /// Also closes the prior `multi_diff_view` watcher leak (it was never
     /// cleared on CLI/Agents entry).
     pub(crate) fn park_displayed_diff(&mut self, cx: &mut Context<Self>) {
-        if let Some(dv) = self.diff_view.take() {
+        if let Some(dv) = self.diff_mode.diff_view.take() {
             dv.update(cx, |v, cx| v.suspend(cx));
         }
-        if let Some(mv) = self.multi_diff_view.take() {
+        if let Some(mv) = self.diff_mode.multi_diff_view.take() {
             mv.update(cx, |v, cx| v.suspend(cx));
         }
     }
@@ -232,9 +232,9 @@ impl PaneFlowApp {
         worktrees: Vec<DiffWorktree>,
         cx: &mut Context<Self>,
     ) -> (Entity<crate::diff::DiffView>, bool) {
-        if let Some(view) = self.diff_view_cache.get(&key).cloned() {
+        if let Some(view) = self.diff_mode.diff_view_cache.get(&key).cloned() {
             view.update(cx, |v, cx| v.resume(cx));
-            self.diff_view_key = Some(key);
+            self.diff_mode.diff_view_key = Some(key);
             return (view, false);
         }
         let view = cx.new(|cx| crate::diff::DiffView::new(root, worktrees, cx));
@@ -243,12 +243,14 @@ impl PaneFlowApp {
         // limbo. Wire it once on the fresh entity; the subscription + flag persist
         // across cache resume (the key is scope-stamped, so a worktree view is
         // never reused for another scope).
-        if self.diff_scope == DiffScope::Worktree {
+        if self.diff_mode.diff_scope == DiffScope::Worktree {
             view.update(cx, |v, _| v.set_close_removes(true));
             cx.subscribe(&view, Self::handle_diff_view_event).detach();
         }
-        self.diff_view_cache.insert(key.clone(), view.clone());
-        self.diff_view_key = Some(key.clone());
+        self.diff_mode
+            .diff_view_cache
+            .insert(key.clone(), view.clone());
+        self.diff_mode.diff_view_key = Some(key.clone());
         self.evict_diff_cache_if_needed(&key);
         (view, true)
     }
@@ -263,10 +265,11 @@ impl PaneFlowApp {
             .iter()
             .filter_map(|ws| ws.repo_root.clone())
             .collect();
-        self.diff_view_cache
+        self.diff_mode
+            .diff_view_cache
             .retain(|k, _| open.contains(&k.repo_root));
         if open.is_empty() {
-            self.multi_diff_view_retained = None;
+            self.diff_mode.multi_diff_view_retained = None;
         }
     }
 
@@ -275,20 +278,21 @@ impl PaneFlowApp {
     /// eviction is safe; `keep` (the just-mounted key) is never evicted.
     /// Dropping an entity frees its rows.
     fn evict_diff_cache_if_needed(&mut self, keep: &DiffViewKey) {
-        if self.diff_view_cache.len() <= DIFF_VIEW_CACHE_CAP {
+        if self.diff_mode.diff_view_cache.len() <= DIFF_VIEW_CACHE_CAP {
             return;
         }
         let victims: Vec<DiffViewKey> = self
+            .diff_mode
             .diff_view_cache
             .keys()
             .filter(|k| *k != keep)
             .cloned()
             .collect();
         for k in victims {
-            if self.diff_view_cache.len() <= DIFF_VIEW_CACHE_CAP {
+            if self.diff_mode.diff_view_cache.len() <= DIFF_VIEW_CACHE_CAP {
                 break;
             }
-            self.diff_view_cache.remove(&k);
+            self.diff_mode.diff_view_cache.remove(&k);
         }
     }
 
@@ -308,7 +312,7 @@ impl PaneFlowApp {
         // US-016++ (#8): flag the in-flight discovery so the sidebar shows a
         // "Discovering worktrees…" note instead of looking like columns are
         // missing during the brief cold-mount window.
-        self.diff_discovering = true;
+        self.diff_mode.diff_discovering = true;
         cx.spawn(async move |this, cx| {
             let discovered = smol::unblock(move || crate::diff::list_repo_worktrees(&root)).await;
             let mut seen: std::collections::HashSet<String> =
@@ -333,12 +337,12 @@ impl PaneFlowApp {
             }
             let _ = cx.update(|cx| {
                 this.update(cx, |app, cx| {
-                    app.diff_discovering = false;
+                    app.diff_mode.diff_discovering = false;
                     // Apply only if still showing this repo's worktree scope.
                     if !new_cols.is_empty()
                         && app.mode == AppMode::Diff
-                        && app.diff_scope == crate::diff::DiffScope::Worktree
-                        && let Some(dv) = app.diff_view.clone()
+                        && app.diff_mode.diff_scope == crate::diff::DiffScope::Worktree
+                        && let Some(dv) = app.diff_mode.diff_view.clone()
                     {
                         dv.update(cx, |v, cx| v.add_columns(new_cols, cx));
                     }
@@ -358,12 +362,12 @@ impl PaneFlowApp {
         root: std::path::PathBuf,
         cx: &mut Context<Self>,
     ) {
-        self.diff_available_repo = Some(root.clone());
+        self.diff_mode.diff_available_repo = Some(root.clone());
         cx.spawn(async move |this, cx| {
             let wts = smol::unblock(move || crate::diff::list_repo_worktrees(&root)).await;
             let _ = cx.update(|cx| {
                 this.update(cx, |app, cx| {
-                    app.diff_available_worktrees = wts
+                    app.diff_mode.diff_available_worktrees = wts
                         .into_iter()
                         .map(|(path, branch)| crate::diff::DiffWorktree {
                             path,
@@ -390,11 +394,13 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) {
         let all: std::collections::HashSet<String> = self
+            .diff_mode
             .diff_available_worktrees
             .iter()
             .map(|w| w.path.to_string_lossy().into_owned())
             .collect();
         let set = self
+            .diff_mode
             .diff_chosen_worktrees
             .entry(root.clone())
             .or_insert(all);
@@ -403,7 +409,7 @@ impl PaneFlowApp {
         }
         let now_empty = set.is_empty();
         if now_empty {
-            self.diff_chosen_worktrees.remove(&root);
+            self.diff_mode.diff_chosen_worktrees.remove(&root);
         }
         self.rebuild_diff_view(cx);
     }
@@ -411,7 +417,7 @@ impl PaneFlowApp {
     /// Whether `path` is currently shown as a column (in the chosen set, or no
     /// chosen set ⇒ all shown). Drives the branches-picker checkmarks.
     pub(crate) fn diff_worktree_is_chosen(&self, root: &std::path::Path, path: &str) -> bool {
-        match self.diff_chosen_worktrees.get(root) {
+        match self.diff_mode.diff_chosen_worktrees.get(root) {
             Some(set) => set.contains(path),
             None => true,
         }
@@ -447,6 +453,7 @@ impl PaneFlowApp {
             return;
         };
         let shown: std::collections::HashSet<String> = self
+            .diff_mode
             .diff_view
             .as_ref()
             .map(|v| {
@@ -460,7 +467,11 @@ impl PaneFlowApp {
         if shown.len() <= 1 {
             return;
         }
-        let set = self.diff_chosen_worktrees.entry(root).or_insert(shown);
+        let set = self
+            .diff_mode
+            .diff_chosen_worktrees
+            .entry(root)
+            .or_insert(shown);
         set.remove(&path);
         self.rebuild_diff_view(cx);
     }
@@ -512,13 +523,15 @@ impl PaneFlowApp {
                 .child(div().text_color(ui.muted).text_size(px(13.)).child(msg))
                 .into_any_element()
         };
-        let body = match self.diff_scope {
+        let body = match self.diff_mode.diff_scope {
             DiffScope::MultiProject => self
+                .diff_mode
                 .multi_diff_view
                 .clone()
                 .map(|v| v.into_any_element())
                 .unwrap_or_else(|| empty("No open projects with a git repository")),
             _ => self
+                .diff_mode
                 .diff_view
                 .clone()
                 .map(|v| v.into_any_element())

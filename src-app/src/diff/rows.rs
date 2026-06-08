@@ -113,6 +113,47 @@ pub fn split_offsets(rows: &[SplitRow]) -> Vec<f32> {
     out
 }
 
+/// Cumulative top offsets (px) of each hunk's first changed row in a unified row
+/// set. A "hunk start" is a change row (Added/Removed) whose predecessor is not
+/// a change, so consecutive removed+added lines count as one hunk. Precomputed
+/// in `Column::recompute_display` (US-046) so the toolbar's hunk counter and
+/// hunk-nav read it per frame instead of re-walking every row.
+pub fn unified_hunk_tops(rows: &[DisplayRow]) -> Vec<f32> {
+    let mut tops = Vec::new();
+    let mut acc = 0.0f32;
+    let mut prev_change = false;
+    for r in rows {
+        let is_change = matches!(r.kind, RowKind::Added | RowKind::Removed);
+        if is_change && !prev_change {
+            tops.push(acc);
+        }
+        prev_change = is_change;
+        acc += display_row_height(r);
+    }
+    tops
+}
+
+/// Side-by-side analog of [`unified_hunk_tops`].
+pub fn split_hunk_tops(rows: &[SplitRow]) -> Vec<f32> {
+    let mut tops = Vec::new();
+    let mut acc = 0.0f32;
+    let mut prev_change = false;
+    for r in rows {
+        let is_change = matches!(
+            r,
+            SplitRow::Pair { left, right }
+                if matches!(left.kind, CellKind::Added | CellKind::Removed)
+                    || matches!(right.kind, CellKind::Added | CellKind::Removed)
+        );
+        if is_change && !prev_change {
+            tops.push(acc);
+        }
+        prev_change = is_change;
+        acc += split_row_height(r);
+    }
+    tops
+}
+
 /// Widest line number across a unified row set (both sides); `0` when empty.
 /// Used to size the line-number gutter once at build time.
 pub fn unified_max_line_no(rows: &[DisplayRow]) -> u32 {
@@ -573,15 +614,24 @@ pub fn build_split_rows(files: &[FileDiff], syntax: Option<&DiffSyntax>) -> (Vec
                     CONTEXT_LINES.min(run - lead)
                 };
                 let hidden = run - lead - trail;
+                // US-058: lead/hidden/trail partition `run = j - i`, so every
+                // `i + off` below is < j <= total. The `.get()` guards make that
+                // fail-safe (no release panic) if the arithmetic ever drifts.
                 for k in 0..lead as usize {
-                    emit_pair(&aligned[i + k], &mut rows, &mut dropped);
+                    debug_assert!(i + k < total, "lead index out of bounds");
+                    if let Some(a) = aligned.get(i + k) {
+                        emit_pair(a, &mut rows, &mut dropped);
+                    }
                 }
                 if hidden > 0 {
                     emit_fold(hidden, &mut rows, &mut dropped);
                 }
                 for k in 0..trail as usize {
                     let off = lead as usize + hidden as usize + k;
-                    emit_pair(&aligned[i + off], &mut rows, &mut dropped);
+                    debug_assert!(i + off < total, "trail index out of bounds");
+                    if let Some(a) = aligned.get(i + off) {
+                        emit_pair(a, &mut rows, &mut dropped);
+                    }
                 }
                 i = j;
             } else {
@@ -640,6 +690,85 @@ mod tests {
 
         // 30-line file → folded output is a handful of rows, not 1 + 30.
         assert!(rows.len() < 10, "folded row count {} too large", rows.len());
+    }
+
+    #[test]
+    fn unified_hunk_tops_marks_each_hunk_start_at_its_row_offset() {
+        // US-046: the cached hunk tops MUST equal the precomputed row offset of
+        // every hunk-start row (a change row whose predecessor is not a change).
+        // Guards against the offsets and hunk_tops computations drifting apart.
+        let base = "a\nb\nc\nd\ne\n".to_string();
+        let new = "a\nB\nc\nd\nE\n".to_string(); // two separate single-line edits
+        let hunks = crate::diff::engine::compute_hunks(&base, &new);
+        let file = FileDiff {
+            path: "a.txt".into(),
+            change: FileChange::Modified,
+            old_path: None,
+            base_text: base,
+            new_text: new,
+            hunks,
+            is_binary: false,
+        };
+        let (rows, _) = build_display_rows(&[file], None);
+        let offsets = unified_offsets(&rows);
+
+        let mut expected = Vec::new();
+        let mut prev_change = false;
+        for (i, r) in rows.iter().enumerate() {
+            let is_change = matches!(r.kind, RowKind::Added | RowKind::Removed);
+            if is_change && !prev_change {
+                expected.push(offsets[i]);
+            }
+            prev_change = is_change;
+        }
+
+        assert_eq!(unified_hunk_tops(&rows), expected);
+        assert_eq!(expected.len(), 2, "fixture has two distinct hunks");
+    }
+
+    #[test]
+    fn split_hunk_tops_marks_each_hunk_start_at_its_row_offset() {
+        // US-046 (EP-008 review): the split analog of the unified drift guard.
+        // `split_hunk_tops` walks the rows with its own accumulator; it MUST
+        // agree with the `split_offsets` prefix sum at every hunk-start row, or
+        // side-by-side hunk-nav jumps to the wrong pixel. Catches a future
+        // divergence between `split_row_height` and the hunk-tops walk that the
+        // unified guard would NOT surface (the two heights are separate fns).
+        let base = "a\nb\nc\nd\ne\n".to_string();
+        let new = "a\nB\nc\nd\nE\n".to_string(); // two separate single-line edits
+        let hunks = crate::diff::engine::compute_hunks(&base, &new);
+        let file = FileDiff {
+            path: "a.txt".into(),
+            change: FileChange::Modified,
+            old_path: None,
+            base_text: base,
+            new_text: new,
+            hunks,
+            is_binary: false,
+        };
+        let (rows, _) = build_split_rows(&[file], None);
+        let offsets = split_offsets(&rows);
+
+        let mut expected = Vec::new();
+        let mut prev_change = false;
+        for (i, r) in rows.iter().enumerate() {
+            let is_change = matches!(
+                r,
+                SplitRow::Pair { left, right }
+                    if matches!(left.kind, CellKind::Added | CellKind::Removed)
+                        || matches!(right.kind, CellKind::Added | CellKind::Removed)
+            );
+            if is_change && !prev_change {
+                expected.push(offsets[i]);
+            }
+            prev_change = is_change;
+        }
+
+        assert_eq!(split_hunk_tops(&rows), expected);
+        assert!(
+            !expected.is_empty(),
+            "fixture must produce at least one split hunk for the guard to be meaningful"
+        );
     }
 
     #[test]

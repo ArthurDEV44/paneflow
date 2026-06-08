@@ -34,6 +34,9 @@ pub mod error;
 pub mod install_method;
 pub mod linux;
 pub mod macos;
+// US-001 (prd-audit-remediation): minisign detached-signature verification —
+// the independent root of trust shared by every installer path.
+pub mod signature;
 pub mod windows;
 
 // US-008 — install-method hygiene migrations. Linux-only by construction

@@ -1,12 +1,16 @@
 //! AppImage self-update via `appimageupdatetool` (US-010).
 //!
 //! Flow:
-//!   1. Resolve `appimageupdatetool` — prefer `$PATH`, else download the
-//!      community release to a cached temp location.
+//!   1. Resolve `appimageupdatetool` — always the pinned-tag, SHA-256-pinned
+//!      community release cached under our data dir (US-006: never a `$PATH`
+//!      lookup, which a hijacked PATH could subvert).
 //!   2. Invoke it with `-O` (overwrite in place) against the running
 //!      AppImage's source `.AppImage` file. zsync streams only the changed
 //!      blocks, typically 10–30 % of file size.
-//!   3. Return the unchanged source path — the file is updated in place.
+//!   3. Re-verify the rewritten AppImage against the new release's detached
+//!      minisign signature (US-006 / US-001). On failure we return an error
+//!      and never restart into it.
+//!   4. Return the unchanged source path — the file is updated in place.
 //!      Caller passes it to `cx.set_restart_path()` for the GPUI launcher
 //!      to exec the new version.
 //!
@@ -81,13 +85,17 @@ fn tool_asset_for(arch: &str) -> Result<(&'static str, &'static [u8; 32])> {
     }
 }
 
-/// Run `appimageupdatetool -O <source_path>` and return the (unchanged)
-/// source path on success.
+/// Run `appimageupdatetool -O <source_path>`, then re-verify the rewritten
+/// AppImage against the new release's detached minisign signature, and return
+/// the (unchanged) source path on success.
+///
+/// `asset_url` is the `browser_download_url` of the new `.AppImage` release
+/// asset — its `.minisig` sibling is the US-001 trust anchor.
 ///
 /// On any failure — missing tool, download error, network outage, missing
-/// embedded update-information, zsync integrity mismatch — returns a
-/// human-readable error suitable for a toast.
-pub fn run_update(source_path: &Path) -> Result<PathBuf> {
+/// embedded update-information, zsync integrity mismatch, or a failed
+/// signature re-check — returns a human-readable error suitable for a toast.
+pub fn run_update(source_path: &Path, asset_url: &str) -> Result<PathBuf> {
     if source_path.as_os_str().is_empty() {
         bail!(
             "This AppImage was launched without $APPIMAGE set; PaneFlow cannot locate the source file to update. Re-launch by double-clicking the .AppImage or running it directly from a shell."
@@ -101,14 +109,37 @@ pub fn run_update(source_path: &Path) -> Result<PathBuf> {
     }
 
     let tool = resolve_tool().context("resolve appimageupdatetool")?;
-    invoke_tool(&tool, source_path).map(|()| source_path.to_path_buf())
+    invoke_tool(&tool, source_path)?;
+
+    // US-006: re-verify the in-place-updated AppImage against the new
+    // release's detached minisign signature (the US-001 root of trust,
+    // deferred to here because zsync rewrites the file opaquely). zsync's own
+    // rolling checksum only proves the delta reconstructed the file the
+    // `.zsync` control file described — it is NOT a signature, so a tampered
+    // `gh-releases-zsync` channel could still deliver bad bytes. The file is
+    // already rewritten by `-O` at this point, so on failure we return an
+    // error and DO NOT restart into it: the caller surfaces the "corrupt or
+    // tampered" toast and the user re-downloads manually.
+    super::super::signature::fetch_and_verify(source_path, asset_url)
+        .context("verify updated AppImage signature")?;
+
+    Ok(source_path.to_path_buf())
 }
 
-/// Return a usable path to `appimageupdatetool`. Checks `$PATH` first; if
-/// absent, downloads the pinned-tag community release (US-005) to
+/// Return a usable path to `appimageupdatetool`. Always the pinned-tag
+/// community release (US-005) cached at
 /// `$XDG_CACHE_HOME/paneflow/appimageupdatetool-<arch>.AppImage` (or
-/// `$HOME/.cache/paneflow/` fallback), verifies its SHA-256 against the
-/// hardcoded digest, and `chmod +x`'s it.
+/// `$HOME/.cache/paneflow/` fallback), downloaded + SHA-256-verified against
+/// the hardcoded digest and `chmod +x`'d on first use.
+///
+/// US-006: we **do not** consult `$PATH` (the old behaviour). Trusting a
+/// `which::which("appimageupdatetool")` lookup means a hijacked `$PATH`
+/// (a writable dir prepended ahead of `/usr/bin`) could substitute an
+/// attacker binary that we'd then exec with the user's privileges. Pinning
+/// to our own hash-verified, fixed-location tool — the `pkexec` model of a
+/// fixed trusted binary, never a PATH search — removes that vector. A
+/// distro-installed copy is ignored; the marginal re-download is a cheap
+/// price for a deterministic trust anchor.
 ///
 /// Trust anchor (US-005): the downloaded bytes are compared byte-for-byte
 /// against `APPIMAGEUPDATETOOL_SHA256_<ARCH>` before the file is renamed
@@ -117,23 +148,11 @@ pub fn run_update(source_path: &Path) -> Result<PathBuf> {
 /// invalidates stale caches from the previous pinned tag — no manual
 /// `rm ~/.cache/paneflow/appimageupdatetool-*` step needed.
 ///
-/// A tool found on `$PATH` is trusted without hashing — a distro-installed
-/// `appimageupdatetool` is under the user's package manager, not the
-/// update flow's threat model.
-///
 /// Concurrent startup: two PaneFlow instances racing on the first update
 /// will each download the tool and both rename into the same path. `rename`
 /// is atomic on one filesystem so the final state is correct; the wasted
 /// bandwidth is an accepted trade for not adding a lock file.
 fn resolve_tool() -> Result<PathBuf> {
-    if let Ok(path) = which::which("appimageupdatetool") {
-        log::info!(
-            "self-update/appimage: using appimageupdatetool from PATH: {}",
-            path.display()
-        );
-        return Ok(path);
-    }
-
     let arch = std::env::consts::ARCH;
     let (url, expected) = tool_asset_for(arch)?;
     let cached = cache_path_for(arch)?;
@@ -232,9 +251,14 @@ fn download_tool(url: &str, expected: &[u8; 32], dest: &Path) -> Result<()> {
         let mut reader = Read::take(reader, MAX_TOOL_BYTES + 1);
         let mut file =
             std::fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
-        let written = std::io::copy(&mut reader, &mut file).context("stream download to disk");
-        file.sync_all().ok();
-        written
+        std::io::copy(&mut reader, &mut file)
+            .context("stream download to disk")
+            .and_then(|written| {
+                // US-010: propagate a flush failure (ENOSPC) so the
+                // classifier renders DiskFull, not a downstream mismatch.
+                file.sync_all().context("flush download to disk")?;
+                Ok(written)
+            })
     };
     let written = match stream_result {
         Ok(n) => n,
@@ -431,7 +455,12 @@ mod tests {
 
     #[test]
     fn empty_source_path_errors_without_spawning() {
-        let r = run_update(Path::new(""));
+        // The early-return guards fire before any tool spawn or signature
+        // fetch, so the asset URL is never consumed here.
+        let r = run_update(
+            Path::new(""),
+            "https://github.com/ArthurDEV44/paneflow/releases/download/v0/x.AppImage",
+        );
         let err = r.unwrap_err().to_string();
         assert!(
             err.contains("$APPIMAGE"),
@@ -441,7 +470,10 @@ mod tests {
 
     #[test]
     fn nonexistent_source_path_errors() {
-        let r = run_update(Path::new("/tmp/paneflow-does-not-exist-xyz.AppImage"));
+        let r = run_update(
+            Path::new("/tmp/paneflow-does-not-exist-xyz.AppImage"),
+            "https://github.com/ArthurDEV44/paneflow/releases/download/v0/x.AppImage",
+        );
         let err = r.unwrap_err().to_string();
         assert!(
             err.contains("not found"),

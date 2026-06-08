@@ -61,7 +61,7 @@ impl PaneFlowApp {
                 "os": std::env::consts::OS,
                 "arch": std::env::consts::ARCH,
                 "app_version": env!("CARGO_PKG_VERSION"),
-                "install_method": install_method_tag(&self.install_method),
+                "install_method": install_method_tag(&self.self_update.install_method),
                 "is_first_run": is_first_run,
             }),
         );
@@ -86,18 +86,22 @@ impl PaneFlowApp {
         self.telemetry.flush_blocking(SHUTDOWN_FLUSH_TIMEOUT);
     }
 
-    /// Fire `update_installed { success: true, ... }` and block up to
-    /// [`SHUTDOWN_FLUSH_TIMEOUT`] so the event lands before the
-    /// `cx.restart()` call that replaces the running process.
+    /// Fire `update_installed { success: true, ... }` WITHOUT blocking.
     ///
-    /// Called from every success path in `self_update_flow.rs`
-    /// immediately before the restart. `to_version` is read from
-    /// `self.update_status` (populated during the update check); an
-    /// unknown `Some(UpdateStatus::Available { version })` state is
-    /// unreachable here by construction, but if it happens we still
-    /// emit with `to_version: "unknown"` rather than silently dropping.
-    pub(crate) fn emit_update_success_and_flush(&self) {
-        let to_version = match self.update_status.as_ref() {
+    /// US-017: this is emitted at *pre-install success* (the update is staged
+    /// and we flip to `ReadyToRestart`), where the process is **not** exiting —
+    /// the user restarts later via a separate, deliberately zero-I/O click that
+    /// calls `cx.restart()`. Blocking the render thread on a network flush here
+    /// is wrong: just `capture()` and let the 5 s background `poll_flush` loop
+    /// (wired in `bootstrap.rs`) drain it while the "ready to restart" UI is up.
+    /// `flush_blocking` stays reserved for the real exit path
+    /// ([`Self::emit_app_exited_and_flush`]).
+    ///
+    /// `to_version` is read from `self.self_update.update_status` (populated during the
+    /// update check); an unknown state still emits `to_version: "unknown"`
+    /// rather than silently dropping.
+    pub(crate) fn emit_update_success(&self) {
+        let to_version = match self.self_update.update_status.as_ref() {
             Some(update::checker::UpdateStatus::Available { version, .. }) => version.clone(),
             _ => "unknown".to_string(),
         };
@@ -106,11 +110,10 @@ impl PaneFlowApp {
             json!({
                 "from_version": env!("CARGO_PKG_VERSION"),
                 "to_version": to_version,
-                "install_method": install_method_tag(&self.install_method),
+                "install_method": install_method_tag(&self.self_update.install_method),
                 "success": true,
             }),
         );
-        self.telemetry.flush_blocking(SHUTDOWN_FLUSH_TIMEOUT);
     }
 
     /// Fire `update_installed { success: false, error_category: ... }`
@@ -122,7 +125,7 @@ impl PaneFlowApp {
     /// `error_category` label is sent — never the error message
     /// (PRD AC #4: "no error message details — just category").
     pub(crate) fn emit_update_failure(&self, err: &UpdateError) {
-        let to_version = match self.update_status.as_ref() {
+        let to_version = match self.self_update.update_status.as_ref() {
             Some(update::checker::UpdateStatus::Available { version, .. }) => version.clone(),
             _ => "unknown".to_string(),
         };
@@ -131,7 +134,7 @@ impl PaneFlowApp {
             json!({
                 "from_version": env!("CARGO_PKG_VERSION"),
                 "to_version": to_version,
-                "install_method": install_method_tag(&self.install_method),
+                "install_method": install_method_tag(&self.self_update.install_method),
                 "success": false,
                 "error_category": error_category_tag(err),
             }),
@@ -143,7 +146,7 @@ impl PaneFlowApp {
     /// emitters so the funnel ties cleanly to `update_available`.
     /// Consent gating is inherited from the `TelemetryClient`.
     pub(crate) fn emit_update_dismissed(&self, reason: UpdateDismissReason) {
-        let to_version = match self.update_status.as_ref() {
+        let to_version = match self.self_update.update_status.as_ref() {
             Some(update::checker::UpdateStatus::Available { version, .. }) => version.clone(),
             _ => "unknown".to_string(),
         };
