@@ -36,6 +36,7 @@ mod ipc;
 mod keybindings;
 mod keys;
 mod layout;
+mod limits;
 mod markdown;
 mod mouse;
 mod opencode_sessions;
