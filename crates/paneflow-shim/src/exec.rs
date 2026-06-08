@@ -74,7 +74,13 @@ pub(crate) fn run_real(tool: &str, path: &Path, args: &[OsString]) -> ExitCode {
     #[cfg(unix)]
     unsafe {
         use std::os::unix::process::CommandExt;
-        cmd.pre_exec(|| {
+        // US-037: capture the shim's own PID in the parent, before fork. Inside
+        // `pre_exec` (post-fork, in the child) `std::process::id()` would return
+        // the child's PID, so the parent PID must be captured here and moved into
+        // the closure to detect reparenting below.
+        #[cfg(target_os = "linux")]
+        let shim_pid = std::process::id();
+        cmd.pre_exec(move || {
             libc::signal(libc::SIGINT, libc::SIG_DFL);
             libc::signal(libc::SIGHUP, libc::SIG_DFL);
             libc::signal(libc::SIGTERM, libc::SIG_DFL);
@@ -123,11 +129,17 @@ pub(crate) fn run_real(tool: &str, path: &Path, args: &[OsString]) -> ExitCode {
                 // US-037: close the fork↔prctl race. PDEATHSIG only fires on
                 // a parent death that happens AFTER it's armed; if the shim
                 // (our parent) already died in the window between fork() and
-                // this prctl, the kernel never delivers the signal. getppid()
-                // == 1 means we were already reparented to init, so
-                // self-terminate rather than leaking a token-burning orphan.
-                // Both calls are async-signal-safe.
-                if libc::getppid() == 1 {
+                // this prctl, the kernel never delivers the signal. A getppid()
+                // that no longer matches the shim's captured PID means we were
+                // already reparented — to init (PID 1) OR, on a host where
+                // Paneflow runs under `systemd --user` (a PR_SET_CHILD_SUBREAPER
+                // reaper), to the user manager whose PID is not 1. Comparing to
+                // the captured `shim_pid` rather than the literal 1 catches the
+                // subreaper case that `== 1` silently misses on modern Linux
+                // desktops, so an orphaned agent self-terminates instead of
+                // streaming on and burning the user's API tokens. Both calls are
+                // async-signal-safe.
+                if libc::getppid() as u32 != shim_pid {
                     libc::raise(libc::SIGKILL);
                 }
             }
