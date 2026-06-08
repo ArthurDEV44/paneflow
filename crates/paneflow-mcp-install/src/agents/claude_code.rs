@@ -17,6 +17,7 @@ use serde_json::json;
 
 use crate::agents::{support, AgentConfigWriter, InstallOutcome, StatusOutcome, UninstallOutcome};
 use crate::detect::{self, Presence};
+use crate::merge;
 
 const CLI: &str = "claude";
 const CONTAINER: &str = "mcpServers";
@@ -123,6 +124,14 @@ impl AgentConfigWriter for ClaudeCode {
 
     fn uninstall(&self) -> Result<UninstallOutcome> {
         let path = self.path()?;
+        // US-021: a present-but-unparseable `~/.claude.json` must surface a
+        // loud error, not be silently mistaken for "nothing to remove". The
+        // tolerant `current_json_command` below swallows parse failures
+        // (`.ok()?` → None), so probe parseability first — `read_json_or_default`
+        // is `Err` on a present malformed file and `Ok` (skeleton) when absent.
+        if path.exists() {
+            merge::read_json_or_default(path)?;
+        }
         if support::current_json_command(path, CONTAINER, support::string_command).is_none() {
             return Ok(UninstallOutcome::NothingToRemove);
         }
@@ -205,6 +214,32 @@ mod tests {
             v["mcpServers"]["paneflow"]["command"],
             json!("/data/paneflow-mcp")
         );
+    }
+
+    #[test]
+    fn uninstall_malformed_config_is_error() {
+        // US-021: a present-but-unparseable config is corruption, not
+        // "nothing to remove" — surface a loud error so the user fixes it
+        // rather than silently believing the entry was already gone.
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join(".claude.json");
+        std::fs::write(&p, b"{ broken").unwrap();
+        let w = test_writer(p.clone());
+        assert!(
+            w.uninstall().is_err(),
+            "uninstall on a malformed present config must error, not return NothingToRemove"
+        );
+        // The invalid file was NOT overwritten.
+        assert_eq!(std::fs::read(&p).unwrap(), b"{ broken");
+    }
+
+    #[test]
+    fn uninstall_absent_config_is_nothing_to_remove() {
+        // Counterpart to the malformed case: a genuinely absent file is a
+        // clean NothingToRemove, not an error.
+        let dir = tempfile::TempDir::new().unwrap();
+        let w = test_writer(dir.path().join("missing.json"));
+        assert_eq!(w.uninstall().unwrap(), UninstallOutcome::NothingToRemove);
     }
 
     #[test]

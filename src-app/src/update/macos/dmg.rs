@@ -90,10 +90,25 @@ fn is_expected_bundle_location(bundle_path: &Path, home: &Path) -> bool {
     parent == Path::new("/Applications") || parent == home.join("Applications")
 }
 
+/// Paneflow's Apple Developer **Team ID** (project_macos_signing, populated
+/// 2026-05-04 with the first signed release; cert valid until 2031-05-05).
+/// For a Developer ID Application certificate the leaf cert's
+/// `subject.OU` equals the Team ID, so pinning it rejects any
+/// validly-notarised-but-*foreign* bundle.
+///
+/// US-018: the plain `codesign --verify` + `spctl --assess` checks below
+/// only prove "signed by *someone* Apple trusts and notarised" — NOT
+/// "signed by us". A second developer's notarised app would pass them. This
+/// pin closes that gap (defense-in-depth on top of the minisign root-of-trust
+/// that already gates the DMG bytes before the bundle is ever mounted).
+#[cfg(target_os = "macos")]
+const APPLE_TEAM_ID: &str = "228F9H5P95";
+
 /// Gatekeeper / code-signature verification of `bundle` (US-004), fail-closed.
 /// `codesign --verify --strict --deep` proves the signature is intact and
-/// covers every nested item; `spctl --assess --type execute` proves the
-/// bundle is notarised / accepted by the system policy. Either tool exiting
+/// covers every nested item; the Team-ID designated-requirement check (US-018)
+/// proves it is *our* signing identity; `spctl --assess --type execute` proves
+/// the bundle is notarised / accepted by the system policy. Any tool exiting
 /// nonzero rejects the update with a tagged `IntegrityMismatch`.
 ///
 /// macOS-only; untestable on the Linux CI leg (no `codesign`/`spctl`, no
@@ -104,6 +119,17 @@ fn verify_macos_bundle(bundle: &Path) -> Result<()> {
     run_gatekeeper_tool(
         "codesign",
         &["--verify", "--strict", "--deep", "--verbose=2"],
+        bundle,
+    )?;
+    // US-018: pin the signing identity to our Team ID via a designated
+    // requirement (`-R`). `codesign --verify -R <req>` fails closed if the
+    // leaf cert's OU is not our Team ID, so a foreign-but-notarised bundle is
+    // rejected even though it passes the plain `--verify` and `spctl` checks.
+    let team_requirement =
+        format!("anchor apple generic and certificate leaf[subject.OU] = \"{APPLE_TEAM_ID}\"");
+    run_gatekeeper_tool(
+        "codesign",
+        &["--verify", "-R", team_requirement.as_str()],
         bundle,
     )?;
     run_gatekeeper_tool("spctl", &["--assess", "--type", "execute"], bundle)?;

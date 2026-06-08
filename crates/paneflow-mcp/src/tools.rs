@@ -170,6 +170,20 @@ fn resolve_target<T: IpcTransport>(args: &Value, transport: &T) -> Result<u64, S
     if let Some(id) = target.as_u64() {
         return Ok(id);
     }
+    // US-021: the schema types `target` as `["string","number"]`, and many
+    // JSON serializers emit an integer as an integral float (`42.0`).
+    // `as_u64()` returns `None` for *any* float, so accept an integral,
+    // in-range float as the surface_id directly — while still rejecting a
+    // fractional (`42.5`) or out-of-range value rather than silently
+    // truncating it into a bogus id.
+    if let Some(f) = target.as_f64() {
+        if f.fract() == 0.0 && f >= 0.0 && f <= u64::MAX as f64 {
+            return Ok(f as u64);
+        }
+        return Err(format!(
+            "'target' number {f} is not a valid surface_id (must be a non-negative integer)"
+        ));
+    }
     let Some(name) = target.as_str() else {
         return Err("'target' must be a surface name (string) or surface_id (number)".to_string());
     };
@@ -447,6 +461,45 @@ mod tests {
         assert_eq!(params["offset"], 5);
         // numeric target must NOT trigger a surface.list lookup.
         assert!(t.last_params("surface.list").is_none());
+    }
+
+    #[test]
+    fn read_pane_integral_float_target_is_treated_as_id() {
+        // US-021: a JSON serializer that emits an integer as `42.0` must
+        // still resolve to surface_id 42 directly, NOT fall through to a
+        // name lookup against surface.list.
+        let t = FakeTransport::new().with(
+            "surface.read",
+            json!({"text": "ok", "total_lines": 1u64, "eof": true}),
+        );
+        let out = dispatch_call(
+            &json!({"name": "read_pane", "arguments": {"target": 42.0}}),
+            &t,
+        );
+        assert_eq!(out["isError"], false);
+        let params = t.last_params("surface.read").unwrap();
+        assert_eq!(params["surface_id"], 42);
+        // Integral float must NOT trigger a surface.list lookup.
+        assert!(t.last_params("surface.list").is_none());
+    }
+
+    #[test]
+    fn read_pane_fractional_target_is_error() {
+        // US-021: a fractional number is not a valid surface_id — reject it
+        // with a clear error rather than truncating to a bogus id.
+        let t = FakeTransport::new();
+        let out = dispatch_call(
+            &json!({"name": "read_pane", "arguments": {"target": 42.5}}),
+            &t,
+        );
+        assert_eq!(out["isError"], true);
+        let text = out["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("surface_id") || text.contains("integer"),
+            "got: {text}"
+        );
+        // A rejected target must not have queried surface.read.
+        assert!(t.last_params("surface.read").is_none());
     }
 
     #[test]

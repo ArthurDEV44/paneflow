@@ -548,6 +548,36 @@ mod tests {
     }
 
     #[test]
+    fn resume_command_neutralizes_flag_shaped_session_id() {
+        // US-019: `resume_command` is the single builder that interpolates a
+        // persisted/restored `session_id` into a PTY command line. It must
+        // re-gate via `is_valid_session_id` so a flag-shaped value (one that
+        // could inject e.g. `--dangerously-skip-permissions`) is refused at
+        // the builder boundary — the call sites skip the send on `None`.
+        // This proves the integration, not just the predicate
+        // (`agent_sessions::valid_session_id_rejects_leading_dash_*`).
+        for agent in [
+            SessionAgent::Claude,
+            SessionAgent::Codex,
+            SessionAgent::OpenCode,
+        ] {
+            assert_eq!(
+                resume_command(agent, "--dangerously-skip-permissions"),
+                None,
+                "{agent:?}: a `--`-prefixed id must not build a command"
+            );
+            assert_eq!(resume_command(agent, "-x"), None);
+            assert_eq!(resume_command(agent, "ses_x; rm -rf ~"), None);
+            assert_eq!(resume_command(agent, "$(reboot)"), None);
+        }
+        // A legitimate UUID session id still builds a command for every agent.
+        let valid = "019dc9ea-38d7-7372-9cc4-253ce944d41b";
+        assert!(resume_command(SessionAgent::Claude, valid).is_some());
+        assert!(resume_command(SessionAgent::Codex, valid).is_some());
+        assert!(resume_command(SessionAgent::OpenCode, valid).is_some());
+    }
+
+    #[test]
     fn visible_window_empty() {
         assert_eq!(visible_window(0, false, CAP), (0, 0));
     }
