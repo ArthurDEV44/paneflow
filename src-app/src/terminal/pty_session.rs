@@ -1087,16 +1087,10 @@ impl TerminalState {
 
         let mut result = lines.join("\n");
 
-        // Cap at MAX_CHARS
-        if result.len() > MAX_CHARS {
-            // Truncate to MAX_CHARS, then trim to last complete line
-            result.truncate(MAX_CHARS);
-            if let Some(last_newline) = result.rfind('\n') {
-                result.truncate(last_newline);
-            }
-            // ANSI-safe: strip any partial escape sequence at the truncation boundary.
-            strip_partial_ansi_tail(&mut result);
-        }
+        // Cap at MAX_CHARS, then trim to last complete line and strip any
+        // partial ANSI escape at the boundary. Shared by both the background
+        // save path and the synchronous quit path (`save_session_blocking`).
+        cap_scrollback_at_char_boundary(&mut result, MAX_CHARS);
 
         if result.is_empty() {
             None
@@ -1275,6 +1269,28 @@ impl TerminalState {
             }
             processor.advance(&mut *term, b"\r\n");
         }
+    }
+}
+
+/// Cap `result` at `max_chars` bytes, cutting on a UTF-8 char boundary, then
+/// trim to the last complete line and strip any partial ANSI escape at the cut.
+///
+/// U-001: `String::truncate` panics if the byte index is not on a char
+/// boundary. Scrollback is built from real grid cells (CJK, emoji,
+/// box-drawing are routine coding-agent output), so a raw `truncate(max_chars)`
+/// panics whenever `max_chars` lands mid-codepoint. `floor_char_boundary`
+/// rounds the index down to the nearest boundary first (no-op when already
+/// aligned), so the result is always a valid `&str` of length ≤ `max_chars`.
+pub(super) fn cap_scrollback_at_char_boundary(result: &mut String, max_chars: usize) {
+    if result.len() > max_chars {
+        let boundary = result.floor_char_boundary(max_chars);
+        result.truncate(boundary);
+        // `rfind('\n')` always returns a char boundary, so this second
+        // truncate is already safe.
+        if let Some(last_newline) = result.rfind('\n') {
+            result.truncate(last_newline);
+        }
+        strip_partial_ansi_tail(result);
     }
 }
 
@@ -2454,6 +2470,35 @@ mod tests {
                 "drained scrollback must contain {marker:?}; got:\n{drained}"
             );
         }
+    }
+
+    /// U-001: a multibyte codepoint straddling the byte cap must not panic
+    /// `String::truncate`; the cut lands on a char boundary at or below the cap.
+    #[test]
+    fn cap_scrollback_truncates_on_char_boundary() {
+        const MAX: usize = 100;
+        // 99 ASCII bytes, then a 4-byte '🦀' occupying byte indices 99..103, so
+        // byte index `MAX` (100) falls inside the codepoint — the case that
+        // panics a raw `truncate(MAX)`. No newline, so the line-trim is a no-op.
+        let mut s = "a".repeat(MAX - 1);
+        s.push('🦀');
+        assert!(s.len() > MAX, "fixture must exceed the cap");
+
+        cap_scrollback_at_char_boundary(&mut s, MAX);
+
+        // `String` already guarantees valid UTF-8; the contract is length ≤ cap
+        // and that the straddling char was dropped whole rather than split.
+        assert!(s.len() <= MAX, "capped length {} must be ≤ {MAX}", s.len());
+        assert_eq!(s, "a".repeat(MAX - 1));
+    }
+
+    /// Already-aligned cap is a no-op beyond the existing line trim.
+    #[test]
+    fn cap_scrollback_noop_under_cap() {
+        let mut s = "short line".to_string();
+        let before = s.clone();
+        cap_scrollback_at_char_boundary(&mut s, 100);
+        assert_eq!(s, before);
     }
 
     /// Dump the viewport grid to a string for the live smoke test.
