@@ -5,17 +5,18 @@
 //! Extracted from `main.rs` per US-017 of the src-app refactor PRD.
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{App, AppContext, Context, Entity};
 use paneflow_config::schema::LayoutNode;
 
 use crate::PaneFlowApp;
-use crate::layout::LayoutTree;
+use crate::layout::{LayoutTree, MAX_PANES};
+use crate::limits::MAX_SESSION_SIZE_BYTES;
 use crate::pane::Pane;
 use crate::terminal::TerminalView;
-use crate::workspace::{Workspace, next_workspace_id};
+use crate::workspace::{MAX_WORKSPACES, Workspace, next_workspace_id};
 
 /// Cap on the number of `session.json.corrupted-*` backup files retained
 /// alongside the live session. Beyond this, the oldest are deleted on
@@ -241,8 +242,13 @@ impl PaneFlowApp {
         Option<paneflow_config::schema::SessionState>,
         Option<SessionCorruptionInfo>,
     ) {
-        let data = match std::fs::read_to_string(path) {
-            Ok(d) => d,
+        // U-008/U-016: bound the read so a multi-hundred-MB hand-edited /
+        // agent-written session.json (or a non-regular file swapped in) can't
+        // OOM/stall the load before parse. On any guard hit we start from an
+        // empty session — identical fallback to a missing file.
+        let data = match read_session_capped(path) {
+            Ok(Some(d)) => d,
+            Ok(None) => return (None, None),
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     log::warn!("session load: read failed at {}: {e}", path.display());
@@ -304,12 +310,34 @@ impl PaneFlowApp {
 
         let mut workspaces = Vec::new();
 
-        for ws_session in &session.workspaces {
+        // U-016: cap restored workspaces. Each layout's pane count is bounded by
+        // `validate_layout` (US-011) below, so this is the only remaining
+        // unbounded restore axis — a session.json with thousands of workspace
+        // entries would otherwise each spawn ≥1 real PTY.
+        if session.workspaces.len() > MAX_WORKSPACES {
+            log::warn!(
+                "session restore: {} workspaces exceeds MAX_WORKSPACES ({MAX_WORKSPACES}); restoring the first {MAX_WORKSPACES}",
+                session.workspaces.len()
+            );
+        }
+        for ws_session in session.workspaces.iter().take(MAX_WORKSPACES) {
             let cwd = PathBuf::from(&ws_session.cwd);
             let ws_id = next_workspace_id();
 
-            let mut workspace = if let Some(mut layout) = ws_session.layout.clone() {
-                paneflow_config::loader::validate_layout(&mut layout);
+            // US-009 AC2 / US-011: `validate_layout` best-effort-caps the leaf
+            // budget, but its ">= 2 children" padding re-introduces a bounded
+            // O(depth) overshoot of app-synthesized pad panes once that budget
+            // is spent (a crafted deeply-nested session.json — local-only, but
+            // still a self-DoS). Enforce the hard MAX_PANES ceiling HERE, the
+            // location US-009 AC2 names, so no workspace can ever restore more
+            // than MAX_PANES real PTYs: over the cap we drop the layout and fall
+            // back to a single default terminal.
+            let restored_layout = ws_session
+                .layout
+                .clone()
+                .and_then(validated_layout_within_cap);
+
+            let mut workspace = if let Some(layout) = restored_layout {
                 let mut pane_deque: VecDeque<Entity<Pane>> = VecDeque::new();
                 let ws_cwd = cwd.clone();
                 let tree = LayoutTree::from_layout_node(&layout, &mut pane_deque, &mut |node| {
@@ -338,7 +366,7 @@ impl PaneFlowApp {
             workspace.files_expanded = ws_session
                 .expanded_paths
                 .iter()
-                .map(|rel| PathBuf::from(&ws_session.cwd).join(rel))
+                .filter_map(|rel| rehydrate_expanded_path(&ws_session.cwd, rel))
                 .collect();
             workspace.propagate_custom_buttons(cx);
             // US-013: kick off the deferred git-stats probe (off render thread).
@@ -438,6 +466,99 @@ impl PaneFlowApp {
         cx.subscribe(&pane, Self::handle_pane_event).detach();
         pane
     }
+}
+
+// ---------------------------------------------------------------------------
+// EP-003 ingress-bound helpers (free functions, free of `&self`)
+// ---------------------------------------------------------------------------
+
+/// Read `path` into a `String`, bounded at [`MAX_SESSION_SIZE_BYTES`] and
+/// rejecting non-regular files (U-008/U-016). Returns `Ok(None)` when the file
+/// should be treated as "start empty" (non-regular, or over the cap) — distinct
+/// from an IO error (`Err`). Stats the OPEN fd, not the path, and caps the read
+/// with `take`, so a swap/grow between stat and read cannot defeat the bound
+/// (the FIFO/device + TOCTOU class, mirroring `read_config_string`).
+fn read_session_capped(path: &Path) -> std::io::Result<Option<String>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        log::warn!(
+            "session load: {} is not a regular file; starting empty",
+            path.display()
+        );
+        return Ok(None);
+    }
+    if meta.len() > MAX_SESSION_SIZE_BYTES {
+        log::warn!(
+            "session load: {} is {} bytes (> {MAX_SESSION_SIZE_BYTES} cap); starting empty",
+            path.display(),
+            meta.len()
+        );
+        return Ok(None);
+    }
+    let mut data = String::new();
+    // +1 so a file grown past the cap between stat and read is still caught.
+    file.take(MAX_SESSION_SIZE_BYTES + 1)
+        .read_to_string(&mut data)?;
+    if data.len() as u64 > MAX_SESSION_SIZE_BYTES {
+        log::warn!(
+            "session load: {} exceeded the {MAX_SESSION_SIZE_BYTES} cap during read; starting empty",
+            path.display()
+        );
+        return Ok(None);
+    }
+    Ok(Some(data))
+}
+
+/// Validate a persisted layout and enforce the hard `MAX_PANES` ceiling
+/// (US-009 AC2 / US-011). `validate_layout` best-effort-caps the leaf budget,
+/// but its ">= 2 children" padding re-introduces a bounded `O(depth)` overshoot
+/// of app-synthesized pad panes once that budget is spent (a crafted
+/// deeply-nested session.json). Returns `None` — restore a single default
+/// terminal — when the post-validation leaf count still exceeds `MAX_PANES`, so
+/// no workspace can ever restore more than `MAX_PANES` real PTYs. The location
+/// US-009 AC2 names; defence-in-depth on top of `validate_layout`'s budget.
+fn validated_layout_within_cap(mut layout: LayoutNode) -> Option<LayoutNode> {
+    paneflow_config::loader::validate_layout(&mut layout);
+    let leaves = layout.leaf_count();
+    if leaves > MAX_PANES {
+        log::warn!(
+            "session restore: layout has {leaves} panes after validation \
+             (> MAX_PANES {MAX_PANES}); discarding it and restoring a single terminal"
+        );
+        return None;
+    }
+    Some(layout)
+}
+
+/// Rehydrate one persisted `expanded_paths` entry into an absolute path under
+/// `cwd`, re-asserting containment (U-030). The save side strips to a relative
+/// inside-root path, but `Path::join` does not normalize, so a hand-edited /
+/// agent-written session.json could carry `../../etc` or an absolute `/etc`
+/// that silently replaces the base. Reject any traversal/absolute component up
+/// front, then re-check `starts_with(base)` after the join. Returns `None`
+/// (drop the entry) on any escape.
+fn rehydrate_expanded_path(cwd: &str, rel: &str) -> Option<PathBuf> {
+    let rel_path = Path::new(rel);
+    if rel_path.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        log::warn!(
+            "session restore: dropping expanded_path with traversal/absolute component: {rel:?}"
+        );
+        return None;
+    }
+    let base = PathBuf::from(cwd);
+    let abs = base.join(rel_path);
+    if !abs.starts_with(&base) {
+        log::warn!("session restore: dropping expanded_path escaping workspace root: {rel:?}");
+        return None;
+    }
+    Some(abs)
 }
 
 // ---------------------------------------------------------------------------
@@ -572,6 +693,83 @@ fn rotate_corruption_backups(dir: &Path, stem: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rehydrate_expanded_path_keeps_inside_root_and_drops_escapes() {
+        // U-030: a legitimate relative path joins under the cwd…
+        assert_eq!(
+            rehydrate_expanded_path("/home/u/proj", "src/app"),
+            Some(PathBuf::from("/home/u/proj/src/app"))
+        );
+        // …while traversal and absolute entries from a tampered session.json
+        // are dropped rather than silently escaping the workspace root.
+        assert_eq!(rehydrate_expanded_path("/home/u/proj", "../../etc"), None);
+        assert_eq!(rehydrate_expanded_path("/home/u/proj", "/etc/passwd"), None);
+        assert_eq!(rehydrate_expanded_path("/home/u/proj", "a/../../b"), None);
+    }
+
+    #[test]
+    fn validated_layout_within_cap_rejects_overshooting_deep_layout() {
+        use paneflow_config::schema::LayoutNode;
+        // A small, valid layout passes through unchanged.
+        let small = LayoutNode::Split {
+            direction: "vertical".to_string(),
+            ratio: None,
+            ratios: None,
+            children: vec![
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+                LayoutNode::Pane {
+                    surfaces: vec![Default::default()],
+                },
+            ],
+        };
+        assert!(
+            validated_layout_within_cap(small).is_some(),
+            "a 2-pane layout is within MAX_PANES"
+        );
+
+        // US-009 AC2 / US-011: a deeply-nested left-leaning chain defeats
+        // `validate_layout`'s leaf budget via its >=2-children padding (each
+        // budget-0 ancestor smuggles in an uncounted pad pane), so the
+        // post-validation leaf_count exceeds MAX_PANES. The hard cap must drop
+        // it rather than spawn O(depth) PTYs.
+        let mut deep = LayoutNode::Pane {
+            surfaces: vec![Default::default()],
+        };
+        for _ in 0..60 {
+            deep = LayoutNode::Split {
+                direction: "vertical".to_string(),
+                ratio: None,
+                ratios: None,
+                children: vec![
+                    deep,
+                    LayoutNode::Pane {
+                        surfaces: vec![Default::default()],
+                    },
+                ],
+            };
+        }
+        assert!(
+            validated_layout_within_cap(deep).is_none(),
+            "a layout exceeding MAX_PANES after validation must be discarded"
+        );
+    }
+
+    #[test]
+    fn read_session_capped_reads_small_file_and_rejects_non_regular() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Happy path: a normal small file round-trips.
+        let path = tmp.path().join("session.json");
+        std::fs::write(&path, "{\"ok\":true}").expect("seed");
+        assert_eq!(
+            read_session_capped(&path).expect("io ok"),
+            Some("{\"ok\":true}".to_string())
+        );
+        // Non-regular (a directory) is treated as "start empty", not an error.
+        assert!(matches!(read_session_capped(tmp.path()), Ok(None) | Err(_)));
+    }
 
     /// Write a `session.json` with deliberately broken JSON, run the
     /// path-parametrised loader, assert the corruption-info shape and

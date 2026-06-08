@@ -10,7 +10,7 @@
 //! wedge the bridge). The server's peer-UID check passes because the bridge
 //! runs as the same user that launched Paneflow.
 
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -22,6 +22,13 @@ use serde_json::{json, Value};
 /// writes a response (it even synthesizes a `-32001 Request timeout`
 /// envelope), so a stall this long means the process is wedged.
 const IPC_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// U-029: per-reply read cap on the untrusted IPC socket. Mirrors the server's
+/// `MAX_REQUEST_LEN` (`src-app/src/ipc.rs`). The recv timeout bounds wall-clock
+/// time but not memory — a same-UID peer can deliver many GB before the
+/// deadline — so the read is also byte-bounded and a reply that hits the cap
+/// without a terminating newline is a framing error, not a partial parse.
+const MAX_RESPONSE_LEN: u64 = 256 * 1024;
 
 /// Abstraction over "send a JSON-RPC request to Paneflow, get the `result`".
 /// Lets the MCP layer and tools be unit-tested against a fake transport with
@@ -117,7 +124,15 @@ fn send_and_receive(socket: &Path, request: &Value) -> io::Result<String> {
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    match reader.read_line(&mut line) {
+    // U-029: cap the reply read at MAX_RESPONSE_LEN (Take rebuilt per call, so
+    // the limit is per-reply) and treat hitting the cap without a terminating
+    // newline as a framing error rather than feeding a truncated line to the
+    // parser.
+    match reader.by_ref().take(MAX_RESPONSE_LEN).read_line(&mut line) {
+        Ok(n) if n as u64 >= MAX_RESPONSE_LEN && !line.ends_with('\n') => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "paneflow response exceeded the size cap",
+        )),
         Ok(_) => Ok(line),
         // SO_RCVTIMEO surfaces as EAGAIN/`WouldBlock` on Unix and `TimedOut`
         // on Windows — normalize both to a friendly timeout message.
