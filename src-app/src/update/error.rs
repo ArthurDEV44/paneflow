@@ -70,6 +70,14 @@ pub enum UpdateError {
     /// `message` is user-visible verbatim so the toast can name the
     /// missing tool and suggest a reinstall / polkit-agent path.
     EnvironmentBroken { message: String },
+    /// A bounded external subprocess in the update flow (the AppImage
+    /// `appimageupdatetool` zsync download, or any other installer tool)
+    /// exceeded its wall-clock deadline and was killed (EP-002, U-002/U-015),
+    /// or the whole `Downloading` state was reset by the worker watchdog.
+    /// Distinct from `Network`: the transport may be fine but the tool hung
+    /// (half-open TCP, a mirror that accepts then stalls, a wedged future).
+    /// The download/install never completed; the user can retry.
+    Timeout,
     /// Classifier couldn't bucket the error. The wrapped message is shown
     /// verbatim so the user sees *something* actionable instead of a
     /// generic "update failed".
@@ -125,6 +133,10 @@ impl UpdateError {
                 }
             }
             UpdateError::EnvironmentBroken { message } => message.clone(),
+            UpdateError::Timeout => {
+                "Update timed out. The download or install stalled — retry when your connection is stable."
+                    .to_string()
+            }
             UpdateError::Other(msg) => msg.clone(),
         }
     }
@@ -214,6 +226,13 @@ impl UpdateError {
             // the chain no longer carries the original ureq::Error.
             || lower.contains("timed out")
             || lower.contains("timeout")
+            // EP-002 safety net: a `paneflow_process::ProcError::Timeout`
+            // wrapped untyped (its Display is "process exceeded its deadline
+            // and was killed") buckets with the network timeouts rather than
+            // the `Other` catch-all. Typed callers (`bail!(UpdateError::Timeout)`)
+            // are already recovered by the downcast above; this only covers a
+            // future caller that forgets to convert.
+            || lower.contains("exceeded its deadline")
         {
             return UpdateError::Network(full);
         }
@@ -284,6 +303,17 @@ mod tests {
         let tagged = UpdateError::Fuse2Missing;
         let err = anyhow::Error::new(tagged);
         assert_eq!(UpdateError::classify(&err), UpdateError::Fuse2Missing);
+    }
+
+    #[test]
+    fn timeout_variant_roundtrips_and_has_user_copy() {
+        // EP-002 U-002: invoke_tool and the watchdog both surface
+        // `UpdateError::Timeout` through `anyhow::Error::new(..)`; classify must
+        // recover it (so record_update_failure tags it, not the `Other`
+        // catch-all) and it must carry a non-empty user-facing message.
+        let err = anyhow::Error::new(UpdateError::Timeout);
+        assert_eq!(UpdateError::classify(&err), UpdateError::Timeout);
+        assert!(!UpdateError::Timeout.user_message().is_empty());
     }
 
     #[test]

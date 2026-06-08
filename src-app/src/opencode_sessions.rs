@@ -18,7 +18,7 @@
 //! [`read_sessions_for_cwd`] from inside `smol::unblock`.
 
 use std::io;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use serde_json::Value;
 
@@ -27,6 +27,15 @@ use crate::agent_sessions::{SessionAgent, SessionMeta};
 /// Cap stderr captured into the warn log when `opencode` exits non-zero.
 /// Keeps the log line readable when the CLI dumps a multi-kilobyte panic.
 const STDERR_LOG_CAP: usize = 200;
+
+/// Wall-clock deadline for `opencode session list` (U-032). A hijacked or hung
+/// binary can't block the smol::unblock worker past this.
+const OPENCODE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// stdout cap for `opencode session list --format json` (U-032). 8 MiB is far
+/// beyond any realistic session list while bounding a malicious binary that
+/// streams gigabytes; past the cap the stream is drained and discarded.
+const OPENCODE_STDOUT_CAP: u64 = 8 * 1024 * 1024;
 
 /// Read all OpenCode CLI sessions whose recorded `directory` matches the
 /// given cwd. Returns sessions sorted by `timestamp` descending (most
@@ -61,27 +70,32 @@ fn read_sessions_with_program(program: &str, cwd: &str) -> Vec<SessionMeta> {
 /// installed), `warn!` for other failures (capped at
 /// [`STDERR_LOG_CAP`] chars).
 fn run_opencode_list(program: &str) -> Option<Vec<u8>> {
-    // Stdio::null() on stdin is mandatory: a GUI process (no console) on
-    // Windows otherwise inherits the parent stdin, and a child that reads
-    // it (auth prompt, telemetry consent) would block the smol::unblock
-    // worker forever. `output()` already pipes stdout/stderr internally
-    // and drains them on dedicated threads, so the 64 KB pipe-buffer
-    // deadlock doesn't apply here.
-    let output = match Command::new(program)
-        .args(["session", "list", "--format", "json"])
-        .stdin(Stdio::null())
-        .output()
-    {
-        Ok(out) => out,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            log::info!("opencode binary not found on PATH; OpenCode tab will be empty");
-            return None;
-        }
-        Err(err) => {
-            log::warn!("failed to spawn opencode: {err}");
-            return None;
-        }
-    };
+    let mut cmd = Command::new(program);
+    cmd.args(["session", "list", "--format", "json"]);
+
+    // U-032: bound the subprocess. run_with_timeout nulls stdin (mandatory: a
+    // GUI process on Windows would otherwise inherit the parent stdin and a
+    // child reading it — auth/consent prompt — would block forever) and caps
+    // stdout at OPENCODE_STDOUT_CAP so a hijacked/chatty binary can't stream
+    // gigabytes into memory or hang the smol::unblock worker.
+    let output =
+        match paneflow_process::run_with_timeout(cmd, OPENCODE_DEADLINE, OPENCODE_STDOUT_CAP) {
+            Ok(out) => out,
+            Err(paneflow_process::ProcError::Spawn(err))
+                if err.kind() == io::ErrorKind::NotFound =>
+            {
+                log::info!("opencode binary not found on PATH; OpenCode tab will be empty");
+                return None;
+            }
+            Err(paneflow_process::ProcError::Timeout) => {
+                log::warn!("opencode session list timed out; OpenCode tab will be empty");
+                return None;
+            }
+            Err(err) => {
+                log::warn!("failed to spawn opencode: {err}");
+                return None;
+            }
+        };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

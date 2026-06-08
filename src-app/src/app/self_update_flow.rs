@@ -12,6 +12,16 @@ use crate::{
     system_package_update_command, update,
 };
 
+/// App-level backstop for a wedged `Downloading`/`Installing` state (EP-002,
+/// U-002/U-015). Every installer worker is spawned + detached and the only
+/// transitions out of `Downloading` live inside those workers' match arms, so
+/// a worker whose future never resolves would pin the pill busy forever. The
+/// per-attempt watchdog routes through `record_update_failure` after this
+/// deadline. Sized longer than any per-subprocess deadline (the AppImage tool's
+/// is 10 min) and generous enough to outlast a legitimate pkexec polkit prompt
+/// the user is still answering.
+const DOWNLOAD_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
 /// One-line summary of the install method for log messages — used by the
 /// auto-kickoff gate to keep diagnostic noise low when the running binary
 /// is not auto-updatable.
@@ -107,6 +117,46 @@ impl PaneFlowApp {
         self.save_session_blocking(cx);
         self.emit_update_success();
         cx.notify();
+    }
+
+    /// Enter the `Downloading` state and arm a one-shot watchdog (EP-002,
+    /// U-002/U-015). Replaces the bare `self_update_status = Downloading;
+    /// cx.notify();` at every installer dispatch site so no path can sit in
+    /// `Downloading` forever: if we are still in THIS attempt and still busy
+    /// after [`DOWNLOAD_WATCHDOG`], the failure is routed through
+    /// [`PaneFlowApp::record_update_failure`] (which leaves the busy state,
+    /// bumps the 3-strikes counter, and surfaces the timeout toast), making the
+    /// retry / circuit-breaker / `EnvironmentBroken` paths reachable again.
+    fn enter_downloading(&mut self, label: &'static str, cx: &mut Context<Self>) {
+        let generation = self.self_update.download_generation.wrapping_add(1);
+        self.self_update.download_generation = generation;
+        self.self_update.self_update_status = update::SelfUpdateStatus::Downloading;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            smol::Timer::after(DOWNLOAD_WATCHDOG).await;
+            let _ = this.update(cx, |app, cx| {
+                // Fire only if THIS download is still the live one and still
+                // busy; a completed / failed / superseded worker already moved
+                // the state on, and the generation guard stops a stale watchdog
+                // from clobbering a newer attempt.
+                if app.self_update.download_generation == generation
+                    && app.self_update.self_update_status.is_busy()
+                {
+                    log::warn!(
+                        "self-update/{label}: watchdog fired after {DOWNLOAD_WATCHDOG:?} — \
+                         worker wedged in {:?}; resetting via record_update_failure",
+                        app.self_update.self_update_status,
+                    );
+                    app.record_update_failure(
+                        label,
+                        &anyhow::Error::new(update::UpdateError::Timeout),
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
     }
 
     /// Kick off the in-app self-update flow. See the module-level doc for the
@@ -256,8 +306,7 @@ impl PaneFlowApp {
                     update::install_method::PackageManager::Other => "system-package",
                     update::install_method::PackageManager::RpmOstree => "rpm-ostree",
                 };
-                self.self_update.self_update_status = update::SelfUpdateStatus::Downloading;
-                cx.notify();
+                self.enter_downloading(manager_label, cx);
 
                 cx.spawn(async move |this, cx| {
                     let result = smol::unblock({
@@ -426,8 +475,7 @@ impl PaneFlowApp {
             // zsync download and the in-place rewrite. Most of the
             // wall-clock time is spent fetching delta blocks, so `Downloading`
             // matches what the user actually sees on a slow link.
-            self.self_update.self_update_status = update::SelfUpdateStatus::Downloading;
-            cx.notify();
+            self.enter_downloading("appimage", cx);
 
             let asset_url_for_verify = asset_url.clone();
             cx.spawn(async move |this, cx| {
@@ -492,8 +540,7 @@ impl PaneFlowApp {
                 );
             }
             let url = asset_url.clone();
-            self.self_update.self_update_status = update::SelfUpdateStatus::Downloading;
-            cx.notify();
+            self.enter_downloading("targz", cx);
 
             cx.spawn(async move |this, cx| {
                 let result = smol::unblock(move || update::linux::targz::run_update(&url)).await;
@@ -530,8 +577,13 @@ impl PaneFlowApp {
         // fail there, but the branch guard prevents ever reaching it.
         if let update::install_method::InstallMethod::WindowsMsi { .. } = &method {
             let url = asset_url.clone();
-            self.self_update.self_update_status = update::SelfUpdateStatus::Downloading;
-            cx.notify();
+            // EP-002 AC2: `msi::install` spawns `msiexec` on the ALREADY-
+            // downloaded local `.msi` (the network fetch is separately bounded
+            // by `UPDATE_HTTP_TIMEOUT`). msiexec is a privileged, user-consented
+            // installer; a hard `kill()` mid-transaction risks a corrupt install,
+            // so it is NOT wrapped in `run_with_timeout`. The worker watchdog
+            // armed below is the bound for a wedged install.
+            self.enter_downloading("msi", cx);
 
             cx.spawn(async move |this, cx| {
                 let result = smol::unblock(move || update::windows::msi::install(&url)).await;
@@ -571,8 +623,13 @@ impl PaneFlowApp {
             // US-004: replace the bundle at its detected location, not a
             // hardcoded /Applications path.
             let bundle = bundle_path.clone();
-            self.self_update.self_update_status = update::SelfUpdateStatus::Downloading;
-            cx.notify();
+            // EP-002 AC2: `dmg::install` runs `hdiutil attach/detach` + `cp` on
+            // the ALREADY-downloaded local `.dmg` (network fetch separately
+            // bounded by `UPDATE_HTTP_TIMEOUT`). Killing a mounted-volume
+            // operation mid-flight risks leaking a mount / corrupting the swap,
+            // so these local tools are NOT wrapped in `run_with_timeout`; the
+            // worker watchdog armed below bounds a wedged install.
+            self.enter_downloading("dmg", cx);
 
             cx.spawn(async move |this, cx| {
                 let result =
@@ -616,8 +673,7 @@ impl PaneFlowApp {
         // "no updater wired" runtime failure.
         #[cfg(unix)]
         {
-            self.self_update.self_update_status = update::SelfUpdateStatus::Downloading;
-            cx.notify();
+            self.enter_downloading("legacy", cx);
 
             cx.spawn(async move |this, cx| {
                 // Download off the GPUI main thread so the UI stays responsive.

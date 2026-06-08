@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 
 use crate::agents::{InstallOutcome, StatusOutcome, UninstallOutcome};
 use crate::{io, merge};
@@ -59,6 +59,15 @@ pub(crate) fn opencode_config() -> Option<PathBuf> {
 // CLI shell-out
 // ---------------------------------------------------------------------------
 
+/// Wall-clock deadline for an agent CLI shell-out (U-032). `mcp add` is a quick
+/// local config edit; 30 s is generous for a cold CLI start yet bounds a hung
+/// invocation (network stall, auth prompt) so install can't block.
+const CLI_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// stdout cap for an agent CLI shell-out — `mcp add` prints a short
+/// confirmation, so 1 MiB is plenty while bounding a runaway CLI.
+const CLI_STDOUT_CAP: u64 = 1024 * 1024;
+
 /// Is `cli` resolvable on `PATH`?
 pub(crate) fn cli_on_path(cli: &str) -> bool {
     which::which(cli).is_ok()
@@ -81,11 +90,13 @@ pub(crate) fn shell_out(program: &str, args: &[&str]) -> Result<()> {
     let mut command = Command::new(resolved);
     #[cfg(not(windows))]
     let mut command = Command::new(program);
+    command.args(args);
 
-    let output = command
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to spawn `{program}`"))?;
+    // U-032: bound the CLI with a wall-clock deadline so a hung `claude`/`codex
+    // mcp add` (network stall, auth prompt) can't block the installer.
+    // run_with_timeout nulls stdin and caps stdout/stderr for us.
+    let output = paneflow_process::run_with_timeout(command, CLI_DEADLINE, CLI_STDOUT_CAP)
+        .map_err(|e| anyhow!("failed to run `{program}`: {e}"))?;
     if output.status.success() {
         return Ok(());
     }

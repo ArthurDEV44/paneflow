@@ -40,6 +40,19 @@ use super::super::error::{IntegrityMismatch, UpdateError};
 /// enough that a zombie background thread never forms on a half-open TCP.
 const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Wall-clock deadline for `appimageupdatetool -O` (U-002). Its `-O` does the
+/// actual zsync delta DOWNLOAD internally, so the 30 s `UPDATE_HTTP_TIMEOUT`
+/// ureq budget never covers it. 10 min (20× `UPDATE_HTTP_TIMEOUT`) is generous
+/// for a slow link yet bounds a stalled mirror / half-open TCP so the update
+/// worker can't wedge forever. The app-level watchdog
+/// (`self_update_flow::DOWNLOAD_WATCHDOG`) is the second, longer backstop.
+const APPIMAGE_TOOL_DEADLINE: Duration = Duration::from_secs(10 * 60);
+
+/// stdout cap for `appimageupdatetool` — it only emits progress/status lines,
+/// so 1 MiB is far more than any honest run produces while bounding a runaway
+/// or hijacked tool.
+const APPIMAGE_TOOL_STDOUT_CAP: u64 = 1024 * 1024;
+
 // ─── US-005: pinned-tag appimageupdatetool with SHA-256 verification ──────
 //
 // Rationale: `releases/latest/download/` silently redirects to whichever
@@ -416,21 +429,38 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 fn invoke_tool(tool: &Path, target: &Path) -> Result<()> {
-    let output = Command::new(tool)
-        // `APPIMAGE_EXTRACT_AND_RUN=1` avoids the FUSE 2 requirement on
-        // Ubuntu 24.04+ where `libfuse2` is no longer shipped by default.
-        .env("APPIMAGE_EXTRACT_AND_RUN", "1")
+    let mut cmd = Command::new(tool);
+    // `APPIMAGE_EXTRACT_AND_RUN=1` avoids the FUSE 2 requirement on
+    // Ubuntu 24.04+ where `libfuse2` is no longer shipped by default.
+    cmd.env("APPIMAGE_EXTRACT_AND_RUN", "1")
         // `-O` rewrites `target` in place. `target` is a sibling CANDIDATE
         // copy of the live AppImage (run_update), never `$APPIMAGE` itself —
         // so the live binary is only ever replaced after signature
         // verification passes, via the atomic rename in run_update.
         .arg("-O")
-        .arg(target)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .with_context(|| format!("spawn {}", tool.display()))?;
+        .arg(target);
+
+    // U-002: bound the opaque zsync download + in-place rewrite with a
+    // wall-clock deadline. `run_with_timeout` nulls stdin and caps stdout for
+    // us; on the deadline it kills + reaps the child and we surface
+    // `UpdateError::Timeout` so the worker future resolves instead of wedging.
+    let output = match paneflow_process::run_with_timeout(
+        cmd,
+        APPIMAGE_TOOL_DEADLINE,
+        APPIMAGE_TOOL_STDOUT_CAP,
+    ) {
+        Ok(output) => output,
+        Err(paneflow_process::ProcError::Timeout) => {
+            log::warn!(
+                "self-update/appimage: {} exceeded {APPIMAGE_TOOL_DEADLINE:?} — killed",
+                tool.display(),
+            );
+            bail!(UpdateError::Timeout);
+        }
+        Err(e) => {
+            return Err(anyhow::Error::new(e)).with_context(|| format!("spawn {}", tool.display()));
+        }
+    };
 
     if output.status.success() {
         log::info!(

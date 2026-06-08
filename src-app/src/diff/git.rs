@@ -131,15 +131,37 @@ pub fn parse_worktrees_from_str(raw: &str, main_worktree_path: Option<&Path>) ->
     worktrees
 }
 
+/// Wall-clock deadline for every diff-viewer git call (U-035). Generous enough
+/// for a large but healthy repo, short enough that a dead/slow mount or a
+/// hanging `.git/config` helper fails instead of wedging the blocking-pool task.
+const GIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// stdout cap for diff-viewer git calls. Comfortably above [`MAX_FILE_BYTES`]
+/// (512 KiB) so a legitimate `git show` of an accepted file is never truncated,
+/// while bounding a runaway/hijacked git that streams unbounded output. A
+/// too-large file is read up to this ceiling and then rejected downstream by
+/// the `MAX_FILE_BYTES` check, so truncated bytes are never displayed.
+const GIT_STDOUT_CAP: u64 = 16 * 1024 * 1024;
+
 /// Run a git subprocess in `dir`, returning captured stdout bytes on success.
-/// A non-zero exit returns `Err` with the trimmed stderr (or a generic
-/// message). Never panics.
+/// A non-zero exit (or a timeout) returns `Err` with the trimmed stderr (or a
+/// generic message); the caller renders the diff's "unavailable" state. Never
+/// panics, never blocks past [`GIT_DEADLINE`].
 fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = Command::new("git")
-        .args(args)
+    let mut cmd = Command::new("git");
+    cmd.args(args)
         .current_dir(dir)
-        .output()
-        .map_err(|e| format!("failed to spawn git: {e}"))?;
+        // U-035: never block on a credential/helper prompt.
+        .env("GIT_TERMINAL_PROMPT", "0");
+    // U-035: bound the subprocess (run_with_timeout also nulls stdin + caps
+    // stdout) so a hung git can't pin the diff viewer's blocking-pool task.
+    let output =
+        paneflow_process::run_with_timeout(cmd, GIT_DEADLINE, GIT_STDOUT_CAP).map_err(|e| {
+            format!(
+                "git {} failed: {e}",
+                args.first().copied().unwrap_or("command")
+            )
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let msg = stderr.trim();

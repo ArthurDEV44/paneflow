@@ -760,6 +760,7 @@ impl PaneFlowApp {
                 self_update_status: update::SelfUpdateStatus::default(),
                 install_method,
                 update_attempt_count: 0,
+                download_generation: 0,
             },
             custom_buttons_modal: None,
             custom_buttons_modal_focus: cx.focus_handle(),

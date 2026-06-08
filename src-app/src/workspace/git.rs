@@ -12,16 +12,38 @@ pub struct GitDiffStats {
     pub deletions: usize,
 }
 
+/// Wall-clock deadline for `git diff --shortstat` (U-035). A healthy repo
+/// answers in well under a second; this bounds a dead/slow network mount or a
+/// `.git/config` external helper that hangs.
+const GIT_DIFF_STAT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// stdout cap for `git diff --shortstat` — the command emits a single summary
+/// line, so 256 KiB is far beyond any real output while bounding a hijacked git.
+const GIT_DIFF_STAT_STDOUT_CAP: u64 = 256 * 1024;
+
 impl GitDiffStats {
     /// Run `git diff --shortstat` in the given directory and parse the result.
+    /// On spawn failure, timeout, or a nonzero exit this returns the empty
+    /// (`is_empty()`) default — the "stats unavailable" state the badge renders.
     pub fn from_cwd(cwd: &str) -> Self {
-        let output = std::process::Command::new("git")
-            .args(["diff", "--shortstat"])
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["diff", "--shortstat"])
             .current_dir(cwd)
-            .output();
+            // U-035: a hung credential/helper prompt would otherwise pin the
+            // blocking-pool task. With no terminal git fails fast instead.
+            .env("GIT_TERMINAL_PROMPT", "0");
 
-        let Ok(output) = output else {
-            return Self::default();
+        // U-035: bound the subprocess (run_with_timeout also nulls stdin) so a
+        // dead mount or slow helper can't hang the blocking-pool task — repeated
+        // CWD changes would otherwise pile up hung tasks. Timeout falls back to
+        // "no stats" exactly like a nonzero exit.
+        let output = match paneflow_process::run_with_timeout(
+            cmd,
+            GIT_DIFF_STAT_DEADLINE,
+            GIT_DIFF_STAT_STDOUT_CAP,
+        ) {
+            Ok(output) => output,
+            Err(_) => return Self::default(),
         };
         if !output.status.success() {
             return Self::default();
@@ -552,5 +574,27 @@ mod tests {
         assert!(!is_worktree);
         // Non-existent path: canonicalize fails, parent is still derivable.
         assert_eq!(repo_root, Some(std::path::PathBuf::from("/nonexistent")));
+    }
+
+    #[test]
+    fn parse_shortstat_extracts_insertions_and_deletions() {
+        let stats =
+            GitDiffStats::parse_shortstat(" 3 files changed, 42 insertions(+), 7 deletions(-)");
+        assert_eq!(stats.insertions, 42);
+        assert_eq!(stats.deletions, 7);
+        assert!(!stats.is_empty());
+    }
+
+    #[test]
+    fn from_cwd_on_non_repo_yields_unavailable_default() {
+        // U-035: a non-git directory makes `git diff --shortstat` exit nonzero,
+        // and the bounded run must fall back to the empty (`is_empty()`) default
+        // — the "stats unavailable" badge state — rather than panic or hang.
+        let dir = tempfile::tempdir().unwrap();
+        let stats = GitDiffStats::from_cwd(dir.path().to_str().unwrap());
+        assert!(
+            stats.is_empty(),
+            "non-repo should yield no stats, got {stats:?}"
+        );
     }
 }
