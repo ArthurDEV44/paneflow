@@ -998,3 +998,52 @@ fn malformed_stdin_logs_diagnostic_and_exits_0() {
         "US-011: diagnostic log must mention the parse failure; got: {log:?}"
     );
 }
+
+#[test]
+fn oversized_stdin_is_rejected_and_drops_frame() {
+    // US-020: the ai-hook's only untrusted input is stdin (it is the hook
+    // *producer*, not a JSONL file parser — that surface lives in the
+    // sibling session loaders, already bounded by EP-003). The stdin read is
+    // capped at MAX_STDIN_BYTES (16 MiB; `crates/paneflow-ai-hook/src/main.rs`
+    // const) via the `take(MAX + 1)` idiom, so a payload exceeding the cap is
+    // rejected with a diagnostic and no frame is ever sent — a chatty/hostile
+    // hook cannot drive unbounded allocation. This regression guard pins that
+    // bound (it was the one coverage gap in the harness).
+    const MAX_STDIN_BYTES: usize = 16 * 1024 * 1024;
+
+    let server = MockServer::start();
+    let log_dir = tempfile::TempDir::new().unwrap();
+    let log_path = log_dir.path().join("hook.log");
+
+    // One byte over the cap. Content need not be JSON: the size guard fires
+    // before the parse step, so this exercises the bound, not the parser.
+    let oversized = vec![b'x'; MAX_STDIN_BYTES + 1];
+
+    let status = run_hook(
+        "UserPromptSubmit",
+        &HookEnv {
+            socket_path: Some(&server.socket_path),
+            workspace_id: 1,
+            tool: "claude",
+            pid: None,
+            hook_log: Some(&log_path),
+        },
+        &oversized,
+    );
+    assert!(
+        status.success(),
+        "US-020: hook must still exit 0 on oversized stdin (PRD C4)"
+    );
+
+    assert!(
+        server.try_recv(Duration::from_millis(250)).is_none(),
+        "US-020: no frame must be sent when stdin exceeds the byte cap"
+    );
+
+    let log = std::fs::read_to_string(&log_path)
+        .unwrap_or_else(|e| panic!("US-020: expected $PANEFLOW_HOOK_LOG at {log_path:?}: {e}"));
+    assert!(
+        log.contains("paneflow-ai-hook:") && log.contains("stdin exceeds"),
+        "US-020: diagnostic log must mention the oversize rejection; got: {log:?}"
+    );
+}

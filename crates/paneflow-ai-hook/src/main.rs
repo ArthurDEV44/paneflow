@@ -27,8 +27,14 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use interprocess::local_socket::{prelude::*, GenericFilePath, Stream};
+
+/// U-027: write deadline for the one-shot hook frame. The hook is invoked
+/// synchronously by the shim, so a stalled same-UID socket peer must not block
+/// it indefinitely. 500 ms is ample for a local socket write.
+const HOOK_IPC_TIMEOUT: Duration = Duration::from_millis(500);
 
 // ---------------------------------------------------------------------------
 // JSON-RPC method constants
@@ -94,6 +100,14 @@ impl AiTool {
 pub fn send_frame(socket_path: &Path, frame: &serde_json::Value) -> std::io::Result<()> {
     let name = socket_path.to_fs_name::<GenericFilePath>()?;
     let mut stream = Stream::connect(name)?;
+    // U-027: bound the write. The shim invokes this hook synchronously on
+    // post-exit cleanup and the SIGINT path, blocking on its exit; a same-UID
+    // squatter that accepts the connection but never drains would otherwise
+    // wedge `write_all`/`flush` forever. 500 ms is ample for a local socket
+    // write — beyond it `dispatch` turns the error into a silent exit 0, which
+    // is the PRD's "fail silent, never break the session" contract (a bounded
+    // failure is strictly better than an unbounded hang).
+    stream.set_send_timeout(Some(HOOK_IPC_TIMEOUT))?;
 
     let mut payload = serde_json::to_vec(frame)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;

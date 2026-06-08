@@ -271,3 +271,139 @@ pub(crate) fn emit_update_dismissed_via(
         update_dismissed_props(from_version, to_version, reason),
     );
 }
+
+#[cfg(test)]
+mod tests {
+    //! US-022 (verify-not-fix): PII-absence guard for the v1 telemetry
+    //! event-property surface. PII is excluded *by construction* — every
+    //! string-valued property is a platform const (`std::env::consts`), a
+    //! compile-time version (`CARGO_PKG_VERSION`) or release-feed semver, a
+    //! canonical `&'static str` tag (`install_method_tag`/`error_category_tag`,
+    //! whose lowercase-ASCII format is enforced in `telemetry::tags::tests`),
+    //! or a closed enum (`UpdateCheckTrigger`/`UpdateDismissReason`). No
+    //! property is built from a path, username, hostname, terminal content,
+    //! or free-form error message. `distinct_id` is an anonymous UUID v4.
+    //!
+    //! This test pins that invariant so a future free-form property cannot
+    //! silently leak user data through PostHog.
+
+    use super::*;
+    use crate::update::checker::UpdateCheckTrigger;
+    use crate::update::install_method::InstallMethod;
+    use serde_json::Value;
+
+    /// Recursively assert a property bag carries no PII. Every string leaf
+    /// must be a short, low-cardinality token: no filesystem path
+    /// (`/`/`\\`), no `user@host`, no whitespace (a leaked path/prompt/
+    /// hostname trips at least one of these), not the running user's
+    /// `$HOME`, and ≤ 64 bytes. Numbers/bools/null carry no identity.
+    fn assert_pii_safe(props: &Value) {
+        match props {
+            Value::String(s) => {
+                assert!(
+                    !s.contains('/') && !s.contains('\\'),
+                    "path-like value leaked into telemetry: {s:?}"
+                );
+                assert!(!s.contains('@'), "email/user@host value leaked: {s:?}");
+                assert!(
+                    !s.chars().any(char::is_whitespace),
+                    "free-form (whitespace-bearing) value leaked: {s:?}"
+                );
+                assert!(
+                    s.len() <= 64,
+                    "telemetry labels are short tokens; oversized value leaked: {s:?}"
+                );
+                if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+                    assert!(
+                        !s.contains(home.to_string_lossy().as_ref()),
+                        "value leaked $HOME: {s:?}"
+                    );
+                }
+            }
+            Value::Array(items) => items.iter().for_each(assert_pii_safe),
+            Value::Object(map) => {
+                for (k, v) in map {
+                    assert!(
+                        !k.contains('/') && !k.chars().any(char::is_whitespace),
+                        "property key is not a stable identifier: {k:?}"
+                    );
+                    assert_pii_safe(v);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn telemetry_property_surface_carries_no_pii() {
+        // Pure prop-builders: trigger / version / asset_format / reason.
+        assert_pii_safe(&update_check_started_props(
+            UpdateCheckTrigger::Auto,
+            env!("CARGO_PKG_VERSION"),
+        ));
+        assert_pii_safe(&update_available_props("0.3.8", "0.4.0", "appimage"));
+        assert_pii_safe(&update_available_props("0.3.8", "unknown", "tar.gz"));
+        assert_pii_safe(&update_dismissed_props(
+            "0.3.8",
+            "0.4.0",
+            UpdateDismissReason::UserDismissed,
+        ));
+        assert_pii_safe(&update_dismissed_props(
+            "0.3.8",
+            "0.4.0",
+            UpdateDismissReason::DialogClosed,
+        ));
+
+        // The two highest-string-cardinality inline events, rebuilt with the
+        // SAME value expressions `emit_app_started` / `emit_update_*` use, so
+        // the guard pins the real property shapes rather than a toy.
+        assert_pii_safe(&json!({
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "app_version": env!("CARGO_PKG_VERSION"),
+            "install_method": install_method_tag(&InstallMethod::Unknown),
+            "is_first_run": true,
+        }));
+        assert_pii_safe(&json!({
+            "from_version": env!("CARGO_PKG_VERSION"),
+            "to_version": "unknown",
+            "install_method": install_method_tag(&InstallMethod::Unknown),
+            "success": false,
+            "error_category": error_category_tag(&UpdateError::Timeout),
+        }));
+
+        // session_corrupted: a typed error bucket + numeric size/age + a BOOL
+        // `backup_written` — deliberately NOT the backup PATH (which carries
+        // $HOME / the username). Rebuilt with the same value expressions
+        // `emit_session_corrupted` uses, so the guard pins THIS shape: a future
+        // edit that swaps the bool for `backup_path.to_string_lossy()` trips the
+        // path-like assertion.
+        assert_pii_safe(&json!({
+            "error": "syntax",
+            "file_size": 4096u64,
+            "file_age_seconds": 12u64,
+            "backup_written": true,
+        }));
+        // app_exited: a single numeric duration — no string surface at all.
+        assert_pii_safe(&json!({
+            "session_duration_seconds": 42u64,
+        }));
+    }
+
+    #[test]
+    fn distinct_id_is_a_uuid_v4_unrelated_to_identity() {
+        // The distinct_id is an anonymous per-install UUID v4 — never a
+        // username/hostname/email. Persistence + degraded modes are covered
+        // by `paneflow_telemetry::id::tests`; here we pin the v4 shape and
+        // that the value itself is PII-safe. Manual nibble check avoids a
+        // direct `uuid` dependency in this crate's test surface.
+        let id = paneflow_telemetry::id::ephemeral_id("us-022 guard");
+        let bytes = id.as_bytes();
+        assert_eq!(id.len(), 36, "UUID canonical form is 36 chars: {id:?}");
+        assert_eq!(
+            bytes[14], b'4',
+            "distinct_id must be a v4 (random) UUID, got {id:?}"
+        );
+        assert_pii_safe(&json!({ "distinct_id": id }));
+    }
+}

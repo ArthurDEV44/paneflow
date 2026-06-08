@@ -17,6 +17,7 @@ use anyhow::{anyhow, Result};
 
 use crate::agents::{support, AgentConfigWriter, InstallOutcome, StatusOutcome, UninstallOutcome};
 use crate::detect::{self, Presence};
+use crate::merge;
 
 const CLI: &str = "codex";
 
@@ -104,6 +105,15 @@ impl AgentConfigWriter for Codex {
 
     fn uninstall(&self) -> Result<UninstallOutcome> {
         let path = self.path()?;
+        // US-021: a present-but-unparseable `~/.codex/config.toml` must
+        // surface a loud error, not be silently mistaken for "nothing to
+        // remove". The tolerant `current_toml_command` below swallows parse
+        // failures (`.ok()?` → None), so probe parseability first —
+        // `read_toml_or_default` is `Err` on a present malformed file and
+        // `Ok` (empty doc) when absent.
+        if path.exists() {
+            merge::read_toml_or_default(path)?;
+        }
         if support::current_toml_command(path).is_none() {
             return Ok(UninstallOutcome::NothingToRemove);
         }
@@ -181,6 +191,29 @@ mod tests {
             InstallOutcome::AlreadyCurrent
         );
         assert_eq!(w.uninstall().unwrap(), UninstallOutcome::Removed);
+        assert_eq!(w.uninstall().unwrap(), UninstallOutcome::NothingToRemove);
+    }
+
+    #[test]
+    fn uninstall_malformed_config_is_error() {
+        // US-021: symmetric with the Claude Code writer — a present-but-
+        // unparseable config is corruption, surfaced loudly, not swallowed
+        // as NothingToRemove.
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, b"this = = broken").unwrap();
+        let w = test_writer(p.clone());
+        assert!(
+            w.uninstall().is_err(),
+            "uninstall on a malformed present config must error, not return NothingToRemove"
+        );
+        assert_eq!(std::fs::read(&p).unwrap(), b"this = = broken");
+    }
+
+    #[test]
+    fn uninstall_absent_config_is_nothing_to_remove() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let w = test_writer(dir.path().join("missing.toml"));
         assert_eq!(w.uninstall().unwrap(), UninstallOutcome::NothingToRemove);
     }
 

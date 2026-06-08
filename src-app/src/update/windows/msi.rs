@@ -204,6 +204,38 @@ fn windows_verify_trust(msi: &Path) -> Result<()> {
 
     if status == 0 {
         // ERROR_SUCCESS / S_OK → the signature chains to a trusted root.
+        //
+        // US-018 (DEFERRED — blocked on Azure provisioning): a *publisher
+        // pin* would slot in HERE, after chain validation succeeds and
+        // before returning Ok. With the chain already proven by
+        // WinVerifyTrust, comparing the leaf cert's subject is NOT a
+        // forgeable name compare (an attacker cannot get a trusted CA to
+        // issue a cert with our validated org subject) — the right pin for
+        // Azure Trusted Signing, whose certs auto-rotate (so a thumbprint
+        // pin is wrong; the stable identity is the subject CN/Organization).
+        //
+        // It is deferred, NOT skipped, because the pin value is not yet
+        // knowable: Azure Trusted Signing is not provisioned (signing is
+        // disabled across the CI matrix — see `.github/workflows/release.yml`
+        // and `run_tests.yml`; the 6 `AZURE_TRUSTED_SIGNING_*` secrets are
+        // empty and no signed MSI exists to pin against). Pinning an
+        // unconfirmed subject on a platform that cannot be compiled/tested on
+        // the Linux dev host would risk bricking the Windows update path the
+        // moment signing goes live (PRD Technical Considerations: pins "must
+        // not break existing signed releases' update path"). Until then,
+        // `WinVerifyTrust` fail-closed (an unsigned/untrusted MSI is rejected
+        // below) is the active guard.
+        //
+        // To land once Trusted Signing is live (confirm the subject from the
+        // issued cert, e.g. `signtool verify /v` or `Get-AuthenticodeSignature`):
+        //   1. After this `status == 0` check, extract the signer's leaf cert
+        //      via `WTHelperProvDataFromStateData(data.hWVTStateData)` +
+        //      `WTHelperGetProvSignerFromChain` + `WTHelperGetProvCertFromChain`
+        //      BEFORE the CLOSE pass frees the provider state.
+        //   2. Read the subject (`CertGetNameStringW`, CERT_NAME_SIMPLE_DISPLAY)
+        //      and compare against a pinned `const WINDOWS_PUBLISHER_SUBJECT`.
+        //   3. On mismatch, return the same `IntegrityMismatch` shape used below.
+        // Tracked as a follow-up in the EP-005 status record.
         return Ok(());
     }
 
