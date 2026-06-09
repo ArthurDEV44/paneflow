@@ -22,6 +22,10 @@ pub(crate) enum AgentsRenameTarget {
         project_idx: usize,
         thread_idx: usize,
     },
+    /// US-008: a free chat row (project-less). Renames `chats[chat_idx]`.
+    Chat {
+        chat_idx: usize,
+    },
 }
 
 /// Open right-click context menu, with the anchor position so the
@@ -37,6 +41,11 @@ pub(crate) enum AgentsContextMenu {
         thread_idx: usize,
         position: Point<Pixels>,
     },
+    /// US-008: context menu for a free chat row.
+    Chat {
+        chat_idx: usize,
+        position: Point<Pixels>,
+    },
 }
 
 /// Pending delete confirmation. The mutation runs only after the user
@@ -50,5 +59,9 @@ pub(crate) enum AgentsDeleteTarget {
     Thread {
         project_idx: usize,
         thread_idx: usize,
+    },
+    /// US-008: delete a free chat (`chats[chat_idx]`).
+    Chat {
+        chat_idx: usize,
     },
 }

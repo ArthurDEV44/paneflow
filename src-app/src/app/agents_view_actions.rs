@@ -53,8 +53,14 @@ impl PaneFlowApp {
     }
 
     /// Switch the main pane to the Skills browser (~/.claude/skills,
-    /// ~/.codex/skills, ~/.agents/skills). Wired to the sidebar's
-    /// "Skills" affordance.
+    /// ~/.codex/skills, ~/.agents/skills).
+    ///
+    /// US-004 (prd-agents-ui-codex-redesign-2026-Q3.md): the rail's "Skills"
+    /// entry point was removed (Codex has no such rail item). The skills
+    /// page renderer and state stay intact — this entry point is kept as
+    /// managed dead code so re-surfacing Skills (e.g. from the bottom
+    /// Settings popover) is a one-line rewire, not a rebuild.
+    #[allow(dead_code)]
     pub(crate) fn show_agents_skills(&mut self, cx: &mut Context<Self>) {
         // US-003: clearing the unified target drops to the picker/home
         // state; the Skills page then takes precedence in the render branch.
@@ -155,26 +161,37 @@ impl PaneFlowApp {
         {
             return render_terminal_thread_surface(view);
         }
-        // No thread selected: the agent picker for the active project is
-        // the home/empty state (start a thread by picking an agent).
-        if !self.projects.is_empty() && self.active_project_idx < self.projects.len() {
-            let project_idx = self.active_project_idx;
-            return self.render_agents_launcher(project_idx, cx);
+        // No thread selected: the picker/home state. US-005 -- the picker
+        // context decides what a launched agent is created into.
+        match self.agents_picker_context {
+            crate::project::AgentsPickerContext::NewChat => {
+                self.render_agents_launcher(LauncherContext::NewChat, cx)
+            }
+            crate::project::AgentsPickerContext::Project => {
+                if !self.projects.is_empty() && self.active_project_idx < self.projects.len() {
+                    self.render_agents_launcher(
+                        LauncherContext::Project(self.active_project_idx),
+                        cx,
+                    )
+                } else {
+                    // No project at all: a minimal empty state mirroring the
+                    // sidebar's "No projects yet" copy.
+                    render_agents_no_project()
+                }
+            }
         }
-        // No project at all: a minimal empty state mirroring the
-        // sidebar's "No projects yet" copy.
-        render_agents_no_project()
     }
 
     /// Agent picker: a centered card list of the CLI coding agents
     /// enabled in Settings → AI Agent. Clicking one creates a Terminal
-    /// Thread in `project_idx` that auto-launches that agent in a PTY
-    /// (honoring the bypass-permission flag). This is the Agents view's
-    /// home/empty state whenever a project is open but no thread is
-    /// selected.
+    /// Thread that auto-launches that agent in a PTY (honoring the
+    /// bypass-permission flag). US-005 -- the [`LauncherContext`] decides
+    /// the create target: a thread in `project_idx`, or a free chat in the
+    /// home dir. This is the Agents view's home/empty state whenever no
+    /// thread/chat is selected.
     fn render_agents_launcher(
         &mut self,
-        project_idx: usize,
+        ctx: LauncherContext,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         use crate::agent_launcher::TerminalAgent;
@@ -218,8 +235,13 @@ impl PaneFlowApp {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
                     })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                        this.create_agent_terminal_thread_in(project_idx, agent, cx);
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| match ctx {
+                        LauncherContext::Project(project_idx) => {
+                            this.create_agent_terminal_thread_in(project_idx, agent, cx);
+                        }
+                        LauncherContext::NewChat => {
+                            this.create_agent_chat(agent, cx);
+                        }
                     }))
                     // Multi-color logos render via `img()` (resvg rasterizes
                     // the SVG, keeping every native fill); monochrome logos
@@ -295,7 +317,10 @@ impl PaneFlowApp {
                                     .text_size(px(16.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(ui.text)
-                                    .child("Start a new thread"),
+                                    .child(match ctx {
+                                        LauncherContext::NewChat => "Start a new chat",
+                                        LauncherContext::Project(_) => "Start a new thread",
+                                    }),
                             )
                             .child(
                                 div()
@@ -489,6 +514,16 @@ impl PaneFlowApp {
     // Sidebar render branch for [`AppMode::Agents`] now lives in
     // [`crate::app::agents_sidebar`] -- US-010 replaced the
     // placeholder shipped here in US-008.
+}
+
+/// US-005: where the agent picker creates its launched agent. Drives the
+/// launcher title and the on-click create path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LauncherContext {
+    /// Create a terminal thread in `projects[idx]`.
+    Project(usize),
+    /// Create a free chat in the home dir.
+    NewChat,
 }
 
 /// Wrap a [`TerminalView`] entity into the Agents main area surface.

@@ -57,6 +57,18 @@ impl PaneFlowApp {
         cx.notify();
     }
 
+    /// US-008: open the context menu for a free chat row.
+    pub(crate) fn open_agents_chat_menu(
+        &mut self,
+        chat_idx: usize,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_agents_rename(cx);
+        self.agents_view.agents_menu_open = Some(AgentsContextMenu::Chat { chat_idx, position });
+        cx.notify();
+    }
+
     pub(crate) fn close_agents_menu(&mut self, cx: &mut Context<Self>) {
         if self.agents_view.agents_menu_open.take().is_some() {
             cx.notify();
@@ -112,6 +124,11 @@ impl PaneFlowApp {
                 .projects
                 .get(project_idx)
                 .and_then(|p| p.threads.get(thread_idx))
+                .map(|t| t.title.clone())
+                .unwrap_or_default(),
+            AgentsRenameTarget::Chat { chat_idx } => self
+                .chats
+                .get(chat_idx)
                 .map(|t| t.title.clone())
                 .unwrap_or_default(),
         };
@@ -237,6 +254,12 @@ impl PaneFlowApp {
                 }
                 self.save_session(cx);
             }
+            AgentsRenameTarget::Chat { chat_idx } => {
+                if let Some(chat) = self.chats.get_mut(chat_idx) {
+                    chat.title = text;
+                }
+                self.save_session(cx);
+            }
         }
         cx.notify();
     }
@@ -308,6 +331,9 @@ impl PaneFlowApp {
                                 app.active_project_idx = idx;
                                 // US-003: picker/home state (no target).
                                 app.agents_target = None;
+                                // US-005: project picker, not chat.
+                                app.agents_picker_context =
+                                    crate::project::AgentsPickerContext::Project;
                             }
                             app.save_session(cx);
                             cx.notify();
@@ -331,6 +357,8 @@ impl PaneFlowApp {
         self.agents_view.agents_skills_visible = false;
         // US-003: picker/home state for `project_idx` (no target selected).
         self.agents_target = None;
+        // US-005: this picker creates into a project, not a free chat.
+        self.agents_picker_context = crate::project::AgentsPickerContext::Project;
         self.active_project_idx = project_idx;
         cx.notify();
     }
@@ -408,6 +436,184 @@ impl PaneFlowApp {
         self.save_session(cx);
     }
 
+    /// Duplicate a free chat: same agent + home cwd, fresh ID (US-008).
+    pub(crate) fn duplicate_agents_chat(&mut self, chat_idx: usize, cx: &mut Context<Self>) {
+        let Some(chat) = self.chats.get(chat_idx) else {
+            return;
+        };
+        let terminal_agent = chat.terminal_agent;
+        let new_title = format!("{} (copy)", chat.title);
+        self.add_chat_thread(new_title, terminal_agent, cx);
+        self.save_session(cx);
+    }
+
+    // ------------------------------------------------------------------
+    // US-005/US-006/US-008: target-parameterized dispatch
+    //
+    // The Pinned and Chats sections render rows that may back either a
+    // project thread OR a free chat. These helpers map a unified
+    // [`crate::project::AgentsTarget`] to the right concrete handler so the
+    // row widgets stay source-agnostic (no duplicated project/chat render
+    // logic, per the PRD maintainability requirement).
+    // ------------------------------------------------------------------
+
+    /// Select whatever the target points at (US-006: a Pinned row routes to
+    /// its original source).
+    pub(crate) fn select_agents_target(
+        &mut self,
+        target: crate::project::AgentsTarget,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::project::AgentsTarget;
+        let _ = match target {
+            AgentsTarget::Thread {
+                project_idx,
+                thread_idx,
+            } => self.select_thread(project_idx, thread_idx, cx),
+            AgentsTarget::Chat { chat_idx } => self.select_chat(chat_idx, cx),
+        };
+    }
+
+    /// Open the context menu for the target's row.
+    pub(crate) fn open_agents_menu_for_target(
+        &mut self,
+        target: crate::project::AgentsTarget,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::project::AgentsTarget;
+        match target {
+            AgentsTarget::Thread {
+                project_idx,
+                thread_idx,
+            } => self.open_agents_thread_menu(project_idx, thread_idx, position, cx),
+            AgentsTarget::Chat { chat_idx } => self.open_agents_chat_menu(chat_idx, position, cx),
+        }
+    }
+
+    /// Begin inline rename for the target's row.
+    pub(crate) fn begin_agents_rename_for_target(
+        &mut self,
+        target: crate::project::AgentsTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::project::AgentsTarget;
+        let rename_target = match target {
+            AgentsTarget::Thread {
+                project_idx,
+                thread_idx,
+            } => AgentsRenameTarget::Thread {
+                project_idx,
+                thread_idx,
+            },
+            AgentsTarget::Chat { chat_idx } => AgentsRenameTarget::Chat { chat_idx },
+        };
+        self.begin_agents_rename(rename_target, window, cx);
+    }
+
+    /// Queue the delete confirmation for the target's row.
+    pub(crate) fn request_delete_for_target(
+        &mut self,
+        target: crate::project::AgentsTarget,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::project::AgentsTarget;
+        let delete_target = match target {
+            AgentsTarget::Thread {
+                project_idx,
+                thread_idx,
+            } => AgentsDeleteTarget::Thread {
+                project_idx,
+                thread_idx,
+            },
+            AgentsTarget::Chat { chat_idx } => AgentsDeleteTarget::Chat { chat_idx },
+        };
+        self.request_agents_confirm_delete(delete_target, cx);
+    }
+
+    /// Duplicate the target's row.
+    pub(crate) fn duplicate_agents_target(
+        &mut self,
+        target: crate::project::AgentsTarget,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::project::AgentsTarget;
+        match target {
+            AgentsTarget::Thread {
+                project_idx,
+                thread_idx,
+            } => self.duplicate_agents_thread(project_idx, thread_idx, cx),
+            AgentsTarget::Chat { chat_idx } => self.duplicate_agents_chat(chat_idx, cx),
+        }
+    }
+
+    /// US-006: toggle the pin flag on the target's thread/chat and persist.
+    /// Idempotent per-click (a re-pin just flips back). Pinned threads are
+    /// aggregated into the rail's PINNED section across both sources.
+    pub(crate) fn toggle_pin_for_target(
+        &mut self,
+        target: crate::project::AgentsTarget,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::project::AgentsTarget;
+        let pinned = match target {
+            AgentsTarget::Thread {
+                project_idx,
+                thread_idx,
+            } => self
+                .projects
+                .get_mut(project_idx)
+                .and_then(|p| p.threads.get_mut(thread_idx))
+                .map(|t| {
+                    t.pinned = !t.pinned;
+                    t.pinned
+                }),
+            AgentsTarget::Chat { chat_idx } => self.chats.get_mut(chat_idx).map(|c| {
+                c.pinned = !c.pinned;
+                c.pinned
+            }),
+        };
+        if pinned.is_some() {
+            self.save_session(cx);
+            cx.notify();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // US-005: New chat (free chat in the home dir)
+    // ------------------------------------------------------------------
+
+    /// "New chat" affordance: drop to the picker/home state in
+    /// new-chat context so the center shows the chat agent picker (cwd =
+    /// home). Picking an agent there creates a free chat (see
+    /// [`Self::create_agent_chat`]). No chat is created until an agent is
+    /// picked — mirrors the project "New thread" flow.
+    pub(crate) fn start_new_chat(&mut self, cx: &mut Context<Self>) {
+        self.agents_view.agents_skills_visible = false;
+        self.agents_target = None;
+        self.agents_picker_context = crate::project::AgentsPickerContext::NewChat;
+        cx.notify();
+    }
+
+    /// Picker selection in new-chat context: create a free chat bound to
+    /// `agent` (cwd = home) and select it. The CLI auto-launches on the
+    /// first PTY mount in [`PaneFlowApp::ensure_terminal_view_mounted`]
+    /// (which resolves the chat target and honors the bypass flag),
+    /// preserving the human-in-loop invariant (only the launch command is
+    /// sent; no user prompt is auto-submitted).
+    pub(crate) fn create_agent_chat(
+        &mut self,
+        agent: crate::agent_launcher::TerminalAgent,
+        cx: &mut Context<Self>,
+    ) {
+        let new_chat_id = self.add_chat_thread(agent.display_name(), Some(agent), cx);
+        if let Some(chat_idx) = self.chats.iter().position(|t| t.id == new_chat_id) {
+            let _ = self.select_chat(chat_idx, cx);
+        }
+        self.save_session(cx);
+    }
+
     // ------------------------------------------------------------------
     // Execute confirmed delete
     // ------------------------------------------------------------------
@@ -444,6 +650,12 @@ impl PaneFlowApp {
                     return;
                 }
                 self.show_toast("Thread deleted", cx);
+            }
+            AgentsDeleteTarget::Chat { chat_idx } => {
+                if self.remove_chat(chat_idx, cx).is_err() {
+                    return;
+                }
+                self.show_toast("Chat deleted", cx);
             }
         }
         self.save_session(cx);

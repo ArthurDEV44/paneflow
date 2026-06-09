@@ -63,6 +63,16 @@ pub(crate) fn thread_visible_in_project(
     matches(&project.title, lowered_needle)
 }
 
+/// US-009: should this free chat row appear under the given filter?
+/// A chat has no parent project, so the rule is simply "the chat title
+/// contains the needle". Empty needle -> always visible.
+pub(crate) fn chat_visible(chat: &Thread, lowered_needle: &str) -> bool {
+    if lowered_needle.is_empty() {
+        return true;
+    }
+    matches(&chat.title, lowered_needle)
+}
+
 /// First (project_idx, thread_idx) pair whose thread matches. Used by
 /// the Down-arrow key handler to jump straight to the first hit.
 pub(crate) fn first_matching_thread(
@@ -82,13 +92,22 @@ pub(crate) fn first_matching_thread(
     None
 }
 
-/// Are there ZERO matching projects/threads? Used by the render path
+/// Are there ZERO matching projects/threads/chats? Used by the render path
 /// to swap the list for the empty-state row from AC #7.
-pub(crate) fn nothing_matches(projects: &[Project], lowered_needle: &str) -> bool {
+///
+/// US-009: extended to the free `chats` source — the rail shows the
+/// "no matches" hint only when NOTHING across all three sections
+/// (Pinned/Projects/Chats) hits.
+pub(crate) fn nothing_matches(
+    projects: &[Project],
+    chats: &[Thread],
+    lowered_needle: &str,
+) -> bool {
     if lowered_needle.is_empty() {
         return false;
     }
     !projects.iter().any(|p| project_visible(p, lowered_needle))
+        && !chats.iter().any(|c| chat_visible(c, lowered_needle))
 }
 
 /// US-021: byte-range of the first case-insensitive substring hit of
@@ -266,9 +285,36 @@ mod tests {
     #[test]
     fn nothing_matches_when_no_project_or_thread_hits() {
         let projects = vec![project_with_threads("Alpha", &["one", "two"])];
-        assert!(!nothing_matches(&projects, ""));
-        assert!(!nothing_matches(&projects, "one"));
-        assert!(nothing_matches(&projects, "xyzzy"));
+        assert!(!nothing_matches(&projects, &[], ""));
+        assert!(!nothing_matches(&projects, &[], "one"));
+        assert!(nothing_matches(&projects, &[], "xyzzy"));
+    }
+
+    #[test]
+    fn chat_visible_matches_chat_title_only() {
+        let chat = crate::project::Thread::new_terminal("Refactor auth", "/home/me", None);
+        // Empty needle -> always visible.
+        assert!(chat_visible(&chat, ""));
+        // Case-insensitive substring on the title (needle pre-lowered).
+        assert!(chat_visible(&chat, "auth"));
+        assert!(chat_visible(&chat, "refactor"));
+        assert!(!chat_visible(&chat, "xyz"));
+    }
+
+    #[test]
+    fn nothing_matches_considers_chats_too() {
+        // US-009: a hit that lives ONLY in a chat must keep the rail from
+        // collapsing to the "no matches" hint.
+        let projects = vec![project_with_threads("Alpha", &["one", "two"])];
+        let chats = vec![crate::project::Thread::new_terminal(
+            "scratch session",
+            "/home/me",
+            None,
+        )];
+        // Needle matches the chat, not any project/thread.
+        assert!(!nothing_matches(&projects, &chats, "scratch"));
+        // Needle matches nothing in either source.
+        assert!(nothing_matches(&projects, &chats, "xyzzy"));
     }
 
     #[test]
@@ -289,7 +335,7 @@ mod tests {
         assert_eq!(total_threads, 500);
 
         let start = std::time::Instant::now();
-        let _ = nothing_matches(&projects, "10");
+        let _ = nothing_matches(&projects, &[], "10");
         let _ = first_matching_thread(&projects, "10");
         let elapsed = start.elapsed();
         // Generous bound -- the substring matcher should hit
