@@ -271,6 +271,29 @@ pub fn bridge_binary_path() -> Option<PathBuf> {
     )
 }
 
+/// Stable, non-versioned path of the `paneflow-ai-hook` callback binary
+/// (EP-004 US-016, prd-cli-agent-orchestration). Same rationale as
+/// [`bridge_binary_path`]: `paneflow hooks setup` writes this path into
+/// **external, persistent agent configs** (`~/.claude/settings.json`, …), so it
+/// must survive Paneflow updates — unlike the version-pinned shim/ai-hook copy
+/// under `cache_dir()/paneflow/bin/<VERSION>/` that the shim itself resolves at
+/// launch. Lives alongside the bridge under `data_dir()/paneflow/bin/`:
+///
+/// - Linux:   `~/.local/share/paneflow/bin/paneflow-ai-hook`
+/// - macOS:   `~/Library/Application Support/paneflow/bin/paneflow-ai-hook`
+/// - Windows: `%LOCALAPPDATA%\paneflow\bin\paneflow-ai-hook.exe`
+///
+/// Returns `None` when `data_dir()` is unresolvable. Computes the path only;
+/// the byte materialization is `ai_hooks::extract::ensure_ai_hook_extracted`.
+pub fn ai_hook_binary_path() -> Option<PathBuf> {
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    Some(
+        data_dir()?
+            .join("bin")
+            .join(format!("paneflow-ai-hook{suffix}")),
+    )
+}
+
 #[cfg(unix)]
 fn check_sun_path_fits(path: &std::path::Path) -> bool {
     let bytes = path.as_os_str().len();
