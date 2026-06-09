@@ -16,6 +16,7 @@ use serde_json::Value;
 mod control_cmds;
 mod read_cmds;
 mod selector;
+mod send_cmd;
 
 /// Process exit codes. Kept distinct so scripts can branch on the failure
 /// kind. clap owns `2` for its own usage/parse errors (and `0` for
@@ -234,12 +235,8 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
         }
         Commands::Select { index } => control_cmds::select(client, index),
         Commands::Split { direction } => control_cmds::split(client, direction.as_ipc()),
-        Commands::Send { .. } => Err(not_implemented("send")),
+        Commands::Send { target, text } => send_cmd::send(client, &target, &text),
     }
-}
-
-fn not_implemented(verb: &str) -> CliError {
-    CliError::runtime(format!("{verb}: not yet implemented"))
 }
 
 /// Render a JSON-RPC `result` value as pretty JSON to stdout. Shared by the
