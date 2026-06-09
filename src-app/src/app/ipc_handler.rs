@@ -13,14 +13,67 @@
 //! remains a single function here; if future additions push it over the
 //! module's LOC budget, split by namespace per the PRD's fallback spec.
 
-use gpui::{App, AppContext, Context};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use gpui::{App, AppContext, Context, Entity};
 use paneflow_config::schema::LayoutNode;
 
 use crate::layout::LayoutTree;
 use crate::layout::{MAX_PANES, SplitDirection};
+use crate::pane::Pane;
 use crate::terminal::TerminalView;
 use crate::workspace::{MAX_WORKSPACES, Workspace, next_workspace_id};
 use crate::{PaneFlowApp, ai_types, keybindings, update};
+
+/// Delay before pre-filling an agent prompt into a freshly-launched pane
+/// (US-010, prd-cli-agent-orchestration). Mirrors the diff-review prefill
+/// timer: the agent CLI's input box is not ready the instant the launch command
+/// is written, so a too-early `send_text` would be lost into a not-ready
+/// buffer. The wait is bounded and runs concurrently per pane (one detached
+/// timer each), so an N-pane `up` still prefills in ~one delay, not N.
+const UP_PREFILL_DELAY_MS: u64 = 1800;
+
+/// A validated pane plan for `workspace.up`: the cwd is already canonicalized,
+/// so the spawn phase is infallible with respect to directories (US-012).
+struct PlannedPane {
+    cwd: Option<PathBuf>,
+    command: Option<String>,
+    prompt: Option<String>,
+    env: Option<HashMap<String, String>>,
+    focus: bool,
+}
+
+/// Parse a JSON `{ "K": "V", … }` object into an env map, dropping non-string
+/// values. Returns `None` for absent/empty so the global `terminal.env` default
+/// still applies underneath (parity with `SurfaceDefinition::env`).
+fn parse_env_object(value: Option<&serde_json::Value>) -> Option<HashMap<String, String>> {
+    let obj = value?.as_object()?;
+    let map: HashMap<String, String> = obj
+        .iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+        .collect();
+    (!map.is_empty()).then_some(map)
+}
+
+/// Build the layout tree for `workspace.up` from a preset name. Mirrors the
+/// keyboard layout presets (`handle_layout_*`): `even_h` = side by side
+/// (Vertical divider), `even_v` = stacked (Horizontal divider), `main_vertical`
+/// = the focused pane at 60% with the rest stacked, `tiled` = tmux grid.
+/// Unknown names fall back to `even_h`.
+fn build_up_layout(preset: &str, panes: Vec<Entity<Pane>>, focus_idx: usize) -> Option<LayoutTree> {
+    match preset {
+        "even_v" => LayoutTree::from_panes_equal(SplitDirection::Horizontal, panes),
+        "main_vertical" => {
+            let main = panes.get(focus_idx).or_else(|| panes.first())?.clone();
+            let others: Vec<_> = panes.into_iter().filter(|p| *p != main).collect();
+            LayoutTree::main_vertical(main, others)
+        }
+        "tiled" => LayoutTree::tiled(panes),
+        _ => LayoutTree::from_panes_equal(SplitDirection::Vertical, panes),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Terminal-routing helpers used by the IPC `surface.*` handlers (US-002:
@@ -464,6 +517,143 @@ impl PaneFlowApp {
         Err(JsonRpcError::invalid_params("no surface available"))
     }
 
+    /// `workspace.up` — materialize a declarative multi-pane agent workspace in
+    /// one call (US-008/US-009/US-010, prd-cli-agent-orchestration). Unlike
+    /// `workspace.create` + `layout`, this honors a per-pane cwd / launch
+    /// command / prompt: each pane spawns in its own directory, optionally runs
+    /// an agent CLI, and optionally gets a prompt pre-filled (never submitted).
+    ///
+    /// Security: same-UID peer-cred is the gate (the socket is 0600 + peer-UID).
+    /// Launching a CLI here is no more privileged than the user's own shell, and
+    /// every pane is freshly created by this call (no injection into a
+    /// pre-existing foreign agent), so it does NOT require the
+    /// `PANEFLOW_IPC_SCRIPTING` gate `surface.send_text` carries — that gate
+    /// guards lateral injection into another agent's live session.
+    ///
+    /// Atomic: every pane's cwd is canonicalized BEFORE anything spawns, so a
+    /// bad directory returns -32602 with no half-built workspace (US-012).
+    fn handle_workspace_up(
+        &mut self,
+        params: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) -> serde_json::Value {
+        if self.workspaces.len() >= MAX_WORKSPACES {
+            return JsonRpcError::invalid_params("Workspace limit reached").into_value();
+        }
+        let name = params
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("Workspace")
+            .to_string();
+        let preset = params
+            .get("layout")
+            .and_then(|l| l.as_str())
+            .unwrap_or("even_h");
+        let pane_specs = match params.get("panes").and_then(|p| p.as_array()) {
+            Some(a) if !a.is_empty() => a,
+            _ => {
+                return JsonRpcError::invalid_params("`panes` must be a non-empty array")
+                    .into_value();
+            }
+        };
+        if pane_specs.len() > MAX_PANES {
+            return JsonRpcError::invalid_params(format!(
+                "layout exceeds maximum pane count ({MAX_PANES})"
+            ))
+            .into_value();
+        }
+
+        // Phase 1 (no mutation): validate + canonicalize every cwd up-front so a
+        // bad path fails atomically with -32602 before any pane spawns (US-012).
+        let mut planned: Vec<PlannedPane> = Vec::with_capacity(pane_specs.len());
+        for (i, spec) in pane_specs.iter().enumerate() {
+            let cwd = match spec.get("cwd").and_then(|c| c.as_str()) {
+                Some(raw) => match canonicalize_workspace_cwd(raw) {
+                    Ok(canonical) => Some(canonical),
+                    Err(_) => {
+                        return JsonRpcError::invalid_params(format!(
+                            "pane {i}: cwd '{raw}' does not exist or is not a directory"
+                        ))
+                        .into_value();
+                    }
+                },
+                None => None,
+            };
+            planned.push(PlannedPane {
+                cwd,
+                command: spec
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string),
+                prompt: spec
+                    .get("prompt")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string),
+                env: parse_env_object(spec.get("env")),
+                focus: spec.get("focus").and_then(|f| f.as_bool()).unwrap_or(false),
+            });
+        }
+
+        // Phase 2: spawn every pane (cwd + env honored). `self.workspaces` is
+        // untouched until the tree is built, so a failed layout strands nothing.
+        let ws_id = next_workspace_id();
+        let mut panes: Vec<Entity<Pane>> = Vec::with_capacity(planned.len());
+        let mut launches: Vec<(Entity<TerminalView>, Option<String>, Option<String>)> =
+            Vec::with_capacity(planned.len());
+        for pp in &planned {
+            let terminal = cx.new(|cx| {
+                TerminalView::with_cwd_and_env(ws_id, pp.cwd.clone(), None, pp.env.clone(), cx)
+            });
+            let pane = self.create_pane(terminal.clone(), ws_id, cx);
+            launches.push((terminal, pp.command.clone(), pp.prompt.clone()));
+            panes.push(pane);
+        }
+
+        let focus_idx = planned.iter().position(|p| p.focus).unwrap_or(0);
+        let Some(tree) = build_up_layout(preset, panes, focus_idx) else {
+            return JsonRpcError::invalid_params("could not build layout from panes").into_value();
+        };
+
+        let ws_cwd = planned
+            .iter()
+            .find_map(|p| p.cwd.clone())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let ws = Workspace::with_layout_and_id(ws_id, &name, ws_cwd, tree);
+        self.watch_git_dir(&ws);
+        Self::spawn_initial_git_stats(ws_id, ws.cwd.clone(), cx);
+        self.workspaces.push(ws);
+        let idx = self.workspaces.len() - 1;
+        self.active_idx = idx;
+
+        // Phase 3: launch each agent (typed-ahead into the shell is fine) and
+        // schedule the prompt prefill after a bounded readiness delay. The
+        // prompt is written WITHOUT a carriage return — human-in-loop: the user
+        // reviews and submits it themselves (US-010).
+        for (terminal, command, prompt) in launches {
+            if let Some(cmd) = command.filter(|c| !c.is_empty()) {
+                terminal.read(cx).send_command(&cmd);
+            }
+            if let Some(prompt) = prompt.filter(|p| !p.is_empty()) {
+                let weak = terminal.downgrade();
+                cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+                    smol::Timer::after(Duration::from_millis(UP_PREFILL_DELAY_MS)).await;
+                    cx.update(|cx| {
+                        if let Some(t) = weak.upgrade() {
+                            t.read(cx).send_text(&prompt);
+                        }
+                    });
+                })
+                .detach();
+            }
+        }
+
+        let panes_n = self.active_workspace().map_or(0, |ws| ws.pane_count());
+        self.save_session(cx);
+        cx.notify();
+        serde_json::json!({"index": idx, "title": name, "panes": panes_n})
+    }
+
     fn handle_ipc(
         &mut self,
         method: &str,
@@ -582,6 +772,7 @@ impl PaneFlowApp {
                 cx.notify();
                 serde_json::json!({"index": idx, "title": name, "panes": panes})
             }
+            "workspace.up" => self.handle_workspace_up(params, cx),
             "workspace.select" => {
                 let idx = params.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
                 if idx < self.workspaces.len() {
