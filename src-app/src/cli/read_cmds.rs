@@ -20,7 +20,7 @@ pub fn ls(client: &impl IpcTransport, human: bool) -> Result<i32, CliError> {
     if human {
         print_surfaces_table(&result);
     } else {
-        print_json(&result)?;
+        super::print_json(&result)?;
     }
     Ok(EXIT_OK)
 }
@@ -45,7 +45,7 @@ pub fn read(
         .call("surface.read", params)
         .map_err(CliError::runtime)?;
     if json_out {
-        print_json(&result)?;
+        super::print_json(&result)?;
     } else {
         // Raw scrollback: print verbatim (it carries its own newlines). No
         // trailing newline is appended so the output round-trips exactly.
@@ -80,16 +80,9 @@ pub fn search(
             }
         }
     } else {
-        print_json(&result)?;
+        super::print_json(&result)?;
     }
     Ok(EXIT_OK)
-}
-
-fn print_json(value: &Value) -> Result<(), CliError> {
-    let rendered = serde_json::to_string_pretty(value)
-        .map_err(|e| CliError::runtime(format!("failed to render JSON: {e}")))?;
-    println!("{rendered}");
-    Ok(())
 }
 
 fn print_surfaces_table(result: &Value) {

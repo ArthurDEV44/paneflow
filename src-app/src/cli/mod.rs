@@ -11,7 +11,9 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 use paneflow_ipc_client::IpcClient;
+use serde_json::Value;
 
+mod control_cmds;
 mod read_cmds;
 mod selector;
 
@@ -123,6 +125,16 @@ enum SplitDir {
     Vertical,
 }
 
+impl SplitDir {
+    /// The `direction` string the `surface.split` IPC method expects.
+    fn as_ipc(self) -> &'static str {
+        match self {
+            SplitDir::Horizontal => "horizontal",
+            SplitDir::Vertical => "vertical",
+        }
+    }
+}
+
 /// A CLI failure carrying the process exit code to surface for it.
 #[derive(Debug)]
 pub struct CliError {
@@ -217,15 +229,27 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             max,
             human,
         } => read_cmds::search(client, &target, &pattern, max, human),
-        Commands::New { .. } => Err(not_implemented("new")),
-        Commands::Select { .. } => Err(not_implemented("select")),
-        Commands::Split { .. } => Err(not_implemented("split")),
+        Commands::New { name, cwd } => {
+            control_cmds::new_workspace(client, name.as_deref(), cwd.as_deref())
+        }
+        Commands::Select { index } => control_cmds::select(client, index),
+        Commands::Split { direction } => control_cmds::split(client, direction.as_ipc()),
         Commands::Send { .. } => Err(not_implemented("send")),
     }
 }
 
 fn not_implemented(verb: &str) -> CliError {
     CliError::runtime(format!("{verb}: not yet implemented"))
+}
+
+/// Render a JSON-RPC `result` value as pretty JSON to stdout. Shared by the
+/// read and control command modules so every machine-readable output uses one
+/// renderer.
+pub(super) fn print_json(value: &Value) -> Result<(), CliError> {
+    let rendered = serde_json::to_string_pretty(value)
+        .map_err(|e| CliError::runtime(format!("failed to render JSON: {e}")))?;
+    println!("{rendered}");
+    Ok(())
 }
 
 #[cfg(test)]
