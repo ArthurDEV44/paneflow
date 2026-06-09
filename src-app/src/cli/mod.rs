@@ -18,6 +18,7 @@ mod read_cmds;
 mod selector;
 mod send_cmd;
 mod up_cmd;
+mod wait_cmd;
 mod workspace_spec;
 
 /// Process exit codes. Kept distinct so scripts can branch on the failure
@@ -26,12 +27,16 @@ mod workspace_spec;
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_RUNTIME: i32 = 1;
 pub const EXIT_TARGET: i32 = 3;
+/// `wait` reached its deadline without the pattern appearing. Distinct from
+/// EXIT_TARGET (no/ambiguous match) and EXIT_RUNTIME (instance down / pane
+/// closed) so scripts can tell a timeout apart from a hard failure.
+pub const EXIT_TIMEOUT: i32 = 4;
 
 /// The verbs this CLI owns. `main.rs` gates the whole CLI dispatch (and the
 /// manual `--help`/`--version` scans) on membership here so the GUI launch
 /// path stays byte-for-byte unchanged for any other `argv[1]`.
 const VERBS: &[&str] = &[
-    "ls", "read", "search", "new", "select", "split", "send", "up",
+    "ls", "read", "search", "new", "select", "split", "send", "up", "wait",
 ];
 
 /// True when `argv[1]` names one of our subcommands.
@@ -127,6 +132,27 @@ enum Commands {
         /// Validate + print the resolved plan without touching the instance.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Block until a regex appears in a pane's recent output (orchestration).
+    Wait {
+        /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
+        /// Note: `cmdline:` matches the full argv on Linux but only the
+        /// executable basename on macOS/Windows; prefer `cwd:` or a name for a
+        /// portable selector.
+        #[arg(long = "match", value_name = "SELECTOR")]
+        selector: String,
+        /// Regex to wait for in the pane's recent scrollback.
+        #[arg(long)]
+        pattern: String,
+        /// Max seconds to wait before giving up (default 300).
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Succeed as soon as ANY matching pane matches (selector may hit several).
+        #[arg(long, conflicts_with = "all")]
+        any: bool,
+        /// Require ALL matching panes to match the pattern.
+        #[arg(long)]
+        all: bool,
     },
 }
 
@@ -249,6 +275,22 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
         Commands::Split { direction } => control_cmds::split(client, direction.as_ipc()),
         Commands::Send { target, text } => send_cmd::send(client, &target, &text),
         Commands::Up { file, dry_run } => up_cmd::up(client, &file, dry_run),
+        Commands::Wait {
+            selector,
+            pattern,
+            timeout,
+            any,
+            all,
+        } => {
+            let mode = if all {
+                wait_cmd::MatchMode::All
+            } else if any {
+                wait_cmd::MatchMode::Any
+            } else {
+                wait_cmd::MatchMode::Single
+            };
+            wait_cmd::wait(client, &selector, &pattern, timeout, mode)
+        }
     }
 }
 

@@ -67,41 +67,57 @@ pub fn resolve_target(client: &impl IpcTransport, target: &str) -> Result<u64, C
     resolve(parse_selector(target), &surfaces)
 }
 
+/// All `surface_id`s matching the selector (for `wait --any/--all`, US-014).
+/// Errors only when nothing matches; never errors on ambiguity (the caller
+/// wants the whole set).
+pub fn resolve_all(client: &impl IpcTransport, target: &str) -> Result<Vec<u64>, CliError> {
+    let surfaces = fetch_surfaces(client)?;
+    let ids: Vec<u64> = matches_for(&parse_selector(target), &surfaces)
+        .iter()
+        .map(|s| s.surface_id)
+        .collect();
+    if ids.is_empty() {
+        return Err(CliError::target(format!(
+            "no pane matches target '{target}'"
+        )));
+    }
+    Ok(ids)
+}
+
 fn resolve(selector: Selector<'_>, surfaces: &[Surface]) -> Result<u64, CliError> {
+    let label = selector_label(&selector);
+    pick_unique(&matches_for(&selector, surfaces), &label)
+}
+
+/// Every surface matching a selector. Shared by the unique-resolution path
+/// (`resolve` -> `pick_unique`) and the all-matches path (`resolve_all`).
+fn matches_for<'s>(selector: &Selector<'_>, surfaces: &'s [Surface]) -> Vec<&'s Surface> {
     match selector {
-        Selector::Id(id) => surfaces
-            .iter()
-            .find(|s| s.surface_id == id)
-            .map(|s| s.surface_id)
-            .ok_or_else(|| CliError::target(format!("no pane with surface id {id}"))),
-        Selector::Name(name) => resolve_by_name(name, surfaces),
+        Selector::Id(id) => surfaces.iter().filter(|s| s.surface_id == *id).collect(),
+        Selector::Name(name) => matches_by_name(name, surfaces),
         Selector::Cmdline(sub) => {
             let needle = sub.to_lowercase();
-            let matches: Vec<&Surface> = surfaces
+            surfaces
                 .iter()
                 .filter(|s| {
                     s.cmd
                         .as_deref()
                         .is_some_and(|c| c.to_lowercase().contains(&needle))
                 })
-                .collect();
-            pick_unique(&matches, &format!("cmdline:{sub}"))
+                .collect()
         }
-        Selector::Cwd(path) => {
-            let matches: Vec<&Surface> = surfaces
-                .iter()
-                .filter(|s| {
-                    s.cwd
-                        .as_deref()
-                        .is_some_and(|c| c == path || c.starts_with(path))
-                })
-                .collect();
-            pick_unique(&matches, &format!("cwd:{path}"))
-        }
+        Selector::Cwd(path) => surfaces
+            .iter()
+            .filter(|s| {
+                s.cwd
+                    .as_deref()
+                    .is_some_and(|c| c == *path || c.starts_with(*path))
+            })
+            .collect(),
     }
 }
 
-fn resolve_by_name(name: &str, surfaces: &[Surface]) -> Result<u64, CliError> {
+fn matches_by_name<'s>(name: &str, surfaces: &'s [Surface]) -> Vec<&'s Surface> {
     // Exact (case-insensitive) wins over prefix, so a pane named "claude" stays
     // reachable even when "claude-2" exists.
     let exact: Vec<&Surface> = surfaces
@@ -113,18 +129,26 @@ fn resolve_by_name(name: &str, surfaces: &[Surface]) -> Result<u64, CliError> {
         })
         .collect();
     if !exact.is_empty() {
-        return pick_unique(&exact, name);
+        return exact;
     }
     let lower = name.to_lowercase();
-    let prefix: Vec<&Surface> = surfaces
+    surfaces
         .iter()
         .filter(|s| {
             s.name
                 .as_deref()
                 .is_some_and(|n| n.to_lowercase().starts_with(&lower))
         })
-        .collect();
-    pick_unique(&prefix, name)
+        .collect()
+}
+
+fn selector_label(selector: &Selector<'_>) -> String {
+    match selector {
+        Selector::Id(id) => id.to_string(),
+        Selector::Name(name) => (*name).to_string(),
+        Selector::Cmdline(sub) => format!("cmdline:{sub}"),
+        Selector::Cwd(path) => format!("cwd:{path}"),
+    }
 }
 
 /// Exactly-one or a dedicated target error. An ambiguous match lists the
@@ -223,5 +247,23 @@ mod tests {
         let err = resolve(Selector::Name("nope"), &fixtures()).unwrap_err();
         assert_eq!(err.code, super::super::EXIT_TARGET);
         assert!(err.message.contains("no pane matches"));
+    }
+
+    #[test]
+    fn matches_for_returns_every_match() {
+        // The all-matches path (resolve_all / wait --any|--all) keeps every
+        // candidate rather than erroring on ambiguity.
+        let surfaces = fixtures();
+        let m = matches_for(&Selector::Cmdline("claude"), &surfaces);
+        let ids: Vec<u64> = m.iter().map(|s| s.surface_id).collect();
+        assert_eq!(ids, vec![12, 18]);
+    }
+
+    #[test]
+    fn cmdline_matches_basename_only_cmd() {
+        // macOS/Windows expose `cmd` as the executable basename (no argv), so a
+        // `cmdline:` selector must still match it (US-015 cross-platform).
+        let surfaces = vec![surface(5, "agent", "claude", "/tmp")];
+        assert_eq!(resolve(Selector::Cmdline("claude"), &surfaces).unwrap(), 5);
     }
 }
