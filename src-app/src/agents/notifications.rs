@@ -26,6 +26,13 @@ pub fn set_window_active(active: bool) {
     WINDOW_ACTIVE.store(active, Ordering::Relaxed);
 }
 
+/// Is the Paneflow window currently the focused surface? EP-004 US-020 reads
+/// this on `ai.stop` to suppress the turn-end desktop notification while the
+/// user is already looking at Paneflow.
+pub fn window_active() -> bool {
+    WINDOW_ACTIVE.load(Ordering::Relaxed)
+}
+
 /// Update the agents-panel-visible flag. Called from the mode toggle
 /// and from the bootstrap when the persisted session restores into
 /// agents mode.

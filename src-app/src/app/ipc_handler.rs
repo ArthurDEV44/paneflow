@@ -75,6 +75,53 @@ fn build_up_layout(preset: &str, panes: Vec<Entity<Pane>>, focus_idx: usize) -> 
     }
 }
 
+/// EP-004 US-020 — fire a best-effort OS desktop notification on agent turn-end,
+/// but only when Paneflow is NOT the focused window (the repositioning intent is
+/// "notify on turn-end, not while you're watching"). Runs the platform notifier
+/// as a bounded subprocess on the background executor: no new crate dependency,
+/// never blocks the render thread, and a missing notifier just fails silently.
+fn fire_turn_end_notification(workspace_title: &str, executor: gpui::BackgroundExecutor) {
+    if crate::agents::notifications::window_active() {
+        return;
+    }
+    let body = format!("{workspace_title}: agent finished");
+    let Some(command) = turn_end_notify_command(&body) else {
+        return;
+    };
+    executor
+        .spawn(async move {
+            let _ = paneflow_process::run_with_timeout(command, Duration::from_secs(10), 64 * 1024);
+        })
+        .detach();
+}
+
+#[cfg(target_os = "linux")]
+fn turn_end_notify_command(body: &str) -> Option<std::process::Command> {
+    let mut command = std::process::Command::new("notify-send");
+    command.arg("--app-name=Paneflow").arg("Paneflow").arg(body);
+    Some(command)
+}
+
+#[cfg(target_os = "macos")]
+fn turn_end_notify_command(body: &str) -> Option<std::process::Command> {
+    // `body` is embedded in an AppleScript string literal, so escape backslash
+    // and double-quote first — a crafted workspace title must not break out of
+    // the literal. Args are passed directly (no shell), so this is the only
+    // escaping needed.
+    let escaped = body.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!("display notification \"{escaped}\" with title \"Paneflow\"");
+    let mut command = std::process::Command::new("osascript");
+    command.arg("-e").arg(script);
+    Some(command)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn turn_end_notify_command(_body: &str) -> Option<std::process::Command> {
+    // Windows: no dependency-free toast path yet (BurntToast / WinRT both add
+    // weight). Documented stub — no notification fired (US-020 AC allows this).
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Terminal-routing helpers used by the IPC `surface.*` handlers (US-002:
 // extracted from `main.rs`). Re-exported at the crate root via `main.rs` so
@@ -1213,7 +1260,11 @@ impl PaneFlowApp {
                     // never auto-cleared and leaked into the sidebar forever.
                     let session_key =
                         upsert_session_state(ws, pid, tool, ai_types::AgentState::Finished, None);
+                    // EP-004 US-020: notify the user the turn ended if they're
+                    // looking elsewhere. Read the title before the borrow ends.
+                    let ws_title = ws.title.clone();
                     cx.notify();
+                    fire_turn_end_notification(&ws_title, cx.background_executor().clone());
 
                     // Auto-clear the session 5 s after stop unless something
                     // else (new prompt_submit, tool_use) bumps it back to
