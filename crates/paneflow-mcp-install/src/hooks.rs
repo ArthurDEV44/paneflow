@@ -308,25 +308,28 @@ pub(crate) fn run_hooks_with(
                 );
                 return 1;
             };
-            if !claude_detected() {
+            let code = if !claude_detected() {
                 let _ = writeln!(out, "claude-code: not detected (skipped)");
-                return 0;
-            }
-            match install(hook_path) {
-                Ok((path, outcome)) => {
-                    let verb = match outcome {
-                        InstallOutcome::Installed => "installed",
-                        InstallOutcome::Updated => "updated",
-                        InstallOutcome::AlreadyCurrent => "already current",
-                    };
-                    let _ = writeln!(out, "claude-code: hooks {verb} ({})", path.display());
-                    0
+                0
+            } else {
+                match install(hook_path) {
+                    Ok((path, outcome)) => {
+                        let verb = match outcome {
+                            InstallOutcome::Installed => "installed",
+                            InstallOutcome::Updated => "updated",
+                            InstallOutcome::AlreadyCurrent => "already current",
+                        };
+                        let _ = writeln!(out, "claude-code: hooks {verb} ({})", path.display());
+                        0
+                    }
+                    Err(e) => {
+                        let _ = writeln!(err, "claude-code: error: {e:#}");
+                        1
+                    }
                 }
-                Err(e) => {
-                    let _ = writeln!(err, "claude-code: error: {e:#}");
-                    1
-                }
-            }
+            };
+            report_other_agents(out);
+            code
         }
         HooksCommand::Uninstall => match uninstall() {
             Ok(UninstallOutcome::Removed) => {
@@ -344,7 +347,7 @@ pub(crate) fn run_hooks_with(
         },
         HooksCommand::Status => {
             let expected = hook_path.unwrap_or_else(|| Path::new(""));
-            match status(expected) {
+            let code = match status(expected) {
                 Ok(StatusOutcome::Installed { path }) => {
                     let _ = writeln!(out, "claude-code: installed ({path})");
                     0
@@ -364,8 +367,33 @@ pub(crate) fn run_hooks_with(
                     let _ = writeln!(err, "claude-code: error: {e:#}");
                     1
                 }
-            }
+            };
+            report_other_agents(out);
+            code
         }
+    }
+}
+
+/// Report the hook state of the non-Claude agents honestly (parity with the
+/// `mcp` per-agent report; only emits a line for an agent present on PATH).
+/// Codex hooks are injected per-launch by the shim (project-scope), so no
+/// user-scope install applies; Gemini and opencode have no notification-hook
+/// mechanism, so there is nothing to install rather than a fabricated shape.
+fn report_other_agents(out: &mut dyn Write) {
+    if which::which("codex").is_ok() {
+        let _ = writeln!(
+            out,
+            "codex: hooks injected per-launch by the shim (no user-scope install)"
+        );
+    }
+    if which::which("gemini").is_ok() {
+        let _ = writeln!(out, "gemini: no notification-hook mechanism (unsupported)");
+    }
+    if which::which("opencode").is_ok() {
+        let _ = writeln!(
+            out,
+            "opencode: no notification-hook mechanism (unsupported)"
+        );
     }
 }
 
