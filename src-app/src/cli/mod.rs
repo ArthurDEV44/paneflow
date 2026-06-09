@@ -12,6 +12,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use paneflow_ipc_client::IpcClient;
 
+mod read_cmds;
+mod selector;
+
 /// Process exit codes. Kept distinct so scripts can branch on the failure
 /// kind. clap owns `2` for its own usage/parse errors (and `0` for
 /// `--help`/`--version`), so the runtime codes start at `1` and avoid `2`.
@@ -121,6 +124,7 @@ enum SplitDir {
 }
 
 /// A CLI failure carrying the process exit code to surface for it.
+#[derive(Debug)]
 pub struct CliError {
     pub code: i32,
     pub message: String,
@@ -134,7 +138,6 @@ impl CliError {
         }
     }
 
-    #[allow(dead_code)] // first consumer lands in US-003/US-004 (target resolution)
     pub fn target(message: impl Into<String>) -> Self {
         Self {
             code: EXIT_TARGET,
@@ -199,11 +202,21 @@ fn connect() -> Result<IpcClient, String> {
 /// (US-005), `send` (US-006). The scaffold (US-002) wires the surface and the
 /// transport; each arm returns an explicit "not yet implemented" runtime error
 /// until its story fills it in.
-fn dispatch(command: Commands, _client: &IpcClient) -> Result<i32, CliError> {
+fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
     match command {
-        Commands::Ls { .. } => Err(not_implemented("ls")),
-        Commands::Read { .. } => Err(not_implemented("read")),
-        Commands::Search { .. } => Err(not_implemented("search")),
+        Commands::Ls { human } => read_cmds::ls(client, human),
+        Commands::Read {
+            target,
+            lines,
+            offset,
+            json,
+        } => read_cmds::read(client, &target, lines, offset, json),
+        Commands::Search {
+            target,
+            pattern,
+            max,
+            human,
+        } => read_cmds::search(client, &target, &pattern, max, human),
         Commands::New { .. } => Err(not_implemented("new")),
         Commands::Select { .. } => Err(not_implemented("select")),
         Commands::Split { .. } => Err(not_implemented("split")),
