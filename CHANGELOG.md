@@ -5,6 +5,51 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-06-09
+
+- Rebuilt the native terminal engine on upstream `alacritty_terminal` with
+  rendering parity: OSC 8 hyperlinks, configurable cursor shapes, a live
+  scrollbar, and faithful cursor and alt-screen input handling.
+- Added PTY teardown and exit-status reporting so a closed shell reports how it
+  ended, plus golden snapshot tests that lock terminal rendering against
+  regressions.
+- Added a Terminal settings tab and a terminal configuration block in the config
+  schema and loader.
+- Hardened self-update end to end: release artifacts are now signed in CI, every
+  download is verified against an embedded minisign key before install, updates
+  swap in atomically with crash recovery, and an unsigned build refuses to
+  self-update.
+- Added per-platform update verification: macOS codesign and spctl gating with
+  Team ID pinning, Windows Authenticode through WinVerifyTrust, hardened tar.gz
+  and AppImage extraction, and native host architecture detection for Rosetta
+  and WOW64.
+- Eliminated panics on untrusted input across session restore, config parsing,
+  IPC, date handling, and layout, replacing defensive indexing with fail-safe
+  accessors.
+- Bounded every external surface against resource exhaustion: the IPC server
+  caps line size, concurrency, and idle time; external subprocesses run under a
+  timeout with a watchdog; ingress and DoS caps are centralized in one module.
+- Moved blocking work off the render thread: session saves, git diff stats,
+  config loads, font enumeration, and the recursive file watcher now run in the
+  background, with a cached config feeding every frame.
+- Sanitized untrusted content paths: markdown rendering strips bidi and
+  zero-width characters, git refs are stripped of control bytes before they
+  reach agent prompts, and session ids are validated to block argument
+  injection.
+- Validated and clamped all persisted config and session input, with atomic
+  write-and-rename for `paneflow.json` and symmetric bounds shared across
+  session, IPC, and the config schema.
+- Hardened terminal and shim lifecycle: PID-reuse guards, an environment
+  deny-list and scrollback sanitization on session restore, codex flock
+  serialization, and correct orphan cleanup under systemd.
+- Improved Windows portability: portable shell launches, correct LOCALAPPDATA
+  casing, Git for Windows PATH augmentation, and `dirs`-based home resolution.
+- Reduced per-frame allocations in terminal paint, sidebar recompute, and
+  layout, with memoized derivations and zero-allocation leaf lookups.
+- Fixed non-US keyboard input, decoupled Alt-on-arrows from the option-as-meta
+  setting, and reworked the keybindings editor to be action-indexed with
+  collision detection.
+
 ## [0.3.8] - 2026-06-02
 
 - Changed the Agents view to a terminal-only model: each thread now launches a
