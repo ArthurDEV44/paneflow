@@ -735,7 +735,23 @@ mod tests {
 
         let target = tmp.path().join("fake.AppImage");
         std::fs::write(&target, b"x").unwrap();
-        let err = invoke_tool(&stub, &target).unwrap_err().to_string();
+
+        // ETXTBSY guard: `cargo test` runs this module's tests in parallel
+        // threads, and a sibling test's concurrent spawn can momentarily hold a
+        // cloned fd to this freshly-chmod'd stub open across the exec window,
+        // so the exec fails with "Text file busy" (surfaced by invoke_tool as a
+        // `spawn <path>` error) instead of running the stub. That race is a
+        // test artifact: production only ever execs a pre-existing
+        // `appimageupdatetool`, never a just-written script. Retry until the
+        // exec lands, then assert on the classified result.
+        let mut err = String::new();
+        for _ in 0..100 {
+            err = invoke_tool(&stub, &target).unwrap_err().to_string();
+            if !err.starts_with("spawn ") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         assert!(err.contains("cannot self-update"), "got: {err}");
     }
 
