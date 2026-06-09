@@ -458,6 +458,100 @@ impl PaneFlowApp {
         Some(view)
     }
 
+    /// US-010 (prd-agents-ui-codex-redesign-2026-Q3.md): the title-bar brand
+    /// labels for Agents mode. Returns `(primary, context, overflow_enabled)`:
+    /// - selected project thread -> (thread title, project name, true)
+    /// - selected free chat      -> (chat title, "Chat", true)
+    /// - picker/home state       -> (neutral label, None, false)
+    ///
+    /// The primary always passes through [`crate::project::clean_sidebar_title`]
+    /// so a CLI spinner glyph never leaks into the chrome. Pushed by
+    /// `PaneFlowApp::render` into the (separate) `TitleBar` entity; the
+    /// neutral picker label satisfies US-010 AC4 (no broken alignment).
+    pub(crate) fn agents_titlebar_labels(&self) -> (Option<String>, Option<String>, bool) {
+        use crate::project::AgentsTarget;
+        let clean =
+            |raw: &str| crate::project::clean_sidebar_title(raw).unwrap_or_else(|| raw.to_string());
+        match self.agents_target {
+            Some(AgentsTarget::Thread {
+                project_idx,
+                thread_idx,
+            }) => {
+                if let Some(project) = self.projects.get(project_idx)
+                    && let Some(thread) = project.threads.get(thread_idx)
+                {
+                    return (
+                        Some(clean(&thread.title)),
+                        Some(project.title.clone()),
+                        true,
+                    );
+                }
+                (Some("Agents".to_string()), None, false)
+            }
+            Some(AgentsTarget::Chat { chat_idx }) => {
+                if let Some(chat) = self.chats.get(chat_idx) {
+                    return (Some(clean(&chat.title)), Some("Chat".to_string()), true);
+                }
+                (Some("Agents".to_string()), None, false)
+            }
+            None => {
+                // Picker/home state — neutral label (AC4): the new-chat intent,
+                // else the active project name, else a plain "Agents".
+                let neutral =
+                    if self.agents_picker_context == crate::project::AgentsPickerContext::NewChat {
+                        "New chat".to_string()
+                    } else if let Some(project) = self.projects.get(self.active_project_idx) {
+                        project.title.clone()
+                    } else {
+                        "Agents".to_string()
+                    };
+                (Some(neutral), None, false)
+            }
+        }
+    }
+
+    /// US-011: handle the title-bar `⋯` dispatch. Resolves the current
+    /// thread/chat target and opens the shared context menu anchored just
+    /// below the title bar. A no-op outside Agents mode or when nothing is
+    /// selected (the button only renders with a live target, but guard
+    /// anyway). The menu reuses `agents_menu_open` so click-outside-to-close
+    /// and the deferred render path are shared with the right-click menus.
+    pub(crate) fn handle_open_agents_thread_menu(
+        &mut self,
+        _: &crate::OpenAgentsThreadMenu,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(self.mode, AppMode::Agents) {
+            return;
+        }
+        let Some(target) = self.agents_target else {
+            return;
+        };
+        if self.thread_for_target(target).is_none() {
+            return;
+        }
+        // Anchor below the title bar near the brand slot. `render_open_agents_menu`
+        // clamps to the window bounds if it would overflow the bottom.
+        let position = gpui::point(px(12.), px(40.));
+        let menu = match target {
+            crate::project::AgentsTarget::Thread {
+                project_idx,
+                thread_idx,
+            } => crate::app::agents_sidebar::AgentsContextMenu::Thread {
+                project_idx,
+                thread_idx,
+                position,
+            },
+            crate::project::AgentsTarget::Chat { chat_idx } => {
+                crate::app::agents_sidebar::AgentsContextMenu::Chat { chat_idx, position }
+            }
+        };
+        self.cancel_agents_rename(cx);
+        self.agents_view.agents_menu_open = Some(menu);
+        cx.notify();
+    }
+
     /// React to an OSC-driven title update from the PTY backing a
     /// Terminal Thread. Updates the matching sidebar row's title and
     /// persists the session so the new label survives a restart.

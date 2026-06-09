@@ -193,9 +193,9 @@ impl PaneFlowApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // 3 items (Rename, Duplicate, Delete) + 1 separator + 8px
-        // padding => ~130px.
-        let menu_height = px(140.);
+        // 4 items (Rename, Duplicate, Reveal, Delete) + 1 separator + 8px
+        // padding => ~165px.
+        let menu_height = px(170.);
         let win_h = window.window_bounds().get_bounds().size.height;
         let menu_y = if position.y + menu_height > win_h {
             (position.y - menu_height).max(px(0.))
@@ -250,6 +250,20 @@ impl PaneFlowApp {
             cx.listener(move |this, _: &ClickEvent, _w, cx| {
                 this.close_agents_menu(cx);
                 this.duplicate_agents_target(target, cx);
+                cx.stop_propagation();
+            }),
+        ));
+
+        // US-011: Reveal the target's cwd (the project dir for a thread, the
+        // home dir for a chat). Surfaced both here (right-click) and in the
+        // title-bar `⋯` overflow menu (same renderer).
+        menu = menu.child(self.render_context_menu_item(
+            "agents-thread-reveal".into(),
+            "Reveal in File Manager",
+            None,
+            ui,
+            cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                this.reveal_agents_target(target, cx);
                 cx.stop_propagation();
             }),
         ));

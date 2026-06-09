@@ -15,6 +15,22 @@ pub struct TitleBar {
     pub ipc_state: crate::ipc::IpcState,
     /// Set by PaneFlowApp when a newer version is detected.
     pub update_available: Option<UpdateInfo>,
+    /// US-010 (prd-agents-ui-codex-redesign-2026-Q3.md): the brand slot's
+    /// primary text in Agents mode (current thread/chat title, or a neutral
+    /// "Agents"/project label in the picker state). `None` in Cli/Diff →
+    /// the brand renders the static "PaneFlow" (diff visuel nul). PUSHED by
+    /// `PaneFlowApp::render` only on the Agents arm; `TitleBar` never reads
+    /// `AppMode` — the render branch tests the presence of this field, not
+    /// the mode (push-only contract).
+    pub agents_thread_title: Option<String>,
+    /// US-010: the secondary "· context" text (project name for a project
+    /// thread, "Chat" for a free chat). `None` in the picker state and in
+    /// Cli/Diff.
+    pub agents_context_label: Option<String>,
+    /// US-011: render the `⋯` overflow button. `true` only when a concrete
+    /// thread/chat is selected (the menu acts on the current target);
+    /// `false` in the picker state and in Cli/Diff.
+    pub agents_overflow: bool,
 }
 
 #[derive(Clone)]
@@ -80,6 +96,9 @@ impl TitleBar {
             sidebar_width: px(220.),
             ipc_state: crate::ipc::IpcState::Online,
             update_available: None,
+            agents_thread_title: None,
+            agents_context_label: None,
+            agents_overflow: false,
         }
     }
 }
@@ -148,21 +167,97 @@ impl Render for TitleBar {
         } else {
             gpui::px(12.0)
         };
-        let brand = div()
+        let mut brand = div()
             .w(self.sidebar_width)
             .flex_shrink_0()
             .flex()
             .flex_row()
             .items_center()
+            .gap(px(6.))
             .pl(brand_pl)
-            .overflow_x_hidden()
-            .child(
+            .pr(px(8.))
+            .overflow_x_hidden();
+        if let Some(title) = self.agents_thread_title.clone() {
+            // US-010: contextual brand in Agents mode — `thread title · context`
+            // replaces the static "PaneFlow". The title truncates first; the
+            // context label and the `⋯` button stay pinned.
+            let mut label_row = div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(ui.text)
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .truncate()
+                        .child(title),
+                );
+            if let Some(ctx) = self.agents_context_label.clone() {
+                label_row = label_row
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(ui.muted)
+                            .text_size(px(12.))
+                            .child("·"),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .max_w(px(110.))
+                            .text_color(ui.muted)
+                            .text_size(px(12.))
+                            .truncate()
+                            .child(ctx),
+                    );
+            }
+            brand = brand.child(label_row);
+            if self.agents_overflow {
+                // US-011: `⋯` overflow button. on_mouse_down + stop_propagation
+                // (NOT on_click) — same Wayland first-press / drag race the
+                // update pill documents (title_bar.rs ~354). Dispatches a typed
+                // action; `PaneFlowApp` resolves the current target and opens
+                // the shared thread context menu.
+                brand = brand.child(
+                    div()
+                        .id("agents-overflow-btn")
+                        .flex_none()
+                        .w(px(22.))
+                        .h(px(22.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .text_color(ui.muted)
+                        .text_size(px(15.))
+                        .hover(|s| {
+                            let ui = crate::theme::ui_colors();
+                            s.bg(ui.subtle).text_color(ui.text)
+                        })
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            cx.stop_propagation();
+                            window.dispatch_action(Box::new(crate::OpenAgentsThreadMenu), cx);
+                        })
+                        .child("⋯"),
+                );
+            }
+        } else {
+            brand = brand.child(
                 div()
                     .text_color(ui.text)
                     .text_sm()
                     .font_weight(gpui::FontWeight::BOLD)
                     .child("PaneFlow"),
             );
+        }
+        let brand = brand;
 
         // --- Center section: workspace name breadcrumb (muted) ---
         // Takes the remaining flex space and centers the current workspace
