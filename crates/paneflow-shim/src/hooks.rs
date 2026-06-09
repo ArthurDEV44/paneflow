@@ -286,6 +286,51 @@ pub(crate) fn cleanup_hook_config_file(
 /// drop. The guard must live for the duration of the child Claude Code
 /// process, then drop normally when `main()` returns — this is why US-005
 /// forces `run_real()` (vs `exec()`) so destructors actually fire.
+/// Cross-platform home directory via std env only (the shim has no `dirs`
+/// dep): `HOME` (Unix / most shells) then `USERPROFILE` (Windows).
+fn home_dir_env() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .or_else(|| env::var_os("USERPROFILE").filter(|h| !h.is_empty()))
+        .map(PathBuf::from)
+}
+
+/// EP-004 US-018: true iff `~/.claude/settings.json` already carries a
+/// Paneflow-managed hook (installed by `paneflow hooks setup`). When present,
+/// the persistent user-scope hooks cover this agent, so the shim skips its
+/// ephemeral project-local injection — avoiding double-fired IPC frames AND
+/// keeping `.claude/settings.local.json` out of the user's project tree
+/// (persistent wins). Detection reuses [`is_paneflow_matcher_group`], so it
+/// recognizes the byte-identical shape `paneflow-mcp-install::hooks` writes.
+fn persistent_claude_hooks_present() -> bool {
+    let Some(home) = home_dir_env() else {
+        return false;
+    };
+    let settings = home.join(".claude").join("settings.json");
+    let Ok(bytes) = std::fs::read(&settings) else {
+        return false;
+    };
+    let Ok(root) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    settings_has_managed_hook(&root)
+}
+
+/// Pure check: does a parsed settings tree carry a Paneflow-managed hook for
+/// any registered event? Split out so it is unit-testable without touching the
+/// real home directory.
+fn settings_has_managed_hook(root: &serde_json::Value) -> bool {
+    let Some(hooks) = root.get("hooks").and_then(|h| h.as_object()) else {
+        return false;
+    };
+    CLAUDE_HOOK_EVENTS.iter().any(|event| {
+        hooks
+            .get(*event)
+            .and_then(|a| a.as_array())
+            .is_some_and(|arr| arr.iter().any(is_paneflow_matcher_group))
+    })
+}
+
 pub(crate) struct HookConfigGuard {
     settings_path: PathBuf,
     claude_dir: PathBuf,
@@ -306,6 +351,18 @@ impl HookConfigGuard {
         let cwd = env::current_dir().ok()?;
         let claude_dir = cwd.join(".claude");
         if !paneflow_ipc_reachable() {
+            sweep_orphan_hook_config(
+                &claude_dir.join("settings.local.json"),
+                remove_paneflow_hooks,
+            );
+            return None;
+        }
+        // EP-004 US-018: persistent user-scope hooks (`paneflow hooks setup`)
+        // take precedence. When present, skip the ephemeral project-local
+        // injection entirely and sweep any orphan it left on a prior run, so
+        // the agent fires each hook exactly once and no `.claude/
+        // settings.local.json` is planted in the project.
+        if persistent_claude_hooks_present() {
             sweep_orphan_hook_config(
                 &claude_dir.join("settings.local.json"),
                 remove_paneflow_hooks,
