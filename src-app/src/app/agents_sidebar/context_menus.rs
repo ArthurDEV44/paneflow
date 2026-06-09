@@ -178,13 +178,14 @@ impl PaneFlowApp {
         deferred(menu).priority(3).into_any_element()
     }
 
-    /// Thread/chat-row right-click menu: Rename, Duplicate, Delete.
+    /// Thread/chat-row right-click menu: Pin/Unpin, Rename, Duplicate,
+    /// Reveal, Delete.
     ///
     /// US-008/US-014: parameterized by [`crate::project::AgentsTarget`] so the
     /// project-thread row and the free-chat row share one menu renderer (no
     /// divergent duplicate). The concrete dispatch lives in the
-    /// `*_for_target` affordance helpers. US-014 (EP-004) grafts the
-    /// Pin/Unpin entry onto this same inner builder.
+    /// `*_for_target` affordance helpers. Also the title-bar `⋯` overflow
+    /// menu (US-011) reuses this exact renderer.
     pub(crate) fn render_agents_thread_context_menu(
         &self,
         target: crate::project::AgentsTarget,
@@ -193,9 +194,9 @@ impl PaneFlowApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // 4 items (Rename, Duplicate, Reveal, Delete) + 1 separator + 8px
-        // padding => ~165px.
-        let menu_height = px(170.);
+        // 5 items (Pin, Rename, Duplicate, Reveal, Delete) + 1 separator +
+        // 8px padding => ~195px.
+        let menu_height = px(200.);
         let win_h = window.window_bounds().get_bounds().size.height;
         let menu_y = if position.y + menu_height > win_h {
             (position.y - menu_height).max(px(0.))
@@ -207,6 +208,17 @@ impl PaneFlowApp {
         let rename_label = match target {
             crate::project::AgentsTarget::Chat { .. } => "Rename chat",
             crate::project::AgentsTarget::Thread { .. } => "Rename thread",
+        };
+        // US-014: the Pin entry's label flips with the target's current
+        // state, mirroring the ★/☆ hover toggle (US-006).
+        let pin_label = if self
+            .thread_for_target(target)
+            .map(|t| t.pinned)
+            .unwrap_or(false)
+        {
+            "Unpin"
+        } else {
+            "Pin"
         };
 
         let mut menu = div()
@@ -229,6 +241,20 @@ impl PaneFlowApp {
             }))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
+
+        // US-014: Pin/Unpin first — the primary "keep this on top" action,
+        // consistent with the hover ★. Toggles `thread.pinned` + saves.
+        menu = menu.child(self.render_context_menu_item(
+            "agents-thread-pin".into(),
+            pin_label,
+            None,
+            ui,
+            cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                this.close_agents_menu(cx);
+                this.toggle_pin_for_target(target, cx);
+                cx.stop_propagation();
+            }),
+        ));
 
         menu = menu.child(self.render_context_menu_item(
             "agents-thread-rename".into(),

@@ -327,7 +327,14 @@ impl PaneFlowApp {
                                     .mb(px(12.))
                                     .text_size(px(12.))
                                     .text_color(ui.muted)
-                                    .child("Pick an agent to launch in a terminal."),
+                                    .child(match ctx {
+                                        LauncherContext::NewChat => {
+                                            "Pick an agent to start a chat in your home directory."
+                                        }
+                                        LauncherContext::Project(_) => {
+                                            "Pick an agent to launch in a terminal."
+                                        }
+                                    }),
                             )
                             .child(body),
                     ),
@@ -636,9 +643,11 @@ pub(crate) fn render_terminal_thread_surface(
         .into_any_element()
 }
 
-/// Main-area empty state when the Agents view has no project to pick an
-/// agent for. Mirrors the sidebar's "No projects yet" copy; the
-/// "New threads" sidebar row opens the folder picker.
+/// US-013: unified welcome/home empty-state when the Agents cockpit has no
+/// project AND no chat to open. Invites the two entry points the rail now
+/// exposes: the "New chat" row (a quick home-dir session) and the `+` next
+/// to the PROJECTS eyebrow (add a repo). Copy is kept in sync with the
+/// renamed rail affordances (the old "New threads" row no longer exists).
 fn render_agents_no_project() -> gpui::AnyElement {
     let ui = crate::theme::ui_colors();
     let theme = crate::theme::active_theme();
@@ -648,18 +657,26 @@ fn render_agents_no_project() -> gpui::AnyElement {
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(8.))
+        .gap(px(10.))
+        .px(px(20.))
         .bg(theme.title_bar_background)
         .child(
             div()
-                .text_size(px(15.))
+                .text_size(px(16.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(ui.text)
-                .child("No project open"),
+                .child("Start working with agents"),
         )
         .child(
-            div().text_size(px(12.)).text_color(ui.muted).child(
-                "Click \"New threads\" in the sidebar to add a project, then pick an agent.",
-            ),
+            div()
+                .max_w(px(420.))
+                .text_size(px(12.))
+                .text_color(ui.muted)
+                .text_center()
+                .child(
+                    "Click New chat for a quick session in your home directory, \
+                     or + next to Projects to add a repository.",
+                ),
         )
         .into_any_element()
 }
