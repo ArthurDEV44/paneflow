@@ -90,15 +90,16 @@ impl Drop for RenderTimeCanary {
 }
 
 impl PaneFlowApp {
-    /// Render the Agents-mode sidebar: section header, project +
-    /// thread list, empty state, scroll wrapper.
+    /// Render the Agents-mode sidebar as Codex-style sections (US-004):
+    /// New chat, Search, then the PINNED / PROJECTS (+) / CHATS eyebrows
+    /// with their rows, then the Settings footer + mode toggle.
     ///
-    /// Visual language matches [`Self::render_sidebar`] (action-button
-    /// row, card-style rows, `sidebar_list_wrapper` scrollbar). The
-    /// data binding is direct: project headers + threads come from
-    /// `self.projects`. Newest threads appear first (we iterate
-    /// `threads` in reverse, since [`crate::project::next_thread_id`]
-    /// is monotonic so insertion order tracks `created_at`).
+    /// Visual language matches [`Self::render_sidebar`] (card-style rows,
+    /// `sidebar_list_wrapper` scrollbar). Data binds directly from
+    /// `self.projects` + `self.chats`. Newest rows appear first (we iterate
+    /// in reverse, since [`crate::project::next_thread_id`] is monotonic so
+    /// insertion order tracks `created_at`). Empty sections hide their
+    /// eyebrow rather than leave an orphan label.
     pub(crate) fn render_agents_sidebar(
         &mut self,
         window: &mut gpui::Window,
@@ -130,16 +131,15 @@ impl PaneFlowApp {
             .flex()
             .flex_col();
 
-        // Primary creation + navigation affordances stay at the top
-        // of the scrollable list ("New threads", "Skills"). Connect
-        // and the escape hatch to the Settings window live in the
-        // bottom-of-sidebar popover.
-        let _ = window;
-
         // -- Scrollable list area. The wheel-scroll behaviour comes
         // from `overflow_y_scroll + track_scroll`; the visible scroll
         // bar has been removed, so the list uses the full sidebar
         // width and there is no trailing gutter.
+        //
+        // US-004: the rail is structured into Codex sections, top to
+        // bottom: New chat, Search, PINNED, PROJECTS (with `+`), CHATS,
+        // then the bottom Settings footer + mode toggle. Empty sections
+        // hide their eyebrow (no orphan label over a void).
         let mut list = div()
             .id("agents-sidebar-list")
             .flex_1()
@@ -149,35 +149,26 @@ impl PaneFlowApp {
             .flex_col()
             .gap(px(2.))
             .py_2()
-            .child(self.new_project_row(ui, cx))
-            .child(self.skills_row(ui, cx));
+            // US-005: "New chat" replaces the old "New threads" row.
+            .child(self.new_chat_row(ui, cx))
+            // US-009: search migrates into the rail, inline under New chat.
+            .child(self.render_agents_filter_row(ui, window, cx));
 
-        if self.projects.is_empty() {
-            list = list.child(empty_state(ui));
-            sidebar = sidebar.child(self.sidebar_list_wrapper(list, cx));
-            return sidebar.into_any_element();
-        }
-
-        // Section header sitting just above the first project: a
-        // "Threads" eyebrow. Extra top margin creates breathing room
-        // from the "New project" row.
-        list = list.child(self.threads_section_header(ui, cx));
-
-        // US-012: if a filter is active and matches nothing, swap the
-        // entire list body for the AC #7 empty-state hint.
-        //
-        // US-010 (audit P1-4): lowercase the needle exactly once per
-        // render. The previous helpers lowered it inside every
-        // matches() / match_positions() call -- on a workspace with
-        // 100 threads x 10 projects that was 1000+ allocations per
-        // keystroke. `query` is kept around for the user-facing
-        // empty-state hint (case preserved); `query_lower` is fed
-        // into every matcher below.
+        // US-010 (audit P1-4): lowercase the needle exactly once per render
+        // (the matchers all take a pre-lowered needle). `query` keeps the
+        // original case for the user-facing empty-state hint.
         let query = self.agents_view.agents_filter.clone();
         let query_lower = query.to_lowercase();
-        if filter::nothing_matches(&self.projects, &query_lower) {
+        let filtering = !query.is_empty();
+
+        // US-009 AC: when a filter is active and matches nothing across ALL
+        // sources (projects, threads, chats), swap the body for the hint.
+        if filtering && filter::nothing_matches(&self.projects, &self.chats, &query_lower) {
             list = list.child(no_matches_hint(&query, ui));
             sidebar = sidebar.child(self.sidebar_list_wrapper(list, cx));
+            sidebar =
+                sidebar.child(self.render_sidebar_settings_footer(self.agents_menu_items(), cx));
+            sidebar = sidebar.child(self.render_mode_toggle(cx));
             return sidebar.into_any_element();
         }
 
@@ -186,10 +177,85 @@ impl PaneFlowApp {
         let agents_target = self.agents_target;
         let renaming = self.agents_view.agents_renaming;
         let rename_input = self.agents_view.agents_rename_input.clone();
+        let shared = RowSharedState {
+            agents_target,
+            renaming,
+            rename_input,
+            now_ms,
+            filtering,
+            ui,
+        };
 
-        let projects_len = self.projects.len();
-        let filtering = !query.is_empty();
-        for project_idx in 0..projects_len {
+        // ---- PINNED section (US-006): pinned threads + chats, cross-source.
+        let mut pinned_rows: Vec<gpui::AnyElement> = Vec::new();
+        for project_idx in 0..self.projects.len() {
+            let tlen = self.projects[project_idx].threads.len();
+            for thread_idx in (0..tlen).rev() {
+                let thread = &self.projects[project_idx].threads[thread_idx];
+                if !thread.pinned {
+                    continue;
+                }
+                if filtering
+                    && !filter::thread_visible_in_project(
+                        thread,
+                        &self.projects[project_idx],
+                        &query_lower,
+                    )
+                {
+                    continue;
+                }
+                let target = crate::project::AgentsTarget::Thread {
+                    project_idx,
+                    thread_idx,
+                };
+                pinned_rows.push(self.agents_thread_row_for(
+                    target,
+                    thread,
+                    true,
+                    "pinned",
+                    &shared,
+                    &query_lower,
+                    cx,
+                ));
+            }
+        }
+        for chat_idx in (0..self.chats.len()).rev() {
+            let chat = &self.chats[chat_idx];
+            if !chat.pinned {
+                continue;
+            }
+            if filtering && !filter::chat_visible(chat, &query_lower) {
+                continue;
+            }
+            let target = crate::project::AgentsTarget::Chat { chat_idx };
+            pinned_rows.push(self.agents_thread_row_for(
+                target,
+                chat,
+                true,
+                "pinned",
+                &shared,
+                &query_lower,
+                cx,
+            ));
+        }
+        if !pinned_rows.is_empty() {
+            list = list.child(section_eyebrow("PINNED", None, ui, cx));
+            for row in pinned_rows {
+                list = list.child(row);
+            }
+        }
+
+        // ---- PROJECTS section (US-007): eyebrow + `+`, then headers/rows.
+        list = list.child(section_eyebrow(
+            "PROJECTS",
+            Some(SharedString::from("agents-projects-add")),
+            ui,
+            cx,
+        ));
+        if self.projects.is_empty() {
+            list = list.child(projects_empty_hint(ui));
+        }
+        for project_idx in 0..self.projects.len() {
             let project = &self.projects[project_idx];
             // US-012: skip projects that neither match the filter
             // themselves nor have any matching thread.
@@ -213,7 +279,7 @@ impl PaneFlowApp {
                     title,
                     is_expanded,
                     rename_input: if is_renaming_project {
-                        rename_input.clone()
+                        shared.rename_input.clone()
                     } else {
                         None
                     },
@@ -238,38 +304,17 @@ impl PaneFlowApp {
                     continue;
                 }
                 shown_threads += 1;
-                let is_active = agents_target
-                    == Some(crate::project::AgentsTarget::Thread {
-                        project_idx,
-                        thread_idx,
-                    });
-                let match_pos = if filtering {
-                    filter::match_positions(&thread.title, &query_lower)
-                } else {
-                    None
+                let target = crate::project::AgentsTarget::Thread {
+                    project_idx,
+                    thread_idx,
                 };
-                let is_renaming_thread = matches!(
-                    renaming,
-                    Some(AgentsRenameTarget::Thread { project_idx: rp, thread_idx: rt })
-                        if rp == project_idx && rt == thread_idx
-                );
-                list = list.child(self.thread_row(
-                    ThreadRowArgs {
-                        project_idx,
-                        thread_idx,
-                        thread_id: thread.id,
-                        title: thread.title.clone(),
-                        rename_input: if is_renaming_thread {
-                            rename_input.clone()
-                        } else {
-                            None
-                        },
-                        created_at_ms: thread.created_at,
-                        is_active,
-                        now_ms,
-                        match_pos,
-                        ui,
-                    },
+                list = list.child(self.agents_thread_row_for(
+                    target,
+                    thread,
+                    thread.pinned,
+                    "project",
+                    &shared,
+                    &query_lower,
                     cx,
                 ));
             }
@@ -292,10 +337,75 @@ impl PaneFlowApp {
             }
         }
 
+        // ---- CHATS section (US-008): free chats, newest-first.
+        let visible_chats: Vec<usize> = (0..self.chats.len())
+            .rev()
+            .filter(|&c| !filtering || filter::chat_visible(&self.chats[c], &query_lower))
+            .collect();
+        if !visible_chats.is_empty() {
+            list = list.child(section_eyebrow("CHATS", None, ui, cx));
+            for chat_idx in visible_chats {
+                let chat = &self.chats[chat_idx];
+                let target = crate::project::AgentsTarget::Chat { chat_idx };
+                list = list.child(self.agents_thread_row_for(
+                    target,
+                    chat,
+                    chat.pinned,
+                    "chat",
+                    &shared,
+                    &query_lower,
+                    cx,
+                ));
+            }
+        }
+
         sidebar = sidebar.child(self.sidebar_list_wrapper(list, cx));
         sidebar = sidebar.child(self.render_sidebar_settings_footer(self.agents_menu_items(), cx));
         sidebar = sidebar.child(self.render_mode_toggle(cx));
         sidebar.into_any_element()
+    }
+
+    /// US-006/008: build one thread/chat row from a unified target +
+    /// shared per-render state. Centralises the rename-input / match-pos /
+    /// is-active wiring so the PINNED, PROJECTS and CHATS sections emit
+    /// identical rows (the only difference is `row_scope`, which keeps the
+    /// element ids unique when a pinned thread also appears in its project).
+    #[allow(clippy::too_many_arguments)]
+    fn agents_thread_row_for(
+        &self,
+        target: crate::project::AgentsTarget,
+        thread: &crate::project::Thread,
+        is_pinned: bool,
+        row_scope: &'static str,
+        shared: &RowSharedState,
+        query_lower: &str,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let match_pos = if shared.filtering {
+            filter::match_positions(&thread.title, query_lower)
+        } else {
+            None
+        };
+        self.thread_row(
+            ThreadRowArgs {
+                target,
+                thread_id: thread.id,
+                title: thread.title.clone(),
+                rename_input: if is_renaming_target(shared.renaming, target) {
+                    shared.rename_input.clone()
+                } else {
+                    None
+                },
+                created_at_ms: thread.created_at,
+                is_active: shared.agents_target == Some(target),
+                is_pinned,
+                row_scope,
+                now_ms: shared.now_ms,
+                match_pos,
+                ui: shared.ui,
+            },
+            cx,
+        )
     }
 
     /// Items rendered inside the bottom Settings popover when in
@@ -332,16 +442,12 @@ impl PaneFlowApp {
         ]
     }
 
-    /// "New project" affordance, styled identically to a
-    /// `project_header_row` so it slots into the list visually. Opens
-    /// the native folder picker on click.
-    fn new_project_row(
-        &self,
-        ui: crate::theme::UiColors,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    /// US-005: "New chat" affordance at the top of the rail (replaces the
+    /// old "New threads" row). Drops to the new-chat picker (cwd = home);
+    /// picking an agent there creates a free chat. Styled like a list row.
+    fn new_chat_row(&self, ui: crate::theme::UiColors, cx: &mut Context<Self>) -> gpui::AnyElement {
         div()
-            .id("agents-sidebar-new-project")
+            .id("agents-sidebar-new-chat")
             .mx(px(6.))
             .px(px(8.))
             .py(px(6.))
@@ -356,7 +462,7 @@ impl PaneFlowApp {
                 s.bg(ui.subtle)
             })
             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                this.create_agents_project_with_picker(cx);
+                this.start_new_chat(cx);
             }))
             .child(
                 svg()
@@ -371,74 +477,9 @@ impl PaneFlowApp {
                     .min_w_0()
                     .text_color(ui.text)
                     .text_size(px(12.))
-                    .font_weight(FontWeight::NORMAL)
+                    .font_weight(FontWeight::MEDIUM)
                     .truncate()
-                    .child("New threads"),
-            )
-            .into_any_element()
-    }
-
-    /// "Skills" affordance, styled identically to `new_project_row`.
-    /// Switches the main pane to the skills browser
-    /// (scans `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`).
-    fn skills_row(&self, ui: crate::theme::UiColors, cx: &mut Context<Self>) -> gpui::AnyElement {
-        div()
-            .id("agents-sidebar-skills")
-            .mx(px(6.))
-            .px(px(8.))
-            .py(px(6.))
-            .rounded(px(6.))
-            .cursor_pointer()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.))
-            .hover(|s| {
-                let ui = crate::theme::ui_colors();
-                s.bg(ui.subtle)
-            })
-            .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                this.show_agents_skills(cx);
-            }))
-            .child(
-                svg()
-                    .size(px(14.))
-                    .flex_none()
-                    .path("icons/layout-grid.svg")
-                    .text_color(ui.muted),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_color(ui.text)
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::NORMAL)
-                    .truncate()
-                    .child("Skills"),
-            )
-            .into_any_element()
-    }
-
-    /// "Threads" eyebrow above the first project.
-    fn threads_section_header(
-        &self,
-        ui: crate::theme::UiColors,
-        _cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .mt(px(8.))
-            .px(px(14.))
-            .py(px(2.))
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::NORMAL)
-                    .text_color(ui.muted)
-                    .child("Threads"),
+                    .child("New chat"),
             )
             .into_any_element()
     }
@@ -569,13 +610,14 @@ impl PaneFlowApp {
 
     fn thread_row(&self, args: ThreadRowArgs, cx: &mut Context<Self>) -> gpui::AnyElement {
         let ThreadRowArgs {
-            project_idx,
-            thread_idx,
+            target,
             thread_id,
             title,
             rename_input,
             created_at_ms,
             is_active,
+            is_pinned,
+            row_scope,
             now_ms,
             match_pos,
             ui,
@@ -587,8 +629,11 @@ impl PaneFlowApp {
 
         // US-023: shared group name so the hover-only action cluster
         // can listen for hover on the row container without listening
-        // on itself. Mirrors `pane.rs:401-464`.
-        let row_group: SharedString = format!("agents-thread-row-{thread_id}").into();
+        // on itself. Mirrors `pane.rs:401-464`. US-006: the scope prefix
+        // keeps element ids unique when a pinned thread renders BOTH in the
+        // PINNED section and in its own project/chat section (same
+        // `thread_id`, different rows) — duplicate GPUI ids would panic.
+        let row_group: SharedString = format!("agents-{row_scope}-row-{thread_id}").into();
 
         let title_el: gpui::AnyElement = if let Some(input) = rename_input {
             // Inline rename input -- full TextArea entity (same
@@ -643,7 +688,9 @@ impl PaneFlowApp {
         // removed the `gap` slot. Reserving an invisible placeholder
         // restores pixel-for-pixel alignment with the project title.
         let mut row = div()
-            .id(SharedString::from(format!("agents-thread-{thread_id}")))
+            .id(SharedString::from(format!(
+                "agents-{row_scope}-thread-{thread_id}"
+            )))
             .group(row_group.clone())
             .relative()
             .mx(px(6.))
@@ -671,20 +718,22 @@ impl PaneFlowApp {
                 // While the row is in rename mode we let the click
                 // pass through to the embedded TextArea (which then
                 // positions the caret / extends the selection). The
-                // row's own select_thread is skipped so an in-place
-                // mouse click on the input doesn't navigate away.
+                // row's own selection is skipped so an in-place mouse
+                // click on the input doesn't navigate away.
                 if is_renaming {
                     return;
                 }
                 this.commit_agents_rename(cx);
-                let _ = this.select_thread(project_idx, thread_idx, cx);
+                // US-006/008: a Pinned row routes to its original source;
+                // a chat row selects the chat. Unified dispatch.
+                this.select_agents_target(target, cx);
             }))
             .on_aux_click(cx.listener(move |this, e: &ClickEvent, _w, cx| {
                 if e.is_right_click()
                     && let Some(position) = e.mouse_position()
                 {
                     this.commit_agents_rename(cx);
-                    this.open_agents_thread_menu(project_idx, thread_idx, position, cx);
+                    this.open_agents_menu_for_target(target, position, cx);
                     cx.stop_propagation();
                 }
             }))
@@ -711,12 +760,7 @@ impl PaneFlowApp {
                     .child(timestamp),
             )
             .child(hover_actions_cluster(
-                project_idx,
-                thread_idx,
-                thread_id,
-                row_group,
-                ui,
-                cx,
+                target, thread_id, is_pinned, row_scope, row_group, ui, cx,
             ));
 
         row.into_any_element()
@@ -888,8 +932,10 @@ struct ProjectHeaderArgs {
 }
 
 struct ThreadRowArgs {
-    project_idx: usize,
-    thread_idx: usize,
+    /// US-006/008: the unified selection target this row drives (a project
+    /// thread or a free chat). Replaces the old positional pair so the same
+    /// widget serves the PINNED, PROJECTS and CHATS sections.
+    target: crate::project::AgentsTarget,
     thread_id: u64,
     title: String,
     /// `Some` when this row is the current inline-rename target; the
@@ -898,6 +944,13 @@ struct ThreadRowArgs {
     rename_input: Option<gpui::Entity<crate::widgets::text_area::TextArea>>,
     created_at_ms: u64,
     is_active: bool,
+    /// US-006: whether this thread/chat is pinned (drives the hover ★/☆
+    /// toggle glyph).
+    is_pinned: bool,
+    /// US-006: section discriminant (`"pinned"` / `"project"` / `"chat"`)
+    /// woven into the element ids so a pinned thread rendered twice (once in
+    /// PINNED, once in its project) never collides on a GPUI id.
+    row_scope: &'static str,
     now_ms: u64,
     /// US-021: byte-range of the current filter query inside `title`,
     /// or `None` when no filter is active or the query does not hit
@@ -906,6 +959,48 @@ struct ThreadRowArgs {
     /// `highlight_positions` slot on `ThreadItem`.
     match_pos: Option<(usize, usize)>,
     ui: crate::theme::UiColors,
+}
+
+/// Per-render state shared by every thread/chat row, captured once in
+/// [`PaneFlowApp::render_agents_sidebar`] and threaded into
+/// [`PaneFlowApp::agents_thread_row_for`] so the three sections build
+/// identical rows without re-reading `self` per row.
+struct RowSharedState {
+    agents_target: Option<crate::project::AgentsTarget>,
+    renaming: Option<AgentsRenameTarget>,
+    rename_input: Option<gpui::Entity<crate::widgets::text_area::TextArea>>,
+    now_ms: u64,
+    filtering: bool,
+    ui: crate::theme::UiColors,
+}
+
+/// Does the active inline-rename target point at `target`'s row? Maps the
+/// rename enum (which still discriminates project rows from chat rows) onto
+/// the unified [`crate::project::AgentsTarget`].
+fn is_renaming_target(
+    renaming: Option<AgentsRenameTarget>,
+    target: crate::project::AgentsTarget,
+) -> bool {
+    use crate::project::AgentsTarget;
+    matches!(
+        (renaming, target),
+        (
+            Some(AgentsRenameTarget::Thread {
+                project_idx: rp,
+                thread_idx: rt,
+            }),
+            AgentsTarget::Thread {
+                project_idx,
+                thread_idx,
+            },
+        ) if rp == project_idx && rt == thread_idx
+    ) || matches!(
+        (renaming, target),
+        (
+            Some(AgentsRenameTarget::Chat { chat_idx: rc }),
+            AgentsTarget::Chat { chat_idx },
+        ) if rc == chat_idx
+    )
 }
 
 /// Key handler for the sidebar filter input (US-012). Escape clears
@@ -954,33 +1049,83 @@ fn handle_filter_key(this: &mut PaneFlowApp, e: &KeyDownEvent, cx: &mut Context<
     }
 }
 
-/// Sidebar-level empty state when zero projects exist. Mirrors the
-/// CLI sidebar's "No workspaces yet" copy. The "+ New project" button
-/// at the top of the sidebar opens the folder picker via
-/// `create_agents_project_with_picker`.
-fn empty_state(ui: crate::theme::UiColors) -> impl IntoElement {
-    div()
-        .flex_1()
+/// US-004: section eyebrow — a small uppercase muted label introducing a
+/// rail section (PINNED / PROJECTS / CHATS). When `add_button_id` is
+/// `Some`, a trailing `+` opens the folder picker (the PROJECTS section's
+/// create affordance, US-007). The caller passes an already-uppercased
+/// label so this stays a pure layout helper.
+fn section_eyebrow(
+    label: &str,
+    add_button_id: Option<SharedString>,
+    ui: crate::theme::UiColors,
+    cx: &mut Context<PaneFlowApp>,
+) -> gpui::AnyElement {
+    let mut row = div()
         .flex()
-        .flex_col()
+        .flex_row()
         .items_center()
-        .justify_center()
-        .gap(px(10.))
-        .px(px(16.))
+        .mt(px(10.))
+        .px(px(14.))
+        .py(px(2.))
         .child(
             div()
-                .text_size(px(12.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(ui.text)
-                .child("No projects yet"),
-        )
-        .child(
-            div()
+                .flex_1()
+                .min_w_0()
                 .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
                 .text_color(ui.muted)
-                .text_center()
-                .child("Create a project, then start a thread with any CLI agent."),
-        )
+                .truncate()
+                .child(SharedString::from(label.to_string())),
+        );
+    if let Some(id) = add_button_id {
+        row = row.child(
+            div()
+                .id(id)
+                .flex_none()
+                .w(px(16.))
+                .h(px(16.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .cursor_pointer()
+                .text_color(ui.muted)
+                .hover(|s| {
+                    let ui = crate::theme::ui_colors();
+                    s.bg(ui.subtle).text_color(ui.text)
+                })
+                .tooltip(|_w, cx| {
+                    cx.new(|_| HoverActionTooltip {
+                        label: SharedString::from("New project"),
+                    })
+                    .into()
+                })
+                .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                    this.create_agents_project_with_picker(cx);
+                }))
+                .child(
+                    svg()
+                        .size(px(12.))
+                        .flex_none()
+                        .path("icons/plus.svg")
+                        .text_color(ui.muted),
+                ),
+        );
+    }
+    row.into_any_element()
+}
+
+/// US-007: compact inline hint shown under the PROJECTS eyebrow when no
+/// project exists yet. The eyebrow's `+` (or "New chat" above) is the
+/// create affordance; this is just guidance copy.
+fn projects_empty_hint(ui: crate::theme::UiColors) -> impl IntoElement {
+    div()
+        .mx(px(12.))
+        .px(px(8.))
+        .py(px(6.))
+        .text_size(px(11.))
+        .text_color(ui.muted)
+        .child("No projects yet. Click + to add one.")
 }
 
 /// Inline hint shown directly under an expanded project header that
@@ -1104,16 +1249,53 @@ fn build_title_highlight_runs(
 /// is hovered -- mirrors Zed's `visible_on_hover` slot on `ThreadItem`
 /// (zero layout shift because `.invisible()` keeps the buttons in flow).
 fn hover_actions_cluster(
-    project_idx: usize,
-    thread_idx: usize,
+    target: crate::project::AgentsTarget,
     thread_id: u64,
+    is_pinned: bool,
+    row_scope: &'static str,
     row_group: SharedString,
     ui: crate::theme::UiColors,
     cx: &mut Context<PaneFlowApp>,
 ) -> gpui::AnyElement {
+    // US-006: pin / unpin toggle. A text glyph (★ filled = pinned, ☆ outline
+    // = unpinned) instead of an SVG — Paneflow ships no pin asset and the
+    // glyph reads correctly at this size. Toggling persists via
+    // `toggle_pin_for_target` (flips `thread.pinned` + saves the session).
+    let pin_glyph = if is_pinned { "★" } else { "☆" };
+    let pin_tooltip = if is_pinned { "Unpin" } else { "Pin" };
+    let pin_btn = div()
+        .id(SharedString::from(format!(
+            "agents-{row_scope}-thread-{thread_id}-pin"
+        )))
+        .flex_none()
+        .w(px(20.))
+        .h(px(20.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.))
+        .cursor_pointer()
+        .text_size(px(13.))
+        .text_color(if is_pinned { ui.accent } else { ui.muted })
+        .hover(|s| {
+            let ui = crate::theme::ui_colors();
+            s.bg(ui.subtle).text_color(ui.text)
+        })
+        .tooltip(move |_w, cx| {
+            cx.new(|_| HoverActionTooltip {
+                label: SharedString::from(pin_tooltip),
+            })
+            .into()
+        })
+        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+            this.toggle_pin_for_target(target, cx);
+            cx.stop_propagation();
+        }))
+        .child(pin_glyph);
+
     let trash_btn = div()
         .id(SharedString::from(format!(
-            "agents-thread-{thread_id}-trash"
+            "agents-{row_scope}-thread-{thread_id}-trash"
         )))
         .flex_none()
         .w(px(20.))
@@ -1135,13 +1317,7 @@ fn hover_actions_cluster(
             .into()
         })
         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-            this.request_agents_confirm_delete(
-                AgentsDeleteTarget::Thread {
-                    project_idx,
-                    thread_idx,
-                },
-                cx,
-            );
+            this.request_delete_for_target(target, cx);
             cx.stop_propagation();
         }))
         .child(
@@ -1164,6 +1340,7 @@ fn hover_actions_cluster(
         .gap(px(4.))
         .invisible()
         .group_hover(row_group, |s| s.visible())
+        .child(pin_btn)
         .child(trash_btn)
         .into_any_element()
 }
@@ -1208,5 +1385,48 @@ mod tests {
         assert_eq!(format_relative_ts(now, now - 8 * 24 * 3_600_000), "1w");
         // Clock skew: created in the future clamps to "now".
         assert_eq!(format_relative_ts(now, now + 60_000), "now");
+    }
+
+    #[test]
+    fn is_renaming_target_maps_rename_enum_to_unified_target() {
+        use crate::project::AgentsTarget;
+        let p_target = AgentsTarget::Thread {
+            project_idx: 1,
+            thread_idx: 2,
+        };
+        let c_target = AgentsTarget::Chat { chat_idx: 3 };
+
+        // A project-thread rename matches only its exact thread row.
+        let renaming_thread = Some(AgentsRenameTarget::Thread {
+            project_idx: 1,
+            thread_idx: 2,
+        });
+        assert!(is_renaming_target(renaming_thread, p_target));
+        assert!(!is_renaming_target(renaming_thread, c_target));
+        assert!(!is_renaming_target(
+            renaming_thread,
+            AgentsTarget::Thread {
+                project_idx: 1,
+                thread_idx: 5
+            }
+        ));
+
+        // A chat rename matches only its exact chat row.
+        let renaming_chat = Some(AgentsRenameTarget::Chat { chat_idx: 3 });
+        assert!(is_renaming_target(renaming_chat, c_target));
+        assert!(!is_renaming_target(renaming_chat, p_target));
+        assert!(!is_renaming_target(
+            renaming_chat,
+            AgentsTarget::Chat { chat_idx: 9 }
+        ));
+
+        // A project rename never matches a thread/chat row (it targets the
+        // header, not a row).
+        let renaming_project = Some(AgentsRenameTarget::Project { project_idx: 1 });
+        assert!(!is_renaming_target(renaming_project, p_target));
+        assert!(!is_renaming_target(renaming_project, c_target));
+
+        // No active rename -> nothing matches.
+        assert!(!is_renaming_target(None, p_target));
     }
 }

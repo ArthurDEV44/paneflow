@@ -822,6 +822,8 @@ impl PaneFlowApp {
             // US-003: start at the picker/home state — no thread/chat
             // selected. The unified target replaces the old `active_thread_idx`.
             agents_target: None,
+            // US-005: default picker context is the active project.
+            agents_picker_context: crate::project::AgentsPickerContext::Project,
             // US-011: rename / context-menu / confirm-delete state.
             // All start empty; the affordance handlers set them in
             // response to user actions.

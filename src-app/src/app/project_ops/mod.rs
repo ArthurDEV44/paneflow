@@ -288,6 +288,10 @@ impl PaneFlowApp {
             project_idx,
             thread_idx,
         });
+        // US-005: a concrete selection always returns the picker context to
+        // the project default (so a later deselect doesn't reopen the chat
+        // picker).
+        self.agents_picker_context = crate::project::AgentsPickerContext::Project;
         // Picking a thread leaves the Skills page.
         self.agents_view.agents_skills_visible = false;
         cx.notify();
@@ -307,6 +311,8 @@ impl PaneFlowApp {
             return Err(OpError::ThreadNotFound);
         }
         self.agents_target = Some(AgentsTarget::Chat { chat_idx });
+        // US-005: reset picker context on any concrete selection.
+        self.agents_picker_context = crate::project::AgentsPickerContext::Project;
         self.agents_view.agents_skills_visible = false;
         cx.notify();
         Ok(())

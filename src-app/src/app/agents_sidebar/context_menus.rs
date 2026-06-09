@@ -178,11 +178,16 @@ impl PaneFlowApp {
         deferred(menu).priority(3).into_any_element()
     }
 
-    /// Thread-row right-click menu: Rename, Duplicate, Delete.
+    /// Thread/chat-row right-click menu: Rename, Duplicate, Delete.
+    ///
+    /// US-008/US-014: parameterized by [`crate::project::AgentsTarget`] so the
+    /// project-thread row and the free-chat row share one menu renderer (no
+    /// divergent duplicate). The concrete dispatch lives in the
+    /// `*_for_target` affordance helpers. US-014 (EP-004) grafts the
+    /// Pin/Unpin entry onto this same inner builder.
     pub(crate) fn render_agents_thread_context_menu(
         &self,
-        project_idx: usize,
-        thread_idx: usize,
+        target: crate::project::AgentsTarget,
         position: gpui::Point<gpui::Pixels>,
         ui: crate::theme::UiColors,
         window: &mut Window,
@@ -196,6 +201,12 @@ impl PaneFlowApp {
             (position.y - menu_height).max(px(0.))
         } else {
             position.y
+        };
+        // The chat row labels its rename entry "Rename chat" so the verb
+        // matches the section the user right-clicked in.
+        let rename_label = match target {
+            crate::project::AgentsTarget::Chat { .. } => "Rename chat",
+            crate::project::AgentsTarget::Thread { .. } => "Rename thread",
         };
 
         let mut menu = div()
@@ -221,19 +232,12 @@ impl PaneFlowApp {
 
         menu = menu.child(self.render_context_menu_item(
             "agents-thread-rename".into(),
-            "Rename thread",
+            rename_label,
             None,
             ui,
             cx.listener(move |this, _: &ClickEvent, w, cx| {
                 this.close_agents_menu(cx);
-                this.begin_agents_rename(
-                    super::state::AgentsRenameTarget::Thread {
-                        project_idx,
-                        thread_idx,
-                    },
-                    w,
-                    cx,
-                );
+                this.begin_agents_rename_for_target(target, w, cx);
                 cx.stop_propagation();
             }),
         ));
@@ -245,7 +249,7 @@ impl PaneFlowApp {
             ui,
             cx.listener(move |this, _: &ClickEvent, _w, cx| {
                 this.close_agents_menu(cx);
-                this.duplicate_agents_thread(project_idx, thread_idx, cx);
+                this.duplicate_agents_target(target, cx);
                 cx.stop_propagation();
             }),
         ));
@@ -258,13 +262,7 @@ impl PaneFlowApp {
             None,
             ui,
             cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                this.request_agents_confirm_delete(
-                    AgentsDeleteTarget::Thread {
-                        project_idx,
-                        thread_idx,
-                    },
-                    cx,
-                );
+                this.request_delete_for_target(target, cx);
                 cx.stop_propagation();
             }),
         ));
@@ -312,6 +310,18 @@ impl PaneFlowApp {
                 (
                     "Delete thread".to_string(),
                     format!("Delete thread \"{name}\"? This cannot be undone."),
+                    "Delete".to_string(),
+                )
+            }
+            AgentsDeleteTarget::Chat { chat_idx } => {
+                let name = self
+                    .chats
+                    .get(chat_idx)
+                    .map(|t| t.title.clone())
+                    .unwrap_or_else(|| "this chat".to_string());
+                (
+                    "Delete chat".to_string(),
+                    format!("Delete chat \"{name}\"? This cannot be undone."),
                     "Delete".to_string(),
                 )
             }
@@ -437,8 +447,19 @@ pub(crate) fn render_open_agents_menu(
                 .unwrap_or(false) =>
         {
             Some(app.render_agents_thread_context_menu(
-                project_idx,
-                thread_idx,
+                crate::project::AgentsTarget::Thread {
+                    project_idx,
+                    thread_idx,
+                },
+                position,
+                ui,
+                window,
+                cx,
+            ))
+        }
+        AgentsContextMenu::Chat { chat_idx, position } if chat_idx < app.chats.len() => {
+            Some(app.render_agents_thread_context_menu(
+                crate::project::AgentsTarget::Chat { chat_idx },
                 position,
                 ui,
                 window,

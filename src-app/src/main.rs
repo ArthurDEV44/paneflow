@@ -531,6 +531,11 @@ struct PaneFlowApp {
     /// an ambiguous parallel index. `None` is the picker/home state (the
     /// project anchor for that state is [`Self::active_project_idx`]).
     pub(crate) agents_target: Option<crate::project::AgentsTarget>,
+    /// US-005 (prd-agents-ui-codex-redesign-2026-Q3.md): in the picker/home
+    /// state (`agents_target == None`), what a launched agent is created
+    /// into — the active project, or a free chat in the home dir (the rail's
+    /// "New chat" row). Reset to `Project` on every concrete selection.
+    pub(crate) agents_picker_context: crate::project::AgentsPickerContext,
     /// US-053: Agents-view sidebar state (rename/menu/skills/filter +
     /// the terminal-thread cache), extracted from the god-struct.
     pub(crate) agents_view: AgentsViewState,

@@ -95,6 +95,21 @@ pub enum AgentsTarget {
     Chat { chat_idx: usize },
 }
 
+/// What a newly-launched agent is created into when no target is selected
+/// (the picker/home state, US-005 of
+/// `prd-agents-ui-codex-redesign-2026-Q3.md`). `Project` → a thread in the
+/// active project (the legacy "select a project → agent picker" flow);
+/// `NewChat` → a free chat in the home dir (the rail's "New chat" row). The
+/// render branch reads this to pick the launcher title + create path; every
+/// concrete selection (`select_thread`/`select_chat`) resets it to
+/// `Project` so a later deselect never lands back in the new-chat picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentsPickerContext {
+    #[default]
+    Project,
+    NewChat,
+}
+
 fn bump_counter(counter: &AtomicU64, target: u64) {
     let mut current = counter.load(Ordering::Relaxed);
     while current < target {
