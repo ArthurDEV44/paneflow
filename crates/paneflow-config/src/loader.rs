@@ -1186,6 +1186,7 @@ mod tests {
             }],
             projects: Vec::new(),
             active_project: 0,
+            chats: Vec::new(),
             mode: AppMode::default(),
             diff_scope: None,
         };
@@ -1228,6 +1229,7 @@ mod tests {
             ],
             projects: Vec::new(),
             active_project: 0,
+            chats: Vec::new(),
             mode: AppMode::default(),
             diff_scope: None,
         };
@@ -1274,6 +1276,7 @@ mod tests {
             }],
             projects: Vec::new(),
             active_project: 0,
+            chats: Vec::new(),
             mode: AppMode::default(),
             diff_scope: None,
         };
@@ -1308,6 +1311,7 @@ mod tests {
             }],
             projects: Vec::new(),
             active_project: 0,
+            chats: Vec::new(),
             mode: AppMode::default(),
             diff_scope: None,
         };
@@ -1663,9 +1667,11 @@ mod tests {
                     store_id: Some("uuid-abc-123".to_string()),
                     kind: None,
                     terminal_agent: None,
+                    pinned: false,
                 }],
             }],
             active_project: 0,
+            chats: Vec::new(),
             mode: AppMode::Agents,
             diff_scope: None,
         };
@@ -1674,6 +1680,101 @@ mod tests {
         assert_eq!(state, restored);
         assert_eq!(restored.projects[0].threads[0].agent, "claude_code");
         assert_eq!(restored.mode, AppMode::Agents);
+    }
+
+    // US-001/US-002 (prd-agents-ui-codex-redesign-2026-Q3.md): the
+    // SessionState gained `chats` and ThreadSession gained `pinned`. These
+    // cover the round-trip with both fields populated and the backward-compat
+    // default when a pre-refonte session.json lacks the keys.
+    #[test]
+    fn test_session_roundtrip_with_chats_and_pinned() {
+        let state = SessionState {
+            version: 1,
+            active_workspace: 0,
+            workspaces: vec![],
+            projects: vec![ProjectSession {
+                id: 1,
+                title: "Paneflow".to_string(),
+                cwd: "/home/user/dev/paneflow".to_string(),
+                is_expanded: true,
+                threads: vec![ThreadSession {
+                    id: 10,
+                    title: "Pinned project thread".to_string(),
+                    agent: "claude_code".to_string(),
+                    cwd: "/home/user/dev/paneflow".to_string(),
+                    created_at: 1_716_336_000_000,
+                    model: None,
+                    mode: None,
+                    store_id: None,
+                    kind: Some("terminal".to_string()),
+                    terminal_agent: Some("claude_code".to_string()),
+                    pinned: true,
+                }],
+            }],
+            active_project: 0,
+            chats: vec![ThreadSession {
+                id: 20,
+                title: "Quick scratch chat".to_string(),
+                agent: "codex".to_string(),
+                cwd: "/home/user".to_string(),
+                created_at: 1_716_337_000_000,
+                model: None,
+                mode: None,
+                store_id: None,
+                kind: Some("terminal".to_string()),
+                terminal_agent: Some("codex".to_string()),
+                pinned: false,
+            }],
+            mode: AppMode::Agents,
+            diff_scope: None,
+        };
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let restored: SessionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, restored);
+        assert_eq!(restored.chats.len(), 1, "the free chat round-trips");
+        assert_eq!(restored.chats[0].cwd, "/home/user", "chat anchored on home");
+        assert!(
+            restored.projects[0].threads[0].pinned,
+            "the pinned flag round-trips on a project thread"
+        );
+        assert!(!restored.chats[0].pinned, "an unpinned chat stays unpinned");
+    }
+
+    #[test]
+    fn test_session_pre_refonte_defaults_chats_empty_and_unpinned() {
+        // A pre-refonte session.json: a project thread with no `pinned`
+        // key, and no top-level `chats` key. Must restore as `chats = []`
+        // and `pinned = false` everywhere — no migration, no error.
+        let legacy = r#"{
+            "version": 1,
+            "active_workspace": 0,
+            "workspaces": [],
+            "projects": [
+                {
+                    "id": 1,
+                    "title": "Paneflow",
+                    "cwd": "/home/user/dev/paneflow",
+                    "is_expanded": true,
+                    "threads": [
+                        {
+                            "id": 10,
+                            "title": "Old thread",
+                            "agent": "claude_code",
+                            "cwd": "/home/user/dev/paneflow",
+                            "created_at": 0
+                        }
+                    ]
+                }
+            ],
+            "active_project": 0,
+            "mode": "agents"
+        }"#;
+        let restored: SessionState = serde_json::from_str(legacy).unwrap();
+        assert!(restored.chats.is_empty(), "chats must default to []");
+        assert!(
+            !restored.projects[0].threads[0].pinned,
+            "a thread with no `pinned` key restores as unpinned"
+        );
     }
 
     #[test]

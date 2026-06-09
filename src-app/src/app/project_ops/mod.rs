@@ -26,7 +26,9 @@ use gpui::Context;
 use paneflow_acp::AgentKind;
 
 use crate::PaneFlowApp;
-use crate::project::{Project, Thread, ThreadStatus, next_project_id, next_thread_id};
+use crate::project::{
+    AgentsTarget, Project, Thread, ThreadStatus, next_project_id, next_thread_id,
+};
 
 /// Hard caps from the PRD's Non-Functional Requirements: at most 50
 /// projects per session and 100 threads per project. Exceeding either
@@ -118,6 +120,11 @@ impl PaneFlowApp {
                 .agents_terminal_view_cache
                 .remove(&thread.id);
         }
+        // US-003: re-map the unified center target across the removal. A
+        // target into the closed project falls back to the picker (`None`);
+        // a target into a project that shifted down by one is re-indexed; a
+        // chat target is unaffected (chats are not part of any project).
+        self.agents_target = remap_target_after_project_removal(self.agents_target, idx);
         // Keep active_project_idx valid: if we removed at or before
         // the active idx, shift it down (clamped to 0). If projects
         // is now empty, reset to 0 (the sidebar reads `is_empty()`
@@ -167,6 +174,10 @@ impl PaneFlowApp {
         let moved_id = self.projects[from].id;
         let project = self.projects.remove(from);
         self.projects.insert(to, project);
+        // US-003: re-map a project-thread target's `project_idx` so the
+        // center keeps pointing at the same thread after the move (chats
+        // are unaffected).
+        self.agents_target = remap_target_after_project_move(self.agents_target, from, to);
         // Re-find the moved project to update active_project_idx so
         // the user's selection follows the drag, not the index.
         if let Some(new_idx) = self.projects.iter().position(|p| p.id == moved_id) {
@@ -219,6 +230,7 @@ impl PaneFlowApp {
             // a SQLite store).
             store_id: None,
             terminal_agent: None,
+            pinned: false,
         };
         let id = thread.id;
         project.threads.push(thread);
@@ -254,10 +266,10 @@ impl PaneFlowApp {
         Ok(id)
     }
 
-    /// Mark a thread as the user's current selection. The selection
-    /// itself lives on `PaneFlowApp` as a future field (US-010); for
-    /// now this op just verifies the indices and notifies the view.
-    /// Returns `Err` if either index is out of bounds.
+    /// Select a project thread as the center target (US-003). Sets both the
+    /// focused-project anchor (`active_project_idx`) and the unified target
+    /// so the rail highlight and the center stay in sync. Returns `Err` if
+    /// either index is out of bounds.
     pub(crate) fn select_thread(
         &mut self,
         project_idx: usize,
@@ -272,8 +284,29 @@ impl PaneFlowApp {
             return Err(OpError::ThreadNotFound);
         }
         self.active_project_idx = project_idx;
-        self.active_thread_idx = Some(thread_idx);
+        self.agents_target = Some(AgentsTarget::Thread {
+            project_idx,
+            thread_idx,
+        });
         // Picking a thread leaves the Skills page.
+        self.agents_view.agents_skills_visible = false;
+        cx.notify();
+        Ok(())
+    }
+
+    /// Select a free chat as the center target (US-003). Leaves
+    /// `active_project_idx` untouched — a chat is not part of any project,
+    /// so the rail's focused-project anchor does not move. Returns `Err`
+    /// if `chat_idx` is out of bounds.
+    pub(crate) fn select_chat(
+        &mut self,
+        chat_idx: usize,
+        cx: &mut Context<Self>,
+    ) -> Result<(), OpError> {
+        if chat_idx >= self.chats.len() {
+            return Err(OpError::ThreadNotFound);
+        }
+        self.agents_target = Some(AgentsTarget::Chat { chat_idx });
         self.agents_view.agents_skills_visible = false;
         cx.notify();
         Ok(())
@@ -302,21 +335,74 @@ impl PaneFlowApp {
         self.agents_view
             .agents_terminal_view_cache
             .remove(&removed.id);
-        // Keep the active-thread selection in range. If we removed the
-        // selected thread, clear it; if we removed something earlier,
-        // shift it down.
-        if let Some(active) = self.active_thread_idx {
-            self.active_thread_idx = if thread_idx == active {
-                None
-            } else if thread_idx < active {
-                Some(active - 1)
-            } else {
-                Some(active)
-            };
-        }
+        // US-003: keep the unified target in range. Only a target pointing
+        // into THIS project's thread list is affected; a chat target or a
+        // different project's target is left untouched. Removing the
+        // selected thread clears the target (falls back to the picker);
+        // removing an earlier sibling shifts the index down.
+        self.agents_target =
+            remap_target_after_thread_removal(self.agents_target, project_idx, thread_idx);
         cx.notify();
         Ok(removed)
     }
+
+    /// Remove a free chat by index (US-003). Drops its cached PTY entity
+    /// and re-maps the unified target the same way [`Self::remove_thread`]
+    /// does for project threads: clearing it when the removed chat was the
+    /// selection, shifting it down for an earlier sibling, leaving project
+    /// targets untouched. Returns the removed [`Thread`].
+    pub(crate) fn remove_chat(
+        &mut self,
+        chat_idx: usize,
+        cx: &mut Context<Self>,
+    ) -> Result<Thread, OpError> {
+        if chat_idx >= self.chats.len() {
+            return Err(OpError::ThreadNotFound);
+        }
+        let removed = self.chats.remove(chat_idx);
+        self.agents_view
+            .agents_terminal_view_cache
+            .remove(&removed.id);
+        self.agents_target = remap_target_after_chat_removal(self.agents_target, chat_idx);
+        cx.notify();
+        Ok(removed)
+    }
+
+    /// Append a free chat (terminal thread) anchored on the user's home dir
+    /// (US-002/US-003). Mirrors [`Self::add_terminal_thread`] but targets the
+    /// project-less `chats` list. `terminal_agent` is the CLI auto-launched
+    /// on first PTY mount (`None` for a bare shell). Chats are uncapped for
+    /// v1 (the cache has no eviction; cap is tracked as a follow-up). Returns
+    /// the new chat's ID.
+    pub(crate) fn add_chat_thread(
+        &mut self,
+        title: impl Into<String>,
+        terminal_agent: Option<crate::agent_launcher::TerminalAgent>,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        let cwd = chat_home_cwd();
+        let thread = Thread::new_terminal(title, cwd, terminal_agent);
+        let id = thread.id;
+        self.chats.push(thread);
+        cx.notify();
+        id
+    }
+}
+
+/// Resolve the cwd for a free chat: the user's home directory (US-002).
+/// Cross-platform via `dirs::home_dir()` — never `$HOME` raw, never a
+/// hardcoded POSIX path. Documented fallback chain when home cannot be
+/// resolved (Edge Case #1): the current working directory, then `"."`
+/// (always a valid relative cwd). Never panics.
+pub(crate) fn chat_home_cwd() -> String {
+    dirs::home_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| ".".to_string())
 }
 
 fn now_unix_millis() -> u64 {
@@ -324,4 +410,236 @@ fn now_unix_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// US-003: pure center-target re-mapping (free functions, no `&self`/`cx`).
+//
+// Extracted from the `cx`-bound ops so the index arithmetic — the part that
+// must never produce a stale target after a removal/move — is unit-testable
+// without a live GPUI `App`. Each takes the current target and returns the
+// re-mapped one; callers assign the result back to `self.agents_target`.
+// ---------------------------------------------------------------------------
+
+/// Re-map the target after removing `projects[project_idx].threads[removed]`.
+/// Only a target into the SAME project's thread list moves: it clears to the
+/// picker (`None`) when the removed thread WAS the selection, and shifts down
+/// by one when an earlier sibling was removed. A chat target or a different
+/// project's target passes through unchanged.
+fn remap_target_after_thread_removal(
+    target: Option<AgentsTarget>,
+    project_idx: usize,
+    removed: usize,
+) -> Option<AgentsTarget> {
+    match target {
+        Some(AgentsTarget::Thread {
+            project_idx: tp,
+            thread_idx: tt,
+        }) if tp == project_idx => {
+            if removed == tt {
+                None
+            } else if removed < tt {
+                Some(AgentsTarget::Thread {
+                    project_idx: tp,
+                    thread_idx: tt - 1,
+                })
+            } else {
+                Some(AgentsTarget::Thread {
+                    project_idx: tp,
+                    thread_idx: tt,
+                })
+            }
+        }
+        other => other,
+    }
+}
+
+/// Re-map the target after removing `chats[removed]`. Mirrors
+/// [`remap_target_after_thread_removal`] for the chat source; project targets
+/// pass through unchanged.
+fn remap_target_after_chat_removal(
+    target: Option<AgentsTarget>,
+    removed: usize,
+) -> Option<AgentsTarget> {
+    match target {
+        Some(AgentsTarget::Chat { chat_idx: tc }) => {
+            if removed == tc {
+                None
+            } else if removed < tc {
+                Some(AgentsTarget::Chat { chat_idx: tc - 1 })
+            } else {
+                Some(AgentsTarget::Chat { chat_idx: tc })
+            }
+        }
+        other => other,
+    }
+}
+
+/// Re-map the target after closing `projects[removed]`. A target into the
+/// closed project falls back to the picker (`None`); a target into a project
+/// that shifted down by one is re-indexed; a chat target is unaffected.
+fn remap_target_after_project_removal(
+    target: Option<AgentsTarget>,
+    removed: usize,
+) -> Option<AgentsTarget> {
+    match target {
+        Some(AgentsTarget::Thread {
+            project_idx: tp,
+            thread_idx: tt,
+        }) => {
+            if tp == removed {
+                None
+            } else if tp > removed {
+                Some(AgentsTarget::Thread {
+                    project_idx: tp - 1,
+                    thread_idx: tt,
+                })
+            } else {
+                Some(AgentsTarget::Thread {
+                    project_idx: tp,
+                    thread_idx: tt,
+                })
+            }
+        }
+        other => other,
+    }
+}
+
+/// Re-map a project-thread target's `project_idx` after moving the project at
+/// `from` to `to` (standard list-move remap). Chats pass through unchanged.
+fn remap_target_after_project_move(
+    target: Option<AgentsTarget>,
+    from: usize,
+    to: usize,
+) -> Option<AgentsTarget> {
+    match target {
+        Some(AgentsTarget::Thread {
+            project_idx: tp,
+            thread_idx: tt,
+        }) => {
+            let new_p = if tp == from {
+                to
+            } else if from < to && from < tp && tp <= to {
+                tp - 1
+            } else if to <= tp && tp < from {
+                tp + 1
+            } else {
+                tp
+            };
+            Some(AgentsTarget::Thread {
+                project_idx: new_p,
+                thread_idx: tt,
+            })
+        }
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn thread(p: usize, t: usize) -> Option<AgentsTarget> {
+        Some(AgentsTarget::Thread {
+            project_idx: p,
+            thread_idx: t,
+        })
+    }
+    fn chat(c: usize) -> Option<AgentsTarget> {
+        Some(AgentsTarget::Chat { chat_idx: c })
+    }
+
+    #[test]
+    fn thread_removal_clears_selection_when_it_was_the_target() {
+        // Deleting the selected thread falls back to the picker, not a
+        // stale index (the index-stale bug class US-003 closes).
+        assert_eq!(remap_target_after_thread_removal(thread(0, 2), 0, 2), None);
+    }
+
+    #[test]
+    fn thread_removal_shifts_earlier_sibling_down() {
+        assert_eq!(
+            remap_target_after_thread_removal(thread(0, 3), 0, 1),
+            thread(0, 2)
+        );
+    }
+
+    #[test]
+    fn thread_removal_leaves_later_sibling_and_other_sources() {
+        // Removing a later sibling does not move the target.
+        assert_eq!(
+            remap_target_after_thread_removal(thread(0, 1), 0, 3),
+            thread(0, 1)
+        );
+        // A different project is untouched.
+        assert_eq!(
+            remap_target_after_thread_removal(thread(1, 0), 0, 0),
+            thread(1, 0)
+        );
+        // A chat target is untouched by a thread removal.
+        assert_eq!(remap_target_after_thread_removal(chat(0), 0, 0), chat(0));
+    }
+
+    #[test]
+    fn chat_removal_clears_shifts_and_ignores_threads() {
+        // Selected chat removed -> picker.
+        assert_eq!(remap_target_after_chat_removal(chat(2), 2), None);
+        // Earlier chat removed -> shift down.
+        assert_eq!(remap_target_after_chat_removal(chat(3), 1), chat(2));
+        // Later chat removed -> unchanged.
+        assert_eq!(remap_target_after_chat_removal(chat(1), 3), chat(1));
+        // A project-thread target is untouched by a chat removal.
+        assert_eq!(
+            remap_target_after_chat_removal(thread(0, 0), 0),
+            thread(0, 0)
+        );
+    }
+
+    #[test]
+    fn project_removal_clears_shifts_and_ignores_chats() {
+        // Target inside the closed project -> picker.
+        assert_eq!(remap_target_after_project_removal(thread(1, 4), 1), None);
+        // Project after the closed one shifts down (thread_idx preserved).
+        assert_eq!(
+            remap_target_after_project_removal(thread(2, 4), 1),
+            thread(1, 4)
+        );
+        // Project before the closed one is unchanged.
+        assert_eq!(
+            remap_target_after_project_removal(thread(0, 4), 1),
+            thread(0, 4)
+        );
+        // A chat target survives a project close.
+        assert_eq!(remap_target_after_project_removal(chat(0), 1), chat(0));
+    }
+
+    #[test]
+    fn project_move_remaps_target_project_idx() {
+        // The moved project itself follows the drag.
+        assert_eq!(
+            remap_target_after_project_move(thread(0, 1), 0, 2),
+            thread(2, 1)
+        );
+        // A project caught in the downward shift moves up one slot.
+        assert_eq!(
+            remap_target_after_project_move(thread(2, 1), 0, 3),
+            thread(1, 1)
+        );
+        // A project caught in an upward shift moves down one slot.
+        assert_eq!(
+            remap_target_after_project_move(thread(1, 1), 3, 0),
+            thread(2, 1)
+        );
+        // Chats are unaffected by a project move.
+        assert_eq!(remap_target_after_project_move(chat(0), 0, 2), chat(0));
+    }
+
+    #[test]
+    fn chat_home_cwd_never_empty() {
+        // US-002 + Edge Case #1: home resolution always yields a non-empty,
+        // usable cwd (home, else current dir, else "."). Never panics, never
+        // a raw `$HOME`.
+        let cwd = chat_home_cwd();
+        assert!(!cwd.is_empty(), "chat cwd must never be empty");
+    }
 }

@@ -145,11 +145,26 @@ impl PaneFlowApp {
                     .collect()
             })
             .unwrap_or_default();
+        // US-002 (prd-agents-ui-codex-redesign-2026-Q3.md): rehydrate free
+        // chats. Same `filter_map` shape as project threads — an unknown
+        // agent tag drops the row rather than crashing. Absent on a
+        // pre-refonte session.json (`#[serde(default)]` → empty).
+        let restored_chats: Vec<crate::project::Thread> = saved_session
+            .as_ref()
+            .map(|s| {
+                s.chats
+                    .iter()
+                    .filter_map(crate::project::thread_from_session)
+                    .collect()
+            })
+            .unwrap_or_default();
         // Bump the in-memory ID counters past anything the session
-        // restored so a freshly-created project/thread can never
+        // restored so a freshly-created project/thread/chat can never
         // collide with a restored ID (US-007's `bump_id_counters_to`
         // is idempotent and a no-op when the counters already lead).
-        crate::project::bump_id_counters_to(&restored_projects);
+        // US-002: chats share the `next_thread_id` counter, so they MUST
+        // be folded into the bump or the next chat ID collides.
+        crate::project::bump_id_counters_to(&restored_projects, &restored_chats);
         let restored_active_project = saved_session
             .as_ref()
             .map(|s| {
@@ -801,8 +816,12 @@ impl PaneFlowApp {
             // launch and for legacy session.json (the `#[serde(default)]`
             // annotations make missing fields resolve to empty).
             projects: restored_projects,
+            // US-002: free chats restored from session (empty pre-refonte).
+            chats: restored_chats,
             active_project_idx: restored_active_project,
-            active_thread_idx: None,
+            // US-003: start at the picker/home state — no thread/chat
+            // selected. The unified target replaces the old `active_thread_idx`.
+            agents_target: None,
             // US-011: rename / context-menu / confirm-delete state.
             // All start empty; the affordance handlers set them in
             // response to user actions.

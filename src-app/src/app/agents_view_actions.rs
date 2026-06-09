@@ -56,7 +56,9 @@ impl PaneFlowApp {
     /// ~/.codex/skills, ~/.agents/skills). Wired to the sidebar's
     /// "Skills" affordance.
     pub(crate) fn show_agents_skills(&mut self, cx: &mut Context<Self>) {
-        self.active_thread_idx = None;
+        // US-003: clearing the unified target drops to the picker/home
+        // state; the Skills page then takes precedence in the render branch.
+        self.agents_target = None;
         self.agents_view.agents_skills_visible = true;
         cx.notify();
     }
@@ -308,16 +310,44 @@ impl PaneFlowApp {
             .into_any_element()
     }
 
-    /// `(project_idx, thread_idx)` of the currently selected thread,
-    /// or `None` when the active project has no thread selected.
-    pub(crate) fn current_thread_view_target(&self) -> Option<(usize, usize)> {
-        let p = self.active_project_idx;
-        let t = self.active_thread_idx?;
-        let project = self.projects.get(p)?;
-        if t < project.threads.len() {
-            Some((p, t))
-        } else {
-            None
+    /// The currently selected center target, validated against the live
+    /// `projects` / `chats` vectors (US-003). Returns `None` when nothing is
+    /// selected (picker/home) OR the stored target points past the end of
+    /// its source (e.g. its row was just removed) — both collapse to the
+    /// picker rather than rendering a stale row.
+    pub(crate) fn current_thread_view_target(&self) -> Option<crate::project::AgentsTarget> {
+        use crate::project::AgentsTarget;
+        match self.agents_target? {
+            AgentsTarget::Thread {
+                project_idx,
+                thread_idx,
+            } => {
+                let project = self.projects.get(project_idx)?;
+                (thread_idx < project.threads.len()).then_some(AgentsTarget::Thread {
+                    project_idx,
+                    thread_idx,
+                })
+            }
+            AgentsTarget::Chat { chat_idx } => {
+                (chat_idx < self.chats.len()).then_some(AgentsTarget::Chat { chat_idx })
+            }
+        }
+    }
+
+    /// Resolve a center target to its backing [`Thread`], whether it lives
+    /// in a project or in the free `chats` list (US-003). `None` when the
+    /// target is out of range.
+    pub(crate) fn thread_for_target(
+        &self,
+        target: crate::project::AgentsTarget,
+    ) -> Option<&crate::project::Thread> {
+        use crate::project::AgentsTarget;
+        match target {
+            AgentsTarget::Thread {
+                project_idx,
+                thread_idx,
+            } => self.projects.get(project_idx)?.threads.get(thread_idx),
+            AgentsTarget::Chat { chat_idx } => self.chats.get(chat_idx),
         }
     }
 
@@ -336,14 +366,14 @@ impl PaneFlowApp {
     /// slot (which has no meaning in the Agents view).
     fn ensure_terminal_view_mounted(
         &mut self,
-        target: (usize, usize),
+        target: crate::project::AgentsTarget,
         cx: &mut Context<Self>,
     ) -> Option<gpui::Entity<crate::terminal::view::TerminalView>> {
-        let (p_idx, t_idx) = target;
-        let thread = self
-            .projects
-            .get(p_idx)
-            .and_then(|p| p.threads.get(t_idx))?;
+        // US-003: resolve the target (project thread OR free chat) to its
+        // backing Thread. The cache key below is the stable `Thread::id`,
+        // shared across both sources, so a project thread and a chat can
+        // never collide and warm-resume survives navigation between them.
+        let thread = self.thread_for_target(target)?;
         let thread_id = thread.id;
         if let Some(cached) = self.agents_view.agents_terminal_view_cache.get(&thread_id) {
             return Some(cached.clone());
@@ -442,6 +472,17 @@ impl PaneFlowApp {
                 cx.notify();
                 return;
             }
+        }
+        // US-003: a chat is a Thread too — its PTY emits OSC titles just
+        // like a project thread, so the same label-sync applies to the
+        // free `chats` list.
+        if let Some(thread) = self.chats.iter_mut().find(|t| t.id == thread_id) {
+            if thread.title == normalized {
+                return;
+            }
+            thread.title = normalized;
+            self.save_session(cx);
+            cx.notify();
         }
     }
 

@@ -182,8 +182,8 @@ impl PaneFlowApp {
         }
 
         let now_ms = now_unix_millis();
-        let active_project_idx = self.active_project_idx;
-        let active_thread_idx = self.active_thread_idx;
+        // US-003: the active row is whatever the unified target points at.
+        let agents_target = self.agents_target;
         let renaming = self.agents_view.agents_renaming;
         let rename_input = self.agents_view.agents_rename_input.clone();
 
@@ -238,8 +238,11 @@ impl PaneFlowApp {
                     continue;
                 }
                 shown_threads += 1;
-                let is_active =
-                    project_idx == active_project_idx && active_thread_idx == Some(thread_idx);
+                let is_active = agents_target
+                    == Some(crate::project::AgentsTarget::Thread {
+                        project_idx,
+                        thread_idx,
+                    });
                 let match_pos = if filtering {
                     filter::match_positions(&thread.title, &query_lower)
                 } else {

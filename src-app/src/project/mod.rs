@@ -53,15 +53,46 @@ pub fn next_thread_id() -> u64 {
 /// On restore, advance both counters past any IDs reloaded from
 /// `session.json` so newly-created projects/threads cannot collide
 /// with restored ones.
-pub fn bump_id_counters_to(projects: &[Project]) {
+///
+/// US-002 (prd-agents-ui-codex-redesign-2026-Q3.md): free `chats` are
+/// `Thread`s allocated from the SAME `next_thread_id` counter as project
+/// threads, so they MUST be folded into the thread-ID max here. Omitting
+/// them would leave the counter below the highest restored chat ID and
+/// the next `next_thread_id()` would collide with a live chat.
+pub fn bump_id_counters_to(projects: &[Project], chats: &[Thread]) {
     let max_project = projects.iter().map(|p| p.id).max().unwrap_or(0);
     let max_thread = projects
         .iter()
         .flat_map(|p| p.threads.iter().map(|t| t.id))
+        .chain(chats.iter().map(|t| t.id))
         .max()
         .unwrap_or(0);
     bump_counter(&NEXT_PROJECT_ID, max_project + 1);
     bump_counter(&NEXT_THREAD_ID, max_thread + 1);
+}
+
+/// Explicit selection target for the Agents-view center surface (US-003
+/// of `prd-agents-ui-codex-redesign-2026-Q3.md`). Replaces the positional
+/// `active_thread_idx: Option<usize>` so the center can address a thread of
+/// a project OR a free chat without the index-stale bug class that a second
+/// parallel `Option<usize>` would reintroduce. `None` (the `Option` wrapper
+/// on `PaneFlowApp`) is the picker/home state; the project anchor for that
+/// state stays `active_project_idx`.
+///
+/// Both arms are positional indices into the live `projects` / `chats`
+/// vectors, kept in range by the data-plane ops (`select_thread`,
+/// `remove_thread`, `select_chat`, `remove_chat`, `close_project`). The PTY
+/// warm-resume cache is keyed by the stable `Thread::id`, not by this
+/// target, so navigating between sources never tears down a running shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentsTarget {
+    /// A thread inside `projects[project_idx].threads[thread_idx]`.
+    Thread {
+        project_idx: usize,
+        thread_idx: usize,
+    },
+    /// A free chat inside `chats[chat_idx]` (anchored on the home dir).
+    Chat { chat_idx: usize },
 }
 
 fn bump_counter(counter: &AtomicU64, target: u64) {
@@ -133,6 +164,12 @@ pub struct Thread {
     /// "New terminal thread" affordance + legacy Agent rows). Always
     /// `None` for `ThreadKind::Agent`.
     pub terminal_agent: Option<crate::agent_launcher::TerminalAgent>,
+    /// US-001 (prd-agents-ui-codex-redesign-2026-Q3.md): whether the user
+    /// pinned this thread. Pinned threads (project threads and free chats
+    /// alike) are surfaced in the rail's PINNED section. Round-trips through
+    /// [`ThreadSession::pinned`]; a restored thread without the flag is
+    /// `false`.
+    pub pinned: bool,
 }
 
 impl Thread {
@@ -151,6 +188,7 @@ impl Thread {
             mode: None,
             store_id: None,
             terminal_agent: None,
+            pinned: false,
         }
     }
 
@@ -176,6 +214,7 @@ impl Thread {
             mode: None,
             store_id: None,
             terminal_agent,
+            pinned: false,
         }
     }
 }
@@ -246,6 +285,9 @@ pub fn thread_to_session(t: &Thread) -> ThreadSession {
             ThreadKind::Terminal => Some(THREAD_KIND_TAG_TERMINAL.to_string()),
         },
         terminal_agent: t.terminal_agent.map(|a| a.tag().to_string()),
+        // US-001: persist the pin flag so a restart restores the
+        // PINNED section.
+        pinned: t.pinned,
     }
 }
 
@@ -301,6 +343,9 @@ pub fn thread_from_session(s: &ThreadSession) -> Option<Thread> {
             .terminal_agent
             .as_deref()
             .and_then(crate::agent_launcher::TerminalAgent::from_tag),
+        // US-001: a pre-refonte ThreadSession defaults `pinned = false`
+        // via `#[serde(default)]`, so this restores cleanly.
+        pinned: s.pinned,
     })
 }
 
@@ -507,11 +552,53 @@ mod tests {
                 store_id: None,
                 kind: None,
                 terminal_agent: None,
+                pinned: false,
             }],
         };
         let restored = project_from_session(&session);
         // The unknown thread is silently dropped (forward-compat).
         assert!(restored.threads.is_empty());
+    }
+
+    /// US-001: the `pinned` flag survives a thread -> session -> thread
+    /// round-trip, and a session shape without the flag restores `false`.
+    #[test]
+    fn pinned_flag_round_trips_through_session() {
+        let mut thread = Thread::new_terminal(
+            "Pinned",
+            "/home/me",
+            Some(crate::agent_launcher::TerminalAgent::ClaudeCode),
+        );
+        assert!(!thread.pinned, "fresh threads start unpinned");
+        thread.pinned = true;
+        let session = thread_to_session(&thread);
+        assert!(session.pinned, "pin flag persists into the session shape");
+        let restored = thread_from_session(&session).expect("terminal thread restores");
+        assert!(restored.pinned, "pin flag restores from the session shape");
+    }
+
+    /// US-002: free chats draw IDs from the same `next_thread_id` counter as
+    /// project threads, so `bump_id_counters_to` MUST fold chats into the
+    /// thread-ID max. After a restore the next ID is `max(all IDs) + 1`,
+    /// even when the highest ID belongs to a chat, not a project thread.
+    #[test]
+    fn bump_id_counters_covers_chats() {
+        // A project thread at a low ID and a chat at a high ID. The chat's
+        // ID must drive the counter, otherwise the next thread collides.
+        let mut project = Project::new("P", "/tmp");
+        let mut low = Thread::new_terminal("t", "/tmp", None);
+        low.id = 1_000_000;
+        project.threads.push(low);
+        let mut chat = Thread::new_terminal("c", "/home/me", None);
+        chat.id = 9_000_000;
+        let chats = vec![chat];
+
+        bump_id_counters_to(std::slice::from_ref(&project), &chats);
+        let next = next_thread_id();
+        assert!(
+            next > 9_000_000,
+            "next_thread_id ({next}) must exceed the highest restored chat ID"
+        );
     }
 
     #[test]
