@@ -1211,7 +1211,15 @@ fn main() {
     // clap owns per-subcommand `--help`/`--version`, and the CLI dispatch runs
     // after the manual intercepts.
     let is_cli_subcommand = cli::is_cli_verb(args.get(1).map(String::as_str));
-    if !is_mcp_subcommand && !is_cli_subcommand && args.iter().any(|a| a == "--help" || a == "-h") {
+    // EP-004 (cli-agent-orchestration): `paneflow hooks <cmd>` is intercepted
+    // before clap (like `mcp`) and mutates agent config files offline — so the
+    // global flag scans must not eat its `--help`.
+    let is_hooks_subcommand = args.get(1).map(String::as_str) == Some("hooks");
+    if !is_mcp_subcommand
+        && !is_cli_subcommand
+        && !is_hooks_subcommand
+        && args.iter().any(|a| a == "--help" || a == "-h")
+    {
         println!(
             "PaneFlow {version} — native terminal workspace for coding agents\n\
              \n\
@@ -1243,6 +1251,7 @@ fn main() {
     }
     if !is_mcp_subcommand
         && !is_cli_subcommand
+        && !is_hooks_subcommand
         && args.iter().any(|a| a == "--version" || a == "-v")
     {
         println!("paneflow {}", env!("CARGO_PKG_VERSION"));
@@ -1320,6 +1329,23 @@ fn main() {
             }
         };
         std::process::exit(paneflow_mcp_install::run_cli(&args[2..], bridge_path));
+    }
+
+    // EP-004 (cli-agent-orchestration): `paneflow hooks <cmd>` installs the
+    // persistent agent-notification hooks and exits — like `mcp`, it mutates
+    // external config files offline and never initializes GPUI. Extract the
+    // ai-hook callback to its stable path first so the path written into agent
+    // configs is guaranteed to exist; fall back to the resolved-but-maybe-
+    // missing path so the engine can emit a precise refusal.
+    if is_hooks_subcommand {
+        let hook_path = match ai_hooks::extract::ensure_ai_hook_extracted() {
+            Ok(p) => Some(p),
+            Err(e) => {
+                log::warn!("paneflow hooks: ai-hook extraction failed ({e:#})");
+                runtime_paths::ai_hook_binary_path()
+            }
+        };
+        std::process::exit(paneflow_mcp_install::run_hooks_cli(&args[2..], hook_path));
     }
 
     // EP-001 (cli-agent-orchestration): the `paneflow <verb>` scriptable CLI

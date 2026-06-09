@@ -185,6 +185,56 @@ pub fn ensure_bridge_extracted() -> Result<PathBuf> {
     Ok(bridge_path)
 }
 
+/// EP-004 US-016 — materialize the embedded `paneflow-ai-hook` callback at the
+/// stable, non-versioned path returned by
+/// `runtime_paths::ai_hook_binary_path()` and return that absolute path.
+///
+/// Exactly mirrors [`ensure_bridge_extracted`] (same atomic-write +
+/// SHA256-compared idempotency), but targets the ai-hook binary so
+/// `paneflow hooks setup` can write a durable path into external agent configs
+/// that survives Paneflow updates — unlike the version-pinned cache copy the
+/// shim resolves at launch.
+///
+/// Unhappy path: `data_dir()` unresolvable -> `ai_hook_binary_path()` is `None`
+/// -> `Err`; `paneflow hooks setup` then refuses cleanly rather than writing a
+/// config pointing at a non-existent path.
+pub fn ensure_ai_hook_extracted() -> Result<PathBuf> {
+    let hook_path = crate::runtime_paths::ai_hook_binary_path().ok_or_else(|| {
+        anyhow!(
+            "EP-004 US-016: data_dir() unresolvable/unwritable; cannot extract paneflow-ai-hook"
+        )
+    })?;
+    let target_dir = hook_path
+        .parent()
+        .ok_or_else(|| {
+            anyhow!(
+                "EP-004 US-016: ai-hook path {} has no parent",
+                hook_path.display()
+            )
+        })?
+        .to_path_buf();
+    let filename = hook_path
+        .file_name()
+        .ok_or_else(|| {
+            anyhow!(
+                "EP-004 US-016: ai-hook path {} has no filename",
+                hook_path.display()
+            )
+        })?
+        .to_string_lossy()
+        .into_owned();
+
+    // Embed source basename matches the ai-hook filename on every OS
+    // (`paneflow-ai-hook` / `paneflow-ai-hook.exe`).
+    let bytes = embedded_bytes(&filename)?;
+    let entry = Entry {
+        filename,
+        bytes: bytes.as_ref(),
+    };
+    extract_into(std::slice::from_ref(&entry), &target_dir)?;
+    Ok(hook_path)
+}
+
 /// Core extraction loop. Factored out of `ensure_binaries_extracted` so
 /// unit tests can drive it with synthetic `Entry` slices and a
 /// `TempDir`-backed output path without depending on `Bins` or
