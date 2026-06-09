@@ -8,7 +8,8 @@
 
 use serde_json::{json, Value};
 
-use crate::ipc_client::IpcTransport;
+use paneflow_ipc_client::IpcTransport;
+
 use crate::resolve;
 
 /// Conservative default line window for `read_pane` (matches the server-side

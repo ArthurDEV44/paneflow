@@ -19,12 +19,12 @@
 //! sole, opt-in write surface (PRD security decision).
 //!
 //! Module map:
-//! - [`ipc_client`] — socket path resolution + blocking JSON-RPC client (US-005)
+//! - [`paneflow_ipc_client`] — socket path resolution + blocking JSON-RPC
+//!   client (US-005), shared with the `paneflow` CLI.
 //! - [`mcp`] — MCP stdio protocol loop (US-006)
 //! - [`tools`] — the three tools + untrusted-output wrapping (US-006/007/008)
 //! - [`resolve`] — name → surface_id resolution with disambiguation (US-009)
 
-mod ipc_client;
 mod mcp;
 mod resolve;
 mod tools;
@@ -32,7 +32,7 @@ mod tools;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let Some(socket) = ipc_client::resolve_socket_path() else {
+    let Some(socket) = paneflow_ipc_client::resolve_socket_path() else {
         eprintln!(
             "paneflow-mcp: cannot locate the Paneflow IPC socket. \
              Set PANEFLOW_SOCKET_PATH (normally inherited from the Paneflow PTY) \
@@ -41,7 +41,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let client = ipc_client::IpcClient::new(socket);
+    let client = paneflow_ipc_client::IpcClient::new(socket);
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
 

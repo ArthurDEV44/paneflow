@@ -4,6 +4,7 @@ members = [
     "crates/paneflow-acp",
     "crates/paneflow-ai-hook",
     "crates/paneflow-config",
+    "crates/paneflow-ipc-client",
     "crates/paneflow-mcp",
     "crates/paneflow-mcp-install",
     "crates/paneflow-process",
@@ -39,6 +40,7 @@ anyhow = "1"
 
 # Internal crates
 paneflow-config = { path = "crates/paneflow-config" }
+paneflow-ipc-client = { path = "crates/paneflow-ipc-client" }
 paneflow-process = { path = "crates/paneflow-process" }
 paneflow-telemetry = { path = "crates/paneflow-telemetry" }
 
