@@ -12,7 +12,8 @@ use std::io::{self, BufRead, Write};
 
 use serde_json::{json, Value};
 
-use crate::ipc_client::IpcTransport;
+use paneflow_ipc_client::IpcTransport;
+
 use crate::tools;
 
 /// MCP protocol version echoed when the client doesn't pin one. Echoing the

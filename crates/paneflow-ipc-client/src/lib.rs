@@ -1,4 +1,13 @@
-//! Blocking JSON-RPC client for Paneflow's local IPC socket (US-005).
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        clippy::panic
+    )
+)]
+//! paneflow-ipc-client — blocking JSON-RPC client for Paneflow's local IPC socket.
 //!
 //! Mirrors the server wire protocol at `src-app/src/ipc.rs`: newline-delimited
 //! JSON-RPC 2.0 over an `interprocess` local socket (Unix domain socket /
@@ -7,8 +16,11 @@
 //! server writes on the same connection.
 //!
 //! One connection per request: simple and robust (a stale connection can't
-//! wedge the bridge). The server's peer-UID check passes because the bridge
+//! wedge the caller). The server's peer-UID check passes because the client
 //! runs as the same user that launched Paneflow.
+//!
+//! Shared crate (no GPUI / `src-app` dependency): consumed both by the MCP
+//! bridge (`paneflow-mcp`) and the `paneflow` CLI subcommands.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -31,7 +43,7 @@ const IPC_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RESPONSE_LEN: u64 = 256 * 1024;
 
 /// Abstraction over "send a JSON-RPC request to Paneflow, get the `result`".
-/// Lets the MCP layer and tools be unit-tested against a fake transport with
+/// Lets callers (MCP layer, CLI) be unit-tested against a fake transport with
 /// no live socket.
 pub trait IpcTransport {
     /// Call a Paneflow IPC method. Returns the `result` value on success, or
@@ -152,7 +164,7 @@ fn send_and_receive(socket: &Path, request: &Value) -> io::Result<String> {
 }
 
 /// Resolve the Paneflow IPC socket path. `PANEFLOW_SOCKET_PATH` (inherited
-/// from the Paneflow PTY through the agent that launched this bridge) is
+/// from the Paneflow PTY through the agent that launched this process) is
 /// authoritative — it carries the exact path the running instance bound,
 /// including the debug `paneflow-dev` vs release distinction. Falls back to
 /// the release default when the env var is absent.
@@ -171,10 +183,10 @@ pub(crate) fn socket_path_from_env(raw: Option<&str>) -> Option<PathBuf> {
 }
 
 /// Best-effort default socket path, mirroring `src-app/src/runtime_paths.rs`
-/// (release profile). The bridge can't know whether a debug `paneflow-dev`
+/// (release profile). The caller can't know whether a debug `paneflow-dev`
 /// instance is running, so it targets the release socket; the env var above
 /// is the authoritative source and normally wins. Uses raw env (no `dirs`
-/// dep) to keep the bridge's dependency tree minimal.
+/// dep) to keep the dependency tree minimal.
 #[cfg(unix)]
 fn default_socket_path() -> Option<PathBuf> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")

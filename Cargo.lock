@@ -6020,13 +6020,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "paneflow-mcp"
+name = "paneflow-ipc-client"
 version = "0.3.9"
 dependencies = [
  "interprocess",
- "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "paneflow-mcp"
+version = "0.3.9"
+dependencies = [
+ "paneflow-ipc-client",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
