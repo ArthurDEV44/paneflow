@@ -226,17 +226,24 @@ mod tests {
         );
     }
 
-    /// stdout cap: a 10 MB producer under a 4 KiB cap returns exactly the cap,
+    /// stdout cap: a 1 MB producer under a 4 KiB cap returns exactly the cap,
     /// the child still exits cleanly (drain), and we neither OOM nor hang.
     /// Unix-only because it leans on `/dev/zero`; the cap/drain logic is pure
     /// `std::io` and platform-agnostic (Windows verified by inspection).
+    ///
+    /// Volume is 1 MB (still 256x the cap, so a broken cap would buffer the
+    /// whole megabyte and fail the length assert) rather than 10 MB: the drain
+    /// deliberately throttles a pipe-saturating producer with a 1 ms sleep per
+    /// 8 KiB read, so 10 MB is ~1220 sleeps whose scheduler jitter on a loaded
+    /// CI runner can overshoot a tight deadline. The 30 s deadline then leaves
+    /// ample headroom over the ~150 ms a 1 MB drain actually takes.
     #[cfg(unix)]
     #[test]
     fn stdout_cap_truncates_without_oom_or_hang() {
         let start = Instant::now();
         let out = run_with_timeout(
-            sh("head -c 10000000 /dev/zero"),
-            Duration::from_secs(10),
+            sh("head -c 1000000 /dev/zero"),
+            Duration::from_secs(30),
             4096,
         )
         .expect("producer should exit cleanly after its output is drained");
@@ -247,7 +254,7 @@ mod tests {
             "stdout must be capped, not buffered"
         );
         assert!(
-            start.elapsed() < Duration::from_secs(10),
+            start.elapsed() < Duration::from_secs(30),
             "drain must let the child exit well under the deadline"
         );
     }
