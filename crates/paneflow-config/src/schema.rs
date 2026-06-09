@@ -847,6 +847,15 @@ pub struct SessionState {
     /// state regardless of this value).
     #[serde(default)]
     pub active_project: usize,
+    /// Free chats — terminal threads not attached to any project, anchored
+    /// on the user's home dir (US-002 of
+    /// `prd-agents-ui-codex-redesign-2026-Q3.md`). A separate list from
+    /// `projects` by design (no implicit "~" project). `skip_serializing_if`
+    /// mirrors the `projects` field, so a pre-refonte session.json
+    /// (without this key) restores as an empty chat list without touching
+    /// the project serialization.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chats: Vec<ThreadSession>,
     /// Last UI mode the user was in. The bootstrap reads this to
     /// reopen the Agents view if it was active at quit time (US-009).
     #[serde(default)]
@@ -940,6 +949,13 @@ pub struct ThreadSession {
     /// `src-app`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_agent: Option<String>,
+    /// Whether the user pinned this thread (US-001 of
+    /// `prd-agents-ui-codex-redesign-2026-Q3.md`). Pinned threads are
+    /// surfaced in the rail's PINNED section across both projects and
+    /// free chats. `#[serde(default)]` so a session.json written before
+    /// this field deserialises cleanly as `false` — no migration.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 fn default_true() -> bool {

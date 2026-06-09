@@ -306,7 +306,8 @@ impl PaneFlowApp {
                                 // it: "New threads -> pick folder -> pick
                                 // agent -> terminal launches".
                                 app.active_project_idx = idx;
-                                app.active_thread_idx = None;
+                                // US-003: picker/home state (no target).
+                                app.agents_target = None;
                             }
                             app.save_session(cx);
                             cx.notify();
@@ -328,7 +329,8 @@ impl PaneFlowApp {
             return;
         }
         self.agents_view.agents_skills_visible = false;
-        self.active_thread_idx = None;
+        // US-003: picker/home state for `project_idx` (no target selected).
+        self.agents_target = None;
         self.active_project_idx = project_idx;
         cx.notify();
     }

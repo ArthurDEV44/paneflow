@@ -511,15 +511,26 @@ struct PaneFlowApp {
     /// projects, persisted to `session.json` via [`save_session`].
     /// Empty until the user creates their first project (US-011).
     pub(crate) projects: Vec<crate::project::Project>,
+    /// US-002 (prd-agents-ui-codex-redesign-2026-Q3.md): free chats —
+    /// terminal threads not attached to any project, anchored on the
+    /// user's home dir. A separate list from [`Self::projects`] by design
+    /// (no implicit "~" project). Persisted to `session.json`. Each chat
+    /// is a full [`crate::project::Thread`] with an ID from the shared
+    /// `next_thread_id` counter, so its PTY shares the same warm-resume
+    /// cache (`agents_terminal_view_cache`) as a project thread.
+    pub(crate) chats: Vec<crate::project::Thread>,
     /// US-007 (prd-agents-view.md): index into [`Self::projects`] of
     /// the currently active project. `0` when no projects exist
     /// (the sidebar reads `projects.is_empty()` to decide whether
-    /// to render anything).
+    /// to render anything). Stays the rail's focused-project anchor +
+    /// the picker's create-into-project context after US-003.
     pub(crate) active_project_idx: usize,
-    /// US-007 (prd-agents-view.md): index into the active project's
-    /// thread list. `None` when no thread is selected (e.g. the
-    /// user just opened the project and hasn't picked a thread yet).
-    pub(crate) active_thread_idx: Option<usize>,
+    /// US-003 (prd-agents-ui-codex-redesign-2026-Q3.md): explicit center
+    /// selection target. Replaces the old positional `active_thread_idx`
+    /// so the center can address a project thread OR a free chat without
+    /// an ambiguous parallel index. `None` is the picker/home state (the
+    /// project anchor for that state is [`Self::active_project_idx`]).
+    pub(crate) agents_target: Option<crate::project::AgentsTarget>,
     /// US-053: Agents-view sidebar state (rename/menu/skills/filter +
     /// the terminal-thread cache), extracted from the god-struct.
     pub(crate) agents_view: AgentsViewState,
