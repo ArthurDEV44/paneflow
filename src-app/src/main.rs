@@ -27,6 +27,7 @@ mod ai_types;
 mod app;
 mod assets;
 mod claude_sessions;
+mod cli;
 mod codex_sessions;
 mod config_writer;
 mod diff;
@@ -1204,7 +1205,13 @@ fn main() {
     // subcommand parser). Gating the global scans on `!is_mcp_subcommand`
     // hands `paneflow mcp …` straight to the dispatcher below.
     let is_mcp_subcommand = args.get(1).map(String::as_str) == Some("mcp");
-    if !is_mcp_subcommand && args.iter().any(|a| a == "--help" || a == "-h") {
+    // EP-001 (cli-agent-orchestration): same gating rationale as the `mcp`
+    // flag. When argv[1] is a known CLI verb (`paneflow ls --help`,
+    // `paneflow read … --json`), the global flag scans below must NOT fire —
+    // clap owns per-subcommand `--help`/`--version`, and the CLI dispatch runs
+    // after the manual intercepts.
+    let is_cli_subcommand = cli::is_cli_verb(args.get(1).map(String::as_str));
+    if !is_mcp_subcommand && !is_cli_subcommand && args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
             "PaneFlow {version} — native terminal workspace for coding agents\n\
              \n\
@@ -1234,7 +1241,10 @@ fn main() {
         );
         return;
     }
-    if !is_mcp_subcommand && args.iter().any(|a| a == "--version" || a == "-v") {
+    if !is_mcp_subcommand
+        && !is_cli_subcommand
+        && args.iter().any(|a| a == "--version" || a == "-v")
+    {
         println!("paneflow {}", env!("CARGO_PKG_VERSION"));
         return;
     }
@@ -1310,6 +1320,16 @@ fn main() {
             }
         };
         std::process::exit(paneflow_mcp_install::run_cli(&args[2..], bridge_path));
+    }
+
+    // EP-001 (cli-agent-orchestration): the `paneflow <verb>` scriptable CLI
+    // drives a RUNNING instance over the existing IPC socket and exits — it
+    // never initializes GPUI. Gated on a known verb in argv[1] (same pattern as
+    // `mcp`) so unknown args still fall through to the GUI below. Placed after
+    // the logger + PATH augmentation so the CLI inherits `RUST_LOG` and the
+    // same binary-resolution environment as the GUI.
+    if is_cli_subcommand {
+        std::process::exit(cli::run());
     }
 
     warn_if_legacy_run_install();
