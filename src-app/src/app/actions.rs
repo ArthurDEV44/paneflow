@@ -101,6 +101,14 @@ actions!(
         OpenDiffView,
         // US-003 of tasks/prd-ai-in-diff-2026-Q3.md — copy the hunk under the
         // cursor as a unified diff (Ctrl+Shift+C inside the DiffView context).
-        CopyDiffHunk
+        CopyDiffHunk,
+        // US-011 of tasks/prd-agents-ui-codex-redesign-2026-Q3.md — open the
+        // overflow (`⋯`) menu for the current Agents thread/chat. Dispatched
+        // by the title-bar `⋯` button (a SEPARATE `TitleBar` entity with no
+        // access to agents state), caught by `PaneFlowApp` which resolves the
+        // selected target and opens the shared thread context menu. The
+        // button never calls agents methods directly — it dispatches this
+        // typed action, mirroring the update pill's `StartSelfUpdate`.
+        OpenAgentsThreadMenu
     ]
 );

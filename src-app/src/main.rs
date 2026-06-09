@@ -730,8 +730,24 @@ impl Render for PaneFlowApp {
                 .into_any_element()
         };
 
-        // Update title bar with current workspace name
-        let ws_name = self.active_workspace().map(|ws| ws.title.clone());
+        // Update title bar with current workspace name. US-010: in Agents
+        // mode the brand slot carries the thread/chat context instead, so the
+        // center workspace breadcrumb is suppressed (a CLI workspace name is
+        // meaningless in the Agents view). Cli/Diff keep it (diff visuel nul).
+        let ws_name = if matches!(self.mode, paneflow_config::schema::AppMode::Agents) {
+            None
+        } else {
+            self.active_workspace().map(|ws| ws.title.clone())
+        };
+        // US-010/US-011: brand labels + overflow flag, computed only on the
+        // Agents arm and reset to `None`/`false` otherwise so `TitleBar` never
+        // reads `AppMode` (push-only contract; Cli/Diff render identically).
+        let (agents_thread_title, agents_context_label, agents_overflow) =
+            if matches!(self.mode, paneflow_config::schema::AppMode::Agents) {
+                self.agents_titlebar_labels()
+            } else {
+                (None, None, false)
+            };
         // Pill state for in-app installer flows (AppImage, TarGz, AppBundle,
         // MSI, pkexec dnf|apt). Shared between the SystemPackage branch and
         // the catch-all so both reflect the live install state machine; if
@@ -809,6 +825,11 @@ impl Render for PaneFlowApp {
             tb.sidebar_width = px(sidebar_px);
             tb.update_available = update_info;
             tb.ipc_state = self.ipc_status.state();
+            // US-010/US-011: push the Agents brand context (None/false on
+            // Cli/Diff frames so the brand reverts to "PaneFlow").
+            tb.agents_thread_title = agents_thread_title;
+            tb.agents_context_label = agents_context_label;
+            tb.agents_overflow = agents_overflow;
         });
 
         // --- CSD resize backdrop ---
@@ -909,6 +930,8 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_start_self_update))
             .on_action(cx.listener(Self::handle_dismiss_update))
             .on_action(cx.listener(Self::handle_open_agents_view))
+            // US-011: title-bar `⋯` overflow menu for the current Agents thread.
+            .on_action(cx.listener(Self::handle_open_agents_thread_menu))
             // EP-001 US-003: Escape cancels an in-flight tab drag. Capture
             // phase runs ancestor-before-descendant, so this pre-empts the
             // focused terminal's own Escape->PTY forwarding — but only while a

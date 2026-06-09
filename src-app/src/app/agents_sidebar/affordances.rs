@@ -665,6 +665,28 @@ impl PaneFlowApp {
     // Reveal / Open in editor (project rows)
     // ------------------------------------------------------------------
 
+    /// US-011: reveal the cwd of a thread/chat target in the OS file
+    /// manager. A project thread reveals its own cwd (defaults to the
+    /// project cwd); a chat reveals its home cwd ("adapté au home" per the
+    /// overflow-menu AC). Closes any open menu first.
+    pub(crate) fn reveal_agents_target(
+        &mut self,
+        target: crate::project::AgentsTarget,
+        cx: &mut Context<Self>,
+    ) {
+        let cwd = self.thread_for_target(target).map(|t| t.cwd.clone());
+        self.agents_view.agents_menu_open = None;
+        let Some(cwd) = cwd else {
+            cx.notify();
+            return;
+        };
+        if let Err(msg) = reveal_in_file_manager(std::path::Path::new(&cwd)) {
+            log::warn!("agents-overflow: reveal failed: {msg}");
+            self.show_toast(msg, cx);
+        }
+        cx.notify();
+    }
+
     pub(crate) fn reveal_agents_project_in_file_manager(
         &mut self,
         project_idx: usize,
