@@ -17,6 +17,8 @@ mod control_cmds;
 mod read_cmds;
 mod selector;
 mod send_cmd;
+mod up_cmd;
+mod workspace_spec;
 
 /// Process exit codes. Kept distinct so scripts can branch on the failure
 /// kind. clap owns `2` for its own usage/parse errors (and `0` for
@@ -28,7 +30,9 @@ pub const EXIT_TARGET: i32 = 3;
 /// The verbs this CLI owns. `main.rs` gates the whole CLI dispatch (and the
 /// manual `--help`/`--version` scans) on membership here so the GUI launch
 /// path stays byte-for-byte unchanged for any other `argv[1]`.
-const VERBS: &[&str] = &["ls", "read", "search", "new", "select", "split", "send"];
+const VERBS: &[&str] = &[
+    "ls", "read", "search", "new", "select", "split", "send", "up",
+];
 
 /// True when `argv[1]` names one of our subcommands.
 pub fn is_cli_verb(arg: Option<&str>) -> bool {
@@ -115,6 +119,14 @@ enum Commands {
         target: String,
         /// Text to inject (no trailing carriage return is ever added).
         text: String,
+    },
+    /// Spawn a declarative agent workspace from a TOML file ("compose for agents").
+    Up {
+        /// Path to a `paneflow.workspace.toml` spec.
+        file: String,
+        /// Validate + print the resolved plan without touching the instance.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -236,6 +248,7 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
         Commands::Select { index } => control_cmds::select(client, index),
         Commands::Split { direction } => control_cmds::split(client, direction.as_ipc()),
         Commands::Send { target, text } => send_cmd::send(client, &target, &text),
+        Commands::Up { file, dry_run } => up_cmd::up(client, &file, dry_run),
     }
 }
 
