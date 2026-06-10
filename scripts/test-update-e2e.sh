@@ -46,6 +46,11 @@ SCENARIO="${SCENARIO:-all}"      # all|happy|hash_mismatch|feed_unreachable
 # from-source build for local dev.
 E2E_NEW_TARBALL="${E2E_NEW_TARBALL:-}"
 E2E_OLD_TARBALL="${E2E_OLD_TARBALL:-}"
+# Optional: detached minisign signature of the NEW tarball. Defaults to
+# the `.minisig` sibling of E2E_NEW_TARBALL when present. Required in
+# practice when the OLD client is ≥ v0.3.9 (fail-closed verification);
+# absent → the harness no-ops with a notice instead of false-failing.
+E2E_NEW_MINISIG="${E2E_NEW_MINISIG:-}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 NEW_VERSION="$(awk -F'"' '/^version = / { print $2; exit }' "$REPO_ROOT/Cargo.toml")"
@@ -121,6 +126,31 @@ NEW_TARBALL="${NEW_TARBALL_DEST}"
 # downloading the tarball body.
 ( cd "${WORK_DIR}/fixture" && sha256sum "paneflow-${NEW_VERSION}-x86_64.tar.gz" \
       > "paneflow-${NEW_VERSION}-x86_64.tar.gz.sha256" )
+
+# Stage the .minisig sidecar when one sits next to the source tarball
+# (E2E_NEW_MINISIG overrides the location). OLD clients ≥ v0.3.9 verify
+# fail-closed: they fetch <tarball-url>.minisig and abort the install
+# when it's missing, so without this file the happy path can never pass
+# against a verifying OLD. release.yml's e2e leg polls the published
+# release for the real signature (the artifact tarball and the published
+# tarball are byte-identical, so the signature transfers).
+NEW_MINISIG_SRC="${E2E_NEW_MINISIG:-}"
+if [ -z "${NEW_MINISIG_SRC}" ] && [ -n "${E2E_NEW_TARBALL}" ]; then
+    NEW_MINISIG_SRC="${E2E_NEW_TARBALL}.minisig"
+fi
+if [ -n "${NEW_MINISIG_SRC}" ] && [ -s "${NEW_MINISIG_SRC}" ]; then
+    cp "${NEW_MINISIG_SRC}" "${NEW_TARBALL_DEST}.minisig"
+    log "phase 1: staged NEW tarball signature from ${NEW_MINISIG_SRC}"
+elif [ "$(printf '%s\n' "0.3.9" "${OLD_VERSION}" | sort -V | head -n1)" = "0.3.9" ]; then
+    # No signature available and the OLD client verifies fail-closed
+    # (≥ 0.3.9). Refusing the unsigned install is the binary BEHAVING
+    # CORRECTLY, not a regression — there is nothing meaningful to
+    # test, so no-op instead of reporting a false failure. This is the
+    # dry-run / local source-build path, where the artifact is never
+    # signed (the signing key is rightly unreachable from here).
+    log "phase 1: no .minisig for the NEW tarball and OLD v${OLD_VERSION} verifies fail-closed — harness no-op"
+    exit 0
+fi
 
 # -----------------------------------------------------------------------------
 # Phase 2 — stage OLD paneflow binary.
