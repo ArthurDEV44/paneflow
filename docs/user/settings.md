@@ -24,10 +24,13 @@ hand and hot-reload the change the moment you save.
 
   ## Appearance [#appearance]
 
-  Pick the terminal font from the bundled families — Adwaita Mono and the
-  full JetBrains Mono weight range, from Thin to Extrabold — and choose a
-  theme. Both hot-reload from [`paneflow.json`](/docs/themes) the instant
-  you save, so you can tune the look without restarting.
+  Pick the terminal font from any monospace family installed on your
+  machine — the picker enumerates them via fontconfig on Linux and Core
+  Text on macOS — or stick with the embedded defaults: IBM Plex Mono
+  (the out-of-the-box terminal font) and Lilex, the ligature-friendly
+  alternate. Font and theme both hot-reload from
+  [`paneflow.json`](/docs/themes) the instant you save, so you can tune
+  the look without restarting.
 
   ## AI agents [#ai-agents]
 
@@ -42,7 +45,9 @@ hand and hot-reload the change the moment you save.
 
   Tune how the terminal itself behaves: default cursor shape and blink,
   how a BEL is surfaced (visual flash, OS sound, both, or off), scrollback
-  history per terminal, font size and line height (both hot-reload),
+  history per terminal (default 10,000 lines, configurable from 100 to
+  100,000 via [`terminal.scrollback_lines`](/docs/configuration/schema#how-do-i-set-terminalscrollback_lines)),
+  font size and line height (both hot-reload),
   programming-font ligatures, and Option as Meta for Alt/Option chords.
   Settings that affect the emulator take effect on the next new terminal;
   the display ones apply the moment you change them.
