@@ -11,7 +11,7 @@
 - [Layouts](layouts.md): Apply Paneflow's four built-in layout presets - even horizontal, even vertical, main vertical, and tiled - to reshape a workspace in one keystroke.
 - [Review](review.md): Read your branch diff and hand it to one or more CLI agents for review — Claude Code, Codex, OpenCode, or Pi — without leaving Paneflow.
 - [Settings](settings.md): Tune Paneflow from the settings panel — keyboard shortcuts, fonts and themes, which AI agents appear in the launch bar, and terminal behavior — all mirrored in paneflow.json.
-- [Themes](themes.md): Switch between Paneflow's bundled themes - One Dark and Paneflow Light - with hot-reload, no restart needed.
+- [Themes](themes.md): Paneflow's theme system with hot-reload from paneflow.json, no restart needed. One Dark ships today; the light theme returns after a redesign.
 - [Troubleshooting](troubleshooting.md): Fixes for the most common Paneflow launch, configuration, and install problems - GPU errors, missing PATH, blocked installers, theme reload issues.
 - [Configuration](configuration.md): Customize Paneflow with a single paneflow.json file - default shell, theme, keybindings, window decorations, and more.
 - [paneflow.json Schema Reference](configuration/schema.md): Every paneflow.json key with type, default value, stability, and an example.
