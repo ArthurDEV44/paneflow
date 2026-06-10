@@ -14,9 +14,11 @@ use super::{CliError, EXIT_OK};
 
 /// `paneflow ls [--human]` — list the active workspace's surfaces.
 pub fn ls(client: &impl IpcTransport, human: bool) -> Result<i32, CliError> {
-    let result = client
-        .call("surface.list", json!({}))
-        .map_err(CliError::runtime)?;
+    let result = super::reject_legacy_error(
+        client
+            .call("surface.list", json!({}))
+            .map_err(CliError::runtime)?,
+    )?;
     if human {
         print_surfaces_table(&result);
     } else {
@@ -41,9 +43,11 @@ pub fn read(
     if let Some(offset) = offset {
         params["offset"] = json!(offset);
     }
-    let result = client
-        .call("surface.read", params)
-        .map_err(CliError::runtime)?;
+    let result = super::reject_legacy_error(
+        client
+            .call("surface.read", params)
+            .map_err(CliError::runtime)?,
+    )?;
     if json_out {
         super::print_json(&result)?;
     } else {
@@ -68,9 +72,11 @@ pub fn search(
     if let Some(max) = max {
         params["max_matches"] = json!(max);
     }
-    let result = client
-        .call("surface.search", params)
-        .map_err(CliError::runtime)?;
+    let result = super::reject_legacy_error(
+        client
+            .call("surface.search", params)
+            .map_err(CliError::runtime)?,
+    )?;
     if human {
         if let Some(matches) = result.get("matches").and_then(Value::as_array) {
             for m in matches {

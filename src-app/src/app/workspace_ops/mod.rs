@@ -68,6 +68,23 @@ impl PaneFlowApp {
         }
     }
 
+    /// US-009 (orchestration-v2): tear down the worktrees a closing workspace
+    /// owns, off the render thread (`git status` + `worktree remove` are
+    /// subprocesses). Clean ones are removed, dirty/unverifiable ones kept,
+    /// the branch never touched — all enforced by `worktree::teardown_all`.
+    pub(crate) fn spawn_worktree_teardown(
+        worktrees: Vec<crate::workspace::worktree::ManagedWorktree>,
+        cx: &mut Context<Self>,
+    ) {
+        if worktrees.is_empty() {
+            return;
+        }
+        cx.spawn(async move |_this, _cx: &mut gpui::AsyncApp| {
+            smol::unblock(move || crate::workspace::worktree::teardown_all(worktrees)).await;
+        })
+        .detach();
+    }
+
     /// US-005/US-014: if in Diff mode, rebuild the mounted diff (deferred) so it
     /// follows the current workspace set and active workspace — covers workspace
     /// switch (re-target) and close (Multi-project group reconcile). Deferred so
@@ -447,6 +464,10 @@ impl PaneFlowApp {
         if let Some(dir) = self.workspaces[idx].git_dir.clone() {
             self.unwatch_git_dir(&dir);
         }
+        // US-009: this workspace's managed worktrees are torn down (clean
+        // ones only) in the background once the workspace is gone.
+        let worktrees = std::mem::take(&mut self.workspaces[idx].managed_worktrees);
+        Self::spawn_worktree_teardown(worktrees, cx);
         self.workspaces.remove(idx);
         if self.workspaces.is_empty() {
             self.active_idx = 0;

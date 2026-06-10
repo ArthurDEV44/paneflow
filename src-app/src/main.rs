@@ -456,6 +456,10 @@ struct PaneFlowApp {
     _toast_task: Option<gpui::Task<()>>,
     /// Whether the loader animation spawn is currently running.
     loader_anim_running: bool,
+    /// US-019 (orchestration-v2): the surface last visited by
+    /// `JumpNextWaiting`, so repeated presses cycle through the waiting
+    /// agents instead of bouncing on the first one.
+    jump_cursor: Option<u64>,
     /// Source pane for swap mode, or `None` if not in swap mode.
     swap_source: Option<Entity<crate::pane::Pane>>,
     /// LIFO stack of recently closed panes for undo-close (US-014).
@@ -861,6 +865,7 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_focus_right))
             .on_action(cx.listener(Self::handle_focus_up))
             .on_action(cx.listener(Self::handle_focus_down))
+            .on_action(cx.listener(Self::handle_jump_next_waiting))
             .on_action(cx.listener(Self::handle_new_workspace))
             .on_action(cx.listener(Self::handle_close_workspace))
             .on_action(cx.listener(Self::handle_copy_workspace_path))
@@ -1344,7 +1349,17 @@ fn main() {
     // 4 on integrity / hash mismatch, 5 on unsupported install method,
     // 1 on any other error. Pair with `PANEFLOW_UPDATE_FEED_URL` to
     // point the checker at a localhost fixture.
-    if !is_mcp_subcommand && args.iter().any(|a| a == "--update-and-exit") {
+    // Gate the global `--update-and-exit` scan on the SAME three intercepts as
+    // the `--help`/`--version` scans above, not just `mcp`. Otherwise a literal
+    // `--update-and-exit` token appearing as a CLI/hooks *argument* (e.g.
+    // `paneflow send <t> "--update-and-exit"`, `paneflow search x --update-and-exit`)
+    // is captured by this `args.iter().any(...)` scan and hijacks the verb into
+    // the self-updater (US-002: "pas de capture par un scan global").
+    if !is_mcp_subcommand
+        && !is_cli_subcommand
+        && !is_hooks_subcommand
+        && args.iter().any(|a| a == "--update-and-exit")
+    {
         std::process::exit(run_update_and_exit());
     }
 

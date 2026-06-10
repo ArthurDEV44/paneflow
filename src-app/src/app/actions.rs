@@ -18,6 +18,7 @@ actions!(
         FocusRight,
         FocusUp,
         FocusDown,
+        JumpNextWaiting,
         NewWorkspace,
         CloseWorkspace,
         CopyWorkspacePath,

@@ -14,6 +14,8 @@ use paneflow_ipc_client::IpcClient;
 use serde_json::Value;
 
 mod control_cmds;
+mod flow_cmd;
+mod flow_spec;
 mod read_cmds;
 mod selector;
 mod send_cmd;
@@ -36,7 +38,7 @@ pub const EXIT_TIMEOUT: i32 = 4;
 /// manual `--help`/`--version` scans) on membership here so the GUI launch
 /// path stays byte-for-byte unchanged for any other `argv[1]`.
 const VERBS: &[&str] = &[
-    "ls", "read", "search", "new", "select", "split", "send", "up", "wait",
+    "ls", "read", "search", "new", "select", "split", "send", "up", "wait", "focus", "key", "flow",
 ];
 
 /// True when `argv[1]` names one of our subcommands.
@@ -113,18 +115,50 @@ enum Commands {
     Split {
         /// `h`/`horizontal` (panes stacked) or `v`/`vertical` (side by side).
         direction: SplitDir,
+        /// Split the pane hosting this target instead of the first leaf.
+        /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
+        #[arg(long)]
+        target: Option<String>,
     },
     /// Inject text into a pane WITHOUT submitting it (human-in-loop).
     ///
     /// Requires `PANEFLOW_IPC_SCRIPTING=1` on the running instance; the text is
     /// written verbatim with no trailing newline so the user/agent reviews and
-    /// presses Enter themselves.
+    /// presses Enter themselves — unless `--submit` is passed explicitly.
     Send {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
         target: String,
-        /// Text to inject (no trailing carriage return is ever added).
+        /// Text to inject (no trailing carriage return is added by default).
         text: String,
+        /// Send to EVERY pane matching the target (a multi-match selector is
+        /// an error without this flag). Prints a `{sent, failed}` report.
+        #[arg(long)]
+        broadcast: bool,
+        /// Submit the text (append a carriage return). Explicit opt-in: this
+        /// is the ONLY way the CLI ever submits on the user's behalf, and it
+        /// still requires the instance-side scripting gate.
+        #[arg(long)]
+        submit: bool,
     },
+    /// Give a targeted pane the keyboard focus (switches workspace/tab too).
+    Focus {
+        /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
+        target: String,
+    },
+    /// Send a named keystroke (e.g. `escape`, `ctrl-c`, `tab`) to a pane.
+    ///
+    /// Requires `PANEFLOW_IPC_SCRIPTING=1` on the running instance. Keystrokes
+    /// that would submit a line (`enter`, `ctrl-m`, `ctrl-j`) are refused —
+    /// submission is exclusive to `send --submit`.
+    Key {
+        /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
+        target: String,
+        /// Dash-separated keystroke description ("escape", "ctrl-c", "alt-f").
+        keystroke: String,
+    },
+    /// Run a declarative agent DAG from a `flow.toml` (orchestration engine).
+    #[command(subcommand)]
+    Flow(FlowCommand),
     /// Spawn a declarative agent workspace from a TOML file ("compose for agents").
     Up {
         /// Path to a `paneflow.workspace.toml` spec.
@@ -153,6 +187,24 @@ enum Commands {
         /// Require ALL matching panes to match the pattern.
         #[arg(long)]
         all: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum FlowCommand {
+    /// Execute (or validate with --dry-run) a flow file against the running
+    /// instance. Spawns panes, waits on `ready` barriers, feeds steps —
+    /// submission only with explicit `submit = true` + the scripting gate.
+    Run {
+        /// Path to a `flow.toml`.
+        file: String,
+        /// Validate + print the resolved plan without touching the instance.
+        #[arg(long)]
+        dry_run: bool,
+        /// Final machine-readable report on stdout (live transitions move to
+        /// stderr).
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -272,8 +324,22 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             control_cmds::new_workspace(client, name.as_deref(), cwd.as_deref())
         }
         Commands::Select { index } => control_cmds::select(client, index),
-        Commands::Split { direction } => control_cmds::split(client, direction.as_ipc()),
-        Commands::Send { target, text } => send_cmd::send(client, &target, &text),
+        Commands::Split { direction, target } => {
+            control_cmds::split(client, direction.as_ipc(), target.as_deref())
+        }
+        Commands::Send {
+            target,
+            text,
+            broadcast,
+            submit,
+        } => send_cmd::send(client, &target, &text, broadcast, submit),
+        Commands::Focus { target } => control_cmds::focus(client, &target),
+        Commands::Key { target, keystroke } => send_cmd::key(client, &target, &keystroke),
+        Commands::Flow(FlowCommand::Run {
+            file,
+            dry_run,
+            json,
+        }) => flow_cmd::run(client, &file, dry_run, json),
         Commands::Up { file, dry_run } => up_cmd::up(client, &file, dry_run),
         Commands::Wait {
             selector,
@@ -304,6 +370,27 @@ pub(super) fn print_json(value: &Value) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Reject a server reply that carries a *legacy* application error.
+///
+/// A handful of server handlers signal cap/validation failures (split at
+/// `MAX_PANES`, `select` out-of-range, `send_text` over the 64 KiB limit) with
+/// an ad-hoc `{"error": "<message>"}` payload that does NOT use the
+/// `_jsonrpc_error` sentinel. The dispatcher therefore promotes them under
+/// `result`, so the transport's `parse_response` returns `Ok` and the command
+/// would otherwise print the error and exit 0 — breaking the scriptability
+/// contract (US-005 AC4 "code non-zéro", US-006 AC3). Calling this on every
+/// `result` before printing maps that legacy shape to a non-zero `CliError`.
+///
+/// No success envelope on these verbs carries a top-level `error` string
+/// (`{index,…}`, `{selected}`, `{split,…}`, `{sent,…}`, `{surfaces,…}`,
+/// `{text,…}`, `{matches,…}`), so the check can't false-positive on real data.
+pub(super) fn reject_legacy_error(result: Value) -> Result<Value, CliError> {
+    if let Some(message) = result.get("error").and_then(Value::as_str) {
+        return Err(CliError::runtime(message.to_string()));
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,9 +399,57 @@ mod tests {
     fn is_cli_verb_matches_known_verbs() {
         assert!(is_cli_verb(Some("ls")));
         assert!(is_cli_verb(Some("send")));
+        assert!(is_cli_verb(Some("focus")));
+        assert!(is_cli_verb(Some("key")));
         assert!(!is_cli_verb(Some("mcp")));
         assert!(!is_cli_verb(Some("--version")));
         assert!(!is_cli_verb(None));
+    }
+
+    #[test]
+    fn send_flags_default_off() {
+        // The human-in-loop default: no broadcast, no submit unless explicit.
+        let cli = Cli::try_parse_from(["paneflow", "send", "backend", "hi"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Send {
+                broadcast: false,
+                submit: false,
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from(["paneflow", "send", "--broadcast", "--submit", "sh", "go"])
+            .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Send {
+                broadcast: true,
+                submit: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn split_target_is_optional() {
+        let cli = Cli::try_parse_from(["paneflow", "split", "v"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Split { target: None, .. })
+        ));
+        let cli =
+            Cli::try_parse_from(["paneflow", "split", "v", "--target", "backend"]).expect("parse");
+        assert!(
+            matches!(cli.command, Some(Commands::Split { target: Some(t), .. }) if t == "backend")
+        );
+    }
+
+    #[test]
+    fn key_requires_target_and_keystroke() {
+        let err = Cli::try_parse_from(["paneflow", "key", "backend"]).expect_err("usage");
+        assert_eq!(err.exit_code(), 2);
+        let cli = Cli::try_parse_from(["paneflow", "key", "backend", "escape"]).expect("parse");
+        assert!(matches!(cli.command, Some(Commands::Key { .. })));
     }
 
     #[test]
@@ -329,7 +464,8 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Split {
-                direction: SplitDir::Horizontal
+                direction: SplitDir::Horizontal,
+                ..
             })
         ));
     }

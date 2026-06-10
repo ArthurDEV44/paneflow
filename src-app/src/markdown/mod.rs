@@ -28,4 +28,8 @@ mod view;
 // live reload re-runs `parse_with_limit`; US-022 walks `MdNode` for search).
 #[allow(unused_imports)]
 pub use parser::{MAX_INPUT_BYTES, MdNode, ParseError, Span, SpanStyle, parse_with_limit};
+// US-016/US-020 (orchestration-v2): the agent-question display path reuses
+// the same bidi/zero-width strip as rendered markdown (one sanitizer, every
+// untrusted display surface).
+pub(crate) use parser::strip_bidi_zero_width;
 pub use view::MarkdownView;

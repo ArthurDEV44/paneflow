@@ -75,6 +75,19 @@ impl TabContent {
 fn tab_colors() -> crate::theme::UiColors {
     crate::theme::ui_colors()
 }
+
+/// First line of an agent question, bounded for the collapsed peek badge
+/// (US-020, orchestration-v2). Pure — unit-tested below.
+fn peek_badge_line(message: &str) -> String {
+    const BADGE_MAX_CHARS: usize = 80;
+    let first = message.lines().next().unwrap_or("").trim();
+    let mut line: String = first.chars().take(BADGE_MAX_CHARS).collect();
+    if first.chars().count() > BADGE_MAX_CHARS {
+        line.push('…');
+    }
+    line
+}
+
 /// Tab bar total height (matches Zed's 32px at default density)
 const TAB_BAR_HEIGHT: f32 = 32.0;
 /// Inner content height (bar height minus 1px bottom border compensation)
@@ -218,6 +231,15 @@ pub struct Pane {
     /// by `EntityId` so it survives tab reorder/move; a dot is shown in the tab
     /// strip until that terminal is focused (cleared in `render`).
     bell_pending: std::collections::HashSet<gpui::EntityId>,
+    /// US-018/US-020 (orchestration-v2): terminals of this pane whose agent
+    /// session is `WaitingForInput`, with the agent's question (≤512 chars,
+    /// UNTRUSTED display-only text). Pushed by `PaneFlowApp::sync_attention`
+    /// — recomputed from the session truth on every transition, never
+    /// mutated locally. Drives the attention ring, the tab dot and the peek
+    /// overlay.
+    attention: std::collections::HashMap<gpui::EntityId, Option<String>>,
+    /// US-020: the peek badge is hovered — render the full question panel.
+    peek_expanded: bool,
     /// Set to true when the workspace is zoomed on this pane.
     pub zoomed: bool,
     /// Workspace ID for spawning new terminals with correct env vars.
@@ -278,6 +300,8 @@ impl Pane {
             tabs: vec![TabContent::Terminal(terminal)],
             selected_idx: 0,
             bell_pending: std::collections::HashSet::new(),
+            attention: std::collections::HashMap::new(),
+            peek_expanded: false,
             zoomed: false,
             workspace_id,
             custom_buttons: Vec::new(),
@@ -309,6 +333,8 @@ impl Pane {
             tabs: vec![tab],
             selected_idx: 0,
             bell_pending: std::collections::HashSet::new(),
+            attention: std::collections::HashMap::new(),
+            peek_expanded: false,
             zoomed: false,
             workspace_id,
             custom_buttons: Vec::new(),
@@ -323,6 +349,82 @@ impl Pane {
             overlay_seq: 0,
             overlay_pane_size: Size::default(),
         }
+    }
+
+    /// US-018/US-020 (orchestration-v2): replace this pane's attention map
+    /// (terminals whose agent waits for input + their question). Idempotent
+    /// push from `PaneFlowApp::sync_attention` — repaints only on change.
+    pub fn set_attention(
+        &mut self,
+        attention: std::collections::HashMap<gpui::EntityId, Option<String>>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.attention != attention {
+            if attention.is_empty() {
+                self.peek_expanded = false;
+            }
+            self.attention = attention;
+            cx.notify();
+        }
+    }
+
+    /// US-020 (orchestration-v2): a compact badge on the pane showing the
+    /// waiting agent's question without stealing focus; hover expands to the
+    /// full message (≤512 chars, plain inert text — no links, no ANSI).
+    /// Top-right under the tab bar so the agent's prompt line stays visible.
+    fn render_peek_overlay(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if self.attention.is_empty() {
+            return None;
+        }
+        // Prefer the visible tab's question; else the first waiting tab's.
+        let message = self
+            .tabs
+            .get(self.selected_idx)
+            .and_then(|t| t.as_terminal())
+            .and_then(|t| self.attention.get(&t.entity_id()))
+            .or_else(|| {
+                self.tabs
+                    .iter()
+                    .filter_map(TabContent::as_terminal)
+                    .find_map(|t| self.attention.get(&t.entity_id()))
+            })
+            .cloned()
+            .flatten();
+        let ui = tab_colors();
+        let full = message.unwrap_or_else(|| "waiting for input".to_string());
+        let shown = if self.peek_expanded {
+            full
+        } else {
+            peek_badge_line(&full)
+        };
+        Some(
+            div()
+                .id(SharedString::from(format!(
+                    "peek-{}",
+                    cx.entity().entity_id().as_u64()
+                )))
+                .absolute()
+                .top(px(TAB_BAR_HEIGHT + 6.0))
+                .right_2()
+                .max_w(px(420.0))
+                .overflow_hidden()
+                .bg(ui.overlay)
+                .border_1()
+                .border_color(ui.vc_conflict.opacity(0.6))
+                .rounded_md()
+                .px_2()
+                .py_1()
+                .text_xs()
+                .text_color(ui.text)
+                .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
+                    if this.peek_expanded != *hovered {
+                        this.peek_expanded = *hovered;
+                        cx.notify();
+                    }
+                }))
+                .child(shown)
+                .into_any_element(),
+        )
     }
 
     /// Iterate over the terminal entities in this pane. Markdown tabs are
@@ -802,7 +904,7 @@ impl Pane {
 
     fn render_tab_bar(
         &self,
-        is_active: bool,
+        _is_active: bool,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -816,14 +918,11 @@ impl Pane {
         // indicator drawn during a same-pane reorder hover.
         let self_entity = cx.entity();
         let accent = ui.accent;
-        // Active pane: full-strength title-bar chrome. Inactive pane: the muted
-        // inactive-chrome slot, so the whole strip reads as dimmed without ever
-        // touching the terminal body — reinforcing the accent focus ring.
-        let bar_bg = if is_active {
-            theme.title_bar_background
-        } else {
-            theme.title_bar_inactive_background
-        };
+        // Tab strip uses the terminal background so it melts into the terminal
+        // body below it — one clean surface (Arthur). No active/inactive chrome
+        // split: the blue focus ring is gone, so the strip no longer carries a
+        // pane-focus signal either.
+        let bar_bg = theme.background;
 
         // Outer container: full-width, fixed height, tab_bar background
         let bar = div()
@@ -953,19 +1052,31 @@ impl Pane {
         // US-006: a small accent dot when this tab's terminal has an
         // unacknowledged bell. Zero-size placeholder otherwise so tab
         // layout/truncation is unaffected.
+        // US-018 (orchestration-v2): an agent waiting for input in this tab
+        // shows the attention-colored dot — it wins over the bell (the more
+        // actionable signal), so a hidden waiting tab stays discoverable.
         let has_bell = self
             .tabs
             .get(i)
             .and_then(|t| t.as_terminal())
             .is_some_and(|t| self.bell_pending.contains(&t.entity_id()));
-        let bell_dot = if has_bell {
+        let has_attention = self
+            .tabs
+            .get(i)
+            .and_then(|t| t.as_terminal())
+            .is_some_and(|t| self.attention.contains_key(&t.entity_id()));
+        let bell_dot = if has_attention || has_bell {
             div()
                 .flex_none()
                 .w(px(6.0))
                 .h(px(6.0))
                 .ml_1()
                 .rounded_full()
-                .bg(ui.accent)
+                .bg(if has_attention {
+                    ui.vc_conflict
+                } else {
+                    ui.accent
+                })
                 .into_any_element()
         } else {
             div().into_any_element()
@@ -1614,30 +1725,53 @@ impl Render for Pane {
             .child(body)
             .child(overlay);
 
-        // Active-pane focus ring. `Pane::focus_handle` delegates to the active
-        // tab's content handle, so this is true exactly when this pane's
-        // terminal/markdown holds focus. Every pane reserves a 1px border so
-        // toggling focus only swaps the color (accent ⇄ transparent) — zero
-        // layout reflow between active and inactive panes.
+        // The blue active-pane focus ring is removed (Arthur): no border tint on
+        // focus. The 1px border is still reserved so the US-018 attention glow
+        // can paint without reflow.
+        //
+        // US-018 (orchestration-v2): a pane whose agent waits for input glows
+        // with the attention color — amplify the waiting pane, never degrade
+        // the others. This stays: it signals "agent needs you", not focus.
         let is_active = self.focus_handle(cx).is_focused(window);
+        let has_attention = !self.attention.is_empty();
+        let attention_color = tab_colors().vc_conflict;
+        let peek = self.render_peek_overlay(cx);
         div()
             .flex()
             .flex_col()
             .size_full()
+            .relative()
             .border_1()
-            .border_color(if is_active {
-                accent.opacity(0.5)
+            .border_color(if has_attention {
+                attention_color.opacity(0.7)
             } else {
                 accent.opacity(0.)
             })
             .child(self.render_tab_bar(is_active, window, cx))
             .child(content)
+            .children(peek)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_TAB_TITLE_LEN, truncate_tab_title};
+    use super::{MAX_TAB_TITLE_LEN, peek_badge_line, truncate_tab_title};
+
+    #[test]
+    fn peek_badge_takes_first_line_bounded() {
+        assert_eq!(
+            peek_badge_line("Allow `cargo test`?\ndetails…"),
+            "Allow `cargo test`?"
+        );
+        let long = "x".repeat(120);
+        let badge = peek_badge_line(&long);
+        assert_eq!(badge.chars().count(), 81, "80 chars + ellipsis");
+        assert!(badge.ends_with('…'));
+        assert_eq!(peek_badge_line(""), "");
+        // Multibyte safety: counts chars, not bytes.
+        let accents = "é".repeat(100);
+        assert!(peek_badge_line(&accents).ends_with('…'));
+    }
 
     #[test]
     fn short_titles_pass_through_unchanged() {

@@ -83,6 +83,16 @@ pub struct AgentSession {
     /// Name of the active sub-tool (Edit, Bash, Read, …) reported by
     /// `ai.tool_use` hooks. Cleared on every non-Thinking transition.
     pub active_tool_name: Option<String>,
+    /// The agent's question, from the `ai.notification` hook payload (≤512
+    /// chars, UNTRUSTED terminal-adjacent text — display only, never
+    /// interpreted). Set on `WaitingForInput`, cleared on `prompt_submit` /
+    /// `stop` so a stale question never haunts the next turn (US-016).
+    pub message: Option<String>,
+    /// The surface (terminal entity id) this session runs in, resolved from
+    /// the hook PID by walking the process ancestor chain to a known pane
+    /// `child_pid` (US-017). `None` when unresolved — the session then only
+    /// exists at workspace level (no per-pane glow), never a wrong pane.
+    pub surface_id: Option<u64>,
 }
 
 impl AgentSession {
@@ -91,6 +101,8 @@ impl AgentSession {
             tool,
             state,
             active_tool_name: None,
+            message: None,
+            surface_id: None,
         }
     }
 }

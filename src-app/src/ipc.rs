@@ -718,13 +718,21 @@ fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
                     }
                     "system.capabilities" => {
                         json!({"jsonrpc": "2.0", "result": {
+                            // EP-003 (orchestration-v2): expose the scripting
+                            // gate so `paneflow flow` can refuse a submitting
+                            // flow up-front (run AND --dry-run) instead of
+                            // failing -32601 on its first send. Same process
+                            // as the gate check in the send_* handlers.
+                            "scripting": std::env::var("PANEFLOW_IPC_SCRIPTING")
+                                .is_ok_and(|v| v == "1"),
                             "methods": [
                                 "system.ping", "system.capabilities", "system.identify",
                                 "workspace.list", "workspace.create", "workspace.select",
                                 "workspace.close", "workspace.current",
-                                "workspace.restore_layout",
+                                "workspace.restore_layout", "workspace.up",
                                 "surface.list", "surface.read", "surface.search", "surface.rename",
                                 "surface.send_text", "surface.send_keystroke", "surface.split",
+                                "surface.focus",
                                 "ai.session_start",
                                 "ai.prompt_submit",
                                 "ai.tool_use",

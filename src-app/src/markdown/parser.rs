@@ -551,7 +551,7 @@ const MAX_PLACEHOLDER_CHARS: usize = 256;
 /// sanitized, not just the `[image:]` placeholder. No length cap (unlike
 /// `sanitize_placeholder`); only re-allocates when such a char is actually
 /// present, so the common (clean) path is allocation-free.
-fn strip_bidi_zero_width(text: String) -> String {
+pub(crate) fn strip_bidi_zero_width(text: String) -> String {
     if text.chars().any(is_bidi_or_zero_width) {
         text.chars()
             .filter(|&c| !is_bidi_or_zero_width(c))

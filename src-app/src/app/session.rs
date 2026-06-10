@@ -94,6 +94,18 @@ impl PaneFlowApp {
                         .filter_map(|p| p.strip_prefix(&ws.cwd).ok())
                         .map(|rel| rel.to_string_lossy().into_owned())
                         .collect(),
+                    // EP-002 (orchestration-v2): persist worktree ownership so
+                    // a crash/restart keeps the teardown + prune record.
+                    managed_worktrees: ws
+                        .managed_worktrees
+                        .iter()
+                        .map(|wt| paneflow_config::schema::ManagedWorktreeDef {
+                            path: wt.path.to_string_lossy().into_owned(),
+                            repo_root: wt.repo_root.to_string_lossy().into_owned(),
+                            branch: wt.branch.clone(),
+                            teardown: wt.teardown.as_str().to_string(),
+                        })
+                        .collect(),
                 })
                 .collect(),
             // US-007 (prd-agents-view.md): persist project + thread
@@ -368,6 +380,18 @@ impl PaneFlowApp {
             };
 
             workspace.custom_buttons = ws_session.custom_buttons.clone();
+            // EP-002 (orchestration-v2): rehydrate worktree ownership so the
+            // close-time teardown still applies after a restart.
+            workspace.managed_worktrees = ws_session
+                .managed_worktrees
+                .iter()
+                .map(|def| crate::workspace::worktree::ManagedWorktree {
+                    path: PathBuf::from(&def.path),
+                    repo_root: PathBuf::from(&def.repo_root),
+                    branch: def.branch.clone(),
+                    teardown: crate::workspace::worktree::TeardownPolicy::parse(&def.teardown),
+                })
+                .collect();
             // US-007: rehydrate expanded dirs as absolute paths under this
             // workspace's cwd. Paths that no longer resolve to a directory are
             // dropped lazily later (by the tree's `hydrated` filter on open),
@@ -381,6 +405,31 @@ impl PaneFlowApp {
             // US-013: kick off the deferred git-stats probe (off render thread).
             Self::spawn_initial_git_stats(ws_id, workspace.cwd.clone(), cx);
             workspaces.push(workspace);
+        }
+
+        // US-009 (orchestration-v2): `git worktree prune` on every repo whose
+        // restored workspaces own worktrees — drops references whose directory
+        // vanished (manual rm -rf, crashed teardown). Git-native guarantee: a
+        // worktree whose directory still exists is untouched (AC5). Best-effort,
+        // off the render thread, deduplicated per repo.
+        let mut prune_roots: Vec<std::path::PathBuf> = workspaces
+            .iter()
+            .flat_map(|ws| ws.managed_worktrees.iter().map(|wt| wt.repo_root.clone()))
+            .collect();
+        prune_roots.sort();
+        prune_roots.dedup();
+        if !prune_roots.is_empty() {
+            cx.spawn(async move |_this, _cx: &mut gpui::AsyncApp| {
+                smol::unblock(move || {
+                    for root in prune_roots {
+                        if let Err(e) = crate::workspace::worktree::prune(&root) {
+                            log::debug!("worktree prune skipped for {}: {e}", root.display());
+                        }
+                    }
+                })
+                .await;
+            })
+            .detach();
         }
 
         let active_idx = session
