@@ -109,22 +109,47 @@ is approximate.
 
 ### How do I set `font_family`? [#how-do-i-set-font_family]
 
-Type: `string` (optional). Default: platform monospace fallback chain.
+Type: `string` (optional). Default: `"IBM Plex Mono"` — embedded in
+the binary and registered with the GPUI text system at boot, so the
+default renders identically on every install with zero system-font
+dependency.
 
 ```json
 { "font_family": "JetBrains Mono" }
 ```
 
-Paneflow tries the configured family first, then falls back to the
-first installed monospace family it can locate.
+Resolution walks four steps:
+
+1. **Alias expansion.** The virtual names `".PaneflowMono"` and
+   `".PaneflowSans"` resolve to the embedded `IBM Plex Mono` /
+   `IBM Plex Sans` before anything else runs.
+2. **Embedded short-circuit.** `IBM Plex Mono`, `IBM Plex Sans`, and
+   `Lilex` (the embedded ligature-friendly alternate) are always
+   accepted — they bypass OS font enumeration entirely.
+3. **Installed-monospace validation.** Any other name is checked
+   against the installed-monospace registry (fontconfig on Linux,
+   Core Text on macOS). A name that is not an installed monospace
+   family falls back to the embedded `IBM Plex Mono` with a log
+   warning.
+4. **Glyph fallback.** Codepoints the active family lacks (emoji,
+   CJK, symbols) fall through GPUI's global fallback stack, which
+   ends in the embedded families — so something always renders.
+
+Paneflow embeds three families, four styles each (regular,
+semibold/bold, and their italics): `IBM Plex Mono` (terminal
+default), `IBM Plex Sans` (UI glyph fallback), and `Lilex`
+(alternate mono with programming ligatures).
 
 ### How do I set `font_size`? [#how-do-i-set-font_size]
 
-Type: `number` (optional, pixels). Default: `14`.
+Type: `number` (optional, pixels, range `8.0`–`32.0`). Default: `14`.
 
 ```json
 { "font_size": 14 }
 ```
+
+Values outside the `8.0`–`32.0` range are rejected with a log warning
+and the default is used instead.
 
 ### How do I set `line_height`? [#how-do-i-set-line_height]
 
@@ -218,9 +243,24 @@ Type: `boolean` inside the `terminal` object (optional). Default:
 { "terminal": { "ligatures": true } }
 ```
 
-Enables programming ligatures for fonts that ship them (Fira Code,
-JetBrains Mono, Iosevka, etc.). The font must contain the ligature
-glyphs for the feature to take effect.
+Enables programming ligatures for fonts that ship them (the embedded
+Lilex, Fira Code, JetBrains Mono, Iosevka, etc.). The font must
+contain the ligature glyphs for the feature to take effect.
+
+### How do I set `terminal.scrollback_lines`? [#how-do-i-set-terminalscrollback_lines]
+
+Type: `integer` inside the `terminal` object (optional, range
+`100`–`100000`). Default: `10000`.
+
+```json
+{ "terminal": { "scrollback_lines": 20000 } }
+```
+
+Maximum scrollback history per terminal, in lines. Applied to
+newly-created terminals only — panes that are already open keep the
+buffer they were spawned with. Out-of-range values are clamped into
+the range with a log warning (unlike `font_size`, which rejects and
+falls back to its default).
 
 ## A complete example [#a-complete-example]
 
@@ -235,7 +275,7 @@ glyphs for the feature to take effect.
   "window_decorations": "client",
   "option_as_meta": true,
   "shortcuts": {},
-  "terminal": { "ligatures": false },
+  "terminal": { "ligatures": false, "scrollback_lines": 10000 },
   "telemetry": { "enabled": null },
   "claude_code_button_visible": true,
   "claude_code_bypass_permissions": false,
