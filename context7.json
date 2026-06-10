@@ -1,8 +1,34 @@
 {
   "$schema": "https://context7.com/schema/context7.json",
   "projectTitle": "Paneflow",
-  "description": "Cross-platform GPU-native terminal multiplexer for agentic CLI workflows. Runs Claude Code, Codex, and OpenCode side by side in branch-aware workspaces with native splits, session restore, and built-in markdown panes on Linux and macOS.",
-  "folders": ["docs/user"],
+  "description": "Cross-platform GPU-native terminal multiplexer for agentic CLI workflows. Runs Claude Code, Codex, and OpenCode side by side in branch-aware workspaces on Linux and macOS.",
+  "folders": [],
+  "excludeFolders": [
+    "docs/release",
+    "tasks",
+    "packaging",
+    "crates",
+    "scripts",
+    "debian",
+    "keys",
+    "schemas",
+    "assets",
+    ".github"
+  ],
+  "excludeFiles": [
+    "CLAUDE.md",
+    "AGENTS.md",
+    "devto-v0.3.4-hardening.md",
+    "debugging-rendering.md",
+    "pkg-repo-runbook.md",
+    "release-runbook.md",
+    "release-signing.md",
+    "self-update-signing.md",
+    "validation-aarch64.md",
+    "WINDOWS.md",
+    "WINDOWS-SMOKE-TEST.md",
+    "ZED_AGENT_REFERENCE.md"
+  ],
   "rules": [
     "Paneflow is a GPU-native terminal multiplexer rendered via GPUI (Zed's Rust UI framework). It is NOT a TUI and NOT an Electron app.",
     "Configuration lives in paneflow.json under ~/.config/paneflow/. Config keys (default_shell, theme, window_decorations, shortcuts, commands) are English and must never be translated or renamed.",
