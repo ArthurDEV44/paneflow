@@ -979,11 +979,23 @@ impl Render for PaneFlowApp {
                                 matches!(self.mode, paneflow_config::schema::AppMode::Agents),
                                 |d| {
                                     // Cockpit colors (Arthur): near-black panel
-                                    // (#111111) on the #1d1d1d rail/chrome.
+                                    // (#111111) on the #1d1d1d rail/chrome, plus
+                                    // a faint rail-side hairline so the panel
+                                    // edge reads even where rail and panel grays
+                                    // blur together.
+                                    // 16px matches the Cli/Diff corner-mask
+                                    // radius so the panel silhouette is the
+                                    // same in every mode. The inset must stay
+                                    // ≥ r·(1−1/√2) ≈ 4.7px or the content's
+                                    // square corner pokes through the arc
+                                    // (GPUI doesn't clip children to the
+                                    // radius) — hence 5px, not the old 4px.
                                     d.bg(rgb(0x111111))
-                                        .rounded_tl(px(10.))
-                                        .rounded_bl(px(10.))
-                                        .p(px(4.))
+                                        .rounded_tl(px(16.))
+                                        .rounded_bl(px(16.))
+                                        .p(px(5.))
+                                        .border_l_1()
+                                        .border_color(rgb(0x2c2c2c))
                                 },
                             )
                             .when(
