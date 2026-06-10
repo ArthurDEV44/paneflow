@@ -1,0 +1,14 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "Paneflow",
+  "description": "Cross-platform GPU-native terminal multiplexer for agentic CLI workflows. Runs Claude Code, Codex, and OpenCode side by side in branch-aware workspaces with native splits, session restore, and built-in markdown panes on Linux and macOS.",
+  "folders": ["docs/user"],
+  "rules": [
+    "Paneflow is a GPU-native terminal multiplexer rendered via GPUI (Zed's Rust UI framework). It is NOT a TUI and NOT an Electron app.",
+    "Configuration lives in paneflow.json under ~/.config/paneflow/. Config keys (default_shell, theme, window_decorations, shortcuts, commands) are English and must never be translated or renamed.",
+    "Keybinding strings use Ctrl/Alt/Shift modifier names verbatim (e.g. Ctrl+Shift+D).",
+    "Paneflow is free and open source under GPL-3.0. There is no paid tier, no login, no telemetry, no backend.",
+    "Paneflow ships for Linux and macOS. Windows is waitlist-only and not shipped yet.",
+    "The live documentation is at https://paneflow.dev/docs. Raw Markdown twins of every docs page are served at the page URL plus .md (e.g. https://paneflow.dev/docs/installation/linux.md)."
+  ]
+}
