@@ -36,5 +36,7 @@
     "Paneflow is free and open source under GPL-3.0. There is no paid tier, no login, no telemetry, no backend.",
     "Paneflow ships for Linux and macOS. Windows is waitlist-only and not shipped yet.",
     "The live documentation is at https://paneflow.dev/docs. Raw Markdown twins of every docs page are served at the page URL plus .md (e.g. https://paneflow.dev/docs/installation/linux.md)."
-  ]
+  ],
+  "url": "https://context7.com/arthurdev44/paneflow",
+  "public_key": "pk_akUTOuCOJmCgVquLtFJRo"
 }
