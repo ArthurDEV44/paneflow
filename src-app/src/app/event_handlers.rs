@@ -674,6 +674,25 @@ impl PaneFlowApp {
                 changed = true;
             }
         }
+        // Agents-view threads: a CLI killed mid-turn never sends `ai.stop`,
+        // which would leave the row spinner running forever. Same
+        // conservative policy as above — a thread whose hook frames carried
+        // no PID is kept as-is (cleared by `ai.stop` / `ai.session_end`).
+        for t in self
+            .projects
+            .iter_mut()
+            .flat_map(|p| p.threads.iter_mut())
+            .chain(self.chats.iter_mut())
+        {
+            if t.status != crate::project::ThreadStatus::Idle
+                && let Some(pid) = t.agent_pid
+                && !pid_is_alive(pid)
+            {
+                t.status = crate::project::ThreadStatus::Idle;
+                t.agent_pid = None;
+                changed = true;
+            }
+        }
         if changed {
             // US-018 (orchestration-v2): a swept session may have been
             // driving a pane glow — resync so no orphan attention survives.

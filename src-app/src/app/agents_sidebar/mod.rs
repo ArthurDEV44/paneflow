@@ -36,9 +36,9 @@ pub(crate) use context_menus::render_open_agents_menu;
 pub(crate) use state::{AgentsContextMenu, AgentsDeleteTarget, AgentsRenameTarget};
 
 use gpui::{
-    ClickEvent, Context, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, StyledText, TextRun,
-    Transformation, Window, div, percentage, prelude::*, px, rgb, svg,
+    Animation, AnimationExt, ClickEvent, Context, Font, FontFeatures, FontStyle, FontWeight, Hsla,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
+    StyledText, TextRun, Transformation, Window, div, percentage, prelude::*, px, rgb, svg,
 };
 
 use crate::PaneFlowApp;
@@ -403,6 +403,7 @@ impl PaneFlowApp {
                 now_ms: shared.now_ms,
                 match_pos,
                 ui: shared.ui,
+                status: thread.status,
             },
             cx,
         )
@@ -621,8 +622,40 @@ impl PaneFlowApp {
             now_ms,
             match_pos,
             ui,
+            status,
         } = args;
         let timestamp = format_relative_ts(now_ms, created_at_ms);
+        // Codex-style activity indicator: while the agent's turn is in
+        // flight the relative timestamp gives way to a rotating arc —
+        // the SAME muted `loader-circle.svg` for every agent (Arthur:
+        // no per-agent branding here, match the Codex app's sidebar) —
+        // or a static amber attention dot (WaitingForInput, same amber
+        // as the CLI sidebar badge). Idle restores the timestamp. The
+        // arc self-animates via the declarative Animation+Transformation
+        // API (same pattern as the title-bar update pill), so no shared
+        // loader-loop state is involved.
+        let right_slot: gpui::AnyElement = match status {
+            crate::project::ThreadStatus::Thinking
+            | crate::project::ThreadStatus::Spawning
+            | crate::project::ThreadStatus::Streaming => svg()
+                .size(px(11.))
+                .flex_none()
+                .path("icons/loader-circle.svg")
+                .text_color(ui.muted)
+                .with_animation(
+                    SharedString::from(format!("agents-{row_scope}-spinner-{thread_id}")),
+                    Animation::new(std::time::Duration::from_secs(1)).repeat(),
+                    |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+                )
+                .into_any_element(),
+            crate::project::ThreadStatus::WaitingForInput => div()
+                .text_color(rgb(0xFBBF24))
+                .child("●")
+                .into_any_element(),
+            crate::project::ThreadStatus::Idle | crate::project::ThreadStatus::Failed => {
+                div().child(timestamp).into_any_element()
+            }
+        };
         let title_color = ui.text;
         let title_weight = FontWeight::NORMAL;
         let is_renaming = rename_input.is_some();
@@ -760,7 +793,7 @@ impl PaneFlowApp {
                     .text_size(px(10.))
                     .text_color(ui.muted)
                     .group_hover(row_group.clone(), |s| s.invisible())
-                    .child(timestamp),
+                    .child(right_slot),
             )
             .child(hover_actions_cluster(
                 target, thread_id, is_pinned, row_scope, row_group, armed, ui, cx,
@@ -989,6 +1022,10 @@ struct ThreadRowArgs {
     /// `highlight_positions` slot on `ThreadItem`.
     match_pos: Option<(usize, usize)>,
     ui: crate::theme::UiColors,
+    /// Live agent-turn state (driven by the `ai.*` IPC hooks). While the
+    /// turn is in flight the row's relative timestamp gives way to a
+    /// spinner / attention dot, Codex-app style.
+    status: crate::project::ThreadStatus,
 }
 
 /// Per-render state shared by every thread/chat row, captured once in

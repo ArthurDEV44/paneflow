@@ -40,6 +40,16 @@ const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
 /// Read the user's configured scrollback length, clamped to the
 /// [`paneflow_config::TerminalConfig`] allowed range. Falls back to
 /// [`DEFAULT_SCROLLBACK_LINES`] when no `terminal` block exists.
+/// Wall-clock millis since UNIX epoch (0 on a pre-1970 clock). Mirrors
+/// `crate::project::now_unix_millis` — duplicated locally so the terminal
+/// layer doesn't grow a dependency on the Agents domain model.
+fn unix_ms_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn resolved_scrollback_lines() -> usize {
     paneflow_config::loader::load_config()
         .terminal
@@ -228,6 +238,14 @@ pub struct TerminalState {
     /// visible). Atomic because `write_to_pty` takes `&self`. Mirrors Zed's
     /// keyboard_input_sent (crates/terminal/src/terminal.rs:2572-2576).
     keyboard_input_sent: std::sync::atomic::AtomicBool,
+    /// Millis-since-UNIX-epoch of the last genuine user input written via
+    /// `write_to_pty` (0 = never). Backs the Agents-row activity heuristic:
+    /// an output burst hot on the heels of a keystroke is the TUI echoing /
+    /// redrawing its input box, not the agent producing work, so it must
+    /// not light the sidebar spinner. Atomic for the same `&self` reason as
+    /// `keyboard_input_sent`; wall-clock (not `Instant`) because an atomic
+    /// needs a plain integer and sub-second windows tolerate clock jumps.
+    last_user_input_unix_ms: std::sync::atomic::AtomicU64,
     /// EP-002 US-005: numeric signal + name if the child was terminated by a
     /// signal (crash), formatted "N (Name)" e.g. "11 (Segmentation fault)".
     /// `None` for a normal code exit. The numeric signal comes directly from
@@ -700,6 +718,7 @@ impl TerminalState {
             events_rx: Some(events_rx),
             exited: None,
             keyboard_input_sent: std::sync::atomic::AtomicBool::new(false),
+            last_user_input_unix_ms: std::sync::atomic::AtomicU64::new(0),
             exit_signal: None,
             child_pid: 0,
             #[cfg(target_os = "macos")]
@@ -1062,7 +1081,18 @@ impl TerminalState {
         // deliberately bypass this by calling `self.notifier.notify` directly.
         self.keyboard_input_sent
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.last_user_input_unix_ms
+            .store(unix_ms_now(), std::sync::atomic::Ordering::Relaxed);
         self.notify_or_buffer(input.into());
+    }
+
+    /// Whether genuine user input was written via [`Self::write_to_pty`]
+    /// within the last `window_ms`. See `last_user_input_unix_ms`.
+    pub fn user_input_within_ms(&self, window_ms: u64) -> bool {
+        let last = self
+            .last_user_input_unix_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        last != 0 && unix_ms_now().saturating_sub(last) < window_ms
     }
 
     /// Send input to the live PTY, or queue it when the terminal is still

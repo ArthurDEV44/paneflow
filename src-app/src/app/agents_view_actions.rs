@@ -25,6 +25,20 @@ use paneflow_config::schema::AppMode;
 /// snaps to the right slot on mode toggle.
 pub(crate) const AGENTS_SIDEBAR_WIDTH: f32 = 280.0;
 
+/// Quiescence window for the output-activity spinner heuristic: a
+/// non-hooked agent thread whose PTY emits no (non-echo) output for this
+/// long is considered done and its row demotes back to the timestamp.
+/// Wide enough to ride out inter-token stalls in a streaming TUI (which
+/// animate their own spinners, so genuine turns rarely go fully quiet),
+/// narrow enough that the row doesn't keep spinning long after the
+/// composer is back.
+const AGENT_ACTIVITY_QUIET_MS: u64 = 3_000;
+
+/// Output bursts within this window after a user keystroke are treated
+/// as the TUI echoing / redrawing its input box rather than agent work —
+/// typing a prompt must not light the row spinner.
+const AGENT_ACTIVITY_ECHO_WINDOW_MS: u64 = 500;
+
 impl PaneFlowApp {
     /// Toggle between [`AppMode::Cli`] and [`AppMode::Agents`].
     ///
@@ -392,10 +406,12 @@ impl PaneFlowApp {
     /// PTY in the thread's cwd via [`TerminalView::with_cwd`] and (when
     /// the thread is bound to a CLI agent) auto-launches it.
     ///
-    /// `workspace_id` for the new view defaults to the thread's own
-    /// `id` so PTY tracking (signal routing, kill-on-quit) keys off a
-    /// stable per-thread identifier rather than the CLI-mode workspace
-    /// slot (which has no meaning in the Agents view).
+    /// `workspace_id` for the new view is the thread's own `id` offset
+    /// into the Agents namespace ([`crate::project::thread_env_id`]) so
+    /// PTY tracking keys off a stable per-thread identifier AND the
+    /// `ai.*` hook frames emitted from inside this PTY route back to
+    /// the thread (spinner / attention state) instead of colliding with
+    /// a same-numbered CLI-mode workspace.
     fn ensure_terminal_view_mounted(
         &mut self,
         target: crate::project::AgentsTarget,
@@ -422,7 +438,12 @@ impl PaneFlowApp {
             crate::project::ThreadKind::Terminal => None,
         });
         let view = cx.new(|cx| {
-            crate::terminal::view::TerminalView::with_cwd(thread_id, Some(cwd), None, cx)
+            crate::terminal::view::TerminalView::with_cwd(
+                crate::project::thread_env_id(thread_id),
+                Some(cwd),
+                None,
+                cx,
+            )
         });
         // Cache miss = first mount of this thread's PTY (fresh creation
         // or first reopen after a restart). When the thread is bound to
@@ -449,13 +470,34 @@ impl PaneFlowApp {
         // generic "Terminal" placeholder. The subscription is detached
         // -- the entity owns its lifecycle and the listener drops with
         // it when the cache evicts the entry.
+        //
+        // ActivityBurst feeds the spinner fallback for agents WITHOUT a
+        // hook integration (only the Claude Code / Codex shims emit
+        // `ai.*` frames): sustained PTY output means the agent is
+        // working. Two guards keep it honest — bursts hot on the heels
+        // of a keystroke are the TUI echoing the user's typing (not
+        // agent work), and `note_agents_thread_activity` is a no-op
+        // once the thread is `hook_managed`. Restricted to agent-bound
+        // threads so a bare-shell thread streaming a dev server never
+        // wears an "agent running" spinner.
+        let heuristic_eligible = terminal_agent.is_some();
         cx.subscribe(
             &view,
-            move |this, src, event: &crate::terminal::view::TerminalEvent, cx| {
-                if matches!(event, crate::terminal::view::TerminalEvent::TitleChanged) {
+            move |this, src, event: &crate::terminal::view::TerminalEvent, cx| match event {
+                crate::terminal::view::TerminalEvent::TitleChanged => {
                     let new_title = src.read(cx).terminal.title.clone();
                     this.handle_terminal_thread_title_changed(thread_id, new_title, cx);
                 }
+                crate::terminal::view::TerminalEvent::ActivityBurst
+                    if heuristic_eligible
+                        && !src
+                            .read(cx)
+                            .terminal
+                            .user_input_within_ms(AGENT_ACTIVITY_ECHO_WINDOW_MS) =>
+                {
+                    this.note_agents_thread_activity(thread_id, cx);
+                }
+                _ => {}
             },
         )
         .detach();
@@ -463,6 +505,84 @@ impl PaneFlowApp {
             .agents_terminal_view_cache
             .insert(thread_id, view.clone());
         Some(view)
+    }
+
+    /// Resolve a thread by its stable [`crate::project::Thread::id`] across
+    /// project threads and free chats (both allocate from the same counter,
+    /// so the id is globally unique).
+    pub(crate) fn agents_thread_mut_by_id(
+        &mut self,
+        thread_id: u64,
+    ) -> Option<&mut crate::project::Thread> {
+        self.projects
+            .iter_mut()
+            .flat_map(|p| p.threads.iter_mut())
+            .chain(self.chats.iter_mut())
+            .find(|t| t.id == thread_id)
+    }
+
+    /// Spinner fallback for agents without a hook integration (everything
+    /// except the Claude Code / Codex shims): an `ActivityBurst` from the
+    /// thread's PTY promotes the row to `Thinking`, and a self-rearming
+    /// quiescence loop demotes it back to `Idle` once no burst has landed
+    /// for [`AGENT_ACTIVITY_QUIET_MS`]. No-op the moment the thread turns
+    /// `hook_managed` — precise `ai.*` lifecycle frames always win over
+    /// the heuristic.
+    fn note_agents_thread_activity(&mut self, thread_id: u64, cx: &mut Context<Self>) {
+        let Some(t) = self.agents_thread_mut_by_id(thread_id) else {
+            return;
+        };
+        if t.hook_managed {
+            return;
+        }
+        t.activity_gen = t.activity_gen.wrapping_add(1);
+        let gen_now = t.activity_gen;
+        if t.status != crate::project::ThreadStatus::Idle {
+            return;
+        }
+        t.status = crate::project::ThreadStatus::Thinking;
+        cx.notify();
+
+        // One loop per turn (spawned only on the Idle→Thinking edge, not
+        // per burst): every quiet-window tick it compares the burst
+        // counter against its snapshot — unchanged means the output went
+        // quiet and the turn is over.
+        let mut seen_gen = gen_now;
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                loop {
+                    smol::Timer::after(std::time::Duration::from_millis(AGENT_ACTIVITY_QUIET_MS))
+                        .await;
+                    let done = cx.update(|cx| {
+                        this.update(cx, |app, cx| {
+                            let Some(t) = app.agents_thread_mut_by_id(thread_id) else {
+                                return true;
+                            };
+                            // A hook frame arriving mid-loop takes over the
+                            // status; any non-Thinking state likewise means
+                            // someone else owns it now.
+                            if t.hook_managed || t.status != crate::project::ThreadStatus::Thinking
+                            {
+                                return true;
+                            }
+                            if t.activity_gen == seen_gen {
+                                t.status = crate::project::ThreadStatus::Idle;
+                                cx.notify();
+                                true
+                            } else {
+                                seen_gen = t.activity_gen;
+                                false
+                            }
+                        })
+                    });
+                    match done {
+                        Ok(false) => {}
+                        _ => break,
+                    }
+                }
+            },
+        )
+        .detach();
     }
 
     /// US-010 (prd-agents-ui-codex-redesign-2026-Q3.md): the title-bar brand
