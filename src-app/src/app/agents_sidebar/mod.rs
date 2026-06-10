@@ -740,7 +740,11 @@ impl PaneFlowApp {
             .gap(px(6.));
 
         if is_active {
-            row = row.bg(ui.surface);
+            // Selection gray pinned against the rail's hardcoded #1d1d1d
+            // cockpit color (not the theme's `ui.surface`, which sits too
+            // close to it to read as selected) — Arthur: "#2c2c2c, un gris
+            // plus clair que la sidebar".
+            row = row.bg(rgb(0x2c2c2c));
         } else {
             row = row.hover(|s| {
                 let ui = crate::theme::ui_colors();
