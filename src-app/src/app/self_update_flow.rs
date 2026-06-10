@@ -72,6 +72,74 @@ pub(crate) fn is_strict_semver(raw: &str) -> bool {
 }
 
 impl PaneFlowApp {
+    /// Current update CTA state, shared by every surface that renders it
+    /// (Diff title-bar pill, Cli/Agents sidebar banner). `None` when no
+    /// update is available (or the pill was dismissed for this launch).
+    ///
+    /// Pill state for in-app installer flows (AppImage, TarGz, AppBundle,
+    /// MSI, pkexec dnf|apt) is shared between the SystemPackage branch and
+    /// the catch-all so both reflect the live install state machine; if
+    /// the SystemPackage branch ignored it, the pkexec dnf/apt path would
+    /// render "Update via dnf" frozen for the entire install while
+    /// is_busy() silently dropped clicks.
+    pub(crate) fn update_pill_info(&self) -> Option<crate::window_chrome::title_bar::UpdateInfo> {
+        use crate::window_chrome::title_bar;
+        let in_app_state = match &self.self_update.self_update_status {
+            update::SelfUpdateStatus::Idle => title_bar::SelfUpdatePillState::Idle,
+            update::SelfUpdateStatus::Downloading => title_bar::SelfUpdatePillState::Downloading,
+            update::SelfUpdateStatus::Installing => title_bar::SelfUpdatePillState::Installing,
+            update::SelfUpdateStatus::ReadyToRestart => {
+                title_bar::SelfUpdatePillState::ReadyToRestart
+            }
+            update::SelfUpdateStatus::Errored(_) => title_bar::SelfUpdatePillState::Errored,
+        };
+        match &self.self_update.update_status {
+            Some(update::checker::UpdateStatus::Available { version, .. }) => {
+                let kind = match &self.self_update.install_method {
+                    update::install_method::InstallMethod::SystemPackage { manager } => {
+                        match manager {
+                            // Dnf / Apt: in-app pkexec install. Pill follows
+                            // the install state machine like every other
+                            // in-app installer.
+                            update::install_method::PackageManager::Dnf
+                            | update::install_method::PackageManager::Apt => {
+                                title_bar::UpdatePillKind::InApp(in_app_state)
+                            }
+                            // Clipboard-only paths: kickoff_self_update_install
+                            // returns early after copying the upgrade command,
+                            // self_update_status never leaves Idle.
+                            update::install_method::PackageManager::RpmOstree => {
+                                title_bar::UpdatePillKind::SystemManaged(
+                                    title_bar::SystemPackageKind::RpmOstree,
+                                )
+                            }
+                            update::install_method::PackageManager::Other => {
+                                title_bar::UpdatePillKind::SystemManaged(
+                                    title_bar::SystemPackageKind::Other,
+                                )
+                            }
+                        }
+                    }
+                    // Flatpak / Snap / `PANEFLOW_UPDATE_EXPLANATION` —
+                    // packager owns updates, render the same generic
+                    // SystemHint pill. The explanation copy is surfaced
+                    // by the click handler below.
+                    update::install_method::InstallMethod::ExternallyManaged { .. } => {
+                        title_bar::UpdatePillKind::SystemManaged(
+                            title_bar::SystemPackageKind::Other,
+                        )
+                    }
+                    _ => title_bar::UpdatePillKind::InApp(in_app_state),
+                };
+                Some(title_bar::UpdateInfo {
+                    version: version.clone(),
+                    kind,
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// Action entry point. Stays a thin wrapper around
     /// [`PaneFlowApp::kickoff_self_update_install`] so that auto-kickoff
     /// from the polling loop can share the exact same logic without

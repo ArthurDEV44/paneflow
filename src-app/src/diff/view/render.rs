@@ -248,17 +248,25 @@ impl Render for DiffView {
             .bg(ui.base)
             .text_color(ui.text);
 
+        let mode = self.effective_mode(window);
+        // Consume the host-pushed scope breadcrumb (push-only contract: the
+        // host re-pushes it every frame before this render runs). Rendered
+        // even on the empty state — it carries the scope/project/branches
+        // pickers, the only way OUT of an empty scope.
+        let scope_slot = self.scope_slot.take();
+
         if self.columns.is_empty() {
-            return root.child(centered(ui.muted, "No sibling worktrees to diff".into()));
+            return root
+                .child(self.render_toolbar(mode, scope_slot, cx))
+                .child(centered(ui.muted, "No sibling worktrees to diff".into()));
         }
 
-        let mode = self.effective_mode(window);
         self.broadcast_scroll(mode);
         let visible: Vec<bool> = self.columns.iter().map(|column| column.visible).collect();
         self.arrange.reconcile(&visible);
         let body = self.render_arrange(&self.arrange, mode, cx);
 
-        let root = root.child(self.render_toolbar(mode, cx));
+        let root = root.child(self.render_toolbar(mode, scope_slot, cx));
         let mut root = root.child(div().flex_1().min_h_0().flex().child(body));
         if let Some(menu) = &self.body_menu {
             root = root.child(self.render_body_menu(menu, ui, cx));

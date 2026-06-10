@@ -700,6 +700,13 @@ impl PaneFlowApp {
             cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Filter files…", cx));
         cx.observe(&diff_file_filter, |_, _, cx| cx.notify())
             .detach();
+        // The Agents sidebar search field (same pattern): a real single-line
+        // TextInput, observed so each keystroke re-renders the sidebar to
+        // re-filter (the TextInput only notifies itself).
+        let agents_filter_input =
+            cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Search threads", cx));
+        cx.observe(&agents_filter_input, |_, _, cx| cx.notify())
+            .detach();
 
         let mut app = Self {
             workspaces,
@@ -834,8 +841,8 @@ impl PaneFlowApp {
                 agents_rename_input: None,
                 agents_menu_open: None,
                 agents_confirm_delete: None,
-                agents_filter: String::new(),
-                agents_filter_focus: cx.focus_handle(),
+                agents_delete_armed: None,
+                agents_filter_input,
                 agents_skills_visible: false,
                 agents_skills_tab: crate::agents_view::SkillsTab::default(),
                 agents_skills_copied: None,

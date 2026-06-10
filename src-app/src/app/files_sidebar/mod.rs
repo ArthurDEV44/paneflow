@@ -171,9 +171,11 @@ impl PaneFlowApp {
             .w(SIDEBAR_WIDTH)
             .flex_shrink_0()
             .h_full()
-            .bg(ui.surface)
-            .border_l_1()
-            .border_color(ui.border)
+            // Cockpit rail (#1d1d1d), mirroring the left + sessions sidebars:
+            // ui.surface is the system's SELECTED fill — a whole panel in it
+            // out-shouted every selection. No border-left: the rail and the
+            // terminal panel separate by a luminance step.
+            .bg(gpui::rgb(0x1d1d1d))
             .child(self.files_sidebar_header(ui, cx))
             .child(self.files_sidebar_body(ui, cx))
             .into_any_element()

@@ -326,13 +326,17 @@ impl PaneFlowApp {
         let ws = &self.workspaces[ws_idx];
         let ui = crate::theme::ui_colors();
 
-        let header_title = match &modal.view {
-            ModalView::List => format!("Custom Buttons — {}", ws.title),
+        // Codex-quiet header: no own background, no divider — the title sits
+        // directly on the card; hierarchy comes from type + spacing. The
+        // workspace context rides along as a muted suffix instead of an
+        // em-dash compound title.
+        let (header_title, header_context) = match &modal.view {
+            ModalView::List => ("Custom buttons", Some(ws.title.clone())),
             ModalView::Form { editing_id, .. } => {
                 if editing_id.is_some() {
-                    "Edit Button".to_string()
+                    ("Edit button", None)
                 } else {
-                    "New Button".to_string()
+                    ("New button", None)
                 }
             }
         };
@@ -343,16 +347,31 @@ impl PaneFlowApp {
             .justify_between()
             .gap(px(12.))
             .px(px(16.))
-            .py(px(12.))
-            .border_b_1()
-            .border_color(ui.border)
-            .bg(ui.surface)
+            .pt(px(14.))
+            .pb(px(6.))
             .child(
                 div()
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ui.text)
-                    .child(header_title),
+                    .flex()
+                    .flex_row()
+                    .items_baseline()
+                    .gap(px(7.))
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ui.text)
+                            .child(header_title),
+                    )
+                    .when_some(header_context, |d, ws_title| {
+                        d.child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(ui.muted)
+                                .truncate()
+                                .child(ws_title),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -523,7 +542,7 @@ impl PaneFlowApp {
                         div()
                             .text_size(px(11.))
                             .text_color(ui.muted)
-                            .child("Click \"+ New Button\" to create one."),
+                            .child("Click \"+ New button\" to create one."),
                     ),
             );
         } else {
@@ -534,9 +553,14 @@ impl PaneFlowApp {
                 let icon_path = SharedString::from(btn.icon.clone());
                 let name = btn.name.clone();
                 let cmd_preview = btn.command.clone();
+                // Hover-reveal actions (Codex/Agents idiom): edit + delete stay
+                // `.invisible()` (in flow — zero layout shift) until the row is
+                // hovered.
+                let row_group = SharedString::from(format!("cbtn-row-g-{btn_id}"));
                 list = list.child(
                     div()
                         .id(SharedString::from(format!("cbtn-row-{btn_id}")))
+                        .group(row_group.clone())
                         .flex()
                         .flex_row()
                         .items_center()
@@ -590,6 +614,8 @@ impl PaneFlowApp {
                         .child(
                             div()
                                 .id(SharedString::from(format!("cbtn-edit-{edit_id}")))
+                                .invisible()
+                                .group_hover(row_group.clone(), |s| s.visible())
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -606,13 +632,15 @@ impl PaneFlowApp {
                                     svg()
                                         .size(px(13.))
                                         .flex_none()
-                                        .path("icons/settings.svg")
+                                        .path("icons/edit.svg")
                                         .text_color(ui.muted),
                                 ),
                         )
                         .child(
                             div()
                                 .id(SharedString::from(format!("cbtn-del-{del_id}")))
+                                .invisible()
+                                .group_hover(row_group.clone(), |s| s.visible())
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -637,65 +665,46 @@ impl PaneFlowApp {
             }
         }
 
+        // Quiet "New button" row (the Agents "New chat" language): no border,
+        // muted at rest, fill on hover.
         let new_row = div()
             .id("cbtn-new")
-            .mt(px(6.))
-            .px(px(10.))
-            .py(px(9.))
+            .mt(px(4.))
+            .px(px(8.))
+            .py(px(8.))
             .rounded(px(6.))
             .cursor_pointer()
-            .border_1()
-            .border_color(ui.border)
-            .hover(|s| s.bg(ui.subtle).border_color(ui.muted))
+            .hover(|s| s.bg(ui.subtle))
             .flex()
             .flex_row()
             .items_center()
-            .justify_center()
-            .gap(px(8.))
+            .gap(px(10.))
             .text_size(px(12.))
             .font_weight(FontWeight::MEDIUM)
-            .text_color(ui.text)
+            .text_color(ui.muted)
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.begin_new_button(window, cx);
                 cx.stop_propagation();
             }))
             .child(
-                svg()
-                    .size(px(13.))
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(26.))
+                    .h(px(26.))
                     .flex_none()
-                    .path("icons/plus.svg")
-                    .text_color(ui.text),
+                    .child(
+                        svg()
+                            .size(px(13.))
+                            .flex_none()
+                            .path("icons/plus.svg")
+                            .text_color(ui.muted),
+                    ),
             )
-            .child("New Button");
+            .child("New button");
 
         list = list.child(new_row);
-
-        let footer = div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .px(px(12.))
-            .py(px(10.))
-            .border_t_1()
-            .border_color(ui.border)
-            .child(
-                div()
-                    .id("cbtn-done")
-                    .px(px(14.))
-                    .py(px(6.))
-                    .rounded(px(6.))
-                    .cursor_pointer()
-                    .bg(ui.text)
-                    .text_color(ui.base)
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .hover(|s| s.opacity(0.85))
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.close_custom_buttons_modal(cx);
-                        cx.stop_propagation();
-                    }))
-                    .child("Done"),
-            );
 
         let bar = scrollbar::render(
             &modal.list_scroll,
@@ -732,13 +741,16 @@ impl PaneFlowApp {
             .child(list)
             .when_some(bar, |d, sb| d.child(sb));
 
+        // No "Done" footer (Codex-minimal): ✕, Esc, and the backdrop click
+        // already dismiss — a primary close button was a third affordance for
+        // the same action. A small bottom pad keeps the list off the edge.
         div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
+            .pb(px(6.))
             .child(list_wrapper)
-            .child(footer)
             .into_any_element()
     }
 
@@ -774,11 +786,12 @@ impl PaneFlowApp {
                     .h(px(32.))
                     .rounded(px(6.))
                     .cursor_pointer()
-                    .border_1()
-                    .when(is_selected, |d| d.border_color(ui.text).bg(ui.subtle))
-                    .when(!is_selected, |d| {
-                        d.border_color(ui.border).hover(|s| s.bg(ui.subtle))
-                    })
+                    // Selection by fill, not border (Codex): the picked tile
+                    // gets the same brightest-neutral fill as every selected
+                    // surface in the app (#323232); the rest are bare and
+                    // fill on hover.
+                    .when(is_selected, |d| d.bg(gpui::rgb(0x323232)))
+                    .when(!is_selected, |d| d.hover(|s| s.bg(ui.subtle)))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         if let Some(modal) = this.custom_buttons_modal.as_mut()
                             && let ModalView::Form {
@@ -813,19 +826,20 @@ impl PaneFlowApp {
             "Create"
         };
 
+        // Quiet form footer: no divider (separation by spacing), Cancel is a
+        // bare quiet button — only the primary CTA carries weight.
         let footer = div()
             .flex()
             .flex_row()
             .justify_between()
             .items_center()
-            .px(px(12.))
-            .py(px(10.))
-            .border_t_1()
-            .border_color(ui.border)
+            .px(px(16.))
+            .pt(px(4.))
+            .pb(px(12.))
             .child(
                 div()
                     .text_size(px(11.))
-                    .text_color(ui.muted)
+                    .text_color(ui.muted.opacity(0.8))
                     .child("Tab to switch field · Enter to save · Esc to cancel"),
             )
             .child(
@@ -840,8 +854,6 @@ impl PaneFlowApp {
                             .py(px(6.))
                             .rounded(px(6.))
                             .cursor_pointer()
-                            .border_1()
-                            .border_color(ui.border)
                             .text_size(px(12.))
                             .text_color(ui.muted)
                             .hover(|s| s.bg(ui.subtle).text_color(ui.text))

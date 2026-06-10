@@ -330,7 +330,9 @@ impl DiffElement {
             }
             RowKind::Fold => {
                 // Collapsed unchanged region: a faint separator band with a
-                // muted count, aligned under the code column.
+                // quiet count, aligned under the code column. The label is
+                // dimmed below `muted` (Codex redesign): it is pure metadata —
+                // it must never compete with the code lines around it.
                 quads.push(Quad {
                     bounds: row_bounds,
                     color: p.muted.opacity(0.06),
@@ -338,7 +340,7 @@ impl DiffElement {
                 let text_x = origin.x + px(BAR_W + PAD2) + self.gutter_w;
                 glyphs.push(Glyphs {
                     origin: point(text_x, origin.y),
-                    line: self.shape_plain(window, row.text.clone(), p.muted),
+                    line: self.shape_plain(window, row.text.clone(), p.muted.opacity(0.6)),
                     clip: Some(row_bounds),
                 });
             }

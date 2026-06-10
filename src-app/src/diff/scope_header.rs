@@ -458,20 +458,18 @@ impl PaneFlowApp {
                 None => (None, None),
             };
 
-        // Breadcrumb-style header — scope › project. No bottom border: it flows
-        // straight into the bar below (the DiffView toolbar in single-repo
-        // scopes, the repo-tab strip in Multi-project) so the whole thing reads
-        // as one connected toolbar rather than two stacked rows.
+        // Breadcrumb FRAGMENT — scope › project › branches. No bar of its own
+        // (no height / bg / padding): it is INJECTED into the single unified
+        // toolbar (DiffView toolbar in single-repo scopes, the repo-tab strip
+        // in Multi-project) via the `scope_slot` push, so the whole Diff mode
+        // has exactly one row of chrome.
         div()
             .relative()
             .flex()
             .flex_row()
             .items_center()
             .gap(px(4.))
-            .h(px(34.))
             .flex_none()
-            .px(px(8.))
-            .bg(ui.surface)
             .child(trigger)
             .children(popover)
             .when(show_project, |d| {

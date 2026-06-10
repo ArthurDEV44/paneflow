@@ -118,16 +118,16 @@ impl PaneFlowApp {
         // hardware.
         let _render_canary = RenderTimeCanary::new(self.projects.len());
         let ui = crate::theme::ui_colors();
-        let theme = crate::theme::active_theme();
 
         let mut sidebar = div()
             .relative()
             .w(px(AGENTS_SIDEBAR_WIDTH))
             .flex_shrink_0()
             .h_full()
-            .bg(theme.title_bar_background)
-            .border_r_1()
-            .border_color(ui.border)
+            // Cockpit color (Arthur): #1d1d1d rail/chrome, a touch lighter than
+            // the near-black #111111 panel; no divider — the bg step + the
+            // floating rounded panel provide the separation.
+            .bg(rgb(0x1d1d1d))
             .flex()
             .flex_col();
 
@@ -157,7 +157,7 @@ impl PaneFlowApp {
         // US-010 (audit P1-4): lowercase the needle exactly once per render
         // (the matchers all take a pre-lowered needle). `query` keeps the
         // original case for the user-facing empty-state hint.
-        let query = self.agents_view.agents_filter.clone();
+        let query = self.agents_view.agents_filter_input.read(cx).value();
         let query_lower = query.to_lowercase();
         let filtering = !query.is_empty();
 
@@ -626,6 +626,9 @@ impl PaneFlowApp {
         let title_color = ui.text;
         let title_weight = FontWeight::NORMAL;
         let is_renaming = rename_input.is_some();
+        // Inline delete-confirm: this row is "armed" (shows a red Delete button
+        // in place of the trash icon) when its target matches the armed slot.
+        let armed = self.agents_view.agents_delete_armed == Some(target);
 
         // US-023: shared group name so the hover-only action cluster
         // can listen for hover on the row container without listening
@@ -760,7 +763,7 @@ impl PaneFlowApp {
                     .child(timestamp),
             )
             .child(hover_actions_cluster(
-                target, thread_id, is_pinned, row_scope, row_group, ui, cx,
+                target, thread_id, is_pinned, row_scope, row_group, armed, ui, cx,
             ));
 
         row.into_any_element()
@@ -800,32 +803,24 @@ impl PaneFlowApp {
         window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let has_focus = self.agents_view.agents_filter_focus.is_focused(window);
-        let query = self.agents_view.agents_filter.clone();
-        let is_empty = query.is_empty();
+        // Real single-line text input: cursor, arrow keys, Delete, Ctrl+A/C/V/X,
+        // mouse selection / click-to-position all come from `TextInput` and its
+        // registered keybindings. The needle is read from `value()` at render.
+        let has_focus = self
+            .agents_view
+            .agents_filter_input
+            .read(cx)
+            .focus_handle
+            .is_focused(window);
+        let is_empty = self
+            .agents_view
+            .agents_filter_input
+            .read(cx)
+            .value()
+            .is_empty();
 
-        // What the user sees in the input area: placeholder when
-        // empty + not focused, the live query otherwise (with a `|`
-        // cursor when focused).
-        let display_label: SharedString = if is_empty && !has_focus {
-            "Search threads".into()
-        } else if has_focus {
-            format!("{query}|").into()
-        } else {
-            query.clone().into()
-        };
-        let label_color = if is_empty && !has_focus {
-            ui.muted
-        } else {
-            ui.text
-        };
-
-        // The outer row wrapper owns horizontal padding + bottom
-        // margin so trailing affordances can sit on the same row as
-        // the input without double-spacing.
-        let mut input = div()
+        let mut field = div()
             .id("agents-sidebar-filter")
-            .track_focus(&self.agents_view.agents_filter_focus)
             .px(px(8.))
             .py(px(5.))
             .rounded(px(6.))
@@ -838,30 +833,63 @@ impl PaneFlowApp {
             .cursor_text();
 
         if has_focus {
-            input = input.border_color(ui.accent);
+            // Minimalist focus ring: a neutral muted border, not the loud blue
+            // accent — a subtle lift over the default border.
+            field = field.border_color(ui.muted);
         } else {
-            input = input.border_color(ui.border).hover(|s| {
+            field = field.border_color(ui.border).hover(|s| {
                 let ui = crate::theme::ui_colors();
                 s.border_color(ui.muted)
             });
         }
 
-        // Mark the input as focusable + accept key events. Down arrow
-        // jumps to the first match; Escape clears + blurs; Backspace
-        // pops; printable chars push.
-        input = input
-            .on_click(cx.listener(|this, _: &ClickEvent, w, cx| {
-                this.agents_view.agents_filter_focus.focus(w, cx);
-                cx.notify();
+        field = field
+            // Escape clears the query; Enter jumps to the first matching thread.
+            // Cursor movement / Delete / Ctrl+A,C,V,X / mouse selection are all
+            // handled inside the focused TextInput via its own keybindings; the
+            // unbound Escape/Enter bubble up to this container.
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _w, cx| {
+                match ev.keystroke.key.as_str() {
+                    "escape" => {
+                        this.agents_view.agents_filter_input.update(cx, |inp, cx| {
+                            inp.content = SharedString::default();
+                            inp.selected_range = 0..0;
+                            cx.notify();
+                        });
+                        cx.stop_propagation();
+                    }
+                    "enter" => {
+                        let q = this
+                            .agents_view
+                            .agents_filter_input
+                            .read(cx)
+                            .value()
+                            .to_lowercase();
+                        if let Some((p, t)) = filter::first_matching_thread(&this.projects, &q) {
+                            let _ = this.select_thread(p, t, cx);
+                        }
+                        cx.stop_propagation();
+                    }
+                    _ => {}
+                }
             }))
-            .on_key_down(cx.listener(|this, e: &KeyDownEvent, _w, cx| {
-                handle_filter_key(this, e, cx);
+            // Clicking outside drops focus so the caret disappears and keys stop
+            // being captured. Guarded so a click elsewhere never blurs another
+            // focused element.
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                if this
+                    .agents_view
+                    .agents_filter_input
+                    .read(cx)
+                    .focus_handle
+                    .is_focused(window)
+                {
+                    window.blur();
+                    cx.notify();
+                }
             }))
             .child(
-                // US-022: magnifier icon (Zed's FilterEditor uses
-                // IconName::MagnifyingGlass). Paneflow's existing
-                // tool_search.svg is the closest visual analog and is
-                // already shipped for the inline read/search tool.
+                // Magnifier icon (Zed's FilterEditor uses MagnifyingGlass).
                 svg()
                     .size(px(12.))
                     .flex_none()
@@ -873,15 +901,14 @@ impl PaneFlowApp {
                     .flex_1()
                     .min_w_0()
                     .text_size(px(12.))
-                    .text_color(label_color)
-                    .truncate()
-                    .child(display_label),
+                    .text_color(ui.text)
+                    .child(self.agents_view.agents_filter_input.clone()),
             );
 
-        // Trailing "clear filter" button when the field has content,
-        // so mouse users do not have to hit Escape.
+        // Trailing "clear filter" button when the field has content, so mouse
+        // users do not have to hit Escape.
         if !is_empty {
-            input = input.child(
+            field = field.child(
                 div()
                     .id("agents-sidebar-filter-clear")
                     .flex_none()
@@ -898,8 +925,11 @@ impl PaneFlowApp {
                         s.bg(ui.subtle).text_color(ui.text)
                     })
                     .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                        this.agents_view.agents_filter.clear();
-                        cx.notify();
+                        this.agents_view.agents_filter_input.update(cx, |inp, cx| {
+                            inp.content = SharedString::default();
+                            inp.selected_range = 0..0;
+                            cx.notify();
+                        });
                     }))
                     .child(
                         svg()
@@ -911,7 +941,7 @@ impl PaneFlowApp {
             );
         }
 
-        input.into_any_element()
+        field.into_any_element()
     }
 }
 
@@ -1001,52 +1031,6 @@ fn is_renaming_target(
             AgentsTarget::Chat { chat_idx },
         ) if rc == chat_idx
     )
-}
-
-/// Key handler for the sidebar filter input (US-012). Escape clears
-/// the filter and blurs the input; Down arrow jumps to the first
-/// matching thread (selecting it); Backspace pops a character;
-/// printable chars are appended.
-fn handle_filter_key(this: &mut PaneFlowApp, e: &KeyDownEvent, cx: &mut Context<PaneFlowApp>) {
-    let key = e.keystroke.key.as_str();
-    match key {
-        "escape" => {
-            // AC #4: Escape clears the filter and returns focus to
-            // the project list. There is no single focus handle for
-            // "the list" today, so we clear the filter + drop the
-            // input's focus by sending a global cx.notify (the next
-            // click on any row takes focus naturally).
-            this.agents_view.agents_filter.clear();
-            cx.notify();
-        }
-        "down" => {
-            // AC #4: Down arrow moves focus to the first matching
-            // row. We map "focus" to "the active selection" -- the
-            // currently visible representation of which thread is in
-            // the spotlight. If the filter matches nothing, do not
-            // mutate selection.
-            let query_lower = this.agents_view.agents_filter.to_lowercase();
-            if let Some((p_idx, t_idx)) =
-                filter::first_matching_thread(&this.projects, &query_lower)
-            {
-                let _ = this.select_thread(p_idx, t_idx, cx);
-            }
-        }
-        "backspace" => {
-            this.agents_view.agents_filter.pop();
-            cx.notify();
-        }
-        _ => {
-            if let Some(ch) = &e.keystroke.key_char
-                && !ch.is_empty()
-                && !e.keystroke.modifiers.control
-                && !e.keystroke.modifiers.platform
-            {
-                this.agents_view.agents_filter.push_str(ch);
-                cx.notify();
-            }
-        }
-    }
 }
 
 /// US-004: section eyebrow — a small uppercase muted label introducing a
@@ -1248,15 +1232,60 @@ fn build_title_highlight_runs(
 /// just Delete). Hidden by default and revealed when the row's group
 /// is hovered -- mirrors Zed's `visible_on_hover` slot on `ThreadItem`
 /// (zero layout shift because `.invisible()` keeps the buttons in flow).
+// Render helper: every input (target/id/pin state/scope/group/armed + theme)
+// is genuinely needed per row; bundling into a struct would only move the
+// noise. 8 args is fine here.
+#[allow(clippy::too_many_arguments)]
 fn hover_actions_cluster(
     target: crate::project::AgentsTarget,
     thread_id: u64,
     is_pinned: bool,
     row_scope: &'static str,
     row_group: SharedString,
+    armed: bool,
     ui: crate::theme::UiColors,
     cx: &mut Context<PaneFlowApp>,
 ) -> gpui::AnyElement {
+    // Inline delete-confirm (ergonomics): once the trash is clicked the row
+    // arms — show a single red "Delete" button, always visible (the cursor has
+    // left the trash icon), and run the delete on the next click. Clicking
+    // elsewhere (selecting a row / opening a menu / arming another) cancels it.
+    if armed {
+        return div()
+            .absolute()
+            .top(px(0.))
+            .bottom(px(0.))
+            .right(px(8.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "agents-{row_scope}-thread-{thread_id}-confirm-delete"
+                    )))
+                    .flex_none()
+                    .h(px(20.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .bg(rgb(0xe5484d))
+                    .text_color(rgb(0xffffff))
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .hover(|s| s.bg(rgb(0xc73d41)))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        this.execute_armed_delete(cx);
+                        cx.stop_propagation();
+                    }))
+                    .child("Delete"),
+            )
+            .into_any_element();
+    }
+
     // US-006: pin / unpin toggle. A text glyph (★ filled = pinned, ☆ outline
     // = unpinned) instead of an SVG — Paneflow ships no pin asset and the
     // glyph reads correctly at this size. Toggling persists via
@@ -1275,7 +1304,11 @@ fn hover_actions_cluster(
         .justify_center()
         .rounded(px(4.))
         .cursor_pointer()
-        .text_size(px(13.))
+        // The ★/☆ glyph sits well inside its em box, so it reads smaller than
+        // its point size — bump it so it doesn't look squished next to the
+        // 12px trash svg. The 20px box has no overflow clip, so the glyph can
+        // exceed it without being cut.
+        .text_size(px(18.))
         .text_color(if is_pinned { ui.accent } else { ui.muted })
         .hover(|s| {
             let ui = crate::theme::ui_colors();
@@ -1317,7 +1350,9 @@ fn hover_actions_cluster(
             .into()
         })
         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-            this.request_delete_for_target(target, cx);
+            // First click arms the inline delete-confirm (no dialog): the row's
+            // cluster flips to a red "Delete" button (see the `armed` branch).
+            this.arm_delete_for_target(target, cx);
             cx.stop_propagation();
         }))
         .child(

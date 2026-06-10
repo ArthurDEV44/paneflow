@@ -29,12 +29,11 @@ impl PaneFlowApp {
             .items_center()
             .justify_between()
             .gap(px(8.))
-            // 32px + bottom border to line up with the pane tab strip.
-            .h(px(32.))
+            // Quiet header — no divider (Codex: separation by spacing, not
+            // borders). 36px matches the unified chrome row height.
+            .h(px(36.))
             .flex_none()
-            .px(px(10.))
-            .border_b_1()
-            .border_color(ui.border)
+            .px(px(12.))
             .child(
                 div()
                     .flex_1()
@@ -42,8 +41,8 @@ impl PaneFlowApp {
                     .overflow_x_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::MEDIUM)
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ui.text)
                     .child(title),
             )

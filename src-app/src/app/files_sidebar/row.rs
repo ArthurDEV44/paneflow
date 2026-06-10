@@ -70,6 +70,11 @@ impl PaneFlowApp {
             .items_center()
             .gap(px(6.))
             .h(ROW_HEIGHT)
+            // Quiet-row geometry (matches the sessions sidebar): inset rounded
+            // rows so the hover fill reads as a discrete pill, not a full-bleed
+            // band.
+            .mx(px(6.))
+            .rounded(px(6.))
             .pl(indent)
             .pr(px(8.))
             .when(dimmed, |s| s.opacity(DIMMED_OPACITY));
@@ -138,7 +143,7 @@ impl PaneFlowApp {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_size(px(13.))
+                    .text_size(px(12.))
                     .text_color(text_color)
                     .overflow_x_hidden()
                     .whitespace_nowrap()

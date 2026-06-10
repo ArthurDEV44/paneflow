@@ -61,7 +61,7 @@ use gpui::{
     App, Bounds, Context, CursorStyle, Decorations, Entity, FocusHandle, Focusable, HitboxBehavior,
     InteractiveElement, IntoElement, MouseButton, Pixels, Point, Render, ResizeEdge, Styled,
     Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, point, prelude::*, px,
-    rgb, size, transparent_black,
+    rgb, size, svg, transparent_black,
 };
 use gpui_platform::application;
 use notify::Watcher;
@@ -320,16 +320,21 @@ struct AgentsViewState {
     /// thread row). `None` when no menu is open.
     pub(crate) agents_menu_open: Option<crate::app::agents_sidebar::AgentsContextMenu>,
     /// US-011: pending delete confirmation. The actual mutation
-    /// happens only after the user confirms in the dialog.
+    /// happens only after the user confirms in the dialog. Still used by the
+    /// context-menu "Delete" path; the hover-trash path uses
+    /// [`Self::agents_delete_armed`] instead (inline confirm, no dialog).
     pub(crate) agents_confirm_delete: Option<crate::app::agents_sidebar::AgentsDeleteTarget>,
-    /// US-012 (prd-agents-view.md): live search/filter query for the
-    /// Agents sidebar. Empty string == "no filter, show full list".
-    /// Case-insensitive substring match is applied at render time.
-    pub(crate) agents_filter: String,
-    /// US-012: focus handle for the sidebar search input. Held on
-    /// `PaneFlowApp` so the input's key handler can route Backspace /
-    /// Escape / Down without competing with the global app key chain.
-    pub(crate) agents_filter_focus: FocusHandle,
+    /// Inline delete-confirm (ergonomics): the row whose trash icon was just
+    /// clicked. While `Some`, that row's action cluster shows a red "Delete"
+    /// button (click-to-confirm) instead of opening the confirmation dialog.
+    /// Cleared on confirm, on selecting/clicking a row, or on opening a menu.
+    pub(crate) agents_delete_armed: Option<crate::project::AgentsTarget>,
+    /// US-012 (prd-agents-view.md): the Agents sidebar search field — a real
+    /// single-line `TextInput` (cursor, arrow keys, Delete, Ctrl+A/C/V/X,
+    /// mouse selection, click-to-position). The live needle is its `value()`,
+    /// read at render time for the case-insensitive substring filter; the
+    /// sidebar re-renders on edits via a `cx.observe` registered at bootstrap.
+    pub(crate) agents_filter_input: gpui::Entity<crate::widgets::text_input::TextInput>,
     /// `true` while the Agents-view sidebar's "Skills" affordance is
     /// active. Takes precedence over the thread / picker surfaces in
     /// `render_agents_main_body`. Cleared by `select_thread` and
@@ -655,6 +660,13 @@ use crate::window_chrome::csd::resize_edge;
 impl Render for PaneFlowApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
+        let theme = crate::theme::active_theme();
+        // Every mode is cockpit now (Agents first, then Cli, then Diff): the
+        // title bar always floats as a rail-confined overlay (never a flex
+        // child), so the right panel rises to y=0 with rounded rail-side
+        // corners. `title_bar_h` mirrors the title bar's own height so the
+        // rail content clears the floating window controls.
+        let title_bar_h = (1.75 * window.rem_size()).max(px(34.));
 
         // EP-003 US-009: focus the pane created by a drop-to-split. Deferred
         // here from the `DropSplit` subscription handler (no `Window` there).
@@ -752,66 +764,9 @@ impl Render for PaneFlowApp {
             } else {
                 (None, None, false)
             };
-        // Pill state for in-app installer flows (AppImage, TarGz, AppBundle,
-        // MSI, pkexec dnf|apt). Shared between the SystemPackage branch and
-        // the catch-all so both reflect the live install state machine; if
-        // the SystemPackage branch ignored this, the pkexec dnf/apt path
-        // would render "Update via dnf" frozen for the entire install while
-        // is_busy() silently dropped clicks.
-        let in_app_state = match &self.self_update.self_update_status {
-            update::SelfUpdateStatus::Idle => title_bar::SelfUpdatePillState::Idle,
-            update::SelfUpdateStatus::Downloading => title_bar::SelfUpdatePillState::Downloading,
-            update::SelfUpdateStatus::Installing => title_bar::SelfUpdatePillState::Installing,
-            update::SelfUpdateStatus::ReadyToRestart => {
-                title_bar::SelfUpdatePillState::ReadyToRestart
-            }
-            update::SelfUpdateStatus::Errored(_) => title_bar::SelfUpdatePillState::Errored,
-        };
-        let update_info = match &self.self_update.update_status {
-            Some(update::checker::UpdateStatus::Available { version, .. }) => {
-                let kind = match &self.self_update.install_method {
-                    update::install_method::InstallMethod::SystemPackage { manager } => {
-                        match manager {
-                            // Dnf / Apt: in-app pkexec install. Pill follows
-                            // the install state machine like every other
-                            // in-app installer.
-                            update::install_method::PackageManager::Dnf
-                            | update::install_method::PackageManager::Apt => {
-                                title_bar::UpdatePillKind::InApp(in_app_state)
-                            }
-                            // Clipboard-only paths: kickoff_self_update_install
-                            // returns early after copying the upgrade command,
-                            // self_update_status never leaves Idle.
-                            update::install_method::PackageManager::RpmOstree => {
-                                title_bar::UpdatePillKind::SystemManaged(
-                                    title_bar::SystemPackageKind::RpmOstree,
-                                )
-                            }
-                            update::install_method::PackageManager::Other => {
-                                title_bar::UpdatePillKind::SystemManaged(
-                                    title_bar::SystemPackageKind::Other,
-                                )
-                            }
-                        }
-                    }
-                    // Flatpak / Snap / `PANEFLOW_UPDATE_EXPLANATION` —
-                    // packager owns updates, render the same generic
-                    // SystemHint pill. The explanation copy is surfaced
-                    // by the click handler in `self_update_flow.rs`.
-                    update::install_method::InstallMethod::ExternallyManaged { .. } => {
-                        title_bar::UpdatePillKind::SystemManaged(
-                            title_bar::SystemPackageKind::Other,
-                        )
-                    }
-                    _ => title_bar::UpdatePillKind::InApp(in_app_state),
-                };
-                Some(title_bar::UpdateInfo {
-                    version: version.clone(),
-                    kind,
-                })
-            }
-            _ => None,
-        };
+        // Update CTA state — extracted to `update_pill_info()` so the Cli/
+        // Agents sidebar banner and the Diff title-bar pill share one source.
+        let update_info = self.update_pill_info();
         // Push the matching sidebar width (220 px CLI / 280 px Agents)
         // so the title bar's brand slot stays aligned with the sidebar
         // edge across mode swaps.
@@ -834,6 +789,10 @@ impl Render for PaneFlowApp {
             tb.agents_thread_title = agents_thread_title;
             tb.agents_context_label = agents_context_label;
             tb.agents_overflow = agents_overflow;
+            tb.is_agents = matches!(self.mode, paneflow_config::schema::AppMode::Agents);
+            // Cockpit chrome (#1d1d1d + no divider) for Cli AND Diff; Agents
+            // paints nothing (is_agents wins).
+            tb.cockpit = !matches!(self.mode, paneflow_config::schema::AppMode::Agents);
         });
 
         // --- CSD resize backdrop ---
@@ -951,8 +910,6 @@ impl Render for PaneFlowApp {
                 }
             }))
             .on_mouse_move(|_e, _, cx| cx.stop_propagation())
-            // Title bar (Entity with drag-to-move support)
-            .child(self.title_bar.clone())
             // Sidebar + main content area. US-008: branch on the
             // top-level UI mode so the CLI sidebar (workspace list)
             // and the Agents sidebar (projects + threads, US-010)
@@ -963,24 +920,130 @@ impl Render for PaneFlowApp {
                     .flex_row()
                     .flex_1()
                     .overflow_hidden()
+                    // Cockpit backdrop: dark-gray (#1d1d1d) chrome behind the
+                    // body row in every mode (the rail + the panel corners read
+                    // against it as one continuous surface).
+                    .bg(rgb(0x1d1d1d))
                     .child(match self.mode {
-                        paneflow_config::schema::AppMode::Agents => {
-                            self.render_agents_sidebar(window, cx)
-                        }
-                        paneflow_config::schema::AppMode::Diff => {
-                            self.render_diff_sidebar(window, cx)
-                        }
-                        paneflow_config::schema::AppMode::Cli => {
-                            self.render_sidebar(cx).into_any_element()
-                        }
+                        paneflow_config::schema::AppMode::Agents => div()
+                            .flex()
+                            .flex_col()
+                            .h_full()
+                            .flex_shrink_0()
+                            // Clear the transparent title-bar overlay so the
+                            // first rail row sits below the floating controls.
+                            .pt(title_bar_h)
+                            .child(self.render_agents_sidebar(window, cx))
+                            .into_any_element(),
+                        paneflow_config::schema::AppMode::Diff => div()
+                            .flex()
+                            .flex_col()
+                            .h_full()
+                            .flex_shrink_0()
+                            // Clear the transparent title-bar overlay so the
+                            // first sidebar row sits below the floating
+                            // window controls (mirrors the other rails).
+                            .pt(title_bar_h)
+                            .child(self.render_diff_sidebar(window, cx))
+                            .into_any_element(),
+                        paneflow_config::schema::AppMode::Cli => div()
+                            .flex()
+                            .flex_col()
+                            .h_full()
+                            .flex_shrink_0()
+                            // Clear the transparent title-bar overlay so the
+                            // first workspace card sits below the floating
+                            // window controls (mirrors the Agents rail).
+                            .pt(title_bar_h)
+                            .child(self.render_sidebar(cx))
+                            .into_any_element(),
                     })
                     .child(
                         div()
                             .flex_1()
                             .h_full()
-                            .bg(rgb(0x212121))
                             .overflow_hidden()
-                            .child(main_content),
+                            // Anchor the Cli corner-mask overlays (below).
+                            .relative()
+                            // Codex cockpit: in Agents mode the right area is a
+                            // floating panel — a slightly-lighter bg sitting on
+                            // the chrome-dark body row, with the rail-side
+                            // corners rounded. The 4px inset keeps the panel's
+                            // opaque content (terminal base-fill, picker) off
+                            // the rounded corners: GPUI's content mask is
+                            // rectangular and does NOT clip children to the
+                            // radius, so a child painting to the edge would
+                            // overdraw the rounded quad. Other modes keep the
+                            // legacy flat bg with no inset.
+                            .when(
+                                matches!(self.mode, paneflow_config::schema::AppMode::Agents),
+                                |d| {
+                                    // Cockpit colors (Arthur): near-black panel
+                                    // (#111111) on the #1d1d1d rail/chrome.
+                                    d.bg(rgb(0x111111))
+                                        .rounded_tl(px(10.))
+                                        .rounded_bl(px(10.))
+                                        .p(px(4.))
+                                },
+                            )
+                            .when(
+                                matches!(self.mode, paneflow_config::schema::AppMode::Cli),
+                                // Cli cockpit: pane grid is flush (no inset). bg
+                                // is theme.background so panel + panes read as one
+                                // surface. The rounded rail-side corners come from
+                                // the corner-mask overlays added after the content
+                                // (GPUI can't clip the custom-painted terminal to
+                                // a radius, so we mask the corners on top instead
+                                // — no gutter needed).
+                                |d| d.bg(theme.background),
+                            )
+                            .when(
+                                matches!(self.mode, paneflow_config::schema::AppMode::Diff),
+                                // Diff cockpit: same flush panel as Cli. ui.base
+                                // (#181818) is the diff content's dominant root
+                                // fill (multi_view + file columns), so panel and
+                                // content read as one surface.
+                                |d| d.bg(ui.base),
+                            )
+                            .child(main_content)
+                            // Rounded rail-side corners WITHOUT a gutter (Cli +
+                            // Diff). GPUI can't clip custom-painted content
+                            // (terminal cells, diff rows) to a radius, so each
+                            // left corner is masked ON TOP by an inverted-corner
+                            // SVG — the curvilinear triangle OUTSIDE the 16px
+                            // arc — tinted #1d1d1d (rail). Unlike a solid square
+                            // mask, the SVG covers nothing inside the arc, so
+                            // scrolled diff lines or terminal cells right at the
+                            // corner stay visible under the curve. 16px (vs
+                            // Agents' 10) because One Dark (#282c34) sits close
+                            // to the #1d1d1d rail; the arc needs length to read.
+                            .when(
+                                matches!(
+                                    self.mode,
+                                    paneflow_config::schema::AppMode::Cli
+                                        | paneflow_config::schema::AppMode::Diff
+                                ),
+                                |d| {
+                                    d.child(
+                                        svg()
+                                            .absolute()
+                                            .top_0()
+                                            .left_0()
+                                            .size(px(16.))
+                                            .path("icons/corner-tl.svg")
+                                            .text_color(rgb(0x1d1d1d)),
+                                    )
+                                    .child(
+                                        svg()
+                                            .absolute()
+                                            .bottom_0()
+                                            .left_0()
+                                            .size(px(16.))
+                                            .path("icons/corner-bl.svg")
+                                            .text_color(rgb(0x1d1d1d)),
+                                    )
+                                },
+                            ),
                     )
                     // Docked agent-sessions sidebar (right edge). A layout child
                     // — not an overlay — so it reflows the content and persists
@@ -995,6 +1058,24 @@ impl Render for PaneFlowApp {
                         row.child(self.render_files_sidebar(cx))
                     }),
             );
+
+        {
+            // Codex cockpit: title bar floats as a confined overlay so the rail
+            // + panel fill the full window height. It still owns window drag +
+            // min/max/close (rendered on top of the top strip).
+            app_content = app_content.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    // Confine the title bar (drag + window controls) to the
+                    // rail width so it never covers the panel — the terminal
+                    // then fills the full height with no reserved top strip.
+                    .w(px(sidebar_px))
+                    .overflow_hidden()
+                    .child(self.title_bar.clone()),
+            );
+        }
 
         if let Some(toast) = &self.toast {
             app_content = app_content.child(self.render_toast(toast, ui));
