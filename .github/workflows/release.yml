@@ -1425,8 +1425,19 @@ jobs:
             echo "::warning::MINISIGN_SECRET_KEY not set — release artifacts will be UNSIGNED. Clients with an embedded key will refuse to self-update from this release. Provision the key per docs/self-update-signing.md."
             exit 0
           fi
-          sudo apt-get update
-          sudo apt-get install -y minisign
+          # minisign is NOT packaged in Ubuntu 22.04 (jammy) — it only enters
+          # the archive in 24.04 (noble, universe). Install the upstream
+          # static binary instead, pinned by version + SHA-256 so the signing
+          # toolchain itself is tamper-evident (first executed 2026-06-10;
+          # the apt path had never run while the secret was unprovisioned).
+          MINISIGN_VERSION=0.12
+          MINISIGN_SHA256=9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73
+          curl -sSfL --retry 3 -o /tmp/minisign.tar.gz \
+            "https://github.com/jedisct1/minisign/releases/download/${MINISIGN_VERSION}/minisign-${MINISIGN_VERSION}-linux.tar.gz"
+          echo "${MINISIGN_SHA256}  /tmp/minisign.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/minisign.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/minisign-linux/x86_64/minisign /usr/local/bin/minisign
+          minisign -v
           # Unencrypted secret key (generated with `minisign -G -W`) written to
           # a private temp file; the GitHub secret is the only protection.
           key_file="$(mktemp)"
