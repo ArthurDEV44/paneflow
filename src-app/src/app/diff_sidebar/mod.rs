@@ -42,16 +42,16 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let ui = crate::theme::ui_colors();
-        let theme = crate::theme::active_theme();
 
         div()
             .relative()
             .w(px(DIFF_SIDEBAR_WIDTH))
             .flex_shrink_0()
             .h_full()
-            .bg(theme.title_bar_background)
-            .border_r_1()
-            .border_color(ui.border)
+            // Cockpit rail (#1d1d1d), matching the Cli/Agents sidebars. No
+            // border-right: the rail and the ui.base panel separate by a
+            // luminance step, not a drawn divider.
+            .bg(gpui::rgb(0x1d1d1d))
             .flex()
             .flex_col()
             .child(self.render_diff_files(ui, cx))

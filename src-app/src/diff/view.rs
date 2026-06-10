@@ -436,6 +436,12 @@ pub struct DiffView {
     /// column. Set for the Worktree scope, where a branch is either shown or not —
     /// no in-between "hidden but tracked" state with a "N hidden" pill.
     close_removes: bool,
+    /// Scope breadcrumb fragment (scope › project › branches) PUSHED by
+    /// `render_diff_main` every frame and consumed (`take`) by the next
+    /// `render` — same push-only contract as `TitleBar`. The DiffView mounts
+    /// it as the left side of its single toolbar row so the whole Diff mode
+    /// has exactly one row of chrome.
+    pub scope_slot: Option<AnyElement>,
 }
 
 /// Events a [`DiffView`] raises to its host (`PaneFlowApp`). Today: the user
@@ -534,6 +540,7 @@ impl DiffView {
             review_resizing: None,
             hover_line: None,
             close_removes: false,
+            scope_slot: None,
         };
         view.bootstrap(cx);
         view
@@ -2055,9 +2062,11 @@ impl DiffView {
             text: ui.text,
             muted: ui.muted,
             header_bg: ui.surface,
-            // Slightly elevated, opaque surface for the pinned sticky header so
-            // it floats above the body (`ui.base`) instead of blending into it.
-            sticky_header_bg: ui.overlay,
+            // Same elevated surface as the inline file headers: the sticky IS
+            // the file header pinned to the top, so it must share its depth
+            // step. (`ui.overlay` was DARKER than the body — a floating
+            // element that sank instead of lifting.)
+            sticky_header_bg: ui.surface,
             border: ui.border,
             add_bg: ui.vc_added_background,
             del_bg: ui.vc_deleted_background,
@@ -2496,41 +2505,41 @@ impl DiffView {
             .min_w_0()
             .flex()
             .flex_col()
-            .child(header)
+            // Codex redesign: the column header only earns its row when there
+            // are multiple columns to tell apart. Solo column: the branch is
+            // already in the breadcrumb + sidebar; its Review/Terminal actions
+            // live in the toolbar (see `render_toolbar`).
+            .children((self.visible_count() > 1).then_some(header))
             .child(body)
             // Embedded review CLIs render UNDER the diff body, in the Diff
             // interface (prd-ai-in-diff-2026-Q3.md, terminal-launch revision).
             .children(self.render_review_terminals(idx, col, ui, cx))
     }
 
-    /// Toolbar: base selector + diffstat on the left, collapse / sync / view-mode
-    /// on the right. JetBrains-flat — borderless controls that hover-fill, an
-    /// active (open / engaged) state as a subtle wash, a thin divider before the
-    /// view-mode toggle, and small monochrome icons.
-    fn render_toolbar(&self, effective: ViewMode, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The single Diff-mode chrome row (Codex redesign): scope breadcrumb
+    /// (host-pushed `scope_slot`) › base selector on the left; hunk nav +
+    /// list actions + view-mode on the right. No own background and no
+    /// border — it sits directly on the panel (`ui.base`), separation by
+    /// spacing. The diffstat is gone from here: it lives ONCE, in the
+    /// sidebar "Changes" header. In single-column scopes the per-column
+    /// Review/Terminal buttons migrate here (the column header is hidden).
+    fn render_toolbar(
+        &self,
+        effective: ViewMode,
+        scope_slot: Option<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
         let hidden = self.columns.len() - self.visible_count();
         // Derived live (not a cached flag) so the chip can never disagree with the
         // real per-column collapse state.
         let all_collapsed = self.all_visible_collapsed();
 
-        // US-009: diffstat for the column you're actually looking at (the
-        // selected one, else first-visible; Zed-style `DiffStat`, curated `vc_*`
-        // tokens). The CROSS-branch total lives in the aggregate strip, where it
-        // is explicitly labeled "N branches vs <base>" — the toolbar shows only
-        // the focused branch on purpose, so a +1000 branch never reads as the
-        // +3000 sum of every visible branch. In single-column scopes the two
-        // coincide (one column ⇒ its stats == the aggregate).
-        let (total_added, total_removed) = self
-            .selected_or_first_visible()
-            .and_then(|i| self.columns.get(i))
-            .map(|c| match &c.state {
-                ColumnState::Loaded { files, .. } => files
-                    .iter()
-                    .fold((0u32, 0u32), |(a, r), f| (a + f.added, r + f.removed)),
-                _ => (0, 0),
-            })
-            .unwrap_or((0, 0));
+        // Single-column scope: the column header row is not rendered, so its
+        // Review / Terminal actions surface here instead.
+        let solo_idx = (self.visible_count() == 1)
+            .then(|| self.selected_or_first_visible())
+            .flatten();
 
         // Hunk-nav state for the selected column: (total hunks, current index by
         // scroll position). `None` / total 0 hides the control. Stateless — read
@@ -2627,13 +2636,19 @@ impl DiffView {
             .flex_row()
             .items_center()
             .gap(px(4.))
-            .h(px(34.))
+            .h(px(36.))
             .flex_none()
-            .px(px(8.))
-            .bg(ui.surface)
-            .border_b_1()
-            .border_color(ui.border)
-            // --- left: base branch + diffstat ---
+            .px(px(10.))
+            // --- left: scope breadcrumb (host slot) › base branch ---
+            .when_some(scope_slot, |d, slot| {
+                d.child(slot).child(
+                    gpui::svg()
+                        .size(px(13.))
+                        .flex_none()
+                        .path("icons/chevron-right.svg")
+                        .text_color(ui.muted),
+                )
+            })
             .child(
                 control("diff-base-chip", self.base_picker_open)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -2658,53 +2673,8 @@ impl DiffView {
             .when(self.base_picker_open, |d| {
                 d.child(deferred(self.render_base_popover(cx)).with_priority(10))
             })
-            .when(total_added > 0 || total_removed > 0, |d| {
-                // GitHub-style proportion bar: green:red filled in proportion to
-                // added:removed, so the diff's shape reads at a glance before the
-                // exact counts. Rounded + clipped; `subtle` shows through only
-                // when a side is zero-width.
-                let bar_w = 48.0_f32;
-                let total = (total_added + total_removed).max(1) as f32;
-                let gw = (bar_w * total_added as f32 / total).round();
-                let rw = bar_w - gw;
-                d.child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.))
-                        .ml(px(4.))
-                        .text_size(px(11.))
-                        .child(
-                            div()
-                                .flex_none()
-                                .flex()
-                                .flex_row()
-                                .h(px(6.))
-                                .w(px(bar_w))
-                                .rounded(px(3.))
-                                .overflow_hidden()
-                                .bg(ui.subtle)
-                                .child(div().h_full().w(px(gw)).bg(ui.vc_added))
-                                .child(div().h_full().w(px(rw)).bg(ui.vc_deleted)),
-                        )
-                        .when(total_added > 0, |d| {
-                            d.child(
-                                div()
-                                    .text_color(ui.vc_added)
-                                    .child(format!("+{total_added}")),
-                            )
-                        })
-                        .when(total_removed > 0, |d| {
-                            d.child(
-                                div()
-                                    .text_color(ui.vc_deleted)
-                                    .child(format!("-{total_removed}")),
-                            )
-                        }),
-                )
-            })
+            // (No diffstat / proportion bar here — purely informational; it
+            // lives once, in the sidebar "Changes" header.)
             // --- hunk navigation: prev / counter / next ---
             .when_some(hunk_nav, |d, (total, current)| {
                 let shown = current.clamp(1, total);
@@ -2762,8 +2732,90 @@ impl DiffView {
             })
             // --- spacer ---
             .child(div().flex_1())
-            // --- right: list actions (AI Review now lives per-branch in the
-            // column header, beside the terminal button) ---
+            // --- single-column: per-branch Review / Terminal actions, migrated
+            // from the (hidden) column header. The Review popover anchors to
+            // its button's relative wrapper.
+            .when_some(solo_idx, |d, idx| {
+                let col_has_changes = self.columns.get(idx).is_some_and(Self::column_has_changes);
+                let review_open = self.review_menu_open == Some(idx);
+                d.when(col_has_changes, |d| {
+                    d.child(
+                        div()
+                            .relative()
+                            .child(
+                                div()
+                                    .id("diff-toolbar-review")
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(22.))
+                                    .rounded(px(4.))
+                                    .when(review_open, |d| d.bg(ui.text.opacity(0.12)))
+                                    .cursor_pointer()
+                                    .hover(|s| {
+                                        let ui = crate::theme::ui_colors();
+                                        s.bg(ui.text.opacity(0.12))
+                                    })
+                                    .tooltip(|_w, cx| {
+                                        cx.new(|_| DiffHeaderTooltip {
+                                            label: "Review".into(),
+                                        })
+                                        .into()
+                                    })
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                        this.toggle_review_menu(idx, cx);
+                                    }))
+                                    .child(
+                                        gpui::svg()
+                                            .size(px(13.))
+                                            .flex_none()
+                                            .path("icons/eye.svg")
+                                            .text_color(if review_open {
+                                                ui.text
+                                            } else {
+                                                ui.muted
+                                            }),
+                                    ),
+                            )
+                            .when(review_open, |d| {
+                                d.child(self.render_review_menu(idx, ui, cx))
+                            }),
+                    )
+                })
+                .child(
+                    div()
+                        .id("diff-toolbar-terminal")
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(22.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .hover(|s| {
+                            let ui = crate::theme::ui_colors();
+                            s.bg(ui.text.opacity(0.12))
+                        })
+                        .tooltip(|_w, cx| {
+                            cx.new(|_| DiffHeaderTooltip {
+                                label: "Open terminal".into(),
+                            })
+                            .into()
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_terminal_for_column(idx, window, cx);
+                        }))
+                        .child(
+                            gpui::svg()
+                                .size(px(13.))
+                                .flex_none()
+                                .path("icons/terminal.svg")
+                                .text_color(ui.muted),
+                        ),
+                )
+            })
+            // --- right: list actions ---
             .child(
                 control("diff-collapse-all", false)
                     .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {

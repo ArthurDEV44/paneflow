@@ -65,7 +65,7 @@ pub const ROW_HEIGHT: f32 = 18.0;
 /// padded, breathing "card" header (Zed buffer-subheader feel) while content
 /// lines stay compact. The custom element lays rows out at variable heights
 /// keyed off [`display_row_height`] / [`split_row_height`].
-pub const FILE_HEADER_HEIGHT: f32 = 40.0;
+pub const FILE_HEADER_HEIGHT: f32 = 32.0;
 
 /// Laid-out height of one unified row: a padded card for file headers, the
 /// compact line height for everything else.

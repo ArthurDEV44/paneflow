@@ -339,7 +339,9 @@ impl PaneFlowApp {
             .pb(px(6.))
             .child("Theme");
 
-        let themes = [("One Dark", "Default (Dark)"), ("PaneFlow Light", "Light")];
+        // "PaneFlow Light" removed pending the light-theme redesign — One Dark
+        // is the only bundled theme until then (see theme/builtin.rs).
+        let themes = [("One Dark", "Default (Dark)")];
         let mut theme_row_inner = div().flex().flex_row().gap(px(8.));
 
         for (theme_id, label) in themes {

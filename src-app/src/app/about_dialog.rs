@@ -1,13 +1,17 @@
-//! About PaneFlow — modal shown from the profile menu's "About PaneFlow"
-//! action. Displays the app name, tagline, version and build credits.
+//! About Paneflow — modal shown from the Settings popover's "About" action.
+//!
+//! Codex-minimal redesign: one quiet card with the identity block (logo,
+//! name, tagline), a single muted meta line, and a quiet GitHub link. No
+//! inner boxes or borders — hierarchy comes from typography and spacing
+//! (the OpenAI "Space" principle). Dismissal is the top-right ✕ or the
+//! backdrop click; no redundant primary "Close" button.
 //!
 //! Behaviour mirrors `custom_buttons_modal`: backdrop overlay rendered via
-//! `deferred().with_priority(10)`, click-outside to dismiss, and a close
-//! button + primary OK action inside the card.
+//! `deferred().with_priority(10)`, click-outside to dismiss.
 
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ObjectFit,
-    ParentElement, SharedString, Styled, deferred, div, hsla, img, prelude::*, px, svg,
+    ParentElement, Styled, deferred, div, hsla, img, prelude::*, px, svg,
 };
 
 use crate::PaneFlowApp;
@@ -19,18 +23,18 @@ impl PaneFlowApp {
         let ui = crate::theme::ui_colors();
         let version = env!("CARGO_PKG_VERSION");
 
-        // ── Header row: spacer + close X ──
-        // The card is visually centered; the close button sits on the top-right
-        // so users have a familiar dismiss affordance alongside the backdrop
-        // click and the primary "Close" button below.
+        // ── Close ✕, floating in the card's top-right corner ──
         let close_x = div()
             .id("about-close-x")
+            .absolute()
+            .top(px(10.))
+            .right(px(10.))
             .flex()
             .items_center()
             .justify_center()
-            .w(px(22.))
-            .h(px(22.))
-            .rounded(px(4.))
+            .w(px(24.))
+            .h(px(24.))
+            .rounded(px(5.))
             .cursor_pointer()
             .hover(|s| {
                 let ui = crate::theme::ui_colors();
@@ -49,51 +53,36 @@ impl PaneFlowApp {
                     .text_color(ui.muted),
             );
 
-        let header = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_end()
-            .w_full()
-            .child(close_x);
-
-        // ── Real PaneFlow icon (PNG embedded via rust-embed). ──
-        // No tile / background: the PNG already has its own shape + rounded
-        // edges, so wrapping it would double up the visual frame.
+        // ── Identity: logo, name + version inline, tagline ──
+        // The PNG carries its own shape + rounded edges — no tile around it.
         let logo_mark = img("icons/paneflow.png")
-            .w(px(64.))
-            .h(px(64.))
+            .w(px(56.))
+            .h(px(56.))
             .object_fit(ObjectFit::Contain);
 
-        // ── Identity block: name + version chip + tagline ──
         let identity = div()
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(6.))
+            .gap(px(4.))
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .items_center()
-                    .gap(px(8.))
+                    .items_baseline()
+                    .gap(px(7.))
                     .child(
                         div()
                             .text_color(ui.text)
-                            .text_size(px(20.))
+                            .text_size(px(18.))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("PaneFlow"),
+                            .child("Paneflow"),
                     )
                     .child(
+                        // Quiet inline version — no chip, no border (the old
+                        // bordered badge fought the name for attention).
                         div()
-                            .px(px(7.))
-                            .py(px(1.))
-                            .rounded(px(4.))
-                            .border_1()
-                            .border_color(ui.border)
-                            .bg(ui.subtle)
-                            .text_size(px(10.))
-                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_size(px(12.))
                             .text_color(ui.muted)
                             .child(format!("v{version}")),
                     ),
@@ -105,48 +94,15 @@ impl PaneFlowApp {
                     .child("Run coding agents in parallel"),
             );
 
-        // ── Meta rows (two-column: label muted, value text) ──
-        let meta_row = |label: &str, value: SharedString| {
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap(px(12.))
-                .w_full()
-                .py(px(4.))
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(ui.muted)
-                        .child(label.to_string()),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(ui.text)
-                        .child(value),
-                )
-        };
-
+        // ── Single muted meta line — replaces the old bordered 3-row table.
+        // Pure metadata: it must read in one glance and never compete with
+        // the identity block.
         let meta = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .px(px(12.))
-            .py(px(8.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(ui.border)
-            .bg(ui.surface)
-            .child(meta_row("Built with", SharedString::from("Rust + GPUI")))
-            .child(div().h(px(1.)).w_full().bg(ui.border))
-            .child(meta_row("License", SharedString::from("GPL-3.0-or-later")))
-            .child(div().h(px(1.)).w_full().bg(ui.border))
-            .child(meta_row("Author", SharedString::from("Arthur Jean")));
+            .text_size(px(11.))
+            .text_color(ui.muted.opacity(0.8))
+            .child("Rust + GPUI · GPL-3.0-or-later · Arthur Jean");
 
-        // ── Repo link (ghost button, icon + label) ──
+        // ── Quiet GitHub link (icon + label, hover fill — no border) ──
         let repo_btn = div()
             .id("about-repo")
             .flex()
@@ -154,18 +110,16 @@ impl PaneFlowApp {
             .items_center()
             .gap(px(6.))
             .px(px(10.))
-            .py(px(6.))
+            .py(px(5.))
             .rounded(px(6.))
             .cursor_pointer()
-            .border_1()
-            .border_color(ui.border)
+            .text_size(px(12.))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(ui.muted)
             .hover(|s| {
                 let ui = crate::theme::ui_colors();
-                s.bg(ui.subtle).border_color(ui.muted)
+                s.bg(ui.subtle).text_color(ui.text)
             })
-            .text_size(px(11.))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(ui.text)
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 if let Err(err) = open::that(REPO_URL) {
                     log::warn!("about: open repo URL failed: {err}");
@@ -182,47 +136,19 @@ impl PaneFlowApp {
             )
             .child("View on GitHub");
 
-        // ── Primary action ──
-        let close_btn = div()
-            .id("about-dialog-close")
-            .px(px(22.))
-            .py(px(6.))
-            .rounded(px(6.))
-            .cursor_pointer()
-            .bg(ui.text)
-            .text_color(ui.base)
-            .text_size(px(12.))
-            .font_weight(gpui::FontWeight::SEMIBOLD)
-            .hover(|s| s.opacity(0.85))
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.show_about_dialog = false;
-                cx.notify();
-                cx.stop_propagation();
-            }))
-            .child("Close");
-
-        let actions = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_center()
-            .gap(px(8.))
-            .pt(px(4.))
-            .child(repo_btn)
-            .child(close_btn);
-
-        // ── Assembled card ──
+        // ── Assembled card — generous breathing room, no inner boxes ──
         let card = div()
             .id("about-dialog")
             .occlude()
+            .relative()
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(14.))
-            .w(px(340.))
-            .px(px(22.))
-            .pt(px(12.))
-            .pb(px(20.))
+            .gap(px(16.))
+            .w(px(320.))
+            .px(px(24.))
+            .pt(px(36.))
+            .pb(px(24.))
             .bg(ui.overlay)
             .border_1()
             .border_color(ui.border)
@@ -230,11 +156,11 @@ impl PaneFlowApp {
             .shadow_lg()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            .child(header)
+            .child(close_x)
             .child(logo_mark)
             .child(identity)
             .child(meta)
-            .child(actions);
+            .child(repo_btn);
 
         deferred(
             div()

@@ -294,6 +294,8 @@ impl PaneFlowApp {
         self.agents_picker_context = crate::project::AgentsPickerContext::Project;
         // Picking a thread leaves the Skills page.
         self.agents_view.agents_skills_visible = false;
+        // Selecting a row cancels any armed inline delete-confirm.
+        self.agents_view.agents_delete_armed = None;
         cx.notify();
         Ok(())
     }
@@ -314,6 +316,8 @@ impl PaneFlowApp {
         // US-005: reset picker context on any concrete selection.
         self.agents_picker_context = crate::project::AgentsPickerContext::Project;
         self.agents_view.agents_skills_visible = false;
+        // Selecting a row cancels any armed inline delete-confirm.
+        self.agents_view.agents_delete_armed = None;
         cx.notify();
         Ok(())
     }

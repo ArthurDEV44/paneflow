@@ -585,7 +585,9 @@ impl Element for TextElement {
                 Some(fill(
                     Bounds::new(
                         point(bounds.left() + cursor_pos, bounds.top()),
-                        size(px(2.), bounds.bottom() - bounds.top()),
+                        // 1px hairline caret (Codex-quiet) — 2px read as a
+                        // block on small input text.
+                        size(px(1.), bounds.bottom() - bounds.top()),
                     ),
                     self.caret_color,
                 )),
@@ -694,7 +696,9 @@ impl Render for TextInput {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .child(TextElement {
                 input: cx.entity(),
-                caret_color: ui.accent,
+                // White caret (ui.text), not accent — the accent stays reserved
+                // for status; a blue caret shouted in every input.
+                caret_color: ui.text,
                 selection_color: selection,
                 placeholder_color: ui.muted,
             })

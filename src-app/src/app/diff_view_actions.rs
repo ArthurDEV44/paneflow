@@ -506,42 +506,63 @@ impl PaneFlowApp {
     /// Renders the mounted `diff::DiffView` (the reused multi-worktree
     /// engine) when the active workspace backs a git repo, else the
     /// empty-state. The entity is (re)built off-render by
-    /// `rebuild_diff_view`; this branch never mutates it (re-entrancy).
-    /// EP-005 layers the scope-selector header on top of the view.
+    /// `rebuild_diff_view`; this branch never mutates the view's diff state
+    /// (re-entrancy) — it only PUSHES the scope breadcrumb fragment into the
+    /// mounted view every frame (`scope_slot`, push-only contract like
+    /// `TitleBar`), which the view mounts as the left side of its single
+    /// toolbar row (Codex redesign: one row of chrome).
     pub(crate) fn render_diff_main(&mut self, cx: &mut Context<Self>) -> AnyElement {
         use crate::diff::DiffScope;
         let ui = crate::theme::ui_colors();
-        let header = self.render_scope_header(cx);
-        let empty = |msg: &'static str| {
+        let breadcrumb = self.render_scope_header(cx);
+        // No view mounted: a local bare bar hosts the breadcrumb — it carries
+        // the scope/project pickers, the only way OUT of an empty scope.
+        let empty = |msg: &'static str, breadcrumb: AnyElement| {
             div()
-                .flex_1()
-                .min_h_0()
                 .flex()
-                .items_center()
-                .justify_center()
+                .flex_col()
                 .size_full()
-                .child(div().text_color(ui.muted).text_size(px(13.)).child(msg))
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .h(px(36.))
+                        .px(px(10.))
+                        .child(breadcrumb),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(div().text_color(ui.muted).text_size(px(13.)).child(msg)),
+                )
                 .into_any_element()
         };
         let body = match self.diff_mode.diff_scope {
-            DiffScope::MultiProject => self
-                .diff_mode
-                .multi_diff_view
-                .clone()
-                .map(|v| v.into_any_element())
-                .unwrap_or_else(|| empty("No open projects with a git repository")),
-            _ => self
-                .diff_mode
-                .diff_view
-                .clone()
-                .map(|v| v.into_any_element())
-                .unwrap_or_else(|| empty("No git repository in the active workspace")),
+            DiffScope::MultiProject => match self.diff_mode.multi_diff_view.clone() {
+                Some(v) => {
+                    v.update(cx, |mv, _| mv.scope_slot = Some(breadcrumb));
+                    v.into_any_element()
+                }
+                None => empty("No open projects with a git repository", breadcrumb),
+            },
+            _ => match self.diff_mode.diff_view.clone() {
+                Some(v) => {
+                    v.update(cx, |dv, _| dv.scope_slot = Some(breadcrumb));
+                    v.into_any_element()
+                }
+                None => empty("No git repository in the active workspace", breadcrumb),
+            },
         };
         div()
             .flex()
             .flex_col()
             .size_full()
-            .child(header)
             .child(div().flex_1().min_h_0().child(body))
             .into_any_element()
     }

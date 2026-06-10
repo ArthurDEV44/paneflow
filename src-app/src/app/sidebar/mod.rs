@@ -111,9 +111,11 @@ impl PaneFlowApp {
             .w(px(SIDEBAR_WIDTH))
             .flex_shrink_0()
             .h_full()
-            .bg(theme.title_bar_background)
-            .border_r_1()
-            .border_color(ui.border)
+            // Cockpit rail (#1d1d1d), matching the Agents sidebar. The
+            // border-right is gone: the rail and the #181818 content gutter
+            // separate by a luminance step, not a drawn divider (the OpenAI
+            // surface system — separation by luminance, not borders).
+            .bg(rgb(0x1d1d1d))
             .flex()
             .flex_col();
 
@@ -249,12 +251,16 @@ impl PaneFlowApp {
                 .mx(px(8.))
                 .px(px(10.))
                 .py(px(8.))
-                .rounded(px(8.))
+                .rounded(px(6.))
                 .cursor_pointer()
-                .when(is_active, |d| {
-                    let ui = crate::theme::ui_colors();
-                    d.bg(ui.surface)
-                })
+                // Quiet card (Codex/OpenAI sidebar row): dissolves into the
+                // #1d1d1d rail at rest. Selection is a fill only — the brightest
+                // neutral fill (#323232), no contour and no colored ring (the
+                // accent stays reserved for agent status). At +21 luminance over
+                // the rail, the fill alone reads clearly. Hover is a quieter fill
+                // (ui.subtle), always below the selected fill so a hovered card
+                // never out-shines the selected one.
+                .when(is_active, |d| d.bg(rgb(0x323232)))
                 .when(!is_active, |d| {
                     d.hover(|s| {
                         let ui = crate::theme::ui_colors();
@@ -419,15 +425,16 @@ impl PaneFlowApp {
 
             card = card.child(title_row);
 
-            // ── Row 2: Meta line — branch (icon + name) and diff stats on
-            // the same row, separated by a muted dot. Skipped entirely
-            // when the workspace is not a git repo and has no diff,
-            // which keeps non-git folders to a single-row card.
-            if !ws.git_branch.is_empty() || !ws.git_stats.is_empty() {
-                // `flex_wrap()` lets the diff stats drop to a second
-                // line if the branch name is unusually long, so the
-                // branch itself is never truncated or clipped — losing
-                // the branch is more confusing than gaining a row.
+            // ── Meta line — branch, diff stats, and active ports, all on a
+            // single compact muted line (Codex quiet-card: one airy meta row,
+            // not a stack of three). `flex_wrap()` lets a long branch or extra
+            // ports drop gracefully instead of truncating; the branch keeps its
+            // natural width (GPUI's truncate + flex_shrink + min_w_0 combo
+            // collapses the label to "…" even with room to spare).
+            let has_branch = !ws.git_branch.is_empty();
+            let has_stats = !ws.git_stats.is_empty();
+            let has_ports = !ws.active_ports.is_empty();
+            if has_branch || has_stats || has_ports {
                 let mut meta_row = div()
                     .flex()
                     .flex_row()
@@ -437,12 +444,7 @@ impl PaneFlowApp {
                     .text_xs()
                     .text_color(ui.muted);
 
-                if !ws.git_branch.is_empty() {
-                    // Branch label keeps its natural width. GPUI's
-                    // truncate + flex_shrink + min_w_0 combo rabbits
-                    // the label down to "…" even when there's plenty of
-                    // room, so we let the row overflow horizontally
-                    // for the rare long branch name instead.
+                if has_branch {
                     meta_row = meta_row
                         .child(
                             svg()
@@ -454,11 +456,11 @@ impl PaneFlowApp {
                         .child(div().flex_none().child(ws.git_branch.clone()));
                 }
 
-                if !ws.git_branch.is_empty() && !ws.git_stats.is_empty() {
+                if has_branch && has_stats {
                     meta_row = meta_row.child(div().flex_none().text_color(ui.muted).child("·"));
                 }
 
-                if !ws.git_stats.is_empty() {
+                if has_stats {
                     let ins = ws.git_stats.insertions;
                     let del = ws.git_stats.deletions;
                     meta_row = meta_row
@@ -478,89 +480,91 @@ impl PaneFlowApp {
                         );
                 }
 
-                card = card.child(meta_row);
-            }
+                // Separator before the ports, only when branch/diff preceded
+                // them (a leading `·` would otherwise dangle).
+                if (has_branch || has_stats) && has_ports {
+                    meta_row = meta_row.child(div().flex_none().text_color(ui.muted).child("·"));
+                }
 
-            // ── Row 3: Active ports. Frontend ports are clickable
-            // tinted chips; non-frontend ports render as plain muted
-            // `:port` text so the chip ink stays meaningful (= clickable).
-            // Capped at 3 visible to keep the card height predictable;
-            // overflow is condensed to a `+N` muted counter.
-            if !ws.active_ports.is_empty() {
-                const PORTS_VISIBLE: usize = 3;
-                let mut ports_row = div().flex().flex_row().flex_wrap().gap(px(4.));
+                // Active ports. Frontend ports are clickable tinted chips;
+                // non-frontend ports render as plain muted `:port` text so the
+                // chip ink stays meaningful (= clickable). Capped at 3 visible
+                // to keep the card height predictable; overflow condenses to a
+                // `+N` muted counter.
+                if has_ports {
+                    const PORTS_VISIBLE: usize = 3;
+                    for (pi, port) in ws.active_ports.iter().take(PORTS_VISIBLE).enumerate() {
+                        let info = ws.service_labels.get(port);
+                        let is_frontend = info.is_some_and(|i| i.is_frontend);
+                        let label = if let Some(i) = info
+                            && let Some(ref l) = i.label
+                        {
+                            format!("{l} :{port}")
+                        } else {
+                            format!(":{port}")
+                        };
 
-                for (pi, port) in ws.active_ports.iter().take(PORTS_VISIBLE).enumerate() {
-                    let info = ws.service_labels.get(port);
-                    let is_frontend = info.is_some_and(|i| i.is_frontend);
-                    let label = if let Some(i) = info
-                        && let Some(ref l) = i.label
-                    {
-                        format!("{l} :{port}")
-                    } else {
-                        format!(":{port}")
-                    };
+                        if is_frontend {
+                            let url = info
+                                .and_then(|i| i.url.clone())
+                                .unwrap_or_else(|| format!("http://localhost:{port}"));
+                            meta_row = meta_row.child(
+                                div()
+                                    .id(SharedString::from(format!("port-{idx}-{pi}")))
+                                    .px(px(6.))
+                                    .py(px(1.))
+                                    .rounded(px(4.))
+                                    .bg(ui.subtle)
+                                    .text_size(px(10.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(ui.text)
+                                    .cursor_pointer()
+                                    .hover(|s| {
+                                        let ui = crate::theme::ui_colors();
+                                        s.bg(ui.surface)
+                                    })
+                                    // US-011 AC4/5/6 + AC7: delegate to the
+                                    // `open` crate which already dispatches
+                                    // per-OS — `xdg-open` subprocess on
+                                    // Linux, `open` subprocess on macOS,
+                                    // and `ShellExecuteW` (Win32 API call,
+                                    // NOT a `cmd /C start ""` subprocess)
+                                    // on Windows.
+                                    .on_click(cx.listener(
+                                        move |this, _: &ClickEvent, _w, cx| {
+                                            if let Err(err) = open::that(&url) {
+                                                let msg = if err.kind()
+                                                    == std::io::ErrorKind::NotFound
+                                                {
+                                                    "Could not open URL — install xdg-utils (Linux), or check your default browser".to_string()
+                                                } else {
+                                                    format!("Could not open URL: {err}")
+                                                };
+                                                log::warn!("sidebar: open URL failed: {err}");
+                                                this.show_toast(msg, cx);
+                                            }
+                                        },
+                                    ))
+                                    .child(label),
+                            );
+                        } else {
+                            meta_row = meta_row
+                                .child(div().text_size(px(10.)).text_color(ui.muted).child(label));
+                        }
+                    }
 
-                    if is_frontend {
-                        let url = info
-                            .and_then(|i| i.url.clone())
-                            .unwrap_or_else(|| format!("http://localhost:{port}"));
-                        ports_row = ports_row.child(
+                    if ws.active_ports.len() > PORTS_VISIBLE {
+                        meta_row = meta_row.child(
                             div()
-                                .id(SharedString::from(format!("port-{idx}-{pi}")))
-                                .px(px(6.))
-                                .py(px(1.))
-                                .rounded(px(4.))
-                                .bg(ui.subtle)
+                                .px(px(4.))
                                 .text_size(px(10.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(ui.text)
-                                .cursor_pointer()
-                                .hover(|s| {
-                                    let ui = crate::theme::ui_colors();
-                                    s.bg(ui.surface)
-                                })
-                                // US-011 AC4/5/6 + AC7: delegate to the
-                                // `open` crate which already dispatches
-                                // per-OS — `xdg-open` subprocess on
-                                // Linux, `open` subprocess on macOS,
-                                // and `ShellExecuteW` (Win32 API call,
-                                // NOT a `cmd /C start ""` subprocess)
-                                // on Windows.
-                                .on_click(cx.listener(
-                                    move |this, _: &ClickEvent, _w, cx| {
-                                        if let Err(err) = open::that(&url) {
-                                            let msg = if err.kind()
-                                                == std::io::ErrorKind::NotFound
-                                            {
-                                                "Could not open URL — install xdg-utils (Linux), or check your default browser".to_string()
-                                            } else {
-                                                format!("Could not open URL: {err}")
-                                            };
-                                            log::warn!("sidebar: open URL failed: {err}");
-                                            this.show_toast(msg, cx);
-                                        }
-                                    },
-                                ))
-                                .child(label),
+                                .text_color(ui.muted)
+                                .child(format!("+{}", ws.active_ports.len() - PORTS_VISIBLE)),
                         );
-                    } else {
-                        ports_row = ports_row
-                            .child(div().text_size(px(10.)).text_color(ui.muted).child(label));
                     }
                 }
 
-                if ws.active_ports.len() > PORTS_VISIBLE {
-                    ports_row = ports_row.child(
-                        div()
-                            .px(px(4.))
-                            .text_size(px(10.))
-                            .text_color(ui.muted)
-                            .child(format!("+{}", ws.active_ports.len() - PORTS_VISIBLE)),
-                    );
-                }
-
-                card = card.child(ports_row);
+                card = card.child(meta_row);
             }
 
             // ── Row 4: AI tool status (one row per active tool). Aggregate

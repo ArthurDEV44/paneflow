@@ -3,7 +3,7 @@ use std::time::Duration;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Decorations, EventEmitter, IntoElement,
     MouseButton, Pixels, Render, Styled, Transformation, Window, WindowControlArea, div,
-    percentage, prelude::*, px, svg,
+    percentage, prelude::*, px, rgb, svg,
 };
 
 use super::csd::default_button_layout;
@@ -31,6 +31,18 @@ pub struct TitleBar {
     /// thread/chat is selected (the menu acts on the current target);
     /// `false` in the picker state and in Cli/Diff.
     pub agents_overflow: bool,
+    /// Codex cockpit polish: in Agents mode the right area is a floating
+    /// rounded panel, so the title bar drops its 1px bottom divider for a
+    /// seamless chrome. `false` in Cli/Diff keeps the divider (diff visuel
+    /// nul). PUSHED by `PaneFlowApp::render`; `TitleBar` never reads `AppMode`.
+    pub is_agents: bool,
+    /// Cockpit chrome for the Cli mode: paint the rail gray (`#1d1d1d`) and
+    /// drop the bottom divider so the title bar + sidebar read as one
+    /// continuous surface, matching the Agents cockpit. `false` in Diff keeps
+    /// the themed chrome + divider (Diff stays frozen). Mutually exclusive with
+    /// `is_agents` (Agents paints nothing). PUSHED by `PaneFlowApp::render`;
+    /// `TitleBar` never reads `AppMode`.
+    pub cockpit: bool,
 }
 
 #[derive(Clone)]
@@ -99,6 +111,8 @@ impl TitleBar {
             agents_thread_title: None,
             agents_context_label: None,
             agents_overflow: false,
+            is_agents: false,
+            cockpit: false,
         }
     }
 }
@@ -177,7 +191,12 @@ impl Render for TitleBar {
             .pl(brand_pl)
             .pr(px(8.))
             .overflow_x_hidden();
-        if let Some(title) = self.agents_thread_title.clone() {
+        if self.is_agents {
+            // Agents: no brand text in the chrome — the thread/chat name is
+            // already shown in the rail (active row) and in the terminal
+            // itself, and the rail-width title bar would only clip it. Keep the
+            // slot empty so just the window controls remain top-left.
+        } else if let Some(title) = self.agents_thread_title.clone() {
             // US-010: contextual brand in Agents mode — `thread title · context`
             // replaces the static "PaneFlow". The title truncates first; the
             // context label and the `⋯` button stay pinned.
@@ -262,6 +281,9 @@ impl Render for TitleBar {
         // --- Center section: workspace name breadcrumb (muted) ---
         // Takes the remaining flex space and centers the current workspace
         // name. Acts as drag area when the workspace is unnamed / unset.
+        // Cockpit (Cli): the breadcrumb is dropped — the workspace name already
+        // anchors the sidebar, so the title bar centre stays a clean drag area.
+        // Diff keeps it.
         let mut content = div()
             .flex_1()
             .flex()
@@ -270,7 +292,9 @@ impl Render for TitleBar {
             .justify_center()
             .px(px(12.))
             .min_w_0();
-        if let Some(name) = self.workspace_name.as_ref() {
+        if !self.cockpit
+            && let Some(name) = self.workspace_name.as_ref()
+        {
             content = content.child(
                 div()
                     .flex()
@@ -298,230 +322,242 @@ impl Render for TitleBar {
         }
 
         // --- Update available pill ---
-        let update_pill = self.update_available.clone().map(|info| {
-            // Decide label + visual style per install method. The click handler
-            // always dispatches `StartSelfUpdate`; the action handler in
-            // `PaneFlowApp` decides whether to download (in-app), trigger
-            // an instant restart (ReadyToRestart), or show the
-            // package-manager hint toast (system-managed).
-            let (label, style): (String, PillStyle) = match info.kind {
-                UpdatePillKind::InApp(state) => match state {
-                    SelfUpdatePillState::Idle => {
-                        (format!("v{} available", info.version), PillStyle::Clickable)
+        // Cockpit modes (Agents + Cli): the bar is a rail-confined overlay
+        // entirely filled by the brand slot, so the pill would never be
+        // visible — its cockpit home is the sidebar update banner
+        // (`render_sidebar_update_banner`). Diff keeps the title-bar pill.
+        let update_pill_visible = !self.is_agents && !self.cockpit;
+        let update_pill = update_pill_visible
+            .then(|| self.update_available.clone())
+            .flatten()
+            .map(|info| {
+                // Decide label + visual style per install method. The click handler
+                // always dispatches `StartSelfUpdate`; the action handler in
+                // `PaneFlowApp` decides whether to download (in-app), trigger
+                // an instant restart (ReadyToRestart), or show the
+                // package-manager hint toast (system-managed).
+                let (label, style): (String, PillStyle) = match info.kind {
+                    UpdatePillKind::InApp(state) => match state {
+                        SelfUpdatePillState::Idle => {
+                            (format!("v{} available", info.version), PillStyle::Clickable)
+                        }
+                        SelfUpdatePillState::Downloading => {
+                            ("Downloading update…".to_string(), PillStyle::Busy)
+                        }
+                        SelfUpdatePillState::Installing => {
+                            ("Installing update…".to_string(), PillStyle::Busy)
+                        }
+                        SelfUpdatePillState::ReadyToRestart => {
+                            ("Restart Paneflow".to_string(), PillStyle::Clickable)
+                        }
+                        SelfUpdatePillState::Errored => {
+                            ("Update failed".to_string(), PillStyle::Clickable)
+                        }
+                    },
+                    UpdatePillKind::SystemManaged(kind) => {
+                        let label = match kind {
+                            SystemPackageKind::RpmOstree => "Update via rpm-ostree".to_string(),
+                            SystemPackageKind::Other => "Update via package manager".to_string(),
+                        };
+                        (label, PillStyle::SystemHint)
                     }
-                    SelfUpdatePillState::Downloading => {
-                        ("Downloading update…".to_string(), PillStyle::Busy)
-                    }
-                    SelfUpdatePillState::Installing => {
-                        ("Installing update…".to_string(), PillStyle::Busy)
-                    }
-                    SelfUpdatePillState::ReadyToRestart => {
-                        ("Restart Paneflow".to_string(), PillStyle::Clickable)
-                    }
-                    SelfUpdatePillState::Errored => {
-                        ("Update failed".to_string(), PillStyle::Clickable)
-                    }
-                },
-                UpdatePillKind::SystemManaged(kind) => {
-                    let label = match kind {
-                        SystemPackageKind::RpmOstree => "Update via rpm-ostree".to_string(),
-                        SystemPackageKind::Other => "Update via package manager".to_string(),
-                    };
-                    (label, PillStyle::SystemHint)
-                }
-            };
+                };
 
-            // Leading icon. Clickable renders `download.svg` for the
-            // pre-install CTA and `refresh.svg` for the post-install
-            // "Restart for vX" CTA so the user has a visual cue that the
-            // heavy work is already done; Busy renders a `loader-circle.svg`
-            // arc continuously rotating via GPUI's declarative
-            // Animation+Transformation API (one full revolution per second,
-            // repeat forever). Pattern mirrors
-            // `crates/gpui/examples/animation.rs` in the upstream Zed repo.
-            let is_ready_to_restart = matches!(
-                info.kind,
-                UpdatePillKind::InApp(SelfUpdatePillState::ReadyToRestart)
-            );
-            let leading_icon: AnyElement = match style {
-                PillStyle::Busy => svg()
-                    .size(px(11.))
-                    .flex_none()
-                    .path("icons/loader-circle.svg")
-                    .text_color(ui.muted)
-                    .with_animation(
-                        "update-pill-spinner",
-                        Animation::new(Duration::from_secs(1)).repeat(),
-                        |svg, delta| {
-                            svg.with_transformation(Transformation::rotate(percentage(delta)))
-                        },
-                    )
-                    .into_any_element(),
-                PillStyle::Clickable => svg()
-                    .size(px(11.))
-                    .flex_none()
-                    .path(if is_ready_to_restart {
-                        "icons/refresh.svg"
-                    } else {
-                        "icons/download.svg"
-                    })
-                    .text_color(ui.muted)
-                    .into_any_element(),
-                PillStyle::SystemHint => svg()
-                    .size(px(11.))
-                    .flex_none()
-                    .path("icons/tool.svg")
-                    .text_color(ui.muted)
-                    .into_any_element(),
-            };
-
-            // The pill sits inside the title bar's `WindowControlArea::Drag`
-            // region declared on the parent. GPUI's hit-testing picks the
-            // most-specific element on hover, so `cursor_pointer()` on the
-            // pill itself overrides the parent's cursor without needing
-            // to detach from the drag area; the `cx.stop_propagation()`
-            // mouse-down further down ensures the click doesn't trigger
-            // a window drag. Same idiom Zed's `ButtonLike` relies on.
-            // US-007 AC3: a small `×` dismiss affordance on the
-            // non-busy states. We deliberately omit it during
-            // Downloading/Installing/ReadyToRestart — those have a
-            // user-perceivable side effect already in flight (or
-            // sitting one click away from `cx.restart()`); a stray
-            // dismiss there would be jarring. Errored remains
-            // dismissable so a user with a chronic install failure
-            // can hide the pill without having to bounce the app.
-            let pill_dismissable = matches!(
-                info.kind,
-                UpdatePillKind::InApp(SelfUpdatePillState::Idle | SelfUpdatePillState::Errored)
-                    | UpdatePillKind::SystemManaged(_)
-            );
-
-            let mut pill = div()
-                .id("update-pill")
-                .ml_auto()
-                .mr_2()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_center()
-                .gap(px(5.))
-                .px(px(8.))
-                .h(px(24.))
-                .rounded(px(6.))
-                .border_1()
-                .border_color(ui.border)
-                .bg(ui.subtle)
-                .text_color(ui.text)
-                .text_size(px(11.))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(leading_icon)
-                .child(label);
-
-            if pill_dismissable {
-                let muted = ui.muted;
-                let text = ui.text;
-                pill = pill.child(
-                    div()
-                        .id("update-pill-dismiss")
-                        .ml(px(2.))
-                        .px(px(4.))
-                        .text_color(muted)
-                        .text_size(px(13.))
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .cursor_pointer()
-                        .hover(move |s| s.text_color(text))
-                        // stop_propagation on BOTH mouse-down and click
-                        // so the click never reaches the parent pill's
-                        // `on_click` handler that dispatches
-                        // `StartSelfUpdate` — otherwise hitting the `×`
-                        // would (a) dismiss the pill (b) immediately
-                        // start the update we just dismissed.
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(|_, window, cx| {
-                            cx.stop_propagation();
-                            window.dispatch_action(Box::new(crate::DismissUpdate), cx);
-                        })
-                        .child("×"),
+                // Leading icon. Clickable renders `download.svg` for the
+                // pre-install CTA and `refresh.svg` for the post-install
+                // "Restart for vX" CTA so the user has a visual cue that the
+                // heavy work is already done; Busy renders a `loader-circle.svg`
+                // arc continuously rotating via GPUI's declarative
+                // Animation+Transformation API (one full revolution per second,
+                // repeat forever). Pattern mirrors
+                // `crates/gpui/examples/animation.rs` in the upstream Zed repo.
+                let is_ready_to_restart = matches!(
+                    info.kind,
+                    UpdatePillKind::InApp(SelfUpdatePillState::ReadyToRestart)
                 );
-            }
-            match style {
-                // Dispatch on mouse-DOWN, not on click (mouse-up). At cold
-                // start the update check resolves before the user has
-                // touched the window, so the very first press on the pill
-                // happens against a window the compositor still considers
-                // inactive (Wayland focus-stealing prevention often
-                // rejects `cx.activate(true)`) and a focus chain that
-                // isn't yet initialized. In that state, `on_click`
-                // (which needs a matched press+release pair routed
-                // through the focus chain) silently drops the first
-                // interaction; the user has to click elsewhere to wake
-                // the chain, then re-click. Press-based dispatch avoids
-                // both races and matches the title-bar button idiom in
-                // Zed/VS Code/Discord. The pkexec modal confirms the
-                // action, so we don't lose "drag-out to cancel".
-                PillStyle::Clickable => {
-                    pill = pill
-                        .cursor_pointer()
-                        .hover(|s| {
-                            let ui = crate::theme::ui_colors();
-                            s.bg(ui.surface).border_color(ui.muted)
-                        })
-                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                            cx.stop_propagation();
-                            window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
-                        });
-                }
-                PillStyle::Busy => {
-                    pill = pill.opacity(0.7);
-                }
-                // SystemHint is a button that copies the upgrade command
-                // to the clipboard via a toast. It's still a button, so
-                // the cursor must hint that — `cursor_pointer()` matches
-                // every other clickable surface in the chrome.
-                PillStyle::SystemHint => {
-                    pill = pill
-                        .opacity(0.8)
-                        .cursor_pointer()
-                        .hover(|s| {
-                            let ui = crate::theme::ui_colors();
-                            s.bg(ui.surface).border_color(ui.muted).opacity(1.0)
-                        })
-                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                            cx.stop_propagation();
-                            window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
-                        });
-                }
-            }
-            pill
-        });
-        let ipc_pill = (self.ipc_state == crate::ipc::IpcState::Disabled).then(|| {
-            div()
-                .id("ipc-offline-pill")
-                .mr_2()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_center()
-                .gap(px(5.))
-                .px(px(8.))
-                .h(px(24.))
-                .rounded(px(6.))
-                .border_1()
-                .border_color(ui.border)
-                .bg(ui.subtle)
-                .text_color(ui.text)
-                .text_size(px(11.))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .child(
-                    svg()
+                let leading_icon: AnyElement = match style {
+                    PillStyle::Busy => svg()
                         .size(px(11.))
                         .flex_none()
-                        .path("icons/triangle-alert.svg")
-                        .text_color(ui.muted),
-                )
-                .child("IPC offline")
-        });
+                        .path("icons/loader-circle.svg")
+                        .text_color(ui.muted)
+                        .with_animation(
+                            "update-pill-spinner",
+                            Animation::new(Duration::from_secs(1)).repeat(),
+                            |svg, delta| {
+                                svg.with_transformation(Transformation::rotate(percentage(delta)))
+                            },
+                        )
+                        .into_any_element(),
+                    PillStyle::Clickable => svg()
+                        .size(px(11.))
+                        .flex_none()
+                        .path(if is_ready_to_restart {
+                            "icons/refresh.svg"
+                        } else {
+                            "icons/download.svg"
+                        })
+                        .text_color(ui.muted)
+                        .into_any_element(),
+                    PillStyle::SystemHint => svg()
+                        .size(px(11.))
+                        .flex_none()
+                        .path("icons/tool.svg")
+                        .text_color(ui.muted)
+                        .into_any_element(),
+                };
+
+                // The pill sits inside the title bar's `WindowControlArea::Drag`
+                // region declared on the parent. GPUI's hit-testing picks the
+                // most-specific element on hover, so `cursor_pointer()` on the
+                // pill itself overrides the parent's cursor without needing
+                // to detach from the drag area; the `cx.stop_propagation()`
+                // mouse-down further down ensures the click doesn't trigger
+                // a window drag. Same idiom Zed's `ButtonLike` relies on.
+                // US-007 AC3: a small `×` dismiss affordance on the
+                // non-busy states. We deliberately omit it during
+                // Downloading/Installing/ReadyToRestart — those have a
+                // user-perceivable side effect already in flight (or
+                // sitting one click away from `cx.restart()`); a stray
+                // dismiss there would be jarring. Errored remains
+                // dismissable so a user with a chronic install failure
+                // can hide the pill without having to bounce the app.
+                let pill_dismissable = matches!(
+                    info.kind,
+                    UpdatePillKind::InApp(SelfUpdatePillState::Idle | SelfUpdatePillState::Errored)
+                        | UpdatePillKind::SystemManaged(_)
+                );
+
+                let mut pill = div()
+                    .id("update-pill")
+                    .ml_auto()
+                    .mr_2()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(5.))
+                    .px(px(8.))
+                    .h(px(24.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(ui.border)
+                    .bg(ui.subtle)
+                    .text_color(ui.text)
+                    .text_size(px(11.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(leading_icon)
+                    .child(label);
+
+                if pill_dismissable {
+                    let muted = ui.muted;
+                    let text = ui.text;
+                    pill = pill.child(
+                        div()
+                            .id("update-pill-dismiss")
+                            .ml(px(2.))
+                            .px(px(4.))
+                            .text_color(muted)
+                            .text_size(px(13.))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .cursor_pointer()
+                            .hover(move |s| s.text_color(text))
+                            // stop_propagation on BOTH mouse-down and click
+                            // so the click never reaches the parent pill's
+                            // `on_click` handler that dispatches
+                            // `StartSelfUpdate` — otherwise hitting the `×`
+                            // would (a) dismiss the pill (b) immediately
+                            // start the update we just dismissed.
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(|_, window, cx| {
+                                cx.stop_propagation();
+                                window.dispatch_action(Box::new(crate::DismissUpdate), cx);
+                            })
+                            .child("×"),
+                    );
+                }
+                match style {
+                    // Dispatch on mouse-DOWN, not on click (mouse-up). At cold
+                    // start the update check resolves before the user has
+                    // touched the window, so the very first press on the pill
+                    // happens against a window the compositor still considers
+                    // inactive (Wayland focus-stealing prevention often
+                    // rejects `cx.activate(true)`) and a focus chain that
+                    // isn't yet initialized. In that state, `on_click`
+                    // (which needs a matched press+release pair routed
+                    // through the focus chain) silently drops the first
+                    // interaction; the user has to click elsewhere to wake
+                    // the chain, then re-click. Press-based dispatch avoids
+                    // both races and matches the title-bar button idiom in
+                    // Zed/VS Code/Discord. The pkexec modal confirms the
+                    // action, so we don't lose "drag-out to cancel".
+                    PillStyle::Clickable => {
+                        pill = pill
+                            .cursor_pointer()
+                            .hover(|s| {
+                                let ui = crate::theme::ui_colors();
+                                s.bg(ui.surface).border_color(ui.muted)
+                            })
+                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                cx.stop_propagation();
+                                window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
+                            });
+                    }
+                    PillStyle::Busy => {
+                        pill = pill.opacity(0.7);
+                    }
+                    // SystemHint is a button that copies the upgrade command
+                    // to the clipboard via a toast. It's still a button, so
+                    // the cursor must hint that — `cursor_pointer()` matches
+                    // every other clickable surface in the chrome.
+                    PillStyle::SystemHint => {
+                        pill = pill
+                            .opacity(0.8)
+                            .cursor_pointer()
+                            .hover(|s| {
+                                let ui = crate::theme::ui_colors();
+                                s.bg(ui.surface).border_color(ui.muted).opacity(1.0)
+                            })
+                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                cx.stop_propagation();
+                                window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
+                            });
+                    }
+                }
+                pill
+            });
+        // Cockpit modes: same rail-confinement story as the update pill — the
+        // notice lives in the sidebar (`render_sidebar_ipc_banner`). Diff
+        // keeps the title-bar pill.
+        let ipc_pill = (update_pill_visible && self.ipc_state == crate::ipc::IpcState::Disabled)
+            .then(|| {
+                div()
+                    .id("ipc-offline-pill")
+                    .mr_2()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(5.))
+                    .px(px(8.))
+                    .h(px(24.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(ui.border)
+                    .bg(ui.subtle)
+                    .text_color(ui.text)
+                    .text_size(px(11.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(
+                        svg()
+                            .size(px(11.))
+                            .flex_none()
+                            .path("icons/triangle-alert.svg")
+                            .text_color(ui.muted),
+                    )
+                    .child("IPC offline")
+            });
 
         let csd_rounding = px(10.);
 
@@ -534,23 +570,37 @@ impl Render for TitleBar {
             .items_center()
             .w_full()
             .h(height)
-            .bg(bg_color)
+            // Agents: the title bar floats as a transparent overlay over the
+            // full-height rail + panel, so it paints no background. Cli cockpit:
+            // paint the rail gray (#1d1d1d) so the strip + sidebar fuse into one
+            // surface. Diff keeps the themed chrome.
+            .when(!self.is_agents && self.cockpit, |d| d.bg(rgb(0x1d1d1d)))
+            .when(!self.is_agents && !self.cockpit, |d| d.bg(bg_color))
             .pr(px(12.));
 
-        // CSD rounded corners with tiling awareness
-        if let Decorations::Client { tiling } = decorations {
+        // CSD rounded corners with tiling awareness. Skipped in the cockpit
+        // (Agents + Cli): the title bar is a confined overlay there, so its
+        // corner fill + border would draw a stray frame (and a mid-window
+        // rounded top-right corner) over the rail + panel.
+        if !self.is_agents
+            && !self.cockpit
+            && let Decorations::Client { tiling } = decorations
+        {
             if !(tiling.top || tiling.left) {
                 bar = bar.rounded_tl(csd_rounding);
             }
             if !(tiling.top || tiling.right) {
                 bar = bar.rounded_tr(csd_rounding);
             }
-            // 1px border + negative margins fill transparent gap at rounded corners
-            bar = bar
-                .mt(px(-1.))
-                .mb(px(-1.))
-                .border(px(1.))
-                .border_color(bg_color);
+            // 1px border + negative margins fill transparent gap at rounded
+            // corners. Match the cockpit gray in Cli so the corner fill blends
+            // with the painted strip instead of showing the themed chrome.
+            bar = bar.mt(px(-1.)).mb(px(-1.)).border(px(1.));
+            bar = if self.cockpit {
+                bar.border_color(rgb(0x1d1d1d))
+            } else {
+                bar.border_color(bg_color)
+            };
         }
 
         bar
@@ -593,14 +643,19 @@ impl Render for TitleBar {
             .children(ipc_pill)
             .children(update_pill)
             .children(right_controls)
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .bottom_0()
-                    .h(px(1.))
-                    .bg(ui.border),
-            )
+            .when(!self.is_agents && !self.cockpit, |this| {
+                // Codex cockpit: Agents + Cli drop the bottom divider so the
+                // chrome reads as one seamless surface (Cli fuses with its
+                // #1d1d1d sidebar); Diff keeps it (diff visuel nul).
+                this.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .h(px(1.))
+                        .bg(ui.border),
+                )
+            })
     }
 }

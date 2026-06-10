@@ -4,8 +4,14 @@ use super::model::{SyntaxPalette, TerminalTheme, h, ha};
 
 pub type ThemeEntry = (&'static str, fn() -> TerminalTheme);
 
-pub static THEMES: &[ThemeEntry] = &[("One Dark", one_dark), ("PaneFlow Light", paneflow_light)];
+// "PaneFlow Light" was pulled from the bundled set (2026-06-10) pending a
+// full light-theme redesign. A config still naming it falls back to One Dark
+// via `theme_by_name` → `watcher.rs`'s `one_dark()` default. The fixture
+// below stays test-only: it exercises the light branch of `ui_colors()` and
+// the APCA machinery, which the redesigned theme will reuse.
+pub static THEMES: &[ThemeEntry] = &[("One Dark", one_dark)];
 
+#[cfg(test)]
 pub fn paneflow_light() -> TerminalTheme {
     TerminalTheme {
         background: h(0xf5f5f5),

@@ -7,14 +7,202 @@
 //! shared because only one sidebar is rendered at a time (mode toggle
 //! swaps the whole sidebar tree).
 
+use std::time::Duration;
+
 use gpui::{
-    AnyElement, ClickEvent, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, SharedString, Styled, div, prelude::*, px, svg,
+    Animation, AnimationExt, AnyElement, ClickEvent, Context, FontWeight, InteractiveElement,
+    IntoElement, MouseButton, ParentElement, SharedString, Styled, Transformation, div, percentage,
+    prelude::*, px, svg,
 };
 
 use crate::PaneFlowApp;
+use crate::window_chrome::title_bar::{SelfUpdatePillState, SystemPackageKind, UpdatePillKind};
 
 impl PaneFlowApp {
+    /// Update CTA banner at the bottom of the sidebar, above the Settings
+    /// trigger. Replaces the title-bar update pill in the cockpit modes
+    /// (Cli/Agents), where the title bar is a rail-confined overlay with no
+    /// room for pills. Same states, labels, icons, and dismiss rules as the
+    /// title-bar pill (`title_bar.rs`); same mouse-DOWN dispatch (Wayland
+    /// focus-stealing prevention silently drops the first on_click after a
+    /// cold start — see the title-bar pill comment for the full story).
+    /// `None` when no update is available.
+    pub(crate) fn render_sidebar_update_banner(
+        &self,
+        _cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let info = self.update_pill_info()?;
+        let ui = crate::theme::ui_colors();
+
+        let (label, busy, system_hint): (String, bool, bool) = match info.kind {
+            UpdatePillKind::InApp(state) => match state {
+                SelfUpdatePillState::Idle => (format!("v{} available", info.version), false, false),
+                SelfUpdatePillState::Downloading => ("Downloading update…".into(), true, false),
+                SelfUpdatePillState::Installing => ("Installing update…".into(), true, false),
+                SelfUpdatePillState::ReadyToRestart => ("Restart Paneflow".into(), false, false),
+                SelfUpdatePillState::Errored => ("Update failed".into(), false, false),
+            },
+            UpdatePillKind::SystemManaged(kind) => {
+                let label = match kind {
+                    SystemPackageKind::RpmOstree => "Update via rpm-ostree".to_string(),
+                    SystemPackageKind::Other => "Update via package manager".to_string(),
+                };
+                (label, false, true)
+            }
+        };
+        let is_ready_to_restart = matches!(
+            info.kind,
+            UpdatePillKind::InApp(SelfUpdatePillState::ReadyToRestart)
+        );
+        let dismissable = matches!(
+            info.kind,
+            UpdatePillKind::InApp(SelfUpdatePillState::Idle | SelfUpdatePillState::Errored)
+                | UpdatePillKind::SystemManaged(_)
+        );
+
+        let leading_icon: AnyElement = if busy {
+            svg()
+                .size(px(14.))
+                .flex_none()
+                .path("icons/loader-circle.svg")
+                .text_color(ui.muted)
+                .with_animation(
+                    "sidebar-update-spinner",
+                    Animation::new(Duration::from_secs(1)).repeat(),
+                    |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+                )
+                .into_any_element()
+        } else {
+            svg()
+                .size(px(14.))
+                .flex_none()
+                .path(if system_hint {
+                    "icons/tool.svg"
+                } else if is_ready_to_restart {
+                    "icons/refresh.svg"
+                } else {
+                    "icons/download.svg"
+                })
+                .text_color(ui.muted)
+                .into_any_element()
+        };
+
+        let mut banner = div()
+            .id("sidebar-update-banner")
+            .mx(px(6.))
+            .mb(px(2.))
+            .px(px(8.))
+            .py(px(6.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(ui.border)
+            .bg(ui.subtle)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.))
+            .child(leading_icon)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(ui.text)
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .truncate()
+                    .child(label),
+            );
+
+        if dismissable {
+            let muted = ui.muted;
+            let text = ui.text;
+            banner = banner.child(
+                div()
+                    .id("sidebar-update-dismiss")
+                    .px(px(4.))
+                    .text_color(muted)
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::BOLD)
+                    .cursor_pointer()
+                    .hover(move |s| s.text_color(text))
+                    // stop_propagation on BOTH mouse-down and click so the
+                    // press never reaches the banner's StartSelfUpdate
+                    // dispatch — hitting × must not start the update it
+                    // just dismissed.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(|_, window, cx| {
+                        cx.stop_propagation();
+                        window.dispatch_action(Box::new(crate::DismissUpdate), cx);
+                    })
+                    .child("×"),
+            );
+        }
+
+        if busy {
+            banner = banner.opacity(0.7);
+        } else {
+            banner = banner
+                .cursor_pointer()
+                .when(system_hint, |d| d.opacity(0.8))
+                .hover(move |s| {
+                    let ui = crate::theme::ui_colors();
+                    let s = s.bg(ui.surface).border_color(ui.muted);
+                    if system_hint { s.opacity(1.0) } else { s }
+                })
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    cx.stop_propagation();
+                    window.dispatch_action(Box::new(crate::StartSelfUpdate), cx);
+                });
+        }
+
+        Some(banner.into_any_element())
+    }
+
+    /// "IPC offline" notice at the bottom of the sidebar — the cockpit home
+    /// of the title-bar IPC pill (same rail-confinement story as the update
+    /// banner). Purely informational, like the original pill: no click
+    /// handler. `None` while the IPC server is up.
+    pub(crate) fn render_sidebar_ipc_banner(&self, _cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.ipc_status.state() != crate::ipc::IpcState::Disabled {
+            return None;
+        }
+        let ui = crate::theme::ui_colors();
+        Some(
+            div()
+                .id("sidebar-ipc-banner")
+                .mx(px(6.))
+                .mb(px(2.))
+                .px(px(8.))
+                .py(px(6.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(ui.border)
+                .bg(ui.subtle)
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    svg()
+                        .size(px(14.))
+                        .flex_none()
+                        .path("icons/triangle-alert.svg")
+                        .text_color(ui.muted),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(ui.text)
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .truncate()
+                        .child("IPC offline"),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Render the bottom Settings trigger + the popover overlay that
     /// opens upward when `sidebar_actions_menu_open` is true. Wrap the
     /// result inside a `relative()` container at the bottom of the
@@ -115,25 +303,29 @@ impl PaneFlowApp {
         if let Some(popover) = popover {
             footer = footer.child(popover);
         }
+        // Cockpit homes of the old title-bar pills, right above the Settings
+        // trigger, shared by Cli + Agents: the "IPC offline" notice first,
+        // then the update CTA banner.
+        if let Some(banner) = self.render_sidebar_ipc_banner(cx) {
+            footer = footer.child(banner);
+        }
+        if let Some(banner) = self.render_sidebar_update_banner(cx) {
+            footer = footer.child(banner);
+        }
         footer.child(trigger).into_any_element()
     }
 
-    /// CLI / Agents segmented toggle, rendered at the very bottom of
-    /// each sidebar (below the Settings footer). Migrated from the
-    /// title bar — the title bar no longer carries any mode chrome.
-    /// Visual language matches the old title-bar pill so the affordance
-    /// stays recognisable across the move.
+    /// CLI / Diff / Agents mode picker, rendered at the very bottom of each
+    /// sidebar (below the Settings footer). Codex redesign: a floating
+    /// fully-rounded pill (the ChatGPT model-picker language) — `ui.surface`
+    /// container with a faint hairline, the active segment a complete
+    /// brighter pill (#323232, the same "brightest fill" as the selected
+    /// workspace card), each segment carrying a small mode icon.
     pub(crate) fn render_mode_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
         use paneflow_config::schema::AppMode;
         let ui = crate::theme::ui_colors();
         let mode = self.mode;
 
-        // Monochrome translucent palette — Linear / Cursor / Vercel
-        // segmented-control language. Layering uses `ui.text` alpha so
-        // the chip adapts to both dark and light themes without
-        // hardcoded hex values. No borders anywhere — separation comes
-        // purely from fill contrast.
-        let active_bg = ui.text.opacity(0.08);
         let inactive_text = ui.text.opacity(0.45);
         let inactive_hover_text = ui.text.opacity(0.85);
 
@@ -144,38 +336,49 @@ impl PaneFlowApp {
         // clickable; switching modes means clicking a different segment.
         type Activate = Box<dyn Fn(&mut PaneFlowApp, &mut gpui::Window, &mut Context<PaneFlowApp>)>;
 
-        let segment =
-            |label: &'static str, is_active: bool, id: &'static str, activate: Activate| {
-                let mut seg = div()
-                    .id(id)
-                    .flex_1()
-                    .px(px(8.))
-                    .py(px(0.))
-                    .h(px(22.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(4.))
-                    .text_size(px(11.));
-                if is_active {
-                    seg = seg
-                        .bg(active_bg)
-                        .text_color(ui.text)
-                        .font_weight(FontWeight::SEMIBOLD);
-                } else {
-                    seg = seg
-                        .text_color(inactive_text)
-                        .font_weight(FontWeight::MEDIUM)
-                        .cursor_pointer()
-                        .hover(move |s| s.text_color(inactive_hover_text))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(move |this, _: &ClickEvent, w, cx| {
-                            cx.stop_propagation();
-                            activate(this, w, cx);
-                        }));
-                }
-                seg.child(label).into_any_element()
-            };
+        let segment = |label: &'static str,
+                       icon: &'static str,
+                       is_active: bool,
+                       id: &'static str,
+                       activate: Activate| {
+            let mut seg = div()
+                .id(id)
+                .flex_1()
+                .h(px(24.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_center()
+                .gap(px(5.))
+                .rounded_full()
+                .text_size(px(11.));
+            if is_active {
+                seg = seg
+                    .bg(gpui::rgb(0x323232))
+                    .text_color(ui.text)
+                    .font_weight(FontWeight::SEMIBOLD);
+            } else {
+                seg = seg
+                    .text_color(inactive_text)
+                    .font_weight(FontWeight::MEDIUM)
+                    .cursor_pointer()
+                    .hover(move |s| s.text_color(inactive_hover_text))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |this, _: &ClickEvent, w, cx| {
+                        cx.stop_propagation();
+                        activate(this, w, cx);
+                    }));
+            }
+            seg.child(
+                svg()
+                    .size(px(13.))
+                    .flex_none()
+                    .path(icon)
+                    .text_color(if is_active { ui.text } else { inactive_text }),
+            )
+            .child(label)
+            .into_any_element()
+        };
 
         div()
             .id("sidebar-mode-toggle")
@@ -185,24 +388,28 @@ impl PaneFlowApp {
             .flex_row()
             .items_center()
             .gap(px(2.))
-            .px(px(2.))
-            .py(px(2.))
-            .rounded(px(6.))
+            .p(px(3.))
+            .rounded_full()
             .bg(ui.surface)
+            .border_1()
+            .border_color(ui.border.opacity(0.5))
             .child(segment(
                 "CLI",
+                "icons/terminal.svg",
                 matches!(mode, AppMode::Cli),
                 "sidebar-mode-cli",
                 Box::new(|this, w, cx| this.enter_cli_mode(w, cx)),
             ))
             .child(segment(
                 "Diff",
+                "icons/git-pull-request.svg",
                 matches!(mode, AppMode::Diff),
                 "sidebar-mode-diff",
                 Box::new(|this, _w, cx| this.enter_diff_mode(cx)),
             ))
             .child(segment(
                 "Agents",
+                "icons/sessions.svg",
                 matches!(mode, AppMode::Agents),
                 "sidebar-mode-agents",
                 Box::new(|this, _w, cx| this.enter_agents_mode(cx)),

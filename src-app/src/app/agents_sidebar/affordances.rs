@@ -482,6 +482,8 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) {
         use crate::project::AgentsTarget;
+        // Opening a context menu cancels any armed inline delete-confirm.
+        self.agents_view.agents_delete_armed = None;
         match target {
             AgentsTarget::Thread {
                 project_idx,
@@ -530,6 +532,42 @@ impl PaneFlowApp {
             AgentsTarget::Chat { chat_idx } => AgentsDeleteTarget::Chat { chat_idx },
         };
         self.request_agents_confirm_delete(delete_target, cx);
+    }
+
+    /// Arm the inline delete-confirm for `target`'s row (ergonomics): clicking
+    /// the trash icon does NOT open a dialog — it flips the row's action
+    /// cluster to a red "Delete" button. A second click on that button runs
+    /// the delete; selecting a row / opening a menu / arming another cancels it.
+    pub(crate) fn arm_delete_for_target(
+        &mut self,
+        target: crate::project::AgentsTarget,
+        cx: &mut Context<Self>,
+    ) {
+        self.agents_view.agents_delete_armed = Some(target);
+        cx.notify();
+    }
+
+    /// Run the armed inline delete. Funnels the armed target through
+    /// `agents_confirm_delete` so it reuses the exact confirmed-delete path
+    /// (toast + cache cleanup + session save) — no dialog is ever shown.
+    pub(crate) fn execute_armed_delete(&mut self, cx: &mut Context<Self>) {
+        use crate::project::AgentsTarget;
+        let Some(target) = self.agents_view.agents_delete_armed.take() else {
+            return;
+        };
+        let delete_target = match target {
+            AgentsTarget::Thread {
+                project_idx,
+                thread_idx,
+            } => AgentsDeleteTarget::Thread {
+                project_idx,
+                thread_idx,
+            },
+            AgentsTarget::Chat { chat_idx } => AgentsDeleteTarget::Chat { chat_idx },
+        };
+        self.agents_view.agents_confirm_delete = Some(delete_target);
+        self.execute_agents_confirm_delete(cx);
+        cx.notify();
     }
 
     /// Duplicate the target's row.

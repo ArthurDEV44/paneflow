@@ -40,6 +40,11 @@ pub struct MultiRepoDiffView {
     /// one repo, switching to another seeds it with the same base. `None` until
     /// a repo resolves/sets one.
     base_ref: Option<String>,
+    /// Scope breadcrumb fragment PUSHED by `render_diff_main` every frame and
+    /// consumed by the next `render` (push-only contract, same as
+    /// `DiffView::scope_slot`). Mounted at the left of the repo-tab strip so
+    /// Multi-project also has a single chrome row.
+    pub scope_slot: Option<gpui::AnyElement>,
 }
 
 impl MultiRepoDiffView {
@@ -59,6 +64,7 @@ impl MultiRepoDiffView {
             groups,
             selected: 0,
             base_ref: None,
+            scope_slot: None,
         };
         this.mount_selected(cx);
         this
@@ -162,19 +168,29 @@ impl Render for MultiRepoDiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
 
+        // Single chrome row (Codex redesign): scope breadcrumb (host slot) at
+        // the left, then the repo tabs. No own background and no border — the
+        // strip sits directly on the panel (`ui.base`).
+        let scope_slot = self.scope_slot.take();
         let mut tabs = div()
             .id("multi-diff-tabs")
             .flex_none()
-            .h(px(34.))
+            .h(px(36.))
             .flex()
             .flex_row()
             .items_center()
             .gap(px(4.))
-            .px(px(8.))
+            .px(px(10.))
             .overflow_x_scroll()
-            .bg(ui.surface)
-            .border_b_1()
-            .border_color(ui.border);
+            .when_some(scope_slot, |d, slot| {
+                d.child(slot).child(
+                    gpui::svg()
+                        .size(px(13.))
+                        .flex_none()
+                        .path("icons/chevron-right.svg")
+                        .text_color(ui.muted),
+                )
+            });
 
         for (i, g) in self.groups.iter().enumerate() {
             let active = i == self.selected;
@@ -193,8 +209,11 @@ impl Render for MultiRepoDiffView {
                     .h_full()
                     .px(px(12.))
                     .border_b_2()
-                    .border_color(if active { ui.accent } else { ui.surface })
-                    .when(active, |d| d.bg(ui.base))
+                    .border_color(if active {
+                        ui.accent
+                    } else {
+                        gpui::transparent_black()
+                    })
                     .cursor_pointer()
                     .hover(|s| {
                         let ui = crate::theme::ui_colors();

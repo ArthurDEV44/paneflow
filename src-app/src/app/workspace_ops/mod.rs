@@ -60,6 +60,21 @@ impl PaneFlowApp {
             // (PRD files-tree US-002 workspace-switch). No-op when closed.
             self.reroot_files_tree(cx);
             self.workspaces[idx].focus_first(window, cx);
+            // An open sessions sidebar follows the active workspace: re-target
+            // it to the new workspace's first pane (rebinds the resume target
+            // + rescans for its cwd). Without this it kept showing — and
+            // resuming into — the PREVIOUS workspace. Closed only if the new
+            // workspace somehow has no pane.
+            if self.agent_sessions.sessions_sidebar_open {
+                match self.workspaces[idx]
+                    .root
+                    .as_ref()
+                    .and_then(|root| root.first_leaf())
+                {
+                    Some(pane) => self.open_sessions_sidebar_for_pane(&pane, cx),
+                    None => self.close_sessions_sidebar(cx),
+                }
+            }
             self.save_session(cx);
             cx.notify();
             // US-005 (prd-git-diff-mode-2026-Q3.md): in Diff mode the diff

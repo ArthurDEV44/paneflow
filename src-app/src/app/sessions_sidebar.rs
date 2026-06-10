@@ -29,6 +29,150 @@ const SIDEBAR_WIDTH: Pixels = px(300.);
 const ROW_HEIGHT: Pixels = px(30.);
 
 impl PaneFlowApp {
+    /// Open (or re-target) the sessions sidebar for `pane`: resolve the
+    /// pane's terminal cwd, bind the resume target, reset per-group state,
+    /// and kick the per-agent scans. Shared by the tab-bar toggle
+    /// (`PaneEvent::ToggleAgentSessions`) and the workspace switch
+    /// (`select_workspace` re-targets an open sidebar to the new active
+    /// workspace through this same path).
+    pub(crate) fn open_sessions_sidebar_for_pane(
+        &mut self,
+        pane: &gpui::Entity<crate::pane::Pane>,
+        cx: &mut Context<Self>,
+    ) {
+        // Resolve the active terminal's cwd: prefer the OSC 7 push
+        // (`current_cwd`), fall back to the on-demand `cwd_now()` syscall for
+        // shells that don't emit OSC 7.
+        let cwd_str = pane.read(cx).active_terminal_opt().and_then(|tv| {
+            let view = tv.read(cx);
+            view.terminal.current_cwd.clone().or_else(|| {
+                view.terminal
+                    .cwd_now()
+                    .map(|p| p.to_string_lossy().into_owned())
+            })
+        });
+
+        // Mutual exclusion: only one right column. Opening sessions closes
+        // the Files sidebar (and vice-versa, in `toggle_files_sidebar`).
+        if self.files_sidebar_open {
+            self.close_files_sidebar(cx);
+        }
+
+        // Close the floating dropdowns so they don't paint over the newly
+        // opened sidebar (the sidebar itself is docked, not an overlay, so it
+        // does not need mutual exclusion with itself).
+        self.workspace_menu_open = None;
+        self.profile_menu_open = None;
+
+        self.agent_sessions.sessions_sidebar_open = true;
+        self.agent_sessions.claude_sessions_cwd = cwd_str.clone();
+        self.agent_sessions.claude_sessions_pane = Some(pane.downgrade());
+        self.agent_sessions.claude_sessions.clear();
+        self.agent_sessions.codex_sessions.clear();
+        self.agent_sessions.opencode_sessions.clear();
+        // Fresh per-group state for this open: all expanded, capped at 5,
+        // not-yet-scanning (each spawned scan flips its own flag below).
+        self.agent_sessions.sessions_group_collapsed = [false; 3];
+        self.agent_sessions.sessions_group_show_all = [false; 3];
+        self.agent_sessions.sessions_scanning = [false; 3];
+        let enabled_agents = crate::agent_sessions::enabled_session_agents();
+        // Fresh handle so a previous scroll offset doesn't bleed into the new
+        // sidebar.
+        self.agent_sessions.claude_sessions_scroll = gpui::ScrollHandle::new();
+
+        if let Some(cwd) = cwd_str {
+            // Parallel scans — Claude Code under `~/.claude/projects/<slug>/`,
+            // Codex CLI under `~/.codex/sessions/YYYY/MM/DD/`, and OpenCode
+            // via a `opencode session list --format json` shell-out (the
+            // SQLite schema is unstable; the CLI is the published contract —
+            // see US-001 spike notes). Each task writes to its own Vec on the
+            // main thread. The sidebar may be closed or re-targeted against a
+            // different cwd before any scan finishes, so stale results are
+            // dropped by checking `claude_sessions_cwd` matches before
+            // applying.
+            //
+            // Scans for agents the user has hidden in Settings → AI Agent are
+            // skipped: with no UI to surface them the disk read would just be
+            // wasted I/O.
+            let scan_claude = enabled_agents.contains(&SessionAgent::Claude);
+            let scan_codex = enabled_agents.contains(&SessionAgent::Codex);
+            let scan_opencode = enabled_agents.contains(&SessionAgent::OpenCode);
+
+            if scan_claude {
+                let idx = agent_index(SessionAgent::Claude);
+                self.agent_sessions.sessions_scanning[idx] = true;
+                let claude_cwd_scan = cwd.clone();
+                let claude_cwd_match = cwd.clone();
+                cx.spawn(async move |this, cx| {
+                    let sessions = smol::unblock(move || {
+                        crate::claude_sessions::read_sessions_for_cwd(&claude_cwd_scan)
+                    })
+                    .await;
+                    let _ = this.update(cx, |app, cx| {
+                        if app.agent_sessions.sessions_sidebar_open
+                            && app.agent_sessions.claude_sessions_cwd.as_deref()
+                                == Some(claude_cwd_match.as_str())
+                        {
+                            app.agent_sessions.claude_sessions = sessions;
+                            app.agent_sessions.sessions_scanning[idx] = false;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+
+            if scan_codex {
+                let idx = agent_index(SessionAgent::Codex);
+                self.agent_sessions.sessions_scanning[idx] = true;
+                let codex_cwd_scan = cwd.clone();
+                let codex_cwd_match = cwd.clone();
+                cx.spawn(async move |this, cx| {
+                    let sessions = smol::unblock(move || {
+                        crate::codex_sessions::read_sessions_for_cwd(&codex_cwd_scan)
+                    })
+                    .await;
+                    let _ = this.update(cx, |app, cx| {
+                        if app.agent_sessions.sessions_sidebar_open
+                            && app.agent_sessions.claude_sessions_cwd.as_deref()
+                                == Some(codex_cwd_match.as_str())
+                        {
+                            app.agent_sessions.codex_sessions = sessions;
+                            app.agent_sessions.sessions_scanning[idx] = false;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+
+            if scan_opencode {
+                let idx = agent_index(SessionAgent::OpenCode);
+                self.agent_sessions.sessions_scanning[idx] = true;
+                let opencode_cwd_scan = cwd.clone();
+                let opencode_cwd_match = cwd;
+                cx.spawn(async move |this, cx| {
+                    let sessions = smol::unblock(move || {
+                        crate::opencode_sessions::read_sessions_for_cwd(&opencode_cwd_scan)
+                    })
+                    .await;
+                    let _ = this.update(cx, |app, cx| {
+                        if app.agent_sessions.sessions_sidebar_open
+                            && app.agent_sessions.claude_sessions_cwd.as_deref()
+                                == Some(opencode_cwd_match.as_str())
+                        {
+                            app.agent_sessions.opencode_sessions = sessions;
+                            app.agent_sessions.sessions_scanning[idx] = false;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+        }
+        cx.notify();
+    }
+
     /// Render the docked sessions sidebar (right edge of the root `flex_row`).
     /// Only called when `sessions_sidebar_open` is true.
     pub(crate) fn render_sessions_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -40,9 +184,11 @@ impl PaneFlowApp {
             .w(SIDEBAR_WIDTH)
             .flex_shrink_0()
             .h_full()
-            .bg(ui.surface)
-            .border_l_1()
-            .border_color(ui.border)
+            // Cockpit rail (#1d1d1d), mirroring the left sidebar: ui.surface
+            // is the system's SELECTED fill — painting a whole panel in it
+            // out-shouted every selection in the app. No border-left either:
+            // the rail and the terminal panel separate by a luminance step.
+            .bg(gpui::rgb(0x1d1d1d))
             .child(self.sessions_sidebar_header(ui, cx))
             .child(self.sessions_sidebar_body(ui, cx))
             .into_any_element()
@@ -59,13 +205,11 @@ impl PaneFlowApp {
             .items_center()
             .justify_between()
             .gap(px(8.))
-            // Fixed 32px height + bottom border so the header lines up exactly
-            // with the pane tab strip on the left (`TAB_BAR_HEIGHT` in pane.rs).
-            .h(px(32.))
+            // Quiet header — no divider (Codex: separation by spacing, not
+            // borders). 36px matches the unified chrome row height.
+            .h(px(36.))
             .flex_none()
-            .px(px(10.))
-            .border_b_1()
-            .border_color(ui.border)
+            .px(px(12.))
             .child(
                 div()
                     .flex_1()
@@ -73,8 +217,8 @@ impl PaneFlowApp {
                     .overflow_x_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::MEDIUM)
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ui.text)
                     .child("Agent sessions"),
             )
@@ -181,7 +325,10 @@ impl PaneFlowApp {
             "icons/chevron-down.svg"
         };
 
-        // US-006: the whole header toggles the group's collapse.
+        // US-006: the whole header toggles the group's collapse. Styled as a
+        // section eyebrow (the Agents-sidebar language): small semibold muted
+        // label, brand glyph kept in its native accent — the only color in
+        // the rail, carrying real signal (which tool).
         let header = div()
             .id(SharedString::from(format!(
                 "sessions-group-{}",
@@ -191,8 +338,8 @@ impl PaneFlowApp {
             .flex_row()
             .items_center()
             .gap(px(6.))
-            .px(px(10.))
-            .pt(px(10.))
+            .px(px(14.))
+            .pt(px(12.))
             .pb(px(4.))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
@@ -200,10 +347,9 @@ impl PaneFlowApp {
                     !this.agent_sessions.sessions_group_collapsed[idx];
                 cx.notify();
             }))
-            // Brand glyph in its native accent so each tool reads at a glance.
             .child(
                 svg()
-                    .size(px(15.))
+                    .size(px(14.))
                     .flex_none()
                     .path(agent_icon_path(agent))
                     .text_color(agent_brand_color(agent, ui)),
@@ -211,14 +357,14 @@ impl PaneFlowApp {
             .child(
                 div()
                     .text_size(px(11.))
-                    .font_weight(FontWeight::MEDIUM)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ui.muted)
                     .child(agent_label(agent)),
             )
             // Collapse chevron, sitting just after the agent name.
             .child(
                 svg()
-                    .size(px(14.))
+                    .size(px(12.))
                     .flex_none()
                     .path(chevron)
                     .text_color(ui.muted),
@@ -240,11 +386,11 @@ impl PaneFlowApp {
             };
             group = group.child(
                 div()
-                    .mx(px(10.))
+                    .mx(px(14.))
                     .px(px(8.))
-                    .py(px(8.))
+                    .py(px(6.))
                     .text_size(px(11.))
-                    .text_color(ui.muted)
+                    .text_color(ui.muted.opacity(0.8))
                     .child(msg),
             );
         } else {
@@ -333,7 +479,7 @@ impl PaneFlowApp {
             .items_center()
             .gap(px(8.))
             .h(ROW_HEIGHT)
-            .mx(px(6.))
+            .mx(px(8.))
             .my(px(1.))
             .px(px(8.))
             .rounded(px(6.))

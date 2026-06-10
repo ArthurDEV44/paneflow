@@ -201,7 +201,6 @@ impl PaneFlowApp {
         };
 
         let ui = crate::theme::ui_colors();
-        let theme = crate::theme::active_theme();
         let config = paneflow_config::loader::load_config();
         let agents = TerminalAgent::visible(&config);
 
@@ -294,7 +293,8 @@ impl PaneFlowApp {
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme.title_bar_background)
+            // Transparent: the Agents main wrapper paints the panel bg
+            // (Codex floating-panel look); the picker inherits it.
             .text_color(ui.text)
             .child(
                 div()
@@ -650,7 +650,6 @@ pub(crate) fn render_terminal_thread_surface(
 /// renamed rail affordances (the old "New threads" row no longer exists).
 fn render_agents_no_project() -> gpui::AnyElement {
     let ui = crate::theme::ui_colors();
-    let theme = crate::theme::active_theme();
     div()
         .size_full()
         .flex()
@@ -659,7 +658,7 @@ fn render_agents_no_project() -> gpui::AnyElement {
         .justify_center()
         .gap(px(10.))
         .px(px(20.))
-        .bg(theme.title_bar_background)
+        // Transparent: the Agents main wrapper paints the panel bg.
         .child(
             div()
                 .text_size(px(16.))

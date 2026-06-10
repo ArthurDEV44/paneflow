@@ -141,10 +141,12 @@ impl SyntaxPalette {
         }
     }
 
-    /// Catppuccin Latte — the light-theme syntax palette (`paneflow_light()`).
-    /// Darker, saturated hues that read on a light editor surface; every slot
-    /// is distinct from the light foreground/background (US-007 contrast gate).
-    /// ≥ 18 distinct values.
+    /// Catppuccin Latte — the light-theme syntax palette. Test-only since
+    /// "PaneFlow Light" left the bundled set (pending the light redesign):
+    /// it feeds the `paneflow_light()` fixture that keeps the light branch
+    /// of `ui_colors()` + the APCA gates under test. Darker, saturated hues
+    /// that read on a light editor surface; ≥ 18 distinct values.
+    #[cfg(test)]
     pub fn catppuccin_latte() -> Self {
         Self {
             comment: h(0x9ca0b0),             // Overlay0
@@ -233,7 +235,12 @@ pub(super) fn ha(hex: u32, alpha: f32) -> Hsla {
 }
 
 const CHROME_BACKGROUND_HEX: u32 = 0x141414;
-const TERMINAL_BACKGROUND_HEX: u32 = 0x181818;
+// Cockpit colors (Arthur): near-black terminal background (#111111). Drives
+// `theme.background` + `theme.ansi_background` for all dark themes, so the
+// Agents panel (#111111) and the terminal surface read as one continuous area.
+// NOTE: global — CLI/Diff terminals also use this (a negligible 7-level darken
+// from the previous 0x181818). Scope per-view if CLI must stay 0x181818.
+const TERMINAL_BACKGROUND_HEX: u32 = 0x111111;
 
 fn is_light_theme(theme: &TerminalTheme) -> bool {
     theme.background.l > 0.5
@@ -513,11 +520,18 @@ mod tests {
     fn theme_by_name_returns_invariant_satisfying_themes() {
         // theme_by_name is the public entry point; users may call it without
         // going through apply_surface_overrides, so it must finalize on the
-        // way out.
-        for name in ["One Dark", "PaneFlow Light"] {
+        // way out. Iterate the live table so the test tracks the bundled set
+        // (PaneFlow Light left it pending the light redesign).
+        for (name, _) in crate::theme::builtin::THEMES {
             let theme = theme_by_name(name).expect("bundled theme not found");
             assert_selection_invariant(&theme, name);
         }
+        // The light fixture no longer ships, but its finalization path must
+        // keep satisfying the invariant for when the redesigned light theme
+        // returns — exercise it directly.
+        let mut light = paneflow_light();
+        light.recompute_selection_foreground();
+        assert_selection_invariant(&light, "PaneFlow Light (test fixture)");
     }
 
     #[test]
