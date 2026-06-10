@@ -2087,6 +2087,45 @@ jobs:
             --dir "${RUNNER_TEMP}/e2e-old"
           ls -la "${RUNNER_TEMP}/e2e-old"
 
+      # The build artifact predates signing: the `.minisig` sidecars are
+      # produced and uploaded by the publish job, which runs in PARALLEL
+      # with this leg. OLD clients ≥ v0.3.9 verify fail-closed — they
+      # fetch `<tarball-url>.minisig` and abort the install when it is
+      # missing — so the harness needs the REAL signature of the NEW
+      # tarball (first observed on v0.4.1: the happy path 404'd on the
+      # fixture's .minisig and the leg went red despite a good release).
+      # Poll the release until the publish job has attached it; the
+      # artifact tarball and the published tarball are byte-identical,
+      # so the signature transfers. Tag-push runs only: a dry-run
+      # publishes nothing — the harness then self-no-ops with a notice
+      # (see scripts/test-update-e2e.sh phase 1).
+      - name: Fetch NEW tarball signature from the published release
+        if: steps.prev_release.outputs.old_version != '' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          NEW_VERSION="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          sig="paneflow-${NEW_VERSION}-x86_64.tar.gz.minisig"
+          # 60 × 15 s = 15 min cap — the publish job typically uploads
+          # within ~2 min of the last build leg finishing. If the cap
+          # trips, publishing (or signing) itself is broken and THAT is
+          # the failure to surface, not a missing-file 404 in the
+          # harness.
+          for i in $(seq 1 60); do
+            if gh release download "$TAG" \
+                 --pattern "$sig" \
+                 --dir "${RUNNER_TEMP}/e2e-new" 2>/dev/null; then
+              echo "signature fetched after ${i} attempt(s)"
+              ls -la "${RUNNER_TEMP}/e2e-new"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::${sig} never appeared on ${TAG} after 15 min — publish leg failed or artifact signing is broken"
+          exit 1
+
       - name: Run auto-update e2e harness
         if: steps.prev_release.outputs.old_version != ''
         env:
