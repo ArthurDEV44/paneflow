@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui::{App, AppContext, Context, Entity};
+use gpui::{App, AppContext, Context, Entity, Focusable};
 use paneflow_config::schema::LayoutNode;
 
 use crate::layout::LayoutTree;
@@ -27,13 +27,24 @@ use crate::terminal::TerminalView;
 use crate::workspace::{MAX_WORKSPACES, Workspace, next_workspace_id};
 use crate::{PaneFlowApp, ai_types, keybindings, update};
 
-/// Delay before pre-filling an agent prompt into a freshly-launched pane
-/// (US-010, prd-cli-agent-orchestration). Mirrors the diff-review prefill
-/// timer: the agent CLI's input box is not ready the instant the launch command
-/// is written, so a too-early `send_text` would be lost into a not-ready
-/// buffer. The wait is bounded and runs concurrently per pane (one detached
-/// timer each), so an N-pane `up` still prefills in ~one delay, not N.
-const UP_PREFILL_DELAY_MS: u64 = 1800;
+/// Prompt-prefill readiness window for `workspace.up` (US-010,
+/// prd-cli-agent-orchestration).
+///
+/// The agent CLI's input box is not ready the instant its launch command is
+/// written, so a too-early `send_text` is lost into a not-ready buffer. A
+/// single fixed delay (the prior approach) silently lost prompts whenever an
+/// agent started slower than the timer — the dominant failure at N-pane scale
+/// (PRD Risk #2). Instead the prefill waits a `FLOOR` (preserving the prior
+/// fast-path behaviour, by which the launch-command echo has settled), then
+/// EXTENDS while the pane is still actively producing output (its
+/// `output_generation` keeps advancing — the agent is still painting), firing
+/// once that output goes idle ("settled") or `MAX` is hit. On `MAX` without a
+/// settle the prompt is injected best-effort with a warning (AC4). The wait is
+/// bounded and runs concurrently per pane (one detached task each), so an
+/// N-pane `up` still prefills in ~one window, not N.
+const UP_PREFILL_FLOOR: Duration = Duration::from_millis(1800);
+const UP_PREFILL_MAX: Duration = Duration::from_millis(8000);
+const UP_PREFILL_POLL: Duration = Duration::from_millis(200);
 
 /// A validated pane plan for `workspace.up`: the cwd is already canonicalized,
 /// so the spawn phase is infallible with respect to directories (US-012).
@@ -81,10 +92,49 @@ fn build_up_layout(preset: &str, panes: Vec<Entity<Pane>>, focus_idx: usize) -> 
 /// as a bounded subprocess on the background executor: no new crate dependency,
 /// never blocks the render thread, and a missing notifier just fails silently.
 fn fire_turn_end_notification(workspace_title: &str, executor: gpui::BackgroundExecutor) {
+    fire_desktop_notification(format!("{workspace_title}: agent finished"), executor);
+}
+
+/// US-016 (orchestration-v2): the WaitingForInput desktop notification
+/// carries the agent's actual question, not a generic "needs input" — the
+/// user decides from the notification whether it's worth coming back.
+fn fire_attention_notification(
+    workspace_title: &str,
+    message: Option<&str>,
+    executor: gpui::BackgroundExecutor,
+) {
+    let body = attention_notification_body(workspace_title, message);
+    fire_desktop_notification(body, executor);
+}
+
+/// US-016/US-020: bound + sanitize an agent question before it is stored on
+/// the session (single choke point — peek badge, expanded panel and desktop
+/// notification all read the stored value). 512-char truncation, then the
+/// shared markdown bidi/zero-width strip: an RLO in untrusted hook text could
+/// otherwise visually reverse the displayed question ("texte brut sanitizé",
+/// US-020 AC5 — same precedent as the markdown viewer). Pure → unit-tested.
+fn sanitize_notification_message(raw: &str) -> String {
+    crate::markdown::strip_bidi_zero_width(raw.chars().take(512).collect())
+}
+
+/// Pure body composition (unit-tested): "title: question", falling back to
+/// the legacy generic body when the hook carried no message — never an
+/// empty body (US-016 AC3).
+fn attention_notification_body(workspace_title: &str, message: Option<&str>) -> String {
+    match message.filter(|m| !m.trim().is_empty()) {
+        Some(m) => format!("{workspace_title}: {m}"),
+        None => format!("{workspace_title}: agent needs input"),
+    }
+}
+
+/// Shared desktop-notification path (turn-end + attention): fires only when
+/// the Paneflow window is NOT focused; body sanitization stays in the per-OS
+/// command builders (`--` on Linux, AppleScript strip on macOS, Windows
+/// stub).
+fn fire_desktop_notification(body: String, executor: gpui::BackgroundExecutor) {
     if crate::agents::notifications::window_active() {
         return;
     }
-    let body = format!("{workspace_title}: agent finished");
     let Some(command) = turn_end_notify_command(&body) else {
         return;
     };
@@ -95,20 +145,40 @@ fn fire_turn_end_notification(workspace_title: &str, executor: gpui::BackgroundE
         .detach();
 }
 
+/// Strip control characters from an untrusted notification body before it is
+/// embedded in an AppleScript string literal. AppleScript literals have no
+/// `\n`/`\r` escape and cannot span a raw newline, so an un-stripped control
+/// char in a crafted workspace title would break the literal (CWE-78 — a parse
+/// error, not RCE, but the brittleness is removed at the source). Pure and not
+/// `cfg`-gated so it is unit-testable on every host; only the macOS notifier
+/// consumes it, hence the off-macOS dead-code allow.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn sanitize_applescript_body(body: &str) -> String {
+    body.chars().filter(|c| !c.is_control()).collect()
+}
+
 #[cfg(target_os = "linux")]
 fn turn_end_notify_command(body: &str) -> Option<std::process::Command> {
     let mut command = std::process::Command::new("notify-send");
-    command.arg("--app-name=Paneflow").arg("Paneflow").arg(body);
+    // `--` terminates GLib option parsing: a workspace title beginning with `-`
+    // must be taken as the summary/body, never mis-parsed as a notify-send flag.
+    command
+        .arg("--app-name=Paneflow")
+        .arg("--")
+        .arg("Paneflow")
+        .arg(body);
     Some(command)
 }
 
 #[cfg(target_os = "macos")]
 fn turn_end_notify_command(body: &str) -> Option<std::process::Command> {
-    // `body` is embedded in an AppleScript string literal, so escape backslash
-    // and double-quote first — a crafted workspace title must not break out of
-    // the literal. Args are passed directly (no shell), so this is the only
-    // escaping needed.
-    let escaped = body.replace('\\', "\\\\").replace('"', "\\\"");
+    // `body` is embedded in an AppleScript string literal. Strip control chars
+    // FIRST (a raw newline cannot live in the literal — no `\n` escape — so a
+    // crafted title would break it, CWE-78), then escape backslash and
+    // double-quote. Args are passed directly (no shell), so this is sufficient.
+    let escaped = sanitize_applescript_body(body)
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let script = format!("display notification \"{escaped}\" with title \"Paneflow\"");
     let mut command = std::process::Command::new("osascript");
     command.arg("-e").arg(script);
@@ -223,6 +293,76 @@ fn find_terminal_in_tree(
             }
             None
         }
+    }
+}
+
+/// Parse the optional `managed_worktree` object a `workspace.up` pane spec or
+/// a spawn-capable `surface.split` carries (EP-002/EP-003, orchestration-v2):
+/// the CLI created a git worktree for this pane and hands the ownership
+/// record over so the workspace tears it down at close (US-009). `path` and
+/// `repo_root` are both required — anything else is ignored (no record, no
+/// teardown: fail toward "never touch what we can't prove we own").
+fn parse_managed_worktree(
+    value: Option<&serde_json::Value>,
+) -> Option<crate::workspace::worktree::ManagedWorktree> {
+    let mw = value.filter(|v| !v.is_null())?;
+    let path = mw.get("path").and_then(|p| p.as_str()).unwrap_or("");
+    let repo_root = mw.get("repo_root").and_then(|p| p.as_str()).unwrap_or("");
+    if path.is_empty() || repo_root.is_empty() {
+        return None;
+    }
+    Some(crate::workspace::worktree::ManagedWorktree {
+        path: PathBuf::from(path),
+        repo_root: PathBuf::from(repo_root),
+        branch: mw
+            .get("branch")
+            .and_then(|b| b.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        teardown: crate::workspace::worktree::TeardownPolicy::parse(
+            mw.get("teardown").and_then(|t| t.as_str()).unwrap_or(""),
+        ),
+    })
+}
+
+/// Locate the pane (and tab index) hosting a surface, across all workspaces.
+/// Returns `(workspace_index, pane, tab_index)`. Unlike
+/// [`find_terminal_by_surface_id`] this yields the *container*, which is what
+/// `surface.focus` (focus + tab activation) and the targeted `surface.split`
+/// (split at that leaf) need (US-001/US-002, prd-orchestration-v2).
+pub(crate) fn find_pane_by_surface_id(
+    workspaces: &[Workspace],
+    surface_id: u64,
+    cx: &App,
+) -> Option<(usize, gpui::Entity<Pane>, usize)> {
+    for (ws_idx, ws) in workspaces.iter().enumerate() {
+        if let Some(root) = &ws.root
+            && let Some((pane, tab_idx)) = find_pane_in_tree(root, surface_id, cx)
+        {
+            return Some((ws_idx, pane, tab_idx));
+        }
+    }
+    None
+}
+
+fn find_pane_in_tree(
+    node: &LayoutTree,
+    surface_id: u64,
+    cx: &App,
+) -> Option<(gpui::Entity<Pane>, usize)> {
+    match node {
+        LayoutTree::Leaf(pane) => {
+            // Index into `tabs` (not the terminals-only iterator): markdown
+            // tabs interleave, and `selected_idx` addresses the full tab list.
+            let tab_idx = pane.read(cx).tabs.iter().position(|tab| {
+                tab.as_terminal()
+                    .is_some_and(|t| t.entity_id().as_u64() == surface_id)
+            })?;
+            Some((pane.clone(), tab_idx))
+        }
+        LayoutTree::Container { children, .. } => children
+            .iter()
+            .find_map(|child| find_pane_in_tree(&child.node, surface_id, cx)),
     }
 }
 
@@ -612,8 +752,15 @@ impl PaneFlowApp {
 
         // Phase 1 (no mutation): validate + canonicalize every cwd up-front so a
         // bad path fails atomically with -32602 before any pane spawns (US-012).
+        // EP-002 (orchestration-v2): collect the worktrees the CLI created for
+        // these panes — the workspace records ownership so close tears them
+        // down (US-009) and session restore keeps the record across a crash.
+        let mut managed_worktrees: Vec<crate::workspace::worktree::ManagedWorktree> = Vec::new();
         let mut planned: Vec<PlannedPane> = Vec::with_capacity(pane_specs.len());
         for (i, spec) in pane_specs.iter().enumerate() {
+            if let Some(mw) = parse_managed_worktree(spec.get("managed_worktree")) {
+                managed_worktrees.push(mw);
+            }
             let cwd = match spec.get("cwd").and_then(|c| c.as_str()) {
                 Some(raw) => match canonicalize_workspace_cwd(raw) {
                     Ok(canonical) => Some(canonical),
@@ -666,7 +813,8 @@ impl PaneFlowApp {
             .find_map(|p| p.cwd.clone())
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
-        let ws = Workspace::with_layout_and_id(ws_id, &name, ws_cwd, tree);
+        let mut ws = Workspace::with_layout_and_id(ws_id, &name, ws_cwd, tree);
+        ws.managed_worktrees = managed_worktrees;
         self.watch_git_dir(&ws);
         Self::spawn_initial_git_stats(ws_id, ws.cwd.clone(), cx);
         self.workspaces.push(ws);
@@ -674,31 +822,193 @@ impl PaneFlowApp {
         self.active_idx = idx;
 
         // Phase 3: launch each agent (typed-ahead into the shell is fine) and
-        // schedule the prompt prefill after a bounded readiness delay. The
+        // schedule the prompt prefill after a bounded readiness wait. The
         // prompt is written WITHOUT a carriage return — human-in-loop: the user
         // reviews and submits it themselves (US-010).
-        for (terminal, command, prompt) in launches {
+        // EP-003 (orchestration-v2): collect the spawned terminals' surface ids
+        // in pane order — `paneflow flow` maps them back to its DAG steps.
+        let mut surface_ids: Vec<u64> = Vec::with_capacity(launches.len());
+        for (i, (terminal, command, prompt)) in launches.into_iter().enumerate() {
+            surface_ids.push(terminal.entity_id().as_u64());
             if let Some(cmd) = command.filter(|c| !c.is_empty()) {
                 terminal.read(cx).send_command(&cmd);
             }
             if let Some(prompt) = prompt.filter(|p| !p.is_empty()) {
-                let weak = terminal.downgrade();
-                cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
-                    smol::Timer::after(Duration::from_millis(UP_PREFILL_DELAY_MS)).await;
-                    cx.update(|cx| {
-                        if let Some(t) = weak.upgrade() {
-                            t.read(cx).send_text(&prompt);
-                        }
-                    });
-                })
-                .detach();
+                Self::schedule_prompt_prefill(&terminal, prompt, i, cx);
             }
         }
 
         let panes_n = self.active_workspace().map_or(0, |ws| ws.pane_count());
         self.save_session(cx);
         cx.notify();
-        serde_json::json!({"index": idx, "title": name, "panes": panes_n})
+        serde_json::json!({
+            "index": idx, "title": name, "panes": panes_n, "surface_ids": surface_ids
+        })
+    }
+
+    /// Prefill a prompt into a pane once its output settles (US-010,
+    /// cli-agent-orchestration): FLOOR delay, then poll `output_generation`
+    /// until idle (two equal reads) or MAX elapses; then write the prompt
+    /// WITHOUT a carriage return — human-in-loop, the user submits. Shared by
+    /// `workspace.up` and the spawn-capable `surface.split` (EP-003).
+    fn schedule_prompt_prefill(
+        terminal: &Entity<TerminalView>,
+        prompt: String,
+        pane_label: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let weak = terminal.downgrade();
+        cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+            smol::Timer::after(UP_PREFILL_FLOOR).await;
+            // `AsyncApp::update` returns the closure value directly, so
+            // this is `Option<u64>`: `None` once the pane is gone.
+            let gen_now = |cx: &mut gpui::AsyncApp| -> Option<u64> {
+                cx.update(|cx| {
+                    weak.upgrade()
+                        .map(|t| t.read(cx).terminal.output_generation)
+                })
+            };
+            let mut last = gen_now(cx);
+            let mut waited = UP_PREFILL_FLOOR;
+            let mut settled = false;
+            while waited < UP_PREFILL_MAX {
+                smol::Timer::after(UP_PREFILL_POLL).await;
+                waited += UP_PREFILL_POLL;
+                let now = gen_now(cx);
+                match (last, now) {
+                    // Output unchanged across a poll interval -> the
+                    // agent is idle and ready for input.
+                    (Some(a), Some(b)) if a == b => {
+                        settled = true;
+                        break;
+                    }
+                    // Pane closed mid-wait: nothing to prefill.
+                    (_, None) => break,
+                    _ => last = now,
+                }
+            }
+            cx.update(|cx| {
+                if let Some(t) = weak.upgrade() {
+                    if !settled {
+                        log::warn!(
+                            "prompt prefill: pane {pane_label} still producing output after \
+                             {UP_PREFILL_MAX:?}; prompt prefilled best-effort"
+                        );
+                    }
+                    t.read(cx).send_text(&prompt);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// US-017 (orchestration-v2): resolve which surface (pane terminal) a
+    /// session's PID lives in, by walking the process ancestor chain to a
+    /// known `terminal.child_pid`. Direct children (agents launched by
+    /// `paneflow up`) hit the fast path synchronously; deeper chains walk
+    /// `/proc`/libproc OFF the render thread and deposit the result back.
+    /// A synthetic session key (legacy no-pid frames) or an unresolvable
+    /// chain leaves `surface_id = None` — workspace-level badge only, never
+    /// a wrong pane.
+    pub(crate) fn schedule_surface_resolution(
+        &mut self,
+        ws_id: u64,
+        session_key: u32,
+        cx: &mut Context<Self>,
+    ) {
+        if session_key >= SYNTHETIC_SESSION_PID_BASE {
+            return;
+        }
+        let already = self
+            .workspaces
+            .iter()
+            .find(|ws| ws.id == ws_id)
+            .and_then(|ws| ws.agent_sessions.get(&session_key))
+            .is_none_or(|s| s.surface_id.is_some());
+        if already {
+            return;
+        }
+        // child_pid → surface entity id, across every workspace (the hook's
+        // workspace_id can lag a moved pane; the chain decides).
+        let mut candidates: HashMap<u32, u64> = HashMap::new();
+        for ws in &self.workspaces {
+            if let Some(root) = &ws.root {
+                for pane in root.collect_leaves() {
+                    for terminal in pane.read(cx).terminals() {
+                        let pid = terminal.read(cx).terminal.child_pid;
+                        if pid > 0 {
+                            candidates.insert(pid, terminal.entity_id().as_u64());
+                        }
+                    }
+                }
+            }
+        }
+        // Fast path: the agent IS the pane's direct child (`up`-launched).
+        if let Some(&sid) = candidates.get(&session_key) {
+            self.set_session_surface(ws_id, session_key, sid, cx);
+            return;
+        }
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let resolved = smol::unblock(move || {
+                    crate::workspace::pid_resolve::resolve_surface_for_pid(session_key, &candidates)
+                })
+                .await;
+                if let Some(sid) = resolved {
+                    let _ = cx.update(|cx| {
+                        this.update(cx, |app, cx| {
+                            app.set_session_surface(ws_id, session_key, sid, cx);
+                        })
+                    });
+                }
+            },
+        )
+        .detach();
+    }
+
+    fn set_session_surface(&mut self, ws_id: u64, key: u32, sid: u64, cx: &mut Context<Self>) {
+        if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == ws_id)
+            && let Some(session) = ws.agent_sessions.get_mut(&key)
+            && session.surface_id != Some(sid)
+        {
+            session.surface_id = Some(sid);
+            self.sync_attention(cx);
+            cx.notify();
+        }
+    }
+
+    /// US-018/US-020 (orchestration-v2): push the WaitingForInput state down
+    /// into the panes. Recomputed idempotently from `agent_sessions` after
+    /// every transition (hooks, sweep, auto-clear, resolution) — the panes'
+    /// `attention` maps can never drift from the session truth. Amplifies
+    /// the waiting pane; inactive panes are never degraded.
+    pub(crate) fn sync_attention(&self, cx: &mut Context<Self>) {
+        let mut waiting: HashMap<u64, Option<String>> = HashMap::new();
+        for ws in &self.workspaces {
+            for session in ws.agent_sessions.values() {
+                if session.state == ai_types::AgentState::WaitingForInput
+                    && let Some(sid) = session.surface_id
+                {
+                    waiting.insert(sid, session.message.clone());
+                }
+            }
+        }
+        for ws in &self.workspaces {
+            if let Some(root) = &ws.root {
+                for pane in root.collect_leaves() {
+                    let subset: HashMap<gpui::EntityId, Option<String>> = pane
+                        .read(cx)
+                        .terminals()
+                        .filter_map(|t| {
+                            waiting
+                                .get(&t.entity_id().as_u64())
+                                .map(|msg| (t.entity_id(), msg.clone()))
+                        })
+                        .collect();
+                    pane.update(cx, |p, cx| p.set_attention(subset, cx));
+                }
+            }
+        }
     }
 
     fn handle_ipc(
@@ -844,6 +1154,11 @@ impl PaneFlowApp {
                         if let Some(dir) = self.workspaces[idx].git_dir.clone() {
                             self.unwatch_git_dir(&dir);
                         }
+                        // US-009 (orchestration-v2): same teardown as the UI
+                        // close path — clean managed worktrees removed in the
+                        // background, dirty ones kept, branch never deleted.
+                        let worktrees = std::mem::take(&mut self.workspaces[idx].managed_worktrees);
+                        Self::spawn_worktree_teardown(worktrees, cx);
                         self.workspaces.remove(idx);
                         if self.active_idx >= self.workspaces.len() {
                             self.active_idx = self.workspaces.len() - 1;
@@ -977,6 +1292,45 @@ impl PaneFlowApp {
                 cx.notify();
                 serde_json::json!({"renamed": true, "name": new_name})
             }
+            "surface.focus" => {
+                // US-001 (orchestration-v2): give a targeted pane the focus.
+                // Navigation only (no PTY write), so — like `workspace.select`
+                // and unlike `surface.send_*` — it does NOT require the
+                // `PANEFLOW_IPC_SCRIPTING` gate.
+                let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64()) else {
+                    return serde_json::json!({"error": "Missing 'surface_id' parameter"});
+                };
+                let Some((ws_idx, pane, tab_idx)) =
+                    find_pane_by_surface_id(&self.workspaces, sid, cx)
+                else {
+                    return serde_json::json!({"error": "Surface not found"});
+                };
+                // Switch workspace + activate the hosting tab synchronously…
+                self.active_idx = ws_idx;
+                pane.update(cx, |p, cx| {
+                    if p.selected_idx != tab_idx {
+                        p.selected_idx = tab_idx;
+                    }
+                    cx.notify();
+                });
+                // …but the keyboard focus needs a `&mut Window`, which the IPC
+                // dispatch doesn't carry. Defer one tick and re-enter through
+                // the main window handle (same pattern as
+                // `push_config_to_settings_window`); deferring keeps the
+                // re-entrant `PaneFlowApp` update out of this in-flight one.
+                cx.defer(move |cx| {
+                    for handle in cx.windows() {
+                        if let Some(main) = handle.downcast::<PaneFlowApp>() {
+                            let _ = main.update(cx, |_, window, cx| {
+                                pane.read(cx).focus_handle(cx).focus(window, cx);
+                            });
+                        }
+                    }
+                });
+                self.save_session(cx);
+                cx.notify();
+                serde_json::json!({"focused": true, "surface_id": sid, "workspace": ws_idx})
+            }
             "surface.send_text" => {
                 // US-012 (cli-hardening-followup-2026-Q3): same-UID
                 // RCE primitive gate. See ipc.rs module doc for the
@@ -1001,11 +1355,26 @@ impl PaneFlowApp {
                 if text.len() > MAX_TEXT_LEN {
                     return serde_json::json!({"error": "Text exceeds 64 KiB limit"});
                 }
+                // US-005 (orchestration-v2): `submit: true` appends a CR after
+                // the text — the ONLY sanctioned submission path. It is
+                // unreachable when the scripting gate is off (the whole method
+                // returns -32601 above, before params are even read), so a
+                // submission can never happen silently; the default stays
+                // strict inject-without-CR.
+                let submit = params
+                    .get("submit")
+                    .and_then(|s| s.as_bool())
+                    .unwrap_or(false);
                 // Route by surface_id if provided, otherwise use first leaf
                 if let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64()) {
                     if let Some(terminal) = find_terminal_by_surface_id(&self.workspaces, sid, cx) {
                         terminal.read(cx).send_text(text);
-                        return serde_json::json!({"sent": true, "length": text.len()});
+                        if submit {
+                            terminal.read(cx).send_text("\r");
+                        }
+                        return serde_json::json!({
+                            "sent": true, "length": text.len(), "submitted": submit
+                        });
                     }
                     return serde_json::json!({"error": "Surface not found"});
                 }
@@ -1013,7 +1382,12 @@ impl PaneFlowApp {
                     && let Some(root) = &ws.root
                 {
                     send_text_to_first_leaf(root, text, cx);
-                    return serde_json::json!({"sent": true, "length": text.len()});
+                    if submit {
+                        send_text_to_first_leaf(root, "\r", cx);
+                    }
+                    return serde_json::json!({
+                        "sent": true, "length": text.len(), "submitted": submit
+                    });
                 }
                 serde_json::json!({"error": "No active terminal"})
             }
@@ -1074,29 +1448,106 @@ impl PaneFlowApp {
                         return serde_json::json!({"error": "Missing or invalid 'direction' parameter (use \"horizontal\" or \"vertical\")"});
                     }
                 };
-                let Some(ws) = self.active_workspace() else {
-                    return serde_json::json!({"error": "No active workspace"});
+                // EP-003 (orchestration-v2): `surface.split` can spawn a fully
+                // configured pane — optional `cwd` (canonicalized, -32602 when
+                // bad), `command` (launched like workspace.up panes), `env`,
+                // `name`, `prompt` (server-side prefill, never submitted) and
+                // `managed_worktree` (ownership registration, US-009). Same
+                // trust model as workspace.up: the pane is freshly created by
+                // this call (no lateral injection into a live agent session),
+                // so no scripting gate. All fields absent = legacy bare split.
+                let spawn_cwd = match params.get("cwd").and_then(|c| c.as_str()) {
+                    Some(raw) => match canonicalize_workspace_cwd(raw) {
+                        Ok(canonical) => Some(canonical),
+                        Err(err) => return err.into_value(),
+                    },
+                    None => None,
                 };
-                let Some(root) = &ws.root else {
+                let spawn_env = parse_env_object(params.get("env"));
+                let spawn_command = params
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .filter(|c| !c.is_empty())
+                    .map(str::to_string);
+                let spawn_name = params
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .filter(|n| !n.is_empty())
+                    .map(str::to_string);
+                let spawn_prompt = params
+                    .get("prompt")
+                    .and_then(|p| p.as_str())
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string);
+
+                // US-002 (orchestration-v2): an optional `surface_id` targets
+                // the leaf hosting that surface — in whatever workspace it
+                // lives — instead of the active workspace's first leaf. Absent
+                // = the legacy first-leaf behavior, so existing clients are
+                // untouched.
+                let (ws_idx, target_pane) =
+                    if let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64()) {
+                        let Some((ws_idx, target_pane, _tab)) =
+                            find_pane_by_surface_id(&self.workspaces, sid, cx)
+                        else {
+                            return serde_json::json!({"error": "Surface not found"});
+                        };
+                        (ws_idx, Some(target_pane))
+                    } else {
+                        (self.active_idx, None)
+                    };
+                let Some(ws) = self.workspaces.get(ws_idx) else {
                     return serde_json::json!({"error": "No active workspace"});
                 };
                 let ws_id = ws.id;
-                if root.leaf_count() >= MAX_PANES {
+                if ws.root.as_ref().is_none_or(|r| r.leaf_count() >= MAX_PANES) {
                     return serde_json::json!({"error": "Maximum pane count reached"});
                 }
-                let new_terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
-                let new_pane = self.create_pane(new_terminal, ws_id, cx);
-                let Some(ws) = self.active_workspace_mut() else {
-                    return serde_json::json!({"error": "No active workspace"});
-                };
-                let Some(root) = ws.root.as_mut() else {
+                let new_terminal = cx.new(|cx| {
+                    TerminalView::with_cwd_and_env(
+                        ws_id,
+                        spawn_cwd.clone(),
+                        None,
+                        spawn_env.clone(),
+                        cx,
+                    )
+                });
+                if let Some(name) = spawn_name {
+                    new_terminal.update(cx, |view, _cx| {
+                        view.terminal.custom_name = Some(name);
+                    });
+                }
+                let surface_id = new_terminal.entity_id().as_u64();
+                let new_pane = self.create_pane(new_terminal.clone(), ws_id, cx);
+                let Some(root) = self.workspaces[ws_idx].root.as_mut() else {
                     return serde_json::json!({"error": "Workspace has no root"});
                 };
-                root.split_first_leaf(direction, new_pane);
-                let panes = ws.pane_count();
+                match target_pane {
+                    Some(target) => {
+                        if !root.split_at_pane(&target, direction, new_pane) {
+                            // The pane vanished between lookup and mutation (a
+                            // close raced this request); nothing was inserted.
+                            return serde_json::json!({"error": "Surface not found"});
+                        }
+                    }
+                    None => root.split_first_leaf(direction, new_pane),
+                }
+                if let Some(mw) = parse_managed_worktree(params.get("managed_worktree")) {
+                    self.workspaces[ws_idx].managed_worktrees.push(mw);
+                }
+                if let Some(cmd) = spawn_command {
+                    new_terminal.read(cx).send_command(&cmd);
+                }
+                if let Some(prompt) = spawn_prompt {
+                    Self::schedule_prompt_prefill(&new_terminal, prompt, usize::MAX, cx);
+                }
+                let panes = self.workspaces[ws_idx].pane_count();
                 self.save_session(cx);
                 cx.notify();
-                serde_json::json!({"split": true, "direction": dir_str, "panes": panes})
+                serde_json::json!({
+                    "split": true, "direction": dir_str, "panes": panes,
+                    "surface_id": surface_id
+                })
             }
             "workspace.restore_layout" => {
                 let Some(layout_value) = params.get("layout") else {
@@ -1170,11 +1621,18 @@ impl PaneFlowApp {
                 let tool = read_tool(params);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
-                    upsert_session_state(ws, pid, tool, ai_types::AgentState::Thinking, None);
+                    let key =
+                        upsert_session_state(ws, pid, tool, ai_types::AgentState::Thinking, None);
+                    // US-016: a new prompt invalidates the previous question.
+                    if let Some(s) = ws.agent_sessions.get_mut(&key) {
+                        s.message = None;
+                    }
                     cx.notify();
                     if !self.loader_anim_running {
                         self.start_loader_animation(cx);
                     }
+                    self.schedule_surface_resolution(workspace_id, key, cx);
+                    self.sync_attention(cx);
                     serde_json::json!({"status": "running"})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
@@ -1197,7 +1655,7 @@ impl PaneFlowApp {
                     // tool_use implies the session is actively thinking —
                     // promote it (or keep it) even if the prior state was
                     // Finished from a stale prompt-end.
-                    upsert_session_state(
+                    let key = upsert_session_state(
                         ws,
                         pid,
                         tool,
@@ -1208,6 +1666,8 @@ impl PaneFlowApp {
                     if !self.loader_anim_running {
                         self.start_loader_animation(cx);
                     }
+                    self.schedule_surface_resolution(workspace_id, key, cx);
+                    self.sync_attention(cx);
                     serde_json::json!({"status": "running"})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
@@ -1220,25 +1680,36 @@ impl PaneFlowApp {
                 let hook = params.get("hook_payload");
                 let pid = read_session_pid(params);
                 let tool = read_tool(params);
-                let message: String = hook
-                    .and_then(|h| h.get("message"))
-                    .and_then(|v| v.as_str())
-                    .or_else(|| params.get("message").and_then(|v| v.as_str()))
-                    .unwrap_or("Needs input")
-                    .chars()
-                    .take(512)
-                    .collect();
+                let message = sanitize_notification_message(
+                    hook.and_then(|h| h.get("message"))
+                        .and_then(|v| v.as_str())
+                        .or_else(|| params.get("message").and_then(|v| v.as_str()))
+                        .unwrap_or("Needs input"),
+                );
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
-                    upsert_session_state(
+                    let key = upsert_session_state(
                         ws,
                         pid,
                         tool,
                         ai_types::AgentState::WaitingForInput,
                         None,
                     );
+                    // US-016: keep the agent's question — the peek overlay
+                    // and the desktop notification surface it. Untrusted
+                    // text: stored and displayed verbatim, never interpreted.
+                    if let Some(s) = ws.agent_sessions.get_mut(&key) {
+                        s.message = Some(message.clone());
+                    }
+                    let ws_title = ws.title.clone();
                     cx.notify();
-                    let _ = message;
+                    fire_attention_notification(
+                        &ws_title,
+                        Some(&message),
+                        cx.background_executor().clone(),
+                    );
+                    self.schedule_surface_resolution(workspace_id, key, cx);
+                    self.sync_attention(cx);
                     serde_json::json!({"status": "waiting"})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
@@ -1260,11 +1731,17 @@ impl PaneFlowApp {
                     // never auto-cleared and leaked into the sidebar forever.
                     let session_key =
                         upsert_session_state(ws, pid, tool, ai_types::AgentState::Finished, None);
+                    // US-016: the turn ended — the question is answered, no
+                    // ghost message may survive into the next state.
+                    if let Some(s) = ws.agent_sessions.get_mut(&session_key) {
+                        s.message = None;
+                    }
                     // EP-004 US-020: notify the user the turn ended if they're
                     // looking elsewhere. Read the title before the borrow ends.
                     let ws_title = ws.title.clone();
                     cx.notify();
                     fire_turn_end_notification(&ws_title, cx.background_executor().clone());
+                    self.sync_attention(cx);
 
                     // Auto-clear the session 5 s after stop unless something
                     // else (new prompt_submit, tool_use) bumps it back to
@@ -1284,6 +1761,7 @@ impl PaneFlowApp {
                                         )
                                     {
                                         ws.agent_sessions.remove(&session_key);
+                                        app.sync_attention(cx);
                                         cx.notify();
                                     }
                                 });
@@ -1341,6 +1819,7 @@ impl PaneFlowApp {
                         }
                     };
                     if removed {
+                        self.sync_attention(cx);
                         cx.notify();
                     }
                     serde_json::json!({"cleared": removed})
@@ -1620,6 +2099,46 @@ pub(crate) fn reconcile_telemetry(old: Option<bool>, new: Option<bool>) -> Telem
 mod tests {
     use super::*;
 
+    // US-020 / CWE-78: a control char (newline) cannot survive into the macOS
+    // AppleScript literal — it is stripped at the source — while quotes are
+    // preserved for the downstream backslash/quote escape.
+    #[test]
+    fn sanitize_applescript_body_strips_control_chars_keeps_quotes() {
+        assert_eq!(sanitize_applescript_body("a\r\nb\tc"), "abc");
+        let with_quote = sanitize_applescript_body("title\"\n");
+        assert_eq!(with_quote, "title\"");
+        assert!(!with_quote.contains('\n'));
+        assert_eq!(sanitize_applescript_body("plain title"), "plain title");
+    }
+
+    // US-008: `workspace.up` env parsing. Non-string values are dropped (a
+    // shell env value can only be a string) and an absent/empty object yields
+    // `None` so the global `terminal.env` default still applies underneath.
+    #[test]
+    fn parse_env_object_keeps_strings_and_drops_the_rest() {
+        let env = parse_env_object(Some(&serde_json::json!({
+            "RUST_LOG": "info",
+            "PORT": 8080,
+            "FLAG": true
+        })))
+        .expect("non-empty string map");
+        assert_eq!(env.get("RUST_LOG").map(String::as_str), Some("info"));
+        assert!(
+            !env.contains_key("PORT"),
+            "non-string value must be dropped"
+        );
+        assert!(!env.contains_key("FLAG"));
+        assert_eq!(env.len(), 1);
+    }
+
+    #[test]
+    fn parse_env_object_absent_or_empty_is_none() {
+        assert!(parse_env_object(None).is_none());
+        assert!(parse_env_object(Some(&serde_json::json!({}))).is_none());
+        // An object with only non-string values collapses to an empty map -> None.
+        assert!(parse_env_object(Some(&serde_json::json!({ "N": 1 }))).is_none());
+    }
+
     // Exhaustive 3x3 transition matrix over `Option<bool>`. Each case is
     // asserted explicitly; a future variant added to the tri-state would
     // force this test to be updated.
@@ -1777,6 +2296,50 @@ mod tests {
         assert!(resp.get("result").is_none());
         assert_eq!(resp["error"]["code"], -32602);
         assert_eq!(resp["error"]["message"], "bad layout");
+    }
+
+    // -----------------------------------------------------------------
+    // US-016 (orchestration-v2) — contextual attention notification
+    // -----------------------------------------------------------------
+
+    /// US-020 AC5: the stored question is bounded (512 chars) and stripped
+    /// of bidi/zero-width controls at the storage choke point — an RLO in
+    /// hook text must not visually reverse the peek badge or the desktop
+    /// notification (same sanitizer as the markdown viewer).
+    #[test]
+    fn notification_message_is_bounded_and_bidi_stripped() {
+        let spoofed = "Allow \u{202E}?fr- mr\u{202C} ?";
+        let clean = super::sanitize_notification_message(spoofed);
+        assert!(!clean.contains('\u{202E}'), "RLO stripped");
+        assert!(!clean.contains('\u{202C}'), "PDF stripped");
+        assert!(clean.contains("Allow"), "visible text kept: {clean}");
+
+        let long = "é".repeat(600);
+        assert_eq!(
+            super::sanitize_notification_message(&long).chars().count(),
+            512,
+            "char-bounded, multibyte-safe"
+        );
+    }
+
+    /// AC2/AC3: the WaitingForInput desktop notification carries the
+    /// agent's question; an empty/absent message falls back to the generic
+    /// body — never an empty notification.
+    #[test]
+    fn attention_body_carries_the_question_with_fallback() {
+        assert_eq!(
+            super::attention_notification_body("backend", Some("Allow `cargo test`?")),
+            "backend: Allow `cargo test`?"
+        );
+        assert_eq!(
+            super::attention_notification_body("backend", None),
+            "backend: agent needs input"
+        );
+        assert_eq!(
+            super::attention_notification_body("backend", Some("   ")),
+            "backend: agent needs input",
+            "whitespace-only message falls back too"
+        );
     }
 
     // -----------------------------------------------------------------

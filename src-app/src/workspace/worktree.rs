@@ -1,0 +1,405 @@
+//! Git worktree-per-agent management (EP-002, prd-orchestration-v2).
+//!
+//! `paneflow up` panes can declare `worktree = "branch"`: the CLI process
+//! creates (or reuses) a git worktree in a SIBLING directory of the repo —
+//! `<repo>.worktrees/<branch-slug>` — copies the top-level gitignored `.env*`
+//! files, optionally runs a `setup` command, and the pane spawns with the
+//! worktree as its cwd. The app side records ownership ([`ManagedWorktree`])
+//! so closing the workspace tears the worktree down — IF it is clean.
+//!
+//! Invariants (US-006/US-009):
+//! - a branch is NEVER deleted, only the worktree directory;
+//! - a worktree with uncommitted changes is NEVER removed;
+//! - only worktrees Paneflow created (tracked in `managed_worktrees`) are
+//!   ever torn down — a pre-existing worktree pointed at by `cwd` is not ours;
+//! - every git invocation is a subprocess with argv (no shell interpolation)
+//!   under [`paneflow_process::run_with_timeout`], and on the app side it runs
+//!   off the render thread (`smol::unblock`).
+//!
+//! Sibling (not in-repo) placement keeps recursive file watchers — including
+//! Paneflow's own diff watcher — from descending into N extra checkouts.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
+
+/// Wall-clock bound for plumbing git calls (list/status/remove/prune).
+const GIT_DEADLINE: Duration = Duration::from_secs(10);
+/// `worktree add` checks out a full tree — give it more room on big repos.
+const ADD_DEADLINE: Duration = Duration::from_secs(120);
+const STDOUT_CAP: u64 = 256 * 1024;
+
+/// Teardown policy for a managed worktree (US-009). `Auto` removes the
+/// worktree at workspace close when it has no uncommitted changes; `Keep`
+/// opts out entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TeardownPolicy {
+    #[default]
+    Auto,
+    Keep,
+}
+
+impl TeardownPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TeardownPolicy::Auto => "auto",
+            TeardownPolicy::Keep => "keep",
+        }
+    }
+
+    /// Lenient parse — an unknown value falls back to `Auto` so a hand-edited
+    /// session.json can't disable data-loss protection by typo (the protection
+    /// is the clean-check, not the policy).
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "keep" => TeardownPolicy::Keep,
+            _ => TeardownPolicy::Auto,
+        }
+    }
+}
+
+/// A worktree Paneflow created for a pane and therefore owns the lifecycle of.
+/// Carried by `Workspace`, persisted in `session.json` (so a crash does not
+/// orphan the ownership record), torn down at workspace close.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManagedWorktree {
+    /// Worktree checkout directory (`<repo>.worktrees/<slug>`).
+    pub path: PathBuf,
+    /// Main repository root (where `git worktree …` commands run).
+    pub repo_root: PathBuf,
+    /// Branch checked out in the worktree. Recorded for diagnostics only —
+    /// teardown never touches the branch.
+    pub branch: String,
+    pub teardown: TeardownPolicy,
+}
+
+/// One entry of `git worktree list --porcelain`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorktreeEntry {
+    pub path: PathBuf,
+    /// `None` for a detached-HEAD worktree.
+    pub branch: Option<String>,
+}
+
+/// Filesystem-safe directory name for a branch (`feat/x` → `feat-x`).
+/// Conservative whitelist: anything outside `[A-Za-z0-9._-]` becomes `-`.
+/// Leading/trailing `-` AND `.` are trimmed: a dot-only branch (`.`/`..`)
+/// would otherwise survive as a path-traversal component of the (destructive)
+/// worktree path, and a leading dot would hide the directory. May return ""
+/// for degenerate input — spec validation rejects that before any git call,
+/// and [`worktree_dir`] falls back to a safe constant as defense in depth.
+pub fn branch_slug(branch: &str) -> String {
+    let slug: String = branch
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    slug.trim_matches(|c: char| c == '-' || c == '.')
+        .to_string()
+}
+
+/// Sibling worktree directory for a branch: `<repo>.worktrees/<slug>`, next to
+/// the repo (NOT inside it — recursive watchers must not descend into it).
+/// Total function: a branch whose slug is empty (dot-only — rejected upstream
+/// by spec validation) maps to the constant `branch` so the result can never
+/// resolve outside `<repo>.worktrees/`.
+pub fn worktree_dir(repo_root: &Path, branch: &str) -> PathBuf {
+    let repo_name = repo_root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".to_string());
+    let parent = repo_root.parent().unwrap_or(repo_root);
+    let slug = branch_slug(branch);
+    let slug = if slug.is_empty() {
+        "branch".to_string()
+    } else {
+        slug
+    };
+    parent.join(format!("{repo_name}.worktrees")).join(slug)
+}
+
+/// Run a git plumbing command and return trimmed stdout, mapping every
+/// failure mode (spawn, timeout, non-zero exit) to a displayable message.
+fn run_git(repo: &Path, args: &[&str], deadline: Duration) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(repo).args(args);
+    let out = paneflow_process::run_with_timeout(cmd, deadline, STDOUT_CAP)
+        .map_err(|e| format!("git {} failed: {e}", args.join(" ")))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            stderr.trim().lines().last().unwrap_or("non-zero exit")
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// `git worktree list --porcelain`, parsed.
+pub fn list_worktrees(repo_root: &Path) -> Result<Vec<WorktreeEntry>, String> {
+    let stdout = run_git(
+        repo_root,
+        &["worktree", "list", "--porcelain"],
+        GIT_DEADLINE,
+    )?;
+    Ok(parse_worktree_porcelain(&stdout))
+}
+
+/// Pure porcelain parser (unit-tested). Entries are blank-line separated;
+/// `branch refs/heads/<name>` is absent for detached or bare entries.
+pub fn parse_worktree_porcelain(stdout: &str) -> Vec<WorktreeEntry> {
+    let mut entries = Vec::new();
+    let mut path: Option<PathBuf> = None;
+    let mut branch: Option<String> = None;
+    for line in stdout.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if let Some(p) = path.take() {
+                entries.push(WorktreeEntry {
+                    path: p,
+                    branch: branch.take(),
+                });
+            }
+            branch = None;
+            continue;
+        }
+        if let Some(p) = line.strip_prefix("worktree ") {
+            path = Some(PathBuf::from(p));
+        } else if let Some(b) = line.strip_prefix("branch ") {
+            branch = Some(b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
+        }
+    }
+    entries
+}
+
+/// True when `branch` exists locally in the repo.
+pub fn branch_exists(repo_root: &Path, branch: &str) -> bool {
+    run_git(
+        repo_root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+        GIT_DEADLINE,
+    )
+    .is_ok()
+}
+
+/// `git worktree add <path> [-b] <branch>`. `create_branch` chooses between
+/// branching off HEAD (`-b`) and checking out the existing branch.
+pub fn add_worktree(
+    repo_root: &Path,
+    path: &Path,
+    branch: &str,
+    create_branch: bool,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    let path_s = path.to_string_lossy();
+    let mut args: Vec<&str> = vec!["worktree", "add", &path_s];
+    if create_branch {
+        args.push("-b");
+    }
+    args.push(branch);
+    run_git(repo_root, &args, ADD_DEADLINE).map(|_| ())
+}
+
+/// True when the worktree has no uncommitted changes (`status --porcelain`
+/// empty). An error (worktree gone, git missing) is NOT "clean" — the caller
+/// must keep its hands off when it cannot prove cleanliness.
+pub fn is_clean(worktree_path: &Path) -> Result<bool, String> {
+    run_git(worktree_path, &["status", "--porcelain"], GIT_DEADLINE).map(|out| out.is_empty())
+}
+
+/// `git worktree remove <path>`. Refuses dirty worktrees by itself too (git
+/// native), but callers must check [`is_clean`] first to control messaging.
+/// The BRANCH IS NEVER DELETED — that is the US-009 invariant, not a TODO.
+pub fn remove_worktree(repo_root: &Path, path: &Path) -> Result<(), String> {
+    let path_s = path.to_string_lossy();
+    run_git(repo_root, &["worktree", "remove", &path_s], GIT_DEADLINE).map(|_| ())
+}
+
+/// `git worktree prune` — drops references whose directory no longer exists.
+/// Git-native guarantee: a worktree whose directory still exists is untouched
+/// (US-009 AC5), so this is safe to run blindly at startup.
+pub fn prune(repo_root: &Path) -> Result<(), String> {
+    run_git(repo_root, &["worktree", "prune"], GIT_DEADLINE).map(|_| ())
+}
+
+/// Copy top-level `.env*` FILES from `src_root` into `dst_root`, skipping any
+/// that already exist there (a tracked `.env.example` arrives via checkout —
+/// don't clobber it). Best-effort by design (US-007): a missing source dir or
+/// an unreadable entry yields an empty/partial copy, never an error. Returns
+/// the file names copied.
+pub fn copy_env_files(src_root: &Path, dst_root: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(src_root) else {
+        return Vec::new();
+    };
+    let mut copied = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_s = name.to_string_lossy();
+        if !name_s.starts_with(".env") {
+            continue;
+        }
+        if !entry.path().is_file() {
+            continue;
+        }
+        let dst = dst_root.join(&name);
+        if dst.exists() {
+            continue;
+        }
+        if std::fs::copy(entry.path(), &dst).is_ok() {
+            copied.push(name_s.into_owned());
+        }
+    }
+    copied.sort();
+    copied
+}
+
+/// Tear down a batch of managed worktrees (blocking — run via `smol::unblock`
+/// on the app side). Per entry: `Keep` policy → skip; dirty or unverifiable →
+/// keep + warn (NEVER remove what might hold work); clean → remove. The
+/// branch is never touched.
+pub fn teardown_all(worktrees: Vec<ManagedWorktree>) {
+    for wt in worktrees {
+        if wt.teardown == TeardownPolicy::Keep {
+            continue;
+        }
+        if !wt.path.exists() {
+            // Directory already gone (user rm -rf'd it): just prune the ref.
+            let _ = prune(&wt.repo_root);
+            continue;
+        }
+        match is_clean(&wt.path) {
+            Ok(true) => match remove_worktree(&wt.repo_root, &wt.path) {
+                Ok(()) => log::info!("worktree removed: {}", wt.path.display()),
+                Err(e) => log::warn!("worktree kept ({}): {e}", wt.path.display()),
+            },
+            Ok(false) => log::warn!(
+                "worktree kept: uncommitted changes in {}",
+                wt.path.display()
+            ),
+            Err(e) => log::warn!(
+                "worktree kept (cannot verify cleanliness): {} — {e}",
+                wt.path.display()
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn branch_slug_is_filesystem_safe() {
+        assert_eq!(
+            branch_slug("feat/cli-orchestration"),
+            "feat-cli-orchestration"
+        );
+        assert_eq!(branch_slug("fix/US-006_teardown"), "fix-US-006_teardown");
+        assert_eq!(branch_slug("a b\\c:d"), "a-b-c-d");
+        // Leading/trailing separators are trimmed so the dir never hides.
+        assert_eq!(branch_slug("/weird/"), "weird");
+        assert_eq!(branch_slug(".hidden"), "hidden");
+        // Inner dots survive (version-style branches stay readable).
+        assert_eq!(branch_slug("release/v1.2.3"), "release-v1.2.3");
+    }
+
+    #[test]
+    fn branch_slug_neutralizes_dot_only_traversal() {
+        // NFR (orchestration-v2): the slug is the one untrusted component of
+        // a destructive path — `.`/`..` must never survive as a path segment.
+        assert_eq!(branch_slug(".."), "");
+        assert_eq!(branch_slug("."), "");
+        assert_eq!(branch_slug("..."), "");
+        assert_eq!(branch_slug("-..-"), "");
+    }
+
+    #[test]
+    fn worktree_dir_never_escapes_the_worktrees_dir() {
+        // Defense in depth below spec validation: even a dot-only branch maps
+        // INSIDE `<repo>.worktrees/` (fallback slug), never to its parent.
+        let dir = worktree_dir(Path::new("/home/a/dev/paneflow"), "..");
+        assert_eq!(dir, PathBuf::from("/home/a/dev/paneflow.worktrees/branch"));
+    }
+
+    #[test]
+    fn worktree_dir_is_a_sibling_of_the_repo() {
+        let dir = worktree_dir(Path::new("/home/a/dev/paneflow"), "feat/x");
+        assert_eq!(dir, PathBuf::from("/home/a/dev/paneflow.worktrees/feat-x"));
+        // NOT inside the repo: recursive watchers must not see it.
+        assert!(!dir.starts_with("/home/a/dev/paneflow/"));
+    }
+
+    #[test]
+    fn parses_worktree_porcelain_with_detached_and_branches() {
+        let out = "worktree /home/a/dev/repo\nHEAD 1111111111111111111111111111111111111111\nbranch refs/heads/main\n\nworktree /home/a/dev/repo.worktrees/feat-x\nHEAD 2222222222222222222222222222222222222222\nbranch refs/heads/feat/x\n\nworktree /tmp/detached\nHEAD 3333333333333333333333333333333333333333\ndetached\n";
+        let entries = parse_worktree_porcelain(out);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].branch.as_deref(), Some("main"));
+        assert_eq!(
+            entries[1].path,
+            PathBuf::from("/home/a/dev/repo.worktrees/feat-x")
+        );
+        assert_eq!(entries[1].branch.as_deref(), Some("feat/x"));
+        assert_eq!(entries[2].branch, None, "detached HEAD has no branch");
+    }
+
+    #[test]
+    fn parse_worktree_porcelain_handles_missing_trailing_blank() {
+        let out = "worktree /r\nbranch refs/heads/main";
+        let entries = parse_worktree_porcelain(out);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn teardown_policy_parse_is_lenient_toward_auto() {
+        assert_eq!(TeardownPolicy::parse("keep"), TeardownPolicy::Keep);
+        assert_eq!(TeardownPolicy::parse("auto"), TeardownPolicy::Auto);
+        // Unknown → Auto: the data-loss protection is the clean-check.
+        assert_eq!(TeardownPolicy::parse("delete"), TeardownPolicy::Auto);
+    }
+
+    #[test]
+    fn copy_env_files_copies_top_level_env_only_and_never_clobbers() {
+        let src = tempfile::tempdir().expect("src");
+        let dst = tempfile::tempdir().expect("dst");
+        std::fs::write(src.path().join(".env"), "A=1").unwrap();
+        std::fs::write(src.path().join(".env.local"), "B=2").unwrap();
+        std::fs::write(src.path().join("notenv"), "x").unwrap();
+        // Nested .env must NOT be picked up (top-level only).
+        std::fs::create_dir(src.path().join("sub")).unwrap();
+        std::fs::write(src.path().join("sub/.env"), "C=3").unwrap();
+        // Pre-existing destination file must survive (checkout owns it).
+        std::fs::write(dst.path().join(".env"), "KEEP").unwrap();
+
+        let copied = copy_env_files(src.path(), dst.path());
+        assert_eq!(copied, vec![".env.local".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join(".env")).unwrap(),
+            "KEEP",
+            "existing destination file is never clobbered"
+        );
+        assert!(dst.path().join(".env.local").exists());
+        assert!(!dst.path().join("notenv").exists());
+    }
+
+    #[test]
+    fn copy_env_files_missing_source_is_silent_empty() {
+        let dst = tempfile::tempdir().expect("dst");
+        let copied = copy_env_files(Path::new("/nonexistent-paneflow-test"), dst.path());
+        assert!(copied.is_empty());
+    }
+}

@@ -1184,3 +1184,43 @@ pub(crate) fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> ExitCo
         }
     }
 }
+
+#[cfg(test)]
+mod hooks_tests {
+    use super::settings_has_managed_hook;
+    use serde_json::json;
+
+    // US-018: the shim defers to a persistent hook installed by
+    // `paneflow hooks setup`. Detection must recognize the byte-identical
+    // managed shape (marker or ai-hook command) and must NOT trip on a foreign
+    // user hook — otherwise the shim would wrongly skip its ephemeral injection
+    // (false positive) or double-fire (false negative).
+    #[test]
+    fn settings_has_managed_hook_detects_managed_and_ignores_foreign() {
+        // Marker-tagged managed group (what the engine writes).
+        let managed = json!({
+            "hooks": { "Stop": [ {
+                "_paneflow_managed": true,
+                "hooks": [ { "type": "command", "command": "/bin/paneflow-ai-hook Stop", "timeout": 5 } ]
+            } ] }
+        });
+        assert!(settings_has_managed_hook(&managed));
+
+        // Marker stripped by Claude's writer → fallback to the ai-hook basename.
+        let by_command = json!({
+            "hooks": { "Notification": [ {
+                "hooks": [ { "type": "command", "command": "/x/paneflow-ai-hook Notification" } ]
+            } ] }
+        });
+        assert!(settings_has_managed_hook(&by_command));
+
+        // A foreign user hook must not be mistaken for a Paneflow-managed one.
+        let foreign = json!({
+            "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "my-own-hook" } ] } ] }
+        });
+        assert!(!settings_has_managed_hook(&foreign));
+
+        // No hooks at all.
+        assert!(!settings_has_managed_hook(&json!({})));
+    }
+}

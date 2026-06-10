@@ -40,7 +40,11 @@ pub enum MatchMode {
 }
 
 enum PaneState {
-    Matched,
+    /// The regex matched. Carries the matching line(s) from the read window so
+    /// `wait` can surface them (US-013 AC2). May be empty if the match spans
+    /// lines: the done-decision uses the full window, the line list is a
+    /// per-line best-effort for display.
+    Matched(Vec<String>),
     NoMatch,
     Gone,
 }
@@ -69,12 +73,14 @@ pub fn wait(
 
     loop {
         let mut matched_ids: Vec<u64> = Vec::new();
+        let mut matches_out: Vec<Value> = Vec::new();
         let mut alive = 0usize;
         for &id in &ids {
             match read_matches(client, id, &re)? {
-                PaneState::Matched => {
+                PaneState::Matched(lines) => {
                     alive += 1;
                     matched_ids.push(id);
+                    matches_out.push(json!({ "surface_id": id, "lines": lines }));
                 }
                 PaneState::NoMatch => alive += 1,
                 PaneState::Gone => {}
@@ -82,7 +88,9 @@ pub fn wait(
         }
 
         if is_done(mode, matched_ids.len(), ids.len()) {
-            super::print_json(&json!({ "matched": true, "panes": matched_ids }))?;
+            super::print_json(
+                &json!({ "matched": true, "panes": matched_ids, "matches": matches_out }),
+            )?;
             return Ok(EXIT_OK);
         }
 
@@ -122,8 +130,15 @@ fn read_matches(client: &impl IpcTransport, id: u64, re: &Regex) -> Result<PaneS
     ) {
         Ok(result) => {
             let text = result.get("text").and_then(Value::as_str).unwrap_or("");
+            // Decide on the full window (a regex may span lines), but surface
+            // the individual matching lines for the caller (US-013 AC2).
             Ok(if re.is_match(text) {
-                PaneState::Matched
+                let hits = text
+                    .lines()
+                    .filter(|l| re.is_match(l))
+                    .map(str::to_string)
+                    .collect();
+                PaneState::Matched(hits)
             } else {
                 PaneState::NoMatch
             })
@@ -170,5 +185,58 @@ mod tests {
             "got: {}",
             err.message
         );
+    }
+
+    /// Fake transport for the poll loop: `surface.list` resolves the selector to
+    /// one pane; `surface.read` returns `read_text` (or a "not found" error,
+    /// modelling a closed pane). No real socket, no sleeps on the tested paths
+    /// (each case resolves on the first poll).
+    struct FakeWait {
+        read_text: Option<&'static str>,
+    }
+    impl IpcTransport for FakeWait {
+        fn call(&self, method: &str, _params: Value) -> Result<Value, String> {
+            match method {
+                "surface.list" => Ok(json!({
+                    "surfaces": [{ "surface_id": 1u64, "name": "agent", "cmd": "claude", "cwd": "/tmp" }]
+                })),
+                "surface.read" => match self.read_text {
+                    Some(t) => Ok(json!({ "text": t })),
+                    None => Err("paneflow error -32602: surface_id 1 not found".to_string()),
+                },
+                other => Err(format!("unexpected method {other}")),
+            }
+        }
+    }
+
+    #[test]
+    fn wait_succeeds_and_surfaces_matched_line() {
+        // Matches on the first poll -> EXIT_OK with no sleep. The matched line
+        // is surfaced (US-013 AC2): read_matches collects it from the window.
+        let fake = FakeWait {
+            read_text: Some("compiling...\nBuild DONE in 3s\n"),
+        };
+        let code = wait(&fake, "1", "DONE", Some(5), MatchMode::Single).expect("ok");
+        assert_eq!(code, EXIT_OK);
+    }
+
+    #[test]
+    fn wait_times_out_with_dedicated_code() {
+        // No match + a zero timeout -> the first deadline check fires, returning
+        // the dedicated EXIT_TIMEOUT (distinct from EXIT_TARGET / EXIT_RUNTIME).
+        let fake = FakeWait {
+            read_text: Some("still working\n"),
+        };
+        let code = wait(&fake, "1", "DONE", Some(0), MatchMode::Single).expect("ok");
+        assert_eq!(code, EXIT_TIMEOUT);
+    }
+
+    #[test]
+    fn wait_fails_fast_when_target_pane_gone() {
+        // surface.read errors (not "unreachable") -> the pane is treated as Gone;
+        // with the whole watched set gone, wait fails fast instead of spinning.
+        let fake = FakeWait { read_text: None };
+        let err = wait(&fake, "1", "DONE", Some(30), MatchMode::Single).unwrap_err();
+        assert!(err.message.contains("closed"), "got: {}", err.message);
     }
 }

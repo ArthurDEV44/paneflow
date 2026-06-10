@@ -7,7 +7,7 @@ use gpui::{Context, Focusable, Window};
 
 use crate::PaneFlowApp;
 use crate::layout::FocusDirection;
-use crate::{FocusDown, FocusLeft, FocusRight, FocusUp, SWAP_MODE};
+use crate::{FocusDown, FocusLeft, FocusRight, FocusUp, JumpNextWaiting, SWAP_MODE};
 
 impl PaneFlowApp {
     pub(crate) fn handle_focus(
@@ -77,5 +77,101 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) {
         self.handle_focus(FocusDirection::Down, w, cx);
+    }
+
+    /// US-019 (orchestration-v2): teleport to the next pane whose agent is
+    /// `WaitingForInput`, cross-workspace, in a stable order (workspace
+    /// index, then layout traversal, then tab order). Repeated presses cycle
+    /// through the waiting set via `jump_cursor`; activating a background
+    /// tab is part of the jump (the waiting surface may be hidden). No
+    /// waiting agent → silent no-op (an empty queue is the good news).
+    /// Sessions without a resolved surface are skipped (US-017 fallback —
+    /// never jump to a guessed pane).
+    pub(crate) fn handle_jump_next_waiting(
+        &mut self,
+        _: &JumpNextWaiting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut order: Vec<(usize, gpui::Entity<crate::pane::Pane>, usize, u64)> = Vec::new();
+        for (ws_idx, ws) in self.workspaces.iter().enumerate() {
+            let waiting: std::collections::HashSet<u64> = ws
+                .agent_sessions
+                .values()
+                .filter(|s| s.state == crate::ai_types::AgentState::WaitingForInput)
+                .filter_map(|s| s.surface_id)
+                .collect();
+            if waiting.is_empty() {
+                continue;
+            }
+            if let Some(root) = &ws.root {
+                for pane in root.collect_leaves() {
+                    for (tab_idx, tab) in pane.read(cx).tabs.iter().enumerate() {
+                        if let Some(t) = tab.as_terminal() {
+                            let sid = t.entity_id().as_u64();
+                            if waiting.contains(&sid) {
+                                order.push((ws_idx, pane.clone(), tab_idx, sid));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let ids: Vec<u64> = order.iter().map(|(_, _, _, sid)| *sid).collect();
+        let Some(next) = next_in_cycle(&ids, self.jump_cursor) else {
+            return;
+        };
+        let Some((ws_idx, pane, tab_idx, sid)) = order.into_iter().find(|(_, _, _, s)| *s == next)
+        else {
+            return;
+        };
+        self.active_idx = ws_idx;
+        pane.update(cx, |p, cx| {
+            if p.selected_idx != tab_idx {
+                p.selected_idx = tab_idx;
+            }
+            cx.notify();
+        });
+        pane.read(cx).focus_handle(cx).focus(window, cx);
+        self.jump_cursor = Some(sid);
+        cx.notify();
+    }
+}
+
+/// Pure cycle rule (unit-tested): first waiting surface when the cursor is
+/// unset or gone from the set; otherwise the one after it, wrapping.
+fn next_in_cycle(order: &[u64], last: Option<u64>) -> Option<u64> {
+    if order.is_empty() {
+        return None;
+    }
+    match last.and_then(|l| order.iter().position(|&x| x == l)) {
+        Some(pos) => Some(order[(pos + 1) % order.len()]),
+        None => Some(order[0]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_in_cycle;
+
+    #[test]
+    fn empty_set_is_none() {
+        assert_eq!(next_in_cycle(&[], None), None);
+        assert_eq!(next_in_cycle(&[], Some(7)), None);
+    }
+
+    #[test]
+    fn unset_or_stale_cursor_starts_at_first() {
+        assert_eq!(next_in_cycle(&[10, 20, 30], None), Some(10));
+        // Cursor points at a surface that stopped waiting: restart at first.
+        assert_eq!(next_in_cycle(&[10, 20, 30], Some(99)), Some(10));
+    }
+
+    #[test]
+    fn cycles_and_wraps() {
+        assert_eq!(next_in_cycle(&[10, 20, 30], Some(10)), Some(20));
+        assert_eq!(next_in_cycle(&[10, 20, 30], Some(30)), Some(10));
+        // Single waiting pane: jumping again stays on it.
+        assert_eq!(next_in_cycle(&[10], Some(10)), Some(10));
     }
 }

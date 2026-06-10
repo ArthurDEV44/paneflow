@@ -760,6 +760,7 @@ impl PaneFlowApp {
             toast: None,
             _toast_task: None,
             loader_anim_running: false,
+            jump_cursor: None,
             swap_source: None,
             closed_panes: Vec::new(),
             show_about_dialog: false,

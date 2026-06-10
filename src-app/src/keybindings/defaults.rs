@@ -93,6 +93,14 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "focus_down",
         context: None,
     },
+    // US-019 (orchestration-v2): cycle to the next pane whose agent waits
+    // for input, cross-workspace. `secondary-shift-j` is unclaimed (the
+    // taken set: d/e/w/n/q/t/z/=/s/a/g).
+    DefaultBinding {
+        key: "secondary-shift-j",
+        action_name: "jump_next_waiting",
+        context: None,
+    },
     DefaultBinding {
         key: "secondary-1",
         action_name: "select_workspace_1",

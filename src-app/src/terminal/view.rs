@@ -640,14 +640,33 @@ impl TerminalView {
     /// Send a keystroke to the PTY by converting it to an escape sequence.
     /// `keystroke_str` is a dash-separated description like "ctrl-c", "enter", "alt-f".
     /// Returns Ok(()) on success, Err(message) if the keystroke string is invalid.
+    ///
+    /// US-005 (orchestration-v2): refuses any keystroke whose RESOLVED escape
+    /// sequence carries CR/LF (`enter`, `ctrl-m`, `ctrl-j`, …). The IPC-level
+    /// CR/LF check only sees the keystroke *name*, so without this guard
+    /// `paneflow key <t> enter` would submit a pre-filled prompt and bypass the
+    /// human-in-loop invariant — submission must stay exclusive to
+    /// `surface.send_text` with `submit=true`.
     pub fn send_keystroke(&self, keystroke_str: &str) -> Result<(), String> {
         let keystroke = gpui::Keystroke::parse(keystroke_str).map_err(|e| format!("{e}"))?;
         let mode = *self.terminal.term.lock_unfair().mode();
         if let Some(seq) =
             crate::keys::to_esc_str(&keystroke, &Modes::from(mode), self.option_as_meta)
         {
+            if sequence_would_submit(&seq) {
+                return Err(format!(
+                    "keystroke '{keystroke_str}' would submit (CR/LF); use \
+                     surface.send_text with submit=true (`paneflow send --submit`) instead"
+                ));
+            }
             self.terminal.write_to_pty(seq.as_bytes().to_vec());
         } else if let Some(ref key_char) = keystroke.key_char {
+            if sequence_would_submit(key_char) {
+                return Err(format!(
+                    "keystroke '{keystroke_str}' would submit (CR/LF); use \
+                     surface.send_text with submit=true (`paneflow send --submit`) instead"
+                ));
+            }
             self.terminal.write_to_pty(key_char.as_bytes().to_vec());
         }
         Ok(())
@@ -662,6 +681,13 @@ impl TerminalView {
             Some(0..utf16_len)
         }
     }
+}
+
+/// True when an escape sequence (or raw key char) would submit a line at the
+/// PTY. Single choke point for the `send_keystroke` refusal above (US-005,
+/// orchestration-v2) — pure so the rule is unit-testable.
+fn sequence_would_submit(seq: &str) -> bool {
+    seq.contains('\r') || seq.contains('\n')
 }
 
 // ---------------------------------------------------------------------------
@@ -1269,6 +1295,35 @@ fn resolve_cursor_visible(
 mod tests {
     use super::*;
     use crate::terminal::pty_session::strip_partial_ansi_tail;
+
+    // --- send_keystroke submission guard (US-005, orchestration-v2) ---
+
+    #[test]
+    fn sequence_would_submit_flags_cr_and_lf_only() {
+        assert!(sequence_would_submit("\r"));
+        assert!(sequence_would_submit("\n"));
+        assert!(sequence_would_submit("text\rmore"));
+        assert!(!sequence_would_submit("\x1b[A")); // arrow key
+        assert!(!sequence_would_submit("\x03")); // ctrl-c
+        assert!(!sequence_would_submit("a"));
+    }
+
+    #[test]
+    fn enter_like_keystrokes_resolve_to_submitting_sequences() {
+        // The IPC handler's CR/LF check sees only the keystroke NAME ("enter"
+        // contains no CR byte), so the guard must catch the RESOLVED sequence.
+        // This pins that `enter` / `ctrl-m` / `ctrl-j` all resolve to CR/LF and
+        // would therefore be refused by `send_keystroke`.
+        for name in ["enter", "ctrl-m", "ctrl-j"] {
+            let ks = gpui::Keystroke::parse(name).expect("parse");
+            let seq = crate::keys::to_esc_str(&ks, &Modes::empty(), false)
+                .unwrap_or_else(|| panic!("{name} must resolve to a sequence"));
+            assert!(
+                sequence_would_submit(&seq),
+                "{name} resolved to {seq:?}, expected a CR/LF sequence"
+            );
+        }
+    }
 
     #[test]
     fn sanitize_osc52_strips_injection_controls_keeps_tab_and_newline() {

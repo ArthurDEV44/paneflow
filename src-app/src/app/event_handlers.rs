@@ -815,6 +815,9 @@ impl PaneFlowApp {
             }
         }
         if changed {
+            // US-018 (orchestration-v2): a swept session may have been
+            // driving a pane glow — resync so no orphan attention survives.
+            self.sync_attention(cx);
             cx.notify();
         }
     }

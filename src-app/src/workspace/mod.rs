@@ -9,8 +9,10 @@
 //! `crate::workspace::*` API.
 
 mod git;
+pub mod pid_resolve;
 mod ports;
 pub mod surface_naming;
+pub mod worktree;
 
 pub use git::{GitDiffStats, detect_branch, find_git_dir, resolve_repo_root};
 pub use ports::{detect_ai_processes, detect_ports};
@@ -102,6 +104,12 @@ pub struct Workspace {
     /// the implicit root. Persisted as workspace-relative paths in
     /// `session.json`; the sidebar's visibility itself is never persisted.
     pub files_expanded: Vec<std::path::PathBuf>,
+    /// Git worktrees Paneflow created for this workspace's panes via
+    /// `paneflow up` (`worktree = "branch"`, EP-002 orchestration-v2). Torn
+    /// down — clean ones only, branch never deleted — when the workspace
+    /// closes; persisted in `session.json` so a crash keeps the ownership
+    /// record. Empty for every workspace not built by `up` with worktrees.
+    pub managed_worktrees: Vec<worktree::ManagedWorktree>,
 }
 
 impl Workspace {
@@ -142,6 +150,7 @@ impl Workspace {
             detected_agents: std::collections::HashSet::new(),
             custom_buttons: Vec::new(),
             files_expanded: Vec::new(),
+            managed_worktrees: Vec::new(),
         }
     }
 

@@ -270,6 +270,13 @@ pub struct TerminalState {
     /// Set when PTY output has been processed (Wakeup event received).
     /// Cleared after cx.notify() triggers a repaint.
     pub dirty: bool,
+    /// US-010 (cli-agent-orchestration): monotonic count of processed
+    /// PTY-output events (`AlacEvent::Wakeup`). Never reset. `workspace.up`
+    /// polls this as a readiness signal for prompt prefill — it is the only
+    /// screen-agnostic "the agent produced output" signal available: `dirty`
+    /// is cleared on every repaint, and `extract_scrollback` misses content
+    /// painted on the alternate screen (where TUI agents live).
+    pub output_generation: u64,
     /// Counter for throttling output scans — scans every 50th dirty tick.
     pub(super) output_scan_ticks: u32,
     /// EP-002 US-007: throttle counter for the proc-based CWD refresh in
@@ -706,6 +713,7 @@ impl TerminalState {
             cursor_blinking: false,
             title: String::from("Terminal"),
             dirty: true,
+            output_generation: 0,
             output_scan_ticks: 0,
             cwd_poll_ticks: 0,
             reported_ports: std::collections::HashSet::new(),
@@ -802,6 +810,10 @@ impl TerminalState {
         match event {
             AlacEvent::Wakeup => {
                 self.dirty = true;
+                // US-010: advance the readiness signal `workspace.up` polls.
+                // Saturating (not wrapping) so the count is monotone for the
+                // lifetime of a pane; u64 never realistically saturates.
+                self.output_generation = self.output_generation.saturating_add(1);
             }
             AlacEvent::ChildExit(status) => {
                 self.reset_active_modes();
@@ -2685,6 +2697,37 @@ mod tests {
         assert!(
             found,
             "EP-002: the EventLoop read path did not deliver shell output to the grid"
+        );
+    }
+
+    #[test]
+    fn output_generation_advances_on_pty_output() {
+        // US-010: `workspace.up` polls `output_generation` as its prefill
+        // readiness signal. A fresh terminal has produced nothing (0); the
+        // counter must advance once the shell emits output (Wakeup events
+        // drained by `sync`), proving the signal tracks real PTY activity.
+        let mut state = TerminalState::new(None, 1, 1, Some((80, 24)), None, None)
+            .expect("spawn a PTY-backed terminal");
+        assert_eq!(
+            state.output_generation, 0,
+            "a fresh terminal has produced no output"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        state.notifier.notify(b"echo PANEFLOW_GEN_OK\n".to_vec());
+
+        let mut advanced = false;
+        for _ in 0..60 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            state.sync();
+            if state.output_generation > 0 {
+                advanced = true;
+                break;
+            }
+        }
+        assert!(
+            advanced,
+            "output_generation must advance once the PTY emits output"
         );
     }
 }

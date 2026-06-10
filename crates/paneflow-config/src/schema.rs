@@ -981,6 +981,29 @@ pub struct WorkspaceSession {
     /// deliberately NOT persisted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expanded_paths: Vec<String>,
+    /// Git worktrees Paneflow created for this workspace via `paneflow up`
+    /// (EP-002, prd-orchestration-v2). Persisted so a crash/restart keeps the
+    /// ownership record (teardown at close, `git worktree prune` at startup).
+    /// Additive + optional like `expanded_paths`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub managed_worktrees: Vec<ManagedWorktreeDef>,
+}
+
+/// A git worktree created (and therefore owned) by Paneflow for one pane of a
+/// `paneflow up` workspace. Paths are stored absolute; `teardown` is `"auto"`
+/// (remove at close when clean) or `"keep"`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ManagedWorktreeDef {
+    /// Worktree checkout directory.
+    pub path: String,
+    /// Main repository root (where `git worktree` commands run).
+    pub repo_root: String,
+    /// Branch checked out in the worktree (diagnostics only — never deleted).
+    pub branch: String,
+    /// Teardown policy: `"auto"` | `"keep"`. Unknown values read as `"auto"`;
+    /// the data-loss protection is the clean-check, not this flag.
+    pub teardown: String,
 }
 
 /// A user-defined command button rendered in a workspace's tab bar.

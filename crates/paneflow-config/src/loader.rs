@@ -1183,6 +1183,7 @@ mod tests {
                 }),
                 custom_buttons: vec![],
                 expanded_paths: vec![],
+                managed_worktrees: vec![],
             }],
             projects: Vec::new(),
             active_project: 0,
@@ -1209,6 +1210,7 @@ mod tests {
                     }),
                     custom_buttons: vec![],
                     expanded_paths: vec![],
+                    managed_worktrees: vec![],
                 },
                 WorkspaceSession {
                     title: "backend".to_string(),
@@ -1218,6 +1220,7 @@ mod tests {
                     }),
                     custom_buttons: vec![],
                     expanded_paths: vec![],
+                    managed_worktrees: vec![],
                 },
                 WorkspaceSession {
                     title: "devops".to_string(),
@@ -1225,6 +1228,7 @@ mod tests {
                     layout: None,
                     custom_buttons: vec![],
                     expanded_paths: vec![],
+                    managed_worktrees: vec![],
                 },
             ],
             projects: Vec::new(),
@@ -1250,6 +1254,7 @@ mod tests {
                 cwd: "/home/user".to_string(),
                 custom_buttons: vec![],
                 expanded_paths: vec![],
+                managed_worktrees: vec![],
                 layout: Some(LayoutNode::Split {
                     direction: "horizontal".to_string(),
                     ratio: None,
@@ -1298,6 +1303,7 @@ mod tests {
                 cwd: "/tmp".to_string(),
                 custom_buttons: vec![],
                 expanded_paths: vec![],
+                managed_worktrees: vec![],
                 layout: Some(LayoutNode::Pane {
                     surfaces: vec![SurfaceDefinition {
                         surface_type: Some("terminal".to_string()),
@@ -1650,6 +1656,7 @@ mod tests {
                 }),
                 custom_buttons: vec![],
                 expanded_paths: vec![],
+                managed_worktrees: vec![],
             }],
             projects: vec![ProjectSession {
                 id: 42,
