@@ -17,9 +17,9 @@ capability. New to Paneflow? Start with [Get started](/docs).
   Split the focused pane horizontally (`Cmd/Ctrl+Shift+D`) or vertically
   (`Cmd/Ctrl+Shift+E`); each new pane spawns a fresh shell in the same
   working directory. Move focus structurally across the tree with
-  `Alt+Arrow`. Reshape the whole workspace in one keystroke with the
-  built-in presets — even, main-vertical, tiled — or author your own
-  [layout tree](/docs/layouts).
+  `Alt+Arrow`. Reshape the whole workspace in one keystroke with the four
+  [built-in presets](/docs/layouts) — even horizontal, even vertical,
+  main vertical, and tiled.
 
   ## Agent-first panes [#agent-first-panes]
 
