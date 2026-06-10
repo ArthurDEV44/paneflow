@@ -94,8 +94,24 @@ fi
 # complexity until someone needs pixel-perfect Apple parity.
 
 # 22.37% expressed as basis points of 10000 for integer arithmetic
-# (matches Apple's documented icon mask ratio).
+# (matches Apple's documented icon mask ratio). NOTE: this is the corner
+# radius of the squircle BODY, applied relative to the body size (the inset
+# artwork), not the full canvas -- see ICON_BODY_PCT below.
 MASK_RADIUS_PCT=2237
+
+# Keyline padding: the squircle body occupies this fraction of the canvas,
+# with transparent margin around it. 80.47% (≈10% margin each side) is the
+# value GNOME and macOS independently converge on:
+#   - GNOME HIG square keyline: 103/128 = 80.47%  (developer.gnome.org/hig
+#     /guidelines/app-icons.html — "drawn within 128px but shouldn't fill it")
+#   - macOS Big Sur grid:       824/1024 = 80.47% (Apple rounded-rect body)
+#   - KDE Breeze is close (40/48 = 83%); freedesktop mandates no padding.
+# Without this inset the icon is FULL-BLEED and renders ~23% larger than
+# spec-compliant peers in the GNOME Shell dash / dock, which scale every PNG
+# to fill a fixed cell and ignore internal padding. Insetting fixes GNOME and
+# makes the macOS .icns (sourced from these same PNGs) more correct too.
+# Set to 10000 to restore the old full-bleed behaviour.
+ICON_BODY_PCT=8047
 
 # Run a `magick` (or `convert`) invocation with up to 3 attempts.
 # ImageMagick 7.1.2-23 (the current Homebrew bottle on macos-14-arm64,
@@ -151,8 +167,15 @@ resize_png() {
 
 resize_and_mask_png() {
     local src="$1" dst="$2" size="$3"
-    local radius=$(( size * MASK_RADIUS_PCT / 10000 ))
-    local edge=$(( size - 1 ))
+    # Inset: the masked squircle body is rendered at `body` px, then centered
+    # on a transparent `size` px canvas. Mask radius is relative to the BODY
+    # (so the squircle's corner curvature scales with the body, not the
+    # padded canvas). At ICON_BODY_PCT=10000 (full-bleed) body==size and the
+    # extent is a no-op, preserving the legacy behaviour exactly.
+    local body=$(( size * ICON_BODY_PCT / 10000 ))
+    [ "$body" -lt 1 ] && body=1
+    local radius=$(( body * MASK_RADIUS_PCT / 10000 ))
+    local edge=$(( body - 1 ))
     if command -v magick >/dev/null 2>&1; then
         # 3-element pipeline in a single invocation (fast, no temp files):
         #   1. resized source with `-alpha On` to ensure the alpha channel is
@@ -172,23 +195,28 @@ resize_and_mask_png() {
         #      channel has only 2 distinct values (fully opaque + fully
         #      transparent), which strips the alpha back out.
         run_magick magick \
-            \( "$src" -filter Lanczos -resize "${size}x${size}" -alpha On \) \
-            \( -size "${size}x${size}" xc:none -fill white \
+            \( "$src" -filter Lanczos -resize "${body}x${body}" -alpha On \) \
+            \( -size "${body}x${body}" xc:none -fill white \
                 -draw "roundrectangle 0,0 ${edge},${edge} ${radius},${radius}" \) \
             -compose DstIn -composite \
+            +repage -compose Over -background none -gravity center \
+            -extent "${size}x${size}" \
             -strip "PNG32:$dst"
     elif command -v convert >/dev/null 2>&1; then
         run_magick convert \
-            \( "$src" -filter Lanczos -resize "${size}x${size}" -alpha On \) \
-            \( -size "${size}x${size}" xc:none -fill white \
+            \( "$src" -filter Lanczos -resize "${body}x${body}" -alpha On \) \
+            \( -size "${body}x${body}" xc:none -fill white \
                 -draw "roundrectangle 0,0 ${edge},${edge} ${radius},${radius}" \) \
             -compose DstIn -composite \
+            +repage -compose Over -background none -gravity center \
+            -extent "${size}x${size}" \
             -strip "PNG32:$dst"
     elif command -v sips >/dev/null 2>&1; then
-        # sips can resize but cannot draw arbitrary masks. Degrade to a raw
-        # resize with a visible warning so the user knows the mask was
-        # silently skipped on this leg.
-        warn "sips fallback: produced ${dst} without squircle mask (install ImageMagick for masked output)"
+        # sips can resize but cannot draw arbitrary masks or center-inset onto
+        # a transparent canvas. Degrade to a raw full-bleed resize with a
+        # visible warning so the user knows both the mask AND the keyline
+        # padding were skipped on this leg.
+        warn "sips fallback: produced ${dst} full-bleed, without squircle mask or keyline padding (install ImageMagick for spec-correct output)"
         sips -Z "$size" "$src" --out "$dst" >/dev/null
     else
         die "need ImageMagick (magick/convert) or sips to resize PNGs"
