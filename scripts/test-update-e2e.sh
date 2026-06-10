@@ -15,7 +15,7 @@
 #
 # Three scenarios are exercised:
 #   (a) tar.gz happy path  — exit 0, version bumps
-#   (b) hash mismatch      — exit 4 (UpdateError::IntegrityMismatch)
+#   (b) tampered artifact  — exit 4 (UpdateError::IntegrityMismatch via minisign verify)
 #   (c) feed unreachable   — exit 3 (HTTP server killed before invocation)
 #
 # AC3a (AppImage swap) is deferred: appimageupdatetool isn't part of the
@@ -330,21 +330,24 @@ run_happy() {
 # Scenario B — hash mismatch (AC3c).
 # -----------------------------------------------------------------------------
 run_hash_mismatch() {
-    log "scenario: hash mismatch"
+    log "scenario: tampered artifact (integrity mismatch)"
     reset_install
 
-    # Mutate the .sha256 sidecar to a wrong-but-well-formed hash. The
-    # checker downloads the sidecar first; the tarball body is then
-    # streamed and hashed with sha2::Sha256, producing
-    # UpdateError::IntegrityMismatch (exit 4 in --update-and-exit).
-    sha_path="${WORK_DIR}/fixture/paneflow-${NEW_VERSION}-x86_64.tar.gz.sha256"
-    sha_path_backup="${sha_path}.real"
-    cp "${sha_path}" "${sha_path_backup}"
-    # Force the sidecar to a well-formed but wrong 64-hex-zeros hash so
-    # `download_with_verification` returns `IntegrityMismatch` after
-    # streaming the body — exit 4 in `--update-and-exit`.
-    fake_hash="$(printf '0%.0s' {1..64})"
-    printf '%s  %s\n' "${fake_hash}" "paneflow-${NEW_VERSION}-x86_64.tar.gz" > "${sha_path}"
+    # Clients ≥ v0.4.0 verify a detached minisign signature over the
+    # downloaded artifact bytes (update/signature.rs); the `.sha256`
+    # sidecar is no longer fetched at all — the v0.4.2 release run
+    # proved it: corrupting the sidecar (this scenario's original
+    # tamper) no longer fails the install, the harness saw exit 0.
+    # Tamper the tarball BODY instead, leaving the genuine `.minisig`
+    # in place: verification fails over the mutated bytes and
+    # `--update-and-exit` maps the resulting `IntegrityMismatch` to
+    # exit 4 — the modern equivalent of the original sha256-mismatch
+    # assertion (and still the right gate if a future client re-adds a
+    # sidecar pre-check: both paths classify as IntegrityMismatch).
+    tarball_path="${WORK_DIR}/fixture/paneflow-${NEW_VERSION}-x86_64.tar.gz"
+    tarball_backup="${tarball_path}.real"
+    cp "${tarball_path}" "${tarball_backup}"
+    printf 'tampered-by-e2e-harness' >> "${tarball_path}"
 
     set +e
     PANEFLOW_UPDATE_FEED_URL="${FEED_BASE}/latest" \
@@ -354,8 +357,8 @@ run_hash_mismatch() {
     rc=$?
     set -e
 
-    # Restore so subsequent scenarios re-use the real sidecar.
-    mv "${sha_path_backup}" "${sha_path}"
+    # Restore so subsequent scenarios re-use the genuine tarball.
+    mv "${tarball_backup}" "${tarball_path}"
 
     [ "${rc}" -eq 4 ] || {
         log "mismatch: stderr:"; cat "${WORK_DIR}/mismatch.stderr" >&2
@@ -364,7 +367,7 @@ run_hash_mismatch() {
     actual_unchanged="$("${INSTALL_BIN}" --version)"
     [ "${actual_unchanged}" = "paneflow ${OLD_VERSION}" ] \
         || fail "mismatch: post-fail version is '${actual_unchanged}', expected unchanged 'paneflow ${OLD_VERSION}'"
-    ok "hash mismatch: rejected, install path unchanged"
+    ok "tampered artifact: rejected, install path unchanged"
 }
 
 # -----------------------------------------------------------------------------
