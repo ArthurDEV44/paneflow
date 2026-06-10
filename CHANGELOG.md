@@ -5,6 +5,59 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-10
+
+### Added
+
+- `paneflow` CLI: a scriptable control plane over the IPC socket. `ls`,
+  `read` and `search` expose pane scrollback with a unified target selector;
+  `new`, `select`, `split` and `focus` drive the layout; `send` feeds text to
+  a pane behind a scripting gate and never auto-submits; `key` sends a single
+  non-submitting keystroke; `wait` blocks on pane readiness as an
+  orchestration primitive.
+- `paneflow up`: declarative agent workspaces. One command builds a
+  workspace from a spec (per-pane cwd, agent to launch, prompt prefill),
+  backed by a `workspace.up` IPC handler.
+- Worktree-per-agent: a `worktree = "branch"` field in `up` gives each pane
+  its own git worktree, with `.env*` copy, an optional setup command, a
+  `${port_offset}` variable for port isolation, clean teardown when the
+  workspace closes and pruning of orphaned worktrees at startup.
+- `paneflow flow`: a flow engine for multi-agent pipelines. `flow.toml`
+  declares spawn steps with `ready.pattern` barriers, gated send steps,
+  `foreach` fan-out and fan-in, `capture` to pass data between steps, plus
+  validation with cycle detection, `--dry-run`, reporting, exit codes and
+  state resume. Submission stays double-gated end to end.
+- Attention routing: a pane whose agent waits for input glows and its tab
+  shows an attention dot; the desktop notification carries the agent's
+  question; `Ctrl+Shift+J` cycles to the next waiting agent across
+  workspaces; hovering the pane badge peeks at the question without
+  stealing focus.
+- Persistent agent-notification hooks: `paneflow hooks setup` installs a
+  durable hook for supported agents, `paneflow hooks status` reports each
+  agent honestly, and the launch shim defers to a persistent hook instead
+  of injecting an ephemeral one.
+- Turn-end desktop notification when the window is unfocused.
+
+### Changed
+
+- Agents view rebuilt as a Codex-style cockpit: rail sections (Search,
+  Pinned, Projects, Chats), free chats anchored to the home directory, a
+  contextual top bar with a thread overflow menu, and unified
+  selection/empty states.
+- Cockpit chrome across every mode: full-height rails with a floating
+  rail-confined title bar, the update call-to-action moved into the sidebar
+  in Cli/Agents, a single-row Diff toolbar with the scope breadcrumb
+  inline, and quieter text inputs (1px white caret).
+- The sessions sidebar now follows the active workspace instead of staying
+  bound to the previous one.
+- "PaneFlow Light" is temporarily out of the bundled theme set pending a
+  light-theme redesign; configs naming it fall back to One Dark.
+
+### Fixed
+
+- A literal `--update-and-exit` token passed as a CLI or hooks argument can
+  no longer hijack the process into the self-updater.
+
 ## [0.3.9] - 2026-06-09
 
 - Rebuilt the native terminal engine on upstream `alacritty_terminal` with
@@ -131,7 +184,10 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 - Opened the 0.3.x release line. See the GitHub compare link for the full commit
   list.
 
-[Unreleased]: https://github.com/ArthurDEV44/paneflow/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ArthurDEV44/paneflow/compare/v0.3.9...v0.4.0
+[0.3.9]: https://github.com/ArthurDEV44/paneflow/compare/v0.3.8...v0.3.9
+[0.3.8]: https://github.com/ArthurDEV44/paneflow/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/ArthurDEV44/paneflow/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/ArthurDEV44/paneflow/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/ArthurDEV44/paneflow/releases/tag/v0.3.5
