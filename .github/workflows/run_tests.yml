@@ -383,7 +383,10 @@ jobs:
           SHIM_SIZE=$(stat -c%s "$SHIM_BIN")
           HOOK_SIZE=$(stat -c%s "$HOOK_BIN")
           # Hard caps (regression gate). Tighten as binaries shrink.
-          SHIM_HARD=460800   # ~450 KB  (measured 423 KB + 6 % slack)
+          # Re-baselined 2026-06-10: the persistent-hooks precedence feature
+          # (US-016..019, hooks installer + managed-shape detection) grew the
+          # shim 423 KB -> 453 KB; same +6 % slack policy on the new baseline.
+          SHIM_HARD=491520   # ~480 KB  (measured 453 KB + 6 % slack)
           HOOK_HARD=384000   # ~375 KB  (measured 351 KB + 6 % slack)
           # Soft caps (PRD launch targets). Warn-only until met.
           SHIM_SOFT=614400   # 600 KB
