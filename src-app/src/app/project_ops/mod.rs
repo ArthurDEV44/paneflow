@@ -231,6 +231,9 @@ impl PaneFlowApp {
             store_id: None,
             terminal_agent: None,
             pinned: false,
+            agent_pid: None,
+            hook_managed: false,
+            activity_gen: 0,
         };
         let id = thread.id;
         project.threads.push(thread);

@@ -1609,6 +1609,13 @@ impl PaneFlowApp {
                     // process dies before its first prompt.
                     let _ = (pid, tool, ws);
                     serde_json::json!({"registered": true})
+                } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
+                    // Same no-op policy for an Agents thread: the spinner
+                    // only appears once a prompt is actually in flight. The
+                    // frame itself proves the hook lifecycle is live, so the
+                    // output-activity heuristic stands down for this thread.
+                    t.hook_managed = true;
+                    serde_json::json!({"registered": true})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
                 }
@@ -1633,6 +1640,16 @@ impl PaneFlowApp {
                     }
                     self.schedule_surface_resolution(workspace_id, key, cx);
                     self.sync_attention(cx);
+                    serde_json::json!({"status": "running"})
+                } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
+                    // The row spinner self-animates (declarative GPUI
+                    // Animation in `thread_row`) — no loader-loop start here.
+                    t.hook_managed = true;
+                    t.status = crate::project::ThreadStatus::Thinking;
+                    if pid.is_some() {
+                        t.agent_pid = pid;
+                    }
+                    cx.notify();
                     serde_json::json!({"status": "running"})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
@@ -1668,6 +1685,16 @@ impl PaneFlowApp {
                     }
                     self.schedule_surface_resolution(workspace_id, key, cx);
                     self.sync_attention(cx);
+                    serde_json::json!({"status": "running"})
+                } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
+                    // tool_use keeps (or promotes) the thread spinner —
+                    // same Finished-revival rationale as the workspace arm.
+                    t.hook_managed = true;
+                    t.status = crate::project::ThreadStatus::Thinking;
+                    if pid.is_some() {
+                        t.agent_pid = pid;
+                    }
+                    cx.notify();
                     serde_json::json!({"status": "running"})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
@@ -1710,6 +1737,24 @@ impl PaneFlowApp {
                     );
                     self.schedule_surface_resolution(workspace_id, key, cx);
                     self.sync_attention(cx);
+                    serde_json::json!({"status": "waiting"})
+                } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
+                    t.hook_managed = true;
+                    t.status = crate::project::ThreadStatus::WaitingForInput;
+                    if pid.is_some() {
+                        t.agent_pid = pid;
+                    }
+                    // Notification body uses the cleaned title so a CLI
+                    // spinner glyph baked into the OSC title never leaks
+                    // into the desktop notification.
+                    let title = crate::project::clean_sidebar_title(&t.title)
+                        .unwrap_or_else(|| t.title.clone());
+                    cx.notify();
+                    fire_attention_notification(
+                        &title,
+                        Some(&message),
+                        cx.background_executor().clone(),
+                    );
                     serde_json::json!({"status": "waiting"})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
@@ -1771,6 +1816,19 @@ impl PaneFlowApp {
                     .detach();
 
                     serde_json::json!({"status": "idle"})
+                } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
+                    // Codex-style: the spinner drops the moment the turn
+                    // ends and the relative timestamp returns. No Finished
+                    // hold state — `ThreadStatus` has no such variant and
+                    // the row's timestamp is the natural rest indicator.
+                    t.hook_managed = true;
+                    t.status = crate::project::ThreadStatus::Idle;
+                    t.agent_pid = None;
+                    let title = crate::project::clean_sidebar_title(&t.title)
+                        .unwrap_or_else(|| t.title.clone());
+                    cx.notify();
+                    fire_turn_end_notification(&title, cx.background_executor().clone());
+                    serde_json::json!({"status": "idle"})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
                 }
@@ -1823,6 +1881,15 @@ impl PaneFlowApp {
                         cx.notify();
                     }
                     serde_json::json!({"cleared": removed})
+                } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
+                    let was_active = t.status != crate::project::ThreadStatus::Idle;
+                    t.hook_managed = true;
+                    t.status = crate::project::ThreadStatus::Idle;
+                    t.agent_pid = None;
+                    if was_active {
+                        cx.notify();
+                    }
+                    serde_json::json!({"cleared": was_active})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
                 }
@@ -1831,6 +1898,17 @@ impl PaneFlowApp {
                 serde_json::json!({"error": format!("Unknown method: {method}")})
             }
         }
+    }
+
+    /// Resolve an `ai.*` frame's `workspace_id` to the Agents thread it was
+    /// emitted from, when the id sits in the Agents PTY-env namespace
+    /// ([`crate::project::AGENTS_THREAD_ENV_ID_BASE`]). CLI-mode workspace
+    /// ids live below the base and return `None` here, so the workspace arm
+    /// and this fallback can never both match one frame. Searches project
+    /// threads and free chats — both spawn through the same mount path.
+    fn agents_thread_mut_by_env_id(&mut self, env_id: u64) -> Option<&mut crate::project::Thread> {
+        let thread_id = crate::project::thread_id_from_env_id(env_id)?;
+        self.agents_thread_mut_by_id(thread_id)
     }
 }
 

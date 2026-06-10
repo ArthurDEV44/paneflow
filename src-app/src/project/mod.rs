@@ -71,6 +71,30 @@ pub fn bump_id_counters_to(projects: &[Project], chats: &[Thread]) {
     bump_counter(&NEXT_THREAD_ID, max_thread + 1);
 }
 
+/// Namespace offset applied to a [`Thread::id`] before it is handed to
+/// [`crate::terminal::view::TerminalView`] as the PTY `PANEFLOW_WORKSPACE_ID`.
+///
+/// Thread IDs and CLI-mode workspace IDs come from two independent
+/// counters that both start at 1, so the raw values collide: an `ai.*`
+/// hook frame emitted from thread 3's PTY used to be indistinguishable
+/// from one emitted from workspace 3 and was routed to the wrong
+/// surface (or dropped). Offsetting the thread namespace into the high
+/// half of u64 keeps the env var a single opaque id for the hook shim
+/// while letting the IPC handler route unambiguously: `< BASE` →
+/// workspace, `>= BASE` → Agents thread.
+pub const AGENTS_THREAD_ENV_ID_BASE: u64 = 1 << 32;
+
+/// The PTY-env id for an Agents thread (see [`AGENTS_THREAD_ENV_ID_BASE`]).
+pub fn thread_env_id(thread_id: u64) -> u64 {
+    AGENTS_THREAD_ENV_ID_BASE + thread_id
+}
+
+/// Decode a PTY-env id back to a [`Thread::id`]. Returns `None` for ids
+/// below the namespace base (CLI-mode workspace ids).
+pub fn thread_id_from_env_id(env_id: u64) -> Option<u64> {
+    env_id.checked_sub(AGENTS_THREAD_ENV_ID_BASE)
+}
+
 /// Explicit selection target for the Agents-view center surface (US-003
 /// of `prd-agents-ui-codex-redesign-2026-Q3.md`). Replaces the positional
 /// `active_thread_idx: Option<usize>` so the center can address a thread of
@@ -185,6 +209,24 @@ pub struct Thread {
     /// [`ThreadSession::pinned`]; a restored thread without the flag is
     /// `false`.
     pub pinned: bool,
+    /// PID of the CLI agent currently driving [`Self::status`], reported
+    /// by the `ai.*` hook frames. Transient (never persisted — a restored
+    /// thread is always `Idle`): only consumed by the stale-PID sweep so a
+    /// killed agent can't leave the sidebar spinner running forever.
+    /// `None` for legacy hook shims that omit `pid`; the sweep then keeps
+    /// the state conservatively (same policy as workspace sessions).
+    pub agent_pid: Option<u32>,
+    /// `true` once any `ai.*` hook frame has been routed to this thread.
+    /// The hook lifecycle (Claude Code / Codex shims) then owns `status`
+    /// exactly, and the PTY output-activity heuristic — the fallback that
+    /// drives the spinner for agents without hook integration (OpenCode,
+    /// Pi, Hermes, …) — stands down for good. Transient, never persisted.
+    pub hook_managed: bool,
+    /// Monotonic counter bumped on every PTY output burst attributed to
+    /// agent work (heuristic threads only). The quiescence loop snapshots
+    /// it to detect "no output for the quiet window" and demote `status`
+    /// back to Idle. Transient, never persisted.
+    pub activity_gen: u64,
 }
 
 impl Thread {
@@ -204,6 +246,9 @@ impl Thread {
             store_id: None,
             terminal_agent: None,
             pinned: false,
+            agent_pid: None,
+            hook_managed: false,
+            activity_gen: 0,
         }
     }
 
@@ -230,6 +275,9 @@ impl Thread {
             store_id: None,
             terminal_agent,
             pinned: false,
+            agent_pid: None,
+            hook_managed: false,
+            activity_gen: 0,
         }
     }
 }
@@ -361,6 +409,9 @@ pub fn thread_from_session(s: &ThreadSession) -> Option<Thread> {
         // US-001: a pre-refonte ThreadSession defaults `pinned = false`
         // via `#[serde(default)]`, so this restores cleanly.
         pinned: s.pinned,
+        agent_pid: None,
+        hook_managed: false,
+        activity_gen: 0,
     })
 }
 
@@ -474,6 +525,19 @@ mod tests {
         let b = next_thread_id();
         let c = next_thread_id();
         assert!(a < b && b < c, "got {a} {b} {c}");
+    }
+
+    #[test]
+    fn thread_env_id_round_trips_and_rejects_workspace_ids() {
+        assert_eq!(thread_id_from_env_id(thread_env_id(1)), Some(1));
+        let big = u32::MAX as u64;
+        assert_eq!(thread_id_from_env_id(thread_env_id(big)), Some(big));
+        // CLI-mode workspace ids live below the namespace base — they must
+        // never decode as a thread, or an ai.* frame from a CLI pane would
+        // drive an Agents row's spinner.
+        assert_eq!(thread_id_from_env_id(0), None);
+        assert_eq!(thread_id_from_env_id(1), None);
+        assert_eq!(thread_id_from_env_id(AGENTS_THREAD_ENV_ID_BASE - 1), None);
     }
 
     // AC: monotonic ID atomicity across 1000 calls. We probe both
