@@ -2323,14 +2323,23 @@ mod tests {
         // Proving the trap ran proves SIGTERM was delivered to the group — and
         // by construction `Drop` sends it synchronously *before* scheduling the
         // 100ms-grace SIGKILL.
+        use std::io::{BufRead, BufReader};
         use std::os::unix::process::{CommandExt, ExitStatusExt};
         use std::process::{Command, Stdio};
         use std::time::{Duration, Instant};
 
+        // `sleep 30 &` + `wait` (not a foreground sleep): POSIX requires the
+        // `wait` builtin to be interrupted by a trapped signal, so the trap
+        // runs promptly even if the group SIGTERM races `sleep`'s fork→exec
+        // window (where an inherited blocked mask can leave it alive — a
+        // foreground sleep then pins the shell for its full 30s before the
+        // trap fires, which is exactly the aarch64-CI hang this replaces).
+        // `echo ready` is the readiness handshake: once the parent reads it,
+        // setsid + trap + background spawn are all done — no blind warmup.
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", "trap 'exit 42' TERM; sleep 30"])
+        cmd.args(["-c", "trap 'exit 42' TERM; sleep 30 & echo ready; wait"])
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null());
         // SAFETY: setsid() runs in the forked child before exec; it detaches
         // the child into its own session/group so kill(-pid, ...) targets
@@ -2344,8 +2353,11 @@ mod tests {
         let mut child = cmd.spawn().expect("spawn test child");
         let pid = child.id() as i32;
 
-        // Let the shell install its TERM trap before we signal.
-        std::thread::sleep(Duration::from_millis(150));
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().expect("piped stdout"))
+            .read_line(&mut ready)
+            .expect("read readiness line");
+        assert_eq!(ready.trim_end(), "ready", "handshake line");
 
         assert!(
             terminate_process_group(pid),
@@ -2353,15 +2365,17 @@ mod tests {
         );
 
         // The trap exits 42 well within the 100ms grace window; poll for exit
-        // with a 5s ceiling so a regression fails fast instead of hanging.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // with a generous ceiling — the suite runs fully parallel on 4-core CI
+        // runners and a 5s deadline has flaked under that load (same class as
+        // the v0.3.9 stdout_cap deflake). A regression still fails, just slower.
+        let deadline = Instant::now() + Duration::from_secs(30);
         let status = loop {
             if let Some(status) = child.try_wait().expect("try_wait child") {
                 break status;
             }
             if Instant::now() > deadline {
                 let _ = child.kill();
-                panic!("US-001: child did not exit after SIGTERM within 5s");
+                panic!("US-001: child did not exit after SIGTERM within 30s");
             }
             std::thread::sleep(Duration::from_millis(20));
         };
