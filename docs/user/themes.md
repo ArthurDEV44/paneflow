@@ -1,6 +1,6 @@
 # Themes
 
-> Switch between Paneflow's bundled themes - One Dark and Paneflow Light - with hot-reload, no restart needed.
+> Paneflow's theme system with hot-reload from paneflow.json, no restart needed. One Dark ships today; the light theme returns after a redesign.
 
 Canonical: https://paneflow.dev/docs/themes
 
