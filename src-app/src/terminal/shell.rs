@@ -38,6 +38,27 @@ __paneflow_path_prepend() {
     path=("${PANEFLOW_BIN_DIR}" "${(@)path:#${PANEFLOW_BIN_DIR}}")
 }
 autoload -Uz add-zsh-hook
+# OSC 133 prompt marks (EP-003 US-007) — interactive shells only. The D
+# (command finished + exit code) fires before the next A; `ret=$?` is the
+# FIRST expansion and this precmd is registered FIRST, so no other hook
+# can clobber the exit status. `__paneflow_cmd_ran` (set by preexec)
+# suppresses the orphan D on the first prompt and on empty Enters.
+if [[ -o interactive ]]; then
+    __paneflow_osc133_precmd() {
+        local ret=$?
+        if [[ -n "${__paneflow_cmd_ran-}" ]]; then
+            printf '\e]133;D;%s\a' "${ret}"
+            unset __paneflow_cmd_ran
+        fi
+        printf '\e]133;A\a'
+    }
+    __paneflow_osc133_preexec() {
+        __paneflow_cmd_ran=1
+        printf '\e]133;C\a'
+    }
+    add-zsh-hook precmd __paneflow_osc133_precmd
+    add-zsh-hook preexec __paneflow_osc133_preexec
+fi
 add-zsh-hook chpwd __paneflow_osc7
 add-zsh-hook precmd __paneflow_path_prepend
 __paneflow_osc7
@@ -59,7 +80,23 @@ __paneflow_path_prepend() {
     PATH="${PANEFLOW_BIN_DIR}:${p}"
     export PATH
 }
-PROMPT_COMMAND="__paneflow_osc7;__paneflow_path_prepend${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+# OSC 133 prompt marks (EP-003 US-007). The 133 hook runs FIRST in
+# PROMPT_COMMAND so `ret=$?` sees the real command status (anything before
+# it would clobber `$?`). `HISTCMD` gates the D emission: it only advances
+# when a command was actually entered, so empty Enters and the first
+# prompt never produce an orphan D (commands skipped by HISTCONTROL lose
+# their D — accepted v1 tradeoff). PS0 (bash 4.4+) marks output start;
+# older bash simply has no C mark (A/D still drive dots + jumps).
+__paneflow_osc133_precmd() {
+    local ret=$?
+    if [[ "${HISTCMD-0}" != "${__paneflow_histcmd-}" ]]; then
+        [[ -n "${__paneflow_histcmd-}" ]] && printf '\e]133;D;%s\a' "${ret}"
+        __paneflow_histcmd="${HISTCMD-0}"
+    fi
+    printf '\e]133;A\a'
+}
+PS0="\e]133;C\a${PS0-}"
+PROMPT_COMMAND="__paneflow_osc133_precmd;__paneflow_osc7;__paneflow_path_prepend${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 __paneflow_path_prepend
 "#;
 
@@ -75,6 +112,21 @@ end
 __paneflow_osc7
 if set -q PANEFLOW_BIN_DIR; and test -n "$PANEFLOW_BIN_DIR"
     fish_add_path -gp $PANEFLOW_BIN_DIR
+end
+# OSC 133 prompt marks (EP-003 US-007) — fish's native event functions
+# compose with any prompt framework (no function is replaced). $status is
+# captured immediately in fish_postexec, which only fires after a real
+# command — no orphan D on the first prompt or empty Enters.
+if status is-interactive
+    function __paneflow_osc133_prompt --on-event fish_prompt
+        printf '\e]133;A\a'
+    end
+    function __paneflow_osc133_preexec --on-event fish_preexec
+        printf '\e]133;C\a'
+    end
+    function __paneflow_osc133_postexec --on-event fish_postexec
+        printf '\e]133;D;%s\a' $status
+    end
 end
 "#;
 
@@ -103,6 +155,21 @@ function global:__paneflow_path_prepend {
     $env:PATH = (@($env:PANEFLOW_BIN_DIR) + $entries) -join $sep
 }
 function global:prompt {
+    # OSC 133 (EP-003 US-007): capture the command status FIRST — any
+    # cmdlet below would reset `$?`. The history id gates D: it only
+    # advances when a command actually ran, so the first prompt and empty
+    # Enters never emit an orphan D. `$LASTEXITCODE` covers native
+    # executables; failed cmdlets synthesize exit 1. No C mark on pwsh in
+    # v1 (a preexec hook needs a PSReadLine key-handler override — too
+    # intrusive; A/D still drive dots + jumps).
+    $__pf_ok = $global:?
+    $__pf_hist = (Get-History -Count 1).Id
+    if ($null -ne $global:__paneflow_hist -and $__pf_hist -ne $global:__paneflow_hist) {
+        $__pf_code = if ($__pf_ok) { 0 } elseif ($global:LASTEXITCODE) { $global:LASTEXITCODE } else { 1 }
+        [Console]::Write("`e]133;D;$__pf_code`a")
+    }
+    $global:__paneflow_hist = $__pf_hist
+    [Console]::Write("`e]133;A`a")
     $cwd = (Get-Location).ProviderPath
     # OSC 7 with BEL terminator (matches zsh/bash/fish emitters).
     [Console]::Write("`e]7;file://$env:COMPUTERNAME$cwd`a")

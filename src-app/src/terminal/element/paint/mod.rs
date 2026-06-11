@@ -21,6 +21,7 @@
 
 pub(super) mod background;
 pub(super) mod cursor;
+pub(super) mod marks;
 pub(super) mod overlay;
 pub(super) mod scrollbar;
 pub(super) mod selection;
