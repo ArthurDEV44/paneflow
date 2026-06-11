@@ -136,11 +136,6 @@ actions!(
         // (US-005) is the worktree + split + agent + prefill one-gesture
         // modal.
         OpenAttentionQueue,
-        OpenLaunchPad,
-        // EP-003 US-008 (prd-cli-cockpit-ergonomics-2026-Q3.md) — jump the
-        // viewport to the previous/next OSC 133 prompt mark. Terminal
-        // context; silent no-op without shell-integration marks.
-        JumpPrevPrompt,
-        JumpNextPrompt
+        OpenLaunchPad
     ]
 );

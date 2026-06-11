@@ -8,12 +8,10 @@ pub mod blink;
 pub mod element;
 mod input;
 mod listener;
-pub mod marks;
 mod pty_session;
 mod search;
 mod service_detector;
 pub mod shell;
-mod tee_pty;
 pub mod types;
 pub mod view;
 

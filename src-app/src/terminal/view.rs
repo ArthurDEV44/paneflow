@@ -151,10 +151,6 @@ pub struct TerminalView {
     pending_system_bell: bool,
     /// Last hovered cell position for URL regex detection (US-015).
     pub(super) hovered_cell: Option<AlacPoint>,
-    /// EP-003 US-008: gutter exit-dot currently under the pointer — drives
-    /// the `exit <code>` tooltip painted by the element. Set by the
-    /// mouse-move gutter hit-test, cleared when the pointer leaves the row.
-    pub(super) hovered_mark: Option<crate::terminal::element::HoveredMark>,
     /// Active hyperlink under Ctrl+hover — drives underline rendering and Ctrl+click.
     pub(super) ctrl_hovered_link: Option<HyperlinkZone>,
     /// US-012: the link under the cursor at modifier+mouse-down. The open is
@@ -474,18 +470,22 @@ impl TerminalView {
 
                             if view.terminal.dirty {
                                 view.terminal.dirty = false;
-                                view.terminal.output_scan_ticks =
-                                    view.terminal.output_scan_ticks.wrapping_add(1);
-                                // Scan every Nth dirty tick. A service that
-                                // boots between ticks is picked up at the
-                                // next multiple instead of being missed by
-                                // the previous "1..=10 then 50+" heuristic.
-                                const SCAN_INTERVAL: u32 = 10;
+                                // Leading edge + throttle (replaces the old
+                                // every-10th-tick modulo): the FIRST dirty
+                                // batch after a quiet spell fires immediately
+                                // — a dev server printing its banner in fewer
+                                // than 10 batches then going silent used to
+                                // be missed entirely — and sustained output
+                                // re-fires at most every 300ms.
+                                const BURST_THROTTLE: std::time::Duration =
+                                    std::time::Duration::from_millis(300);
+                                let now = std::time::Instant::now();
                                 if view
                                     .terminal
-                                    .output_scan_ticks
-                                    .is_multiple_of(SCAN_INTERVAL)
+                                    .last_activity_burst
+                                    .is_none_or(|t| now.duration_since(t) >= BURST_THROTTLE)
                                 {
+                                    view.terminal.last_activity_burst = Some(now);
                                     for service in view.terminal.scan_output() {
                                         cx.emit(TerminalEvent::ServiceDetected(service));
                                     }
@@ -597,7 +597,6 @@ impl TerminalView {
             bell_flash_until: None,
             pending_system_bell: false,
             hovered_cell: None,
-            hovered_mark: None,
             ctrl_hovered_link: None,
             mouse_down_link: None,
             ime_marked_text: String::new(),
@@ -1229,15 +1228,7 @@ impl Render for TerminalView {
             cx.entity().clone(),
             self.needs_initial_clear.clone(),
             self.scrollbar_metrics.clone(),
-            // EP-003 US-008: snapshot of the `133;D` marks (abs line + exit
-            // code) — the element projects them onto this frame's viewport.
-            self.terminal
-                .marks
-                .iter()
-                .filter_map(|m| m.exit_code.map(|c| (m.abs_line, c)))
-                .collect(),
             search_rail_lines,
-            self.hovered_mark,
             #[cfg(debug_assertions)]
             keystroke_at,
         );
@@ -1327,14 +1318,6 @@ impl Render for TerminalView {
             )
             .on_action(cx.listener(|this, _: &crate::ResetTerminal, _window, cx| {
                 this.reset_terminal(cx);
-            }))
-            // EP-003 US-008: jump-to-prompt across the scrollback. No marks
-            // (no shell integration) → silent no-op.
-            .on_action(cx.listener(|this, _: &crate::JumpPrevPrompt, _window, cx| {
-                this.jump_to_prompt(true, cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::JumpNextPrompt, _window, cx| {
-                this.jump_to_prompt(false, cx);
             }))
             .size_full()
             .child(terminal_element);

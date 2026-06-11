@@ -327,7 +327,9 @@ pub struct TerminalState {
     /// painted on the alternate screen (where TUI agents live).
     pub output_generation: u64,
     /// Counter for throttling output scans — scans every 50th dirty tick.
-    pub(super) output_scan_ticks: u32,
+    /// Leading-edge throttle for ActivityBurst/service-scan emission
+    /// (view.rs): when the last burst was emitted for this terminal.
+    pub(super) last_activity_burst: Option<std::time::Instant>,
     /// EP-002 US-007: throttle counter for the proc-based CWD refresh in
     /// `sync_channels` (the OSC 7 byte-scanner was removed with the 2-thread
     /// reader; the EventLoop owns the read path with no pre-parse hook).
@@ -363,14 +365,6 @@ pub struct TerminalState {
     /// `Send` and matches the crate's interior-mutability idiom; the lock is
     /// uncontended (main thread only).
     pending_input: std::sync::Mutex<Vec<Cow<'static, [u8]>>>,
-    /// EP-003 US-006: raw OSC 133 marks detected by the `TeePty` scanner on
-    /// the PTY reader thread, drained on the GPUI poll loop (where the grid
-    /// lock is available to anchor them). `None` until [`promote`] installs
-    /// the live PTY.
-    marks_rx: Option<std::sync::mpsc::Receiver<crate::terminal::marks::RawMark>>,
-    /// EP-003 US-006: bounded per-terminal command-mark ring (cap 1000,
-    /// drop-oldest). Session-local by design — never persisted.
-    pub marks: crate::terminal::marks::MarkRing,
 }
 
 /// Cap on input buffered during the pre-promotion window. Generous for a
@@ -401,8 +395,6 @@ pub(super) struct SpawnParams {
 pub(super) struct SpawnedPty {
     channel: EventLoopSender,
     child_pid: u32,
-    /// EP-003 US-006: receiving end of the `TeePty` mark channel.
-    marks_rx: std::sync::mpsc::Receiver<crate::terminal::marks::RawMark>,
     #[cfg(target_os = "macos")]
     pty_master_fd: Option<i32>,
 }
@@ -669,14 +661,6 @@ impl TerminalState {
             (dup >= 0).then_some(dup)
         };
 
-        // EP-003 US-006: wrap the PTY in the OSC 133 byte tap AFTER the
-        // child-pid / master-fd captures above (they need the concrete Pty).
-        // The tap is generic over the platform Pty and adds one in-place
-        // byte scan per read on the existing IO thread — no extra thread,
-        // no fork of alacritty_terminal (spike verdict in tee_pty.rs).
-        let (marks_tx, marks_rx) = std::sync::mpsc::channel();
-        let pty = crate::terminal::tee_pty::TeePty::new(pty, marks_tx);
-
         let event_loop = EventLoop::new(
             term, listener, pty, false, // drain_on_exit
             false, // ref_test
@@ -690,7 +674,6 @@ impl TerminalState {
         Ok(SpawnedPty {
             channel,
             child_pid,
-            marks_rx,
             #[cfg(target_os = "macos")]
             pty_master_fd,
         })
@@ -705,7 +688,6 @@ impl TerminalState {
     pub(super) fn promote(&mut self, spawned: SpawnedPty) {
         self.notifier = PtyNotifier(PtySender::pty(spawned.channel));
         self.child_pid = spawned.child_pid;
-        self.marks_rx = Some(spawned.marks_rx);
         #[cfg(target_os = "macos")]
         {
             self.pty_master_fd = spawned.pty_master_fd;
@@ -796,15 +778,13 @@ impl TerminalState {
             title: String::from("Terminal"),
             dirty: true,
             output_generation: 0,
-            output_scan_ticks: 0,
+            last_activity_burst: None,
             cwd_poll_ticks: 0,
             reported_ports: std::collections::HashSet::new(),
             #[cfg(debug_assertions)]
             last_keystroke_at: None,
             background_executor: None,
             pending_input: std::sync::Mutex::new(Vec::new()),
-            marks_rx: None,
-            marks: crate::terminal::marks::MarkRing::default(),
         };
         (state, events_tx)
     }
@@ -834,7 +814,7 @@ impl TerminalState {
         processor.advance(&mut *term, &converted);
     }
 
-    /// Drain CWD and prompt mark channels, then drain any remaining events.
+    /// Drain the CWD channel, then drain any remaining events.
     /// Sets `dirty = true` when PTY output was processed.
     #[allow(dead_code)]
     pub fn sync(&mut self) {
@@ -861,51 +841,6 @@ impl TerminalState {
         {
             self.current_cwd = Some(cwd.to_string_lossy().into_owned());
         }
-        self.drain_marks();
-    }
-
-    /// EP-003 US-006: anchor the raw marks the `TeePty` scanner detected to
-    /// the grid. Runs on the GPUI poll loop right after the batch's events
-    /// were processed, so the parser has consumed the chunk that carried the
-    /// sequence: the cursor sits on the prompt line the mark belongs to
-    /// (`133;A` is immediately followed by the prompt on the same line).
-    /// Absolute line = `history_size + cursor_line` — exact below the
-    /// scrollback limit; once history saturates and drops its oldest lines
-    /// this anchor drifts (documented v1 tolerance, marks age out through
-    /// the ring cap). Cheap no-op when the channel is empty (one try_recv).
-    fn drain_marks(&mut self) {
-        let Some(rx) = &self.marks_rx else { return };
-        let mut next = match rx.try_recv() {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let (history_size, cursor_line, screen_lines) = {
-            let term = self.term.lock_unfair();
-            (
-                term.history_size() as i64,
-                term.grid().cursor.point.line.0 as i64,
-                term.screen_lines() as i64,
-            )
-        };
-        let abs_line = history_size + cursor_line;
-        let at = std::time::Instant::now();
-        loop {
-            self.marks.push(crate::terminal::marks::CommandMark {
-                kind: next.kind,
-                exit_code: next.exit_code,
-                abs_line,
-                at,
-            });
-            match rx.try_recv() {
-                Ok(m) => next = m,
-                Err(_) => break,
-            }
-        }
-        // A cleared/reset grid (history back to 0) leaves marks pointing
-        // below the new bottom — purge anything beyond the live window
-        // (US-006 AC5: never a mark outside the grid).
-        let bottom_abs = history_size + screen_lines.saturating_sub(1);
-        self.marks.retain_at_or_below(bottom_abs);
     }
 
     /// Defensively reset terminal modes that could corrupt the outer terminal.
@@ -1465,6 +1400,15 @@ impl TerminalState {
     /// the list is bounded: a flood of fake announcements can at most fill
     /// 16 slots (oldest kept — the legitimate dev-server line is printed
     /// once at startup, i.e. first).
+    /// Drop announce-dedup state for ports that are no longer LISTEN
+    /// anywhere in the workspace. Without this, `reported_ports` was only
+    /// cleared on ChildExit — a dev server restarted inside a live shell
+    /// (nodemon, plain re-run) re-printed its banner but could never re-fire
+    /// `ServiceDetected`, leaving the sidebar chip stale until the pane died.
+    pub fn retain_reported_ports(&mut self, live: &[u16]) {
+        self.reported_ports.retain(|p| live.contains(p));
+    }
+
     pub fn note_announced_port(&mut self, port: u16) {
         const MAX_ANNOUNCED_PORTS: usize = 16;
         if !self.announced_ports.contains(&port) && self.announced_ports.len() < MAX_ANNOUNCED_PORTS

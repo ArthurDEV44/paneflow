@@ -467,19 +467,6 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         context: "",
         description: "Launch Pad",
     },
-    // EP-003 US-008 (cli-cockpit): prompt-mark navigation.
-    ActionMeta {
-        name: "jump_prev_prompt",
-        factory: || Box::new(crate::JumpPrevPrompt),
-        context: "Terminal",
-        description: "Jump to previous prompt",
-    },
-    ActionMeta {
-        name: "jump_next_prompt",
-        factory: || Box::new(crate::JumpNextPrompt),
-        context: "Terminal",
-        description: "Jump to next prompt",
-    },
 ];
 
 fn find(name: &str) -> Option<&'static ActionMeta> {

@@ -511,10 +511,6 @@ impl TerminalView {
         let prev_hovered_cell = self.hovered_cell;
         self.hovered_cell = Some(hover_point);
 
-        // EP-003 US-008: exit-dot tooltip hit-test (gutter only — no-op for
-        // terminals without marks).
-        self.refresh_hovered_mark(event.position, cx);
-
         // Cmd/Ctrl+hover: detect link under cursor for hyperlink rendering
         // (US-016 + US-019). OSC 8 takes priority over regex URL detection,
         // which takes priority over file-path detection.
@@ -997,96 +993,6 @@ impl TerminalView {
         self.terminal.dirty = true;
         drop(term);
         cx.notify();
-    }
-
-    /// EP-003 US-008: jump the viewport to the previous/next `133;A` prompt
-    /// mark. No marks (no shell integration installed) or no neighbor in
-    /// that direction → silent no-op (the extremities are not an error).
-    /// Reuses the `scroll_to_match` delta math: positive `AlacScroll::Delta`
-    /// scrolls toward the history.
-    pub(super) fn jump_to_prompt(&mut self, backward: bool, cx: &mut Context<Self>) {
-        if self.terminal.marks.is_empty() {
-            return;
-        }
-        let mut term = self.terminal.term.lock();
-        let display_offset = term.grid().display_offset() as i64;
-        let history_size = term.history_size() as i64;
-        // The viewport's top line in the mark ring's absolute coordinates.
-        let top_abs = history_size - display_offset;
-        let target = if backward {
-            self.terminal.marks.prompt_before(top_abs)
-        } else {
-            self.terminal.marks.prompt_after(top_abs)
-        };
-        let Some(target_abs) = target else {
-            return;
-        };
-        // New display offset that puts the prompt line at the viewport top,
-        // clamped into the live history (a drifted anchor can never scroll
-        // out of range).
-        let new_offset = (history_size - target_abs).clamp(0, history_size);
-        let delta = (new_offset - display_offset) as i32;
-        if delta != 0 {
-            term.scroll_display(AlacScroll::Delta(delta));
-            self.terminal.dirty = true;
-        }
-        drop(term);
-        cx.notify();
-    }
-
-    /// EP-003 US-008: hit-test the pointer against the gutter exit-dots.
-    /// Cheap: only locks the grid when the pointer is actually inside the
-    /// 1-cell gutter and at least one mark exists.
-    pub(super) fn refresh_hovered_mark(
-        &mut self,
-        position: gpui::Point<gpui::Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        let new = self.hovered_mark_at(position);
-        if new != self.hovered_mark {
-            self.hovered_mark = new;
-            cx.notify();
-        }
-    }
-
-    fn hovered_mark_at(
-        &self,
-        position: gpui::Point<gpui::Pixels>,
-    ) -> Option<crate::terminal::element::HoveredMark> {
-        if self.terminal.marks.is_empty() {
-            return None;
-        }
-        // `element_origin` is the gutter-adjusted grid origin — the gutter
-        // spans one cell to its LEFT.
-        let origin = *self
-            .element_origin
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let gutter_left = origin.x - self.cell_width;
-        if position.x < gutter_left || position.x >= origin.x || position.y < origin.y {
-            return None;
-        }
-        let row = ((position.y - origin.y) / self.line_height).floor() as i64;
-        let (history_size, display_offset) = {
-            let term = self.terminal.term.lock_unfair();
-            (
-                term.history_size() as i64,
-                term.grid().display_offset() as i64,
-            )
-        };
-        // Latest mark wins on a shared row (mirrors paint order).
-        let mut found = None;
-        for m in self.terminal.marks.iter() {
-            let Some(code) = m.exit_code else { continue };
-            if m.abs_line - history_size + display_offset == row {
-                found = Some(crate::terminal::element::HoveredMark {
-                    row: row as i32,
-                    exit_code: code,
-                    at: m.at,
-                });
-            }
-        }
-        found
     }
 }
 
