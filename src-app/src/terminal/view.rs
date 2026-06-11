@@ -111,7 +111,12 @@ pub struct TerminalView {
     pub(super) scroll_remainder: f32,
     /// Whether the search overlay is visible
     pub(super) search_active: bool,
-    /// Current search query string
+    /// Real single-line input backing the find bar — the same `TextInput`
+    /// widget the Agents sidebar uses. Focused on open so keystrokes land in
+    /// the field (cursor, selection, IME, clipboard) instead of the PTY.
+    pub(super) search_input: gpui::Entity<crate::widgets::text_input::TextInput>,
+    /// Current search query string (kept in sync with `search_input` via
+    /// `cx.observe`; the source of truth for match scanning + the counter).
     pub(super) search_query: String,
     /// Cached search matches (grid coordinates)
     pub(super) search_matches: Vec<crate::search::SearchMatch>,
@@ -280,6 +285,15 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
+
+        // Find bar input — same widget as the Agents sidebar filter. Observe it
+        // so every keystroke re-runs the in-buffer search (no submit needed).
+        let search_input =
+            cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Search", cx));
+        cx.observe(&search_input, |this, _input, cx| {
+            this.on_search_input_changed(cx);
+        })
+        .detach();
 
         // Event batch coalescing (Zed pattern):
         // Phase 1: Block until first event (zero CPU when idle)
@@ -568,6 +582,7 @@ impl TerminalView {
             scrollbar_drag: None,
             scroll_remainder: 0.0,
             search_active: false,
+            search_input,
             search_query: String::new(),
             search_matches: Vec::new(),
             search_current: 0,
@@ -983,127 +998,192 @@ impl TerminalView {
     /// Build the top-right search overlay bar. Caller is responsible for
     /// adding it to the main element tree (and for gating on `search_active`).
     fn render_search_overlay(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let search_query = self.search_query.clone();
-        let search_regex_mode = self.search_regex_mode;
-        let search_has_regex_error = self.search_regex_error.is_some();
+        use gpui::{FontWeight, Hsla, MouseButton, hsla, px, svg};
+
+        // Themed chrome (One Dark / PaneFlow Light), not hardcoded Catppuccin —
+        // keeps the find bar consistent with the fleet-search card and sidebar.
+        let ui = crate::theme::ui_colors();
+
+        let regex_active = self.search_regex_mode;
+        let has_regex_error = self.search_regex_error.is_some();
         let match_count = self.search_matches.len();
-        let current_match = if match_count > 0 {
+        let has_matches = match_count > 0;
+        let current_match = if has_matches {
             self.search_current + 1
         } else {
             0
         };
 
-        let status_text = if search_has_regex_error {
-            "Invalid regex".to_string()
-        } else if search_query.is_empty() {
-            String::new()
-        } else if match_count == 0 {
-            "0 results".to_string()
+        let (status_text, status_color) = if has_regex_error {
+            ("Invalid regex".to_string(), ui.agent_error)
+        } else if self.search_query.is_empty() {
+            (String::new(), ui.muted)
+        } else if !has_matches {
+            ("No results".to_string(), ui.muted)
         } else {
-            format!("{current_match}/{match_count}")
+            (format!("{current_match}/{match_count}"), ui.muted)
         };
 
-        // Regex toggle button: highlighted when active
+        // Real input entity (cursor, selection, IME, clipboard) — the same
+        // widget the Agents sidebar uses, focused on open. The caret and
+        // "Search" placeholder are painted by the widget itself; we only own
+        // the wrapper box (width + inherited text size/colour).
+        let field = div()
+            .id("search-field")
+            .flex()
+            .items_center()
+            .min_w(px(160.))
+            .max_w(px(320.))
+            .text_size(px(13.))
+            .text_color(ui.text)
+            .child(self.search_input.clone());
+
+        // Regex toggle (.*): active state reads as a pressed pill with an accent
+        // hairline — a full accent fill would drop below 4.5:1 on the light theme.
         let regex_toggle = div()
             .id("search-regex-toggle")
-            .px(gpui::px(4.0))
-            .py(gpui::px(2.0))
-            .rounded_sm()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(22.))
+            .rounded(px(5.))
             .cursor_pointer()
-            .text_size(gpui::px(12.0))
-            .when(search_regex_mode, |el| {
-                el.bg(gpui::rgb(0x89b4fa)).text_color(gpui::rgb(0x1e1e2e))
+            .border_1()
+            .text_size(px(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .when(regex_active, |el| {
+                el.bg(ui.subtle).border_color(ui.accent).text_color(ui.text)
             })
-            .when(!search_regex_mode, |el| {
-                el.bg(gpui::rgb(0x45475a)).text_color(gpui::rgb(0x6c7086))
+            .when(!regex_active, |el| {
+                el.border_color(hsla(0., 0., 0., 0.))
+                    .text_color(ui.muted)
+                    .hover(|s| {
+                        let ui = crate::theme::ui_colors();
+                        s.bg(ui.subtle)
+                    })
             })
             .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, _window, cx| {
-                    this.toggle_search_regex(cx);
-                }),
+                MouseButton::Left,
+                cx.listener(|this, _, _window, cx| this.toggle_search_regex(cx)),
             )
             .child(".*");
 
-        // EP-006 US-018: fan the query out to every pane of every workspace.
-        // The clickable counterpart of the remappable `toggle_fleet_search`
-        // action (alt-f in the Search context).
+        // EP-006 US-018: fan the query out to every pane of every workspace. The
+        // clickable counterpart of the remappable `toggle_fleet_search` action.
         let fleet_toggle = div()
             .id("search-fleet-toggle")
-            .px(gpui::px(4.0))
-            .py(gpui::px(2.0))
-            .rounded_sm()
-            .cursor_pointer()
-            .text_size(gpui::px(12.0))
-            .bg(gpui::rgb(0x45475a))
-            .text_color(gpui::rgb(0x6c7086))
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, _window, cx| {
-                    this.request_fleet_search(cx);
-                }),
-            )
-            .child("Fleet");
-
-        // Query display — red border on regex error
-        let query_border_color = if search_has_regex_error {
-            gpui::rgb(0xf38ba8) // Catppuccin red
-        } else {
-            gpui::rgb(0x45475a) // Subtle border
-        };
-
-        let query_display = div()
-            .id("search-query-display")
-            .min_w(gpui::px(120.0))
-            .px_2()
-            .py(gpui::px(2.0))
-            .rounded_sm()
-            .bg(gpui::rgb(0x1e1e2e))
-            .border_1()
-            .border_color(query_border_color)
-            .text_color(gpui::rgb(0xcdd6f4))
-            .text_size(gpui::px(13.0))
-            .child(if search_query.is_empty() {
-                "...".to_string()
-            } else {
-                search_query
-            });
-
-        div()
-            .id("search-overlay")
-            .absolute()
-            .top_1()
-            .right_1()
             .flex()
             .flex_row()
             .items_center()
-            .gap_2()
-            .px_3()
-            .py_1()
-            .rounded_md()
-            .bg(gpui::rgb(0x313244))
-            .border_1()
-            .border_color(gpui::rgb(0x585b70))
+            .gap(px(4.))
+            .h(px(22.))
+            .px(px(7.))
+            .rounded(px(5.))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .text_color(ui.muted)
+            .hover(|s| {
+                let ui = crate::theme::ui_colors();
+                s.bg(ui.subtle)
+            })
             .child(
-                div()
-                    .id("search-icon")
-                    .text_color(gpui::rgb(0x6c7086))
-                    .text_size(gpui::px(13.0))
-                    .child("Find:"),
+                svg()
+                    .size(px(13.))
+                    .flex_none()
+                    .path("icons/world.svg")
+                    .text_color(ui.muted),
             )
+            .child("Fleet")
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _window, cx| this.request_fleet_search(cx)),
+            );
+
+        // Icon-only square button (chevrons + close): hover surface, dimmable.
+        let icon_btn = |id: &'static str, icon: &'static str, color: Hsla| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(22.))
+                .rounded(px(5.))
+                .cursor_pointer()
+                .hover(|s| {
+                    let ui = crate::theme::ui_colors();
+                    s.bg(ui.subtle)
+                })
+                .child(svg().size(px(14.)).flex_none().path(icon).text_color(color))
+        };
+        let nav_color = if has_matches {
+            ui.muted
+        } else {
+            ui.muted.opacity(0.35)
+        };
+
+        let prev_btn = icon_btn("search-prev", "icons/chevron_up.svg", nav_color).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _window, cx| this.search_prev(cx)),
+        );
+        let next_btn = icon_btn("search-next", "icons/chevron_down.svg", nav_color).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _window, cx| this.search_next(cx)),
+        );
+        let close_btn = icon_btn("search-close", "icons/close.svg", ui.muted).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, window, cx| {
+                this.dismiss_search(cx);
+                this.focus_handle.clone().focus(window, cx);
+            }),
+        );
+
+        div()
+            .id("search-overlay")
+            .occlude()
+            .absolute()
+            .top_2()
+            .right_2()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .px(px(8.))
+            .py(px(6.))
+            .rounded(px(8.))
+            .bg(ui.overlay)
+            .border_1()
+            .border_color(ui.border)
+            .shadow_lg()
+            .child(
+                svg()
+                    .size(px(15.))
+                    .flex_none()
+                    .path("icons/tool_search.svg")
+                    .text_color(ui.muted),
+            )
+            .child(field)
             .child(regex_toggle)
             .child(fleet_toggle)
-            .child(query_display)
+            .when(!status_text.is_empty(), |el| {
+                el.child(
+                    div()
+                        .id("search-status")
+                        .flex_none()
+                        .text_size(px(12.))
+                        .text_color(status_color)
+                        .child(status_text.clone()),
+                )
+            })
+            .child(div().flex_none().w(px(1.)).h(px(16.)).bg(ui.border))
             .child(
                 div()
-                    .id("search-status")
-                    .text_color(if search_has_regex_error {
-                        gpui::rgb(0xf38ba8)
-                    } else {
-                        gpui::rgb(0xa6adc8)
-                    })
-                    .text_size(gpui::px(12.0))
-                    .child(status_text),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(prev_btn)
+                    .child(next_btn)
+                    .child(close_btn),
             )
             .into_any_element()
     }
@@ -1270,11 +1350,12 @@ impl Render for TerminalView {
             .on_action(cx.listener(|this, _: &crate::ScrollPageDown, window, cx| {
                 this.handle_scroll_page_down(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &crate::ToggleSearch, _window, cx| {
-                this.toggle_search(cx);
+            .on_action(cx.listener(|this, _: &crate::ToggleSearch, window, cx| {
+                this.toggle_search(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &crate::DismissSearch, _window, cx| {
+            .on_action(cx.listener(|this, _: &crate::DismissSearch, window, cx| {
                 this.dismiss_search(cx);
+                this.focus_handle.clone().focus(window, cx);
             }))
             .on_action(
                 cx.listener(|this, _: &crate::ToggleSearchRegex, _window, cx| {

@@ -89,29 +89,12 @@ impl TerminalView {
             return;
         }
 
-        // When search overlay is active, redirect typed characters to search query
+        // The find bar owns keyboard input via its focused `TextInput` entity
+        // (typing, IME, selection, clipboard); search-scoped action bindings
+        // (SearchNext / SearchPrev / DismissSearch / regex / fleet) are
+        // dispatched by GPUI before this handler. The terminal must not also
+        // forward these keys to the PTY, so bail out while the overlay is open.
         if self.search_active {
-            let keystroke = &event.keystroke;
-            if keystroke.key == "backspace" && !keystroke.modifiers.control {
-                self.search_query.pop();
-                self.run_search();
-                cx.notify();
-                return;
-            }
-            if let Some(key_char) = &keystroke.key_char
-                && !keystroke.modifiers.control
-                && !keystroke.modifiers.alt
-                && self.search_query.len() < crate::search::MAX_QUERY_LEN
-            {
-                self.search_query.push_str(key_char);
-                self.run_search();
-                cx.notify();
-                return;
-            }
-            // Consume all other keys while search is active — action bindings
-            // (ToggleSearch, DismissSearch, SearchNext, SearchPrev) are dispatched
-            // by GPUI before on_key_down, so they still fire. Everything else
-            // (F-keys, Alt combos, etc.) is intentionally suppressed.
             return;
         }
 
