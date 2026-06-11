@@ -132,6 +132,13 @@ pub struct AgentSession {
     /// `child_pid` (US-017). `None` when unresolved — the session then only
     /// exists at workspace level (no per-pane glow), never a wrong pane.
     pub surface_id: Option<u64>,
+    /// EP-002 US-004 (cli-cockpit): when this session ENTERED
+    /// `WaitingForInput` — drives the Attention Queue's wait column and its
+    /// longest-waiting-first order. Stamped by `upsert_session_state` via
+    /// [`next_waiting_since`]; cleared on any non-waiting transition.
+    /// `Instant` (monotonic) so a wall-clock jump never shows a negative or
+    /// absurd wait.
+    pub waiting_since: Option<std::time::Instant>,
     /// EP-004 US-011 (cli-cockpit): when the last `ai.*` lifecycle event
     /// for this session arrived. Stamped by `upsert_session_state` on every
     /// hook frame (prompt_submit / tool_use / notification / stop / exit);
@@ -149,8 +156,27 @@ impl AgentSession {
             active_tool_name: None,
             message: None,
             surface_id: None,
+            waiting_since: None,
             last_activity: std::time::Instant::now(),
         }
+    }
+}
+
+/// EP-002 US-004: next value of `waiting_since` for a state transition.
+/// Stamped on ENTERING `WaitingForInput`; a re-notification while already
+/// waiting keeps the original stamp so the queue shows the true wait;
+/// any other state clears it. Pure — unit-tested.
+pub fn next_waiting_since(
+    prev: Option<(&AgentState, Option<std::time::Instant>)>,
+    new_state: &AgentState,
+    now: std::time::Instant,
+) -> Option<std::time::Instant> {
+    match new_state {
+        AgentState::WaitingForInput => match prev {
+            Some((AgentState::WaitingForInput, since @ Some(_))) => since,
+            _ => Some(now),
+        },
+        _ => None,
     }
 }
 
@@ -234,6 +260,51 @@ mod tests {
 
     fn s(tool: AiTool, state: AgentState) -> AgentSession {
         AgentSession::new(tool, state)
+    }
+
+    #[test]
+    fn waiting_since_stamps_on_entering_waiting_only() {
+        use AgentState::*;
+        let now = std::time::Instant::now();
+        // Fresh session entering WaitingForInput → stamped.
+        assert_eq!(next_waiting_since(None, &WaitingForInput, now), Some(now));
+        // Thinking → WaitingForInput → stamped.
+        assert_eq!(
+            next_waiting_since(Some((&Thinking, None)), &WaitingForInput, now),
+            Some(now)
+        );
+        // Any non-waiting target clears.
+        assert_eq!(
+            next_waiting_since(Some((&WaitingForInput, Some(now))), &Thinking, now),
+            None
+        );
+        assert_eq!(
+            next_waiting_since(Some((&WaitingForInput, Some(now))), &Finished, now),
+            None
+        );
+    }
+
+    #[test]
+    fn waiting_since_survives_renotification() {
+        use AgentState::*;
+        let first = std::time::Instant::now();
+        let later = first + std::time::Duration::from_secs(90);
+        // A second ai.notification while already waiting keeps the ORIGINAL
+        // stamp — the queue must show the true wait, not reset on every
+        // notification frame.
+        assert_eq!(
+            next_waiting_since(
+                Some((&WaitingForInput, Some(first))),
+                &WaitingForInput,
+                later
+            ),
+            Some(first)
+        );
+        // Waiting state but a missing stamp (legacy row) self-heals.
+        assert_eq!(
+            next_waiting_since(Some((&WaitingForInput, None)), &WaitingForInput, later),
+            Some(later)
+        );
     }
 
     #[test]

@@ -119,6 +119,13 @@ actions!(
         OpenComposer,
         ToggleBroadcastMember,
         OpenBroadcastGroups,
+        // EP-002 (prd-cli-cockpit-ergonomics-2026-Q3.md) — triage & launch.
+        // `OpenAttentionQueue` (US-004) lists every WaitingForInput session
+        // cross-workspace with its question + wait time; `OpenLaunchPad`
+        // (US-005) is the worktree + split + agent + prefill one-gesture
+        // modal.
+        OpenAttentionQueue,
+        OpenLaunchPad,
         // EP-003 US-008 (prd-cli-cockpit-ergonomics-2026-Q3.md) — jump the
         // viewport to the previous/next OSC 133 prompt mark. Terminal
         // context; silent no-op without shell-integration marks.

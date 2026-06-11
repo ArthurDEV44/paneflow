@@ -718,6 +718,11 @@ impl PaneFlowApp {
                         && session.last_activity.elapsed() >= stall_threshold
                     {
                         session.state = ai_types::AgentState::Stalled;
+                        // This write bypasses `upsert_session_state`, so hold
+                        // its invariant by hand: only WaitingForInput carries
+                        // a wait stamp. A Thinking row is already None, but
+                        // clear defensively rather than rely on that.
+                        session.waiting_since = None;
                         stalled_notifs
                             .push((ws.title.clone(), session.last_activity.elapsed().as_secs()));
                         changed = true;
