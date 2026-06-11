@@ -130,6 +130,16 @@ pub fn register_keybindings(cx: &mut App) {
         // US-019: Escape dismisses the Composer's popups via the
         // registered `on_escape` callback (no-op when none is set).
         KeyBinding::new("escape", TaEscape, Some("PaneflowTextArea")),
+        // EP-001 (cli-cockpit US-001): the Composer's explicit
+        // deliver-then-submit gesture. `secondary` resolves to Cmd on macOS
+        // and Ctrl elsewhere. Consumers that install no
+        // `on_submit_immediate` callback (inline renames) are unaffected —
+        // the action no-ops for them.
+        KeyBinding::new(
+            "secondary-enter",
+            TaSubmitImmediate,
+            Some("PaneflowTextArea"),
+        ),
     ]);
     #[cfg(target_os = "macos")]
     cx.bind_keys([

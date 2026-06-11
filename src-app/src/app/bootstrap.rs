@@ -777,6 +777,15 @@ impl PaneFlowApp {
             theme_picker_focus: cx.focus_handle(),
             theme_picker_scroll: gpui::ScrollHandle::new(),
             theme_picker_drag: None,
+            // EP-001 (cli-cockpit): Composer closed, no groups, no buffers.
+            composer: None,
+            broadcast: crate::app::broadcast::BroadcastState::default(),
+            broadcast_picker_open: false,
+            broadcast_picker_query: String::new(),
+            broadcast_picker_selected: 0,
+            broadcast_picker_renaming: None,
+            broadcast_picker_error: None,
+            broadcast_picker_focus: cx.focus_handle(),
             self_update: crate::SelfUpdateState {
                 pending_update,
                 update_status: None,

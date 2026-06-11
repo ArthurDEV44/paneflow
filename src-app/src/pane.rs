@@ -19,8 +19,8 @@ use std::time::Duration;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClickEvent, Context, DragMoveEvent, Entity,
     EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, Pixels, Point, Render, SharedString, Size, Styled, Window, div, ease_out_quint,
-    img, prelude::*, px, rgb, svg,
+    MouseDownEvent, Pixels, Point, Render, SharedString, Size, Styled, Window, deferred, div,
+    ease_out_quint, img, prelude::*, px, rgb, svg,
 };
 use paneflow_config::schema::ButtonCommand;
 
@@ -295,6 +295,22 @@ pub struct Pane {
     /// Last observed content size (captured in the `on_drag_move` handler), used
     /// to convert a [`DropEdge`] into an absolute-pixel rectangle for the glide.
     overlay_pane_size: Size<Pixels>,
+    /// EP-001 US-001/US-003 (cli-cockpit): the Composer overlay pushed by
+    /// `PaneFlowApp::refresh_composer_slot` when this pane is the Composer
+    /// target. `None` on every other pane. The pane renders it bottom-anchored
+    /// and routes gestures back through the slot's closures — it never reads
+    /// app state.
+    composer_slot: Option<crate::app::composer::ComposerSlot>,
+    /// EP-001 US-003: terminals of this pane holding a queued prompt
+    /// (broadcast/Composer buffer awaiting the agent's next idle transition).
+    /// Pushed by `PaneFlowApp::sync_pending_chips`; drives the "1 queued" tab
+    /// chip.
+    pending_prefill: std::collections::HashSet<gpui::EntityId>,
+    /// EP-001 US-002: broadcast-group stripe color index (`UiColors::group_*`)
+    /// when this pane is a group member. Pushed by
+    /// `PaneFlowApp::sync_broadcast_stripes`. The stripe is a DISTINCT element
+    /// from the attention border below — the pane border slot stays the glow's.
+    broadcast_stripe: Option<usize>,
 }
 
 impl EventEmitter<PaneEvent> for Pane {}
@@ -324,6 +340,9 @@ impl Pane {
             overlay_current: Rc::new(Cell::new((0.0, 0.0, 0.0, 0.0))),
             overlay_seq: 0,
             overlay_pane_size: Size::default(),
+            composer_slot: None,
+            pending_prefill: std::collections::HashSet::new(),
+            broadcast_stripe: None,
         }
     }
 
@@ -357,6 +376,9 @@ impl Pane {
             overlay_current: Rc::new(Cell::new((0.0, 0.0, 0.0, 0.0))),
             overlay_seq: 0,
             overlay_pane_size: Size::default(),
+            composer_slot: None,
+            pending_prefill: std::collections::HashSet::new(),
+            broadcast_stripe: None,
         }
     }
 
@@ -389,6 +411,189 @@ impl Pane {
             self.errored = errored;
             cx.notify();
         }
+    }
+
+    /// EP-001 US-001 (cli-cockpit): install/clear the Composer overlay on
+    /// this pane. Always notifies — the slot carries live `busy`/group data
+    /// recomputed by the pusher, and the closure fields defeat `PartialEq`.
+    pub fn set_composer_slot(
+        &mut self,
+        slot: Option<crate::app::composer::ComposerSlot>,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer_slot = slot;
+        cx.notify();
+    }
+
+    /// EP-001 US-003: replace the queued-prompt indicator set. Idempotent
+    /// push from `PaneFlowApp::sync_pending_chips` — repaints only on change.
+    pub fn set_pending_prefill(
+        &mut self,
+        pending: std::collections::HashSet<gpui::EntityId>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_prefill != pending {
+            self.pending_prefill = pending;
+            cx.notify();
+        }
+    }
+
+    /// EP-001 US-002: set/clear the broadcast-group stripe color slot.
+    /// Idempotent push from `PaneFlowApp::sync_broadcast_stripes`.
+    pub fn set_broadcast_stripe(&mut self, color_idx: Option<usize>, cx: &mut Context<Self>) {
+        if self.broadcast_stripe != color_idx {
+            self.broadcast_stripe = color_idx;
+            cx.notify();
+        }
+    }
+
+    /// EP-001 US-001/US-003: the Composer overlay — a bottom-anchored prompt
+    /// panel over a click-swallowing backdrop, so the terminal underneath
+    /// receives neither keystrokes (the TextArea holds focus) nor clicks
+    /// while the user is composing (theme-picker overlay model).
+    fn render_composer_overlay(&self, _cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let slot = self.composer_slot.clone()?;
+        let ui = tab_colors();
+
+        let mut header = div().flex().flex_row().items_center().gap(px(6.)).child(
+            div()
+                .text_size(px(11.))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(ui.text)
+                .child("Composer"),
+        );
+
+        // Broadcast toggle: shows the active group when armed, plain label
+        // otherwise. With no group defined the click routes to a toast that
+        // points at the picker (handled app-side).
+        let toggle = slot.toggle_broadcast.clone();
+        let broadcast_label: SharedString = if slot.broadcast {
+            match &slot.group_label {
+                Some(label) => format!("Broadcast: {label}").into(),
+                None => "Broadcast".into(),
+            }
+        } else {
+            "Single pane".into()
+        };
+        header = header.child(
+            div()
+                .id("composer-broadcast-toggle")
+                .px(px(6.))
+                .py(px(2.))
+                .rounded(px(4.))
+                .text_size(px(10.))
+                .cursor_pointer()
+                .when(slot.broadcast, |d| {
+                    d.bg(ui.accent.opacity(0.15)).text_color(ui.accent)
+                })
+                .when(!slot.broadcast, |d| {
+                    d.bg(ui.subtle)
+                        .text_color(ui.muted)
+                        .hover(|s| s.text_color(ui.text))
+                })
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    toggle(cx);
+                })
+                .child(broadcast_label),
+        );
+
+        if slot.busy {
+            // US-001 AC5 chip (US-003 unified semantics): the target's agent
+            // is generating — validation queues instead of delivering.
+            header = header.child(
+                div()
+                    .px(px(6.))
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .text_size(px(10.))
+                    .bg(ui.vc_modified.opacity(0.15))
+                    .text_color(ui.vc_modified)
+                    .child("agent generating — Enter queues"),
+            );
+        }
+
+        if slot.pending_count > 0 {
+            let cancel = slot.cancel_pending.clone();
+            header = header.child(
+                div()
+                    .id("composer-cancel-pending")
+                    .px(px(6.))
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .text_size(px(10.))
+                    .bg(ui.subtle)
+                    .text_color(ui.muted)
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(ui.vc_deleted))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        cancel(cx);
+                    })
+                    .child(format!("{} queued · cancel", slot.pending_count)),
+            );
+        }
+
+        // US-001 AC4: the explicit deliver-then-submit gesture is documented
+        // right on the surface; US-003 AC7: it is unavailable in broadcast.
+        let submit_chord = if cfg!(target_os = "macos") {
+            "⌘+Enter"
+        } else {
+            "Ctrl+Enter"
+        };
+        let hint: SharedString = if slot.broadcast {
+            "Enter pre-fills every ready member — broadcast never submits".into()
+        } else {
+            format!("Enter pre-fills without submitting · {submit_chord} pre-fills and submits")
+                .into()
+        };
+
+        let dismiss_backdrop = slot.dismiss.clone();
+        let dismiss_out = slot.dismiss.clone();
+        Some(
+            deferred(
+                div()
+                    .id("composer-backdrop")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .justify_end()
+                    .bg(gpui::hsla(0., 0., 0., 0.25))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        cx.stop_propagation();
+                        dismiss_backdrop(cx);
+                    })
+                    .child(
+                        div()
+                            .id("composer-panel")
+                            .occlude()
+                            .m(px(8.))
+                            .p(px(8.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.))
+                            .bg(ui.overlay)
+                            .border_1()
+                            .border_color(ui.border)
+                            .rounded(px(8.))
+                            .shadow_lg()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_mouse_down_out(move |_, _, cx| {
+                                dismiss_out(cx);
+                            })
+                            .child(header)
+                            .child(div().max_h(px(180.)).child(slot.input.clone()))
+                            .child(div().text_size(px(10.)).text_color(ui.muted).child(hint)),
+                    ),
+            )
+            .with_priority(4)
+            .into_any_element(),
+        )
     }
 
     /// US-020 (orchestration-v2): a compact badge on the pane showing the
@@ -1117,6 +1322,29 @@ impl Pane {
             div().into_any_element()
         };
 
+        // EP-001 US-003 (cli-cockpit): queued-prompt chip — tab-anatomy slot
+        // ranked just below the state dot. Zero-size placeholder otherwise so
+        // tab layout/truncation is unaffected (same convention as bell_dot).
+        let has_pending = self
+            .tabs
+            .get(i)
+            .and_then(|t| t.as_terminal())
+            .is_some_and(|t| self.pending_prefill.contains(&t.entity_id()));
+        let pending_chip = if has_pending {
+            div()
+                .flex_none()
+                .ml_1()
+                .px(px(4.))
+                .rounded(px(3.))
+                .bg(ui.subtle)
+                .text_size(px(9.))
+                .text_color(ui.muted)
+                .child("1 queued")
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+
         let mut tab = div()
             .id(SharedString::from(format!("pane-tab-{i}")))
             .group(group_name.clone())
@@ -1341,6 +1569,7 @@ impl Pane {
                 cx.stop_propagation();
             }))
             .child(bell_dot)
+            .child(pending_chip)
             .child(leading_icon)
             .child(self.render_tab_title(i, cx))
             .child(close_btn);
@@ -1771,6 +2000,7 @@ impl Render for Pane {
         let has_attention = !self.attention.is_empty();
         let attention_color = tab_colors().vc_conflict;
         let peek = self.render_peek_overlay(cx);
+        let composer = self.render_composer_overlay(cx);
         div()
             .flex()
             .flex_col()
@@ -1785,6 +2015,22 @@ impl Render for Pane {
             .child(self.render_tab_bar(is_active, window, cx))
             .child(content)
             .children(peek)
+            // EP-001 US-002: broadcast-group stripe — a DISTINCT left-edge
+            // element; the pane border slot above stays the attention glow's
+            // (Files NOT to Modify). Absolutely positioned so it never
+            // perturbs the tab/content flex chain.
+            .when_some(self.broadcast_stripe, |d, idx| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(3.))
+                        .bg(tab_colors().group_color(idx)),
+                )
+            })
+            .children(composer)
     }
 }
 

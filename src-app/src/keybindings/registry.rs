@@ -409,6 +409,26 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         context: "DiffView",
         description: "Copy hunk as diff",
     },
+    // EP-001 (prd-cli-cockpit-ergonomics-2026-Q3.md): Cli-cockpit steering.
+    // Global context — the handlers gate on `AppMode::Cli` themselves.
+    ActionMeta {
+        name: "open_composer",
+        factory: || Box::new(crate::OpenComposer),
+        context: "",
+        description: "Open prompt composer",
+    },
+    ActionMeta {
+        name: "toggle_broadcast_member",
+        factory: || Box::new(crate::ToggleBroadcastMember),
+        context: "",
+        description: "Toggle pane in broadcast group",
+    },
+    ActionMeta {
+        name: "open_broadcast_groups",
+        factory: || Box::new(crate::OpenBroadcastGroups),
+        context: "",
+        description: "Broadcast groups",
+    },
     // EP-003 US-008 (cli-cockpit): prompt-mark navigation.
     ActionMeta {
         name: "jump_prev_prompt",

@@ -111,6 +111,14 @@ actions!(
         // button never calls agents methods directly — it dispatches this
         // typed action, mirroring the update pill's `StartSelfUpdate`.
         OpenAgentsThreadMenu,
+        // EP-001 (prd-cli-cockpit-ergonomics-2026-Q3.md) — Cli-cockpit
+        // steering. `OpenComposer` (US-001) anchors the multi-line prompt
+        // Composer to the focused pane; `ToggleBroadcastMember` and
+        // `OpenBroadcastGroups` (US-002) manage the named pane groups the
+        // Composer's broadcast mode targets (US-003).
+        OpenComposer,
+        ToggleBroadcastMember,
+        OpenBroadcastGroups,
         // EP-003 US-008 (prd-cli-cockpit-ergonomics-2026-Q3.md) — jump the
         // viewport to the previous/next OSC 133 prompt mark. Terminal
         // context; silent no-op without shell-integration marks.

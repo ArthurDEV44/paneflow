@@ -482,6 +482,21 @@ struct PaneFlowApp {
     /// Scroll state for the theme picker list (visible scrollbar overlay).
     theme_picker_scroll: gpui::ScrollHandle,
     theme_picker_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
+    /// EP-001 US-001/US-003 (cli-cockpit): live Composer session, `None` =
+    /// closed. The target pane renders the pushed slot snapshot.
+    composer: Option<app::composer::ComposerState>,
+    /// EP-001 US-002/US-003 (cli-cockpit): broadcast groups + active index +
+    /// per-terminal queued-prompt buffers. Volatile by design (v1).
+    broadcast: app::broadcast::BroadcastState,
+    /// Broadcast-group picker modal (theme-picker scaffold): visibility,
+    /// name-input buffer (create/rename), keyboard cursor, in-place rename
+    /// target, inline validation error, and the key-routing focus handle.
+    broadcast_picker_open: bool,
+    broadcast_picker_query: String,
+    broadcast_picker_selected: usize,
+    broadcast_picker_renaming: Option<usize>,
+    broadcast_picker_error: Option<String>,
+    broadcast_picker_focus: FocusHandle,
     /// US-053: self-update flow state (see `SelfUpdateState`).
     self_update: SelfUpdateState,
     /// State of the "Custom Buttons" management modal opened from the
@@ -896,6 +911,10 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_open_agents_view))
             // US-011: title-bar `⋯` overflow menu for the current Agents thread.
             .on_action(cx.listener(Self::handle_open_agents_thread_menu))
+            // EP-001 (cli-cockpit): Composer + broadcast groups.
+            .on_action(cx.listener(Self::handle_open_composer))
+            .on_action(cx.listener(Self::handle_toggle_broadcast_member))
+            .on_action(cx.listener(Self::handle_open_broadcast_groups))
             // EP-001 US-003: Escape cancels an in-flight tab drag. Capture
             // phase runs ancestor-before-descendant, so this pre-empts the
             // focused terminal's own Escape->PTY forwarding — but only while a
@@ -1099,6 +1118,11 @@ impl Render for PaneFlowApp {
 
         if self.show_theme_picker {
             app_content = app_content.child(self.render_theme_picker(cx));
+        }
+
+        // EP-001 US-002 (cli-cockpit): broadcast-group picker modal.
+        if self.broadcast_picker_open {
+            app_content = app_content.child(self.render_broadcast_picker(cx));
         }
 
         if self.custom_buttons_modal.is_some() {
