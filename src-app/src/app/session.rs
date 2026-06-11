@@ -490,6 +490,25 @@ impl PaneFlowApp {
                             view.terminal.custom_name = Some(custom.clone());
                         });
                     }
+                    // EP-005 US-013: restore the identity pill as a dimmed
+                    // "last known" value. Ingress whitelist: `from_tag` is an
+                    // exact match against the known agent tags, so an
+                    // unknown, oversized, or control-char value from a
+                    // hand-edited session.json maps to `None` and no pill is
+                    // rendered (parity with the US-057/EP-010 invariant —
+                    // session.json is local-only but validated anyway). The
+                    // first scan (0/2 s burst on restore activity) then
+                    // confirms or clears it.
+                    if let Some(agent) = surface
+                        .agent
+                        .as_deref()
+                        .and_then(crate::agent_launcher::TerminalAgent::from_tag)
+                    {
+                        t.update(cx, |view, _cx| {
+                            view.terminal.detected_agent = Some(agent);
+                            view.terminal.agent_confirmed = false;
+                        });
+                    }
                     cx.subscribe(&t, Self::handle_terminal_event).detach();
                     if surface.focus == Some(true) {
                         focus_idx = i;

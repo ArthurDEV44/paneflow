@@ -15,7 +15,7 @@ pub mod surface_naming;
 pub mod worktree;
 
 pub use git::{GitDiffStats, detect_branch, find_git_dir, resolve_repo_root};
-pub use ports::{detect_ai_processes, detect_ports};
+pub use ports::{PaneScan, scan_panes};
 
 /// Hard cap on open workspaces (US-054: single source for the bound previously
 /// re-declared as a local `const` at every create/IPC site).
@@ -92,8 +92,10 @@ pub struct Workspace {
     /// Independent of the optional IPC hook handshake -- this is what
     /// the sidebar pastille reads so the "session active" signal works
     /// even when Claude Code is launched without the Paneflow shim.
-    /// Refreshed by `detect_ai_processes` from the same scan path that
-    /// already walks descendants for port detection.
+    /// Refreshed by the per-pane `scan_panes` walk (EP-005 US-012) — the
+    /// union of every pane's detected agents; the recognition vocabulary
+    /// is `TerminalAgent::ALL` binaries (16), unified from the historical
+    /// 3-name `AI_PROCESS_NAMES` list.
     pub detected_agents: std::collections::HashSet<String>,
     /// User-defined tab-bar buttons for this workspace.
     /// Rendered after the 2 built-in defaults (Claude / Codex).

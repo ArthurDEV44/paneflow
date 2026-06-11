@@ -550,6 +550,10 @@ impl PaneFlowApp {
                 self.handle_cwd_change(&terminal, new_cwd, cx);
             }
             terminal::TerminalEvent::ServiceDetected(info) => {
+                // EP-005 US-014: remember which terminal announced this port
+                // so the next scan can cross-check the announcement against
+                // the actual LISTEN owner (collision badge).
+                terminal.update(cx, |view, _| view.terminal.note_announced_port(info.port));
                 if let Some(ws_idx) = self.workspace_idx_for_terminal(&terminal, cx) {
                     let ws = &mut self.workspaces[ws_idx];
                     // Don't overwrite a frontend label with a non-frontend one.
@@ -869,15 +873,19 @@ impl PaneFlowApp {
         .detach();
     }
 
-    /// Execute a single port scan for a workspace. Returns `false` if the scan
-    /// should be aborted (generation superseded or workspace removed).
+    /// Execute a single per-pane scan for a workspace (EP-005 US-012).
+    /// Returns `false` if the scan should be aborted (generation superseded
+    /// or workspace removed).
     fn run_port_scan(&mut self, ws_id: u64, generation: u64, cx: &mut Context<Self>) -> bool {
         let ws = match self.workspaces.iter().find(|ws| ws.id == ws_id) {
             Some(ws) if ws.port_scan_generation == generation => ws,
             _ => return false,
         };
 
-        let pids: Vec<u32> = ws
+        // (terminal entity id, PTY child pid) pairs — the scan partitions
+        // the process walk per terminal subtree instead of flattening the
+        // workspace into one pid pool.
+        let roots: Vec<(u64, u32)> = ws
             .root
             .as_ref()
             .map(|root| {
@@ -886,58 +894,225 @@ impl PaneFlowApp {
                     .flat_map(|pane| {
                         pane.read(cx)
                             .terminals()
-                            .map(|tv| tv.read(cx).terminal.child_pid)
+                            .map(|tv| (tv.entity_id().as_u64(), tv.read(cx).terminal.child_pid))
                             .collect::<Vec<_>>()
                     })
                     .collect()
             })
             .unwrap_or_default();
 
-        if pids.is_empty() {
+        if roots.is_empty() {
             return true;
         }
 
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                // One descendant walk feeds two consumers: the port
-                // table and the AI-process detector. Doing both in the
-                // same `smol::unblock` keeps the walk single-shot per
-                // scan even though the two scans are logically
-                // independent.
-                let pids_for_scan = pids.clone();
-                let (ports, detected_agents) = smol::unblock(move || {
-                    (
-                        crate::workspace::detect_ports(&pids_for_scan),
-                        crate::workspace::detect_ai_processes(&pids_for_scan),
-                    )
+                // One unified subtree walk per tick feeds ports AND agent
+                // identity (the pre-refactor code walked the descendants
+                // once for each — this is the strictly-cheaper single pass,
+                // US-012 cost contract).
+                let scan = smol::unblock(move || {
+                    let agent_binaries: Vec<&'static str> =
+                        crate::agent_launcher::TerminalAgent::ALL
+                            .iter()
+                            .map(|a| a.binary())
+                            .collect();
+                    crate::workspace::scan_panes(&roots, &agent_binaries)
                 })
                 .await;
                 let _ = cx.update(|cx| {
                     this.update(cx, |app: &mut Self, cx: &mut Context<Self>| {
-                        if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.id == ws_id)
-                            && ws.port_scan_generation == generation
-                        {
-                            let mut changed = false;
-                            if ws.active_ports != ports {
-                                ws.active_ports = ports;
-                                ws.service_labels
-                                    .retain(|port, _| ws.active_ports.contains(port));
-                                changed = true;
-                            }
-                            if ws.detected_agents != detected_agents {
-                                ws.detected_agents = detected_agents;
-                                changed = true;
-                            }
-                            if changed {
-                                cx.notify();
-                            }
-                        }
+                        app.apply_pane_scan(ws_id, generation, scan, cx);
                     })
                 });
             },
         )
         .detach();
         true
+    }
+
+    /// Deposit a finished per-pane scan on the main thread (EP-005).
+    ///
+    /// Writes the per-terminal truth (identity-pill agent US-013, port
+    /// badges + collision flags US-014) onto each LIVE terminal, then
+    /// refreshes the workspace aggregates the sidebar reads — fed with the
+    /// union of the per-pane results, identically to the pre-refactor flat
+    /// scan (zero sidebar regression, US-012 AC). A pane closed between
+    /// scan and deposit is naturally dropped: the deposit iterates the
+    /// live tree, so its scan entry never matches.
+    fn apply_pane_scan(
+        &mut self,
+        ws_id: u64,
+        generation: u64,
+        scan: std::collections::HashMap<u64, crate::workspace::PaneScan>,
+        cx: &mut Context<Self>,
+    ) {
+        use std::collections::hash_map::Entry;
+
+        let Some(ws) = self
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.id == ws_id && ws.port_scan_generation == generation)
+        else {
+            return;
+        };
+
+        // Workspace aggregates (sidebar contract).
+        let mut ports: Vec<u16> = scan
+            .values()
+            .flat_map(|s| s.ports.iter().copied())
+            .collect();
+        ports.sort_unstable();
+        ports.dedup();
+        let detected_agents: std::collections::HashSet<String> = scan
+            .values()
+            .flat_map(|s| s.agents.iter().cloned())
+            .collect();
+
+        let mut changed = false;
+        if ws.active_ports != ports {
+            ws.active_ports = ports;
+            ws.service_labels
+                .retain(|port, _| ws.active_ports.contains(port));
+            changed = true;
+        }
+        if ws.detected_agents != detected_agents {
+            ws.detected_agents = detected_agents;
+            changed = true;
+        }
+
+        // Frontend URLs for clickable port badges (US-014, sidebar parity:
+        // only frontend services get a link, backend ports stay textual).
+        let frontend_urls: std::collections::HashMap<u16, String> = ws
+            .service_labels
+            .iter()
+            .filter(|(_, info)| info.is_frontend)
+            .filter_map(|(port, info)| info.url.clone().map(|u| (*port, u)))
+            .collect();
+
+        let leaves: Vec<gpui::Entity<crate::pane::Pane>> = ws
+            .root
+            .as_ref()
+            .map(|root| root.collect_leaves())
+            .unwrap_or_default();
+
+        // US-014 collision pre-pass: port → owning terminal. A port
+        // LISTENed by ≥ 2 subtrees is excluded — that is SO_REUSEPORT-style
+        // sharding (nginx workers, `reusePort` servers), intentional load
+        // balancing, not a collision. Other known false positives (proxies,
+        // port-forwards, re-announcements after a restart) are tolerated in
+        // v1 — the badge is an info-level heuristic, never blocking.
+        let mut owner: std::collections::HashMap<u16, u64> = std::collections::HashMap::new();
+        let mut shared: std::collections::HashSet<u16> = std::collections::HashSet::new();
+        for (tid, s) in &scan {
+            for &p in &s.ports {
+                match owner.entry(p) {
+                    Entry::Occupied(e) => {
+                        if *e.get() != *tid {
+                            shared.insert(p);
+                        }
+                    }
+                    Entry::Vacant(v) => {
+                        v.insert(*tid);
+                    }
+                }
+            }
+        }
+
+        // Owner display names for the conflict tooltip (custom name, else
+        // OSC title, else a stable surface reference). The OSC title is
+        // UNTRUSTED terminal-controlled text and this tooltip is a new sink
+        // for it: strip bidi/zero-width controls (an RLO could visually
+        // reverse the surrounding `port N is owned by "…"` and spoof the
+        // owner) and clamp the length (an unbounded title would otherwise
+        // inflate the tooltip and this per-tick map). The custom name is
+        // user-typed and already bounded, but it rides the same scrub —
+        // one path, no exceptions.
+        let mut display_names: std::collections::HashMap<u64, String> =
+            std::collections::HashMap::new();
+        for pane in &leaves {
+            for tv in pane.read(cx).terminals() {
+                let tid = tv.entity_id().as_u64();
+                let r = tv.read(cx);
+                let name = r
+                    .terminal
+                    .custom_name
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| {
+                        if r.terminal.title.is_empty() {
+                            format!("surface {tid}")
+                        } else {
+                            r.terminal.title.clone()
+                        }
+                    });
+                let name = crate::markdown::strip_bidi_zero_width(name.chars().take(64).collect());
+                display_names.insert(tid, name);
+            }
+        }
+
+        for pane in &leaves {
+            let terminals: Vec<gpui::Entity<crate::terminal::TerminalView>> =
+                pane.read(cx).terminals().cloned().collect();
+            let mut pane_changed = false;
+            for tv in terminals {
+                let tid = tv.entity_id().as_u64();
+                // A terminal spawned after the scan's root collection has no
+                // entry — leave it untouched (the burst's next tick or the
+                // next activity scan covers it).
+                let Some(s) = scan.get(&tid) else {
+                    continue;
+                };
+                let agent = s
+                    .agents
+                    .first()
+                    .and_then(|b| crate::agent_launcher::TerminalAgent::from_binary(b));
+                tv.update(cx, |view, _cx| {
+                    let t = &mut view.terminal;
+                    if t.detected_agent != agent || !t.agent_confirmed {
+                        // The live scan owns the value from here on — this
+                        // both confirms a restored "last known" pill and
+                        // clears a stale one (US-013).
+                        t.detected_agent = agent;
+                        t.agent_confirmed = true;
+                        pane_changed = true;
+                    }
+                    let ports_with_links: Vec<(u16, Option<String>)> = s
+                        .ports
+                        .iter()
+                        .map(|p| (*p, frontend_urls.get(p).cloned()))
+                        .collect();
+                    if t.detected_ports != ports_with_links {
+                        t.detected_ports = ports_with_links;
+                        pane_changed = true;
+                    }
+                    let conflicts: Vec<(u16, String)> = t
+                        .announced_ports
+                        .iter()
+                        .filter_map(|p| match owner.get(p) {
+                            Some(&o) if o != tid && !shared.contains(p) => {
+                                Some((*p, display_names.get(&o).cloned().unwrap_or_default()))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    if t.port_conflicts != conflicts {
+                        t.port_conflicts = conflicts;
+                        pane_changed = true;
+                    }
+                });
+            }
+            if pane_changed {
+                // The tab strip renders from the terminals' state — nudge
+                // the pane so the pill/badges repaint on this frame.
+                pane.update(cx, |_, cx| cx.notify());
+                changed = true;
+            }
+        }
+
+        if changed {
+            cx.notify();
+        }
     }
 
     /// Handle a CWD change from a terminal. Only processes if the terminal is

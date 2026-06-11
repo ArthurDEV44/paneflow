@@ -582,9 +582,11 @@ impl PaneFlowApp {
                             ai_types::AiTool::Claude => &CLAUDE_SPINNER_FRAMES,
                             ai_types::AiTool::Codex => &CODEX_SPINNER_FRAMES,
                         };
+                        // EP-005 US-013: tool colors are UiColors slots now
+                        // (FR-08) — shared with the tab identity pill.
                         let thinking_color = match agg.tool {
-                            ai_types::AiTool::Claude => rgb(0xE89271), // Anthropic salmon
-                            ai_types::AiTool::Codex => rgb(0x5B6CFF),  // Codex indigo
+                            ai_types::AiTool::Claude => ui.agent_claude,
+                            ai_types::AiTool::Codex => ui.agent_codex,
                         };
                         let angle = ws.loader_angle.get();
                         let idx = ((angle / std::f32::consts::TAU) * frames.len() as f32) as usize
@@ -946,8 +948,10 @@ fn capitalize_agent(key: &str) -> &'static str {
 /// Lightweight tooltip body reused by sidebar affordances that just
 /// need to show one short label. Mirrors the `WorkspaceCwdTooltip`
 /// style minus the monospace font so prose reads naturally.
-struct SidebarTooltip {
-    label: SharedString,
+/// `pub(crate)`: the tab identity pill + port badges (EP-005, pane.rs)
+/// reuse it rather than duplicating a fourth one-label tooltip body.
+pub(crate) struct SidebarTooltip {
+    pub(crate) label: SharedString,
 }
 
 impl Render for SidebarTooltip {

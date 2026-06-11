@@ -111,6 +111,11 @@ impl LayoutTree {
                                 None
                             },
                             scrollback,
+                            // EP-005 US-013: persist the detected agent's
+                            // stable tag (confirmed or "last known" alike, so
+                            // the pill survives consecutive restarts even
+                            // when no scan ran in between).
+                            agent: tv_ref.terminal.detected_agent.map(|a| a.tag().to_string()),
                         }
                     })
                     .collect();

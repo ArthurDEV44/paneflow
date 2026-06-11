@@ -93,15 +93,35 @@ impl PaneFlowApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.jump_next_session_where(
+            |s| *s == crate::ai_types::AgentState::WaitingForInput,
+            window,
+            cx,
+        );
+    }
+
+    /// EP-005 US-015: the teleport body of `handle_jump_next_waiting`,
+    /// parametrized by the state predicate so the Fleet Bar's waiting AND
+    /// errored chips reuse the exact same stable order + cursor cycling
+    /// (`next_in_cycle`). The cursor is shared across predicates: switching
+    /// chip kinds simply restarts the cycle at the first match (the cursor
+    /// no longer appears in the new order), which is the existing
+    /// stale-cursor behavior.
+    pub(crate) fn jump_next_session_where(
+        &mut self,
+        state_matches: impl Fn(&crate::ai_types::AgentState) -> bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut order: Vec<(usize, gpui::Entity<crate::pane::Pane>, usize, u64)> = Vec::new();
         for (ws_idx, ws) in self.workspaces.iter().enumerate() {
-            let waiting: std::collections::HashSet<u64> = ws
+            let matching: std::collections::HashSet<u64> = ws
                 .agent_sessions
                 .values()
-                .filter(|s| s.state == crate::ai_types::AgentState::WaitingForInput)
+                .filter(|s| state_matches(&s.state))
                 .filter_map(|s| s.surface_id)
                 .collect();
-            if waiting.is_empty() {
+            if matching.is_empty() {
                 continue;
             }
             if let Some(root) = &ws.root {
@@ -109,7 +129,7 @@ impl PaneFlowApp {
                     for (tab_idx, tab) in pane.read(cx).tabs.iter().enumerate() {
                         if let Some(t) = tab.as_terminal() {
                             let sid = t.entity_id().as_u64();
-                            if waiting.contains(&sid) {
+                            if matching.contains(&sid) {
                                 order.push((ws_idx, pane.clone(), tab_idx, sid));
                             }
                         }

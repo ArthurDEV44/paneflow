@@ -358,6 +358,13 @@ pub struct UiColors {
     /// US-011: `AgentState::Stalled` — sidebar badge (muted grey-blue:
     /// "silent", not "failing").
     pub agent_stalled: Hsla,
+    // EP-005 US-013: per-tool identity colors, promoted from the inline
+    // hexes the sidebar spinner rows used (FR-08). Brand hues, identical
+    // on both themes by design (they tint text on the theme surface).
+    /// Claude rows/spinner (Anthropic salmon).
+    pub agent_claude: Hsla,
+    /// Codex rows/spinner (Codex indigo).
+    pub agent_codex: Hsla,
 }
 
 impl UiColors {
@@ -439,6 +446,8 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
             // neutral overlay grey for a silent session.
             agent_error: h(0xd20f39),
             agent_stalled: h(0x7c7f93),
+            agent_claude: h(0xe89271),
+            agent_codex: h(0x5b6cff),
         }
     } else {
         UiColors {
@@ -482,6 +491,8 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
             // neutral overlay grey for a silent session.
             agent_error: h(0xf38ba8),
             agent_stalled: h(0x9399b2),
+            agent_claude: h(0xe89271),
+            agent_codex: h(0x5b6cff),
         }
     };
 

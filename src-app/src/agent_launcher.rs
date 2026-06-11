@@ -189,6 +189,17 @@ impl TerminalAgent {
         }
     }
 
+    /// EP-005 US-013: map a detected process basename back to its agent
+    /// (reverse of [`Self::binary`]). Exact match only — the per-pane scan
+    /// matches `/proc/<pid>/comm` verbatim, so a wrapper script or a
+    /// suffixed binary never produces a pill.
+    pub fn from_binary(name: &str) -> Option<TerminalAgent> {
+        TerminalAgent::ALL
+            .iter()
+            .copied()
+            .find(|a| a.binary() == name)
+    }
+
     pub fn from_tag(tag: &str) -> Option<TerminalAgent> {
         match tag {
             "claude_code" => Some(TerminalAgent::ClaudeCode),
@@ -364,6 +375,33 @@ mod tests {
             assert_eq!(TerminalAgent::from_tag(agent.tag()), Some(agent));
         }
         assert_eq!(TerminalAgent::from_tag("unknown"), None);
+    }
+
+    // EP-005 US-013: `from_tag` is the session.json ingress whitelist for
+    // the persisted `agent` field — hostile or malformed values (oversized,
+    // control chars, near-misses) must all map to None so no pill renders.
+    #[test]
+    fn from_tag_rejects_hostile_session_values() {
+        assert_eq!(TerminalAgent::from_tag(""), None);
+        assert_eq!(
+            TerminalAgent::from_tag("Claude_Code"),
+            None,
+            "case-sensitive"
+        );
+        assert_eq!(TerminalAgent::from_tag("claude_code "), None, "no trim");
+        assert_eq!(TerminalAgent::from_tag("claude_code\u{202e}"), None);
+        assert_eq!(TerminalAgent::from_tag("codex\n"), None);
+        assert_eq!(TerminalAgent::from_tag(&"x".repeat(10_000)), None);
+    }
+
+    #[test]
+    fn binary_roundtrip_via_from_binary() {
+        // EP-005 US-013: the scan's comm match resolves back to the agent.
+        for agent in TerminalAgent::ALL {
+            assert_eq!(TerminalAgent::from_binary(agent.binary()), Some(agent));
+        }
+        assert_eq!(TerminalAgent::from_binary("bash"), None);
+        assert_eq!(TerminalAgent::from_binary("claude-code-cli"), None);
     }
 
     #[test]
