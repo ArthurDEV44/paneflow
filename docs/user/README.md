@@ -10,6 +10,7 @@
 - [Commands](keybindings.md): Every Paneflow command and its default keyboard shortcut, grouped by what it controls, with the action name to use in paneflow.json overrides.
 - [Layouts](layouts.md): Apply Paneflow's four built-in layout presets - even horizontal, even vertical, main vertical, and tiled - to reshape a workspace in one keystroke.
 - [Review](review.md): Read your branch diff and hand it to one or more CLI agents for review — Claude Code, Codex, OpenCode, or Pi — without leaving Paneflow.
+- [Scripting and automation](scripting.md): Drive a running Paneflow from any shell or AI agent - 12 CLI verbs, the JSON-RPC IPC socket, declarative agent workspaces, multi-agent flow pipelines, the read-only MCP bridge, and lifecycle hooks.
 - [Settings](settings.md): Tune Paneflow from the settings panel — keyboard shortcuts, fonts and themes, which AI agents appear in the launch bar, and terminal behavior — all mirrored in paneflow.json.
 - [Themes](themes.md): Paneflow's theme system with hot-reload from paneflow.json, no restart needed. One Dark ships today; the light theme returns after a redesign.
 - [Troubleshooting](troubleshooting.md): Fixes for the most common Paneflow launch, configuration, and install problems - GPU errors, missing PATH, blocked installers, theme reload issues.

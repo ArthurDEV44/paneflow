@@ -60,13 +60,18 @@ capability. New to Paneflow? Start with [Get started](/docs).
   Axum and Spring get a labeled port. The edit-refresh loop stays
   inside the workspace.
 
-  ## Headless scripting (MCP and JSON-RPC) [#headless-scripting-mcp-and-json-rpc]
+  ## Headless scripting (CLI, MCP and JSON-RPC) [#headless-scripting-cli-mcp-and-json-rpc]
 
-  Drive Paneflow from outside the GUI over a JSON-RPC IPC socket at
-  `$XDG_RUNTIME_DIR/paneflow/paneflow.sock` — list panes, read scrollback,
-  search buffers. An MCP server exposes those same read operations to
+  Drive Paneflow from outside the GUI: since v0.4.0 the `paneflow`
+  binary is also a CLI with 12 verbs over a JSON-RPC IPC socket at
+  `$XDG_RUNTIME_DIR/paneflow/paneflow.sock` — list panes, read and
+  search scrollback, split, focus, inject text behind an explicit
+  scripting gate, block on output patterns, spawn declarative agent
+  workspaces (`paneflow up`) and run multi-agent pipelines
+  (`paneflow flow`). An MCP server exposes the read operations to
   agents, so an assistant can inspect what another pane printed without
-  you copy-pasting.
+  you copy-pasting. The full command and method reference lives on the
+  [scripting and automation page](/docs/scripting).
 
   ## Custom action buttons [#custom-action-buttons]
 

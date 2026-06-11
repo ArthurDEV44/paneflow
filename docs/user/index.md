@@ -102,6 +102,8 @@ the per-OS guides call out the platform-specific exceptions.
 
   
 
+  
+
 ## What runs on the inside [#what-runs-on-the-inside]
 
 * **Pure Rust** + [GPUI](https://www.gpui.rs/) - the same framework Zed runs on.
