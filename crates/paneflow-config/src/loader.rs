@@ -393,6 +393,7 @@ impl Default for crate::schema::SurfaceDefinition {
             env: None,
             focus: None,
             scrollback: None,
+            agent: None,
         }
     }
 }

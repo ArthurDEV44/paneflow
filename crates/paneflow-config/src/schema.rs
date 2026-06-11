@@ -1105,6 +1105,13 @@ pub struct SurfaceDefinition {
     /// Saved scrollback text (plain, ANSI stripped). Up to 4000 lines / 400K chars.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scrollback: Option<String>,
+    /// EP-005 US-013: stable tag of the agent CLI last detected in this
+    /// surface's PTY subtree (e.g. `"claude_code"`), so the identity pill
+    /// survives restart as a dimmed "last known" until the first scan
+    /// confirms it. Whitelisted at ingress against the known agent tags;
+    /// unknown or malformed values are dropped silently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[cfg(test)]

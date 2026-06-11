@@ -7,6 +7,14 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ### Added
 
+- Fleet observability: the port/process scan now attributes results to each
+  pane. Tabs show a compact identity pill for the agent CLI running inside
+  (PID-detected across 16 known agents, persisted across restarts as a
+  dimmed "last known" until confirmed) and per-pane port badges, clickable
+  when the port belongs to a frontend dev server. When a pane announces a
+  URL whose port is actually owned by another pane, its badge turns into an
+  alert naming the owner.
+
 - Errored agent state: when an agent CLI launched through the shimmed PATH
   exits non-zero, its session turns red (tab dot + sidebar badge) and the
   desktop notification says "agent exited (exit N)" instead of a false

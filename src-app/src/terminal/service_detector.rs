@@ -26,7 +26,17 @@ pub(super) fn parse_service_line(line: &str) -> Option<ServiceInfo> {
     if port == 0 {
         return None;
     }
-    let url = extract_url(line);
+    // Security (EP-005 review): the URL feeds `open::that` behind a single
+    // click (sidebar chip + tab port badge). The PORT anchor above proves a
+    // loopback service exists on the line, but `extract_url` independently
+    // grabs the first http(s) token — a hostile pane printing
+    // `localhost:5173 http://evil.example` would otherwise arm a clickable
+    // badge to an attacker URL. Only keep a loopback URL; anything else
+    // degrades to a synthesized localhost URL so legitimate frontends stay
+    // clickable.
+    let url = extract_url(line)
+        .filter(|u| is_loopback_url(u))
+        .or_else(|| Some(format!("http://localhost:{port}")));
     let (label, is_frontend) = detect_framework(line);
     Some(ServiceInfo {
         port,
@@ -34,6 +44,32 @@ pub(super) fn parse_service_line(line: &str) -> Option<ServiceInfo> {
         label,
         is_frontend,
     })
+}
+
+/// Whether a URL's host is a loopback/unspecified local address. Tiny
+/// scheme-then-host parse — no URL crate; conservative `false` on anything
+/// unrecognized (the caller then substitutes a synthesized localhost URL).
+fn is_loopback_url(url: &str) -> bool {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"));
+    let Some(rest) = rest else {
+        return false;
+    };
+    // Host runs until the port, path, query, or fragment. Bracketed IPv6
+    // hosts (`[::1]:5173`) contain ':' — close the bracket first.
+    let host_end = if rest.starts_with('[') {
+        rest.find(']').map(|i| i + 1).unwrap_or(rest.len())
+    } else {
+        rest.find([':', '/', '?', '#']).unwrap_or(rest.len())
+    };
+    let host = &rest[..host_end];
+    host.eq_ignore_ascii_case("localhost")
+        || host == "0.0.0.0"
+        || host == "[::1]"
+        || host
+            .strip_prefix("127.")
+            .is_some_and(|tail| tail.split('.').all(|seg| seg.parse::<u8>().is_ok()))
 }
 
 /// Extract a port number from localhost:PORT, 127.0.0.1:PORT, or 0.0.0.0:PORT patterns.
@@ -114,4 +150,50 @@ pub(super) fn detect_framework(line: &str) -> (Option<String>, bool) {
         }
     }
     (None, false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // EP-005 security review: the clickable URL must never leave loopback —
+    // a hostile pane printing a localhost anchor next to an attacker URL
+    // must not arm `open::that` toward that host.
+    #[test]
+    fn hostile_url_next_to_local_anchor_is_replaced_by_loopback() {
+        let info =
+            parse_service_line("vite dev server ready localhost:5173 see http://evil.example/x")
+                .unwrap();
+        assert_eq!(info.port, 5173);
+        assert_eq!(info.url.as_deref(), Some("http://localhost:5173"));
+    }
+
+    #[test]
+    fn legitimate_loopback_url_is_kept_verbatim() {
+        let info = parse_service_line("  ➜  Local:   http://localhost:5173/app").unwrap();
+        assert_eq!(info.port, 5173);
+        assert_eq!(info.url.as_deref(), Some("http://localhost:5173/app"));
+    }
+
+    #[test]
+    fn line_without_printed_url_synthesizes_loopback() {
+        let info = parse_service_line("Serving HTTP on 127.0.0.1 port 8000").unwrap();
+        assert_eq!(info.port, 8000);
+        assert_eq!(info.url.as_deref(), Some("http://localhost:8000"));
+    }
+
+    #[test]
+    fn is_loopback_url_host_classes() {
+        assert!(is_loopback_url("http://localhost:3000"));
+        assert!(is_loopback_url("http://LOCALHOST:3000/x"));
+        assert!(is_loopback_url("https://127.0.0.1:8443/"));
+        assert!(is_loopback_url("http://127.1.2.3:80"));
+        assert!(is_loopback_url("http://0.0.0.0:5173"));
+        assert!(is_loopback_url("http://[::1]:5173/app"));
+        assert!(!is_loopback_url("http://evil.example/x"));
+        assert!(!is_loopback_url("http://localhost.evil.example:3000"));
+        assert!(!is_loopback_url("http://127.evil.example/"));
+        assert!(!is_loopback_url("file:///etc/passwd"));
+        assert!(!is_loopback_url("http://192.168.1.10:3000"));
+    }
 }

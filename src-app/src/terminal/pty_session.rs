@@ -273,6 +273,32 @@ pub struct TerminalState {
     /// auto-derived surface name in `surface.list` / MCP / the sidebar, and is
     /// persisted to `session.json`. `None` falls back to derivation.
     pub custom_name: Option<String>,
+    /// EP-005 US-013: agent CLI detected in this terminal's PTY subtree by
+    /// the per-pane scan — PID-authoritative, never the spoofable OSC
+    /// title. Drives the tab identity pill; persisted to `session.json`
+    /// as the agent's stable `tag()`.
+    pub detected_agent: Option<crate::agent_launcher::TerminalAgent>,
+    /// US-013: `false` while `detected_agent` is a session-restored "last
+    /// known" value awaiting its first scan confirmation (the pill renders
+    /// at 0.6 opacity); flipped `true` (or the agent cleared) by every
+    /// scan deposit.
+    pub agent_confirmed: bool,
+    /// EP-005 US-014: LISTEN ports attributed to this terminal's PTY
+    /// subtree by the per-pane scan, each with the clickable frontend URL
+    /// when the workspace's `service_labels` knows one (sidebar parity).
+    /// Sorted by port, deduplicated; drives the tab port badges. Not
+    /// persisted (live resource state).
+    pub detected_ports: Vec<(u16, Option<String>)>,
+    /// US-014: ports whose service URL was announced in THIS terminal
+    /// while the LISTEN socket belongs to another pane's subtree —
+    /// `(port, owner pane display name)`. Info-level heuristic; known
+    /// false positives (proxies, port-forwards, re-announcements) are
+    /// tolerated in v1.
+    pub port_conflicts: Vec<(u16, String)>,
+    /// US-014: ports announced by service URLs detected in this terminal's
+    /// own output (untrusted text — used only to cross-check against the
+    /// scan's LISTEN attribution, never to open anything). Bounded.
+    pub announced_ports: Vec<u16>,
     /// OSC 52 clipboard access mode (default: copy-only for security).
     pub osc52_mode: Osc52Mode,
     /// Deferred clipboard operations from sync() — drained in the poll loop
@@ -751,6 +777,11 @@ impl TerminalState {
             pty_master_fd: None,
             current_cwd: None,
             custom_name: None,
+            detected_agent: None,
+            agent_confirmed: false,
+            detected_ports: Vec::new(),
+            port_conflicts: Vec::new(),
+            announced_ports: Vec::new(),
             osc52_mode: Osc52Mode::Disabled,
             pending_clipboard_ops: Vec::new(),
             pending_size_ops: Vec::new(),
@@ -1420,6 +1451,20 @@ impl TerminalState {
                         && !('\u{80}'..='\u{9f}').contains(&c))
             })
             .collect()
+    }
+
+    /// EP-005 US-014: remember a port announced by a service URL in this
+    /// terminal's output, for the collision cross-check against the scan's
+    /// LISTEN attribution. The source text is UNTRUSTED terminal output, so
+    /// the list is bounded: a flood of fake announcements can at most fill
+    /// 16 slots (oldest kept — the legitimate dev-server line is printed
+    /// once at startup, i.e. first).
+    pub fn note_announced_port(&mut self, port: u16) {
+        const MAX_ANNOUNCED_PORTS: usize = 16;
+        if !self.announced_ports.contains(&port) && self.announced_ports.len() < MAX_ANNOUNCED_PORTS
+        {
+            self.announced_ports.push(port);
+        }
     }
 
     /// Feed saved scrollback text into the terminal grid via VTE processor.
