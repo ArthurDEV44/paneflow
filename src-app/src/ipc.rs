@@ -81,7 +81,9 @@
 //! - `surface.list` / `surface.send_text` / `surface.send_keystroke` /
 //!   `surface.split` — pane operations.
 //! - `ai.session_start` / `ai.prompt_submit` / `ai.tool_use` /
-//!   `ai.notification` / `ai.stop` / `ai.session_end` — AI hook lifecycle.
+//!   `ai.notification` / `ai.stop` / `ai.exit` / `ai.session_end` — AI
+//!   hook lifecycle (`ai.exit` carries the wrapped agent binary's real
+//!   exit status, EP-004 US-010).
 //!
 //! Handlers may return a structured JSON-RPC error by emitting the
 //! `_jsonrpc_error` sentinel (see `app::ipc_handler::JsonRpcError`); the
@@ -738,6 +740,7 @@ fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
                                 "ai.tool_use",
                                 "ai.notification",
                                 "ai.stop",
+                                "ai.exit",
                                 "ai.session_end"
                             ]
                         }, "id": id})

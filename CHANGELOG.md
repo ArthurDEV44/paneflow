@@ -5,6 +5,18 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+### Added
+
+- Errored agent state: when an agent CLI launched through the shimmed PATH
+  exits non-zero, its session turns red (tab dot + sidebar badge) and the
+  desktop notification says "agent exited (exit N)" instead of a false
+  "agent finished". Human interrupts (Ctrl+C, pane close, external kill)
+  still count as finished, never as errors.
+- Stalled agent detection (on by default): a thinking agent that emits no
+  hook activity for 5 minutes is flagged "stalled" in the sidebar, with one
+  desktop notification per stall episode. Threshold configurable via
+  `agent_stall_threshold_secs`; kill switch via `agent_stall_detection`.
+
 ## [0.4.2] - 2026-06-10
 
 ### Changed

@@ -656,6 +656,34 @@ impl PaneFlowApp {
     /// handle; other: conservative keep).
     pub(crate) fn sweep_stale_pids(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
+        // EP-004 US-010: surfaces that still resolve to a live terminal tab.
+        // An `Errored` session's PID is dead by definition (the binary
+        // exited) — it is spared from the PID reap WHILE its pane lives so
+        // the crash signal stays visible, and reaped here once the pane
+        // closes. An Errored session that never resolved a surface has no
+        // visible anchor beyond the sidebar; it follows the plain PID reap
+        // (≤ 30 s) so unresolvable rows can never accumulate.
+        let live_surfaces: std::collections::HashSet<u64> = self
+            .workspaces
+            .iter()
+            .filter_map(|ws| ws.root.as_ref())
+            .flat_map(|root| root.collect_leaves())
+            .flat_map(|pane| {
+                pane.read(cx)
+                    .terminals()
+                    .map(|t| t.entity_id().as_u64())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        // EP-004 US-011: Stalled detection (default ON, threshold default
+        // 300 s — both hot-reload aware via `cached_config`). The sweep runs
+        // every 30 s, so the effective granularity is threshold ± 30 s
+        // (documented in the PRD AC and the JSON-schema description).
+        let stall_enabled = self.cached_config.agent_stall_detection_enabled();
+        let stall_threshold = std::time::Duration::from_secs(
+            self.cached_config.resolved_agent_stall_threshold_secs(),
+        );
+        let mut stalled_notifs: Vec<(String, u64)> = Vec::new();
         for ws in &mut self.workspaces {
             if ws.agent_sessions.is_empty() {
                 continue;
@@ -668,10 +696,33 @@ impl PaneFlowApp {
             // always say "dead" and immediately drop a live legacy
             // session. Keep them around: they'll be cleared by
             // `ai.session_end` or by the next state transition.
-            ws.agent_sessions
-                .retain(|&pid, _session| pid > i32::MAX as u32 || pid_is_alive(pid));
+            ws.agent_sessions.retain(|&pid, session| {
+                pid > i32::MAX as u32
+                    || pid_is_alive(pid)
+                    || (session.state == ai_types::AgentState::Errored
+                        && session
+                            .surface_id
+                            .is_some_and(|sid| live_surfaces.contains(&sid)))
+            });
             if ws.agent_sessions.len() < before {
                 changed = true;
+            }
+            // US-011: a `Thinking` session silent past the threshold flips
+            // to `Stalled`. Only `Thinking` flips, so the once-per-episode
+            // notification dedup is structural: the session stays Stalled
+            // (this branch can't re-trigger) until a hook event revives it,
+            // and a NEW episode requires a fresh Thinking phase first.
+            if stall_enabled {
+                for session in ws.agent_sessions.values_mut() {
+                    if session.state == ai_types::AgentState::Thinking
+                        && session.last_activity.elapsed() >= stall_threshold
+                    {
+                        session.state = ai_types::AgentState::Stalled;
+                        stalled_notifs
+                            .push((ws.title.clone(), session.last_activity.elapsed().as_secs()));
+                        changed = true;
+                    }
+                }
             }
         }
         // Agents-view threads: a CLI killed mid-turn never sends `ai.stop`,
@@ -698,6 +749,16 @@ impl PaneFlowApp {
             // driving a pane glow — resync so no orphan attention survives.
             self.sync_attention(cx);
             cx.notify();
+        }
+        // EP-004 US-011: fire AFTER the state writes so the toast and the UI
+        // agree. One entry per Thinking→Stalled transition == one
+        // notification per stall episode (PRD dedup AC).
+        for (title, silent_secs) in stalled_notifs {
+            super::ipc_handler::fire_stalled_notification(
+                &title,
+                silent_secs,
+                cx.background_executor().clone(),
+            );
         }
     }
 

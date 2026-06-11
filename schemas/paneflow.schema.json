@@ -57,6 +57,18 @@
       "type": ["boolean", "null"],
       "description": "Master switch for the per-shell rc injection (OSC 7 CWD reporting + OSC 133 command marks). null/true = enabled (default); false = no snippet is written or wired - the shell starts exactly as it would outside Paneflow."
     },
+    "agent_stall_detection": {
+      "type": ["boolean", "null"],
+      "description": "Master switch for Stalled agent detection. null/true = enabled (default): a Thinking agent session with no hook activity past agent_stall_threshold_secs is flagged Stalled, with ONE desktop notification per stall episode (the flag clears on the next hook event, so a legitimately long turn costs at most one notification). false = kill switch - no Stalled state is ever produced.",
+      "default": true
+    },
+    "agent_stall_threshold_secs": {
+      "type": ["integer", "null"],
+      "description": "Silence threshold in seconds before a Thinking agent session is flagged Stalled. Checked by a 30 s sweep, so the effective granularity is threshold +/- 30 s. Out-of-range values are clamped.",
+      "minimum": 30,
+      "maximum": 86400,
+      "default": 300
+    },
     "external_editor": {
       "type": ["string", "null"],
       "description": "Editor used to open file links. 'auto' probes zed, cursor, windsurf, then code; 'system' always uses the OS opener.",

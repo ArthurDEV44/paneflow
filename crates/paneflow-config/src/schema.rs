@@ -35,6 +35,18 @@ pub struct PaneFlowConfig {
     /// is written or wired — the shell starts exactly as it would outside
     /// Paneflow.
     pub shell_integration: Option<bool>,
+    /// EP-004 US-011 (cli-cockpit): master switch for Stalled detection.
+    /// `None`/`true` = enabled (default ON): a `Thinking` agent session with
+    /// no hook activity past the silence threshold is flagged `Stalled` and
+    /// notified ONCE per stall episode (the flag clears on the next hook
+    /// event, so a legitimately long turn costs at most one notification).
+    /// `false` = kill switch — no `Stalled` state is ever produced.
+    pub agent_stall_detection: Option<bool>,
+    /// EP-004 US-011: silence threshold in seconds before a `Thinking`
+    /// session is flagged `Stalled`. `None` resolves to 300 s; values are
+    /// clamped to `[30, 86400]`. Checked by the 30 s sweep, so the
+    /// effective granularity is threshold ± 30 s.
+    pub agent_stall_threshold_secs: Option<u64>,
     /// External editor used to open markdown links (file paths shipped
     /// by the agent as `[foo](src/foo.rs)` or `[foo](src/foo.rs:42)`).
     ///
@@ -150,6 +162,48 @@ pub struct PaneFlowConfig {
     /// this tool" UI writes today.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tool_permissions: HashMap<String, ToolPermissionsEntry>,
+}
+
+impl PaneFlowConfig {
+    /// EP-004 US-011: default Stalled silence threshold. 300 s tolerates a
+    /// long tool-free reasoning stretch while still surfacing a wedged
+    /// agent within minutes (CI no-output watchdogs sit at 10 min; an
+    /// interactive cockpit warrants half that).
+    pub const DEFAULT_AGENT_STALL_THRESHOLD_SECS: u64 = 300;
+    /// Lower bound: below the 30 s sweep cadence the threshold cannot be
+    /// honored and every long tool call would false-positive.
+    pub const MIN_AGENT_STALL_THRESHOLD_SECS: u64 = 30;
+    /// Upper bound: a day — past this the feature is effectively off, so
+    /// use [`PaneFlowConfig::agent_stall_detection`] instead.
+    pub const MAX_AGENT_STALL_THRESHOLD_SECS: u64 = 86_400;
+
+    /// Resolve the Stalled-detection master switch (default ON).
+    pub fn agent_stall_detection_enabled(&self) -> bool {
+        self.agent_stall_detection.unwrap_or(true)
+    }
+
+    /// Resolve `agent_stall_threshold_secs`: default 300, clamped to
+    /// `[30, 86400]` with a `warn!` so an out-of-range value is noticed.
+    pub fn resolved_agent_stall_threshold_secs(&self) -> u64 {
+        let raw = self
+            .agent_stall_threshold_secs
+            .unwrap_or(Self::DEFAULT_AGENT_STALL_THRESHOLD_SECS);
+        let clamped = raw.clamp(
+            Self::MIN_AGENT_STALL_THRESHOLD_SECS,
+            Self::MAX_AGENT_STALL_THRESHOLD_SECS,
+        );
+        if clamped != raw {
+            tracing::warn!(
+                target: "paneflow_config::agent",
+                requested = raw,
+                clamped,
+                "agent_stall_threshold_secs out of range [{min}, {max}], clamped",
+                min = Self::MIN_AGENT_STALL_THRESHOLD_SECS,
+                max = Self::MAX_AGENT_STALL_THRESHOLD_SECS,
+            );
+        }
+        clamped
+    }
 }
 
 /// Per-tool permission patterns persisted under `"tool_permissions"`
@@ -1102,6 +1156,8 @@ mod tests {
             font_size: Some(14.0),
             option_as_meta: Some(true),
             shell_integration: Some(true),
+            agent_stall_detection: Some(true),
+            agent_stall_threshold_secs: Some(300),
             external_editor: Some("auto".to_string()),
             claude_code_bypass_permissions: Some(false),
             claude_code_button_visible: Some(true),
@@ -1176,6 +1232,38 @@ mod tests {
             object_keys(&schema["definitions"]["toolPermissionsEntry"]["properties"]),
             "ToolPermissionsEntry and public JSON Schema drifted"
         );
+    }
+
+    #[test]
+    fn agent_stall_settings_resolve_with_defaults_and_clamp() {
+        // EP-004 US-011: default ON, threshold 300 s.
+        let cfg = PaneFlowConfig::default();
+        assert!(cfg.agent_stall_detection_enabled());
+        assert_eq!(cfg.resolved_agent_stall_threshold_secs(), 300);
+
+        // Kill switch.
+        let cfg = PaneFlowConfig {
+            agent_stall_detection: Some(false),
+            ..Default::default()
+        };
+        assert!(!cfg.agent_stall_detection_enabled());
+
+        // Clamp both ends.
+        let cfg = PaneFlowConfig {
+            agent_stall_threshold_secs: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_agent_stall_threshold_secs(), 30);
+        let cfg = PaneFlowConfig {
+            agent_stall_threshold_secs: Some(u64::MAX),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_agent_stall_threshold_secs(), 86_400);
+        let cfg = PaneFlowConfig {
+            agent_stall_threshold_secs: Some(600),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_agent_stall_threshold_secs(), 600);
     }
 
     #[test]

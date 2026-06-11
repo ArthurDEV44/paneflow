@@ -667,6 +667,59 @@ impl PaneFlowApp {
                                 .child(div().child(format!("{} done{}", agg.tool.label(), extra))),
                         );
                     }
+                    // EP-004 US-010: a crashed agent reads in red, never as
+                    // "done". Color from the dedicated `agent_error` slot
+                    // (FR-08 — distinct from the attention amber above).
+                    ai_types::AgentState::Errored => {
+                        card = card.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.))
+                                .text_xs()
+                                .text_color(ui.agent_error)
+                                .child(
+                                    svg()
+                                        .size(px(11.))
+                                        .flex_none()
+                                        .path("icons/x_circle.svg")
+                                        .text_color(ui.agent_error),
+                                )
+                                .child(div().child(format!(
+                                    "{} errored{}",
+                                    agg.tool.label(),
+                                    extra
+                                ))),
+                        );
+                    }
+                    // EP-004 US-011: a silent agent is a suspicion, not a
+                    // failure — muted grey-blue from the `agent_stalled`
+                    // slot, alert-triangle icon (information also carried by
+                    // the label, never by color alone).
+                    ai_types::AgentState::Stalled => {
+                        card = card.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.))
+                                .text_xs()
+                                .text_color(ui.agent_stalled)
+                                .child(
+                                    svg()
+                                        .size(px(11.))
+                                        .flex_none()
+                                        .path("icons/triangle-alert.svg")
+                                        .text_color(ui.agent_stalled),
+                                )
+                                .child(div().child(format!(
+                                    "{} stalled{}",
+                                    agg.tool.label(),
+                                    extra
+                                ))),
+                        );
+                    }
                 }
             }
 

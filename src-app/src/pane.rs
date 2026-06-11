@@ -238,6 +238,13 @@ pub struct Pane {
     /// mutated locally. Drives the attention ring, the tab dot and the peek
     /// overlay.
     attention: std::collections::HashMap<gpui::EntityId, Option<String>>,
+    /// EP-004 US-010 (cli-cockpit): terminals of this pane whose agent
+    /// session is `Errored` (the agent binary exited non-zero). Pushed by
+    /// `PaneFlowApp::sync_attention` alongside `attention` — same idempotent
+    /// recompute-from-session-truth contract. Drives the dedicated
+    /// `agent_error` tab dot (tab-anatomy state slot, ranked above the
+    /// waiting dot and the bell).
+    errored: std::collections::HashSet<gpui::EntityId>,
     /// US-020: the peek badge is hovered — render the full question panel.
     peek_expanded: bool,
     /// Set to true when the workspace is zoomed on this pane.
@@ -301,6 +308,7 @@ impl Pane {
             selected_idx: 0,
             bell_pending: std::collections::HashSet::new(),
             attention: std::collections::HashMap::new(),
+            errored: std::collections::HashSet::new(),
             peek_expanded: false,
             zoomed: false,
             workspace_id,
@@ -334,6 +342,7 @@ impl Pane {
             selected_idx: 0,
             bell_pending: std::collections::HashSet::new(),
             attention: std::collections::HashMap::new(),
+            errored: std::collections::HashSet::new(),
             peek_expanded: false,
             zoomed: false,
             workspace_id,
@@ -364,6 +373,20 @@ impl Pane {
                 self.peek_expanded = false;
             }
             self.attention = attention;
+            cx.notify();
+        }
+    }
+
+    /// EP-004 US-010 (cli-cockpit): replace this pane's Errored set
+    /// (terminals whose agent binary exited non-zero). Same idempotent
+    /// push contract as [`Pane::set_attention`] — repaints only on change.
+    pub fn set_errored(
+        &mut self,
+        errored: std::collections::HashSet<gpui::EntityId>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.errored != errored {
+            self.errored = errored;
             cx.notify();
         }
     }
@@ -1055,6 +1078,11 @@ impl Pane {
         // US-018 (orchestration-v2): an agent waiting for input in this tab
         // shows the attention-colored dot — it wins over the bell (the more
         // actionable signal), so a hidden waiting tab stays discoverable.
+        // EP-004 US-010: an Errored agent (binary exited non-zero) wins over
+        // both — a crash is the most salient state and must never hide
+        // behind a waiting dot. Dedicated `agent_error` slot, distinct from
+        // the attention orange (a session is either waiting OR errored, but
+        // two terminals of the same tab strip can show one of each).
         let has_bell = self
             .tabs
             .get(i)
@@ -1065,14 +1093,21 @@ impl Pane {
             .get(i)
             .and_then(|t| t.as_terminal())
             .is_some_and(|t| self.attention.contains_key(&t.entity_id()));
-        let bell_dot = if has_attention || has_bell {
+        let has_errored = self
+            .tabs
+            .get(i)
+            .and_then(|t| t.as_terminal())
+            .is_some_and(|t| self.errored.contains(&t.entity_id()));
+        let bell_dot = if has_errored || has_attention || has_bell {
             div()
                 .flex_none()
                 .w(px(6.0))
                 .h(px(6.0))
                 .ml_1()
                 .rounded_full()
-                .bg(if has_attention {
+                .bg(if has_errored {
+                    ui.agent_error
+                } else if has_attention {
                     ui.vc_conflict
                 } else {
                     ui.accent

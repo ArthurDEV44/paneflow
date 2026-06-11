@@ -36,7 +36,13 @@ use std::io::Write;
 // `TOOL_CLAUDE`, which makes the sidebar render "Claude thinking…" for
 // every Codex turn — visible regression observed in the field.
 
-pub(crate) fn run_real(tool: &str, path: &Path, args: &[OsString]) -> ExitCode {
+// EP-004 US-010 (cli-cockpit): `run_real` also returns the agent binary's RAW
+// exit code (`Some(i32)`, shell `128+signum` convention for signal deaths) so
+// `main` can emit the `ai.exit` IPC frame. `None` means the agent never ran
+// (spawn failure) or its status is unknown (wait failure) — no frame is
+// emitted and the server keeps today's `ai.stop`-driven behavior.
+
+pub(crate) fn run_real(tool: &str, path: &Path, args: &[OsString]) -> (ExitCode, Option<i32>) {
     let mut cmd = std::process::Command::new(path);
     cmd.args(args)
         .envs(env::vars_os())
@@ -160,15 +166,18 @@ pub(crate) fn run_real(tool: &str, path: &Path, args: &[OsString]) -> ExitCode {
         Ok(c) => c,
         Err(e) => {
             eprintln!("paneflow-shim: spawn '{}' failed: {e}", path.display());
-            return ExitCode::from(127);
+            return (ExitCode::from(127), None);
         }
     };
 
     match child.wait() {
-        Ok(status) => exit_code_from_status(&status),
+        Ok(status) => (
+            exit_code_from_status(&status),
+            Some(raw_exit_code_from_status(&status)),
+        ),
         Err(e) => {
             eprintln!("paneflow-shim: wait on '{}' failed: {e}", path.display());
-            ExitCode::from(1)
+            (ExitCode::from(1), None)
         }
     }
 }
@@ -194,6 +203,26 @@ pub(crate) fn exit_code_from_status(status: &std::process::ExitStatus) -> ExitCo
         }
     }
     ExitCode::from(1)
+}
+
+/// EP-004 US-010: the same mapping, kept as a full-width `i32` for the
+/// `ai.exit` IPC frame. Unlike [`exit_code_from_status`] there is no `u8`
+/// clamp: the server's classifier needs the verbatim value (e.g. Windows
+/// `STATUS_CONTROL_C_EXIT` = `-1073741510`, which a `u8` clamp would fold
+/// into an indistinguishable `1`). Unix signal deaths use the same shell
+/// `128 + signum` convention (130 = SIGINT, 139 = SIGSEGV, …).
+pub(crate) fn raw_exit_code_from_status(status: &std::process::ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return 128i32.saturating_add(sig);
+        }
+    }
+    1
 }
 
 /// Make the shim survive PTY-close + kill signals so the child

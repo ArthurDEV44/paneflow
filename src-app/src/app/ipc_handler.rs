@@ -127,6 +127,46 @@ fn attention_notification_body(workspace_title: &str, message: Option<&str>) -> 
     }
 }
 
+/// EP-004 US-010: the `Errored` desktop notification — distinct body so a
+/// crash never reads as "agent finished". Same choke point + window-focus
+/// gate as the other two notification kinds.
+fn fire_agent_exit_notification(
+    workspace_title: &str,
+    exit_code: i32,
+    executor: gpui::BackgroundExecutor,
+) {
+    fire_desktop_notification(
+        agent_exit_notification_body(workspace_title, exit_code),
+        executor,
+    );
+}
+
+/// Pure body composition (unit-tested) — PRD US-010 AC #6.
+fn agent_exit_notification_body(workspace_title: &str, exit_code: i32) -> String {
+    format!("{workspace_title}: agent exited (exit {exit_code})")
+}
+
+/// EP-004 US-011: the `Stalled` desktop notification. Called by the
+/// periodic sweep (`event_handlers.rs::sweep_stale_pids`) on the ONE
+/// `Thinking → Stalled` transition of a stall episode — the dedup is
+/// structural (the sweep only flips `Thinking`, so a stalled session can't
+/// re-trigger until a hook event revives it first).
+pub(crate) fn fire_stalled_notification(
+    workspace_title: &str,
+    silent_secs: u64,
+    executor: gpui::BackgroundExecutor,
+) {
+    fire_desktop_notification(
+        stalled_notification_body(workspace_title, silent_secs),
+        executor,
+    );
+}
+
+/// Pure body composition (unit-tested) — PRD US-011 AC #4.
+fn stalled_notification_body(workspace_title: &str, silent_secs: u64) -> String {
+    format!("{workspace_title}: agent silent for {silent_secs} s")
+}
+
 /// Shared desktop-notification path (turn-end + attention): fires only when
 /// the Paneflow window is NOT focused; body sanitization stays in the per-OS
 /// command builders (`--` on Linux, AppleScript strip on macOS, Windows
@@ -972,6 +1012,16 @@ impl PaneFlowApp {
             && session.surface_id != Some(sid)
         {
             session.surface_id = Some(sid);
+            // EP-004 US-010: a NEW session resolving this pane evicts a stale
+            // `Errored` row left by the previous (dead) agent on the same
+            // surface — "pas d'erreur collante": relaunching the agent in the
+            // pane replaces the crash signal with the live state. Deliberately
+            // NOT tool-scoped: launching codex where claude crashed also
+            // clears the dot — the surface is visibly back in use, whatever
+            // the tool, and the dead row has no further eviction path.
+            ws.agent_sessions.retain(|k, s| {
+                *k == key || s.surface_id != Some(sid) || s.state != ai_types::AgentState::Errored
+            });
             self.sync_attention(cx);
             cx.notify();
         }
@@ -984,12 +1034,23 @@ impl PaneFlowApp {
     /// the waiting pane; inactive panes are never degraded.
     pub(crate) fn sync_attention(&self, cx: &mut Context<Self>) {
         let mut waiting: HashMap<u64, Option<String>> = HashMap::new();
+        // EP-004 US-010: Errored surfaces ride the same idempotent push, in a
+        // PARALLEL set (never overloading the waiting map — a tab is either
+        // asking for input or crashed, and the dot colors must not mix).
+        let mut errored: std::collections::HashSet<u64> = std::collections::HashSet::new();
         for ws in &self.workspaces {
             for session in ws.agent_sessions.values() {
-                if session.state == ai_types::AgentState::WaitingForInput
-                    && let Some(sid) = session.surface_id
-                {
-                    waiting.insert(sid, session.message.clone());
+                let Some(sid) = session.surface_id else {
+                    continue;
+                };
+                match session.state {
+                    ai_types::AgentState::WaitingForInput => {
+                        waiting.insert(sid, session.message.clone());
+                    }
+                    ai_types::AgentState::Errored => {
+                        errored.insert(sid);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1005,7 +1066,16 @@ impl PaneFlowApp {
                                 .map(|msg| (t.entity_id(), msg.clone()))
                         })
                         .collect();
-                    pane.update(cx, |p, cx| p.set_attention(subset, cx));
+                    let errored_subset: std::collections::HashSet<gpui::EntityId> = pane
+                        .read(cx)
+                        .terminals()
+                        .filter(|t| errored.contains(&t.entity_id().as_u64()))
+                        .map(|t| t.entity_id())
+                        .collect();
+                    pane.update(cx, |p, cx| {
+                        p.set_attention(subset, cx);
+                        p.set_errored(errored_subset, cx);
+                    });
                 }
             }
         }
@@ -1833,6 +1903,69 @@ impl PaneFlowApp {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
                 }
             }
+            // EP-004 US-010: the shim reports the wrapped agent binary's REAL
+            // exit status (`ChildExit` only ever carries the shell's). Always
+            // emitted BEFORE the shim's `ai.session_end`, both blocking — see
+            // `paneflow-shim::main` for the ordering contract.
+            "ai.exit" => {
+                let Some(workspace_id) = params.get("workspace_id").and_then(|v| v.as_u64()) else {
+                    return serde_json::json!({"error": "Missing workspace_id"});
+                };
+                let Some(exit_code) = params
+                    .get("exit_code")
+                    .and_then(|v| v.as_i64())
+                    .and_then(|n| i32::try_from(n).ok())
+                else {
+                    return serde_json::json!({"error": "Missing or invalid exit_code"});
+                };
+                let pid = read_session_pid(params);
+                let tool = read_tool(params);
+
+                if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
+                    // 0 / SIGINT-and-friends → Finished (a human interrupt is
+                    // NOT an error, FR-06); everything else → Errored. The
+                    // classifier is pure and unit-tested in `ai_types`.
+                    let state = ai_types::state_for_exit(exit_code);
+                    let errored = state == ai_types::AgentState::Errored;
+                    let key = upsert_session_state(ws, pid, tool, state, None);
+                    // The binary is gone — whatever question it was asking is
+                    // moot (same ghost-message rationale as `ai.stop`).
+                    if let Some(s) = ws.agent_sessions.get_mut(&key) {
+                        s.message = None;
+                    }
+                    let ws_title = ws.title.clone();
+                    cx.notify();
+                    if errored {
+                        fire_agent_exit_notification(
+                            &ws_title,
+                            exit_code,
+                            cx.background_executor().clone(),
+                        );
+                        // A crash-on-launch session may have had no prior
+                        // frame: try resolving its pane while the shim (the
+                        // PID anchor) is still alive, so the Errored dot can
+                        // land on a tab. No-op if already resolved.
+                        self.schedule_surface_resolution(workspace_id, key, cx);
+                    }
+                    // Finished (exit 0 / interrupt) intentionally fires no
+                    // notification — `ai.stop` already announced the turn
+                    // end, and the shim's `ai.session_end` lands right after
+                    // this frame to clear the row.
+                    self.sync_attention(cx);
+                    serde_json::json!({"status": if errored { "errored" } else { "finished" }})
+                } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
+                    // Agents view (out of this PRD's cockpit scope): the
+                    // thread model has no Errored status — treat like
+                    // `ai.session_end` so the spinner never sticks.
+                    t.hook_managed = true;
+                    t.status = crate::project::ThreadStatus::Idle;
+                    t.agent_pid = None;
+                    cx.notify();
+                    serde_json::json!({"status": "idle"})
+                } else {
+                    serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
+                }
+            }
             "ai.session_end" => {
                 let Some(workspace_id) = params.get("workspace_id").and_then(|v| v.as_u64()) else {
                     return serde_json::json!({"error": "Missing workspace_id"});
@@ -1859,15 +1992,31 @@ impl PaneFlowApp {
                     // shims that didn't carry `pid` on session_end). Last
                     // resort keeps `agent_sessions` consistent with the
                     // pre-refactor "one session per tool" assumption.
+                    //
+                    // EP-004 US-010: an `Errored` session is SPARED — the
+                    // shim's `ai.exit` lands just before this frame, and
+                    // removing the row here would wipe the crash signal the
+                    // instant it appeared. The Errored row is evicted later
+                    // by a new session resolving the same pane
+                    // (`set_session_surface`) or by the sweep once its pane
+                    // closes (`sweep_stale_pids`).
+                    let is_errored =
+                        |s: &ai_types::AgentSession| s.state == ai_types::AgentState::Errored;
                     let removed = if let Some(p) = pid
+                        && ws.agent_sessions.get(&p).is_some_and(|s| !is_errored(s))
                         && ws.agent_sessions.remove(&p).is_some()
                     {
                         true
+                    } else if pid.is_some_and(|p| ws.agent_sessions.contains_key(&p)) {
+                        // Exact-PID match exists but is Errored: keep it, and
+                        // do NOT fall through to the tool-name removal (it
+                        // would evict an unrelated sibling session).
+                        false
                     } else {
                         let pid_to_remove = ws
                             .agent_sessions
                             .iter()
-                            .find(|(_, s)| s.tool == tool)
+                            .find(|(_, s)| s.tool == tool && !is_errored(s))
                             .map(|(k, _)| *k);
                         if let Some(k) = pid_to_remove {
                             ws.agent_sessions.remove(&k);
@@ -1920,12 +2069,22 @@ impl PaneFlowApp {
 /// when the field is missing or zero — older shims (pre multi-session
 /// refactor) don't include `pid` on every lifecycle frame, so the
 /// caller must tolerate `None` and degrade to tool-name-based matching.
+///
+/// EP-004 security hardening: the upper half of u32 (`> i32::MAX`) is
+/// REJECTED from clients. That band is reserved for server-allocated
+/// synthetic keys and — critically — `sweep_stale_pids` keeps every key in
+/// it forever (it can't be probed with `kill(pid, 0)`). Accepting it from
+/// the (same-UID, untrusted) socket would let a forger accumulate
+/// unbounded permanent sessions. Real OS PIDs sit far below this bound on
+/// every supported platform (Linux pid_max 4 194 304; macOS 99 999;
+/// Windows DWORD ids in practice), so a legitimate frame is never dropped;
+/// a forged real-range PID is self-limiting (probed and reaped ≤ 30 s).
 fn read_session_pid(params: &serde_json::Value) -> Option<u32> {
     params
         .get("pid")
         .and_then(|v| v.as_u64())
         .and_then(|n| u32::try_from(n).ok())
-        .filter(|&p| p > 0)
+        .filter(|&p| p > 0 && p <= i32::MAX as u32)
 }
 
 /// Read the `tool` field from an `ai.*` IPC param object, falling back
@@ -1991,16 +2150,25 @@ fn upsert_session_state(
         }
     };
 
+    // EP-004 US-011: `last_activity` is refreshed here too — every `ai.*`
+    // lifecycle frame routes through this function, so the Stalled sweep's
+    // silence clock resets on any hook activity. This also makes Stalled
+    // non-sticky for free: the next frame overwrites `state` AND the clock.
+    let now = std::time::Instant::now();
     ws.agent_sessions
         .entry(key)
         .and_modify(|s| {
             s.tool = tool;
             s.state = state.clone();
             s.active_tool_name = active_tool_name.clone();
+            s.last_activity = now;
         })
         .or_insert_with(|| {
             let mut session = ai_types::AgentSession::new(tool, state);
             session.active_tool_name = active_tool_name;
+            // Same `now` as the and_modify arm — `AgentSession::new` stamps
+            // its own Instant, which would skew (sub-µs) from the wait stamp.
+            session.last_activity = now;
             session
         });
     key
@@ -2187,6 +2355,50 @@ mod tests {
         assert_eq!(with_quote, "title\"");
         assert!(!with_quote.contains('\n'));
         assert_eq!(sanitize_applescript_body("plain title"), "plain title");
+    }
+
+    // EP-004 security hardening: client-supplied PIDs above i32::MAX are
+    // rejected — that band is server-reserved (synthetic keys) AND immune to
+    // the stale-PID sweep, so accepting it would allow unbounded permanent
+    // session accumulation from forged frames on the same-UID socket.
+    #[test]
+    fn read_session_pid_rejects_server_reserved_high_band() {
+        let pid = |v: serde_json::Value| read_session_pid(&serde_json::json!({ "pid": v }));
+        assert_eq!(pid(serde_json::json!(1234)), Some(1234));
+        assert_eq!(pid(serde_json::json!(i32::MAX as u32)), Some(2147483647));
+        assert_eq!(pid(serde_json::json!(i32::MAX as u32 + 1)), None);
+        assert_eq!(
+            pid(serde_json::json!(0xFFFF_0000u32)),
+            None,
+            "synthetic band floor"
+        );
+        assert_eq!(pid(serde_json::json!(u32::MAX)), None);
+        assert_eq!(pid(serde_json::json!(0)), None);
+        assert_eq!(read_session_pid(&serde_json::json!({})), None);
+    }
+
+    // EP-004 US-010/US-011: the two new notification bodies are distinct
+    // from each other and from the legacy "agent finished" / "needs input"
+    // shapes — the whole point of the epic is that the four causes read
+    // differently in a desktop toast.
+    #[test]
+    fn agent_exit_body_carries_workspace_and_code() {
+        assert_eq!(
+            agent_exit_notification_body("api", 1),
+            "api: agent exited (exit 1)"
+        );
+        assert_eq!(
+            agent_exit_notification_body("ws", -1073741510),
+            "ws: agent exited (exit -1073741510)"
+        );
+    }
+
+    #[test]
+    fn stalled_body_carries_workspace_and_silence() {
+        assert_eq!(
+            stalled_notification_body("api", 300),
+            "api: agent silent for 300 s"
+        );
     }
 
     // US-008: `workspace.up` env parsing. Non-string values are dropped (a

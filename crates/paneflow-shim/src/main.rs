@@ -18,9 +18,11 @@
 //! 2. PATH-walks `$PATH`, **excluding its own directory**, to locate the
 //!    real AI binary (`find_real_binary`). Self-exclusion prevents an
 //!    infinite exec-loop when the shim dir is first on `$PATH`.
-//! 3. Execs the real binary with argv and env passed through. On Unix,
-//!    uses the `exec()` syscall for zero-fork process replacement; on
-//!    Windows, spawns a child and propagates the exit code.
+//! 3. Runs the real binary with argv and env passed through. Both
+//!    platforms spawn + wait (`Command::status()`): US-005's drop-cleanup
+//!    guards and EP-004's `ai.exit` exit-status report are incompatible
+//!    with `exec()`-style process replacement. The exit code is
+//!    propagated verbatim (shell `128+signum` convention for signals).
 //!
 //! US-004 scope: detect / find / exec only. Hook config injection
 //! (`.claude/settings.local.json` via US-005; `.codex/hooks.json` via
@@ -83,7 +85,7 @@ fn main() -> ExitCode {
     // Gated on detecting the `exec` subcommand; interactive codex falls
     // through to the plain `run_real` path without tee.
     #[cfg(not(unix))]
-    let code = if tool == "codex" {
+    let (code, agent_exit) = if tool == "codex" {
         let (final_args, should_tee) = rewrite_codex_args(&args);
         if should_tee {
             run_codex_with_jsonl_tee(&real, &final_args)
@@ -94,7 +96,18 @@ fn main() -> ExitCode {
         run_real(tool, &real, &args)
     };
     #[cfg(unix)]
-    let code = run_real(tool, &real, &args);
+    let (code, agent_exit) = run_real(tool, &real, &args);
+
+    // EP-004 US-010: report the agent binary's REAL exit status. The shell's
+    // ChildExit only carries the shell's exit; this is the one place that
+    // knows the agent's. Emitted BEFORE `notify_session_end` — both block on
+    // the hook subprocess (`.status()`), so the server is guaranteed to see
+    // `ai.exit` (which may set `Errored`) before `ai.session_end` (which
+    // spares an `Errored` session instead of removing it). `None` (spawn or
+    // wait failure) emits nothing — the server keeps today's behavior.
+    if let Some(exit_code) = agent_exit {
+        notify_exit(tool, exit_code);
+    }
 
     // The real AI binary has exited. Neither claude nor codex fires a
     // session-end hook event of their own, so the sidebar loader would
@@ -107,6 +120,26 @@ fn main() -> ExitCode {
     notify_session_end(tool);
 
     code
+}
+
+/// EP-004 US-010: best-effort notify of `ai.exit { exit_code }` after the
+/// real AI binary exits. Same contract as [`notify_session_end`] (sibling
+/// hook binary, blocking `.status()` wait, silent failure); the raw code
+/// rides in `PANEFLOW_AI_EXIT_CODE` since the hook's stdin is null on
+/// shim-synthesized events.
+fn notify_exit(tool: &str, exit_code: i32) {
+    let Some(hook_path) = locate_sibling_hook_binary() else {
+        return;
+    };
+    let _ = std::process::Command::new(&hook_path)
+        .arg("Exit")
+        .env("PANEFLOW_AI_TOOL", tool)
+        .env("PANEFLOW_AI_PID", std::process::id().to_string())
+        .env("PANEFLOW_AI_EXIT_CODE", exit_code.to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// Best-effort notify of `ai.session_end` after the real AI binary exits.
