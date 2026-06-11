@@ -336,6 +336,19 @@ pub struct UiColors {
     pub vc_word_added: Hsla,
     /// Intra-line word-diff emphasis (deleted side).
     pub vc_word_deleted: Hsla,
+    // EP-001 (prd-cli-cockpit-ergonomics-2026-Q3.md, US-002): broadcast-group
+    // stripe palette — eight first-class slots so render code never inlines a
+    // hex (FR-08). Positional identity colors (not semantic status colors):
+    // they only need to stay mutually distinguishable and readable as a 3px
+    // pane-edge stripe on both bundled themes.
+    pub group_1: Hsla,
+    pub group_2: Hsla,
+    pub group_3: Hsla,
+    pub group_4: Hsla,
+    pub group_5: Hsla,
+    pub group_6: Hsla,
+    pub group_7: Hsla,
+    pub group_8: Hsla,
     // EP-004 (prd-cli-cockpit-ergonomics-2026-Q3.md): agent terminal-state
     // slots (FR-08 — no inline hex in render code). Both are deliberately
     // distinct from `vc_conflict` (the attention/waiting dot) so a crashed
@@ -345,6 +358,24 @@ pub struct UiColors {
     /// US-011: `AgentState::Stalled` — sidebar badge (muted grey-blue:
     /// "silent", not "failing").
     pub agent_stalled: Hsla,
+}
+
+impl UiColors {
+    /// Stripe color for broadcast-group slot `idx` (0-based). Wraps modulo 8
+    /// so an out-of-range index (impossible via the picker, which caps group
+    /// creation at 8) can never panic the render path.
+    pub fn group_color(&self, idx: usize) -> Hsla {
+        match idx % 8 {
+            0 => self.group_1,
+            1 => self.group_2,
+            2 => self.group_3,
+            3 => self.group_4,
+            4 => self.group_5,
+            5 => self.group_6,
+            6 => self.group_7,
+            _ => self.group_8,
+        }
+    }
 }
 
 /// Derive UI colors from the active terminal theme.
@@ -394,6 +425,16 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
             vc_modified_background: ha(0xdf8e1d, 0.16),
             vc_word_added: ha(0x40a02b, 0.40),
             vc_word_deleted: ha(0xd20f39, 0.40),
+            // Broadcast stripes (Catppuccin Latte family) — saturated hues
+            // that hold up as a thin stripe on a light pane edge.
+            group_1: h(0x1e66f5),
+            group_2: h(0x40a02b),
+            group_3: h(0xdf8e1d),
+            group_4: h(0xd20f39),
+            group_5: h(0x8839ef),
+            group_6: h(0x179299),
+            group_7: h(0xfe640b),
+            group_8: h(0x7287fd),
             // Agent state (Latte family): saturated red for a crash, the
             // neutral overlay grey for a silent session.
             agent_error: h(0xd20f39),
@@ -427,6 +468,16 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
             vc_modified_background: ha(0xf9e2af, 0.12),
             vc_word_added: ha(0xa6e3a1, 0.40),
             vc_word_deleted: ha(0xf38ba8, 0.40),
+            // Broadcast stripes (Catppuccin Mocha family) — pastel hues with
+            // enough luminance to read against the dark pane edge.
+            group_1: h(0x89b4fa),
+            group_2: h(0xa6e3a1),
+            group_3: h(0xf9e2af),
+            group_4: h(0xf38ba8),
+            group_5: h(0xcba6f7),
+            group_6: h(0x94e2d5),
+            group_7: h(0xfab387),
+            group_8: h(0xb4befe),
             // Agent state (Mocha family): pastel red for a crash, the
             // neutral overlay grey for a silent session.
             agent_error: h(0xf38ba8),

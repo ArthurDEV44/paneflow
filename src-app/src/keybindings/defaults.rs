@@ -307,6 +307,26 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "copy_diff_hunk",
         context: Some("DiffView"),
     },
+    // EP-001 (prd-cli-cockpit-ergonomics-2026-Q3.md): Composer + broadcast
+    // groups. All three are unclaimed `secondary-shift-…` slots (taken set
+    // before this block: d/e/w/n/q/j/t/z/=/s/a/g) and none shadows a common
+    // shell/readline/TUI chord (FR-12) — Ctrl+Shift+Space/B/M mean nothing to
+    // readline, vim or nano. Remappable like every entry in this table.
+    DefaultBinding {
+        key: "secondary-shift-space",
+        action_name: "open_composer",
+        context: None,
+    },
+    DefaultBinding {
+        key: "secondary-shift-b",
+        action_name: "toggle_broadcast_member",
+        context: None,
+    },
+    DefaultBinding {
+        key: "secondary-shift-m",
+        action_name: "open_broadcast_groups",
+        context: None,
+    },
     // EP-003 US-008 (cli-cockpit): jump-to-prompt. iTerm2's convention;
     // `ctrl-up/down` were explicitly ruled out by the PRD (they would steal
     // CSI 1;5A/B from vim/nano TUIs). Terminal context, remappable.

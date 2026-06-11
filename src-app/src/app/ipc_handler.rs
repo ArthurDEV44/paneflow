@@ -1023,6 +1023,9 @@ impl PaneFlowApp {
                 *k == key || s.surface_id != Some(sid) || s.state != ai_types::AgentState::Errored
             });
             self.sync_attention(cx);
+            // EP-001 US-003 (cli-cockpit): a late surface resolution can flip
+            // a pane's busy verdict — refresh the Composer chip.
+            self.agent_sessions_changed(cx);
             cx.notify();
         }
     }
@@ -1710,6 +1713,9 @@ impl PaneFlowApp {
                     }
                     self.schedule_surface_resolution(workspace_id, key, cx);
                     self.sync_attention(cx);
+                    // EP-001 US-003 (cli-cockpit): the target just turned
+                    // busy — refresh the Composer chip (no flush can apply).
+                    self.agent_sessions_changed(cx);
                     serde_json::json!({"status": "running"})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     // The row spinner self-animates (declarative GPUI
@@ -1755,6 +1761,8 @@ impl PaneFlowApp {
                     }
                     self.schedule_surface_resolution(workspace_id, key, cx);
                     self.sync_attention(cx);
+                    // EP-001 US-003 (cli-cockpit): see the prompt_submit arm.
+                    self.agent_sessions_changed(cx);
                     serde_json::json!({"status": "running"})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     // tool_use keeps (or promotes) the thread spinner —
@@ -1807,6 +1815,10 @@ impl PaneFlowApp {
                     );
                     self.schedule_surface_resolution(workspace_id, key, cx);
                     self.sync_attention(cx);
+                    // EP-001 US-003 (cli-cockpit): WaitingForInput is a safe
+                    // prefill target — flush this pane's queued prompt now
+                    // (main thread: transition and flush are serialized).
+                    self.agent_sessions_changed(cx);
                     serde_json::json!({"status": "waiting"})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     t.hook_managed = true;
@@ -1857,6 +1869,9 @@ impl PaneFlowApp {
                     cx.notify();
                     fire_turn_end_notification(&ws_title, cx.background_executor().clone());
                     self.sync_attention(cx);
+                    // EP-001 US-003 (cli-cockpit): the turn ended — flush any
+                    // queued prompt for this pane (prefill only).
+                    self.agent_sessions_changed(cx);
 
                     // Auto-clear the session 5 s after stop unless something
                     // else (new prompt_submit, tool_use) bumps it back to
@@ -1877,6 +1892,7 @@ impl PaneFlowApp {
                                     {
                                         ws.agent_sessions.remove(&session_key);
                                         app.sync_attention(cx);
+                                        app.agent_sessions_changed(cx);
                                         cx.notify();
                                     }
                                 });
@@ -1952,6 +1968,7 @@ impl PaneFlowApp {
                     // end, and the shim's `ai.session_end` lands right after
                     // this frame to clear the row.
                     self.sync_attention(cx);
+                    self.agent_sessions_changed(cx);
                     serde_json::json!({"status": if errored { "errored" } else { "finished" }})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     // Agents view (out of this PRD's cockpit scope): the
@@ -2027,6 +2044,9 @@ impl PaneFlowApp {
                     };
                     if removed {
                         self.sync_attention(cx);
+                        // EP-001 US-003 (cli-cockpit): a removed session
+                        // leaves a bare shell — always a safe prefill target.
+                        self.agent_sessions_changed(cx);
                         cx.notify();
                     }
                     serde_json::json!({"cleared": removed})

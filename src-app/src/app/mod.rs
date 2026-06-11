@@ -7,6 +7,8 @@ pub mod actions;
 pub mod agents_sidebar;
 pub mod agents_view_actions;
 pub mod bootstrap;
+pub mod broadcast;
+pub mod composer;
 pub mod constants;
 pub mod custom_buttons_modal;
 pub mod diff_sidebar;

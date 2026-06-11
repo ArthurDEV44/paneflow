@@ -748,6 +748,11 @@ impl PaneFlowApp {
             // US-018 (orchestration-v2): a swept session may have been
             // driving a pane glow — resync so no orphan attention survives.
             self.sync_attention(cx);
+            // EP-001 US-003 (cli-cockpit): a swept `Thinking` session leaves
+            // a bare shell — flush (or drop) its queued prompt now, else the
+            // buffer and the "1 queued" chip strand forever (no further
+            // `ai.*` frame will ever arrive for the dead session).
+            self.agent_sessions_changed(cx);
             cx.notify();
         }
         // EP-004 US-011: fire AFTER the state writes so the toast and the UI

@@ -374,6 +374,30 @@ impl PaneFlowApp {
             }
         }
 
+        // EP-001 US-003 (cli-cockpit): cancel this tab's queued prompt —
+        // the non-Composer cancel path. Only shown when a buffer exists.
+        let pending_sid = source
+            .read(cx)
+            .tabs
+            .get(source_idx)
+            .and_then(|t| t.as_terminal())
+            .map(|t| t.entity_id().as_u64())
+            .filter(|sid| self.broadcast.pending.contains_key(sid));
+        if let Some(sid) = pending_sid {
+            context_menu = context_menu.child(self.render_context_menu_item(
+                SharedString::from("tab-cancel-queued"),
+                "Cancel queued prompt",
+                None,
+                ui,
+                cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    this.tab_menu_open = None;
+                    this.cancel_pending_for(sid, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            ));
+        }
+
         deferred(context_menu).priority(3).into_any_element()
     }
 }
