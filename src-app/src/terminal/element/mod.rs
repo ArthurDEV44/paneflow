@@ -50,7 +50,6 @@ pub(crate) use color::ensure_minimum_contrast;
 // US-015: re-export the scrollbar geometry so the view's mouse handlers
 // (`crate::terminal::input`) can hit-test against the painted strip. `paint`
 // is a private module, so the type must surface through `element`.
-pub(crate) use paint::marks::HoveredMark;
 pub(crate) use paint::scrollbar::ScrollbarMetrics;
 
 /// APCA minimum Lc (lightness contrast) threshold.
@@ -369,10 +368,6 @@ pub struct LayoutState {
     link_text_color: Hsla,
     /// Cursor position bounds for IME popup positioning (pixel coordinates).
     ime_cursor_bounds: Option<Bounds<Pixels>>,
-    /// EP-003 US-008: exit-code dots projected onto viewport rows (filled by
-    /// `build_layout` after the snapshot — empty when no `133;D` mark is in
-    /// view). Bounded by the viewport, never by the mark ring.
-    mark_dots: Vec<paint::marks::MarkDot>,
 }
 
 // ---------------------------------------------------------------------------
@@ -427,17 +422,10 @@ pub struct TerminalElement {
     /// mouse handlers can hit-test interactive scroll against the exact strip
     /// that was drawn. Same single-thread sharing as [`element_origin`].
     scrollbar_metrics: Arc<Mutex<Option<ScrollbarMetrics>>>,
-    /// EP-003 US-008: `(abs_line, exit_code)` of the terminal's `133;D`
-    /// marks, snapshotted by the view at render time. Projected onto the
-    /// viewport in `build_layout`.
-    command_marks: Vec<(i64, i32)>,
     /// EP-006 US-017: search-match positions as lines-from-grid-bottom,
     /// snapshotted by the view at render time (empty when no search).
     /// Painted as decimated ticks on the scrollbar track.
     search_rail_lines: Vec<usize>,
-    /// EP-003 US-008: the gutter dot under the pointer, if any (view-side
-    /// hit-test) — drives the `exit <code>` tooltip.
-    hovered_mark: Option<paint::marks::HoveredMark>,
     /// Timestamp of the keystroke that triggered this render, for latency measurement.
     #[cfg(debug_assertions)]
     last_keystroke_at: Option<std::time::Instant>,
@@ -463,9 +451,7 @@ impl TerminalElement {
         terminal_view: gpui::Entity<crate::terminal::TerminalView>,
         needs_initial_clear: Arc<std::sync::atomic::AtomicBool>,
         scrollbar_metrics: Arc<Mutex<Option<ScrollbarMetrics>>>,
-        command_marks: Vec<(i64, i32)>,
         search_rail_lines: Vec<usize>,
-        hovered_mark: Option<paint::marks::HoveredMark>,
         #[cfg(debug_assertions)] last_keystroke_at: Option<std::time::Instant>,
     ) -> Self {
         Self {
@@ -486,9 +472,7 @@ impl TerminalElement {
             terminal_view,
             needs_initial_clear,
             scrollbar_metrics,
-            command_marks,
             search_rail_lines,
-            hovered_mark,
             #[cfg(debug_assertions)]
             last_keystroke_at,
         }
@@ -611,7 +595,7 @@ impl TerminalElement {
             .ceil()
             .max(0.0) as i32;
 
-        let mut layout = layout_from_snapshot(LayoutInputs {
+        layout_from_snapshot(LayoutInputs {
             cells,
             cursor: cursor_snapshot,
             selection_range,
@@ -628,21 +612,7 @@ impl TerminalElement {
             theme: &theme,
             exited: self.exited,
             exit_signal: self.exit_signal.clone(),
-        });
-        // EP-003 US-008: project the `133;D` marks onto this frame's viewport.
-        // Status colors come from the `UiColors` slots (FR-08).
-        if !self.command_marks.is_empty() {
-            let ui = crate::theme::ui_colors_with(&theme);
-            layout.mark_dots = paint::marks::compute_mark_dots(
-                &self.command_marks,
-                history_size,
-                display_offset,
-                desired_rows,
-                ui.vc_added,
-                ui.vc_deleted,
-            );
-        }
-        layout
+        })
     }
 }
 
@@ -1181,7 +1151,6 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
         desired_rows,
         link_text_color: theme.link_text,
         ime_cursor_bounds,
-        mark_dots: Vec::new(),
     }
 }
 
@@ -1466,17 +1435,6 @@ impl Element for TerminalElement {
 
             // 3b. Hyperlink underline + tooltip (Ctrl+hover)
             paint::overlay::paint_hyperlink_tooltip(self, &layout, &geom, window, cx);
-
-            // 3c. EP-003 US-008: exit-code dots in the left gutter + the
-            // hovered dot's `exit <code>` tooltip.
-            paint::marks::paint_mark_dots(&layout, bounds, &geom, window);
-            paint::marks::paint_mark_tooltip(
-                self.hovered_mark.as_ref(),
-                &layout,
-                &geom,
-                window,
-                cx,
-            );
 
             // 4. Primary cursor
             paint::cursor::paint_cursor(&layout, &geom, &base_font, font_size, window, cx);
