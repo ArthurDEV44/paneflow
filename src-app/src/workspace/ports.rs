@@ -75,6 +75,9 @@ fn agents_in_bfs_order<'a>(
 /// Parse `/proc/net/tcp`-format content into `(port, socket_inode)` pairs
 /// for LISTEN-state (0A) sockets. Pure string parsing, platform-neutral so
 /// the fixture test runs on every host; malformed lines are skipped.
+/// Gated to Linux + test builds: only the `/proc` scan consumes it at
+/// runtime, and macOS/Windows compile with `-D warnings` (dead_code).
+#[cfg(any(target_os = "linux", test))]
 fn parse_listen_entries(content: &str) -> Vec<(u16, u64)> {
     let mut out = Vec::new();
     for line in content.lines().skip(1) {
