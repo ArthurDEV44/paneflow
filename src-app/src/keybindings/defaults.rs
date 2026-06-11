@@ -307,6 +307,19 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "copy_diff_hunk",
         context: Some("DiffView"),
     },
+    // EP-003 US-008 (cli-cockpit): jump-to-prompt. iTerm2's convention;
+    // `ctrl-up/down` were explicitly ruled out by the PRD (they would steal
+    // CSI 1;5A/B from vim/nano TUIs). Terminal context, remappable.
+    DefaultBinding {
+        key: "secondary-shift-up",
+        action_name: "jump_prev_prompt",
+        context: Some("Terminal"),
+    },
+    DefaultBinding {
+        key: "secondary-shift-down",
+        action_name: "jump_next_prompt",
+        context: Some("Terminal"),
+    },
 ];
 
 /// Platform-specific default bindings layered on top of [`DEFAULTS`].

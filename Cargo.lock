@@ -6029,6 +6029,7 @@ dependencies = [
  "paneflow-process",
  "paneflow-telemetry",
  "parking_lot",
+ "polling",
  "pulldown-cmark 0.10.3",
  "regex",
  "rfd",

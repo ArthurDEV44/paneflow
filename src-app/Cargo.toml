@@ -68,6 +68,11 @@ ui = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-a
 
 # Alacritty terminal emulation (upstream crates.io — migrated from Zed fork in US-005)
 alacritty_terminal = "0.26"
+# EP-003 US-006: named directly because the `TeePty` byte tap implements
+# alacritty_terminal's public `tty::EventedReadWrite` traits, whose
+# signatures expose `polling` types (not re-exported by the crate). Same
+# semver line as alacritty_terminal's own dependency — one shared instance.
+polling = "3"
 
 # Internal crates
 paneflow-config = { path = "../crates/paneflow-config" }

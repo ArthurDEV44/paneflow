@@ -29,6 +29,12 @@ pub struct PaneFlowConfig {
     /// Treat Alt key as Meta (send ESC prefix). Default: true on Linux.
     /// Set to false for future macOS where Option produces Unicode characters.
     pub option_as_meta: Option<bool>,
+    /// EP-003 US-007 (cli-cockpit): master switch for the per-shell rc
+    /// injection (OSC 7 CWD reporting + OSC 133 command marks). `None`/`true`
+    /// = enabled (the long-standing default behavior); `false` = no snippet
+    /// is written or wired — the shell starts exactly as it would outside
+    /// Paneflow.
+    pub shell_integration: Option<bool>,
     /// External editor used to open markdown links (file paths shipped
     /// by the agent as `[foo](src/foo.rs)` or `[foo](src/foo.rs:42)`).
     ///
@@ -1095,6 +1101,7 @@ mod tests {
             font_family: Some("Lilex".to_string()),
             font_size: Some(14.0),
             option_as_meta: Some(true),
+            shell_integration: Some(true),
             external_editor: Some("auto".to_string()),
             claude_code_bypass_permissions: Some(false),
             claude_code_button_visible: Some(true),

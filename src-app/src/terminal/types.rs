@@ -816,6 +816,10 @@ mod tests {
             "terminal/search.rs",            // grid search machinery on Term
             "search.rs",                     // root: scrollback grid search on Term
             "terminal/element/hyperlink.rs", // grid-coordinate URL/path detection
+            // EP-003 US-006 (cli-cockpit): the OSC 133 byte tap implements
+            // alacritty's public tty traits to wrap the platform Pty -
+            // backend adapter by definition, same seam as pty_session.
+            "terminal/tee_pty.rs",
         ];
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

@@ -53,6 +53,10 @@
       "description": "Treat Alt/Option as Meta and send an ESC prefix. Default true on Linux and Windows. On macOS, set to false if you rely on Option to produce Unicode characters.",
       "default": true
     },
+    "shell_integration": {
+      "type": ["boolean", "null"],
+      "description": "Master switch for the per-shell rc injection (OSC 7 CWD reporting + OSC 133 command marks). null/true = enabled (default); false = no snippet is written or wired - the shell starts exactly as it would outside Paneflow."
+    },
     "external_editor": {
       "type": ["string", "null"],
       "description": "Editor used to open file links. 'auto' probes zed, cursor, windsurf, then code; 'system' always uses the OS opener.",
