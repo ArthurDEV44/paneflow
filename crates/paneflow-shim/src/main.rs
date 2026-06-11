@@ -9,9 +9,10 @@
 )]
 //! PaneFlow AI-binary shim.
 //!
-//! Copied or hardlinked (by US-008 extraction) as `claude` and `codex` into
-//! the PaneFlow bin cache dir, which US-009 prepends to the PTY's `$PATH`.
-//! When the user runs `claude` or `codex`, this shim:
+//! Copied (by US-008 extraction) under every `TerminalAgent` binary name
+//! (`claude`, `codex`, `gemini`, `cursor-agent`, …) into the PaneFlow bin
+//! cache dir, which US-009 prepends to the PTY's `$PATH`. When the user
+//! runs one of those tools, this shim:
 //!
 //! 1. Reads its own filename via `current_exe()` to decide which tool to
 //!    front for (`detect_tool`).
@@ -55,7 +56,8 @@ fn main() -> ExitCode {
         // cannot proceed regardless of PaneFlow state.
         eprintln!(
             "paneflow-shim: invoked under an unexpected name; copy or \
-             hardlink this binary as 'claude' or 'codex' and put that \
+             hardlink this binary under one of the Paneflow-wrapped agent \
+             CLI names ('claude', 'codex', 'gemini', …) and put that \
              directory first on $PATH."
         );
         return ExitCode::from(2);
@@ -70,14 +72,12 @@ fn main() -> ExitCode {
     };
 
     // Install hook config guards before spawning the child, remove on drop.
-    // Bindings are held to end of `main` so destructors fire after
+    // The binding is held to end of `main` so destructors fire after
     // `run_real` returns; `None` is the graceful-degradation path for a
-    // read-only FS / missing permissions (PRD C4).
-    let _claude_guard = (tool == "claude").then(HookConfigGuard::install).flatten();
-    #[cfg(unix)]
-    let _codex_guard = (tool == "codex")
-        .then(CodexHookConfigGuard::install)
-        .flatten();
+    // read-only FS / missing permissions (PRD C4) — and for every wrapped
+    // tool with no hook integration yet (the shim still provides the
+    // universal `ai.exit`/`ai.session_end` lifecycle below).
+    let _hook_guard = install_hook_guard(tool);
 
     let args: Vec<OsString> = env::args_os().skip(1).collect();
 
@@ -120,6 +120,90 @@ fn main() -> ExitCode {
     notify_session_end(tool);
 
     code
+}
+
+/// Per-tool hook-config installation. One guard variant per config FORMAT:
+/// Claude Code keeps its dedicated guard (persistent-hooks precedence logic);
+/// Codex keeps its TOML+JSON pair (Unix only — Windows uses the JSONL tee);
+/// everything else rides [`ManagedHookConfigGuard`] parameterized by
+/// location + merge/remove pair. Tools without a hook integration return
+/// `None` — they still get the shim's universal exit/session-end lifecycle.
+// Fields are never READ — they exist solely so the wrapped guard's `Drop`
+// (hook-config cleanup) fires when `main` returns.
+#[allow(dead_code)]
+enum ToolHookGuard {
+    Claude(HookConfigGuard),
+    #[cfg(unix)]
+    Codex(CodexHookConfigGuard),
+    Managed(ManagedHookConfigGuard),
+    Pi(PiExtensionGuard),
+    OpenCode(OpenCodePluginGuard),
+    Hermes(HermesHookConfigGuard),
+    Grok(GrokHookFileGuard),
+}
+
+fn install_hook_guard(tool: &str) -> Option<ToolHookGuard> {
+    match tool {
+        "claude" => HookConfigGuard::install().map(ToolHookGuard::Claude),
+        #[cfg(unix)]
+        "codex" => CodexHookConfigGuard::install().map(ToolHookGuard::Codex),
+        // Claude-Code-compatible clones: same settings.local.json format,
+        // project-local dir, different event coverage.
+        "codebuddy" => ManagedHookConfigGuard::install_in_cwd(
+            ".codebuddy",
+            "settings.local.json",
+            "CodeBuddy",
+            merge_paneflow_hooks,
+            remove_paneflow_hooks,
+        )
+        .map(ToolHookGuard::Managed),
+        "qodercli" => ManagedHookConfigGuard::install_in_cwd(
+            ".qoder",
+            "settings.local.json",
+            "Qoder",
+            merge_qoder_hooks,
+            remove_qoder_hooks,
+        )
+        .map(ToolHookGuard::Managed),
+        // Flat-format CLIs, user-scope config (their project files are
+        // primary configs, often git-tracked — mutating those would churn
+        // the user's diff for the whole session).
+        "gemini" => ManagedHookConfigGuard::install_in_home(
+            ".gemini",
+            "settings.json",
+            "Gemini CLI",
+            merge_gemini_hooks,
+            remove_gemini_hooks,
+        )
+        .map(ToolHookGuard::Managed),
+        "cursor-agent" => ManagedHookConfigGuard::install_in_home(
+            ".cursor",
+            "hooks.json",
+            "Cursor",
+            merge_cursor_hooks,
+            remove_cursor_hooks,
+        )
+        .map(ToolHookGuard::Managed),
+        // TypeScript-plugin agents: an embedded bridge file is materialized
+        // (and, for OpenCode, declared in opencode.json) for the session.
+        "pi" => PiExtensionGuard::install().map(ToolHookGuard::Pi),
+        "opencode" => OpenCodePluginGuard::install().map(ToolHookGuard::OpenCode),
+        // YAML config, string-level marked block (comment-preserving).
+        "hermes" => HermesHookConfigGuard::install().map(ToolHookGuard::Hermes),
+        // Dedicated merged hook file — wholly Paneflow-owned, zero RMW.
+        "grok" => GrokHookFileGuard::install().map(ToolHookGuard::Grok),
+        // Deliberately ABSENT (documented, not forgotten):
+        // - "copilot": no hook/JSON-stream surface exists at all.
+        // - "kiro-cli": hooks live inside PER-AGENT definition files
+        //   (`~/.kiro/agents/<name>.json`) — injecting would mean rewriting
+        //   every agent the user defined, and the default agent has no
+        //   file to extend. No per-session surface exists.
+        // - "droid": hooks are dashboard-managed (closed-source).
+        // - "agy" / "openclaw" / the rest: no stable public hook surface.
+        // They all still get the universal `ai.exit`/`ai.session_end`
+        // lifecycle plus the sidebar's process-scan "running" row.
+        _ => None,
+    }
 }
 
 /// EP-004 US-010: best-effort notify of `ai.exit { exit_code }` after the
@@ -198,8 +282,13 @@ mod tests {
 
     #[test]
     fn detect_tool_from_stem_maps_known_stems() {
+        // Every wrapped tool maps to itself — the stem IS the wire id.
+        for tool in detect::WRAPPED_TOOLS {
+            assert_eq!(detect_tool_from_stem(tool), Some(*tool));
+        }
         assert_eq!(detect_tool_from_stem("claude"), Some("claude"));
-        assert_eq!(detect_tool_from_stem("codex"), Some("codex"));
+        assert_eq!(detect_tool_from_stem("cursor-agent"), Some("cursor-agent"));
+        assert_eq!(detect_tool_from_stem("qodercli"), Some("qodercli"));
     }
 
     #[test]
@@ -741,6 +830,294 @@ mod tests {
         let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["matcher"], json!("Bash"));
+    }
+
+    // ---------- Multi-agent: clones + flat-format guards ----------
+
+    #[test]
+    fn qoder_merge_skips_notification_event() {
+        // Qoder has no `Notification` hook event — registering it could
+        // make its config validator reject the whole file.
+        let mut root = json!({});
+        merge_qoder_hooks(&mut root);
+        let hooks = root["hooks"].as_object().unwrap();
+        assert!(hooks.contains_key("UserPromptSubmit"));
+        assert!(hooks.contains_key("Stop"));
+        assert!(
+            !hooks.contains_key("Notification"),
+            "Notification must not be registered for Qoder"
+        );
+        // Round-trip: removal leaves an empty tree (deletable file).
+        remove_qoder_hooks(&mut root);
+        assert_eq!(root, json!({}));
+    }
+
+    #[test]
+    fn gemini_flat_merge_writes_canonical_argv_and_roundtrips() {
+        let mut root = json!({});
+        merge_gemini_hooks(&mut root);
+        // Foreign key on the config side…
+        let before_agent = root["hooks"]["BeforeAgent"].as_array().unwrap();
+        assert_eq!(before_agent.len(), 1);
+        // …canonical Claude-shaped event in the command argv.
+        let cmd = before_agent[0]["command"].as_str().unwrap();
+        assert!(
+            cmd.ends_with(" UserPromptSubmit"),
+            "BeforeAgent must invoke the canonical UserPromptSubmit: {cmd}"
+        );
+        // No matcher-group wrapper and no marker field (stricter parsers).
+        assert!(before_agent[0].get("_paneflow_managed").is_none());
+        assert!(before_agent[0].get("hooks").is_none());
+        // Idempotent merge.
+        merge_gemini_hooks(&mut root);
+        assert_eq!(root["hooks"]["BeforeAgent"].as_array().unwrap().len(), 1);
+        // Removal restores an empty tree.
+        remove_gemini_hooks(&mut root);
+        assert_eq!(root, json!({}));
+    }
+
+    #[test]
+    fn cursor_flat_merge_stamps_version_and_preserves_user_entries() {
+        let mut root = json!({
+            "hooks": {
+                "preToolUse": [ { "command": "/usr/bin/audit-tool" } ]
+            }
+        });
+        merge_cursor_hooks(&mut root);
+        assert_eq!(root["version"], json!(1), "Cursor requires version: 1");
+        let arr = root["hooks"]["preToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 2, "user entry + paneflow entry");
+        assert_eq!(arr[0]["command"], json!("/usr/bin/audit-tool"));
+
+        remove_cursor_hooks(&mut root);
+        let arr = root["hooks"]["preToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1, "only the user's entry survives removal");
+        // `version` is kept while user content remains.
+        assert_eq!(root["version"], json!(1));
+    }
+
+    #[test]
+    fn cursor_flat_remove_drops_version_when_nothing_else_remains() {
+        let mut root = json!({});
+        merge_cursor_hooks(&mut root);
+        remove_cursor_hooks(&mut root);
+        assert_eq!(
+            root,
+            json!({}),
+            "a fully-managed file must collapse to empty (then deleted)"
+        );
+    }
+
+    #[test]
+    fn managed_guard_install_and_drop_roundtrip_in_clone_dir() {
+        // End-to-end for the clone path: .codebuddy/settings.local.json is
+        // created with Claude-format hooks, then fully cleaned up on drop
+        // (file deleted, created dir removed).
+        let td = tempfile::TempDir::new().unwrap();
+        let dir = td.path().join(".codebuddy");
+
+        let guard = ManagedHookConfigGuard::install_at(
+            &dir,
+            "settings.local.json",
+            "CodeBuddy",
+            merge_paneflow_hooks,
+            remove_paneflow_hooks,
+        )
+        .expect("install in fresh dir must succeed");
+
+        let content = std::fs::read_to_string(dir.join("settings.local.json")).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(root["hooks"]["UserPromptSubmit"].is_array());
+
+        drop(guard);
+        assert!(
+            !dir.exists(),
+            "drop must delete the managed file and the created dir"
+        );
+    }
+
+    #[test]
+    fn pi_extension_guard_roundtrip() {
+        let td = tempfile::TempDir::new().unwrap();
+        let ext_dir = td.path().join(".pi/agent/extensions");
+        let guard = PiExtensionGuard::install_at(&ext_dir).expect("install must succeed");
+        let ext = ext_dir.join(PANEFLOW_TS_BASENAME);
+        let content = std::fs::read_to_string(&ext).unwrap();
+        assert!(
+            content.contains("PANEFLOW_SOCKET_PATH"),
+            "extension must be env-gated to stay inert outside Paneflow"
+        );
+        drop(guard);
+        assert!(!ext.exists(), "drop must remove the extension file");
+    }
+
+    #[test]
+    fn opencode_guard_declares_plugin_and_cleans_up() {
+        let td = tempfile::TempDir::new().unwrap();
+        let dir = td.path().join("opencode");
+
+        let guard = OpenCodePluginGuard::install_at(&dir).expect("fresh install must succeed");
+        let plugin = dir.join("plugins").join(PANEFLOW_TS_BASENAME);
+        assert!(plugin.is_file());
+        let root: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
+                .unwrap();
+        let entries = root["plugin"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].as_str().unwrap().ends_with(PANEFLOW_TS_BASENAME));
+
+        drop(guard);
+        assert!(!plugin.exists(), "drop must remove the plugin file");
+        assert!(
+            !dir.join("opencode.json").exists(),
+            "a config we created and fully own must be deleted on drop"
+        );
+    }
+
+    #[test]
+    fn opencode_guard_preserves_user_config_and_refuses_unparseable() {
+        let td = tempfile::TempDir::new().unwrap();
+        let dir = td.path().join("opencode");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // User config with their own plugin entry survives the roundtrip.
+        std::fs::write(
+            dir.join("opencode.json"),
+            r#"{"model": "anthropic/claude-opus-4-8", "plugin": ["./mine.ts"]}"#,
+        )
+        .unwrap();
+        let guard = OpenCodePluginGuard::install_at(&dir).unwrap();
+        let root: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
+                .unwrap();
+        assert_eq!(root["plugin"].as_array().unwrap().len(), 2);
+        drop(guard);
+        let root: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
+                .unwrap();
+        assert_eq!(root["plugin"], json!(["./mine.ts"]));
+        assert_eq!(root["model"], json!("anthropic/claude-opus-4-8"));
+
+        // PRIMARY config that doesn't parse must never be clobbered.
+        std::fs::write(dir.join("opencode.json"), "{ definitely not json").unwrap();
+        assert!(
+            OpenCodePluginGuard::install_at(&dir).is_none(),
+            "unparseable primary config must skip the install"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("opencode.json")).unwrap(),
+            "{ definitely not json",
+            "the user's file must be byte-identical after the refusal"
+        );
+    }
+
+    #[test]
+    fn opencode_guard_skips_jsonc_only_setup() {
+        let td = tempfile::TempDir::new().unwrap();
+        let dir = td.path().join("opencode");
+        std::fs::create_dir_all(&dir).unwrap();
+        // serde_json can't round-trip comments — a .jsonc-only setup must
+        // be left alone entirely.
+        std::fs::write(dir.join("opencode.jsonc"), "{ /* user comment */ }").unwrap();
+        assert!(OpenCodePluginGuard::install_at(&dir).is_none());
+        assert!(!dir.join("opencode.json").exists());
+    }
+
+    #[test]
+    fn grok_guard_writes_dedicated_file_and_removes_on_drop() {
+        let td = tempfile::TempDir::new().unwrap();
+        let hooks_dir = td.path().join(".grok/hooks");
+        let guard = GrokHookFileGuard::install_at(&hooks_dir).expect("install must succeed");
+        let path = hooks_dir.join("paneflow.json");
+        let root: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // Claude matcher-group shape, reduced event set.
+        assert!(root["hooks"]["UserPromptSubmit"].is_array());
+        assert!(root["hooks"]["Stop"].is_array());
+        assert!(
+            root["hooks"].get("Notification").is_none(),
+            "Notification must not be registered for Grok (whitelist-dropped)"
+        );
+        let cmd = root["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.ends_with(" PreToolUse"));
+        drop(guard);
+        assert!(!path.exists(), "drop must delete the dedicated hook file");
+    }
+
+    #[test]
+    fn hermes_guard_appends_block_and_strips_on_drop() {
+        let td = tempfile::TempDir::new().unwrap();
+        let dir = td.path().join(".hermes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let user_yaml = "model: hermes-4\n# my comment\nverbose: true\n";
+        std::fs::write(dir.join("config.yaml"), user_yaml).unwrap();
+
+        let guard = HermesHookConfigGuard::install_at(&dir).expect("install must succeed");
+        let content = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert!(content.starts_with(user_yaml), "user content untouched");
+        assert!(content.contains(HERMES_BLOCK_BEGIN));
+        assert!(content.contains("pre_llm_call:"));
+        assert!(content.contains(" UserPromptSubmit\""));
+        assert!(content.contains(" PermissionRequest\""));
+
+        drop(guard);
+        let content = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert_eq!(
+            content, user_yaml,
+            "drop must restore the file byte-identical (comments included)"
+        );
+    }
+
+    #[test]
+    fn hermes_guard_refuses_when_user_has_hooks_key() {
+        // A duplicate top-level `hooks:` key would silently override the
+        // user's own hooks under PyYAML-family last-wins semantics.
+        let td = tempfile::TempDir::new().unwrap();
+        let dir = td.path().join(".hermes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let user_yaml = "hooks:\n  pre_tool_call:\n    - command: \"~/mine.sh\"\n";
+        std::fs::write(dir.join("config.yaml"), user_yaml).unwrap();
+
+        assert!(HermesHookConfigGuard::install_at(&dir).is_none());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("config.yaml")).unwrap(),
+            user_yaml,
+            "refusal must leave the file untouched"
+        );
+    }
+
+    #[test]
+    fn hermes_guard_reinstall_is_idempotent_and_fresh_file_deleted() {
+        let td = tempfile::TempDir::new().unwrap();
+        let dir = td.path().join(".hermes");
+
+        // Fresh dir: file created from scratch…
+        let g1 = HermesHookConfigGuard::install_at(&dir).unwrap();
+        // …simulate a SIGKILL (no Drop) then a new session re-installing.
+        std::mem::forget(g1);
+        let g2 = HermesHookConfigGuard::install_at(&dir).unwrap();
+        let content = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert_eq!(
+            content.matches(HERMES_BLOCK_BEGIN).count(),
+            1,
+            "re-install must replace, not stack, the managed block"
+        );
+        drop(g2);
+        // g2 was created over a file g1 made — created_file=false for g2, so
+        // the file survives but holds no managed block.
+        let content = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert!(strip_hermes_managed_block(&content).is_none());
+        assert!(content.trim().is_empty());
+    }
+
+    #[test]
+    fn strip_hermes_block_handles_absent_and_partial_markers() {
+        assert!(strip_hermes_managed_block("model: x\n").is_none());
+        // Begin without end (truncated write) → refuse to strip.
+        let partial = format!("a: 1\n{HERMES_BLOCK_BEGIN}\nhooks:\n");
+        assert!(strip_hermes_managed_block(&partial).is_none());
     }
 
     // ---------- US-006: CodexHookConfigGuard (Unix) ----------

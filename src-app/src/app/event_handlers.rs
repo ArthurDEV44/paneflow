@@ -75,6 +75,92 @@ fn pid_is_alive(pid: u32) -> bool {
     }
 }
 
+/// Parse the `starttime` field (22) from `/proc/{pid}/stat` content. The
+/// comm field (2) is parenthesized and may contain spaces and parens
+/// (`(tmux: server)`, `(next-server (v15))`) — split after the LAST `)`
+/// (kernel-guaranteed unambiguous), then take the 20th whitespace field of
+/// the remainder (state is field 3 → index 0, so starttime is index 19).
+/// Platform-neutral pure parsing so the fixture test runs on every host.
+#[cfg(any(target_os = "linux", test))]
+fn parse_proc_stat_starttime(stat: &str) -> Option<u64> {
+    let after = stat.rsplit_once(')')?.1;
+    after.split_whitespace().nth(19)?.parse::<u64>().ok()
+}
+
+/// OS start time of a process, as an opaque value only ever compared for
+/// equality. Pinned on `AgentSession` at creation and re-probed by the
+/// sweep to detect PID reuse (a recycled PID passes `pid_is_alive` but
+/// carries a different start time). `None` on probe failure (EPERM, dead
+/// process, exotic target) — callers fall back to liveness-only.
+#[cfg(target_os = "linux")]
+pub(crate) fn pid_start_time(pid: u32) -> Option<u64> {
+    let content = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_proc_stat_starttime(&content)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn pid_start_time(pid: u32) -> Option<u64> {
+    use libproc::libproc::bsd_info::BSDInfo;
+    use libproc::libproc::proc_pid::pidinfo;
+    // EPERM (SIP-protected targets) and dead-pid races degrade to None —
+    // the caller keeps the conservative liveness-only check.
+    let info = pidinfo::<BSDInfo>(pid as i32, 0).ok()?;
+    Some(
+        info.pbi_start_tvsec
+            .wrapping_mul(1_000_000)
+            .wrapping_add(info.pbi_start_tvusec),
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn pid_start_time(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess};
+    // Same minimal access right as `pid_is_alive` above.
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    if pid == 0 {
+        return None;
+    }
+    // SAFETY: `OpenProcess` returns a valid handle (closed below) or NULL;
+    // `GetProcessTimes` writes only into the four provided FILETIMEs, which
+    // are plain-old-data and fully initialized by `zeroed`.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut creation: FILETIME = std::mem::zeroed();
+        let mut exit: FILETIME = std::mem::zeroed();
+        let mut kernel: FILETIME = std::mem::zeroed();
+        let mut user: FILETIME = std::mem::zeroed();
+        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
+        let _ = CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        Some(((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64)
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+pub(crate) fn pid_start_time(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// [`pid_is_alive`] hardened against PID reuse: when the session pinned a
+/// start time at creation, a live PID with a DIFFERENT current start time
+/// is a recycled PID — the original agent is gone. An unknown start time on
+/// either side keeps the conservative "alive" answer.
+fn pid_matches(pid: u32, pinned_start: Option<u64>) -> bool {
+    if !pid_is_alive(pid) {
+        return false;
+    }
+    match (pinned_start, pid_start_time(pid)) {
+        (Some(pinned), Some(current)) => pinned == current,
+        _ => true,
+    }
+}
+
 impl PaneFlowApp {
     pub(crate) fn handle_title_bar_event(
         &mut self,
@@ -604,7 +690,15 @@ impl PaneFlowApp {
                     })
                     .detach();
             }
-            // ChildExited + TitleChanged are handled by Pane's subscription
+            terminal::TerminalEvent::ChildExited => {
+                // The Pane's own subscription closes the tab; here we drop
+                // the dying surface's agent sessions NOW instead of waiting
+                // ≤30s for the sweep. Covers the paths where the shim's
+                // `ai.exit`/`ai.session_end` never arrive (shim SIGKILLed,
+                // agent launched without the shim).
+                self.purge_sessions_for_surface(terminal.entity_id().as_u64(), cx);
+            }
+            // TitleChanged is handled by Pane's subscription
             _ => {}
         }
     }
@@ -663,6 +757,44 @@ impl PaneFlowApp {
         })
     }
 
+    /// Immediately drop agent sessions anchored to a dying surface (the
+    /// shell behind it exited — its tab is closing), plus any real-PID
+    /// session of the same pass whose process is already gone. Surgical
+    /// complement to [`Self::sweep_stale_pids`]: same retention semantics,
+    /// zero latency instead of ≤30s, no Stalled logic. An `Errored` session
+    /// on the dying surface is dropped too — that matches the sweep's
+    /// "sticky until its pane closes" contract, just without the wait.
+    pub(crate) fn purge_sessions_for_surface(&mut self, surface_id: u64, cx: &mut Context<Self>) {
+        let mut changed = false;
+        for ws in &mut self.workspaces {
+            if ws.agent_sessions.is_empty() {
+                continue;
+            }
+            let before = ws.agent_sessions.len();
+            ws.agent_sessions.retain(|&pid, session| {
+                if session.surface_id == Some(surface_id) {
+                    return false;
+                }
+                // Opportunistic: a session never resolved to a surface can
+                // only be reaped through its PID — probe it now (the dying
+                // shell may have taken the agent with it via SIGHUP).
+                session.surface_id.is_some()
+                    || pid > i32::MAX as u32
+                    || pid_matches(pid, session.proc_start)
+            });
+            if ws.agent_sessions.len() < before {
+                changed = true;
+            }
+        }
+        if changed {
+            // Same post-mutation trio as the sweep: drop orphan pane glows,
+            // flush queued prompts stranded on the dead session, repaint.
+            self.sync_attention(cx);
+            self.agent_sessions_changed(cx);
+            cx.notify();
+        }
+    }
+
     /// Probe registered AI agent PIDs and clean up stale entries where the
     /// process no longer exists. See [`pid_is_alive`] for the per-platform
     /// probe (Unix: `kill(pid, 0)` / `ESRCH`; Windows: `OpenProcess` null
@@ -711,7 +843,7 @@ impl PaneFlowApp {
             // `ai.session_end` or by the next state transition.
             ws.agent_sessions.retain(|&pid, session| {
                 pid > i32::MAX as u32
-                    || pid_is_alive(pid)
+                    || pid_matches(pid, session.proc_start)
                     || (session.state == ai_types::AgentState::Errored
                         && session
                             .surface_id
@@ -849,10 +981,20 @@ impl PaneFlowApp {
         .detach();
     }
 
-    /// Schedule a debounced port scan for the given workspace.
-    /// Uses a generation counter to cancel superseded scans.
+    /// Schedule a debounced port-scan ladder for the given workspace.
+    ///
+    /// `port_scan_pending` absorbs bursts while a ladder is in flight: the
+    /// old design bumped the generation on EVERY burst, so sustained output
+    /// (an agent streaming for a minute) superseded the 500ms-debounced scan
+    /// over and over and no scan ran until the terminal went quiet. The
+    /// generation counter stays as the cancellation belt for workspace
+    /// close/reuse.
     fn schedule_port_scan(&mut self, ws_idx: usize, cx: &mut Context<Self>) {
         let ws = &mut self.workspaces[ws_idx];
+        if ws.port_scan_pending {
+            return;
+        }
+        ws.port_scan_pending = true;
         ws.port_scan_generation += 1;
         let generation = ws.port_scan_generation;
         let ws_id = ws.id;
@@ -877,6 +1019,16 @@ impl PaneFlowApp {
                         _ => break,
                     }
                 }
+
+                // Re-arm regardless of how the ladder ended — the next
+                // ActivityBurst starts a fresh one.
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app: &mut Self, _cx| {
+                        if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.id == ws_id) {
+                            ws.port_scan_pending = false;
+                        }
+                    })
+                });
             },
         )
         .detach();
@@ -969,7 +1121,7 @@ impl PaneFlowApp {
         // Workspace aggregates (sidebar contract).
         let mut ports: Vec<u16> = scan
             .values()
-            .flat_map(|s| s.ports.iter().copied())
+            .flat_map(|s| s.ports.iter().map(|e| e.port))
             .collect();
         ports.sort_unstable();
         ports.dedup();
@@ -989,6 +1141,45 @@ impl PaneFlowApp {
             ws.detected_agents = detected_agents;
             changed = true;
         }
+
+        // OS-side classification → service_labels. The argv classifier is
+        // the AUTHORITATIVE clickability signal (it sees the actual socket
+        // owner); the PTY-text path stays as enrichment (exact URL with
+        // path, backend labels). Without this merge, clickability required
+        // the text scrape to have caught the announcement line — a
+        // timing-dependent AND of two detectors that made chips appear
+        // "sometimes".
+        for entry in scan.values().flat_map(|s| s.ports.iter()) {
+            let Some(label) = entry.frontend else {
+                continue;
+            };
+            match ws.service_labels.entry(entry.port) {
+                Entry::Occupied(mut e) => {
+                    let info = e.get_mut();
+                    if !info.is_frontend {
+                        info.is_frontend = true;
+                        info.label = Some(label.to_string());
+                        if info.url.is_none() {
+                            info.url = Some(format!("http://localhost:{}", entry.port));
+                        }
+                        changed = true;
+                    }
+                }
+                Entry::Vacant(v) => {
+                    v.insert(crate::terminal::ServiceInfo {
+                        port: entry.port,
+                        url: Some(format!("http://localhost:{}", entry.port)),
+                        label: Some(label.to_string()),
+                        is_frontend: true,
+                    });
+                    changed = true;
+                }
+            }
+        }
+
+        // Snapshot for the per-terminal announce-dedup purge below (ends the
+        // mutable borrow region cleanly before the pane loop).
+        let live_ports: Vec<u16> = ws.active_ports.clone();
 
         // Frontend URLs for clickable port badges (US-014, sidebar parity:
         // only frontend services get a link, backend ports stay textual).
@@ -1014,11 +1205,11 @@ impl PaneFlowApp {
         let mut owner: std::collections::HashMap<u16, u64> = std::collections::HashMap::new();
         let mut shared: std::collections::HashSet<u16> = std::collections::HashSet::new();
         for (tid, s) in &scan {
-            for &p in &s.ports {
-                match owner.entry(p) {
-                    Entry::Occupied(e) => {
-                        if *e.get() != *tid {
-                            shared.insert(p);
+            for e in &s.ports {
+                match owner.entry(e.port) {
+                    Entry::Occupied(o) => {
+                        if *o.get() != *tid {
+                            shared.insert(e.port);
                         }
                     }
                     Entry::Vacant(v) => {
@@ -1078,6 +1269,12 @@ impl PaneFlowApp {
                     .and_then(|b| crate::agent_launcher::TerminalAgent::from_binary(b));
                 tv.update(cx, |view, _cx| {
                     let t = &mut view.terminal;
+                    // A port that left LISTEN must become re-announceable —
+                    // a dev server restarted inside a live shell (nodemon,
+                    // plain re-run) re-prints its banner, and that line must
+                    // re-fire ServiceDetected (the dedup was previously
+                    // cleared only on ChildExit).
+                    t.retain_reported_ports(&live_ports);
                     if t.detected_agent != agent || !t.agent_confirmed {
                         // The live scan owns the value from here on — this
                         // both confirms a restored "last known" pill and
@@ -1089,7 +1286,7 @@ impl PaneFlowApp {
                     let ports_with_links: Vec<(u16, Option<String>)> = s
                         .ports
                         .iter()
-                        .map(|p| (*p, frontend_urls.get(p).cloned()))
+                        .map(|e| (e.port, frontend_urls.get(&e.port).cloned()))
                         .collect();
                     if t.detected_ports != ports_with_links {
                         t.detected_ports = ports_with_links;
@@ -1243,5 +1440,23 @@ impl PaneFlowApp {
             },
         )
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_proc_stat_starttime;
+
+    #[test]
+    fn proc_stat_starttime_survives_hostile_comm_names() {
+        // Plain comm: starttime is the 22nd field (9876543 here).
+        let plain = "1234 (zsh) S 1 1234 1234 0 -1 4194304 0 0 0 0 5 3 0 0 20 0 11 0 9876543 123 456 18446744073709551615";
+        assert_eq!(parse_proc_stat_starttime(plain), Some(9876543));
+        // Comm with spaces AND parens — split must anchor on the LAST ')'.
+        let hostile = "1234 (next-server (v15)) S 1 1234 1234 0 -1 4194304 0 0 0 0 5 3 0 0 20 0 11 0 424242 123 456";
+        assert_eq!(parse_proc_stat_starttime(hostile), Some(424242));
+        // Truncated content (fewer than 22 fields) yields None, not a panic.
+        assert_eq!(parse_proc_stat_starttime("1234 (zsh) S 1 1234"), None);
+        assert_eq!(parse_proc_stat_starttime(""), None);
     }
 }

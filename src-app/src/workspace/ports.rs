@@ -2,7 +2,11 @@
 //!
 //! One entry point, [`scan_panes`]: given `(terminal_key, root_pid)` pairs,
 //! it returns a per-terminal [`PaneScan`] attributing LISTEN ports and
-//! recognised agent binaries to each terminal's PTY process subtree.
+//! recognised agent binaries to each terminal's PTY process subtree. Each
+//! port carries an OS-side frontend classification ([`PortEntry`]) derived
+//! from the socket-owning process's argv — the sidebar's clickable chips key
+//! off this, not off PTY-text scraping (which is timing-dependent and stays
+//! enrichment-only: exact URLs, backend labels).
 //!
 //! Cost contract (US-012): the process table is traversed ONCE per tick —
 //! a shared `visited` set spans all roots so no pid is walked twice, each
@@ -29,11 +33,24 @@
 #[cfg(target_os = "linux")]
 use super::git::read_capped;
 
+/// One LISTEN port owned by a terminal's subtree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortEntry {
+    pub port: u16,
+    /// `Some(display_label)` when the socket-owning process's argv matches a
+    /// known frontend dev server (Vite, Next.js, …). The OS-side classifier
+    /// sees the actual socket owner, so chip clickability no longer depends
+    /// on the PTY text scrape having caught the announcement line inside its
+    /// scan window.
+    pub frontend: Option<&'static str>,
+}
+
 /// Per-terminal scan result (EP-005 US-012).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PaneScan {
-    /// Sorted, deduplicated LISTEN ports owned by the terminal's subtree.
-    pub ports: Vec<u16>,
+    /// LISTEN ports owned by the terminal's subtree, sorted by port number
+    /// and deduplicated (a dual-stack v4+v6 bind is one entry).
+    pub ports: Vec<PortEntry>,
     /// Recognised agent binary names found in the subtree, in BFS
     /// (root-proximity) order, deduplicated. `first()` is the pane's
     /// identity-pill agent (US-013); the union across panes feeds the
@@ -72,32 +89,76 @@ fn agents_in_bfs_order<'a>(
     found
 }
 
-/// Parse `/proc/net/tcp`-format content into `(port, socket_inode)` pairs
-/// for LISTEN-state (0A) sockets. Pure string parsing, platform-neutral so
-/// the fixture test runs on every host; malformed lines are skipped.
+/// Parse one `/proc/net/tcp`-format line into `(port, socket_inode)` for a
+/// LISTEN-state (0A) socket. Pure string parsing, platform-neutral so the
+/// fixture test runs on every host; header/malformed lines yield `None`.
 /// Gated to Linux + test builds: only the `/proc` scan consumes it at
 /// runtime, and macOS/Windows compile with `-D warnings` (dead_code).
 #[cfg(any(target_os = "linux", test))]
-fn parse_listen_entries(content: &str) -> Vec<(u16, u64)> {
-    let mut out = Vec::new();
-    for line in content.lines().skip(1) {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 10 {
-            continue;
-        }
-        // Field 3 is TCP state; 0A = LISTEN
-        if fields[3] != "0A" {
-            continue;
-        }
-        // Field 1 is local_address (hex_ip:hex_port)
-        if let Some(port_hex) = fields[1].split(':').next_back()
-            && let Ok(port) = u16::from_str_radix(port_hex, 16)
-            && let Ok(inode) = fields[9].parse::<u64>()
+fn parse_listen_line(line: &str) -> Option<(u16, u64)> {
+    let mut fields = line.split_whitespace();
+    let _sl = fields.next()?;
+    // Field 1 is local_address (hex_ip:hex_port)
+    let local = fields.next()?;
+    let _remote = fields.next()?;
+    // Field 3 is TCP state; 0A = LISTEN
+    if fields.next()? != "0A" {
+        return None;
+    }
+    // Fields 4..8 (queues, timers, retrnsmt, uid, timeout) precede the inode.
+    let inode = fields.nth(5)?.parse::<u64>().ok()?;
+    let port = u16::from_str_radix(local.split(':').next_back()?, 16).ok()?;
+    Some((port, inode))
+}
+
+/// Frontend dev servers recognisable from the socket owner's argv. The table
+/// is deliberately frontend-only: a hit arms a CLICKABLE sidebar chip, so
+/// precision beats recall here — backend labels keep flowing from the
+/// PTY-text enrichment path, where a mislabel is cosmetic.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+const FRONTEND_ARGV: &[(&str, &str)] = &[
+    ("vite", "Vite"),
+    ("next", "Next.js"),
+    ("nuxt", "Nuxt"),
+    ("nuxi", "Nuxt"),
+    ("astro", "Astro"),
+    ("remix", "Remix"),
+    ("webpack-dev-server", "Webpack"),
+    ("ng", "Angular"),
+    ("react-scripts", "React"),
+];
+
+/// Classify a process's argv into a frontend dev-server label.
+///
+/// Matches per-argument BASENAMES (directory components and `.js`-family
+/// extensions stripped) so `node /…/node_modules/.bin/vite` hits while
+/// `/srv/invite/server.js` cannot. One special case: Next.js rewrites its
+/// process title to `next-server (vX.Y.Z)` — a single argv token, matched by
+/// prefix. Only the leading args are inspected; launchers always carry the
+/// tool name up front.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn classify_frontend_argv<'a>(args: impl Iterator<Item = &'a str>) -> Option<&'static str> {
+    for arg in args.take(8) {
+        if arg
+            .get(..11)
+            .is_some_and(|p| p.eq_ignore_ascii_case("next-server"))
         {
-            out.push((port, inode));
+            return Some("Next.js");
+        }
+        let base = arg.rsplit(['/', '\\']).next().unwrap_or(arg);
+        let base = base
+            .strip_suffix(".js")
+            .or_else(|| base.strip_suffix(".mjs"))
+            .or_else(|| base.strip_suffix(".cjs"))
+            .or_else(|| base.strip_suffix(".ts"))
+            .unwrap_or(base);
+        for &(key, label) in FRONTEND_ARGV {
+            if base.eq_ignore_ascii_case(key) {
+                return Some(label);
+            }
         }
     }
-    out
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +195,23 @@ fn bfs_descendants_linux(root_pid: u32, visited: &mut std::collections::HashSet<
         }
     }
     result
+}
+
+/// argv of a pid from `/proc/{pid}/cmdline` (NUL-separated). 4 KiB cap —
+/// the classifiable token always sits in the leading args; non-UTF-8 argv
+/// degrades to "unclassified", never an error.
+#[cfg(target_os = "linux")]
+fn cmdline_args_linux(pid: u32) -> Vec<String> {
+    let path = format!("/proc/{pid}/cmdline");
+    read_capped(std::path::Path::new(&path), 4096)
+        .map(|content| {
+            content
+                .split('\0')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Collect socket inodes from `/proc/{pid}/fd/` for one PID.
@@ -180,8 +258,9 @@ pub fn scan_panes(
     }
 
     // 2. Agents per subtree: read each pid's comm once, match in BFS order.
-    //    3. Socket inodes per subtree → inode → subtree-index map.
-    let mut inode_owner: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    //    3. Socket inodes per subtree → inode → (subtree index, pid) map.
+    let mut inode_owner: std::collections::HashMap<u64, (usize, u32)> =
+        std::collections::HashMap::new();
     for (idx, (key, pids)) in subtrees.iter().enumerate() {
         let comms: Vec<String> = if agent_binaries.is_empty() {
             Vec::new()
@@ -196,15 +275,15 @@ pub fn scan_panes(
         };
         let agents = agents_in_bfs_order(comms.iter().map(String::as_str), agent_binaries);
 
-        let mut inodes: Vec<u64> = Vec::new();
         for &pid in pids {
+            let mut inodes: Vec<u64> = Vec::new();
             socket_inodes_of(pid, &mut inodes);
-        }
-        for inode in inodes {
-            // First owner wins; subtrees are disjoint (shared `visited`) so
-            // a duplicate inode here means a shared/inherited socket — keep
-            // the earlier (older pane) attribution deterministically.
-            inode_owner.entry(inode).or_insert(idx);
+            for inode in inodes {
+                // First owner wins; subtrees are disjoint (shared `visited`)
+                // so a duplicate inode here means a shared/inherited socket —
+                // keep the earlier (older pane) attribution deterministically.
+                inode_owner.entry(inode).or_insert((idx, pid));
+            }
         }
 
         results.insert(
@@ -216,25 +295,45 @@ pub fn scan_panes(
         );
     }
 
-    // 4. /proc/net/tcp[6] parsed ONCE for the whole tick. The 256 KiB read
-    //    cap (~1700 socket lines) truncates the tail on hosts with very
-    //    many sockets; the failure mode is "some ports missing badges this
-    //    tick" (inode-keyed attribution skips the cut lines), never a
-    //    failed scan — `parse_listen_entries` drops the partial last line.
-    let mut per_idx_ports: Vec<Vec<u16>> = vec![Vec::new(); subtrees.len()];
+    // 4. /proc/net/tcp[6] parsed ONCE for the whole tick, streamed
+    //    line-by-line. The previous single capped read (256 KiB) silently
+    //    dropped the tail on socket-heavy hosts (Docker, busy dev boxes),
+    //    making ports vanish for whole ticks; streaming keeps memory at one
+    //    line while reading arbitrarily many sockets. The line cap below
+    //    only bounds a pathological /proc — and the scan runs under
+    //    `smol::unblock`, never on the render thread. The owning pid's argv
+    //    classifies the port (cached per pid).
+    const MAX_TCP_LINES: usize = 65_536;
+    let mut class_cache: std::collections::HashMap<u32, Option<&'static str>> =
+        std::collections::HashMap::new();
+    let mut per_idx_ports: Vec<Vec<PortEntry>> = vec![Vec::new(); subtrees.len()];
     for path in &["/proc/net/tcp", "/proc/net/tcp6"] {
-        if let Ok(content) = read_capped(std::path::Path::new(path), 256 * 1024) {
-            for (port, inode) in parse_listen_entries(&content) {
-                if let Some(&idx) = inode_owner.get(&inode) {
-                    per_idx_ports[idx].push(port);
-                }
+        use std::io::BufRead;
+        let Ok(file) = std::fs::File::open(path) else {
+            continue;
+        };
+        for line in std::io::BufReader::new(file).lines().take(MAX_TCP_LINES) {
+            let Ok(line) = line else {
+                break;
+            };
+            let Some((port, inode)) = parse_listen_line(&line) else {
+                continue;
+            };
+            if let Some(&(idx, pid)) = inode_owner.get(&inode) {
+                let frontend = *class_cache.entry(pid).or_insert_with(|| {
+                    let args = cmdline_args_linux(pid);
+                    classify_frontend_argv(args.iter().map(String::as_str))
+                });
+                per_idx_ports[idx].push(PortEntry { port, frontend });
             }
         }
     }
     for (idx, (key, _)) in subtrees.iter().enumerate() {
         let mut ports = std::mem::take(&mut per_idx_ports[idx]);
-        ports.sort_unstable();
-        ports.dedup();
+        // Dual-stack v4+v6 binds yield two sockets on one port — keep one
+        // entry, preferring a classified one.
+        ports.sort_by_key(|e| (e.port, e.frontend.is_none()));
+        ports.dedup_by_key(|e| e.port);
         if let Some(scan) = results.get_mut(key) {
             scan.ports = ports;
         }
@@ -363,6 +462,85 @@ fn listen_ports_of(pid: u32, ports: &mut Vec<u16>) {
     }
 }
 
+/// argv of a pid via `sysctl(KERN_PROCARGS2)` — macOS's equivalent of Linux
+/// `/proc/{pid}/cmdline`. EPERM (other-user pids, SIP-protected targets) and
+/// malformed buffers degrade to an empty vec: the port then simply stays
+/// unclassified, parity with the Linux non-UTF-8 fallback.
+#[cfg(target_os = "macos")]
+fn argv_of_macos(pid: u32) -> Vec<String> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+
+    let mut size: libc::size_t = 0;
+    // SAFETY: standard 3-int MIB size probe — a null buffer with a size
+    // out-param is the documented sysctl(3) calling convention; nothing is
+    // written besides `size`.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || size == 0 {
+        return Vec::new();
+    }
+
+    // The probed size covers the full argv+env block, bounded by the
+    // kernel's ARG_MAX (1 MiB) — a transient allocation on the unblock
+    // thread, freed before the scan returns.
+    let mut buf = vec![0u8; size];
+    // SAFETY: `buf` provides exactly `size` writable bytes; the kernel
+    // writes at most `size` and updates it to the written length.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return Vec::new();
+    }
+    buf.truncate(size);
+    parse_procargs2(&buf)
+}
+
+/// Pure parser for the `KERN_PROCARGS2` buffer layout: `argc: c_int`, the
+/// NUL-terminated exec path, a NUL padding run, then `argc` NUL-separated
+/// argv strings (env vars follow and are ignored). Platform-neutral so the
+/// fixture test runs on every host.
+#[cfg(any(target_os = "macos", test))]
+fn parse_procargs2(buf: &[u8]) -> Vec<String> {
+    let Some(argc_bytes) = buf.get(..4) else {
+        return Vec::new();
+    };
+    let argc = i32::from_ne_bytes([argc_bytes[0], argc_bytes[1], argc_bytes[2], argc_bytes[3]])
+        .max(0) as usize;
+    if argc == 0 {
+        return Vec::new();
+    }
+    let rest = &buf[4..];
+    // Skip the exec path, then its NUL padding run.
+    let path_end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+    let args_start = rest[path_end..]
+        .iter()
+        .position(|&b| b != 0)
+        .map(|off| path_end + off)
+        .unwrap_or(rest.len());
+    rest[args_start..]
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .take(argc)
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect()
+}
+
 /// Scan every terminal's PTY subtree in one pass (macOS). libproc's socket
 /// queries are naturally per-pid, so per-subtree attribution falls out of
 /// the BFS partition without a global socket table. Same shared-`visited` /
@@ -395,12 +573,26 @@ pub fn scan_panes(
         };
         let agents = agents_in_bfs_order(comms.iter().map(String::as_str), agent_binaries);
 
-        let mut ports: Vec<u16> = Vec::new();
+        let mut ports: Vec<PortEntry> = Vec::new();
         for &pid in &pids {
-            listen_ports_of(pid, &mut ports);
+            let mut pid_ports: Vec<u16> = Vec::new();
+            listen_ports_of(pid, &mut pid_ports);
+            if pid_ports.is_empty() {
+                continue;
+            }
+            // argv fetched only for pids that actually own a LISTEN socket.
+            let args = argv_of_macos(pid);
+            let frontend = classify_frontend_argv(args.iter().map(String::as_str));
+            ports.extend(
+                pid_ports
+                    .into_iter()
+                    .map(|port| PortEntry { port, frontend }),
+            );
         }
-        ports.sort_unstable();
-        ports.dedup();
+        // Dual-stack v4+v6 binds yield two sockets on one port — keep one
+        // entry, preferring a classified one.
+        ports.sort_by_key(|e| (e.port, e.frontend.is_none()));
+        ports.dedup_by_key(|e| e.port);
 
         results.insert(key, PaneScan { ports, agents });
     }
@@ -458,19 +650,66 @@ mod tests {
     }
 
     #[test]
-    fn parse_listen_entries_filters_listen_state_and_malformed_lines() {
-        // Header + one LISTEN (port 0x1F90 = 8080, inode 4242) + one
-        // ESTABLISHED (01) + one garbage line.
-        let content = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
-             0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 4242 1 0000000000000000 100 0 0 10 0\n\
-             1: 0100007F:0050 0100007F:1234 01 00000000:00000000 00:00000000 00000000  1000        0 9999 1 0000000000000000 100 0 0 10 0\n\
-             garbage line\n";
-        assert_eq!(parse_listen_entries(content), vec![(8080, 4242)]);
+    fn parse_listen_line_filters_listen_state_and_malformed_lines() {
+        // LISTEN (port 0x1F90 = 8080, inode 4242) parses; header,
+        // ESTABLISHED (01) and garbage lines yield None.
+        let listen = "   0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 4242 1 0000000000000000 100 0 0 10 0";
+        assert_eq!(parse_listen_line(listen), Some((8080, 4242)));
+        let header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode";
+        assert_eq!(parse_listen_line(header), None);
+        let established = "   1: 0100007F:0050 0100007F:1234 01 00000000:00000000 00:00000000 00000000  1000        0 9999 1 0000000000000000 100 0 0 10 0";
+        assert_eq!(parse_listen_line(established), None);
+        assert_eq!(parse_listen_line("garbage line"), None);
+        assert_eq!(parse_listen_line(""), None);
     }
 
     #[test]
-    fn parse_listen_entries_empty_input() {
-        assert!(parse_listen_entries("").is_empty());
-        assert!(parse_listen_entries("header only\n").is_empty());
+    fn classify_frontend_argv_matches_basenames_and_titles() {
+        // node running the .bin shim — the canonical vite/next launch shape.
+        let argv = ["node", "/repo/node_modules/.bin/vite"];
+        assert_eq!(classify_frontend_argv(argv.into_iter()), Some("Vite"));
+        // bun executing the package bin JS directly.
+        let argv = ["bun", "/repo/node_modules/vite/bin/vite.js"];
+        assert_eq!(classify_frontend_argv(argv.into_iter()), Some("Vite"));
+        // Next.js rewrites its process title to one "next-server (vX)" token.
+        let argv = ["next-server (v15.3.2)"];
+        assert_eq!(classify_frontend_argv(argv.into_iter()), Some("Next.js"));
+        let argv = ["node", "/repo/node_modules/.bin/next", "dev"];
+        assert_eq!(classify_frontend_argv(argv.into_iter()), Some("Next.js"));
+        let argv = ["node", "/usr/lib/node_modules/@angular/cli/bin/ng", "serve"];
+        assert_eq!(classify_frontend_argv(argv.into_iter()), Some("Angular"));
+    }
+
+    #[test]
+    fn classify_frontend_argv_rejects_lookalikes() {
+        // Basename matching, not substring: a path that merely CONTAINS a
+        // framework name must not arm a clickable chip.
+        let argv = ["node", "/srv/invite/server.js"];
+        assert_eq!(classify_frontend_argv(argv.into_iter()), None);
+        let argv = ["node", "/srv/vitesse-app/index.js"];
+        assert_eq!(classify_frontend_argv(argv.into_iter()), None);
+        let argv = ["python3", "-m", "http.server"];
+        assert_eq!(classify_frontend_argv(argv.into_iter()), None);
+        assert_eq!(classify_frontend_argv(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn parse_procargs2_extracts_argv_after_exec_path() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&2i32.to_ne_bytes());
+        // Exec path + NUL padding run, then argc args, then env (ignored).
+        buf.extend_from_slice(b"/usr/local/bin/node\0\0\0\0");
+        buf.extend_from_slice(b"node\0/repo/node_modules/.bin/vite\0");
+        buf.extend_from_slice(b"PATH=/usr/bin\0");
+        assert_eq!(
+            parse_procargs2(&buf),
+            vec![
+                "node".to_string(),
+                "/repo/node_modules/.bin/vite".to_string()
+            ]
+        );
+        assert!(parse_procargs2(&[]).is_empty());
+        assert!(parse_procargs2(&[1, 0, 0]).is_empty());
+        assert!(parse_procargs2(&0i32.to_ne_bytes()).is_empty());
     }
 }

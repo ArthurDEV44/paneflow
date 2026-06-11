@@ -54,37 +54,45 @@ const METHOD_TOOL_USE: &str = "ai.tool_use";
 /// binary's REAL exit status (the shell's ChildExit never sees it).
 const METHOD_EXIT: &str = "ai.exit";
 
-// Tool-identity strings. The server's `AiTool` enum (`ai_types.rs:27-31`) maps
-// `"codex"` to `AiTool::Codex` and everything else (including `"claude"`) to
-// `AiTool::Claude`. `ipc.rs:367-370` also validates `ai.session_start.tool` as
-// alphanumeric + hyphens ≤ 64 chars; both constants below pass trivially.
-const TOOL_CLAUDE: &str = "claude";
-const TOOL_CODEX: &str = "codex";
-
-/// Typed AI tool identity. Replaces ad-hoc `&'static str` matching across
-/// dispatch + `build_frame` so an unknown value can't sneak past the
-/// `_ => Claude` fallback as a stringly-typed surprise.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AiTool {
-    Claude,
-    Codex,
-}
-
-impl AiTool {
-    /// Wire-format string written into the `tool` field of every IPC frame.
-    /// Must match the server's `AiTool::wire_id()` mapping at
-    /// `ai_types.rs::AiTool::wire_id`.
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Claude => TOOL_CLAUDE,
-            Self::Codex => TOOL_CODEX,
-        }
-    }
-}
+// Tool identity: the agent's BINARY name (`claude`, `codex`, `gemini`,
+// `cursor-agent`, …), set by the shim from its own argv[0] stem and
+// forwarded verbatim in the `tool` field of every IPC frame. The server
+// resolves it via `TerminalAgent::from_binary` and REJECTS unknown strings
+// (the historical 2-variant enum silently retyped everything as Claude).
+// `ipc.rs` validates the field as alphanumeric + hyphens ≤ 64 chars —
+// [`detect_tool_from`] enforces the same shape on this side so a hostile
+// env value degrades to the legacy default instead of a rejected frame.
+const TOOL_DEFAULT: &str = "claude";
 
 // ---------------------------------------------------------------------------
 // JSON-RPC client
 // ---------------------------------------------------------------------------
+
+/// Backoffs between delivery attempts (total attempts = 1 + len). A single
+/// attempt was enough to drop a lifecycle frame whenever the PaneFlow main
+/// thread was busy past the 500 ms timeout at the exact moment the frame
+/// arrived (large render, config reload) — and a dropped `ai.stop` left the
+/// sidebar spinner on "thinking…" until the 300 s Stalled sweep. Three
+/// bounded attempts make that loss practically impossible while keeping the
+/// worst case under ~2 s, well inside what Claude Code / Codex tolerate for
+/// a hook (and still honoring PRD C4: the final failure stays silent).
+const SEND_BACKOFF: [Duration; 2] = [Duration::from_millis(100), Duration::from_millis(300)];
+
+/// [`send_frame`] with retry: re-attempts on ANY send error (connect refused
+/// from a full backlog, write timeout from a busy main thread, …) — the
+/// distinction isn't observable from this side of the socket, and the budget
+/// is bounded either way. Returns the LAST error when every attempt fails.
+fn send_frame_with_retry(socket_path: &Path, frame: &serde_json::Value) -> std::io::Result<()> {
+    let mut result = send_frame(socket_path, frame);
+    for backoff in SEND_BACKOFF {
+        if result.is_ok() {
+            return result;
+        }
+        std::thread::sleep(backoff);
+        result = send_frame(socket_path, frame);
+    }
+    result
+}
 
 /// Open a blocking local-socket connection to `socket_path`, write `frame`
 /// serialized as JSON + a single `\n` terminator, then close the stream.
@@ -292,21 +300,29 @@ fn next_id() -> u64 {
 // Env-driven tool + PID detection (US-003)
 // ---------------------------------------------------------------------------
 
-/// Resolve the AI tool identity from `$PANEFLOW_AI_TOOL`, which the US-004
-/// shim sets to either `"claude"` or `"codex"` based on its own argv[0].
-/// Unknown or missing values default to `Claude` — matching the server
-/// default at `ipc_handler.rs:391-395` and preserving US-002 behavior when
-/// the shim is not yet deployed.
-fn detect_tool() -> AiTool {
+/// Resolve the AI tool identity from `$PANEFLOW_AI_TOOL`, which the shim
+/// sets to one of the 16 `TerminalAgent` binary names based on its own
+/// argv[0] stem. Forwarded verbatim — the server is the single authority
+/// on the name→agent mapping. Missing or malformed values fall back to
+/// `"claude"` (preserves US-002 behavior when the shim is not deployed).
+fn detect_tool() -> String {
     detect_tool_from(env::var("PANEFLOW_AI_TOOL").ok().as_deref())
 }
 
 /// Testable inner. Keeps the tests out of `env::set_var`, which is Send-unsafe
-/// under Cargo's parallel test runner.
-fn detect_tool_from(raw: Option<&str>) -> AiTool {
+/// under Cargo's parallel test runner. Mirrors the server-side wire shape
+/// (alphanumeric + hyphens, ≤ 64 chars) so a hostile env value can't smuggle
+/// arbitrary bytes into the frame.
+fn detect_tool_from(raw: Option<&str>) -> String {
     match raw {
-        Some("codex") => AiTool::Codex,
-        _ => AiTool::Claude,
+        Some(s)
+            if !s.is_empty()
+                && s.len() <= 64
+                && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') =>
+        {
+            s.to_owned()
+        }
+        _ => TOOL_DEFAULT.to_owned(),
     }
 }
 
@@ -420,7 +436,8 @@ fn dispatch() {
         payload
     };
 
-    let tool = detect_tool().as_str();
+    let tool = detect_tool();
+    let tool = tool.as_str();
     let pid = read_ai_pid();
     // US-016 — best-effort: a missing or malformed surface_id leaves the
     // server falling back to workspace-only routing.
@@ -442,8 +459,8 @@ fn dispatch() {
         return;
     };
 
-    if send_frame(&socket_path, &frame).is_err() {
-        diagnose(&format!("{event}: send_frame failed"));
+    if send_frame_with_retry(&socket_path, &frame).is_err() {
+        diagnose(&format!("{event}: send_frame failed after retries"));
     }
 }
 
@@ -642,7 +659,7 @@ mod tests {
         let frame = build_frame(
             "UserPromptSubmit",
             42,
-            TOOL_CLAUDE,
+            "claude",
             payload.clone(),
             None,
             None,
@@ -662,8 +679,7 @@ mod tests {
             "message": "Allow Bash?",
             "notification_type": "permission_prompt",
         });
-        let frame =
-            build_frame("Notification", 7, TOOL_CLAUDE, payload.clone(), None, None).unwrap();
+        let frame = build_frame("Notification", 7, "claude", payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.notification");
         assert_eq!(params["workspace_id"], 7);
@@ -679,7 +695,7 @@ mod tests {
     #[test]
     fn stop_maps_to_ai_stop() {
         let payload = json!({ "session_id": "s1" });
-        let frame = build_frame("Stop", 1, TOOL_CLAUDE, payload.clone(), None, None).unwrap();
+        let frame = build_frame("Stop", 1, "claude", payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.stop");
         assert_eq!(params["workspace_id"], 1);
@@ -690,8 +706,7 @@ mod tests {
     #[test]
     fn subagent_stop_maps_to_ai_stop() {
         let payload = json!({ "session_id": "sub" });
-        let frame =
-            build_frame("SubagentStop", 1, TOOL_CLAUDE, payload.clone(), None, None).unwrap();
+        let frame = build_frame("SubagentStop", 1, "claude", payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.stop");
         assert_eq!(params["tool"], "claude");
@@ -703,7 +718,7 @@ mod tests {
     #[test]
     fn exit_maps_to_ai_exit_with_top_level_exit_code() {
         let payload = json!({ "exit_code": 1 });
-        let frame = build_frame("Exit", 9, TOOL_CLAUDE, payload.clone(), Some(4242), None).unwrap();
+        let frame = build_frame("Exit", 9, "claude", payload.clone(), Some(4242), None).unwrap();
 
         let params = assert_envelope(&frame, "ai.exit");
         assert_eq!(params["workspace_id"], 9);
@@ -717,7 +732,7 @@ mod tests {
     fn exit_preserves_negative_windows_ntstatus_codes() {
         // STATUS_CONTROL_C_EXIT (0xC000013A) survives the i64 round-trip.
         let payload = json!({ "exit_code": -1_073_741_510_i64 });
-        let frame = build_frame("Exit", 9, TOOL_CODEX, payload, None, None).unwrap();
+        let frame = build_frame("Exit", 9, "codex", payload, None, None).unwrap();
         let params = assert_envelope(&frame, "ai.exit");
         assert_eq!(params["exit_code"], -1_073_741_510_i64);
     }
@@ -725,7 +740,7 @@ mod tests {
     #[test]
     fn exit_without_exit_code_bails() {
         assert!(
-            build_frame("Exit", 9, TOOL_CLAUDE, json!({}), None, None).is_none(),
+            build_frame("Exit", 9, "claude", json!({}), None, None).is_none(),
             "an ai.exit frame without exit_code is useless to the classifier"
         );
     }
@@ -749,7 +764,7 @@ mod tests {
             "tool_name": "Bash",
             "tool_input": { "command": "ls" },
         });
-        let frame = build_frame("PreToolUse", 3, TOOL_CLAUDE, payload.clone(), None, None).unwrap();
+        let frame = build_frame("PreToolUse", 3, "claude", payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.tool_use");
         assert_eq!(params["workspace_id"], 3);
@@ -764,7 +779,7 @@ mod tests {
     #[test]
     fn post_tool_use_maps_to_ai_tool_use_with_tool_name() {
         let payload = json!({ "tool_name": "Edit" });
-        let frame = build_frame("PostToolUse", 3, TOOL_CLAUDE, payload, None, None).unwrap();
+        let frame = build_frame("PostToolUse", 3, "claude", payload, None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.tool_use");
         assert_eq!(params["tool_name"], "Edit");
@@ -776,7 +791,7 @@ mod tests {
         // still dispatches so the server can mark the workspace as tool-busy,
         // but with `tool_name` absent from top-level params.
         let payload = json!({ "tool_input": { "command": "ls" } });
-        let frame = build_frame("PreToolUse", 3, TOOL_CLAUDE, payload.clone(), None, None).unwrap();
+        let frame = build_frame("PreToolUse", 3, "claude", payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.tool_use");
         assert!(
@@ -789,8 +804,8 @@ mod tests {
     #[test]
     fn unknown_event_returns_none() {
         let payload = json!({});
-        assert!(build_frame("Bogus", 1, TOOL_CLAUDE, payload.clone(), None, None).is_none());
-        assert!(build_frame("", 1, TOOL_CLAUDE, payload, None, None).is_none());
+        assert!(build_frame("Bogus", 1, "claude", payload.clone(), None, None).is_none());
+        assert!(build_frame("", 1, "claude", payload, None, None).is_none());
     }
 
     #[test]
@@ -799,7 +814,7 @@ mod tests {
         // exits. Unlike SessionStart, no `pid` is required (server only
         // needs workspace_id + tool to clear the loader state).
         let payload = json!({});
-        let frame = build_frame("SessionEnd", 7, TOOL_CODEX, payload.clone(), None, None).unwrap();
+        let frame = build_frame("SessionEnd", 7, "codex", payload.clone(), None, None).unwrap();
         let params = assert_envelope(&frame, "ai.session_end");
         assert_eq!(params["workspace_id"], 7);
         assert_eq!(params["tool"], "codex");
@@ -814,7 +829,7 @@ mod tests {
         let frame = build_frame(
             "SessionStart",
             5,
-            TOOL_CODEX,
+            "codex",
             payload.clone(),
             Some(4242),
             None,
@@ -837,8 +852,7 @@ mod tests {
         // hook binary must honor it so the frame still dispatches even when
         // invoked outside the US-004 shim.
         let payload = json!({ "session_id": "codex-2", "pid": 7777u64 });
-        let frame =
-            build_frame("SessionStart", 9, TOOL_CODEX, payload.clone(), None, None).unwrap();
+        let frame = build_frame("SessionStart", 9, "codex", payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.session_start");
         assert_eq!(params["workspace_id"], 9);
@@ -853,7 +867,7 @@ mod tests {
         // rejects pid == 0 / missing with `ipc_handler.rs:353`).
         let payload = json!({ "session_id": "codex-3" });
         assert!(
-            build_frame("SessionStart", 9, TOOL_CODEX, payload, None, None).is_none(),
+            build_frame("SessionStart", 9, "codex", payload, None, None).is_none(),
             "SessionStart must return None when no pid is resolvable"
         );
     }
@@ -864,7 +878,7 @@ mod tests {
         // absent so the frame isn't built with an invalid pid.
         let payload = json!({ "pid": 0u64 });
         assert!(
-            build_frame("SessionStart", 1, TOOL_CODEX, payload, None, None).is_none(),
+            build_frame("SessionStart", 1, "codex", payload, None, None).is_none(),
             "pid == 0 must not satisfy SessionStart's pid requirement"
         );
     }
@@ -872,15 +886,8 @@ mod tests {
     #[test]
     fn codex_user_prompt_submit_carries_tool_codex() {
         let payload = json!({ "prompt": "run tests" });
-        let frame = build_frame(
-            "UserPromptSubmit",
-            2,
-            TOOL_CODEX,
-            payload.clone(),
-            None,
-            None,
-        )
-        .unwrap();
+        let frame =
+            build_frame("UserPromptSubmit", 2, "codex", payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.prompt_submit");
         assert_eq!(params["tool"], "codex");
@@ -897,7 +904,7 @@ mod tests {
         // `WaitingForInput` overwrites the preceding `Stop → Finished`.
         let payload = json!({ "message": "Indexing workspace…" });
         assert!(
-            build_frame("Notification", 2, TOOL_CODEX, payload.clone(), None, None).is_none(),
+            build_frame("Notification", 2, "codex", payload.clone(), None, None).is_none(),
             "Notification without permission_prompt/elicitation_dialog must be dropped"
         );
 
@@ -909,7 +916,7 @@ mod tests {
             build_frame(
                 "Notification",
                 2,
-                TOOL_CLAUDE,
+                "claude",
                 payload_with_unknown,
                 None,
                 None
@@ -925,8 +932,7 @@ mod tests {
             "message": "What language?",
             "notification_type": "elicitation_dialog",
         });
-        let frame =
-            build_frame("Notification", 4, TOOL_CLAUDE, payload.clone(), None, None).unwrap();
+        let frame = build_frame("Notification", 4, "claude", payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.notification");
         assert_eq!(params["tool"], "claude");
@@ -936,7 +942,7 @@ mod tests {
     #[test]
     fn codex_stop_carries_tool_codex() {
         let payload = json!({ "session_id": "codex-stop" });
-        let frame = build_frame("Stop", 2, TOOL_CODEX, payload.clone(), None, None).unwrap();
+        let frame = build_frame("Stop", 2, "codex", payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.stop");
         assert_eq!(params["workspace_id"], 2);
@@ -947,7 +953,7 @@ mod tests {
     #[test]
     fn codex_pre_tool_use_carries_tool_codex_and_tool_name() {
         let payload = json!({ "tool_name": "shell", "command": "ls" });
-        let frame = build_frame("PreToolUse", 2, TOOL_CODEX, payload.clone(), None, None).unwrap();
+        let frame = build_frame("PreToolUse", 2, "codex", payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.tool_use");
         assert_eq!(params["tool"], "codex");
@@ -957,15 +963,8 @@ mod tests {
     #[test]
     fn codex_permission_request_maps_to_ai_notification_with_type() {
         let payload = json!({ "message": "Approve shell command?" });
-        let frame = build_frame(
-            "PermissionRequest",
-            2,
-            TOOL_CODEX,
-            payload.clone(),
-            None,
-            None,
-        )
-        .unwrap();
+        let frame =
+            build_frame("PermissionRequest", 2, "codex", payload.clone(), None, None).unwrap();
 
         let params = assert_envelope(&frame, "ai.notification");
         assert_eq!(params["tool"], "codex");
@@ -980,21 +979,27 @@ mod tests {
     // ---------- Env-lookup helpers (US-003) ----------
 
     #[test]
-    fn detect_tool_from_returns_codex_only_on_exact_match() {
-        assert_eq!(detect_tool_from(Some("codex")), AiTool::Codex);
-        // Anything else (including wrong case, empty, arbitrary) defaults to
-        // claude — matching the server's behaviour.
-        assert_eq!(detect_tool_from(Some("claude")), AiTool::Claude);
-        assert_eq!(detect_tool_from(Some("CODEX")), AiTool::Claude);
-        assert_eq!(detect_tool_from(Some("")), AiTool::Claude);
-        assert_eq!(detect_tool_from(Some("gemini")), AiTool::Claude);
-        assert_eq!(detect_tool_from(None), AiTool::Claude);
+    fn detect_tool_from_forwards_wellformed_names_verbatim() {
+        // Any wire-shaped binary name passes through — the SERVER owns the
+        // name→agent mapping (TerminalAgent::from_binary) and rejects
+        // unknowns; this side must not collapse future agents to claude.
+        assert_eq!(detect_tool_from(Some("codex")), "codex");
+        assert_eq!(detect_tool_from(Some("claude")), "claude");
+        assert_eq!(detect_tool_from(Some("gemini")), "gemini");
+        assert_eq!(detect_tool_from(Some("cursor-agent")), "cursor-agent");
+        assert_eq!(detect_tool_from(Some("kiro-cli")), "kiro-cli");
     }
 
     #[test]
-    fn ai_tool_as_str_matches_wire_constants() {
-        assert_eq!(AiTool::Claude.as_str(), TOOL_CLAUDE);
-        assert_eq!(AiTool::Codex.as_str(), TOOL_CODEX);
+    fn detect_tool_from_defaults_on_missing_or_malformed() {
+        // Missing env (legacy shim) and wire-shape violations (empty,
+        // whitespace, separator smuggling, over-length) all degrade to the
+        // historical claude default instead of emitting a rejectable frame.
+        assert_eq!(detect_tool_from(None), TOOL_DEFAULT);
+        assert_eq!(detect_tool_from(Some("")), TOOL_DEFAULT);
+        assert_eq!(detect_tool_from(Some("a b")), TOOL_DEFAULT);
+        assert_eq!(detect_tool_from(Some("tool/../etc")), TOOL_DEFAULT);
+        assert_eq!(detect_tool_from(Some(&"x".repeat(65))), TOOL_DEFAULT);
     }
 
     #[test]

@@ -92,7 +92,7 @@ impl PaneFlowApp {
                 rows.push(QueueRow {
                     surface_id,
                     ws_title: ws.title.clone(),
-                    tool_label: session.tool.label(),
+                    tool_label: session.tool.display_name(),
                     message: session.message.clone(),
                     waiting_secs: session
                         .waiting_since

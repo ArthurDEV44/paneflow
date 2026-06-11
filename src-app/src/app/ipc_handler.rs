@@ -1670,7 +1670,7 @@ impl PaneFlowApp {
                 {
                     return serde_json::json!({"error": "Invalid tool name"});
                 }
-                let tool = ai_types::AiTool::from_name(tool_str);
+                let tool = crate::agent_launcher::TerminalAgent::from_binary(tool_str);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     // session_start is a no-op on `agent_sessions`: a
@@ -1698,7 +1698,12 @@ impl PaneFlowApp {
                     return serde_json::json!({"error": "Missing workspace_id"});
                 };
                 let pid = read_session_pid(params);
-                let tool = read_tool(params);
+                let Some(tool) = read_tool(params) else {
+                    // An unknown binary name can't map to a TerminalAgent —
+                    // reject instead of mislabeling the session as Claude
+                    // (the pre-fusion `from_name` fallback did exactly that).
+                    return serde_json::json!({"error": "Unknown tool"});
+                };
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     let key =
@@ -1742,7 +1747,12 @@ impl PaneFlowApp {
                     .or_else(|| params.get("tool_name").and_then(|v| v.as_str()))
                     .map(|s| s.chars().take(128).collect::<String>());
                 let pid = read_session_pid(params);
-                let tool = read_tool(params);
+                let Some(tool) = read_tool(params) else {
+                    // An unknown binary name can't map to a TerminalAgent —
+                    // reject instead of mislabeling the session as Claude
+                    // (the pre-fusion `from_name` fallback did exactly that).
+                    return serde_json::json!({"error": "Unknown tool"});
+                };
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     // tool_use implies the session is actively thinking —
@@ -1784,7 +1794,12 @@ impl PaneFlowApp {
                 };
                 let hook = params.get("hook_payload");
                 let pid = read_session_pid(params);
-                let tool = read_tool(params);
+                let Some(tool) = read_tool(params) else {
+                    // An unknown binary name can't map to a TerminalAgent —
+                    // reject instead of mislabeling the session as Claude
+                    // (the pre-fusion `from_name` fallback did exactly that).
+                    return serde_json::json!({"error": "Unknown tool"});
+                };
                 let message = sanitize_notification_message(
                     hook.and_then(|h| h.get("message"))
                         .and_then(|v| v.as_str())
@@ -1847,7 +1862,12 @@ impl PaneFlowApp {
                     return serde_json::json!({"error": "Missing workspace_id"});
                 };
                 let pid = read_session_pid(params);
-                let tool = read_tool(params);
+                let Some(tool) = read_tool(params) else {
+                    // An unknown binary name can't map to a TerminalAgent —
+                    // reject instead of mislabeling the session as Claude
+                    // (the pre-fusion `from_name` fallback did exactly that).
+                    return serde_json::json!({"error": "Unknown tool"});
+                };
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     // U-014: key the auto-clear on the RESOLVED session key, not
@@ -1935,7 +1955,12 @@ impl PaneFlowApp {
                     return serde_json::json!({"error": "Missing or invalid exit_code"});
                 };
                 let pid = read_session_pid(params);
-                let tool = read_tool(params);
+                let Some(tool) = read_tool(params) else {
+                    // An unknown binary name can't map to a TerminalAgent —
+                    // reject instead of mislabeling the session as Claude
+                    // (the pre-fusion `from_name` fallback did exactly that).
+                    return serde_json::json!({"error": "Unknown tool"});
+                };
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     // 0 / SIGINT-and-friends → Finished (a human interrupt is
@@ -2001,7 +2026,9 @@ impl PaneFlowApp {
                     return serde_json::json!({"error": "Invalid tool name"});
                 }
                 let pid = read_session_pid(params);
-                let tool = ai_types::AiTool::from_name(tool_str);
+                // Unknown tool string → `None`: the PID-based removal below
+                // still works, only the tool-name fallback is skipped.
+                let tool = crate::agent_launcher::TerminalAgent::from_binary(tool_str);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     // Prefer exact PID removal; fall back to removing one
@@ -2033,7 +2060,7 @@ impl PaneFlowApp {
                         let pid_to_remove = ws
                             .agent_sessions
                             .iter()
-                            .find(|(_, s)| s.tool == tool && !is_errored(s))
+                            .find(|(_, s)| Some(s.tool) == tool && !is_errored(s))
                             .map(|(k, _)| *k);
                         if let Some(k) = pid_to_remove {
                             ws.agent_sessions.remove(&k);
@@ -2108,16 +2135,21 @@ fn read_session_pid(params: &serde_json::Value) -> Option<u32> {
 }
 
 /// Read the `tool` field from an `ai.*` IPC param object, falling back
-/// to `hook_payload.tool`, defaulting to Claude (matches the server's
-/// historical behavior for legacy shims that don't stamp the field).
-fn read_tool(params: &serde_json::Value) -> ai_types::AiTool {
+/// to `hook_payload.tool`, defaulting to `"claude"` when absent (matches
+/// the server's historical behavior for legacy shims that don't stamp the
+/// field). The string is the agent's BINARY name — the wire id shared with
+/// the shim's `detect_tool_from_stem` — resolved via
+/// [`TerminalAgent::from_binary`]. `None` for an unknown string: the frame
+/// is then ignored by the caller instead of silently retyped as Claude
+/// (the historical `from_name` fallback mislabeled every future agent).
+fn read_tool(params: &serde_json::Value) -> Option<crate::agent_launcher::TerminalAgent> {
     let hook = params.get("hook_payload");
     let tool_str = params
         .get("tool")
         .and_then(|v| v.as_str())
         .or_else(|| hook.and_then(|h| h.get("tool")).and_then(|v| v.as_str()))
         .unwrap_or("claude");
-    ai_types::AiTool::from_name(tool_str)
+    crate::agent_launcher::TerminalAgent::from_binary(tool_str)
 }
 
 /// US-026: floor of the reserved synthetic-PID namespace. Legacy `ai.*` frames
@@ -2142,7 +2174,7 @@ const SYNTHETIC_SESSION_PID_BASE: u32 = 0xFFFF_0000;
 fn upsert_session_state(
     ws: &mut crate::workspace::Workspace,
     pid: Option<u32>,
-    tool: ai_types::AiTool,
+    tool: crate::agent_launcher::TerminalAgent,
     state: ai_types::AgentState,
     active_tool_name: Option<String>,
 ) -> u32 {
@@ -2180,6 +2212,18 @@ fn upsert_session_state(
     // silence clock resets on any hook activity. This also makes Stalled
     // non-sticky for free: the next frame overwrites `state` AND the clock.
     let now = std::time::Instant::now();
+    // Pin the process start time for real-PID sessions so the sweep can
+    // tell a recycled PID from the original agent (an opaque value, only
+    // compared for equality). Probed once — a `Some` is immutable for the
+    // process's lifetime; a `None` (transient EPERM) retries on the next
+    // frame.
+    let probe_start = |k: u32| {
+        if k <= i32::MAX as u32 {
+            super::event_handlers::pid_start_time(k)
+        } else {
+            None
+        }
+    };
     ws.agent_sessions
         .entry(key)
         .and_modify(|s| {
@@ -2189,6 +2233,9 @@ fn upsert_session_state(
             s.state = state.clone();
             s.active_tool_name = active_tool_name.clone();
             s.last_activity = now;
+            if s.proc_start.is_none() {
+                s.proc_start = probe_start(key);
+            }
         })
         .or_insert_with(|| {
             let mut session = ai_types::AgentSession::new(tool, state);
@@ -2197,6 +2244,7 @@ fn upsert_session_state(
             // Same `now` as the and_modify arm — `AgentSession::new` stamps
             // its own Instant, which would skew (sub-µs) from the wait stamp.
             session.last_activity = now;
+            session.proc_start = probe_start(key);
             session
         });
     key

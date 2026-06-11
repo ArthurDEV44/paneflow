@@ -62,13 +62,42 @@ on exit.
 ## Per-agent support
 
 Only **Claude Code** exposes a verified, file-based user-scope notification-hook
-surface, so it is the only agent that receives a persistent install. The other
-detected agents are reported honestly rather than given a fabricated shape:
+surface, so it is the only agent that receives a persistent install
+(`paneflow hooks setup`). Every other integration is EPHEMERAL: injected by
+the shim when the agent launches inside a Paneflow terminal, removed when it
+exits. The shim wraps all 16 `TerminalAgent` binaries; whatever has no hook
+surface below still gets the universal lifecycle (`ai.exit` on crash,
+`ai.session_end` on quit) plus the sidebar's "running" row from the process
+scan.
 
-- **Codex**: hooks are injected per-launch by the shim (project scope); no
-  user-scope install applies.
-- **Gemini / opencode**: no notification-hook mechanism exists today, so there
-  is nothing to install (reported as unsupported).
+| Agent | Mechanism | Where the shim writes | Events mapped |
+|-------|-----------|----------------------|---------------|
+| Claude Code | Claude hooks (matcher groups) | `./.claude/settings.local.json` | UserPromptSubmit, Notification, Stop, Pre/PostToolUse |
+| Codex | hooks.json + TOML feature flag (Unix); JSONL tee (Windows) | `./.codex/hooks.json` | SessionStart, UserPromptSubmit, Stop, Pre/PostToolUse, PermissionRequest |
+| CodeBuddy | Claude-compatible clone | `./.codebuddy/settings.local.json` | same five as Claude Code |
+| Qoder | Claude-compatible clone | `./.qoder/settings.local.json` | four (no Notification) |
+| Gemini CLI | flat hooks in settings | `~/.gemini/settings.json` | BeforeAgent→UserPromptSubmit, AfterAgent→Stop, Before/AfterTool→Pre/PostToolUse |
+| Cursor | flat hooks.json (`version: 1`) | `~/.cursor/hooks.json` | beforeSubmitPrompt, stop, pre/postToolUse |
+| OpenCode | TS plugin + `plugin` entry | `~/.config/opencode/plugins/paneflow-status.ts` + `opencode.json` | chat.message, tool.execute.before/after, session.idle, permission.asked |
+| Pi | TS extension (auto-loaded) | `~/.pi/agent/extensions/paneflow-status.ts` | agent_start/end, tool_execution_start/end |
+| Hermes | marked YAML block | `~/.hermes/config.yaml` | pre/post_llm_call, pre/post_tool_call, pre_approval_request |
+| Grok | dedicated merged hook file (wholly Paneflow-owned) | `~/.grok/hooks/paneflow.json` | UserPromptSubmit, Stop, Pre/PostToolUse |
+
+Safety properties shared by every ephemeral installer: idempotent merge,
+ownership detection by command basename (`paneflow-ai-hook`), orphan sweep on
+the next launch after a SIGKILL, and refusal paths that protect user files —
+a symlinked config dir, an unparseable PRIMARY config (`opencode.json`,
+`~/.hermes/config.yaml` with an existing `hooks:` key), or a `.jsonc`-only
+OpenCode setup all skip the install instead of clobbering. The TS bridges are
+env-gated on `PANEFLOW_SOCKET_PATH`, so they are inert when the CLI runs
+outside a Paneflow terminal.
+
+Deliberately not integrated (no safe surface): **Copilot CLI** (no hooks, no
+JSON stream), **Factory Droid** (dashboard-managed hooks), **Kiro** (hooks
+live inside per-agent definition files — no per-session surface),
+**Antigravity / Openclaw** and the remaining launchers (no stable public
+hook surface). They still get the universal exit/session-end lifecycle and
+the "running" row.
 
 On Windows, Codex uses a JSONL tee rather than file hooks; the shim handles that
 path at launch.

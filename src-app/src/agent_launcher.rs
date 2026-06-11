@@ -22,7 +22,7 @@ use paneflow_config::schema::PaneFlowConfig;
 /// Distinct from [`paneflow_acp::AgentKind`] (Claude/Codex only, the ACP
 /// wire agents): this is the broader set surfaced as terminal launchers
 /// and bound to Agents-view Terminal Threads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TerminalAgent {
     ClaudeCode,
     Codex,
@@ -64,6 +64,16 @@ impl TerminalAgent {
         TerminalAgent::Qoder,
         TerminalAgent::Openclaw,
     ];
+
+    /// Stable display rank — index in [`Self::ALL`]. Used by the sidebar to
+    /// order multi-tool status rows deterministically instead of letting
+    /// `HashMap` iteration order leak into the UI.
+    pub fn display_rank(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|a| *a == self)
+            .unwrap_or(usize::MAX)
+    }
 
     pub fn display_name(self) -> &'static str {
         match self {

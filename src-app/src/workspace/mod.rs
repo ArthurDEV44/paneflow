@@ -70,12 +70,19 @@ pub struct Workspace {
     pub is_worktree: bool,
     /// Active TCP listening ports from workspace terminal processes.
     pub active_ports: Vec<u16>,
-    /// Generation counter for debouncing event-driven port scans.
-    /// Incremented on each `ActivityBurst` event; superseded scans check this
-    /// to abort if a newer scan was triggered.
+    /// Generation counter for event-driven port scans — the cancellation
+    /// belt for workspace close/reuse (superseded scans check it to abort).
     pub port_scan_generation: u64,
-    /// Service metadata detected from PTY output (enrichment for `active_ports`).
-    /// Keyed by port number; cleaned up when ports are removed from `active_ports`.
+    /// True while a scan ladder (debounce + retries) is in flight for this
+    /// workspace — ActivityBursts arriving meanwhile are absorbed instead of
+    /// superseding the pending scan (under sustained output, the old
+    /// generation-bump-per-burst starved the 500ms debounce indefinitely).
+    pub port_scan_pending: bool,
+    /// Service metadata for `active_ports` chips, fed from BOTH sides:
+    /// OS-side argv classification (authoritative for `is_frontend`, with a
+    /// synthesized localhost URL) and PTY-output detection (enrichment —
+    /// exact URL with path, backend labels). Keyed by port number; pruned
+    /// when ports are removed from `active_ports`.
     pub service_labels: std::collections::HashMap<u16, crate::terminal::ServiceInfo>,
     /// Registered AI agent sessions for this workspace, keyed by PID. A
     /// workspace can hold many concurrent sessions (e.g., two Claude
@@ -146,6 +153,7 @@ impl Workspace {
             is_worktree,
             active_ports: vec![],
             port_scan_generation: 0,
+            port_scan_pending: false,
             service_labels: std::collections::HashMap::new(),
             agent_sessions: std::collections::HashMap::new(),
             loader_angle: Rc::new(Cell::new(0.0)),

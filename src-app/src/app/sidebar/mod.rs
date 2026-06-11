@@ -579,14 +579,22 @@ impl PaneFlowApp {
                 match agg.dominant {
                     ai_types::AgentState::Thinking => {
                         let frames: &[char] = match agg.tool {
-                            ai_types::AiTool::Claude => &CLAUDE_SPINNER_FRAMES,
-                            ai_types::AiTool::Codex => &CODEX_SPINNER_FRAMES,
+                            crate::agent_launcher::TerminalAgent::ClaudeCode => {
+                                &CLAUDE_SPINNER_FRAMES
+                            }
+                            // Every other agent shares the Codex-style dot
+                            // spinner — distinct brand frames only where the
+                            // CLI itself has a recognizable one.
+                            _ => &CODEX_SPINNER_FRAMES,
                         };
-                        // EP-005 US-013: tool colors are UiColors slots now
-                        // (FR-08) — shared with the tab identity pill.
+                        // EP-005 US-013: Claude/Codex colors are UiColors
+                        // slots (FR-08, shared with the tab identity pill);
+                        // the other agents use their brand accent, falling
+                        // back to the theme text color for monochrome logos.
                         let thinking_color = match agg.tool {
-                            ai_types::AiTool::Claude => ui.agent_claude,
-                            ai_types::AiTool::Codex => ui.agent_codex,
+                            crate::agent_launcher::TerminalAgent::ClaudeCode => ui.agent_claude,
+                            crate::agent_launcher::TerminalAgent::Codex => ui.agent_codex,
+                            other => other.accent().map(|c| rgb(c).into()).unwrap_or(ui.text),
                         };
                         let angle = ws.loader_angle.get();
                         let idx = ((angle / std::f32::consts::TAU) * frames.len() as f32) as usize
@@ -612,7 +620,7 @@ impl PaneFlowApp {
                                 )
                                 .child(div().child(format!(
                                     "{} thinking…{}",
-                                    agg.tool.label(),
+                                    agg.tool.display_name(),
                                     extra
                                 ))),
                         );
@@ -643,7 +651,7 @@ impl PaneFlowApp {
                                         .text_color(ui.base)
                                         .child(format!(
                                             "{} needs input{}",
-                                            agg.tool.label(),
+                                            agg.tool.display_name(),
                                             extra
                                         )),
                                 ),
@@ -666,7 +674,11 @@ impl PaneFlowApp {
                                         .path("icons/check.svg")
                                         .text_color(done_color),
                                 )
-                                .child(div().child(format!("{} done{}", agg.tool.label(), extra))),
+                                .child(div().child(format!(
+                                    "{} done{}",
+                                    agg.tool.display_name(),
+                                    extra
+                                ))),
                         );
                     }
                     // EP-004 US-010: a crashed agent reads in red, never as
@@ -690,7 +702,7 @@ impl PaneFlowApp {
                                 )
                                 .child(div().child(format!(
                                     "{} errored{}",
-                                    agg.tool.label(),
+                                    agg.tool.display_name(),
                                     extra
                                 ))),
                         );
@@ -717,12 +729,52 @@ impl PaneFlowApp {
                                 )
                                 .child(div().child(format!(
                                     "{} stalled{}",
-                                    agg.tool.label(),
+                                    agg.tool.display_name(),
                                     extra
                                 ))),
                         );
                     }
                 }
+            }
+
+            // Agents detected in the process tree (per-pane /proc scan) with
+            // NO IPC session — the shim was bypassed (shell alias, rc file
+            // rewriting PATH, absolute binary path) or the agent has no hook
+            // support at all. Show an honest static "running" row instead of
+            // nothing: the user sees the agent is alive without a fabricated
+            // lifecycle state (no spinner — we genuinely don't know).
+            let hooked_tools: std::collections::HashSet<crate::agent_launcher::TerminalAgent> =
+                ws.agent_sessions.values().map(|s| s.tool).collect();
+            let mut unhooked: Vec<&'static str> = ws
+                .detected_agents
+                .iter()
+                .filter_map(|bin| crate::agent_launcher::TerminalAgent::from_binary(bin))
+                .filter(|agent| !hooked_tools.contains(agent))
+                .map(|agent| agent.display_name())
+                .collect();
+            unhooked.sort_unstable();
+            unhooked.dedup();
+            for name in unhooked {
+                card = card.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.))
+                        .text_xs()
+                        .text_color(ui.muted)
+                        .child(
+                            div()
+                                .w(px(11.))
+                                .h(px(11.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(div().w(px(5.)).h(px(5.)).rounded_full().bg(ui.muted)),
+                        )
+                        .child(div().child(format!("{name} running"))),
+                );
             }
 
             // Working directory moves into a hover tooltip so the card
