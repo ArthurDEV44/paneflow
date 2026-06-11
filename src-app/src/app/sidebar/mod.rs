@@ -10,14 +10,15 @@
 mod context_menu;
 
 use gpui::{
-    AnyElement, AppContext, ClickEvent, Context, FontWeight, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, ParentElement, Render, SharedString, Styled, Window, deferred, div,
-    prelude::*, px, rgb, svg,
+    Animation, AnimationExt, AnyElement, AppContext, ClickEvent, Context, FontWeight,
+    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Render,
+    SharedString, Styled, Transformation, Window, deferred, div, percentage, prelude::*, px, rgb,
+    svg,
 };
 
 use crate::{
-    CLAUDE_SPINNER_FRAMES, CODEX_SPINNER_FRAMES, PaneFlowApp, SIDEBAR_WIDTH, WorkspaceContextMenu,
-    WorkspaceDrag, WorkspaceDragPreview, ai_types, workspace::Workspace,
+    CLAUDE_SPINNER_FRAMES, PaneFlowApp, SIDEBAR_WIDTH, WorkspaceContextMenu, WorkspaceDrag,
+    WorkspaceDragPreview, ai_types, workspace::Workspace,
 };
 
 /// US-048: memoized result of the sidebar's sibling-worktree grouping. The
@@ -578,28 +579,57 @@ impl PaneFlowApp {
                 let extra = agg.extra_suffix();
                 match agg.dominant {
                     ai_types::AgentState::Thinking => {
-                        let frames: &[char] = match agg.tool {
-                            crate::agent_launcher::TerminalAgent::ClaudeCode => {
-                                &CLAUDE_SPINNER_FRAMES
-                            }
-                            // Every other agent shares the Codex-style dot
-                            // spinner — distinct brand frames only where the
-                            // CLI itself has a recognizable one.
-                            _ => &CODEX_SPINNER_FRAMES,
+                        // Arthur: Claude Code keeps its salmon-orange identity
+                        // colour and its unique glyph spinner; every other agent
+                        // reads a soft light grey with the rotating SVG arc from
+                        // the Agents sidebar.
+                        let is_claude =
+                            matches!(agg.tool, crate::agent_launcher::TerminalAgent::ClaudeCode);
+                        let thinking_color: gpui::Hsla = if is_claude {
+                            ui.agent_claude
+                        } else {
+                            rgb(0xc4c4c4).into()
                         };
-                        // EP-005 US-013: Claude/Codex colors are UiColors
-                        // slots (FR-08, shared with the tab identity pill);
-                        // the other agents use their brand accent, falling
-                        // back to the theme text color for monochrome logos.
-                        let thinking_color = match agg.tool {
-                            crate::agent_launcher::TerminalAgent::ClaudeCode => ui.agent_claude,
-                            crate::agent_launcher::TerminalAgent::Codex => ui.agent_codex,
-                            other => other.accent().map(|c| rgb(c).into()).unwrap_or(ui.text),
+                        let glyph: AnyElement = if is_claude {
+                            let angle = ws.loader_angle.get();
+                            let idx = ((angle / std::f32::consts::TAU)
+                                * CLAUDE_SPINNER_FRAMES.len() as f32)
+                                as usize
+                                % CLAUDE_SPINNER_FRAMES.len();
+                            let spinner = CLAUDE_SPINNER_FRAMES[idx];
+                            div()
+                                .w(px(11.))
+                                .h(px(11.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(format!("{spinner}"))
+                                .into_any_element()
+                        } else {
+                            // Same self-animating arc as the Agents sidebar
+                            // (declarative Animation+Transformation, no shared
+                            // loader-loop state), tinted with the status colour.
+                            svg()
+                                .size(px(11.))
+                                .flex_none()
+                                .path("icons/loader-circle.svg")
+                                .text_color(thinking_color)
+                                .with_animation(
+                                    SharedString::from(format!(
+                                        "sidebar-spinner-{}-{}",
+                                        ws.id,
+                                        agg.tool.display_name()
+                                    )),
+                                    Animation::new(std::time::Duration::from_secs(1)).repeat(),
+                                    |svg, delta| {
+                                        svg.with_transformation(Transformation::rotate(percentage(
+                                            delta,
+                                        )))
+                                    },
+                                )
+                                .into_any_element()
                         };
-                        let angle = ws.loader_angle.get();
-                        let idx = ((angle / std::f32::consts::TAU) * frames.len() as f32) as usize
-                            % frames.len();
-                        let spinner = frames[idx];
                         card = card.child(
                             div()
                                 .flex()
@@ -608,16 +638,7 @@ impl PaneFlowApp {
                                 .gap(px(6.))
                                 .text_xs()
                                 .text_color(thinking_color)
-                                .child(
-                                    div()
-                                        .w(px(11.))
-                                        .h(px(11.))
-                                        .flex_none()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(format!("{spinner}")),
-                                )
+                                .child(glyph)
                                 .child(div().child(format!(
                                     "{} thinking…{}",
                                     agg.tool.display_name(),
