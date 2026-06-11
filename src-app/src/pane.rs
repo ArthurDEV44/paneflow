@@ -420,6 +420,19 @@ impl Pane {
         }
     }
 
+    /// EP-006 US-018 (cli-cockpit): replace this pane's transient fleet-grep
+    /// badge counts. Same idempotent push contract as [`Pane::set_attention`].
+    pub fn set_search_hits(
+        &mut self,
+        hits: std::collections::HashMap<gpui::EntityId, usize>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.search_hits != hits {
+            self.search_hits = hits;
+            cx.notify();
+        }
+    }
+
     /// EP-001 US-001 (cli-cockpit): install/clear the Composer overlay on
     /// this pane. Always notifies — the slot carries live `busy`/group data
     /// recomputed by the pusher, and the closure fields defeat `PartialEq`.
@@ -734,7 +747,9 @@ impl Pane {
                 | TerminalEvent::CancelSwapMode
                 | TerminalEvent::SelectionCopied
                 | TerminalEvent::OpenMarkdownPath(_)
-                | TerminalEvent::OpenCodePath { .. } => {}
+                | TerminalEvent::OpenCodePath { .. }
+                | TerminalEvent::FontZoomChanged
+                | TerminalEvent::FleetSearchRequested { .. } => {}
             }
         })
         .detach();

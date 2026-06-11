@@ -34,7 +34,71 @@ impl TerminalView {
         cx.notify();
     }
 
+    // --- Per-pane font zoom (EP-006 US-019) ---
+
+    /// ±1 px per-pane font zoom, clamped to [8.0, 32.0]; at a bound the
+    /// step is a silent no-op (PRD AC — no toast). Writing the override is
+    /// the whole job: the next frame re-measures the cell with it,
+    /// recomputes cols/rows from the pane bounds, and `resize_if_needed`
+    /// notifies the PTY — the exact window-resize path, so fullscreen TUIs
+    /// reflow. Strictly per-view: sibling panes never change.
+    pub(super) fn font_zoom_step(&mut self, delta: f32, cx: &mut Context<Self>) {
+        let current = self
+            .terminal
+            .font_size_override
+            .unwrap_or_else(crate::terminal::element::global_font_size);
+        let next = (current + delta).clamp(
+            crate::terminal::element::MIN_FONT_SIZE,
+            crate::terminal::element::MAX_FONT_SIZE,
+        );
+        if next == current && self.terminal.font_size_override.is_some() {
+            return;
+        }
+        if next == current && self.terminal.font_size_override.is_none() {
+            // Global default already at the bound — don't pin a no-op
+            // override that would stop tracking future global changes.
+            return;
+        }
+        self.terminal.font_size_override = Some(next);
+        cx.emit(super::TerminalEvent::FontZoomChanged);
+        cx.notify();
+    }
+
+    /// Reset to the global font size (`override = None` — the pane follows
+    /// live global changes again).
+    pub(super) fn font_zoom_reset(&mut self, cx: &mut Context<Self>) {
+        if self.terminal.font_size_override.take().is_some() {
+            cx.emit(super::TerminalEvent::FontZoomChanged);
+            cx.notify();
+        }
+    }
+
     // --- Search ---
+
+    /// EP-006 US-018: hand the current query to the app for a fleet-wide
+    /// fan-out. Empty query is a silent no-op; the regex validity check
+    /// happens app-side ONCE (a single error surface, never N copies).
+    pub(super) fn request_fleet_search(&mut self, cx: &mut Context<Self>) {
+        if !self.search_active || self.search_query.trim().is_empty() {
+            return;
+        }
+        cx.emit(super::TerminalEvent::FleetSearchRequested {
+            query: self.search_query.clone(),
+            regex: self.search_regex_mode,
+        });
+    }
+
+    /// EP-006 US-018: arm THIS view's local search with a fleet query (the
+    /// Enter-on-result teleport). Same effect as typing it in the find bar:
+    /// overlay open, matches computed, viewport on the first hit — and the
+    /// US-017 match rail renders from the same state.
+    pub fn arm_search(&mut self, query: &str, regex: bool, cx: &mut Context<Self>) {
+        self.search_active = true;
+        self.search_query = query.to_string();
+        self.search_regex_mode = regex;
+        self.run_search();
+        cx.notify();
+    }
 
     pub(super) fn toggle_search(&mut self, cx: &mut Context<Self>) {
         self.search_active = !self.search_active;

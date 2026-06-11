@@ -299,6 +299,11 @@ pub struct TerminalState {
     /// own output (untrusted text — used only to cross-check against the
     /// scan's LISTEN attribution, never to open anything). Bounded.
     pub announced_ports: Vec<u16>,
+    /// EP-006 US-019: per-pane font-size override in pixels. `None` follows
+    /// the global config (and live global changes); `Some` is clamped to
+    /// [8.0, 32.0] at every write site (zoom actions, session ingress) and
+    /// wins over the global. Persisted to `session.json`.
+    pub font_size_override: Option<f32>,
     /// OSC 52 clipboard access mode (default: copy-only for security).
     pub osc52_mode: Osc52Mode,
     /// Deferred clipboard operations from sync() — drained in the poll loop
@@ -782,6 +787,7 @@ impl TerminalState {
             detected_ports: Vec::new(),
             port_conflicts: Vec::new(),
             announced_ports: Vec::new(),
+            font_size_override: None,
             osc52_mode: Osc52Mode::Disabled,
             pending_clipboard_ops: Vec::new(),
             pending_size_ops: Vec::new(),

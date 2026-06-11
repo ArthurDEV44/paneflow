@@ -1112,6 +1112,12 @@ pub struct SurfaceDefinition {
     /// unknown or malformed values are dropped silently.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// EP-006 US-019: per-pane font-size override in pixels. `None` =
+    /// follow the global config. Validated at restore ingress (NaN/inf
+    /// dropped, finite values clamped to [8.0, 32.0]) — never fed raw to
+    /// the cell geometry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f32>,
 }
 
 #[cfg(test)]

@@ -19,6 +19,7 @@ use crate::{
     SplitEqualize, SplitHorizontally, SplitVertically, SwapPane, TerminalCopy, TerminalPaste,
     ToggleCopyMode, ToggleSearch, ToggleSearchRegex, ToggleZoom, UndoClosePane,
 };
+use crate::{FontSizeDecrease, FontSizeIncrease, FontSizeReset, ToggleFleetSearch};
 
 /// Metadata for a single dispatchable action.
 ///
@@ -295,6 +296,30 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         factory: || Box::new(ToggleSearch),
         context: "Terminal",
         description: "Toggle search",
+    },
+    ActionMeta {
+        name: "font_size_increase",
+        factory: || Box::new(FontSizeIncrease),
+        context: "Terminal",
+        description: "Increase pane font size",
+    },
+    ActionMeta {
+        name: "font_size_decrease",
+        factory: || Box::new(FontSizeDecrease),
+        context: "Terminal",
+        description: "Decrease pane font size",
+    },
+    ActionMeta {
+        name: "font_size_reset",
+        factory: || Box::new(FontSizeReset),
+        context: "Terminal",
+        description: "Reset pane font size",
+    },
+    ActionMeta {
+        name: "toggle_fleet_search",
+        factory: || Box::new(ToggleFleetSearch),
+        context: "Search",
+        description: "Search across all panes",
     },
     ActionMeta {
         name: "toggle_search_regex",

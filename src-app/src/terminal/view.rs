@@ -904,6 +904,15 @@ pub enum TerminalEvent {
         line: Option<u32>,
         col: Option<u32>,
     },
+    /// EP-006 US-019 — the per-pane font override changed. The receiver
+    /// (PaneFlowApp) persists the session so the zoom survives a crash,
+    /// not just a clean quit (same rationale as `SurfaceRenamed`).
+    FontZoomChanged,
+    /// EP-006 US-018 — the user toggled the fleet scope from this view's
+    /// find bar. The receiver (PaneFlowApp) fans the query out to every
+    /// pane of every workspace off the render thread and opens the fleet
+    /// results overlay.
+    FleetSearchRequested { query: String, regex: bool },
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -1017,6 +1026,26 @@ impl TerminalView {
             )
             .child(".*");
 
+        // EP-006 US-018: fan the query out to every pane of every workspace.
+        // The clickable counterpart of the remappable `toggle_fleet_search`
+        // action (alt-f in the Search context).
+        let fleet_toggle = div()
+            .id("search-fleet-toggle")
+            .px(gpui::px(4.0))
+            .py(gpui::px(2.0))
+            .rounded_sm()
+            .cursor_pointer()
+            .text_size(gpui::px(12.0))
+            .bg(gpui::rgb(0x45475a))
+            .text_color(gpui::rgb(0x6c7086))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _window, cx| {
+                    this.request_fleet_search(cx);
+                }),
+            )
+            .child("Fleet");
+
         // Query display — red border on regex error
         let query_border_color = if search_has_regex_error {
             gpui::rgb(0xf38ba8) // Catppuccin red
@@ -1064,6 +1093,7 @@ impl TerminalView {
                     .child("Find:"),
             )
             .child(regex_toggle)
+            .child(fleet_toggle)
             .child(query_display)
             .child(
                 div()
@@ -1109,7 +1139,8 @@ impl Render for TerminalView {
         }
 
         // Update cell dimensions for mouse → grid mapping
-        let dims = crate::terminal::element::measure_cell(window, cx);
+        let dims =
+            crate::terminal::element::measure_cell(window, cx, self.terminal.font_size_override);
         self.cell_width = dims.cell_width;
         self.line_height = dims.line_height;
 
@@ -1162,6 +1193,21 @@ impl Render for TerminalView {
                 .mode()
                 .contains(TermMode::ALT_SCREEN);
 
+        // EP-006 US-017: match positions for the scrollbar rail, converted
+        // from grid-absolute lines to lines-from-bottom under a short lock
+        // (the `scroll_to_match` reference conversion). Empty when no
+        // search → the rail disappears at the same repaint (US-017 AC).
+        let search_rail_lines: Vec<usize> = if self.search_active && !self.search_matches.is_empty()
+        {
+            let bottom = self.terminal.term.lock_unfair().bottommost_line();
+            self.search_matches
+                .iter()
+                .map(|m| (bottom - m.start.line).0.max(0) as usize)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         let terminal_element = TerminalElement::new(
             self.terminal.term.clone(),
             PtyNotifier(self.terminal.notifier.0.clone()),
@@ -1190,6 +1236,7 @@ impl Render for TerminalView {
                 .iter()
                 .filter_map(|m| m.exit_code.map(|c| (m.abs_line, c)))
                 .collect(),
+            search_rail_lines,
             self.hovered_mark,
             #[cfg(debug_assertions)]
             keystroke_at,
@@ -1252,6 +1299,26 @@ impl Render for TerminalView {
             .on_action(cx.listener(|this, _: &crate::ToggleCopyMode, _window, cx| {
                 this.toggle_copy_mode(cx);
             }))
+            // EP-006 US-019: per-pane font zoom (±1 px, clamp [8, 32]).
+            .on_action(
+                cx.listener(|this, _: &crate::FontSizeIncrease, _window, cx| {
+                    this.font_zoom_step(1.0, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::FontSizeDecrease, _window, cx| {
+                    this.font_zoom_step(-1.0, cx);
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::FontSizeReset, _window, cx| {
+                this.font_zoom_reset(cx);
+            }))
+            // EP-006 US-018: fan the current query out to the whole fleet.
+            .on_action(
+                cx.listener(|this, _: &crate::ToggleFleetSearch, _window, cx| {
+                    this.request_fleet_search(cx);
+                }),
+            )
             .on_drop(cx.listener(Self::handle_file_drop))
             .on_action(
                 cx.listener(|this, _: &crate::ClearScrollHistory, _window, cx| {

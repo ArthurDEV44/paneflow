@@ -27,8 +27,11 @@ mod paint;
 pub(super) mod pixel_probe;
 
 use color::{convert_color, rgb_to_hsla};
+pub use font::{
+    MAX_FONT_SIZE, MIN_FONT_SIZE, global_font_size, measure_cell, resolve_font_family,
+    sanitize_font_override,
+};
 use font::{base_font, font_size};
-pub use font::{measure_cell, resolve_font_family};
 use geometry::CellGeometry;
 pub use hyperlink::{
     detect_code_paths_on_line_mapped, detect_file_paths_on_line_mapped, detect_urls_on_line_mapped,
@@ -428,6 +431,10 @@ pub struct TerminalElement {
     /// marks, snapshotted by the view at render time. Projected onto the
     /// viewport in `build_layout`.
     command_marks: Vec<(i64, i32)>,
+    /// EP-006 US-017: search-match positions as lines-from-grid-bottom,
+    /// snapshotted by the view at render time (empty when no search).
+    /// Painted as decimated ticks on the scrollbar track.
+    search_rail_lines: Vec<usize>,
     /// EP-003 US-008: the gutter dot under the pointer, if any (view-side
     /// hit-test) — drives the `exit <code>` tooltip.
     hovered_mark: Option<paint::marks::HoveredMark>,
@@ -457,6 +464,7 @@ impl TerminalElement {
         needs_initial_clear: Arc<std::sync::atomic::AtomicBool>,
         scrollbar_metrics: Arc<Mutex<Option<ScrollbarMetrics>>>,
         command_marks: Vec<(i64, i32)>,
+        search_rail_lines: Vec<usize>,
         hovered_mark: Option<paint::marks::HoveredMark>,
         #[cfg(debug_assertions)] last_keystroke_at: Option<std::time::Instant>,
     ) -> Self {
@@ -479,10 +487,17 @@ impl TerminalElement {
             needs_initial_clear,
             scrollbar_metrics,
             command_marks,
+            search_rail_lines,
             hovered_mark,
             #[cfg(debug_assertions)]
             last_keystroke_at,
         }
+    }
+
+    /// EP-006 US-019: this view's font-size override, read live from the
+    /// entity so the same frame that mutates it lays out with it.
+    fn size_override(&self, cx: &App) -> Option<f32> {
+        self.terminal_view.read(cx).terminal.font_size_override
     }
 
     fn build_layout(
@@ -491,7 +506,7 @@ impl TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) -> LayoutState {
-        let dims = measure_cell(window, cx);
+        let dims = measure_cell(window, cx, self.size_override(cx));
         let theme = crate::theme::active_theme();
 
         // Compute desired terminal grid size from pixel bounds (accounting for left gutter)
@@ -1376,7 +1391,7 @@ impl Element for TerminalElement {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = origin;
         let line_height = layout.dimensions.line_height;
-        let font_size = font_size();
+        let font_size = font_size(self.size_override(cx));
 
         let geom = CellGeometry {
             origin,
@@ -1471,6 +1486,19 @@ impl Element for TerminalElement {
 
             // 5. Scrollbar thumb
             paint::scrollbar::paint_scrollbar(&layout, &geom, bounds, window);
+
+            // 5b. EP-006 US-017: search match rail — decimated ticks on the
+            // same strip. Click-to-jump rides the existing proportional
+            // track click (US-015 hit-test below); the rail disappears with
+            // the search at the same repaint (empty snapshot → no paint).
+            paint::scrollbar::paint_match_ticks(
+                &self.search_rail_lines,
+                crate::theme::ui_colors().vc_modified,
+                &layout,
+                &geom,
+                bounds,
+                window,
+            );
 
             // US-015: publish the painted scrollbar geometry so the view's
             // mouse handlers can hit-test click-to-jump / drag against the same

@@ -116,6 +116,8 @@ impl LayoutTree {
                             // the pill survives consecutive restarts even
                             // when no scan ran in between).
                             agent: tv_ref.terminal.detected_agent.map(|a| a.tag().to_string()),
+                            // EP-006 US-019: per-pane font zoom override.
+                            font_size: tv_ref.terminal.font_size_override,
                         }
                     })
                     .collect();

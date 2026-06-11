@@ -1,9 +1,84 @@
-//! Scrollbar thumb paint pass.
+//! Scrollbar thumb + search match-rail paint pass.
 
-use gpui::{Bounds, Pixels, Point, Window, fill, px};
+use gpui::{Bounds, Hsla, Pixels, Point, Window, fill, px};
 
 use super::super::LayoutState;
 use super::super::geometry::CellGeometry;
+
+/// EP-006 US-017: match-rail tick height AND bucket size. One tick per
+/// occupied 2 px bucket bounds the paint cost by the track height, never
+/// by the match count (which is capped at 10 000 upstream anyway).
+const TICK_PX: f32 = 2.0;
+
+/// EP-006 US-017: project match positions (lines from the grid bottom)
+/// onto the scrollbar track, decimated by [`TICK_PX`] buckets. Document
+/// space is `total_lines` (history + visible screen); top of track = top
+/// of scrollback. Returns each occupied bucket's tick-top Y relative to
+/// the track top. Pure — unit-tested.
+pub(crate) fn match_tick_offsets(
+    lines_from_bottom: impl IntoIterator<Item = usize>,
+    total_lines: usize,
+    track_height: f32,
+) -> Vec<f32> {
+    if total_lines == 0 || track_height <= TICK_PX {
+        return Vec::new();
+    }
+    let bucket_count = (track_height / TICK_PX).ceil() as usize;
+    let mut occupied = vec![false; bucket_count];
+    for l in lines_from_bottom {
+        let doc_pos = (total_lines - 1).saturating_sub(l.min(total_lines - 1));
+        let y = (doc_pos as f32 / total_lines as f32) * track_height;
+        let idx = ((y / TICK_PX) as usize).min(bucket_count - 1);
+        occupied[idx] = true;
+    }
+    occupied
+        .iter()
+        .enumerate()
+        .filter_map(|(i, o)| o.then_some(i as f32 * TICK_PX))
+        .collect()
+}
+
+/// EP-006 US-017: paint the search match rail — one [`TICK_PX`]-high quad
+/// per occupied bucket, on the same 4 px right-edge strip as the thumb.
+/// Painted whenever a search has matches, independent of the thumb (which
+/// only shows while scrolled); rail click-to-jump is the EXISTING
+/// proportional track click (`ScrollbarMetrics::offset_for_y` in the
+/// view's mouse handler) — no per-tick hit-test needed.
+pub fn paint_match_ticks(
+    lines_from_bottom: &[usize],
+    color: Hsla,
+    layout: &LayoutState,
+    geom: &CellGeometry,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+) {
+    if lines_from_bottom.is_empty() {
+        return;
+    }
+    // Keep this visible_rows/total_lines derivation IDENTICAL to
+    // `scrollbar_metrics` above — the rail and the thumb must agree on the
+    // document space or ticks drift off the offsets the track click jumps to.
+    let visible_rows = (bounds.size.height / geom.line_height).floor().max(1.0) as usize;
+    let total_lines = layout.history_size + visible_rows;
+    let track_height = bounds.size.height.as_f32();
+    let strip_width = px(4.0);
+    let strip_left = bounds.origin.x + bounds.size.width - strip_width;
+    for y in match_tick_offsets(lines_from_bottom.iter().copied(), total_lines, track_height) {
+        window.paint_quad(fill(
+            Bounds::new(
+                Point {
+                    x: strip_left,
+                    y: geom.origin.y + px(y),
+                },
+                gpui::Size {
+                    width: strip_width,
+                    height: px(TICK_PX),
+                },
+            ),
+            color,
+        ));
+    }
+}
 
 /// US-015: resolved pixel geometry of the scrollbar strip + thumb for a single
 /// frame. Computed in [`scrollbar_metrics`] (the single source of truth shared
@@ -141,6 +216,46 @@ mod tests {
             thumb_height: px(16.0),
             history_size: history,
         }
+    }
+
+    // EP-006 US-017 — match-rail projection + decimation.
+
+    #[test]
+    fn ticks_project_proportionally_top_to_bottom() {
+        // total 1000 lines, 400px track. A match at the very top of the
+        // scrollback (999 from bottom) → y≈0; at the live edge (0 from
+        // bottom) → y near the track bottom.
+        let ticks = match_tick_offsets([999usize, 0], 1000, 400.0);
+        assert_eq!(ticks.len(), 2);
+        assert_eq!(ticks[0], 0.0);
+        assert!(ticks[1] >= 396.0, "live-edge match lands at the bottom");
+    }
+
+    #[test]
+    fn ticks_are_decimated_to_one_per_bucket() {
+        // 10 000 matches over a 400px track can paint at most
+        // track_height / TICK_PX = 200 ticks (US-017 AC: paint bounded by
+        // the track, never the match count).
+        let ticks = match_tick_offsets(0..10_000usize, 10_000, 400.0);
+        assert!(ticks.len() <= 200, "got {} ticks", ticks.len());
+        assert!(!ticks.is_empty());
+    }
+
+    #[test]
+    fn ticks_adjacent_matches_share_a_bucket() {
+        // Two matches one line apart in a huge document share one 2px
+        // bucket → one tick.
+        let ticks = match_tick_offsets([5000usize, 5001], 100_000, 400.0);
+        assert_eq!(ticks.len(), 1);
+    }
+
+    #[test]
+    fn ticks_empty_and_degenerate_inputs() {
+        assert!(match_tick_offsets(std::iter::empty(), 1000, 400.0).is_empty());
+        assert!(match_tick_offsets([5usize], 0, 400.0).is_empty());
+        assert!(match_tick_offsets([5usize], 1000, 0.0).is_empty());
+        // Out-of-range line (hostile/stale) is clamped, never panics.
+        assert_eq!(match_tick_offsets([usize::MAX], 100, 400.0).len(), 1);
     }
 
     // US-015: top of track = fully scrolled back; bottom = at the live edge.
