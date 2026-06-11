@@ -10,7 +10,7 @@
 use alacritty_terminal::grid::{Dimensions, Scroll as AlacScroll};
 use alacritty_terminal::index::{Column as GridCol, Line as GridLine, Point as AlacPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use gpui::{ClipboardItem, Context};
+use gpui::{ClipboardItem, Context, Focusable};
 
 use super::TerminalView;
 
@@ -100,18 +100,57 @@ impl TerminalView {
         cx.notify();
     }
 
-    pub(super) fn toggle_search(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn toggle_search(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
         self.search_active = !self.search_active;
-        if !self.search_active {
-            self.search_query.clear();
-            self.search_matches.clear();
-            self.search_current = 0;
-            self.search_regex_error = None;
-            // Reset scroll position
-            let mut term = self.terminal.term.lock();
-            term.scroll_display(AlacScroll::Bottom);
+        // Always reset the query state; the field starts empty on every open.
+        self.search_query.clear();
+        self.search_matches.clear();
+        self.search_current = 0;
+        self.search_regex_error = None;
+        self.search_input.update(cx, |input, cx| {
+            input.content = "".into();
+            input.selected_range = 0..0;
+            cx.notify();
+        });
+
+        if self.search_active {
+            // Move keyboard focus to the real input so keystrokes land in the
+            // find bar, not the terminal/PTY — this is the whole point of using
+            // a `TextInput` entity instead of capturing keys by hand.
+            let handle = self.search_input.read(cx).focus_handle(cx);
+            handle.focus(window, cx);
+        } else {
+            // Reset scroll position and hand focus back to the terminal.
+            {
+                let mut term = self.terminal.term.lock();
+                term.scroll_display(AlacScroll::Bottom);
+            }
+            self.focus_handle(cx).focus(window, cx);
         }
         cx.notify();
+    }
+
+    /// Re-run the search whenever the bound [`TextInput`] entity changes (wired
+    /// via `cx.observe` in the view constructor). Keeps `search_query` — the
+    /// source of truth for match scanning and the result counter — in sync with
+    /// the field content, clamped to `MAX_QUERY_LEN` on a char boundary.
+    pub(super) fn on_search_input_changed(&mut self, cx: &mut Context<Self>) {
+        if !self.search_active {
+            return;
+        }
+        let mut q = self.search_input.read(cx).value();
+        if q.len() > crate::search::MAX_QUERY_LEN {
+            let mut end = crate::search::MAX_QUERY_LEN;
+            while end > 0 && !q.is_char_boundary(end) {
+                end -= 1;
+            }
+            q.truncate(end);
+        }
+        if q != self.search_query {
+            self.search_query = q;
+            self.run_search();
+            cx.notify();
+        }
     }
 
     pub(super) fn dismiss_search(&mut self, cx: &mut Context<Self>) {
