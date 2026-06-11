@@ -5,8 +5,32 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-06-11
+
 ### Added
 
+- Composer: a bottom-anchored multi-line input (secondary-shift-space) over
+  the focused pane. Enter pre-fills the agent through bracketed paste
+  without submitting, so the prompt is yours to review before it is sent;
+  secondary-enter pre-fills and submits in one keystroke.
+- Named broadcast groups: assign panes to a group (secondary-shift-b to
+  toggle membership, secondary-shift-m for the picker), each marked by a
+  3px coloured edge stripe. The Composer fans one prompt out to every live
+  member of the active group and shows a transient recap of who received
+  it, so a broadcast is never silent.
+- Queued prompts for busy agents: a prompt sent to a generating agent is
+  held ("1 queued" tab chip) and flushed automatically on that session's
+  next idle transition, instead of being dropped or spliced into the
+  running turn.
+- Attention Queue (secondary-shift-k): a single overlay listing every agent
+  waiting for input across all workspaces, with its question and how long
+  it has waited, longest-waiting first. Enter warps straight to that pane.
+- Launch Pad (secondary-shift-l): worktree, split, agent launch and
+  first-prompt prefill in one gesture.
+- Agent status beyond Claude Code and Codex: the sidebar states, tab dots
+  and notifications now apply to any agent CLI launched through the shimmed
+  PATH, identified by its binary name; an unrecognized tool is reported as
+  itself instead of being mislabeled as Claude.
 - Scrollbar match rail: an active search projects every match as a tick on
   the scrollbar track (decimated to the pixel grid, so 10 000 matches cost
   the same as 10), with the existing proportional track click to jump.
@@ -36,6 +60,24 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
   hook activity for 5 minutes is flagged "stalled" in the sidebar, with one
   desktop notification per stall episode. Threshold configurable via
   `agent_stall_threshold_secs`; kill switch via `agent_stall_detection`.
+
+### Changed
+
+- Dev-server detection is now OS-authoritative. A port badge's clickable
+  link is derived from the command line of the process that owns the
+  socket, so it no longer depends on catching the dev server's banner line
+  in the terminal output. The link survives an in-shell restart (nodemon, a
+  plain re-run) that re-binds the port, and sustained agent output no longer
+  starves the scan that picks up new ports.
+
+### Fixed
+
+- Agent sessions are reaped the moment their pane closes instead of
+  lingering up to 30s for the periodic sweep, covering the cases where the
+  exit hook never arrives (shim killed, agent started without the shim).
+- A recycled process id can no longer keep a finished agent's status alive:
+  a session pins its process start time, and a reused pid whose start time
+  differs is treated as gone.
 
 ## [0.4.2] - 2026-06-10
 
