@@ -336,6 +336,15 @@ pub struct UiColors {
     pub vc_word_added: Hsla,
     /// Intra-line word-diff emphasis (deleted side).
     pub vc_word_deleted: Hsla,
+    // EP-004 (prd-cli-cockpit-ergonomics-2026-Q3.md): agent terminal-state
+    // slots (FR-08 — no inline hex in render code). Both are deliberately
+    // distinct from `vc_conflict` (the attention/waiting dot) so a crashed
+    // agent never reads as "needs input".
+    /// US-010: `AgentState::Errored` — tab dot + sidebar badge (red).
+    pub agent_error: Hsla,
+    /// US-011: `AgentState::Stalled` — sidebar badge (muted grey-blue:
+    /// "silent", not "failing").
+    pub agent_stalled: Hsla,
 }
 
 /// Derive UI colors from the active terminal theme.
@@ -385,6 +394,10 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
             vc_modified_background: ha(0xdf8e1d, 0.16),
             vc_word_added: ha(0x40a02b, 0.40),
             vc_word_deleted: ha(0xd20f39, 0.40),
+            // Agent state (Latte family): saturated red for a crash, the
+            // neutral overlay grey for a silent session.
+            agent_error: h(0xd20f39),
+            agent_stalled: h(0x7c7f93),
         }
     } else {
         UiColors {
@@ -414,6 +427,10 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
             vc_modified_background: ha(0xf9e2af, 0.12),
             vc_word_added: ha(0xa6e3a1, 0.40),
             vc_word_deleted: ha(0xf38ba8, 0.40),
+            // Agent state (Mocha family): pastel red for a crash, the
+            // neutral overlay grey for a silent session.
+            agent_error: h(0xf38ba8),
+            agent_stalled: h(0x9399b2),
         }
     };
 

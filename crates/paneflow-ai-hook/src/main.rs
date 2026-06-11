@@ -50,6 +50,9 @@ const METHOD_PROMPT_SUBMIT: &str = "ai.prompt_submit";
 const METHOD_NOTIFICATION: &str = "ai.notification";
 const METHOD_STOP: &str = "ai.stop";
 const METHOD_TOOL_USE: &str = "ai.tool_use";
+/// EP-004 US-010: shim-synthesized frame carrying the wrapped agent
+/// binary's REAL exit status (the shell's ChildExit never sees it).
+const METHOD_EXIT: &str = "ai.exit";
 
 // Tool-identity strings. The server's `AiTool` enum (`ai_types.rs:27-31`) maps
 // `"codex"` to `AiTool::Codex` and everything else (including `"claude"`) to
@@ -224,6 +227,20 @@ fn build_frame(
             }
         }
         "Stop" | "SubagentStop" => METHOD_STOP,
+        // Exit is shim-synthesized like SessionEnd: `paneflow-shim` fires it
+        // after the wrapped agent binary terminates, with the agent's raw
+        // exit code (shell `128+signum` convention for signal deaths) in
+        // `hook_payload.exit_code` — synthesized by `dispatch` from
+        // `$PANEFLOW_AI_EXIT_CODE`. Hard-require the code: a frame without
+        // it is useless to the server's `Errored` classifier
+        // (`ipc_handler.rs` `ai.exit` arm), so bail instead of degrading.
+        "Exit" => {
+            let code = hook_payload
+                .get("exit_code")
+                .and_then(serde_json::Value::as_i64)?;
+            params.insert("exit_code".into(), serde_json::Value::from(code));
+            METHOD_EXIT
+        }
         // SessionEnd is invoked by `paneflow-shim` after the real AI binary
         // exits, NOT by claude/codex themselves — neither tool fires a
         // session-end hook event. The shim runs `paneflow-ai-hook SessionEnd`
@@ -305,6 +322,21 @@ fn read_ai_pid_from(raw: Option<&str>) -> Option<u32> {
     raw?.parse::<u32>().ok().filter(|&p| p > 0)
 }
 
+/// EP-004 US-010: read the wrapped agent binary's raw exit code from
+/// `$PANEFLOW_AI_EXIT_CODE` (set by the shim's `notify_exit`). `None` if
+/// unset or non-numeric — the caller bails rather than send a degraded
+/// frame. Negative values are legitimate (Windows NTSTATUS codes, e.g.
+/// `STATUS_CONTROL_C_EXIT` = -1073741510).
+fn read_exit_code() -> Option<i32> {
+    read_exit_code_from(env::var("PANEFLOW_AI_EXIT_CODE").ok().as_deref())
+}
+
+/// Testable inner — same `env::set_var`-avoidance rationale as
+/// [`read_ai_pid_from`].
+fn read_exit_code_from(raw: Option<&str>) -> Option<i32> {
+    raw?.parse::<i32>().ok()
+}
+
 // ---------------------------------------------------------------------------
 // Diagnostic logging (opt-in)
 // ---------------------------------------------------------------------------
@@ -366,14 +398,21 @@ fn dispatch() {
         return;
     };
 
-    // SessionEnd is the one event the shim invokes itself (post-`run_real`)
-    // with `Stdio::null()`, so empty stdin is the EXPECTED case — not an
-    // error. Skip the stdin read entirely and use an empty payload `{}`.
-    // Every other event requires real stdin (the AI tool feeds JSON via
-    // the hook contract); empty/malformed there still bails via
-    // `read_stdin_json` as before.
+    // SessionEnd and Exit are the events the shim invokes itself
+    // (post-`run_real`) with `Stdio::null()`, so empty stdin is the EXPECTED
+    // case — not an error. Skip the stdin read entirely: SessionEnd uses an
+    // empty payload `{}`; Exit synthesizes its payload from
+    // `$PANEFLOW_AI_EXIT_CODE` (EP-004 US-010). Every other event requires
+    // real stdin (the AI tool feeds JSON via the hook contract);
+    // empty/malformed there still bails via `read_stdin_json` as before.
     let hook_payload = if event == "SessionEnd" {
         serde_json::json!({})
+    } else if event == "Exit" {
+        let Some(code) = read_exit_code() else {
+            diagnose("Exit: missing or invalid PANEFLOW_AI_EXIT_CODE");
+            return;
+        };
+        serde_json::json!({ "exit_code": code })
     } else {
         let Some(payload) = read_stdin_json(&event) else {
             return;
@@ -394,6 +433,8 @@ fn dispatch() {
         // their event name or check their env / stdin.
         let reason = if event == "SessionStart" {
             "missing pid (set $PANEFLOW_AI_PID or include pid in hook JSON)"
+        } else if event == "Exit" {
+            "missing exit_code in synthesized payload"
         } else {
             "unhandled hook event"
         };
@@ -655,6 +696,51 @@ mod tests {
         let params = assert_envelope(&frame, "ai.stop");
         assert_eq!(params["tool"], "claude");
         assert_eq!(params["hook_payload"], payload);
+    }
+
+    // ---------- Exit (EP-004 US-010, shim-synthesized) ----------
+
+    #[test]
+    fn exit_maps_to_ai_exit_with_top_level_exit_code() {
+        let payload = json!({ "exit_code": 1 });
+        let frame = build_frame("Exit", 9, TOOL_CLAUDE, payload.clone(), Some(4242), None).unwrap();
+
+        let params = assert_envelope(&frame, "ai.exit");
+        assert_eq!(params["workspace_id"], 9);
+        assert_eq!(params["tool"], "claude");
+        assert_eq!(params["exit_code"], 1, "code must be lifted to top level");
+        assert_eq!(params["pid"], 4242, "session routing needs the shim PID");
+        assert_eq!(params["hook_payload"], payload);
+    }
+
+    #[test]
+    fn exit_preserves_negative_windows_ntstatus_codes() {
+        // STATUS_CONTROL_C_EXIT (0xC000013A) survives the i64 round-trip.
+        let payload = json!({ "exit_code": -1_073_741_510_i64 });
+        let frame = build_frame("Exit", 9, TOOL_CODEX, payload, None, None).unwrap();
+        let params = assert_envelope(&frame, "ai.exit");
+        assert_eq!(params["exit_code"], -1_073_741_510_i64);
+    }
+
+    #[test]
+    fn exit_without_exit_code_bails() {
+        assert!(
+            build_frame("Exit", 9, TOOL_CLAUDE, json!({}), None, None).is_none(),
+            "an ai.exit frame without exit_code is useless to the classifier"
+        );
+    }
+
+    #[test]
+    fn read_exit_code_from_parses_i32_including_negative() {
+        assert_eq!(read_exit_code_from(Some("0")), Some(0));
+        assert_eq!(read_exit_code_from(Some("130")), Some(130));
+        assert_eq!(
+            read_exit_code_from(Some("-1073741510")),
+            Some(-1_073_741_510)
+        );
+        assert_eq!(read_exit_code_from(Some("abc")), None);
+        assert_eq!(read_exit_code_from(Some("")), None);
+        assert_eq!(read_exit_code_from(None), None);
     }
 
     #[test]

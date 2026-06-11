@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 // OS-string types. All cfg-gated so they aren't flagged unused on the Unix
 // build where the tee code is absent.
 #[cfg(not(unix))]
-use crate::exec::exit_code_from_status;
+use crate::exec::{exit_code_from_status, raw_exit_code_from_status};
 #[cfg(not(unix))]
 use std::ffi::OsString;
 #[cfg(not(unix))]
@@ -1084,8 +1084,10 @@ pub(crate) fn parse_codex_event(line: &str) -> Option<&'static str> {
     }
 }
 
+// EP-004 US-010: returns the raw agent exit code alongside, mirroring
+// `run_real` — `main` emits `ai.exit` from it. `None` on spawn/wait failure.
 #[cfg(not(unix))]
-pub(crate) fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> ExitCode {
+pub(crate) fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> (ExitCode, Option<i32>) {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
 
@@ -1105,7 +1107,7 @@ pub(crate) fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> ExitCo
                 "paneflow-shim: spawn '{}' failed: {e}",
                 safe_path_display(path)
             );
-            return ExitCode::from(127);
+            return (ExitCode::from(127), None);
         }
     };
 
@@ -1162,24 +1164,30 @@ pub(crate) fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> ExitCo
         let status = child.wait();
         let _ = tee_handle.join();
         match status {
-            Ok(s) => exit_code_from_status(&s),
+            Ok(s) => (
+                exit_code_from_status(&s),
+                Some(raw_exit_code_from_status(&s)),
+            ),
             Err(e) => {
                 eprintln!(
                     "paneflow-shim: wait on '{}' failed: {e}",
                     safe_path_display(path)
                 );
-                ExitCode::from(127)
+                (ExitCode::from(127), None)
             }
         }
     } else {
         match child.wait() {
-            Ok(s) => exit_code_from_status(&s),
+            Ok(s) => (
+                exit_code_from_status(&s),
+                Some(raw_exit_code_from_status(&s)),
+            ),
             Err(e) => {
                 eprintln!(
                     "paneflow-shim: wait on '{}' failed: {e}",
                     safe_path_display(path)
                 );
-                ExitCode::from(127)
+                (ExitCode::from(127), None)
             }
         }
     }

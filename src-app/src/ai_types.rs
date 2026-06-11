@@ -63,7 +63,7 @@ impl AiTool {
 /// Lifecycle state for one agent session (one PID).
 ///
 /// `Inactive` is implicit (a session that's not in the map is inactive),
-/// so the enum carries only the three "visible" states.
+/// so the enum carries only the "visible" states.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentState {
     /// Agent is processing a prompt or using tools.
@@ -73,6 +73,45 @@ pub enum AgentState {
     /// Agent finished its response. Auto-cleared after 5 s by the IPC
     /// `ai.stop` handler unless overridden by a new state transition.
     Finished,
+    /// EP-004 US-010 (cli-cockpit): the agent BINARY exited non-zero —
+    /// reported by the shim's `ai.exit` frame (the shell's `ChildExit`
+    /// only carries the shell's exit, never the agent's). Sticky until a
+    /// new lifecycle event replaces it or its pane closes; never produced
+    /// by a human interrupt (see [`state_for_exit`]).
+    Errored,
+    /// EP-004 US-011 (cli-cockpit): a `Thinking` session with no hook
+    /// activity past the configured silence threshold. Flipped by the
+    /// periodic sweep; any subsequent hook event replaces it immediately
+    /// (never sticky).
+    Stalled,
+}
+
+/// EP-004 US-010: classify the agent binary's raw exit code into the
+/// session state it produces. Exit codes are reported by the shim with the
+/// shell convention `128 + signum` for signal terminations (see
+/// `paneflow-shim::exec::raw_exit_code_from_status`).
+///
+/// A termination *initiated from outside the agent* is not an agent
+/// failure (FR-06: "une interruption humaine n'est PAS une erreur"):
+/// - 130 (`128+SIGINT`) — Ctrl+C, the PRD-mandated case.
+/// - 129 (`128+SIGHUP`) — pane/PTY closed under a running agent. Without
+///   this exclusion every pane close with a live agent would flash a
+///   false `Errored`.
+/// - 143 (`128+SIGTERM`) / 137 (`128+SIGKILL`) — external kill.
+/// - `STATUS_CONTROL_C_EXIT` (0xC000013A) — the Windows Ctrl+C exit code
+///   (`code()` is always `Some` on Windows; there are no signals).
+///
+/// Genuine crash signals (SIGSEGV → 139, SIGABRT → 134, …) and every
+/// other non-zero code classify as `Errored`.
+pub fn state_for_exit(exit_code: i32) -> AgentState {
+    /// `{Application Exit by CTRL+C}` — 0xC000013A as i32.
+    const STATUS_CONTROL_C_EXIT: i32 = 0xC000_013Au32 as i32;
+    match exit_code {
+        0 => AgentState::Finished,
+        129 | 130 | 137 | 143 => AgentState::Finished,
+        STATUS_CONTROL_C_EXIT => AgentState::Finished,
+        _ => AgentState::Errored,
+    }
 }
 
 /// One row in the per-workspace `agent_sessions` map.
@@ -93,6 +132,13 @@ pub struct AgentSession {
     /// `child_pid` (US-017). `None` when unresolved — the session then only
     /// exists at workspace level (no per-pane glow), never a wrong pane.
     pub surface_id: Option<u64>,
+    /// EP-004 US-011 (cli-cockpit): when the last `ai.*` lifecycle event
+    /// for this session arrived. Stamped by `upsert_session_state` on every
+    /// hook frame (prompt_submit / tool_use / notification / stop / exit);
+    /// the periodic sweep flips a `Thinking` session to `Stalled` once this
+    /// exceeds the configured silence threshold. Monotonic for the same
+    /// reason as `waiting_since`.
+    pub last_activity: std::time::Instant,
 }
 
 impl AgentSession {
@@ -103,6 +149,7 @@ impl AgentSession {
             active_tool_name: None,
             message: None,
             surface_id: None,
+            last_activity: std::time::Instant::now(),
         }
     }
 }
@@ -136,10 +183,14 @@ impl ToolAggregate {
 }
 
 /// Salience ranking used to pick the dominant state when a tool has
-/// multiple sessions in different states.
+/// multiple sessions in different states. `Errored` outranks everything
+/// (a crash must never hide behind a sibling's spinner); `Stalled` sits
+/// between `WaitingForInput` (actionable now) and `Thinking` (nominal).
 fn state_rank(s: &AgentState) -> u8 {
     match s {
-        AgentState::WaitingForInput => 3,
+        AgentState::Errored => 5,
+        AgentState::WaitingForInput => 4,
+        AgentState::Stalled => 3,
         AgentState::Thinking => 2,
         AgentState::Finished => 1,
     }
@@ -232,6 +283,61 @@ mod tests {
         ];
         let rows = aggregate_by_tool(sessions.iter());
         assert_eq!(rows[0].dominant, AgentState::Thinking);
+    }
+
+    #[test]
+    fn dominant_picks_errored_over_everything() {
+        let sessions = [
+            s(AiTool::Claude, AgentState::Thinking),
+            s(AiTool::Claude, AgentState::WaitingForInput),
+            s(AiTool::Claude, AgentState::Errored),
+        ];
+        let rows = aggregate_by_tool(sessions.iter());
+        assert_eq!(rows[0].dominant, AgentState::Errored);
+    }
+
+    #[test]
+    fn dominant_picks_waiting_over_stalled() {
+        // A waiting agent is actionable NOW; a stalled one is a suspicion.
+        let sessions = [
+            s(AiTool::Claude, AgentState::Stalled),
+            s(AiTool::Claude, AgentState::WaitingForInput),
+        ];
+        let rows = aggregate_by_tool(sessions.iter());
+        assert_eq!(rows[0].dominant, AgentState::WaitingForInput);
+    }
+
+    #[test]
+    fn dominant_picks_stalled_over_thinking() {
+        let sessions = [
+            s(AiTool::Claude, AgentState::Thinking),
+            s(AiTool::Claude, AgentState::Stalled),
+        ];
+        let rows = aggregate_by_tool(sessions.iter());
+        assert_eq!(rows[0].dominant, AgentState::Stalled);
+    }
+
+    #[test]
+    fn exit_zero_and_interrupts_finish_everything_else_errors() {
+        use AgentState::*;
+        // FR-06: clean exit and human/external terminations are not errors.
+        assert_eq!(state_for_exit(0), Finished);
+        assert_eq!(state_for_exit(130), Finished, "128+SIGINT (Ctrl+C)");
+        assert_eq!(state_for_exit(129), Finished, "128+SIGHUP (pane closed)");
+        assert_eq!(state_for_exit(143), Finished, "128+SIGTERM");
+        assert_eq!(state_for_exit(137), Finished, "128+SIGKILL");
+        assert_eq!(
+            state_for_exit(0xC000_013Au32 as i32),
+            Finished,
+            "Windows STATUS_CONTROL_C_EXIT"
+        );
+        // Genuine failures.
+        assert_eq!(state_for_exit(1), Errored);
+        assert_eq!(state_for_exit(2), Errored);
+        assert_eq!(state_for_exit(127), Errored, "command not found");
+        assert_eq!(state_for_exit(139), Errored, "128+SIGSEGV is a crash");
+        assert_eq!(state_for_exit(134), Errored, "128+SIGABRT is a crash");
+        assert_eq!(state_for_exit(-1), Errored, "negative non-Ctrl+C code");
     }
 
     #[test]
