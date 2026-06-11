@@ -5,6 +5,30 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-10
+
+### Changed
+
+- New logo artwork. Every icon size (16-512, master 1024, .icns, .ico) is
+  regenerated with a transparent keyline margin: the squircle body is
+  rendered at ~80% of the canvas, the value GNOME and macOS icon grids
+  converge on, so the icon no longer renders oversized next to
+  spec-compliant peers in the GNOME Shell dash and macOS dock.
+
+## [0.4.1] - 2026-06-10
+
+### Added
+
+- Live activity indicator on Agents thread rows: a row whose agent is
+  working shows a Codex-style spinner, driven by the same `ai.*` signals as
+  the pane badges.
+
+### Changed
+
+- Agents panel polish: stronger selected-row contrast against the rail, a
+  faint hairline between rail and panel, and a 16px panel corner radius
+  matching the Cli/Diff silhouette.
+
 ## [0.4.0] - 2026-06-10
 
 ### Added
@@ -184,7 +208,9 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 - Opened the 0.3.x release line. See the GitHub compare link for the full commit
   list.
 
-[Unreleased]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/ArthurDEV44/paneflow/compare/v0.3.9...v0.4.0
 [0.3.9]: https://github.com/ArthurDEV44/paneflow/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/ArthurDEV44/paneflow/compare/v0.3.7...v0.3.8
