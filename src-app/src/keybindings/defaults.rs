@@ -327,6 +327,20 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "open_broadcast_groups",
         context: None,
     },
+    // EP-002 (cli-cockpit): Attention Queue + Launch Pad. `secondary-shift-k`
+    // and `secondary-shift-l` are unclaimed (taken set before this block:
+    // d/e/w/n/q/j/t/z/=/s/a/g/space/b/m) and shadow no shell/readline/TUI
+    // chord (FR-12 — Ctrl+K kill-line is BARE ctrl, not ctrl+shift).
+    DefaultBinding {
+        key: "secondary-shift-k",
+        action_name: "open_attention_queue",
+        context: None,
+    },
+    DefaultBinding {
+        key: "secondary-shift-l",
+        action_name: "open_launch_pad",
+        context: None,
+    },
     // EP-003 US-008 (cli-cockpit): jump-to-prompt. iTerm2's convention;
     // `ctrl-up/down` were explicitly ruled out by the PRD (they would steal
     // CSI 1;5A/B from vim/nano TUIs). Terminal context, remappable.

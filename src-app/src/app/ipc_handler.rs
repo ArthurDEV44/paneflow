@@ -891,7 +891,7 @@ impl PaneFlowApp {
     /// until idle (two equal reads) or MAX elapses; then write the prompt
     /// WITHOUT a carriage return — human-in-loop, the user submits. Shared by
     /// `workspace.up` and the spawn-capable `surface.split` (EP-003).
-    fn schedule_prompt_prefill(
+    pub(crate) fn schedule_prompt_prefill(
         terminal: &Entity<TerminalView>,
         prompt: String,
         pane_label: usize,
@@ -2170,6 +2170,11 @@ fn upsert_session_state(
         }
     };
 
+    // EP-002 US-004 (cli-cockpit): this is the single choke point for every
+    // state write, so the Attention Queue's wait stamp lives here — stamped
+    // on entering WaitingForInput, preserved across re-notifications,
+    // cleared on any other transition.
+    //
     // EP-004 US-011: `last_activity` is refreshed here too — every `ai.*`
     // lifecycle frame routes through this function, so the Stalled sweep's
     // silence clock resets on any hook activity. This also makes Stalled
@@ -2178,6 +2183,8 @@ fn upsert_session_state(
     ws.agent_sessions
         .entry(key)
         .and_modify(|s| {
+            s.waiting_since =
+                ai_types::next_waiting_since(Some((&s.state, s.waiting_since)), &state, now);
             s.tool = tool;
             s.state = state.clone();
             s.active_tool_name = active_tool_name.clone();
@@ -2185,6 +2192,7 @@ fn upsert_session_state(
         })
         .or_insert_with(|| {
             let mut session = ai_types::AgentSession::new(tool, state);
+            session.waiting_since = ai_types::next_waiting_since(None, &session.state, now);
             session.active_tool_name = active_tool_name;
             // Same `now` as the and_modify arm — `AgentSession::new` stamps
             // its own Instant, which would skew (sub-µs) from the wait stamp.

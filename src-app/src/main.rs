@@ -497,6 +497,15 @@ struct PaneFlowApp {
     broadcast_picker_renaming: Option<usize>,
     broadcast_picker_error: Option<String>,
     broadcast_picker_focus: FocusHandle,
+    /// EP-002 US-004 (cli-cockpit): Attention Queue overlay — visibility,
+    /// keyboard cursor, key-routing focus handle. Rows are derived live
+    /// from `agent_sessions` on every render, never stored.
+    attention_queue_open: bool,
+    attention_queue_selected: usize,
+    attention_queue_focus: FocusHandle,
+    /// EP-002 US-005 (cli-cockpit): Launch Pad modal state, `None` = closed.
+    launch_pad: Option<app::launch_pad::LaunchPadState>,
+    launch_pad_focus: FocusHandle,
     /// US-053: self-update flow state (see `SelfUpdateState`).
     self_update: SelfUpdateState,
     /// State of the "Custom Buttons" management modal opened from the
@@ -915,6 +924,9 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_open_composer))
             .on_action(cx.listener(Self::handle_toggle_broadcast_member))
             .on_action(cx.listener(Self::handle_open_broadcast_groups))
+            // EP-002 (cli-cockpit): Attention Queue + Launch Pad.
+            .on_action(cx.listener(Self::handle_open_attention_queue))
+            .on_action(cx.listener(Self::handle_open_launch_pad))
             // EP-001 US-003: Escape cancels an in-flight tab drag. Capture
             // phase runs ancestor-before-descendant, so this pre-empts the
             // focused terminal's own Escape->PTY forwarding — but only while a
@@ -1125,6 +1137,17 @@ impl Render for PaneFlowApp {
             app_content = app_content.child(self.render_broadcast_picker(cx));
         }
 
+        // EP-002 (cli-cockpit): Attention Queue overlay + Launch Pad modal.
+        // Mode-gated (review R3): a mode switch while a launch runs in the
+        // background must not paint cockpit chrome over Agents/Diff — the
+        // modal reappears (or finishes) back in Cli mode.
+        let in_cli_mode = matches!(self.mode, paneflow_config::schema::AppMode::Cli);
+        if self.attention_queue_open && in_cli_mode {
+            app_content = app_content.child(self.render_attention_queue(cx));
+        }
+        if self.launch_pad.is_some() && in_cli_mode {
+            app_content = app_content.child(self.render_launch_pad(cx));
+        }
         if self.custom_buttons_modal.is_some() {
             app_content = app_content.child(self.render_custom_buttons_modal(cx));
         }

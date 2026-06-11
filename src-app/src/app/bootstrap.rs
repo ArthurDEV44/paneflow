@@ -786,6 +786,12 @@ impl PaneFlowApp {
             broadcast_picker_renaming: None,
             broadcast_picker_error: None,
             broadcast_picker_focus: cx.focus_handle(),
+            // EP-002 (cli-cockpit): Attention Queue + Launch Pad closed.
+            attention_queue_open: false,
+            attention_queue_selected: 0,
+            attention_queue_focus: cx.focus_handle(),
+            launch_pad: None,
+            launch_pad_focus: cx.focus_handle(),
             self_update: crate::SelfUpdateState {
                 pending_update,
                 update_status: None,

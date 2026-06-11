@@ -429,6 +429,19 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         context: "",
         description: "Broadcast groups",
     },
+    // EP-002 (prd-cli-cockpit-ergonomics-2026-Q3.md): triage & launch.
+    ActionMeta {
+        name: "open_attention_queue",
+        factory: || Box::new(crate::OpenAttentionQueue),
+        context: "",
+        description: "Attention queue",
+    },
+    ActionMeta {
+        name: "open_launch_pad",
+        factory: || Box::new(crate::OpenLaunchPad),
+        context: "",
+        description: "Launch Pad",
+    },
     // EP-003 US-008 (cli-cockpit): prompt-mark navigation.
     ActionMeta {
         name: "jump_prev_prompt",
