@@ -77,8 +77,7 @@ pub use app::actions::*;
 // so callers like `crate::TOAST_HOLD_MS` keep resolving without an
 // import-rewrite churn across the workspace.
 pub(crate) use app::constants::{
-    CLAUDE_SPINNER_FRAMES, CODEX_SPINNER_FRAMES, MAX_CLOSED_PANES, RESIZE_BORDER, SIDEBAR_WIDTH,
-    TOAST_HOLD_MS,
+    CLAUDE_SPINNER_FRAMES, MAX_CLOSED_PANES, RESIZE_BORDER, SIDEBAR_WIDTH, TOAST_HOLD_MS,
 };
 // `TOAST_ENTER_MS` and `TOAST_EXIT_MS` are used only by the toast
 // renderer inside `app::notifications`; not re-exported at crate root.

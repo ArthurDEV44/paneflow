@@ -11,10 +11,9 @@ use gpui::{Pixels, px};
 pub(crate) const SIDEBAR_WIDTH: f32 = 240.;
 
 /// Claude Code spinner glyphs — same characters Claude renders in the terminal.
+/// Claude Code keeps this unique glyph spinner; every other agent uses the
+/// rotating `loader-circle.svg` arc (shared with the Agents sidebar).
 pub(crate) const CLAUDE_SPINNER_FRAMES: [char; 6] = ['·', '✻', '✽', '✶', '✳', '✢'];
-
-/// Codex spinner glyphs — pulsing dot from the dots animation variant.
-pub(crate) const CODEX_SPINNER_FRAMES: [char; 4] = ['●', '○', '◉', '○'];
 
 /// Toast animation durations (ms). The `hold_ms` carried on each `Toast`
 /// must match the dismiss timer in `push_toast` — otherwise the exit
