@@ -5,6 +5,22 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-06-11
+
+### Changed
+
+- The in-pane find bar is now a real editable field. It hosts the same text
+  input the agent sidebar uses, so opening a search puts a live caret in the
+  field with selection, IME and clipboard support, and the query updates the
+  match list as you type. Its chrome follows the active theme (One Dark /
+  PaneFlow Light) instead of a fixed palette, with search, regex, fleet,
+  previous, next and close controls, and a status line that reads the match
+  position, an empty result, or an invalid pattern.
+- Every agent other than Claude Code now shows the same rotating arc the agent
+  sidebar uses while it is thinking, in a soft neutral grey, replacing the
+  Codex-style pulsing dots. Claude Code keeps its own glyph spinner and salmon
+  identity colour.
+
 ## [0.4.3] - 2026-06-11
 
 ### Added
@@ -282,7 +298,9 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 - Opened the 0.3.x release line. See the GitHub compare link for the full commit
   list.
 
-[Unreleased]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.3...v0.4.4
+[0.4.3]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/ArthurDEV44/paneflow/compare/v0.3.9...v0.4.0
