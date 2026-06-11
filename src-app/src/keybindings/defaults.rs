@@ -246,6 +246,32 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "toggle_search_regex",
         context: Some("Search"),
     },
+    // EP-006 US-018 — fan the open search out to every pane (fleet grep).
+    // Search context only, so no terminal chord is shadowed.
+    DefaultBinding {
+        key: "alt-f",
+        action_name: "toggle_fleet_search",
+        context: Some("Search"),
+    },
+    // EP-006 US-019 — per-pane font zoom. These DO shadow readline's
+    // C-- (undo) / C-0 (digit-argument) in the focused terminal: the
+    // PRD's documented, remappable exception (Hard Constraint clavier),
+    // matching the zoom convention of gnome-terminal/Ghostty on Linux.
+    DefaultBinding {
+        key: "secondary-=",
+        action_name: "font_size_increase",
+        context: Some("Terminal"),
+    },
+    DefaultBinding {
+        key: "secondary--",
+        action_name: "font_size_decrease",
+        context: Some("Terminal"),
+    },
+    DefaultBinding {
+        key: "secondary-0",
+        action_name: "font_size_reset",
+        context: Some("Terminal"),
+    },
     // US-022 — markdown pane navigation. Same chord vocabulary as the
     // terminal pane so muscle memory transfers cleanly between pane types.
     DefaultBinding {

@@ -509,6 +509,18 @@ impl PaneFlowApp {
                             view.terminal.agent_confirmed = false;
                         });
                     }
+                    // EP-006 US-019: restore the per-pane font zoom through
+                    // the ingress sanitizer — NaN/inf dropped, finite values
+                    // clamped to [8.0, 32.0]; never fed raw to the cell
+                    // geometry (US-057/EP-010 invariant).
+                    if let Some(size) = surface
+                        .font_size
+                        .and_then(crate::terminal::element::sanitize_font_override)
+                    {
+                        t.update(cx, |view, _cx| {
+                            view.terminal.font_size_override = Some(size);
+                        });
+                    }
                     cx.subscribe(&t, Self::handle_terminal_event).detach();
                     if surface.focus == Some(true) {
                         focus_idx = i;

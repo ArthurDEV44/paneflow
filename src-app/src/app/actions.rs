@@ -58,6 +58,17 @@ actions!(
         ToggleCopyMode,
         ClearScrollHistory,
         ResetTerminal,
+        // EP-006 US-019 (cli-cockpit) — per-pane font zoom. Terminal
+        // context; the secondary-=/-/-0 default chords follow the Linux
+        // terminal-emulator zoom convention (gnome-terminal, Ghostty) —
+        // the readline shadow is the PRD's documented, remappable
+        // exception to the no-shadow rule.
+        FontSizeIncrease,
+        FontSizeDecrease,
+        FontSizeReset,
+        // EP-006 US-018 — widen the open search to every pane of every
+        // workspace (fleet grep). Search context (find bar open).
+        ToggleFleetSearch,
         StartSelfUpdate,
         /// US-007 AC3: dismiss the update pill for the current launch
         /// (no persistence — re-prompts on next start). Dispatched by

@@ -7,6 +7,18 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ### Added
 
+- Scrollbar match rail: an active search projects every match as a tick on
+  the scrollbar track (decimated to the pixel grid, so 10 000 matches cost
+  the same as 10), with the existing proportional track click to jump.
+- Fleet grep: from any pane's find bar, the "Fleet" toggle (or Alt+F) runs
+  the same query across every pane of every workspace off the render
+  thread, lists the matching panes with counts, flashes a transient match
+  badge on their tabs, and Enter teleports with the local search pre-armed.
+- Per-pane font zoom: Ctrl+= / Ctrl+- / Ctrl+0 (Cmd on macOS) change the
+  focused pane's font size by 1 px steps within 8-32 px, with the PTY grid
+  reflowing like a window resize. Persisted per pane across restarts;
+  panes without an override keep following the global setting.
+
 - Fleet observability: the port/process scan now attributes results to each
   pane. Tabs show a compact identity pill for the agent CLI running inside
   (PID-detected across 16 known agents, persisted across restarts as a

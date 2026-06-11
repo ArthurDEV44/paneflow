@@ -297,14 +297,49 @@ pub(super) fn base_font() -> Font {
     }
 }
 
-pub(super) fn font_size() -> Pixels {
+/// EP-006 US-019: bounds shared by the global config validation, the
+/// per-pane zoom steps, and the session-restore ingress.
+pub const MIN_FONT_SIZE: f32 = 8.0;
+pub const MAX_FONT_SIZE: f32 = 32.0;
+
+/// EP-006 US-019: validate a `font_size` read back from session.json
+/// (UNTRUSTED-adjacent: local-only but validated anyway, US-057/EP-010
+/// invariant). NaN/±inf are DROPPED (`None` — they would poison the cell
+/// geometry); finite out-of-range values are clamped. Pure — unit-tested.
+pub fn sanitize_font_override(raw: f32) -> Option<f32> {
+    if !raw.is_finite() {
+        return None;
+    }
+    Some(raw.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE))
+}
+
+/// Effective terminal font size. `size_override` is EP-006 US-019's
+/// per-pane zoom: `Some(px)` wins over the global config; `None` falls
+/// back to the cached global (config + 500 ms cache). The override is
+/// already clamped to [8.0, 32.0] at every write site (action handler +
+/// session ingress), so no re-validation here.
+pub(super) fn font_size(size_override: Option<f32>) -> Pixels {
+    if let Some(s) = size_override {
+        return px(s);
+    }
     let (_, size, _, _) = cached_font_config();
     px(size)
 }
 
-pub fn measure_cell(window: &mut Window, _cx: &mut App) -> CellDimensions {
+/// EP-006 US-019: the global (non-overridden) font size — the zoom
+/// handlers' baseline for a pane that has no override yet.
+pub fn global_font_size() -> f32 {
+    let (_, size, _, _) = cached_font_config();
+    size
+}
+
+pub fn measure_cell(
+    window: &mut Window,
+    _cx: &mut App,
+    size_override: Option<f32>,
+) -> CellDimensions {
     let font = base_font();
-    let font_size = font_size();
+    let font_size = font_size(size_override);
     let font_id = window.text_system().resolve_font(&font);
 
     // DIAGNOSTIC A — fires once per process. Surfaces whether GPUI's
@@ -369,7 +404,10 @@ pub fn measure_cell(window: &mut Window, _cx: &mut App) -> CellDimensions {
             font_size
         });
 
-    let (_, size_f32, multiplier, _) = cached_font_config();
+    // Line height scales with the EFFECTIVE size (override or global) so a
+    // zoomed pane keeps its configured line-height ratio.
+    let (_, global_size, multiplier, _) = cached_font_config();
+    let size_f32 = size_override.unwrap_or(global_size);
     let line_height_raw = px(size_f32 * multiplier);
 
     // US-002: snap raw font measurements to integer pixels via `.round()`
@@ -431,6 +469,21 @@ mod tests {
             "snapped 8.4 should be integer, got {}",
             snapped.as_f32()
         );
+    }
+
+    // EP-006 US-019: session.json ingress for the per-pane zoom — NaN/inf
+    // dropped, finite values clamped to [8.0, 32.0] (PRD AC + test).
+    #[test]
+    fn sanitize_font_override_drops_non_finite_and_clamps() {
+        assert_eq!(sanitize_font_override(f32::NAN), None);
+        assert_eq!(sanitize_font_override(f32::INFINITY), None);
+        assert_eq!(sanitize_font_override(f32::NEG_INFINITY), None);
+        assert_eq!(sanitize_font_override(0.0), Some(MIN_FONT_SIZE));
+        assert_eq!(sanitize_font_override(-5.0), Some(MIN_FONT_SIZE));
+        assert_eq!(sanitize_font_override(1000.0), Some(MAX_FONT_SIZE));
+        assert_eq!(sanitize_font_override(14.0), Some(14.0));
+        assert_eq!(sanitize_font_override(8.0), Some(8.0));
+        assert_eq!(sanitize_font_override(32.0), Some(32.0));
     }
 
     #[test]

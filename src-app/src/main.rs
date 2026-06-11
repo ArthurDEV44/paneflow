@@ -503,6 +503,16 @@ struct PaneFlowApp {
     attention_queue_open: bool,
     attention_queue_selected: usize,
     attention_queue_focus: FocusHandle,
+    /// EP-006 US-018 (cli-cockpit): fleet-grep overlay state, `None` =
+    /// closed. Results are a bounded snapshot (counts + names, never the
+    /// match vectors); the fan-out is generation-guarded.
+    fleet_search: Option<app::fleet_search::FleetSearchState>,
+    fleet_search_generation: u64,
+    fleet_search_focus: FocusHandle,
+    /// Deferred focus for the fleet overlay (opened from an event handler
+    /// that has no `Window` — consumed in `render`, like
+    /// `pending_pane_focus`).
+    fleet_search_pending_focus: bool,
     /// EP-002 US-005 (cli-cockpit): Launch Pad modal state, `None` = closed.
     launch_pad: Option<app::launch_pad::LaunchPadState>,
     launch_pad_focus: FocusHandle,
@@ -1148,6 +1158,15 @@ impl Render for PaneFlowApp {
         if self.launch_pad.is_some() && in_cli_mode {
             app_content = app_content.child(self.render_launch_pad(cx));
         }
+        // EP-006 US-018: fleet-grep results overlay (same mode gate). The
+        // deferred focus (the trigger event has no Window) lands here.
+        if self.fleet_search.is_some() && in_cli_mode {
+            if std::mem::take(&mut self.fleet_search_pending_focus) {
+                self.fleet_search_focus.focus(window, cx);
+            }
+            app_content = app_content.child(self.render_fleet_search(cx));
+        }
+
         if self.custom_buttons_modal.is_some() {
             app_content = app_content.child(self.render_custom_buttons_modal(cx));
         }

@@ -790,6 +790,11 @@ impl PaneFlowApp {
             attention_queue_open: false,
             attention_queue_selected: 0,
             attention_queue_focus: cx.focus_handle(),
+            // EP-006 US-018 (cli-cockpit): fleet grep closed.
+            fleet_search: None,
+            fleet_search_generation: 0,
+            fleet_search_focus: cx.focus_handle(),
+            fleet_search_pending_focus: false,
             launch_pad: None,
             launch_pad_focus: cx.focus_handle(),
             self_update: crate::SelfUpdateState {
