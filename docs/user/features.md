@@ -46,8 +46,18 @@ capability. New to Paneflow? Start with [Get started](/docs).
   ## Dev-server port detection [#dev-server-port-detection]
 
   When a process inside a pane binds a port, Paneflow surfaces it
-  automatically — no manual wiring. Start a dev server in one pane and
-  the detected URL is one click away, so the edit-refresh loop stays
+  automatically — no manual wiring, no external tools. A burst of
+  terminal activity schedules a scan (debounced 500 ms, re-run at +2 s
+  and +6 s to catch slow-binding servers) that reads the OS socket
+  tables directly: `/proc/net/tcp` cross-referenced with the pane's
+  process tree on Linux, `libproc` socket enumeration on macOS. Each
+  port is attributed to the pane whose shell owns it.
+
+  In parallel, terminal output is matched against the startup banners
+  of 21 dev servers. Frontend ones — Next.js (including Turbopack),
+  Vite, Nuxt, Remix, Astro, Webpack, Angular — get a clickable URL in
+  the sidebar; backend frameworks from Express, Flask, and Django to
+  Axum and Spring get a labeled port. The edit-refresh loop stays
   inside the workspace.
 
   ## Headless scripting (MCP and JSON-RPC) [#headless-scripting-mcp-and-json-rpc]
