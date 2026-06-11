@@ -16,16 +16,37 @@ pub(crate) fn detect_tool() -> Option<&'static str> {
     detect_tool_from_stem(stem)
 }
 
-/// Testable inner: map a filename stem to the tool identity. Only the two
-/// exact lowercase matches are accepted — US-008 controls the extracted
-/// filenames, so anything else here means the binary has been renamed or
-/// invoked directly.
+/// Every binary name the US-008 extractor may materialize this shim under —
+/// the wire-format tool identity IS the binary name. MUST stay in sync with
+/// `TerminalAgent::binary()` in `src-app/src/agent_launcher.rs` (the shim
+/// stays dependency-free of the app crate, so the list is mirrored here;
+/// the app-side `wrapped_stems_match_shim_detect_list` test pins the
+/// source list so any drift fails the build over there).
+pub(crate) const WRAPPED_TOOLS: &[&str] = &[
+    "claude",
+    "codex",
+    "opencode",
+    "pi",
+    "hermes",
+    "grok",
+    "amp",
+    "cursor-agent",
+    "gemini",
+    "kiro-cli",
+    "agy",
+    "copilot",
+    "codebuddy",
+    "droid",
+    "qodercli",
+    "openclaw",
+];
+
+/// Testable inner: map a filename stem to the tool identity. Only exact
+/// lowercase matches against [`WRAPPED_TOOLS`] are accepted — US-008
+/// controls the extracted filenames, so anything else here means the
+/// binary has been renamed or invoked directly.
 pub(crate) fn detect_tool_from_stem(stem: &str) -> Option<&'static str> {
-    match stem {
-        "claude" => Some("claude"),
-        "codex" => Some("codex"),
-        _ => None,
-    }
+    WRAPPED_TOOLS.iter().find(|t| **t == stem).copied()
 }
 
 // ---------------------------------------------------------------------------

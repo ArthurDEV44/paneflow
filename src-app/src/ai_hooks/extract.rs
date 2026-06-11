@@ -7,6 +7,7 @@
 //! <dirs::cache_dir()>/paneflow/bin/<version>/
 //!     ├── claude[.exe]            ← copy of paneflow-shim
 //!     ├── codex[.exe]             ← copy of paneflow-shim
+//!     ├── …one per TerminalAgent binary (gemini, cursor-agent, …)
 //!     └── paneflow-ai-hook[.exe]  ← copy of paneflow-ai-hook
 //! ```
 //!
@@ -56,15 +57,26 @@ const TARGET_TRIPLE: &str = env!("PANEFLOW_TARGET_TRIPLE");
 /// `CARGO_PKG_VERSION` from the outer build.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Three filenames the extractor materializes in the cache dir.
-/// `(basename, source)` where `source` is the name inside the embed
-/// folder (same basename for the ai-hook callback; `paneflow-shim` for
-/// both `claude` and `codex`).
-const EXTRACT_PLAN: &[(&str, &str)] = &[
-    ("claude", "paneflow-shim"),
-    ("codex", "paneflow-shim"),
-    ("paneflow-ai-hook", "paneflow-ai-hook"),
-];
+/// Filenames the extractor materializes in the cache dir: one shim copy per
+/// [`crate::agent_launcher::TerminalAgent`] binary name, plus the ai-hook
+/// callback. `(basename, source)` where `source` is the name inside the
+/// embed folder.
+///
+/// Wrapping is UNCONDITIONAL for all 16 agents (not gated on the real CLI
+/// being installed): probing Paneflow's own `$PATH` would silently disable
+/// hooks whenever the app is launched from a desktop entry with a minimal
+/// PATH while the PTY's login shell resolves the agent fine. The cost is
+/// bounded and visible — running a wrapped-but-uninstalled tool prints the
+/// shim's "could not find real …" message with exit 127, the same shape as
+/// command-not-found.
+fn extract_plan() -> Vec<(&'static str, &'static str)> {
+    let mut plan: Vec<(&'static str, &'static str)> = crate::agent_launcher::TerminalAgent::ALL
+        .iter()
+        .map(|agent| (agent.binary(), "paneflow-shim"))
+        .collect();
+    plan.push(("paneflow-ai-hook", "paneflow-ai-hook"));
+    plan
+}
 
 /// Platform-appropriate executable extension. Empty on Unix, `.exe` on
 /// Windows. Used for both the embed-side filename and the extracted
@@ -115,9 +127,10 @@ pub fn ensure_binaries_extracted() -> Result<PathBuf> {
         .join(VERSION);
 
     let suffix = exe_suffix();
+    let plan = extract_plan();
     let mut buffers: Vec<(String, std::borrow::Cow<'static, [u8]>)> =
-        Vec::with_capacity(EXTRACT_PLAN.len());
-    for (out_name, src_name) in EXTRACT_PLAN {
+        Vec::with_capacity(plan.len());
+    for (out_name, src_name) in plan {
         let src_full = format!("{src_name}{suffix}");
         let out_full = format!("{out_name}{suffix}");
         buffers.push((out_full, embedded_bytes(&src_full)?));
@@ -558,25 +571,27 @@ mod tests {
     }
 
     #[test]
-    fn ensure_binaries_extracted_produces_three_files() {
+    fn ensure_binaries_extracted_produces_all_agent_wrappers() {
         // End-to-end smoke: calls the public entry point against the
-        // real cache dir and asserts all three expected filenames land.
-        // The cache dir is per-user and persistent, so this test is
-        // deliberately idempotent — safe to run repeatedly. Skip when
-        // `dirs::cache_dir()` is unresolvable (ephemeral CI containers
-        // with no `$HOME` set) so the test becomes a no-op rather than
-        // a false failure in those environments.
+        // real cache dir and asserts every TerminalAgent wrapper plus the
+        // ai-hook callback lands. The cache dir is per-user and
+        // persistent, so this test is deliberately idempotent — safe to
+        // run repeatedly. Skip when `dirs::cache_dir()` is unresolvable
+        // (ephemeral CI containers with no `$HOME` set) so the test
+        // becomes a no-op rather than a false failure in those
+        // environments.
         if dirs::cache_dir().is_none() {
             eprintln!("skip: dirs::cache_dir() unresolvable in this environment");
             return;
         }
         let dir = ensure_binaries_extracted().unwrap();
         let suffix = exe_suffix();
-        for name in [
-            format!("claude{suffix}"),
-            format!("codex{suffix}"),
-            format!("paneflow-ai-hook{suffix}"),
-        ] {
+        let mut expected: Vec<String> = crate::agent_launcher::TerminalAgent::ALL
+            .iter()
+            .map(|a| format!("{}{suffix}", a.binary()))
+            .collect();
+        expected.push(format!("paneflow-ai-hook{suffix}"));
+        for name in expected {
             let p = dir.join(&name);
             assert!(
                 p.is_file(),
@@ -584,6 +599,40 @@ mod tests {
                 p.display()
             );
         }
+    }
+
+    #[test]
+    fn wrapped_stems_match_shim_detect_list() {
+        // The shim crate mirrors `TerminalAgent::binary()` in its
+        // `detect_tool_from_stem` accept-list (it can't depend on this
+        // crate). This pin breaks whenever an agent is added/renamed here
+        // so the mirror in `paneflow-shim/src/detect.rs` gets updated in
+        // the same change.
+        let binaries: Vec<&str> = crate::agent_launcher::TerminalAgent::ALL
+            .iter()
+            .map(|a| a.binary())
+            .collect();
+        assert_eq!(
+            binaries,
+            vec![
+                "claude",
+                "codex",
+                "opencode",
+                "pi",
+                "hermes",
+                "grok",
+                "amp",
+                "cursor-agent",
+                "gemini",
+                "kiro-cli",
+                "agy",
+                "copilot",
+                "codebuddy",
+                "droid",
+                "qodercli",
+                "openclaw",
+            ],
+        );
     }
 
     #[test]

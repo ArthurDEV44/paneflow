@@ -443,6 +443,15 @@ pub(crate) fn is_paneflow_hook_command(command: &str) -> bool {
 /// if a PaneFlow handler for an event is already present (identified by the
 /// command basename OR the `_paneflow_managed` marker), we don't duplicate.
 pub(crate) fn merge_paneflow_hooks(root: &mut serde_json::Value) {
+    merge_matcher_hooks_for_events(root, CLAUDE_HOOK_EVENTS);
+}
+
+/// Claude-Code-FORMAT merge parameterized by event list, shared by Claude
+/// Code itself and its config-compatible clones (CodeBuddy: same five
+/// events; Qoder: four — no `Notification`). The format is the matcher-group
+/// shape: `hooks.<Event>: [{_paneflow_managed, hooks: [{type, command,
+/// timeout}]}]`.
+fn merge_matcher_hooks_for_events(root: &mut serde_json::Value, events: &[&str]) {
     let root_obj = match root.as_object_mut() {
         Some(o) => o,
         None => {
@@ -466,7 +475,7 @@ pub(crate) fn merge_paneflow_hooks(root: &mut serde_json::Value) {
         return;
     };
 
-    for event in CLAUDE_HOOK_EVENTS {
+    for event in events {
         let entry = hooks_obj
             .entry(*event)
             .or_insert_with(|| serde_json::json!([]));
@@ -504,6 +513,12 @@ pub(crate) fn merge_paneflow_hooks(root: &mut serde_json::Value) {
 /// user entries untouched. Collapses empty event arrays and the empty
 /// `hooks` key so cleanup produces a minimal file.
 pub(crate) fn remove_paneflow_hooks(root: &mut serde_json::Value) {
+    remove_matcher_hooks_for_events(root, CLAUDE_HOOK_EVENTS);
+}
+
+/// Claude-Code-FORMAT removal parameterized by event list (see
+/// [`merge_matcher_hooks_for_events`]).
+fn remove_matcher_hooks_for_events(root: &mut serde_json::Value, events: &[&str]) {
     let Some(root_obj) = root.as_object_mut() else {
         return;
     };
@@ -511,7 +526,7 @@ pub(crate) fn remove_paneflow_hooks(root: &mut serde_json::Value) {
         return;
     };
 
-    for event in CLAUDE_HOOK_EVENTS {
+    for event in events {
         let Some(array) = hooks_obj.get_mut(*event).and_then(|v| v.as_array_mut()) else {
             continue;
         };
@@ -525,6 +540,728 @@ pub(crate) fn remove_paneflow_hooks(root: &mut serde_json::Value) {
     // empty and be deleted.
     if hooks_obj.is_empty() {
         root_obj.remove("hooks");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Claude-Code-compatible clones + flat-format CLIs (multi-agent hooks)
+// ---------------------------------------------------------------------------
+
+/// Qoder CLI hook events — the Claude Code set minus `Notification`
+/// (unsupported there; `PostToolUseFailure` exists but has no `ai.*`
+/// mapping, so it is deliberately not registered).
+pub(crate) const QODER_HOOK_EVENTS: &[&str] =
+    &["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"];
+
+/// Qoder merge/remove — Claude Code format, reduced event list.
+pub(crate) fn merge_qoder_hooks(root: &mut serde_json::Value) {
+    merge_matcher_hooks_for_events(root, QODER_HOOK_EVENTS);
+}
+pub(crate) fn remove_qoder_hooks(root: &mut serde_json::Value) {
+    remove_matcher_hooks_for_events(root, QODER_HOOK_EVENTS);
+}
+
+/// Gemini CLI hook registrations as `(foreign_event, canonical_event)`.
+/// The CONFIG key uses Gemini's event vocabulary; the command's argv[1]
+/// carries our canonical Claude-shaped event name so `paneflow-ai-hook`
+/// needs zero per-CLI mapping. `Notification` is deliberately skipped: its
+/// Gemini payload shape doesn't carry the `notification_type` whitelist the
+/// hook gates `WaitingForInput` on, so registering it would only burn a
+/// subprocess per notification for a frame the hook drops.
+pub(crate) const GEMINI_HOOK_EVENTS: &[(&str, &str)] = &[
+    ("BeforeAgent", "UserPromptSubmit"),
+    ("AfterAgent", "Stop"),
+    ("BeforeTool", "PreToolUse"),
+    ("AfterTool", "PostToolUse"),
+];
+
+/// Cursor CLI (`cursor-agent`) hook registrations — camelCase vocabulary,
+/// same `(foreign, canonical)` translation as Gemini.
+pub(crate) const CURSOR_HOOK_EVENTS: &[(&str, &str)] = &[
+    ("beforeSubmitPrompt", "UserPromptSubmit"),
+    ("stop", "Stop"),
+    ("preToolUse", "PreToolUse"),
+    ("postToolUse", "PostToolUse"),
+];
+
+/// Merge hook entries in the FLAT format shared by Gemini CLI and Cursor:
+/// `hooks.<event>: [{command, timeout}]` — no matcher-group wrapper. No
+/// `_paneflow_managed` marker either: both parsers are stricter than Claude
+/// Code's about unknown fields, so ownership detection rides exclusively on
+/// the command basename ([`is_paneflow_hook_command`]). `version_field`
+/// stamps Cursor's required top-level `"version": 1` when absent.
+fn merge_flat_hooks_for_events(
+    root: &mut serde_json::Value,
+    events: &[(&str, &str)],
+    version_field: bool,
+) {
+    let root_obj = match root.as_object_mut() {
+        Some(o) => o,
+        None => {
+            *root = serde_json::json!({});
+            let Some(o) = root.as_object_mut() else {
+                return;
+            };
+            o
+        }
+    };
+    if version_field {
+        root_obj
+            .entry("version")
+            .or_insert_with(|| serde_json::json!(1));
+    }
+
+    let hooks_entry = root_obj
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(hooks_obj) = hooks_entry.as_object_mut() else {
+        *hooks_entry = serde_json::json!({});
+        return;
+    };
+
+    for (foreign, canonical) in events {
+        let entry = hooks_obj
+            .entry(*foreign)
+            .or_insert_with(|| serde_json::json!([]));
+        let Some(array) = entry.as_array_mut() else {
+            continue;
+        };
+        if array.iter().any(is_paneflow_flat_entry) {
+            continue;
+        }
+        array.push(serde_json::json!({
+            "command": resolve_hook_command(canonical),
+            "timeout": 5,
+        }));
+    }
+}
+
+/// Removal counterpart of [`merge_flat_hooks_for_events`]. Also drops the
+/// `"version"` field once the file holds nothing else of ours, so an
+/// otherwise-empty managed file can be deleted by the shared cleanup.
+fn remove_flat_hooks_for_events(root: &mut serde_json::Value, events: &[(&str, &str)]) {
+    let Some(root_obj) = root.as_object_mut() else {
+        return;
+    };
+    if let Some(hooks_obj) = root_obj.get_mut("hooks").and_then(|v| v.as_object_mut()) {
+        for (foreign, _) in events {
+            if let Some(array) = hooks_obj.get_mut(*foreign).and_then(|v| v.as_array_mut()) {
+                array.retain(|entry| !is_paneflow_flat_entry(entry));
+            }
+        }
+        hooks_obj.retain(|_k, v| v.as_array().is_none_or(|a| !a.is_empty()));
+    }
+    let hooks_empty = root_obj
+        .get("hooks")
+        .and_then(|v| v.as_object())
+        .is_none_or(serde_json::Map::is_empty);
+    if hooks_empty {
+        root_obj.remove("hooks");
+        // A bare `{"version": 1}` left behind would block file deletion in
+        // `cleanup_hook_config_file` — drop it iff nothing else remains.
+        if root_obj.len() == 1 && root_obj.contains_key("version") {
+            root_obj.remove("version");
+        }
+    }
+}
+
+/// Flat-entry ownership test: `{command: "<…>paneflow-ai-hook <Event>"}`.
+fn is_paneflow_flat_entry(value: &serde_json::Value) -> bool {
+    value
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(is_paneflow_hook_command)
+}
+
+/// Per-tool wrapper fns — `install_hook_config_file` takes plain `fn`
+/// pointers, so the event tables are baked in here.
+pub(crate) fn merge_gemini_hooks(root: &mut serde_json::Value) {
+    merge_flat_hooks_for_events(root, GEMINI_HOOK_EVENTS, false);
+}
+pub(crate) fn remove_gemini_hooks(root: &mut serde_json::Value) {
+    remove_flat_hooks_for_events(root, GEMINI_HOOK_EVENTS);
+}
+pub(crate) fn merge_cursor_hooks(root: &mut serde_json::Value) {
+    merge_flat_hooks_for_events(root, CURSOR_HOOK_EVENTS, true);
+}
+pub(crate) fn remove_cursor_hooks(root: &mut serde_json::Value) {
+    remove_flat_hooks_for_events(root, CURSOR_HOOK_EVENTS);
+}
+
+/// RAII guard for every JSON-config agent beyond Claude/Codex (CodeBuddy,
+/// Qoder, Gemini, Cursor): same install/sweep/cleanup lifecycle as
+/// [`HookConfigGuard`], parameterized by config location and merge/remove
+/// pair. Two anchor modes:
+/// - **cwd**: project-local config dir (`.codebuddy/`, `.qoder/`) — the
+///   Claude `settings.local.json` precedent, ephemeral by design.
+/// - **home**: user-scope config dir (`~/.gemini/`, `~/.cursor/`) — used
+///   where the project file is the tool's PRIMARY config (often
+///   git-tracked; mutating it would churn the user's diff all session).
+///   Outside a Paneflow PTY the installed hooks are inert: the hook binary
+///   exits silently when `PANEFLOW_SOCKET_PATH` is absent (C4).
+pub(crate) struct ManagedHookConfigGuard {
+    settings_path: PathBuf,
+    config_dir: PathBuf,
+    created_dir: bool,
+    remove_fn: fn(&mut serde_json::Value),
+}
+
+impl ManagedHookConfigGuard {
+    /// Project-CWD anchor (Claude-clone pattern).
+    pub(crate) fn install_in_cwd(
+        dir_name: &str,
+        config_filename: &str,
+        tool_label: &str,
+        merge_fn: fn(&mut serde_json::Value),
+        remove_fn: fn(&mut serde_json::Value),
+    ) -> Option<Self> {
+        let cwd = env::current_dir().ok()?;
+        Self::install_anchored(
+            &cwd.join(dir_name),
+            config_filename,
+            tool_label,
+            merge_fn,
+            remove_fn,
+        )
+    }
+
+    /// Home-dir anchor (user-scope config tools).
+    pub(crate) fn install_in_home(
+        dir_name: &str,
+        config_filename: &str,
+        tool_label: &str,
+        merge_fn: fn(&mut serde_json::Value),
+        remove_fn: fn(&mut serde_json::Value),
+    ) -> Option<Self> {
+        let home = home_dir_env()?;
+        Self::install_anchored(
+            &home.join(dir_name),
+            config_filename,
+            tool_label,
+            merge_fn,
+            remove_fn,
+        )
+    }
+
+    fn install_anchored(
+        config_dir: &Path,
+        config_filename: &str,
+        tool_label: &str,
+        merge_fn: fn(&mut serde_json::Value),
+        remove_fn: fn(&mut serde_json::Value),
+    ) -> Option<Self> {
+        if !paneflow_ipc_reachable() {
+            sweep_orphan_hook_config(&config_dir.join(config_filename), remove_fn);
+            return None;
+        }
+        Self::install_at(config_dir, config_filename, tool_label, merge_fn, remove_fn)
+    }
+
+    /// Testable inner — no IPC gate, mirrors [`HookConfigGuard::install_at`].
+    pub(crate) fn install_at(
+        config_dir: &Path,
+        config_filename: &str,
+        tool_label: &str,
+        merge_fn: fn(&mut serde_json::Value),
+        remove_fn: fn(&mut serde_json::Value),
+    ) -> Option<Self> {
+        let (settings_path, created_dir) =
+            install_hook_config_file(config_dir, config_filename, tool_label, merge_fn)?;
+        Some(Self {
+            settings_path,
+            config_dir: config_dir.to_path_buf(),
+            created_dir,
+            remove_fn,
+        })
+    }
+}
+
+impl Drop for ManagedHookConfigGuard {
+    fn drop(&mut self) {
+        cleanup_hook_config_file(
+            &self.settings_path,
+            &self.config_dir,
+            self.created_dir,
+            self.remove_fn,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TypeScript-plugin agents: Pi (auto-loaded extension) + OpenCode (declared
+// plugin)
+// ---------------------------------------------------------------------------
+
+/// Basename of the bridge file both TS-plugin guards materialize. Ownership
+/// detection and cleanup key off this exact name.
+pub(crate) const PANEFLOW_TS_BASENAME: &str = "paneflow-status.ts";
+
+/// Embedded TS sources (staged next to the crate; `include_str!` keeps the
+/// shim free of any asset-loading machinery).
+const PI_EXTENSION_SOURCE: &str = include_str!("../assets/pi-paneflow-status.ts");
+const OPENCODE_PLUGIN_SOURCE: &str = include_str!("../assets/opencode-paneflow-status.ts");
+
+/// RAII guard for Pi: drops `paneflow-status.ts` into the AUTO-LOADED
+/// global extension dir `~/.pi/agent/extensions/` on install, deletes it on
+/// drop. No config file to edit — Pi discovers `*.ts` there by itself. The
+/// extension is inert outside Paneflow PTYs (it early-returns without
+/// `PANEFLOW_SOCKET_PATH`), so the install/remove window racing a non-
+/// Paneflow `pi` session is harmless.
+pub(crate) struct PiExtensionGuard {
+    ext_path: PathBuf,
+}
+
+impl PiExtensionGuard {
+    pub(crate) fn install() -> Option<Self> {
+        let home = home_dir_env()?;
+        let ext_dir = home.join(".pi").join("agent").join("extensions");
+        if !paneflow_ipc_reachable() {
+            // Orphan sweep: a previous SIGKILL'd session never dropped.
+            let _ = std::fs::remove_file(ext_dir.join(PANEFLOW_TS_BASENAME));
+            return None;
+        }
+        Self::install_at(&ext_dir)
+    }
+
+    /// Testable inner — no IPC gate.
+    pub(crate) fn install_at(ext_dir: &Path) -> Option<Self> {
+        if config_dir_is_symlink(ext_dir) {
+            return None;
+        }
+        std::fs::create_dir_all(ext_dir).ok()?;
+        let ext_path = ext_dir.join(PANEFLOW_TS_BASENAME);
+        write_text_atomic(&ext_path, PI_EXTENSION_SOURCE).ok()?;
+        Some(Self { ext_path })
+    }
+}
+
+impl Drop for PiExtensionGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.ext_path);
+    }
+}
+
+/// OpenCode's config dir, honoring `$XDG_CONFIG_HOME` the way OpenCode
+/// itself does, with the `~/.config` fallback.
+fn opencode_config_dir() -> Option<PathBuf> {
+    if let Some(xdg) = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(xdg).join("opencode"));
+    }
+    home_dir_env().map(|h| h.join(".config").join("opencode"))
+}
+
+/// RAII guard for OpenCode: materializes the bridge plugin at
+/// `<config>/plugins/paneflow-status.ts` AND declares it in the global
+/// `opencode.json` `plugin` array (OpenCode has no auto-discovery dir — an
+/// undeclared file is dead weight). Drop removes both.
+///
+/// The config file is OpenCode's PRIMARY user config, so unlike the
+/// settings.local.json scaffold this guard never clobbers on parse failure:
+/// unreadable JSON (or a `.jsonc`-only setup, which serde_json cannot
+/// round-trip without destroying comments) skips the install — the user
+/// keeps a working OpenCode, just without sidebar status (C4).
+pub(crate) struct OpenCodePluginGuard {
+    plugin_path: PathBuf,
+    config_path: PathBuf,
+    created_config: bool,
+}
+
+impl OpenCodePluginGuard {
+    pub(crate) fn install() -> Option<Self> {
+        let dir = opencode_config_dir()?;
+        if !paneflow_ipc_reachable() {
+            Self::sweep_orphan(&dir);
+            return None;
+        }
+        Self::install_at(&dir)
+    }
+
+    /// Testable inner — no IPC gate. `dir` is the opencode config dir.
+    pub(crate) fn install_at(dir: &Path) -> Option<Self> {
+        let config_path = dir.join("opencode.json");
+        // A `.jsonc`-only setup wins: opencode prefers it, and editing it
+        // would strip the user's comments. Skip rather than degrade.
+        if !config_path.exists() && dir.join("opencode.jsonc").exists() {
+            return None;
+        }
+
+        let existing = std::fs::read_to_string(&config_path).ok();
+        let created_config = existing.is_none();
+        let mut root: serde_json::Value = match existing {
+            None => serde_json::json!({}),
+            Some(content) => match serde_json::from_str(&content) {
+                Ok(v) => v,
+                Err(_) => {
+                    // PRIMARY config — never overwrite what we can't parse.
+                    eprintln!(
+                        "paneflow-shim: {} is not parseable JSON; skipping \
+                         OpenCode status plugin this session",
+                        safe_path_display(&config_path)
+                    );
+                    return None;
+                }
+            },
+        };
+
+        let plugins_dir = dir.join("plugins");
+        if config_dir_is_symlink(&plugins_dir) {
+            return None;
+        }
+        std::fs::create_dir_all(&plugins_dir).ok()?;
+        let plugin_path = plugins_dir.join(PANEFLOW_TS_BASENAME);
+        write_text_atomic(&plugin_path, OPENCODE_PLUGIN_SOURCE).ok()?;
+
+        merge_opencode_plugin_entry(&mut root, &plugin_path.to_string_lossy());
+        if write_atomic(&config_path, &root).is_err() {
+            let _ = std::fs::remove_file(&plugin_path);
+            return None;
+        }
+
+        Some(Self {
+            plugin_path,
+            config_path,
+            created_config,
+        })
+    }
+
+    /// Best-effort removal of a previous session's leftovers (no live IPC).
+    fn sweep_orphan(dir: &Path) {
+        let _ = std::fs::remove_file(dir.join("plugins").join(PANEFLOW_TS_BASENAME));
+        let config_path = dir.join("opencode.json");
+        let Ok(content) = std::fs::read_to_string(&config_path) else {
+            return;
+        };
+        let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&content) else {
+            return;
+        };
+        let before = root.clone();
+        remove_opencode_plugin_entry(&mut root);
+        if root != before {
+            let is_empty = root
+                .as_object()
+                .map(serde_json::Map::is_empty)
+                .unwrap_or(false);
+            let _ = if is_empty {
+                std::fs::remove_file(&config_path)
+            } else {
+                write_atomic(&config_path, &root)
+            };
+        }
+    }
+}
+
+impl Drop for OpenCodePluginGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.plugin_path);
+        let Ok(content) = std::fs::read_to_string(&self.config_path) else {
+            return;
+        };
+        let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&content) else {
+            return;
+        };
+        remove_opencode_plugin_entry(&mut root);
+        let is_empty = root
+            .as_object()
+            .map(serde_json::Map::is_empty)
+            .unwrap_or(false);
+        let _ = if is_empty && self.created_config {
+            std::fs::remove_file(&self.config_path)
+        } else {
+            write_atomic(&self.config_path, &root)
+        };
+    }
+}
+
+/// Idempotent insert of the plugin path into `opencode.json`'s `plugin`
+/// array. Ownership detection is by file basename so an older absolute path
+/// (different cache dir, moved home) still counts as ours and gets replaced
+/// rather than duplicated.
+pub(crate) fn merge_opencode_plugin_entry(root: &mut serde_json::Value, plugin_path: &str) {
+    let root_obj = match root.as_object_mut() {
+        Some(o) => o,
+        None => {
+            *root = serde_json::json!({});
+            let Some(o) = root.as_object_mut() else {
+                return;
+            };
+            o
+        }
+    };
+    let entry = root_obj
+        .entry("plugin")
+        .or_insert_with(|| serde_json::json!([]));
+    let Some(array) = entry.as_array_mut() else {
+        return;
+    };
+    array.retain(|v| !is_paneflow_plugin_entry(v));
+    array.push(serde_json::Value::String(plugin_path.to_owned()));
+}
+
+/// Removal counterpart — drops our entries, collapses an empty `plugin`
+/// array so a fully-managed file can become empty and be deleted.
+pub(crate) fn remove_opencode_plugin_entry(root: &mut serde_json::Value) {
+    let Some(root_obj) = root.as_object_mut() else {
+        return;
+    };
+    if let Some(array) = root_obj.get_mut("plugin").and_then(|v| v.as_array_mut()) {
+        array.retain(|v| !is_paneflow_plugin_entry(v));
+    }
+    let empty = root_obj
+        .get("plugin")
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| a.is_empty());
+    if empty {
+        root_obj.remove("plugin");
+    }
+}
+
+/// A `plugin` array entry is ours iff it is a string whose final path
+/// component is [`PANEFLOW_TS_BASENAME`]. Tuple-form entries
+/// (`["pkg", {...}]`) are always user-owned.
+fn is_paneflow_plugin_entry(value: &serde_json::Value) -> bool {
+    value.as_str().is_some_and(|s| {
+        Path::new(s)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n == PANEFLOW_TS_BASENAME)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Grok (`~/.grok/hooks/paneflow.json` — dedicated merged hook file)
+// ---------------------------------------------------------------------------
+
+/// Grok Build hook events — PascalCase, Claude-compatible names. Same
+/// reduced set as Qoder: `Notification` is skipped (Grok's stdin payload
+/// has no `notification_type`, so the hook's whitelist would drop every
+/// frame) and `SessionStart`/`SessionEnd` are covered by the shim's
+/// universal lifecycle.
+pub(crate) const GROK_HOOK_EVENTS: &[&str] =
+    &["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"];
+
+/// RAII guard for Grok: writes a DEDICATED `~/.grok/hooks/paneflow.json`
+/// (Grok merges every `*.json` in that dir at discovery — global hooks are
+/// always trusted) and deletes it on drop. The file is wholly ours, so
+/// there is no read-modify-write of any user config at all; Grok's
+/// documented behavior on a malformed hook file is skip-with-warning
+/// (fail-open), so the downside risk is bounded to a log line.
+pub(crate) struct GrokHookFileGuard {
+    hook_path: PathBuf,
+}
+
+impl GrokHookFileGuard {
+    pub(crate) fn install() -> Option<Self> {
+        let home = home_dir_env()?;
+        let hooks_dir = home.join(".grok").join("hooks");
+        if !paneflow_ipc_reachable() {
+            let _ = std::fs::remove_file(hooks_dir.join("paneflow.json"));
+            return None;
+        }
+        Self::install_at(&hooks_dir)
+    }
+
+    /// Testable inner — no IPC gate.
+    pub(crate) fn install_at(hooks_dir: &Path) -> Option<Self> {
+        if config_dir_is_symlink(hooks_dir) {
+            return None;
+        }
+        std::fs::create_dir_all(hooks_dir).ok()?;
+        let hook_path = hooks_dir.join("paneflow.json");
+        // Grok's hook schema is the Claude matcher-group shape verbatim
+        // (timeout in seconds, `type: command`) — reuse the shared merge on
+        // an empty root.
+        let mut root = serde_json::json!({});
+        merge_matcher_hooks_for_events(&mut root, GROK_HOOK_EVENTS);
+        write_atomic(&hook_path, &root).ok()?;
+        Some(Self { hook_path })
+    }
+}
+
+impl Drop for GrokHookFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.hook_path);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hermes (`~/.hermes/config.yaml`, YAML — string-level marked block)
+// ---------------------------------------------------------------------------
+
+/// Markers bounding Paneflow's managed block in `~/.hermes/config.yaml`.
+/// String-level append/strip (the Codex TOML-marker precedent): a serde
+/// round-trip of the user's PRIMARY YAML config would destroy their
+/// comments and formatting, which is never acceptable.
+pub(crate) const HERMES_BLOCK_BEGIN: &str =
+    "# >>> paneflow managed hooks (auto-installed; removed on session end) >>>";
+pub(crate) const HERMES_BLOCK_END: &str = "# <<< paneflow managed hooks <<<";
+
+/// Quote a string for a YAML double-quoted scalar (backslashes + quotes —
+/// enough for command paths; the rest of the command is our own ASCII).
+fn yaml_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// The managed `hooks:` block for Hermes. Event mapping notes:
+/// - Hermes has NO turn-end event, so `post_llm_call` maps to `Stop`: the
+///   final LLM response of a turn correctly lands `Finished`, and a
+///   mid-turn `Stop` is immediately re-promoted to `Thinking` by the next
+///   `pre_tool_call`/`pre_llm_call` (the server's tool_use arm revives
+///   Finished sessions by design). Worst case is a brief "done" flicker
+///   between tool calls — self-healing, never stuck.
+/// - `pre_approval_request` maps to the `PermissionRequest` argv, which the
+///   hook translates to `ai.notification` with `notification_type:
+///   permission_prompt` itself — Hermes' stdin payload doesn't carry the
+///   field the plain `Notification` whitelist gates on.
+/// - `on_session_start`/`on_session_end` are NOT registered: the shim's
+///   universal `ai.exit`/`ai.session_end` already covers the lifecycle and
+///   registering them would double-fire.
+fn hermes_managed_block() -> String {
+    let q = |event: &str| yaml_quote(&resolve_hook_command(event));
+    format!(
+        "{HERMES_BLOCK_BEGIN}\n\
+         hooks:\n\
+         \x20 pre_llm_call:\n\
+         \x20   - command: {}\n\
+         \x20     timeout: 5\n\
+         \x20 post_llm_call:\n\
+         \x20   - command: {}\n\
+         \x20     timeout: 5\n\
+         \x20 pre_tool_call:\n\
+         \x20   - command: {}\n\
+         \x20     timeout: 5\n\
+         \x20 post_tool_call:\n\
+         \x20   - command: {}\n\
+         \x20     timeout: 5\n\
+         \x20 pre_approval_request:\n\
+         \x20   - command: {}\n\
+         \x20     timeout: 5\n\
+         {HERMES_BLOCK_END}\n",
+        q("UserPromptSubmit"),
+        q("Stop"),
+        q("PreToolUse"),
+        q("PostToolUse"),
+        q("PermissionRequest"),
+    )
+}
+
+/// Strip the managed block (markers inclusive, plus the end marker's
+/// trailing newline). `None` when no complete block is present.
+pub(crate) fn strip_hermes_managed_block(content: &str) -> Option<String> {
+    let begin = content.find(HERMES_BLOCK_BEGIN)?;
+    let end_rel = content[begin..].find(HERMES_BLOCK_END)?;
+    let mut end = begin + end_rel + HERMES_BLOCK_END.len();
+    if content[end..].starts_with('\n') {
+        end += 1;
+    }
+    let mut out = String::with_capacity(content.len() - (end - begin));
+    out.push_str(&content[..begin]);
+    out.push_str(&content[end..]);
+    Some(out)
+}
+
+/// True iff the (block-stripped) YAML content already has a top-level
+/// `hooks:` key. Appending a second `hooks:` mapping would be a duplicate
+/// key — PyYAML-family loaders silently keep the LAST one, which would
+/// CLOBBER the user's own hooks for the session. Refusing is the only safe
+/// answer without a comment-preserving YAML rewriter.
+fn yaml_has_top_level_hooks_key(content: &str) -> bool {
+    content
+        .lines()
+        .any(|l| l.starts_with("hooks:") || l == "hooks")
+}
+
+/// RAII guard for Hermes: appends the marked `hooks:` block to
+/// `~/.hermes/config.yaml` on install, strips it on drop. Also sets
+/// `HERMES_ACCEPT_HOOKS=1` in the shim's own env (inherited by the child)
+/// so Hermes' first-use consent prompt doesn't block a fresh session
+/// mid-turn — scoped to sessions where Paneflow actually manages the
+/// hooks, and `~/.hermes` is user-owned (same-UID writers could edit the
+/// consent allowlist directly anyway).
+pub(crate) struct HermesHookConfigGuard {
+    config_path: PathBuf,
+    created_file: bool,
+}
+
+impl HermesHookConfigGuard {
+    pub(crate) fn install() -> Option<Self> {
+        let home = home_dir_env()?;
+        let hermes_dir = home.join(".hermes");
+        let config_path = hermes_dir.join("config.yaml");
+        if !paneflow_ipc_reachable() {
+            Self::sweep_orphan(&config_path);
+            return None;
+        }
+        let guard = Self::install_at(&hermes_dir)?;
+        // Safe (not the Rust-2024 unsafe form) on this crate's 2021
+        // edition; single-threaded here, before the child spawn.
+        env::set_var("HERMES_ACCEPT_HOOKS", "1");
+        Some(guard)
+    }
+
+    /// Testable inner — no IPC gate, no env mutation.
+    pub(crate) fn install_at(hermes_dir: &Path) -> Option<Self> {
+        if config_dir_is_symlink(hermes_dir) {
+            return None;
+        }
+        std::fs::create_dir_all(hermes_dir).ok()?;
+        let config_path = hermes_dir.join("config.yaml");
+
+        let existing = std::fs::read_to_string(&config_path).ok();
+        let created_file = existing.is_none();
+        let content = existing.unwrap_or_default();
+        // Idempotent re-install: strip any block a previous session left.
+        let base = strip_hermes_managed_block(&content).unwrap_or(content);
+
+        if yaml_has_top_level_hooks_key(&base) {
+            eprintln!(
+                "paneflow-shim: {} already defines a hooks: section; \
+                 skipping Hermes status hooks this session (a duplicate \
+                 YAML key would override yours)",
+                safe_path_display(&config_path)
+            );
+            return None;
+        }
+
+        let mut next = base;
+        if !next.is_empty() && !next.ends_with('\n') {
+            next.push('\n');
+        }
+        next.push_str(&hermes_managed_block());
+        write_text_atomic(&config_path, &next).ok()?;
+
+        Some(Self {
+            config_path,
+            created_file,
+        })
+    }
+
+    fn sweep_orphan(config_path: &Path) {
+        let Ok(content) = std::fs::read_to_string(config_path) else {
+            return;
+        };
+        if let Some(stripped) = strip_hermes_managed_block(&content) {
+            let _ = if stripped.trim().is_empty() {
+                std::fs::remove_file(config_path)
+            } else {
+                write_text_atomic(config_path, &stripped)
+            };
+        }
+    }
+}
+
+impl Drop for HermesHookConfigGuard {
+    fn drop(&mut self) {
+        let Ok(content) = std::fs::read_to_string(&self.config_path) else {
+            return;
+        };
+        let Some(stripped) = strip_hermes_managed_block(&content) else {
+            return;
+        };
+        let _ = if stripped.trim().is_empty() && self.created_file {
+            std::fs::remove_file(&self.config_path)
+        } else {
+            write_text_atomic(&self.config_path, &stripped)
+        };
     }
 }
 

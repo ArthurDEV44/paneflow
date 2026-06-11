@@ -1,6 +1,14 @@
 //! AI tool type definitions shared across the app.
 //!
-//! `AiTool` identifies which AI coding tool is active (Claude Code, Codex).
+//! The tool identity is [`crate::agent_launcher::TerminalAgent`] — the same
+//! 16-agent taxonomy as the terminal launchers (single source of truth:
+//! binaries are the wire ids, `display_name`/`accent`/`display_rank` come
+//! for free). The historical 2-variant `AiTool` enum was folded into it
+//! when hook support grew past Claude Code + Codex; on the wire, `tool` is
+//! the agent's binary name (`claude`, `codex`, `gemini`, …) resolved via
+//! [`TerminalAgent::from_binary`], and an UNKNOWN string is now rejected
+//! instead of silently retyped as Claude.
+//!
 //! `AgentState` tracks the lifecycle state of a single agent session.
 //! `AgentSession` bundles tool + state + the currently-active sub-tool name
 //! (`Edit`, `Bash`, …) for one PID. A workspace can hold many sessions
@@ -13,52 +21,7 @@
 //! same workspace — the second `ai.session_start` used to overwrite the
 //! first PID in a `HashMap<String, u32>`).
 
-/// Which AI coding tool is active in the terminal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AiTool {
-    /// Claude Code CLI (Anthropic)
-    Claude,
-    /// Codex CLI (OpenAI)
-    Codex,
-}
-
-impl AiTool {
-    pub fn label(&self) -> &'static str {
-        match self {
-            AiTool::Claude => "Claude",
-            AiTool::Codex => "Codex",
-        }
-    }
-
-    /// Wire-format string used by the `ai.*` IPC `tool` parameter.
-    #[allow(dead_code)]
-    pub fn wire_id(&self) -> &'static str {
-        match self {
-            AiTool::Claude => "claude",
-            AiTool::Codex => "codex",
-        }
-    }
-
-    /// Parse a tool name string into an `AiTool`. Case-insensitive.
-    /// Defaults to `Claude` for unknown names.
-    pub fn from_name(name: &str) -> Self {
-        if name.eq_ignore_ascii_case("codex") {
-            AiTool::Codex
-        } else {
-            AiTool::Claude
-        }
-    }
-
-    /// Stable display order — Claude first, Codex second. Used by the
-    /// sidebar to render multi-tool status rows deterministically rather
-    /// than letting `HashMap` iteration order leak into the UI.
-    pub fn display_order(&self) -> u8 {
-        match self {
-            AiTool::Claude => 0,
-            AiTool::Codex => 1,
-        }
-    }
-}
+use crate::agent_launcher::TerminalAgent;
 
 /// Lifecycle state for one agent session (one PID).
 ///
@@ -117,7 +80,7 @@ pub fn state_for_exit(exit_code: i32) -> AgentState {
 /// One row in the per-workspace `agent_sessions` map.
 #[derive(Debug, Clone)]
 pub struct AgentSession {
-    pub tool: AiTool,
+    pub tool: TerminalAgent,
     pub state: AgentState,
     /// Name of the active sub-tool (Edit, Bash, Read, …) reported by
     /// `ai.tool_use` hooks. Cleared on every non-Thinking transition.
@@ -146,10 +109,18 @@ pub struct AgentSession {
     /// exceeds the configured silence threshold. Monotonic for the same
     /// reason as `waiting_since`.
     pub last_activity: std::time::Instant,
+    /// OS start time of the session's process, pinned at session creation
+    /// (Linux `/proc/{pid}/stat` field 22, macOS `pbi_start_tvsec`, Windows
+    /// `GetProcessTimes` creation FILETIME — opaque, only compared for
+    /// equality). Guards the sweep's `pid_is_alive` probe against PID reuse:
+    /// a live PID whose start time changed belongs to a DIFFERENT process,
+    /// so the session is dead. `None` (synthetic PID, probe failure) keeps
+    /// the conservative liveness-only check.
+    pub proc_start: Option<u64>,
 }
 
 impl AgentSession {
-    pub fn new(tool: AiTool, state: AgentState) -> Self {
+    pub fn new(tool: TerminalAgent, state: AgentState) -> Self {
         Self {
             tool,
             state,
@@ -158,6 +129,7 @@ impl AgentSession {
             surface_id: None,
             waiting_since: None,
             last_activity: std::time::Instant::now(),
+            proc_start: None,
         }
     }
 }
@@ -189,7 +161,7 @@ pub fn next_waiting_since(
 /// `count - 1`, the "+N" suffix shown after the lead label.
 #[derive(Debug, Clone)]
 pub struct ToolAggregate {
-    pub tool: AiTool,
+    pub tool: TerminalAgent,
     pub dominant: AgentState,
     pub count: usize,
     pub active_tool_name: Option<String>,
@@ -223,12 +195,12 @@ fn state_rank(s: &AgentState) -> u8 {
 }
 
 /// Aggregate the per-PID sessions of a workspace into one row per
-/// `AiTool`, sorted by `AiTool::display_order`.
+/// `TerminalAgent`, sorted by `TerminalAgent::display_rank`.
 pub fn aggregate_by_tool<'a, I>(sessions: I) -> Vec<ToolAggregate>
 where
     I: IntoIterator<Item = &'a AgentSession>,
 {
-    let mut by_tool: std::collections::HashMap<AiTool, ToolAggregate> =
+    let mut by_tool: std::collections::HashMap<TerminalAgent, ToolAggregate> =
         std::collections::HashMap::new();
 
     for s in sessions {
@@ -250,7 +222,7 @@ where
     }
 
     let mut rows: Vec<ToolAggregate> = by_tool.into_values().collect();
-    rows.sort_by_key(|a| a.tool.display_order());
+    rows.sort_by_key(|a| a.tool.display_rank());
     rows
 }
 
@@ -258,7 +230,7 @@ where
 mod tests {
     use super::*;
 
-    fn s(tool: AiTool, state: AgentState) -> AgentSession {
+    fn s(tool: TerminalAgent, state: AgentState) -> AgentSession {
         AgentSession::new(tool, state)
     }
 
@@ -315,7 +287,7 @@ mod tests {
 
     #[test]
     fn single_session_no_suffix() {
-        let sessions = [s(AiTool::Claude, AgentState::Thinking)];
+        let sessions = [s(TerminalAgent::ClaudeCode, AgentState::Thinking)];
         let rows = aggregate_by_tool(sessions.iter());
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].count, 1);
@@ -325,9 +297,9 @@ mod tests {
     #[test]
     fn multi_same_tool_yields_plus_n_suffix() {
         let sessions = [
-            s(AiTool::Claude, AgentState::Thinking),
-            s(AiTool::Claude, AgentState::Thinking),
-            s(AiTool::Claude, AgentState::Thinking),
+            s(TerminalAgent::ClaudeCode, AgentState::Thinking),
+            s(TerminalAgent::ClaudeCode, AgentState::Thinking),
+            s(TerminalAgent::ClaudeCode, AgentState::Thinking),
         ];
         let rows = aggregate_by_tool(sessions.iter());
         assert_eq!(rows.len(), 1);
@@ -338,9 +310,9 @@ mod tests {
     #[test]
     fn dominant_picks_waiting_over_thinking() {
         let sessions = [
-            s(AiTool::Claude, AgentState::Thinking),
-            s(AiTool::Claude, AgentState::WaitingForInput),
-            s(AiTool::Claude, AgentState::Finished),
+            s(TerminalAgent::ClaudeCode, AgentState::Thinking),
+            s(TerminalAgent::ClaudeCode, AgentState::WaitingForInput),
+            s(TerminalAgent::ClaudeCode, AgentState::Finished),
         ];
         let rows = aggregate_by_tool(sessions.iter());
         assert_eq!(rows[0].dominant, AgentState::WaitingForInput);
@@ -349,8 +321,8 @@ mod tests {
     #[test]
     fn dominant_picks_thinking_over_finished() {
         let sessions = [
-            s(AiTool::Claude, AgentState::Finished),
-            s(AiTool::Claude, AgentState::Thinking),
+            s(TerminalAgent::ClaudeCode, AgentState::Finished),
+            s(TerminalAgent::ClaudeCode, AgentState::Thinking),
         ];
         let rows = aggregate_by_tool(sessions.iter());
         assert_eq!(rows[0].dominant, AgentState::Thinking);
@@ -359,9 +331,9 @@ mod tests {
     #[test]
     fn dominant_picks_errored_over_everything() {
         let sessions = [
-            s(AiTool::Claude, AgentState::Thinking),
-            s(AiTool::Claude, AgentState::WaitingForInput),
-            s(AiTool::Claude, AgentState::Errored),
+            s(TerminalAgent::ClaudeCode, AgentState::Thinking),
+            s(TerminalAgent::ClaudeCode, AgentState::WaitingForInput),
+            s(TerminalAgent::ClaudeCode, AgentState::Errored),
         ];
         let rows = aggregate_by_tool(sessions.iter());
         assert_eq!(rows[0].dominant, AgentState::Errored);
@@ -371,8 +343,8 @@ mod tests {
     fn dominant_picks_waiting_over_stalled() {
         // A waiting agent is actionable NOW; a stalled one is a suspicion.
         let sessions = [
-            s(AiTool::Claude, AgentState::Stalled),
-            s(AiTool::Claude, AgentState::WaitingForInput),
+            s(TerminalAgent::ClaudeCode, AgentState::Stalled),
+            s(TerminalAgent::ClaudeCode, AgentState::WaitingForInput),
         ];
         let rows = aggregate_by_tool(sessions.iter());
         assert_eq!(rows[0].dominant, AgentState::WaitingForInput);
@@ -381,8 +353,8 @@ mod tests {
     #[test]
     fn dominant_picks_stalled_over_thinking() {
         let sessions = [
-            s(AiTool::Claude, AgentState::Thinking),
-            s(AiTool::Claude, AgentState::Stalled),
+            s(TerminalAgent::ClaudeCode, AgentState::Thinking),
+            s(TerminalAgent::ClaudeCode, AgentState::Stalled),
         ];
         let rows = aggregate_by_tool(sessions.iter());
         assert_eq!(rows[0].dominant, AgentState::Stalled);
@@ -414,12 +386,12 @@ mod tests {
     #[test]
     fn claude_renders_before_codex() {
         let sessions = [
-            s(AiTool::Codex, AgentState::Thinking),
-            s(AiTool::Claude, AgentState::Thinking),
+            s(TerminalAgent::Codex, AgentState::Thinking),
+            s(TerminalAgent::ClaudeCode, AgentState::Thinking),
         ];
         let rows = aggregate_by_tool(sessions.iter());
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].tool, AiTool::Claude);
-        assert_eq!(rows[1].tool, AiTool::Codex);
+        assert_eq!(rows[0].tool, TerminalAgent::ClaudeCode);
+        assert_eq!(rows[1].tool, TerminalAgent::Codex);
     }
 }
