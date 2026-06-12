@@ -1644,7 +1644,10 @@ pub(crate) fn disable_codex_feature_flag(path: &Path) {
 /// Phase 7 security audit MEDIUM #3: concurrent shims both calling
 /// `fs::write` on `~/.codex/config.toml` can produce torn bytes; rename
 /// swap is the fix.
-#[cfg(unix)]
+///
+/// Cross-platform: also called by the Pi / OpenCode / Hermes guards above,
+/// which compile on Windows too — keep this ungated (`tempfile` +
+/// `std::io::Write` are cross-platform).
 pub(crate) fn write_text_atomic(path: &Path, content: &str) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
