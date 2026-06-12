@@ -14,6 +14,16 @@
 Paneflow turns “one terminal per agent” into a branch-aware workspace: panes, tabs, sidebars, session restore, in-app diffs, review prompts, and a JSON-RPC event stream that your own tooling can react to. It is open source, written in Rust on [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), native on Linux and macOS today, with Windows support in progress.
 
 <p align="center">
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#features">Features</a> ·
+  <a href="ARCHITECTURE.md">Architecture</a> ·
+  <a href="#faq">FAQ</a> ·
+  <a href="https://paneflow.dev">Website</a> ·
+  <a href="https://paneflow.dev/compare">Compare</a>
+</p>
+
+<p align="center">
   <img src="assets/images/hero-paneflow.png" alt="Paneflow" width="100%" />
 </p>
 
@@ -32,6 +42,8 @@ chmod +x "paneflow-${VER}-${ARCH}.AppImage"
 ```
 
 Need `.deb`, `.rpm`, `.tar.gz`, or macOS DMG? Jump to [Install](#install).
+
+> Paneflow is free and open source. If it earns a place in your workflow, [a star](https://github.com/ArthurDEV44/paneflow/stargazers) helps other people running agents in parallel find it.
 
 ## Where it fits
 
@@ -630,6 +642,38 @@ Detailed comparisons:
 - [vs WezTerm](https://paneflow.dev/compare/wezterm)
 - [vs iTerm2](https://paneflow.dev/compare/iterm2)
 - [vs Warp](https://paneflow.dev/compare/warp)
+
+## Architecture
+
+Paneflow is one Rust binary: GPUI for GPU-accelerated UI (Vulkan / Metal / DirectX), upstream `alacritty_terminal` for VT emulation confined behind a neutral-type boundary, one PTY I/O thread per pane, and a JSON-RPC IPC layer that powers the CLI, the MCP bridge, and agent lifecycle tracking.
+
+[ARCHITECTURE.md](ARCHITECTURE.md) covers the thread model, the keystroke-to-pixel pipeline, how agent state detection works (PATH shim + lifecycle hooks), and the security posture (minisign-signed updates with fail-closed verification, opt-in telemetry, untrusted-ingress validation).
+
+## FAQ
+
+**Why not tmux with one agent per pane?**
+That works — until you run more than two agents. Paneflow's value is the state layer on top of the panes: it knows when an agent is thinking, waiting on a question (and what the question is), finished, errored, or stalled, and routes that to tab dots, sidebar status, an attention queue, desktop notifications, and `Ctrl+Shift+J` to jump to the next agent that needs you. Add per-agent git worktrees, an in-app diff viewer, session restore, and an IPC API, and the comparison stops being about splitting a screen.
+
+**Is this another Electron app?**
+No. Paneflow is native Rust on Zed's GPUI: Vulkan on Linux, Metal on macOS, DirectX on Windows. No Chromium, no Node runtime.
+
+**Does it phone home?**
+Not unless you say yes. Telemetry is opt-in via a first-run consent modal and disabled by default. When enabled it sends five app-lifecycle events (app started/exited, update check/installed, session corrupted) — never terminal content, paths, or prompts. `PANEFLOW_NO_TELEMETRY=1` is an unconditional kill switch, and the entire client is auditable in [`crates/paneflow-telemetry/`](crates/paneflow-telemetry/).
+
+**Is it a fork of Zed or cmux?**
+No. Paneflow is an independent codebase that uses Zed's GPUI as its UI framework and upstream `alacritty_terminal` for emulation. The cmux comparison is about the category (agent workspaces), not the code.
+
+**Does it drive agents for me?**
+No, and that's deliberate. Agents run as real CLI processes in real PTY panes you can see and interrupt. Paneflow pre-fills prompts (Composer, Launch Pad, broadcast groups) but a human presses Enter — there is no headless mode that submits prompts on your behalf.
+
+**Why GPL-3.0?**
+Paneflow is free and open source by design, and GPL keeps it that way: improvements to the app stay in the commons.
+
+**What about Windows?**
+In progress and actively worked on — the codebase is cross-platform by policy (every platform-specific path has a Windows branch or a documented stub). See [docs/WINDOWS.md](docs/WINDOWS.md) for current status.
+
+**Is the terminal itself any good?**
+It is upstream alacritty's VT emulation with GPU rendering, so: fast. Find-in-buffer with regex, fleet-wide grep across every pane, OSC 8 hyperlinks, per-pane font zoom, ligatures, themes with hot reload. The multiplexing does not tax the basics.
 
 ## License
 
