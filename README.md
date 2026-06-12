@@ -24,7 +24,10 @@ Paneflow turns “one terminal per agent” into a branch-aware workspace: panes
 </p>
 
 <p align="center">
-  <img src="assets/images/hero-paneflow.png" alt="Paneflow" width="100%" />
+  <img src="assets/images/demo.gif" alt="Paneflow running Claude Code and Pi in parallel panes — live agent status in the sidebar" width="100%" />
+</p>
+<p align="center">
+  <sub>Real session at 2.5× speed: two coding agents working the same repo in parallel — panes spawned and prompts pre-filled over the IPC API, sidebar tracking who is thinking, who is running, who needs you.</sub>
 </p>
 
 ## Quickstart
@@ -99,8 +102,12 @@ One-shot install of the `.deb`. The package's `postinst` automatically wires `pk
 curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-<ARCH>.deb
 # Verify the signature BEFORE `apt install`: postinst runs as root,
 # so an unsigned/tampered .deb could write arbitrary repo sources.
-sudo apt install -y dpkg-sig
-dpkg-sig --verify paneflow-X.Y.Z-<ARCH>.deb       # expect: GOODSIG
+# Import the release key first (cross-check the fingerprint — see
+# Troubleshooting > Verifying releases), then:
+#   Debian / Ubuntu <= 23.10:
+sudo apt install -y dpkg-sig && dpkg-sig --verify paneflow-X.Y.Z-<ARCH>.deb   # expect: GOODSIG
+#   Ubuntu 24.04+ (dpkg-sig was dropped from the archive):
+ar x paneflow-X.Y.Z-<ARCH>.deb _gpgbuilder && gpg --verify _gpgbuilder        # expect: Good signature
 sudo apt install ./paneflow-X.Y.Z-<ARCH>.deb
 paneflow --version
 ```
@@ -277,11 +284,13 @@ Every Paneflow release is signed and the procedure to verify a downloaded artifa
 **Quick `.deb` verification** (full procedure, including the mandatory fingerprint cross-check before key import, in the Linux runbook §1; do NOT paste the snippet below until you have verified the key fingerprint matches `9809948F4433CF93DD1329449A252F0C183F2711`):
 
 ```bash
+# Import the release key into your GPG keyring (verify the fingerprint first):
 curl -fsSL https://raw.githubusercontent.com/ArthurDEV44/paneflow/main/keys/paneflow-release.asc \
-  | gpg --dearmor \
-  | sudo tee /usr/share/keyrings/paneflow-archive.gpg >/dev/null
-sudo apt-get install -y dpkg-sig
-dpkg-sig --verify paneflow-X.Y.Z-x86_64.deb   # expect: GOODSIG
+  | gpg --import
+# Debian / Ubuntu <= 23.10:
+sudo apt-get install -y dpkg-sig && dpkg-sig --verify paneflow-X.Y.Z-x86_64.deb   # expect: GOODSIG
+# Ubuntu 24.04+ (dpkg-sig no longer packaged): verify the embedded signature directly
+ar x paneflow-X.Y.Z-x86_64.deb _gpgbuilder && gpg --verify _gpgbuilder            # expect: Good signature
 ```
 
 ### Uninstall

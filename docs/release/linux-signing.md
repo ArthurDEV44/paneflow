@@ -132,11 +132,11 @@ dpkg-sig --verify paneflow-vX.Y.Z-x86_64.deb
 ```
 
 > **Ubuntu 24.04 (Noble) and later.** `dpkg-sig` is unmaintained
-> upstream (last upstream release 2014) and was dropped from the main
-> Ubuntu archive. On 24.04+, install it from the universe component
-> (`sudo add-apt-repository universe && sudo apt-get install
-> dpkg-sig`) or use the bare-GPG fallback: extract the `_gpgbuilder`
-> member with `ar x` and verify it directly:
+> upstream (last upstream release 2014) and was dropped from the
+> Ubuntu archive entirely — `apt-cache policy dpkg-sig` resolves to
+> nothing on 24.04 even with universe enabled (verified on a fresh
+> noble container, 2026-06). Use the bare-GPG fallback: extract the
+> `_gpgbuilder` member with `ar x` and verify it directly:
 >
 > ```bash
 > ar x paneflow-vX.Y.Z-x86_64.deb _gpgbuilder
