@@ -290,6 +290,11 @@ impl Render for SettingsWindow {
         let title_bar = {
             let height = (1.75 * window.rem_size()).max(px(34.));
             let is_csd = matches!(decorations, Decorations::Client { .. });
+            // Paint our own controls under CSD (Linux) and always on Windows,
+            // where the transparent titlebar hides the native caption buttons
+            // while gpui reports `Decorations::Server`. Mirrors the main
+            // title bar (window_chrome/title_bar.rs); macOS keeps traffic lights.
+            let render_controls = is_csd || cfg!(target_os = "windows");
             let theme = crate::theme::active_theme();
             let bg_color = if window.is_window_active() {
                 theme.title_bar_background
@@ -301,22 +306,24 @@ impl Render for SettingsWindow {
             let supported = window.window_controls();
             let on_close = |window: &mut Window, _cx: &mut gpui::App| window.remove_window();
 
-            let left_controls = if is_csd {
+            let left_controls = if render_controls {
                 crate::window_chrome::csd::render_button_group(
                     "l",
                     &layout.left,
                     is_maximized,
+                    height,
                     &supported,
                     on_close,
                 )
             } else {
                 None
             };
-            let right_controls = if is_csd {
+            let right_controls = if render_controls {
                 crate::window_chrome::csd::render_button_group(
                     "r",
                     &layout.right,
                     is_maximized,
+                    height,
                     &supported,
                     on_close,
                 )
@@ -366,7 +373,8 @@ impl Render for SettingsWindow {
                 .w_full()
                 .h(height)
                 .bg(bg_color)
-                .pr(px(12.));
+                // Windows: flush native-style caption buttons (no right inset).
+                .when(!cfg!(target_os = "windows"), |d| d.pr(px(12.)));
 
             if let Decorations::Client { tiling } = decorations {
                 if !(tiling.top || tiling.left) {
