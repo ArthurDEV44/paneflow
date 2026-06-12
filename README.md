@@ -24,10 +24,10 @@ Paneflow turns “one terminal per agent” into a branch-aware workspace: panes
 </p>
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/ec5a7789-50ff-4d37-961a-bae54715d53b" controls muted width="100%"></video>
+  <img src="assets/images/demo.gif" alt="Paneflow running several coding agents in parallel panes, with live per-session status in the sidebar" width="100%" />
 </p>
 <p align="center">
-  <sub>A real session: several coding agents working in parallel panes, with live per-session status in the sidebar — who is thinking, who is running, who needs you.</sub>
+  <sub>A real session, sped up: several coding agents working in parallel panes, with live per-session status in the sidebar — who is thinking, who is running, who needs you.</sub>
 </p>
 
 ## Quickstart
