@@ -151,11 +151,21 @@ impl Render for TitleBar {
             }
         };
 
-        let left_controls = if is_csd {
+        // Paint our own window controls under CSD (Linux) and always on
+        // Windows, where the transparent titlebar (`appears_transparent: true`)
+        // hides the native caption buttons while gpui still reports
+        // `Decorations::Server` — so `is_csd` is false and, without this guard,
+        // the minimize/maximize/close buttons vanish entirely on Windows.
+        // macOS keeps its native traffic lights, so it stays gated on `is_csd`
+        // (false there). Mirrors the settings title bar (settings/window.rs).
+        let render_controls = is_csd || cfg!(target_os = "windows");
+
+        let left_controls = if render_controls {
             super::csd::render_button_group(
                 "l",
                 &layout.left,
                 is_maximized,
+                height,
                 &supported,
                 on_close.clone(),
             )
@@ -163,8 +173,15 @@ impl Render for TitleBar {
             None
         };
 
-        let right_controls = if is_csd {
-            super::csd::render_button_group("r", &layout.right, is_maximized, &supported, on_close)
+        let right_controls = if render_controls {
+            super::csd::render_button_group(
+                "r",
+                &layout.right,
+                is_maximized,
+                height,
+                &supported,
+                on_close,
+            )
         } else {
             None
         };
@@ -576,7 +593,10 @@ impl Render for TitleBar {
             // surface. Diff keeps the themed chrome.
             .when(!self.is_agents && self.cockpit, |d| d.bg(rgb(0x1d1d1d)))
             .when(!self.is_agents && !self.cockpit, |d| d.bg(bg_color))
-            .pr(px(12.));
+            // Windows: drop the right padding so the native-style caption
+            // buttons sit flush in the top-right corner (Fitts's-law target).
+            // Linux/macOS keep the 12px inset for the compact pill controls.
+            .when(!cfg!(target_os = "windows"), |d| d.pr(px(12.)));
 
         // CSD rounded corners with tiling awareness. Skipped in the cockpit
         // (Agents + Cli): the title bar is a confined overlay there, so its

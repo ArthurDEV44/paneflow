@@ -93,6 +93,7 @@ pub(crate) fn render_button_group(
     side: &'static str,
     buttons: &[Option<WindowButton>; 3],
     is_maximized: bool,
+    bar_height: Pixels,
     supported: &WindowControls,
     on_close: impl Fn(&mut Window, &mut App) + Clone + 'static,
 ) -> Option<AnyElement> {
@@ -104,7 +105,9 @@ pub(crate) fn render_button_group(
             WindowButton::Maximize => supported.maximize,
             WindowButton::Close => true,
         })
-        .map(|button| render_window_button(side, button, is_maximized, on_close.clone()))
+        .map(|button| {
+            render_window_button(side, button, is_maximized, bar_height, on_close.clone())
+        })
         .collect();
 
     if children.is_empty() {
@@ -116,7 +119,10 @@ pub(crate) fn render_button_group(
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(2.))
+            // Windows: full-height, flush, zero-gap cluster (native Win11
+            // caption strip). Linux/macOS: compact pills with a 2px gap.
+            .when(cfg!(target_os = "windows"), |d| d.h(bar_height))
+            .when(!cfg!(target_os = "windows"), |d| d.gap(px(2.)))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .children(children)
             .into_any_element(),
@@ -129,6 +135,7 @@ pub(crate) fn render_window_button(
     side: &'static str,
     button: WindowButton,
     is_maximized: bool,
+    bar_height: Pixels,
     on_close: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let id = match button {
@@ -152,13 +159,26 @@ pub(crate) fn render_window_button(
 
     let element_id = format!("{id}-{side}");
     let is_left = side == "l";
-    let (button_width, button_height) = if is_left {
+
+    // Windows: native Win11 caption buttons — 46px wide, full title-bar
+    // height, square + flush, with the system hover palette (subtle white
+    // overlay for min/max, #c42b1c red on close, #c84c3f when pressed). The
+    // OS already hit-tests these regions as HT{MIN,MAX,CLOSE}, so snap
+    // layouts and the actual minimize/maximize/close are system-handled
+    // (gpui_windows events.rs) — only the pixels are ours, making them
+    // indistinguishable from the OS-drawn ones. Linux/macOS keep the compact
+    // chrome-themed pills.
+    let is_windows = cfg!(target_os = "windows");
+    let is_close = matches!(button, WindowButton::Close);
+    let (button_width, button_height) = if is_windows {
+        (px(46.), bar_height)
+    } else if is_left {
         (px(22.), px(22.))
     } else {
         (px(28.), px(22.))
     };
 
-    div()
+    let btn = div()
         .id(SharedString::from(element_id))
         .window_control_area(control_area)
         .flex()
@@ -166,17 +186,7 @@ pub(crate) fn render_window_button(
         .justify_center()
         .w(button_width)
         .h(button_height)
-        .when(is_left, |s| s.rounded_full())
-        .when(!is_left, |s| s.rounded_sm())
         .cursor_pointer()
-        .hover(|s| {
-            let ui = crate::theme::ui_colors();
-            s.bg(ui.subtle)
-        })
-        .active(|s| {
-            let ui = crate::theme::ui_colors();
-            s.bg(ui.subtle)
-        })
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |_: &ClickEvent, window, cx| {
             cx.stop_propagation();
@@ -185,14 +195,31 @@ pub(crate) fn render_window_button(
                 WindowButton::Maximize => window.zoom_window(),
                 WindowButton::Close => on_close(window, cx),
             }
-        })
-        .child({
-            let ui = crate::theme::ui_colors();
-            svg()
-                .size(px(16.))
-                .flex_none()
-                .path(icon_path)
-                .text_color(ui.text)
-        })
-        .into_any_element()
+        });
+
+    let btn = if is_windows {
+        if is_close {
+            btn.hover(|s| s.bg(gpui::rgb(0xc42b1c)))
+                .active(|s| s.bg(gpui::rgb(0xc84c3f)))
+        } else {
+            btn.hover(|s| s.bg(gpui::rgba(0xffffff14)))
+                .active(|s| s.bg(gpui::rgba(0xffffff0a)))
+        }
+    } else {
+        let hover_bg = crate::theme::ui_colors().subtle;
+        btn.when(is_left, |s| s.rounded_full())
+            .when(!is_left, |s| s.rounded_sm())
+            .hover(move |s| s.bg(hover_bg))
+            .active(move |s| s.bg(hover_bg))
+    };
+
+    btn.child({
+        let ui = crate::theme::ui_colors();
+        svg()
+            .size(px(16.))
+            .flex_none()
+            .path(icon_path)
+            .text_color(ui.text)
+    })
+    .into_any_element()
 }
