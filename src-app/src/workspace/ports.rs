@@ -73,6 +73,10 @@ const MAX_PIDS_PER_ROOT: usize = 512;
 /// binaries, preserving first-seen (nearest-root) order and deduplicating.
 /// Exact basename match only — `claude-code-cli` or a wrapper script must
 /// not trigger (parity with the historical `AI_PROCESS_NAMES` contract).
+///
+/// Consumed only by the Linux/macOS `scan_panes` paths and the unit tests;
+/// gated so Windows (`-D warnings`) doesn't flag it as dead_code.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn agents_in_bfs_order<'a>(
     comms_in_bfs_order: impl Iterator<Item = &'a str>,
     agent_binaries: &[&str],
