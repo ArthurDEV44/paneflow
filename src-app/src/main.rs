@@ -1057,7 +1057,23 @@ impl Render for PaneFlowApp {
                                 // content read as one surface.
                                 |d| d.bg(ui.base),
                             )
-                            .child(main_content)
+                            // Windows: "descendre la partie droite" — inset the
+                            // panel content below the full-width title bar
+                            // (whose window controls sit at the window's
+                            // top-right corner, Codex / VS Code convention) by
+                            // wrapping `main_content` rather than padding the
+                            // panel div. Padding the panel would drag its
+                            // absolute rounded-corner masks (corner-tl.svg) down
+                            // and square off the top-left; the wrapper keeps the
+                            // masks pinned to the panel's true top-left (y=0)
+                            // while only the content descends. Linux/macOS keep
+                            // the rail-confined floating bar, so no top strip.
+                            .child(
+                                div()
+                                    .size_full()
+                                    .when(cfg!(target_os = "windows"), |d| d.pt(title_bar_h))
+                                    .child(main_content),
+                            )
                             // Rounded rail-side corners WITHOUT a gutter (Cli +
                             // Diff). GPUI can't clip custom-painted content
                             // (terminal cells, diff rows) to a radius, so each
@@ -1076,10 +1092,24 @@ impl Render for PaneFlowApp {
                                         | paneflow_config::schema::AppMode::Diff
                                 ),
                                 |d| {
+                                    // Windows: the full-width title bar paints
+                                    // an opaque #1d1d1d strip over the panel's
+                                    // top `title_bar_h` px, so a corner mask at
+                                    // y=0 is hidden under it and the VISIBLE
+                                    // top-left corner (where the panel content
+                                    // begins, at y=title_bar_h — see the
+                                    // main_content wrapper) is left square. Drop
+                                    // the mask down to that visible corner.
+                                    // Linux/macOS keep it at y=0 (no strip).
+                                    let tl_top = if cfg!(target_os = "windows") {
+                                        title_bar_h
+                                    } else {
+                                        px(0.)
+                                    };
                                     d.child(
                                         svg()
                                             .absolute()
-                                            .top_0()
+                                            .top(tl_top)
                                             .left_0()
                                             .size(px(16.))
                                             .path("icons/corner-tl.svg")
@@ -1120,10 +1150,25 @@ impl Render for PaneFlowApp {
                     .absolute()
                     .top_0()
                     .left_0()
-                    // Confine the title bar (drag + window controls) to the
-                    // rail width so it never covers the panel — the terminal
-                    // then fills the full height with no reserved top strip.
-                    .w(px(sidebar_px))
+                    // Linux/macOS cockpit: confine the title bar (drag +
+                    // controls) to the rail width so the floating overlay never
+                    // covers the panel — the compositor (Linux) / traffic
+                    // lights (macOS) own the window controls, and the terminal
+                    // fills the full height with no reserved top strip.
+                    //
+                    // Windows: span the FULL window width so the in-bar
+                    // min/max/close cluster lands at the window's top-right
+                    // corner (Explorer / VS Code / Codex convention, and what
+                    // `settings/window.rs` already does). The right panel
+                    // reserves a matching top strip below (see its `pt` guard)
+                    // so its content clears this bar.
+                    .map(|d| {
+                        if cfg!(target_os = "windows") {
+                            d.w_full()
+                        } else {
+                            d.w(px(sidebar_px))
+                        }
+                    })
                     .overflow_hidden()
                     .child(self.title_bar.clone()),
             );
