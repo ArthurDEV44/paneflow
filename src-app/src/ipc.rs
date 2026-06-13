@@ -101,9 +101,11 @@ use std::sync::{
 use std::time::Duration;
 
 use interprocess::TryClone;
-use interprocess::local_socket::{
-    GenericFilePath, Listener, ListenerNonblockingMode, ListenerOptions, Stream, prelude::*,
-};
+use interprocess::local_socket::{GenericFilePath, Listener, ListenerOptions, Stream, prelude::*};
+// `ListenerNonblockingMode` is only referenced by the Unix-only clobber-
+// detection accept loop; gating the import keeps the Windows build warning-free.
+#[cfg(unix)]
+use interprocess::local_socket::ListenerNonblockingMode;
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
@@ -269,6 +271,14 @@ pub fn start_server() -> (mpsc::Receiver<IpcRequest>, IpcStatus) {
             #[cfg(unix)]
             if let Some(parent) = socket_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
+                // Lock the socket's containing dir to the owner. Under
+                // $XDG_RUNTIME_DIR this already holds, but the fallback chain
+                // ($TMPDIR / ~/.cache/run) can land in a world-traversable
+                // /tmp — 0700 stops other local users from reaching the socket
+                // at all (defense-in-depth atop the socket's own 0600 +
+                // SO_PEERCRED).
+                use std::os::unix::fs::PermissionsExt as _;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
             }
 
             let listener = match bind_socket(&socket_path) {
@@ -288,9 +298,21 @@ pub fn start_server() -> (mpsc::Receiver<IpcRequest>, IpcStatus) {
             #[cfg(not(unix))]
             let listener = listener;
 
-            // Non-blocking accept so we can periodically verify the socket
-            // file (Unix) without starving connections. Stream I/O itself
-            // stays blocking so `handle_connection` can use plain `BufRead`.
+            // Non-blocking accept is UNIX-ONLY: it lets the loop periodically
+            // re-verify the socket inode (clobber detection) without starving
+            // connections. On Windows there is no inode/clobber check, and
+            // `interprocess`'s non-blocking named-pipe accept mismanages pipe
+            // instances — the accepted `Stream` does not correspond to the
+            // client that actually wrote, so the handler's read blocks forever
+            // (the frame is "sent OK" by the hook but never delivered to the
+            // server read), and that blocked read aborts the whole process at
+            // shutdown (STATUS_STACK_BUFFER_OVERRUN, observed in the field).
+            // BLOCKING accept on Windows matches the reliable MockServer used
+            // by the ai-hook integration suite: accept() waits in the kernel on
+            // a single pending instance, so every client's data is delivered to
+            // exactly the handler that accepted it. Stream I/O is blocking on
+            // both platforms so `handle_connection` can use plain `BufRead`.
+            #[cfg(unix)]
             listener
                 .set_nonblocking(ListenerNonblockingMode::Accept)
                 .ok();
@@ -671,7 +693,9 @@ fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
 
     // US-022: drop a peer that opens a connection and then goes mute, so it
     // can't pin this handler thread forever. Enforced at the OS level; a
-    // best-effort failure leaves the previous (blocking) behavior.
+    // best-effort failure leaves the previous (blocking) behavior. NOTE: on
+    // Windows named pipes this returns ErrorKind::Unsupported (no idle bound),
+    // which is acceptable — clients send a frame immediately on connect.
     let _ = stream.set_recv_timeout(Some(IPC_IDLE_TIMEOUT));
 
     let mut reader = BufReader::new(stream);
@@ -703,6 +727,17 @@ fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
             continue;
         }
 
+        // `ai.*` frames from `paneflow-ai-hook` are fire-and-forget: the hook
+        // writes one frame and closes its pipe IMMEDIATELY, never reading a
+        // reply. Writing a JSON-RPC response back to that already-closed Windows
+        // named pipe makes `interprocess`'s overlapped write panic internally,
+        // and its `CannotUnwind` guard converts the panic to `abort()` —
+        // crashing the WHOLE app (confirmed with a live debugger: the fault was
+        // `handle_connection` → `write_all` → interprocess `CannotUnwind::drop`
+        // → `std::process::abort`). So suppress the reply for those frames; the
+        // hook never reads it. Request/response clients (`paneflow-ipc-client`)
+        // keep the pipe open to read, so their replies are written normally.
+        let mut suppress_reply = false;
         let response = match serde_json::from_str::<Value>(line) {
             Ok(req) => {
                 let id = req.get("id").cloned().unwrap_or(Value::Null);
@@ -712,6 +747,20 @@ fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
                     .unwrap_or("")
                     .to_string();
                 let params = req.get("params").cloned().unwrap_or(json!({}));
+
+                // Hook-chain diagnostic: confirm the IPC server received the
+                // lifecycle frame at all (vs. the hook never connecting). Only
+                // `ai.*` frames drive the sidebar status, so scope the log to
+                // them to keep the trace readable. No-op unless PANEFLOW_HOOK_LOG.
+                if method.starts_with("ai.") {
+                    suppress_reply = true;
+                    crate::ai_hooks::hook_diag(&format!(
+                        "ipc server received {method} (tool={:?} pid={:?} ws={:?})",
+                        params.get("tool"),
+                        params.get("pid"),
+                        params.get("workspace_id"),
+                    ));
+                }
 
                 // Handle stateless methods directly on the socket thread
                 match method.as_str() {
@@ -763,11 +812,28 @@ fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
             }
         };
 
-        let mut response_str = serde_json::to_string(&response).unwrap_or_default();
-        response_str.push('\n');
-        if writer.write_all(response_str.as_bytes()).is_err() {
-            break;
+        // Skip the reply for fire-and-forget `ai.*` frames (see `suppress_reply`
+        // above): the hook has already closed its pipe, and writing to it aborts
+        // the process inside `interprocess`. Other methods reply normally.
+        if !suppress_reply {
+            let mut response_str = serde_json::to_string(&response).unwrap_or_default();
+            response_str.push('\n');
+            if writer.write_all(response_str.as_bytes()).is_err() {
+                break;
+            }
         }
+
+        // Windows: serve exactly ONE request per connection. Every paneflow
+        // client closes after a single exchange — `paneflow-ai-hook` is
+        // fire-and-forget (writes one frame, closes immediately without reading
+        // the reply), and `paneflow-ipc-client` does one request/response then
+        // drops the stream. Looping back to a SECOND read on a now peer-closed
+        // Windows named pipe also aborts the ENTIRE process inside `interprocess`
+        // (STATUS_STACK_BUFFER_OVERRUN 0xC0000409 — the read `__fastfail`s
+        // instead of returning EOF; confirmed with a live debugger). Unix has no
+        // such abort (EOF is returned cleanly), so it keeps the multi-request loop.
+        #[cfg(windows)]
+        break;
     }
 }
 

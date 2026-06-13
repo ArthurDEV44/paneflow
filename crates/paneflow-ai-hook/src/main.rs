@@ -118,7 +118,21 @@ pub fn send_frame(socket_path: &Path, frame: &serde_json::Value) -> std::io::Res
     // write — beyond it `dispatch` turns the error into a silent exit 0, which
     // is the PRD's "fail silent, never break the session" contract (a bounded
     // failure is strictly better than an unbounded hang).
-    stream.set_send_timeout(Some(HOOK_IPC_TIMEOUT))?;
+    //
+    // BEST-EFFORT on purpose: Windows named pipes do not support I/O timeouts
+    // (`interprocess` returns `ErrorKind::Unsupported`). The `?` here used to
+    // bail BEFORE the write on every Windows hook invocation, so NO `ai.*`
+    // frame was ever delivered and the sidebar agent status silently never
+    // updated on Windows (it worked on Unix domain sockets, which accept the
+    // timeout). Tolerate the Unsupported case and proceed unbounded — the peer
+    // is the same-UID local PaneFlow and the payload is a sub-kilobyte frame,
+    // so an unbounded write is an acceptable trade vs. dropping the frame. Any
+    // other error (a genuinely broken stream) still propagates.
+    if let Err(e) = stream.set_send_timeout(Some(HOOK_IPC_TIMEOUT)) {
+        if e.kind() != std::io::ErrorKind::Unsupported {
+            return Err(e);
+        }
+    }
 
     let mut payload = serde_json::to_vec(frame)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -380,11 +394,14 @@ fn diagnose_to(msg: &str, log_path: Option<&Path>) {
     let Some(log_path) = log_path else {
         return;
     };
+    // One atomic append (whole line incl. newline): app/shim/ai-hook write the
+    // same file concurrently, and a per-argument `writeln!` tears under that.
+    let line = format!("paneflow-ai-hook: {msg}\n");
     let _ = OpenOptions::new()
         .append(true)
         .create(true)
         .open(log_path)
-        .and_then(|mut f| writeln!(f, "paneflow-ai-hook: {msg}"));
+        .and_then(|mut f| f.write_all(line.as_bytes()));
 }
 
 // ---------------------------------------------------------------------------

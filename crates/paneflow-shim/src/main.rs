@@ -33,6 +33,7 @@
 
 use std::env;
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -47,6 +48,30 @@ use hooks::*;
 // ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
+
+/// Opt-in diagnostic logging for the sidebar-status hook chain. Mirrors
+/// `paneflow-ai-hook`'s `diagnose()`: appends one line to `$PANEFLOW_HOOK_LOG`
+/// when set and non-empty, a silent no-op otherwise. Deliberately NOT stderr —
+/// the shim sits in front of the agent's TUI and stderr noise would corrupt
+/// it (and Claude Code surfaces hook stderr in its UI). The app, shim, agent,
+/// and ai-hook all honour the same env var, so one file captures the whole
+/// pipeline and shows exactly where the chain stops on Windows.
+fn diagnose(msg: &str) {
+    let Some(path) = env::var_os("PANEFLOW_HOOK_LOG") else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    // One atomic append (whole line incl. newline) so concurrent writers
+    // (app, shim, ai-hook) don't interleave or drop lines.
+    let line = format!("paneflow-shim[{}]: {msg}\n", std::process::id());
+    let _ = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&path)
+        .and_then(|mut f| f.write_all(line.as_bytes()));
+}
 
 fn main() -> ExitCode {
     let Some(tool) = detect_tool() else {
@@ -78,6 +103,20 @@ fn main() -> ExitCode {
     // tool with no hook integration yet (the shim still provides the
     // universal `ai.exit`/`ai.session_end` lifecycle below).
     let _hook_guard = install_hook_guard(tool);
+    // The single most important diagnostic: did hook config actually land?
+    // `None` here (with `ipc_reachable=true`) means a real install failure;
+    // `None` with `ipc_reachable=false` means the reachability gate rejected
+    // us (the Windows named-pipe regression). `installed` means the agent
+    // will fire `paneflow-ai-hook` and the sidebar should update.
+    diagnose(&format!(
+        "install_hook_guard({tool}) = {}; ipc_reachable = {}",
+        if _hook_guard.is_some() {
+            "installed"
+        } else {
+            "None (skipped)"
+        },
+        paneflow_ipc_reachable(),
+    ));
 
     let args: Vec<OsString> = env::args_os().skip(1).collect();
 
@@ -147,6 +186,21 @@ fn install_hook_guard(tool: &str) -> Option<ToolHookGuard> {
         "claude" => HookConfigGuard::install().map(ToolHookGuard::Claude),
         #[cfg(unix)]
         "codex" => CodexHookConfigGuard::install().map(ToolHookGuard::Codex),
+        // Windows: Codex now supports hooks (June 2026) using the SAME
+        // matcher-group `hooks.json` format and event names as Claude — and
+        // with NO `config.toml` feature flag — so ride the generic managed
+        // guard over `.codex/hooks.json`. This gives INTERACTIVE Codex sidebar
+        // status on Windows (the `codex exec` JSONL tee below only covered the
+        // non-interactive case). See `merge_codex_hooks_win`.
+        #[cfg(not(unix))]
+        "codex" => ManagedHookConfigGuard::install_in_cwd(
+            ".codex",
+            "hooks.json",
+            "Codex",
+            merge_codex_hooks_win,
+            remove_codex_hooks_win,
+        )
+        .map(ToolHookGuard::Managed),
         // Claude-Code-compatible clones: same settings.local.json format,
         // project-local dir, different event coverage.
         "codebuddy" => ManagedHookConfigGuard::install_in_cwd(

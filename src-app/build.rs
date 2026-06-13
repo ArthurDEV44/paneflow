@@ -131,6 +131,19 @@ fn main() {
         "cargo:rerun-if-changed={}",
         workspace_root.join("Cargo.toml").display()
     );
+    // Explicit per-FILE watches for the shim's `include_str!`'d plugin assets.
+    // A directory `rerun-if-changed` only catches add/remove/rename (the dir
+    // mtime), NOT a content edit of a nested file on Windows — so without these
+    // an edited `*-paneflow-status.ts` would silently not be re-embedded.
+    for asset in [
+        "crates/paneflow-shim/assets/opencode-paneflow-status.ts",
+        "crates/paneflow-shim/assets/pi-paneflow-status.ts",
+    ] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            workspace_root.join(asset).display()
+        );
+    }
 
     let skip_nested_build = std::env::var_os("PANEFLOW_SKIP_EMBED_BUILD").is_some();
     if !skip_nested_build {

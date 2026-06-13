@@ -1,24 +1,43 @@
 // Paneflow status bridge for Pi — INSTALLED AND REMOVED AUTOMATICALLY by
-// paneflow-shim around each `pi` session started inside a Paneflow
-// terminal. Safe to delete; do not edit (changes are overwritten).
+// paneflow-shim around each `pi` session started inside a Paneflow terminal.
+// Safe to delete; do not edit (changes are overwritten).
 //
-// Forwards lifecycle events to the Paneflow sidebar by invoking the
-// `paneflow-ai-hook` binary (on PATH inside Paneflow PTYs). Inert anywhere
-// else: PANEFLOW_SOCKET_PATH is absent there, so every handler returns
-// immediately and Pi behaves as if this extension did not exist.
+// Reports lifecycle to the Paneflow sidebar by connecting to Paneflow's IPC
+// endpoint (PANEFLOW_SOCKET_PATH) and writing a single JSON-RPC frame, then
+// closing — NO `paneflow-ai-hook` subprocess. On Windows, repeatedly spawning
+// `paneflow-ai-hook.exe` from the agent fails to start (0xC0000142) and pops
+// error dialogs; a direct socket write avoids all of that. Inert outside a
+// Paneflow PTY (the env vars are absent there).
+
+import net from "node:net";
 
 export default function (pi) {
-  const fire = (event) => {
-    if (!process.env["PANEFLOW_SOCKET_PATH"]) return;
+  const send = (method, params) => {
+    const sock = process.env["PANEFLOW_SOCKET_PATH"];
+    const wsId = process.env["PANEFLOW_WORKSPACE_ID"];
+    if (!sock || !wsId) return;
     try {
-      // Fire-and-forget: never block the agent loop on status reporting.
-      pi.exec("paneflow-ai-hook", [event]).catch(() => {});
+      const p = {
+        workspace_id: Number(wsId),
+        tool: "pi",
+        pid: Number(process.env["PANEFLOW_AI_PID"] || process.pid),
+        ...(params ?? {}),
+      };
+      const sid = process.env["PANEFLOW_SURFACE_ID"];
+      if (sid) p.surface_id = Number(sid);
+      const frame =
+        JSON.stringify({ jsonrpc: "2.0", method, params: p, id: 1 }) + "\n";
+      const conn = net.connect(sock);
+      conn.on("error", () => {});
+      conn.on("connect", () => {
+        conn.end(frame);
+      });
     } catch {
       // Status reporting must never break the session.
     }
   };
-  pi.on("agent_start", () => fire("UserPromptSubmit"));
-  pi.on("agent_end", () => fire("Stop"));
-  pi.on("tool_execution_start", () => fire("PreToolUse"));
-  pi.on("tool_execution_end", () => fire("PostToolUse"));
+  pi.on("agent_start", () => send("ai.prompt_submit", { hook_payload: {} }));
+  pi.on("agent_end", () => send("ai.stop", { hook_payload: {} }));
+  pi.on("tool_execution_start", () => send("ai.tool_use", { hook_payload: {} }));
+  pi.on("tool_execution_end", () => send("ai.tool_use", { hook_payload: {} }));
 }
