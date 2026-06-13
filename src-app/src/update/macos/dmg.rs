@@ -20,8 +20,11 @@
 //!      rolled back so `/Applications/PaneFlow.app` never disappears.
 //!   7. `hdiutil detach <mount>` — run unconditionally (RAII guard) so a
 //!      mid-flow error still cleans up the mounted volume.
-//!   8. Return `/Applications/PaneFlow.app/Contents/MacOS/paneflow` for
-//!      `cx.set_restart_path()`.
+//!   8. Return the `.app` bundle path for `cx.set_restart_path()`. GPUI's
+//!      macOS `restart()` runs `open "<path>"`, which relaunches a *bundle*
+//!      but NOT a bare Mach-O — so it must receive `PaneFlow.app`, not the
+//!      inner `Contents/MacOS/paneflow`. Mirrors Zed returning `Ok(None)`,
+//!      which falls back to the `NSBundle.bundlePath` (the `.app`).
 //!
 //! **Cross-platform compile.** This module is built on every target so
 //! the enclosing crate is a single compile-closure (no cfg churn in
@@ -67,17 +70,30 @@ pub fn install(asset_url: &str, bundle_path: &Path) -> Result<PathBuf> {
         .context("HOME environment variable is not set")?;
 
     if !is_expected_bundle_location(bundle_path, &home) {
-        return Err(anyhow::Error::new(UpdateError::InstallDeclined {
-            message: format!(
+        // Distinguish App Translocation (running quarantined from ~/Downloads)
+        // from a genuine odd install location, so the user gets the actionable
+        // "move it to /Applications" hint instead of a generic error.
+        let message = if is_translocated_path(bundle_path) {
+            format!(
+                "PaneFlow is running translocated from a quarantine sandbox ({}), so in-app updates are disabled. Move PaneFlow.app into /Applications (drag it there in Finder) and reopen it.",
+                bundle_path.display()
+            )
+        } else {
+            format!(
                 "PaneFlow is installed at an unexpected location ({}); reinstall from the DMG into /Applications or ~/Applications to enable in-app updates.",
                 bundle_path.display()
-            ),
-        }));
+            )
+        };
+        return Err(anyhow::Error::new(UpdateError::InstallDeclined { message }));
     }
 
     let cache_dir = home.join(".cache").join("paneflow");
     install_in(asset_url, bundle_path, &cache_dir, &HdiutilProcessRunner)?;
-    Ok(bundle_path.join("Contents").join("MacOS").join("paneflow"))
+    // Return the `.app` bundle itself, NOT the inner Mach-O. GPUI's macOS
+    // `restart()` does `open "<path>"`; `open` relaunches a bundle but treats a
+    // bare executable as a file to open — so passing the Mach-O left the old
+    // process dead and the new one never started after a successful update.
+    Ok(bundle_path.to_path_buf())
 }
 
 /// True when `bundle_path` sits directly under `/Applications` or
@@ -88,6 +104,20 @@ fn is_expected_bundle_location(bundle_path: &Path, home: &Path) -> bool {
         return false;
     };
     parent == Path::new("/Applications") || parent == home.join("Applications")
+}
+
+/// True when `path` is an App Translocation / quarantine-sandbox path. macOS
+/// runs a quarantined app (e.g. launched straight from `~/Downloads`) from a
+/// randomized read-only mount under
+/// `/private/var/folders/.../AppTranslocation/...` rather than its real
+/// location. `current_exe()` reports that translocated path (unlike
+/// `NSBundle.bundlePath`, which the OS de-translocates), so the updater cannot
+/// find — let alone replace — the real bundle. Detecting it lets `install`
+/// surface "move the app to /Applications" instead of a generic error. Pure
+/// string logic, unit-tested on every platform.
+fn is_translocated_path(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    s.contains("/AppTranslocation/") || s.contains("/var/folders/")
 }
 
 /// Paneflow's Apple Developer **Team ID** (project_macos_signing, populated
@@ -209,9 +239,12 @@ fn install_in(
     // bytes. cfg(macos) so the Linux/Windows compile-closure and the
     // platform-neutral copy/swap unit tests stay free of `codesign`/`spctl`.
     #[cfg(target_os = "macos")]
-    if let Err(e) = verify_macos_bundle(&mounted.join("PaneFlow.app")) {
-        let _ = std::fs::remove_file(&dmg);
-        return Err(e);
+    {
+        let bundle_name = bundle_file_name(install_dir)?;
+        if let Err(e) = verify_macos_bundle(&mounted.join(bundle_name)) {
+            let _ = std::fs::remove_file(&dmg);
+            return Err(e);
+        }
     }
 
     let swap_result = copy_and_swap(&mounted, install_dir);
@@ -301,10 +334,11 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
 /// Split out so the testable core can inject a fake mount directory
 /// (the copy/rename half is filesystem-only and doesn't need hdiutil).
 fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
-    let source_bundle = mounted_volume.join("PaneFlow.app");
+    let source_bundle = mounted_volume.join(bundle_file_name(install_dir)?);
     if !source_bundle.exists() {
         bail!(
-            "DMG did not contain a PaneFlow.app bundle at {} — archive appears malformed.",
+            "DMG did not contain the {} bundle at {} — archive appears malformed.",
+            bundle_file_name(install_dir)?.to_string_lossy(),
             source_bundle.display()
         );
     }
@@ -333,11 +367,13 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
         );
     }
 
-    // `cp -R` preserves bundle structure, symlinks, and extended
-    // attributes (important — `com.apple.quarantine` flag removal etc.).
+    // `cp -R` preserves bundle structure, symlinks, and extended attributes —
+    // notably the code-signed `_CodeSignature` tree (a hand-rolled recursive
+    // copy risks corrupting it). NOTE: preserving xattrs also carries any
+    // `com.apple.quarantine` flag through to the install, which is why
+    // `strip_quarantine` runs after the swap below.
     // Using a subprocess rather than `fs_extra` / hand-rolled recursion
-    // matches the macOS convention and sidesteps the xattr-copy corner
-    // cases (e.g. preserving the code-signed `_CodeSignature` tree).
+    // matches the macOS convention and sidesteps the xattr-copy corner cases.
     let cp_out = Command::new("cp")
         .arg("-R")
         .arg(&source_bundle)
@@ -362,6 +398,17 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
             &stderr,
             &format!("copy {} → {}", source_bundle.display(), new_dir.display()),
         ));
+    }
+
+    // #9: re-verify the COPIED bundle, not just the read-only source on the
+    // DMG. A `cp -R` that exits 0 yet produced a corrupt tree would otherwise
+    // promote an unverified (possibly invalidly-signed) bundle. cfg(macos) so
+    // the cross-platform compile-closure and the filesystem-only swap tests
+    // stay free of codesign/spctl.
+    #[cfg(target_os = "macos")]
+    if let Err(e) = verify_macos_bundle(&new_dir) {
+        let _ = std::fs::remove_dir_all(&new_dir);
+        return Err(e);
     }
 
     // Atomic swap: two renames. The window where `install_dir` doesn't
@@ -425,6 +472,13 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
         );
     }
 
+    // #7: strip com.apple.quarantine from the freshly promoted bundle. `cp -R`
+    // preserved any flag the DMG (or a file in it) carried, which could prompt
+    // Gatekeeper on first launch. Best-effort — a notarized bundle launches
+    // without it regardless.
+    #[cfg(target_os = "macos")]
+    strip_quarantine(install_dir);
+
     Ok(())
 }
 
@@ -440,6 +494,34 @@ fn staging_dirs(install_dir: &Path) -> Result<(PathBuf, PathBuf)> {
         parent.join(format!("{name}.old")),
         parent.join(format!("{name}.new")),
     ))
+}
+
+/// The `.app` filename to look for inside the mounted DMG, derived from the
+/// install target. Couples the source-bundle name and the destination to a
+/// SINGLE invariant instead of two hardcoded `"PaneFlow.app"` literals that
+/// could silently drift apart. (Zed derives the same from the running bundle.)
+fn bundle_file_name(install_dir: &Path) -> Result<&std::ffi::OsStr> {
+    install_dir
+        .file_name()
+        .context("install_dir has no file name — cannot locate the bundle inside the DMG")
+}
+
+/// Best-effort removal of `com.apple.quarantine` from a freshly promoted
+/// bundle. `cp -R` PRESERVES extended attributes, so a quarantined source
+/// would yield a quarantined install and Gatekeeper could prompt on first
+/// launch. A notarized bundle is trusted regardless, and a missing attribute
+/// or an `xattr` failure must not fail an otherwise-successful update — hence
+/// the ignored result.
+#[cfg(target_os = "macos")]
+fn strip_quarantine(bundle: &Path) {
+    let _ = Command::new("xattr")
+        .arg("-dr")
+        .arg("com.apple.quarantine")
+        .arg(bundle)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 fn append_suffix(path: &Path, suffix: &str) -> Result<PathBuf> {
@@ -519,8 +601,13 @@ impl Hdiutil for HdiutilProcessRunner {
     fn detach(&self, mount: &Path) {
         // Best-effort. A still-mounted volume blocks /private/tmp
         // cleanup for the next update but is not an install failure.
+        // `-force` ejects even if a file on the volume is still open (e.g. the
+        // `cp` we just ran briefly held one), matching Zed — without it a busy
+        // volume lingers and the next update's `attach` to the same mountpoint
+        // fails.
         let status = Command::new("hdiutil")
             .arg("detach")
+            .arg("-force")
             .arg(mount)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -561,6 +648,35 @@ mod tests {
         let (old, new) = staging_dirs(Path::new("/Applications/PaneFlow.app")).unwrap();
         assert_eq!(old, PathBuf::from("/Applications/PaneFlow.app.old"));
         assert_eq!(new, PathBuf::from("/Applications/PaneFlow.app.new"));
+    }
+
+    #[test]
+    fn is_translocated_path_detects_quarantine_sandbox() {
+        // The real install locations are NOT translocated.
+        assert!(!is_translocated_path(Path::new(
+            "/Applications/PaneFlow.app"
+        )));
+        assert!(!is_translocated_path(Path::new(
+            "/Users/x/Applications/PaneFlow.app"
+        )));
+        // App Translocation mounts the quarantined bundle under a randomized
+        // /private/var/folders/.../AppTranslocation/ path.
+        assert!(is_translocated_path(Path::new(
+            "/private/var/folders/ab/cd/T/AppTranslocation/UUID/d/PaneFlow.app"
+        )));
+        // Bare /var/folders (older layout / symlink-resolved) also flags.
+        assert!(is_translocated_path(Path::new(
+            "/var/folders/ab/cd/T/PaneFlow.app"
+        )));
+    }
+
+    #[test]
+    fn bundle_file_name_derives_from_install_dir() {
+        assert_eq!(
+            bundle_file_name(Path::new("/Applications/PaneFlow.app")).unwrap(),
+            std::ffi::OsStr::new("PaneFlow.app")
+        );
+        assert!(bundle_file_name(Path::new("/")).is_err());
     }
 
     #[test]
