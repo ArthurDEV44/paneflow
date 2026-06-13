@@ -27,9 +27,9 @@ use crate::settings::components::{
     hairline, section_header, setting_card, setting_text, toggle_pill,
 };
 
-use super::super::window::{SettingsWindow, TerminalDropdown};
+use crate::{PaneFlowApp, TerminalDropdown};
 
-impl SettingsWindow {
+impl PaneFlowApp {
     pub(crate) fn render_terminal_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // US-016: read the cached config (no per-frame `load_config()`).
         let config = &self.cached_config;

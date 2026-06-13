@@ -1,77 +1,18 @@
-//! Settings window — separate GPUI window for app-wide configuration
-//! (keyboard shortcuts, theme, font).
+//! Embedded settings — Codex-style settings rendered *inside* the main window
+//! (grouped nav rail + content panel) rather than a separate GPUI window.
 //!
 //! Layout:
-//! - `window`   — `SettingsWindow` struct + lifecycle + `Render` shell
-//! - `keyboard` — key-down handler + shortcut capture
-//! - `tabs`     — per-panel bodies (`shortcuts`, `appearance`)
+//! - `chrome`     — the nav rail (`render_settings_nav`) + content panel
+//!   (`render_settings_content_panel`) + section dispatch, all on `PaneFlowApp`.
+//! - `components` — shared UI primitives (cards, toggles, section headers).
+//! - `tabs`       — per-section bodies (`general`, `appearance`, `shortcuts`,
+//!   `terminal`, `ai_agent`, `mcp`), each `impl PaneFlowApp`.
 //!
-//! The `open_or_focus` entry point is called from `PaneFlowApp` and either
-//! focuses the existing settings window or opens a new one.
+//! The Settings button (`PaneFlowApp::open_settings_window`, in `app::settings`)
+//! sets `settings_section = Some(General)`; `main.rs` then swaps the left rail
+//! for the nav and the content area for the panel. There is no standalone
+//! settings window anymore.
 
+pub mod chrome;
 pub mod components;
-pub mod keyboard;
-pub mod sidebar;
 pub mod tabs;
-pub mod window;
-
-pub use window::SettingsWindow;
-
-use gpui::{
-    AppContext, Context, Window, WindowBounds, WindowDecorations, WindowOptions, point, px, size,
-};
-
-/// Open the settings window, or activate + focus the existing one.
-pub fn open_or_focus<T>(_window: &mut Window, cx: &mut Context<T>) {
-    if let Some(existing) = cx
-        .windows()
-        .into_iter()
-        .find_map(|window| window.downcast::<SettingsWindow>())
-    {
-        existing
-            .update(cx, |settings_window, window, cx| {
-                window.activate_window();
-                settings_window.settings_focus.focus(window, cx);
-            })
-            .ok();
-        return;
-    }
-
-    let config = paneflow_config::loader::load_config();
-    let decorations = match config.window_decorations.as_deref() {
-        Some("server") => WindowDecorations::Server,
-        Some("client") | None => WindowDecorations::Client,
-        Some(_) => WindowDecorations::Client,
-    };
-
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(980.), px(720.)), cx)),
-        window_min_size: Some(size(px(900.), px(520.))),
-        window_decorations: Some(decorations),
-        titlebar: Some(gpui::TitlebarOptions {
-            title: Some("Settings".into()),
-            appears_transparent: true,
-            // macOS: place the native traffic lights at the same (12,12) inset
-            // as the main window (main.rs) so both windows' caption buttons
-            // line up and clear the titlebar content. Ignored on platforms that
-            // draw their own controls.
-            traffic_light_position: Some(point(px(12.0), px(12.0))),
-        }),
-        app_id: Some("paneflow".into()),
-        focus: true,
-        show: true,
-        ..Default::default()
-    };
-
-    if let Ok(settings_window) = cx.open_window(options, |window, cx| {
-        let settings_window = cx.new(SettingsWindow::new);
-        let focus = settings_window.read(cx).settings_focus.clone();
-        focus.focus(window, cx);
-        settings_window
-    }) {
-        let _ = settings_window.update(cx, |settings_window, window, cx| {
-            window.activate_window();
-            settings_window.settings_focus.focus(window, cx);
-        });
-    }
-}

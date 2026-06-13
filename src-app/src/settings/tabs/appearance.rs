@@ -9,13 +9,12 @@ use gpui::{
     deferred, div, prelude::*, px, svg,
 };
 
+use crate::PaneFlowApp;
 use crate::settings::components::{
     secondary_button, section_header_with_action, setting_card, setting_text,
 };
 
-use super::super::window::SettingsWindow;
-
-impl SettingsWindow {
+impl PaneFlowApp {
     pub(crate) fn render_appearance_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // US-016: read the cached config (no per-frame `load_config()`).
         let config = &self.cached_config;
@@ -37,7 +36,7 @@ impl SettingsWindow {
             }),
         );
 
-        let header = section_header_with_action(ui, "Appearance", reset_btn);
+        let header = section_header_with_action(ui, "Font", reset_btn);
 
         // Setting row: font family label/description on the left,
         // compact dropdown trigger on the right.
