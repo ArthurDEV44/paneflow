@@ -2028,6 +2028,9 @@ pub(crate) fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> (ExitC
 #[cfg(test)]
 mod hooks_tests {
     use super::display_hook_program;
+    // Only the `#[cfg(windows)]` round-trip test below references this; gating
+    // the import keeps the non-Windows test build warning-free under `-D warnings`.
+    #[cfg(windows)]
     use super::is_paneflow_hook_command;
     use super::reachable_from_socket_env;
     use super::settings_has_managed_hook;
