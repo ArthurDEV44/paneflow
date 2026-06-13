@@ -971,7 +971,12 @@ pub(crate) fn system_package_update_command(
             format!("sudo apt update && sudo apt install paneflow={version}-1")
         }
         Some(update::install_method::PackageManager::Dnf) => {
-            format!("sudo dnf upgrade paneflow-{version}")
+            // Match the validated pkexec argv (`dnf --refresh install …`): plain
+            // `dnf upgrade <pkg>-<ver>` hits "No match for argument" right after
+            // a publish because the cached metadata predates the new version.
+            // `--refresh install` forces a metadata sync and installs the exact
+            // version (dnf treats install of a higher version as an upgrade).
+            format!("sudo dnf --refresh install paneflow-{version}")
         }
         // US-004: `rpm-ostree upgrade` takes no package argument — it
         // rebases the whole deployment. Version string is intentionally
