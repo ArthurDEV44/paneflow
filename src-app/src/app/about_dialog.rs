@@ -1,45 +1,28 @@
-//! About Paneflow — modal shown from the Settings popover's "About" action.
-//!
-//! Codex-minimal redesign: one quiet card with the identity block (logo,
-//! name, tagline), a single muted meta line, and a quiet GitHub link. No
-//! inner boxes or borders — hierarchy comes from typography and spacing
-//! (the OpenAI "Space" principle). Dismissal is the top-right ✕ or the
-//! backdrop click; no redundant primary "Close" button.
-//!
-//! Behaviour mirrors `custom_buttons_modal`: backdrop overlay rendered via
-//! `deferred().with_priority(10)`, click-outside to dismiss.
+//! About Paneflow modal, styled as a compact native application dialog.
 
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ObjectFit,
-    ParentElement, Styled, deferred, div, hsla, img, prelude::*, px, svg,
+    ParentElement, Styled, deferred, div, hsla, img, prelude::*, px, rgb, svg,
 };
 
 use crate::PaneFlowApp;
-
-const REPO_URL: &str = "https://github.com/ArthurDEV44/paneflow";
 
 impl PaneFlowApp {
     pub(crate) fn render_about_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
         let ui = crate::theme::ui_colors();
         let version = env!("CARGO_PKG_VERSION");
 
-        // ── Close ✕, floating in the card's top-right corner ──
         let close_x = div()
             .id("about-close-x")
-            .absolute()
-            .top(px(10.))
-            .right(px(10.))
+            .flex_none()
             .flex()
             .items_center()
             .justify_center()
-            .w(px(24.))
-            .h(px(24.))
-            .rounded(px(5.))
+            .w(px(30.))
+            .h(px(30.))
+            .rounded(px(7.))
             .cursor_pointer()
-            .hover(|s| {
-                let ui = crate::theme::ui_colors();
-                s.bg(ui.subtle)
-            })
+            .hover(|s| s.bg(rgb(0x3a3a3c)))
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.show_about_dialog = false;
                 cx.notify();
@@ -47,120 +30,136 @@ impl PaneFlowApp {
             }))
             .child(
                 svg()
-                    .size(px(11.))
+                    .size(px(12.))
                     .flex_none()
                     .path("icons/close.svg")
-                    .text_color(ui.muted),
+                    .text_color(ui.text),
             );
 
-        // ── Identity: logo, name + version inline, tagline ──
-        // The PNG carries its own shape + rounded edges — no tile around it.
-        let logo_mark = img("icons/paneflow.png")
-            .w(px(56.))
-            .h(px(56.))
-            .object_fit(ObjectFit::Contain);
-
-        let identity = div()
+        let header = div()
+            .h(px(32.))
+            .w_full()
+            .flex_none()
             .flex()
-            .flex_col()
+            .flex_row()
             .items_center()
-            .gap(px(4.))
+            .justify_between()
+            .pl(px(10.))
+            .pr(px(2.))
+            .bg(rgb(0x222228))
+            .border_b_1()
+            .border_color(rgb(0x343438))
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .items_baseline()
+                    .items_center()
                     .gap(px(7.))
                     .child(
-                        div()
-                            .text_color(ui.text)
-                            .text_size(px(18.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("Paneflow"),
+                        img("icons/paneflow.png")
+                            .w(px(16.))
+                            .h(px(16.))
+                            .object_fit(ObjectFit::Contain),
                     )
                     .child(
-                        // Quiet inline version — no chip, no border (the old
-                        // bordered badge fought the name for attention).
                         div()
                             .text_size(px(12.))
-                            .text_color(ui.muted)
-                            .child(format!("v{version}")),
+                            .font_weight(gpui::FontWeight::NORMAL)
+                            .text_color(ui.text)
+                            .child("About Paneflow"),
                     ),
             )
-            .child(
-                div()
-                    .text_color(ui.muted)
-                    .text_size(px(12.))
-                    .child("Run coding agents in parallel"),
-            );
+            .child(close_x);
 
-        // ── Single muted meta line — replaces the old bordered 3-row table.
-        // Pure metadata: it must read in one glance and never compete with
-        // the identity block.
-        let meta = div()
-            .text_size(px(11.))
-            .text_color(ui.muted.opacity(0.8))
-            .child("Rust + GPUI · GPL-3.0-or-later · Arthur Jean");
-
-        // ── Quiet GitHub link (icon + label, hover fill — no border) ──
-        let repo_btn = div()
-            .id("about-repo")
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.))
-            .px(px(10.))
-            .py(px(5.))
-            .rounded(px(6.))
-            .cursor_pointer()
-            .text_size(px(12.))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(ui.muted)
-            .hover(|s| {
-                let ui = crate::theme::ui_colors();
-                s.bg(ui.subtle).text_color(ui.text)
-            })
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                if let Err(err) = open::that(REPO_URL) {
-                    log::warn!("about: open repo URL failed: {err}");
-                    this.show_toast(format!("Could not open URL: {err}"), cx);
-                }
-                cx.stop_propagation();
-            }))
-            .child(
-                svg()
-                    .size(px(12.))
-                    .flex_none()
-                    .path("icons/brand-git.svg")
-                    .text_color(ui.muted),
-            )
-            .child("View on GitHub");
-
-        // ── Assembled card — generous breathing room, no inner boxes ──
-        let card = div()
-            .id("about-dialog")
-            .occlude()
-            .relative()
+        let body = div()
+            .w_full()
+            .h(px(225.))
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(16.))
-            .w(px(320.))
-            .px(px(24.))
-            .pt(px(36.))
-            .pb(px(24.))
-            .bg(ui.overlay)
+            .justify_center()
+            .bg(rgb(0x202020))
+            .child(
+                img("icons/paneflow.png")
+                    .w(px(64.))
+                    .h(px(64.))
+                    .object_fit(ObjectFit::Contain),
+            )
+            .child(
+                div()
+                    .mt(px(14.))
+                    .text_color(ui.text)
+                    .text_size(px(16.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("Paneflow"),
+            )
+            .child(
+                div()
+                    .mt(px(20.))
+                    .text_color(ui.muted)
+                    .text_size(px(12.))
+                    .child(format!("Version {version}")),
+            )
+            .child(
+                div()
+                    .mt(px(14.))
+                    .text_color(ui.muted)
+                    .text_size(px(12.))
+                    .child("© Arthur Jean"),
+            );
+
+        let ok_button = div()
+            .id("about-ok")
+            .w(px(76.))
+            .h(px(28.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(3.))
             .border_1()
-            .border_color(ui.border)
-            .rounded(px(12.))
+            .border_color(rgb(0x66666a))
+            .bg(rgb(0x2d2d2f))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .text_color(ui.text)
+            .hover(|s| s.bg(rgb(0x3a3a3c)))
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.show_about_dialog = false;
+                cx.notify();
+                cx.stop_propagation();
+            }))
+            .child("OK");
+
+        let footer = div()
+            .w_full()
+            .h(px(56.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_end()
+            .px(px(14.))
+            .bg(rgb(0x252525))
+            .border_t_1()
+            .border_color(rgb(0x343438))
+            .child(ok_button);
+
+        let dialog = div()
+            .id("about-dialog")
+            .occlude()
+            .w(px(382.))
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .bg(rgb(0x202020))
+            .border_1()
+            .border_color(rgb(0x3a3a3c))
+            .rounded(px(10.))
             .shadow_lg()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            .child(close_x)
-            .child(logo_mark)
-            .child(identity)
-            .child(meta)
-            .child(repo_btn);
+            .child(header)
+            .child(body)
+            .child(footer);
 
         deferred(
             div()
@@ -172,12 +171,15 @@ impl PaneFlowApp {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(hsla(0., 0., 0., 0.5))
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.show_about_dialog = false;
-                    cx.notify();
-                }))
-                .child(card),
+                .bg(hsla(0., 0., 0., 0.55))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.show_about_dialog = false;
+                        cx.notify();
+                    }),
+                )
+                .child(dialog),
         )
         .with_priority(10)
         .into_any_element()
