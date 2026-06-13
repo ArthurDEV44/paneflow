@@ -12,6 +12,12 @@ pub(crate) const SIDEBAR_WIDTH: f32 = 240.;
 
 /// Original solid PaneFlow chrome tint used while the window is inactive.
 const CHROME_INACTIVE_TINT: u32 = 0x141414;
+/// Linux-only: opacity of the neutral `#141414` veil applied over native blur
+/// while the window is active (see `cockpit_chrome_background`). Only referenced
+/// from the `#[cfg(target_os = "linux")]` branch, so gate the declaration too —
+/// otherwise it reads as dead code on the Windows/macOS builds.
+#[cfg(target_os = "linux")]
+const LINUX_CHROME_ACTIVE_OPACITY: f32 = 0.72;
 
 /// Source tint for selected and hovered sidebar tabs.
 const SIDEBAR_TAB_TINT: u32 = 0x30373c;
@@ -23,9 +29,10 @@ pub(crate) const SIDEBAR_TAB_CORNER_RADIUS: Pixels = px(9.);
 
 /// Native material used behind the main application window.
 ///
-/// GPUI provides acrylic/visual-effect blur on Windows and macOS. Linux keeps
-/// an opaque window because compositor blur support is not portable across
-/// Wayland and X11 environments.
+/// Windows delegates to GPUI's system backdrop support. On macOS PaneFlow
+/// installs a semantic AppKit sidebar material after the native window opens.
+/// Linux starts opaque and switches to a transparent surface only after the
+/// compositor advertises a supported blur protocol.
 pub(crate) fn window_background_appearance() -> WindowBackgroundAppearance {
     #[cfg(target_os = "windows")]
     {
@@ -38,7 +45,7 @@ pub(crate) fn window_background_appearance() -> WindowBackgroundAppearance {
 
     #[cfg(target_os = "macos")]
     {
-        WindowBackgroundAppearance::Blurred
+        WindowBackgroundAppearance::Transparent
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -79,28 +86,46 @@ fn windows_supports_system_backdrop() -> bool {
 
 /// Background used by the title bar and navigation rails.
 ///
-/// Inactive windows keep PaneFlow's original solid `#141414`. Active windows
-/// leave the chrome transparent so the subtler standard Mica material shows
-/// through without an application tint.
+/// Windows keeps PaneFlow's original solid `#141414` while inactive and leaves
+/// active chrome transparent for standard Mica. macOS always stays transparent
+/// so AppKit's semantic material can perform its native, subtler active/inactive
+/// transition. Linux applies a neutral `#141414` veil only when native blur is
+/// confirmed, keeping colorful wallpapers subtle and readable.
 pub(crate) fn cockpit_chrome_background(background: Hsla, is_window_active: bool) -> Hsla {
-    if cfg!(any(target_os = "windows", target_os = "macos")) {
-        if is_window_active {
+    if cfg!(target_os = "macos") {
+        return gpui::transparent_black();
+    } else if cfg!(target_os = "windows") {
+        return if is_window_active {
             gpui::transparent_black()
         } else {
             Hsla::from(gpui::rgb(CHROME_INACTIVE_TINT))
-        }
-    } else {
-        background
+        };
     }
+
+    #[cfg(target_os = "linux")]
+    if crate::window_chrome::linux_backdrop::native_blur_active() {
+        return if is_window_active {
+            Hsla::from(gpui::rgb(CHROME_INACTIVE_TINT)).opacity(LINUX_CHROME_ACTIVE_OPACITY)
+        } else {
+            Hsla::from(gpui::rgb(CHROME_INACTIVE_TINT))
+        };
+    }
+
+    background
 }
 
 /// Window-level backdrop behind the translucent chrome.
 pub(crate) fn cockpit_backdrop_background(background: Hsla) -> Hsla {
     if cfg!(any(target_os = "windows", target_os = "macos")) {
-        gpui::transparent_black()
-    } else {
-        background
+        return gpui::transparent_black();
     }
+
+    #[cfg(target_os = "linux")]
+    if crate::window_chrome::linux_backdrop::native_blur_active() {
+        return gpui::transparent_black();
+    }
+
+    background
 }
 
 /// Background for the selected tab in the CLI and Agents sidebars.

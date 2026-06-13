@@ -6001,6 +6001,7 @@ dependencies = [
  "anyhow",
  "base64",
  "clap",
+ "cocoa 0.26.0",
  "collections",
  "core-foundation 0.10.0",
  "core-text",
@@ -6022,6 +6023,7 @@ dependencies = [
  "minisign-verify",
  "notify 7.0.0",
  "notify-rust",
+ "objc",
  "open",
  "paneflow-acp",
  "paneflow-config",
@@ -6070,9 +6072,12 @@ dependencies = [
  "ui",
  "unicode-segmentation",
  "ureq",
+ "wayland-client",
+ "wayland-protocols",
  "which 8.0.2",
  "win32job",
  "windows-sys 0.59.0",
+ "x11rb",
 ]
 
 [[package]]

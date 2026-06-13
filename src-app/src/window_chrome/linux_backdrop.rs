@@ -1,0 +1,465 @@
+//! Native Linux compositor blur for PaneFlow's sidebar and title bar.
+//!
+//! Linux has no distribution-wide material API. Capability detection is done
+//! against the active display server: ext-background-effect-v1 on Wayland,
+//! GPUI's legacy KDE Wayland integration, then KWin's X11 property.
+
+use std::{
+    cell::RefCell,
+    ffi::c_void,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+use anyhow::{Context as _, Result, anyhow};
+use gpui::{Window, WindowBackgroundAppearance};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+
+static NATIVE_BLUR_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    static BACKDROP: RefCell<Option<LinuxBackdrop>> = const { RefCell::new(None) };
+}
+
+/// Whether PaneFlow can safely expose translucent application chrome.
+pub(crate) fn native_blur_active() -> bool {
+    NATIVE_BLUR_ACTIVE.load(Ordering::Relaxed)
+}
+
+/// Detects and installs the best native blur mechanism for the active session.
+pub(crate) fn apply_subtle_chrome_material(window: &mut Window) {
+    let backdrop = match LinuxBackdrop::new(window) {
+        Ok(backdrop) => backdrop,
+        Err(error) => {
+            log::warn!("Linux native blur initialization failed: {error:#}");
+            LinuxBackdrop::Unsupported
+        }
+    };
+
+    let active = backdrop.is_active();
+    NATIVE_BLUR_ACTIVE.store(active, Ordering::Relaxed);
+    window.set_background_appearance(if active {
+        backdrop.background_appearance()
+    } else {
+        WindowBackgroundAppearance::Opaque
+    });
+
+    BACKDROP.with(|slot| {
+        *slot.borrow_mut() = Some(backdrop);
+    });
+    refresh_blur_region(window);
+    window.refresh();
+}
+
+/// Refreshes compositor regions after resize and processes Wayland capability
+/// changes. The blur is confined to the sidebar plus title bar.
+pub(crate) fn refresh_blur_region(window: &mut Window) {
+    BACKDROP.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(backdrop) = slot.as_mut() else {
+            return;
+        };
+
+        if let Err(error) = backdrop.refresh(window) {
+            log::warn!("Could not refresh the Linux blur region: {error:#}");
+        }
+
+        let active = backdrop.is_active();
+        NATIVE_BLUR_ACTIVE.store(active, Ordering::Relaxed);
+        window.set_background_appearance(if active {
+            backdrop.background_appearance()
+        } else {
+            WindowBackgroundAppearance::Opaque
+        });
+    });
+}
+
+/// Releases guest Wayland/X11 resources before GPUI tears down its display.
+pub(crate) fn clear_subtle_chrome_material() {
+    BACKDROP.with(|slot| {
+        slot.borrow_mut().take();
+    });
+    NATIVE_BLUR_ACTIVE.store(false, Ordering::Relaxed);
+}
+
+enum LinuxBackdrop {
+    WaylandExt(WaylandExtBackdrop),
+    WaylandKde(WaylandGuest),
+    WaylandUnsupported(WaylandGuest),
+    X11Kde(X11Backdrop),
+    Unsupported,
+}
+
+impl LinuxBackdrop {
+    fn new(window: &Window) -> Result<Self> {
+        let window_handle = HasWindowHandle::window_handle(window)
+            .map_err(|error| anyhow!("GPUI did not expose a Linux window handle: {error:?}"))?;
+        let display_handle = HasDisplayHandle::display_handle(window)
+            .map_err(|error| anyhow!("GPUI did not expose a Linux display handle: {error:?}"))?;
+
+        match (window_handle.as_raw(), display_handle.as_raw()) {
+            (
+                RawWindowHandle::Wayland(window_handle),
+                RawDisplayHandle::Wayland(display_handle),
+            ) => setup_wayland(
+                window_handle.surface.as_ptr(),
+                display_handle.display.as_ptr(),
+            ),
+            (RawWindowHandle::Xcb(window_handle), RawDisplayHandle::Xcb(display_handle)) => {
+                let connection = display_handle
+                    .connection
+                    .ok_or_else(|| anyhow!("GPUI returned a null XCB connection"))?;
+                setup_x11(
+                    window,
+                    connection.as_ptr(),
+                    display_handle.screen,
+                    window_handle.window.get(),
+                )
+            }
+            _ => Ok(Self::Unsupported),
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        match self {
+            Self::WaylandExt(backdrop) => backdrop.guest.state.blur_supported,
+            Self::WaylandKde(_) | Self::X11Kde(_) => true,
+            Self::WaylandUnsupported(_) | Self::Unsupported => false,
+        }
+    }
+
+    fn background_appearance(&self) -> WindowBackgroundAppearance {
+        match self {
+            Self::WaylandKde(_) => WindowBackgroundAppearance::Blurred,
+            Self::WaylandExt(_) | Self::X11Kde(_) => WindowBackgroundAppearance::Transparent,
+            Self::WaylandUnsupported(_) | Self::Unsupported => WindowBackgroundAppearance::Opaque,
+        }
+    }
+
+    fn refresh(&mut self, window: &Window) -> Result<()> {
+        match self {
+            Self::WaylandExt(backdrop) => backdrop.refresh(window),
+            Self::X11Kde(backdrop) => backdrop.refresh(window),
+            Self::WaylandKde(guest) => {
+                guest.dispatch_pending()?;
+                Ok(())
+            }
+            Self::WaylandUnsupported(guest) => {
+                guest.dispatch_pending()?;
+                Ok(())
+            }
+            Self::Unsupported => Ok(()),
+        }
+    }
+}
+
+fn chrome_rectangles(window: &Window, scale: f32) -> Vec<[i32; 4]> {
+    let bounds = window.bounds().size;
+    let width = (f32::from(bounds.width) * scale).ceil().max(1.0) as i32;
+    let height = (f32::from(bounds.height) * scale).ceil().max(1.0) as i32;
+    let sidebar = (crate::SIDEBAR_WIDTH * scale)
+        .ceil()
+        .clamp(1.0, width as f32) as i32;
+    let title_bar = ((1.75 * f32::from(window.rem_size())).max(34.0) * scale)
+        .ceil()
+        .clamp(1.0, height as f32) as i32;
+
+    let mut rectangles = vec![[0, 0, sidebar, height]];
+    if sidebar < width {
+        rectangles.push([sidebar, 0, width - sidebar, title_bar]);
+    }
+    rectangles
+}
+
+use wayland_client::{
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop,
+    globals::{GlobalList, GlobalListContents, registry_queue_init},
+    protocol::{wl_compositor, wl_region, wl_registry, wl_surface},
+};
+use wayland_protocols::ext::background_effect::v1::client::{
+    ext_background_effect_manager_v1, ext_background_effect_surface_v1,
+};
+
+const KDE_WAYLAND_BLUR_INTERFACE: &str = "org_kde_kwin_blur_manager";
+
+struct WaylandDispatchState {
+    blur_supported: bool,
+}
+
+impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandDispatchState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_registry::WlRegistry,
+        _event: wl_registry::Event,
+        _data: &GlobalListContents,
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, ()>
+    for WaylandDispatchState
+{
+    fn event(
+        state: &mut Self,
+        _proxy: &ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1,
+        event: ext_background_effect_manager_v1::Event,
+        _data: &(),
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
+    ) {
+        if let ext_background_effect_manager_v1::Event::Capabilities { flags } = event {
+            state.blur_supported = matches!(
+                flags,
+                WEnum::Value(capabilities)
+                    if capabilities.contains(
+                        ext_background_effect_manager_v1::Capability::Blur
+                    )
+            );
+        }
+    }
+}
+
+delegate_noop!(WaylandDispatchState: ignore wl_compositor::WlCompositor);
+delegate_noop!(WaylandDispatchState: ignore wl_region::WlRegion);
+delegate_noop!(
+    WaylandDispatchState:
+    ignore ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1
+);
+
+struct WaylandGuest {
+    connection: Connection,
+    _globals: GlobalList,
+    event_queue: EventQueue<WaylandDispatchState>,
+    state: WaylandDispatchState,
+}
+
+impl WaylandGuest {
+    fn dispatch_pending(&mut self) -> Result<()> {
+        self.event_queue
+            .dispatch_pending(&mut self.state)
+            .context("Wayland background-effect dispatch failed")?;
+        Ok(())
+    }
+}
+
+struct WaylandExtBackdrop {
+    guest: WaylandGuest,
+    manager: ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1,
+    compositor: wl_compositor::WlCompositor,
+    effect: ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
+    last_rectangles: Vec<[i32; 4]>,
+}
+
+fn setup_wayland(surface_ptr: *mut c_void, display_ptr: *mut c_void) -> Result<LinuxBackdrop> {
+    let backend =
+        unsafe { wayland_client::backend::Backend::from_foreign_display(display_ptr.cast()) };
+    let connection = Connection::from_backend(backend);
+    let (globals, mut event_queue) = registry_queue_init::<WaylandDispatchState>(&connection)
+        .context("Could not read Wayland globals")?;
+    let queue = event_queue.handle();
+    let kde_available = globals.contents().with_list(|globals| {
+        globals
+            .iter()
+            .any(|global| global.interface == KDE_WAYLAND_BLUR_INTERFACE)
+    });
+
+    let mut state = WaylandDispatchState {
+        blur_supported: false,
+    };
+    let manager = match globals
+        .bind::<ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, _, _>(
+            &queue,
+            1..=1,
+            (),
+        ) {
+        Ok(manager) => manager,
+        Err(_) => {
+            let guest = WaylandGuest {
+                connection,
+                _globals: globals,
+                event_queue,
+                state,
+            };
+            return Ok(if kde_available {
+                LinuxBackdrop::WaylandKde(guest)
+            } else {
+                LinuxBackdrop::WaylandUnsupported(guest)
+            });
+        }
+    };
+
+    event_queue
+        .roundtrip(&mut state)
+        .context("Could not read Wayland background-effect capabilities")?;
+    if !state.blur_supported {
+        manager.destroy();
+        connection.flush().ok();
+        let guest = WaylandGuest {
+            connection,
+            _globals: globals,
+            event_queue,
+            state,
+        };
+        return Ok(if kde_available {
+            LinuxBackdrop::WaylandKde(guest)
+        } else {
+            LinuxBackdrop::WaylandUnsupported(guest)
+        });
+    }
+
+    let compositor: wl_compositor::WlCompositor = globals
+        .bind(&queue, 1..=6, ())
+        .context("Wayland compositor global is unavailable")?;
+    let surface_id = unsafe {
+        wayland_client::backend::ObjectId::from_ptr(
+            &wl_surface::WlSurface::interface(),
+            surface_ptr.cast(),
+        )
+    }
+    .context("Could not import GPUI's Wayland surface")?;
+    let surface = wl_surface::WlSurface::from_id(&connection, surface_id)
+        .context("Could not wrap GPUI's Wayland surface")?;
+    let effect = manager.get_background_effect(&surface, &queue, ());
+
+    Ok(LinuxBackdrop::WaylandExt(WaylandExtBackdrop {
+        guest: WaylandGuest {
+            connection,
+            _globals: globals,
+            event_queue,
+            state,
+        },
+        manager,
+        compositor,
+        effect,
+        last_rectangles: Vec::new(),
+    }))
+}
+
+impl WaylandExtBackdrop {
+    fn refresh(&mut self, window: &Window) -> Result<()> {
+        self.guest.dispatch_pending()?;
+        if !self.guest.state.blur_supported {
+            self.effect.set_blur_region(None);
+            self.guest.connection.flush().ok();
+            self.last_rectangles.clear();
+            return Ok(());
+        }
+
+        let rectangles = chrome_rectangles(window, 1.0);
+        if rectangles == self.last_rectangles {
+            return Ok(());
+        }
+
+        let queue = self.guest.event_queue.handle();
+        let region = self.compositor.create_region(&queue, ());
+        for [x, y, width, height] in &rectangles {
+            region.add(*x, *y, *width, *height);
+        }
+        self.effect.set_blur_region(Some(&region));
+        region.destroy();
+        self.guest
+            .connection
+            .flush()
+            .context("Could not flush the Wayland blur region")?;
+        self.last_rectangles = rectangles;
+        Ok(())
+    }
+}
+
+impl Drop for WaylandExtBackdrop {
+    fn drop(&mut self) {
+        self.effect.destroy();
+        self.manager.destroy();
+        let _ = self.guest.connection.flush();
+    }
+}
+
+use x11rb::{
+    connection::Connection as _,
+    protocol::xproto::{AtomEnum, ConnectionExt as _, PropMode},
+    wrapper::ConnectionExt as _,
+    xcb_ffi::XCBConnection,
+};
+
+const KDE_X11_BLUR_ATOM: &[u8] = b"_KDE_NET_WM_BLUR_BEHIND_REGION";
+
+struct X11Backdrop {
+    connection: XCBConnection,
+    window: u32,
+    atom: u32,
+    last_rectangles: Vec<[i32; 4]>,
+}
+
+fn setup_x11(
+    window: &Window,
+    connection_ptr: *mut c_void,
+    screen: i32,
+    window_id: u32,
+) -> Result<LinuxBackdrop> {
+    let connection = unsafe { XCBConnection::from_raw_xcb_connection(connection_ptr, false) }
+        .context("Could not import GPUI's XCB connection")?;
+    let root = connection
+        .setup()
+        .roots
+        .get(screen.max(0) as usize)
+        .ok_or_else(|| anyhow!("XCB screen index {screen} is unavailable"))?
+        .root;
+    let atom = connection
+        .intern_atom(true, KDE_X11_BLUR_ATOM)
+        .context("Could not query the KDE X11 blur atom")?
+        .reply()
+        .context("KDE X11 blur atom query failed")?
+        .atom;
+    if atom == x11rb::NONE {
+        return Ok(LinuxBackdrop::Unsupported);
+    }
+
+    let properties = connection
+        .list_properties(root)
+        .context("Could not inspect X11 root properties")?
+        .reply()
+        .context("X11 root property query failed")?;
+    if !properties.atoms.contains(&atom) {
+        return Ok(LinuxBackdrop::Unsupported);
+    }
+
+    let mut backdrop = X11Backdrop {
+        connection,
+        window: window_id,
+        atom,
+        last_rectangles: Vec::new(),
+    };
+    backdrop.refresh(window)?;
+    Ok(LinuxBackdrop::X11Kde(backdrop))
+}
+
+impl X11Backdrop {
+    fn refresh(&mut self, window: &Window) -> Result<()> {
+        let rectangles = chrome_rectangles(window, window.scale_factor());
+        if rectangles == self.last_rectangles {
+            return Ok(());
+        }
+
+        let data: Vec<u32> = rectangles
+            .iter()
+            .flat_map(|rectangle| rectangle.iter().map(|value| *value as u32))
+            .collect();
+        self.connection
+            .change_property32(
+                PropMode::REPLACE,
+                self.window,
+                self.atom,
+                AtomEnum::CARDINAL,
+                &data,
+            )
+            .context("Could not set the KDE X11 blur region")?
+            .check()
+            .context("KDE X11 rejected the blur region")?;
+        self.connection
+            .flush()
+            .context("Could not flush the KDE X11 blur region")?;
+        self.last_rectangles = rectangles;
+        Ok(())
+    }
+}
