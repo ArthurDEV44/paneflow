@@ -400,12 +400,13 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
         ));
     }
 
-    // #9: re-verify the COPIED bundle, not just the read-only source on the
-    // DMG. A `cp -R` that exits 0 yet produced a corrupt tree would otherwise
-    // promote an unverified (possibly invalidly-signed) bundle. cfg(macos) so
-    // the cross-platform compile-closure and the filesystem-only swap tests
-    // stay free of codesign/spctl.
-    #[cfg(target_os = "macos")]
+    // #9: re-verify the COPIED bundle BEFORE the swap, not just the read-only
+    // source on the DMG. A `cp -R` that exits 0 yet produced a corrupt tree
+    // would otherwise promote an unverified (possibly invalidly-signed) bundle.
+    // `not(test)` so the filesystem-only `copy_and_swap` unit tests — which
+    // stage a fake unsigned bundle and genuinely cannot satisfy codesign —
+    // keep exercising the copy/rename logic without spawning codesign/spctl.
+    #[cfg(all(target_os = "macos", not(test)))]
     if let Err(e) = verify_macos_bundle(&new_dir) {
         let _ = std::fs::remove_dir_all(&new_dir);
         return Err(e);
