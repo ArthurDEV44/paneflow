@@ -293,15 +293,26 @@ fn classify(
         };
     }
 
-    // 2. AppImage — mounted under /tmp/.mount_XXXXXX/. The path prefix alone
-    //    is enough; $APPIMAGE is only used to locate the source .AppImage file
-    //    for the updater. Works even when the user launched the AppImage in a
-    //    non-standard way that didn't set $APPIMAGE.
-    if let Some(mount_point) = appimage_mount_point(canonical) {
-        let source_path = appimage.map(PathBuf::from).unwrap_or_default();
+    // 2. AppImage. The type-2 runtime ALWAYS exports $APPIMAGE (the absolute
+    //    path to the .AppImage), which is exactly what the updater needs, so a
+    //    non-empty $APPIMAGE is the PRIMARY signal. The `/tmp/.mount_` path
+    //    heuristic alone breaks when the runtime mounts under $TMPDIR instead of
+    //    /tmp (NixOS, systemd `PrivateTmp=yes`, sandboxes), which silently
+    //    dropped self-update to `Unknown`. The heuristic stays as a fallback for
+    //    a non-standard launch that didn't set $APPIMAGE.
+    let appimage_source = appimage
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty());
+    let mount_point = appimage_mount_point(canonical);
+    if appimage_source.is_some() || mount_point.is_some() {
         return InstallMethod::AppImage {
-            mount_point,
-            source_path,
+            // The updater only consumes `source_path`; `mount_point` is
+            // diagnostic, so best-effort: the real `/tmp/.mount_` dir when the
+            // heuristic matched, else the running binary's parent.
+            mount_point: mount_point
+                .or_else(|| canonical.parent().map(Path::to_path_buf))
+                .unwrap_or_default(),
+            source_path: appimage_source.unwrap_or_default(),
         };
     }
 
@@ -364,8 +375,15 @@ fn detect_package_manager_with_probes(
     fedora_marker: bool,
     ostree_booted: bool,
 ) -> PackageManager {
-    // Debian derivatives never carry `/run/ostree-booted`, so check Debian
-    // first as the clearest signal.
+    // Endless OS is Debian-based but boots ostree (immutable rootfs), so it
+    // carries BOTH `/etc/debian_version` AND `/run/ostree-booted`. An
+    // `apt install` would fail on its read-only deployment, and it is NOT
+    // rpm-ostree either — route it to the generic externally-managed hint
+    // rather than the broken `apt` path.
+    if debian_marker && ostree_booted {
+        return PackageManager::Other;
+    }
+    // A plain Debian/Ubuntu (no ostree) uses apt.
     if debian_marker {
         return PackageManager::Apt;
     }
@@ -821,17 +839,26 @@ mod tests {
     }
 
     #[test]
-    fn detect_package_manager_debian_plus_ostree_returns_apt() {
+    fn detect_package_manager_debian_plus_ostree_is_externally_managed() {
         // Endless OS (Debian-based with an ostree layer) carries BOTH
-        // `/etc/debian_version` and `/run/ostree-booted`. Current
-        // precedence is Debian-first → returns `Apt`. This is known
-        // imperfect for Endless (the updater will fail against the
-        // read-only base) but is at least deterministic; a dedicated
-        // Endless path is out of scope for US-004. This test pins the
-        // current behavior so a later refactor can't silently change it.
+        // `/etc/debian_version` and `/run/ostree-booted`. An `apt install`
+        // would fail against its read-only ostree base, and it is NOT
+        // rpm-ostree either — so `(debian && ostree)` routes to the generic
+        // externally-managed `Other` hint, checked BEFORE the plain-Debian
+        // `Apt` arm.
         assert_eq!(
             detect_package_manager_with_probes(true, false, true),
+            PackageManager::Other
+        );
+        // Plain Debian (no ostree) still uses apt …
+        assert_eq!(
+            detect_package_manager_with_probes(true, false, false),
             PackageManager::Apt
+        );
+        // … and Fedora Silverblue (ostree, no debian) is still rpm-ostree.
+        assert_eq!(
+            detect_package_manager_with_probes(false, true, true),
+            PackageManager::RpmOstree
         );
     }
 }
