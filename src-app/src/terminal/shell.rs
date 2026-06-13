@@ -95,19 +95,35 @@ const PWSH_OSC7: &str = r#"# PaneFlow shell integration - OSC 7 CWD reporting (U
 # wrapper additionally re-asserts the prepend on every prompt for users
 # who modify $env:PATH at runtime.
 
-$__paneflow_prev_prompt = Get-Item function:prompt
 function global:__paneflow_path_prepend {
     if ([string]::IsNullOrEmpty($env:PANEFLOW_BIN_DIR)) { return }
     $sep = [System.IO.Path]::PathSeparator
     $entries = $env:PATH -split [regex]::Escape($sep) | Where-Object { $_ -ne $env:PANEFLOW_BIN_DIR }
     $env:PATH = (@($env:PANEFLOW_BIN_DIR) + $entries) -join $sep
 }
-function global:prompt {
-    $cwd = (Get-Location).ProviderPath
-    # OSC 7 with BEL terminator (matches zsh/bash/fish emitters).
-    [Console]::Write("`e]7;file://$env:COMPUTERNAME$cwd`a")
-    __paneflow_path_prepend
-    & $__paneflow_prev_prompt.ScriptBlock
+
+# Capture the CURRENT prompt as a ScriptBlock VALUE (snapshot) via
+# `$function:prompt`, NOT `Get-Item function:prompt`. A FunctionInfo from
+# Get-Item is a LIVE handle: its `.ScriptBlock` re-resolves to whatever
+# `prompt` is at call time, which after we redefine `prompt` below is OUR
+# wrapper -- so `& $prev.ScriptBlock` calls the wrapper again, recursing
+# forever ("call depth overflow") and the prompt never renders. This bites
+# hardest with Starship / oh-my-posh, which also redefine `prompt`. The
+# $global:__paneflow_prompt_wrapped guard keeps a re-source from capturing
+# our own wrapper as the "previous" prompt.
+if (-not $global:__paneflow_prompt_wrapped) {
+    $global:__paneflow_prev_prompt = $function:prompt
+    function global:prompt {
+        # Call the wrapped prompt FIRST, while $?/$LASTEXITCODE still reflect
+        # the user's last command -- Starship / oh-my-posh read them to render
+        # the exit-status segment. Our OSC 7 + PATH bookkeeping runs after.
+        $__paneflow_out = if ($global:__paneflow_prev_prompt) { & $global:__paneflow_prev_prompt } else { "PS $($executionContext.SessionState.Path.CurrentLocation)> " }
+        # OSC 7 with BEL terminator (matches zsh/bash/fish emitters).
+        [Console]::Write("`e]7;file://$env:COMPUTERNAME$((Get-Location).ProviderPath)`a")
+        __paneflow_path_prepend
+        $__paneflow_out
+    }
+    $global:__paneflow_prompt_wrapped = $true
 }
 __paneflow_path_prepend
 "#;
@@ -118,9 +134,12 @@ __paneflow_path_prepend
 ///
 /// Unix chain: configured (if executable) → `$SHELL` → `/bin/sh`.
 /// Windows chain: configured (if present, resolved via PATH when it has no
-/// separators) → `%ComSpec%` → `C:\Windows\System32\cmd.exe` → `powershell.exe`
-/// on PATH → bare `"cmd.exe"` (last-ditch; the spawner will search PATH and
-/// surface a clearly-located error if even this fails).
+/// separators) → PowerShell 7 (`pwsh.exe`) → Windows PowerShell 5.1
+/// (`powershell.exe`) → `%ComSpec%` → `C:\Windows\System32\cmd.exe` → bare
+/// `"cmd.exe"` (last-ditch). PowerShell is preferred over `cmd.exe` so a fresh
+/// Windows install lands on a modern shell (rich prompt, ANSI colors, working
+/// `clear`) instead of the legacy console — mirrors Zed's
+/// `get_windows_system_shell` (`crates/util/src/shell.rs`).
 pub(super) fn resolve_default_shell(configured: Option<&str>) -> String {
     if let Some(path) = configured {
         if let Some(resolved) = configured_shell_if_usable(path) {
@@ -173,8 +192,16 @@ fn resolve_default_shell_fallback() -> String {
 
 #[cfg(windows)]
 fn resolve_default_shell_fallback() -> String {
-    // %ComSpec% — Windows convention for "the command interpreter",
-    // respected by every console app on the platform.
+    // Prefer PowerShell over cmd.exe. A bare cmd.exe default gives the legacy
+    // "BIOS console" experience — no `clear` (it's `cls`), a 16-color `C:\>`
+    // prompt, no PSReadLine — which is jarring next to a standalone PowerShell.
+    // Mirrors Zed's `get_windows_system_shell` (crates/util/src/shell.rs):
+    // pwsh 7 → Windows PowerShell 5.1 → cmd.exe only as a last resort.
+    if let Some(powershell) = find_windows_powershell() {
+        return powershell;
+    }
+    // No PowerShell found — fall back to cmd.exe. %ComSpec% is the Windows
+    // convention for "the command interpreter", respected by every console app.
     if let Ok(com_spec) = std::env::var("ComSpec")
         && std::path::Path::new(&com_spec).is_file()
     {
@@ -187,18 +214,83 @@ fn resolve_default_shell_fallback() -> String {
     if std::path::Path::new(CMD_FALLBACK).is_file() {
         return CMD_FALLBACK.to_string();
     }
-    // PowerShell 5.1 (bundled with Windows) or pwsh.exe (PowerShell 7) —
-    // `which` appends PATHEXT extensions when resolving.
-    if let Ok(pwsh) = which::which("powershell.exe") {
-        return pwsh.to_string_lossy().into_owned();
-    }
     // Last-ditch: return bare "cmd.exe" and let the spawner search PATH.
     log::error!(
-        "Windows shell fallback chain exhausted: %ComSpec%, C:\\Windows\\System32\\cmd.exe, \
-         and powershell.exe on PATH all unavailable. Falling back to bare 'cmd.exe'; \
-         PTY spawn will fail with a clear error if even this is missing."
+        "Windows shell fallback chain exhausted: no pwsh.exe/powershell.exe found, \
+         and %ComSpec% / C:\\Windows\\System32\\cmd.exe both unavailable. Falling \
+         back to bare 'cmd.exe'; PTY spawn will surface a clear error if even this \
+         is missing."
     );
     "cmd.exe".to_string()
+}
+
+/// Locate a PowerShell executable, preferring PowerShell 7+ (`pwsh.exe`) over
+/// the bundled Windows PowerShell 5.1 (`powershell.exe`). Mirrors the search
+/// order of Zed's `get_windows_system_shell` so PaneFlow lands on the same
+/// modern shell users expect (rich prompt, ANSI colors, working `clear`)
+/// rather than cmd.exe. `pwsh.exe` is frequently NOT on `PATH`, so the
+/// well-known install locations are probed before the `PATH` search.
+///
+/// Order (short-circuits on the first hit):
+/// 1. `pwsh.exe` under `%ProgramFiles%\PowerShell\<n>` (highest major version)
+/// 2. `pwsh.exe` under `%ProgramFiles(x86)%\PowerShell\<n>`
+/// 3. `pwsh.exe` from the MSIX/Store install (`%LOCALAPPDATA%\…\WindowsApps`)
+/// 4. `pwsh.exe` from a scoop shim
+/// 5. `pwsh.exe` anywhere on `PATH`
+/// 6. `powershell.exe` (Windows PowerShell 5.1) on `PATH`
+#[cfg(windows)]
+fn find_windows_powershell() -> Option<String> {
+    use std::path::PathBuf;
+
+    // Newest `pwsh.exe` under a `<ProgramFiles>\PowerShell` install. The
+    // directory names are the major version (`7`, `6`, …); the highest wins.
+    fn find_pwsh_in_program_files(env_var: &str) -> Option<PathBuf> {
+        let base = PathBuf::from(std::env::var_os(env_var)?).join("PowerShell");
+        base.read_dir()
+            .ok()?
+            .filter_map(Result::ok)
+            .filter(|entry| matches!(entry.file_type(), Ok(ft) if ft.is_dir()))
+            .filter_map(|entry| {
+                let version: u32 = entry.file_name().to_string_lossy().parse().ok()?;
+                let exe = entry.path().join("pwsh.exe");
+                exe.exists().then_some((version, exe))
+            })
+            .max_by_key(|(version, _)| *version)
+            .map(|(_, exe)| exe)
+    }
+
+    // Store/MSIX install drops `pwsh.exe` under a versioned package dir.
+    fn find_pwsh_in_msix() -> Option<PathBuf> {
+        let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Microsoft\\WindowsApps");
+        dir.read_dir()
+            .ok()?
+            .filter_map(Result::ok)
+            .filter(|entry| matches!(entry.file_type(), Ok(ft) if ft.is_dir()))
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("Microsoft.PowerShell_")
+            })
+            .find_map(|entry| {
+                let exe = entry.path().join("pwsh.exe");
+                exe.exists().then_some(exe)
+            })
+    }
+
+    // scoop shim.
+    fn find_pwsh_in_scoop() -> Option<PathBuf> {
+        let exe = PathBuf::from(std::env::var_os("USERPROFILE")?).join("scoop\\shims\\pwsh.exe");
+        exe.exists().then_some(exe)
+    }
+
+    find_pwsh_in_program_files("ProgramFiles")
+        .or_else(|| find_pwsh_in_program_files("ProgramFiles(x86)"))
+        .or_else(find_pwsh_in_msix)
+        .or_else(find_pwsh_in_scoop)
+        .or_else(|| which::which("pwsh.exe").ok())
+        .or_else(|| which::which("powershell.exe").ok())
+        .map(|path| path.to_string_lossy().trim().to_owned())
 }
 
 /// Build a command that clears the terminal before launching an interactive
@@ -423,5 +515,79 @@ mod tests {
         // or `clear` exist (nushell, elvish, xonsh, …).
         assert_eq!(clear_then_for_shell("opencode", "/usr/bin/nu"), "opencode");
         assert_eq!(clear_then_for_shell("claude", "elvish"), "claude");
+    }
+
+    #[test]
+    fn pwsh_osc7_snapshots_prompt_and_avoids_recursion() {
+        // Regression guard for the infinite-recursion bug that left the prompt
+        // blank under Starship / oh-my-posh: capturing the previous prompt via a
+        // live `Get-Item function:prompt` handle made `.ScriptBlock` re-resolve
+        // to our own wrapper after redefinition -> "call depth overflow". The
+        // fix snapshots the scriptblock by value (`$function:prompt`), invokes
+        // it directly, and guards against re-wrapping.
+        //
+        // Asserted POSITIVELY (presence of the fixed code lines) rather than by
+        // substring-absence: the anti-pattern strings (`Get-Item`,
+        // `.ScriptBlock`) legitimately appear in this constant's own
+        // explanatory comment, so an absence check would false-positive.
+        let s = super::PWSH_OSC7;
+        assert!(
+            s.contains("$global:__paneflow_prev_prompt = $function:prompt"),
+            "must snapshot the prompt by value via $function:prompt"
+        );
+        assert!(
+            s.contains("& $global:__paneflow_prev_prompt"),
+            "must invoke the captured scriptblock directly (not .ScriptBlock of a live handle)"
+        );
+        assert!(
+            s.contains("__paneflow_prompt_wrapped"),
+            "must guard against double-wrapping on re-source"
+        );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_shell_tests {
+    use super::*;
+
+    /// The fallback must always yield a non-empty program for `portable-pty`,
+    /// even on a machine with no PowerShell at all (it lands on cmd.exe).
+    #[test]
+    fn fallback_returns_nonempty_shell() {
+        assert!(
+            !resolve_default_shell_fallback().is_empty(),
+            "Windows shell fallback must never return an empty string"
+        );
+    }
+
+    /// The regression guard for the "BIOS terminal" bug: whenever a PowerShell
+    /// is discoverable (GitHub's `windows-latest` runners ship pwsh 7; any real
+    /// Windows box has at least Windows PowerShell 5.1), the default must NOT
+    /// degrade to cmd.exe.
+    #[test]
+    fn fallback_prefers_powershell_over_cmd_when_present() {
+        if find_windows_powershell().is_some() {
+            let shell = resolve_default_shell_fallback().to_ascii_lowercase();
+            assert!(
+                shell.ends_with("pwsh.exe") || shell.ends_with("powershell.exe"),
+                "expected the default to be a PowerShell, got {shell:?}"
+            );
+        }
+    }
+
+    /// Whatever `find_windows_powershell` returns must actually be a PowerShell
+    /// binary (`pwsh` or `powershell`), never something else mis-classified.
+    #[test]
+    fn discovered_powershell_is_pwsh_or_powershell() {
+        if let Some(found) = find_windows_powershell() {
+            let stem = std::path::Path::new(&found)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_ascii_lowercase);
+            assert!(
+                matches!(stem.as_deref(), Some("pwsh") | Some("powershell")),
+                "unexpected PowerShell binary stem: {found:?}"
+            );
+        }
     }
 }
