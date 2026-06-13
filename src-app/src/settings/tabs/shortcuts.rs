@@ -1,10 +1,10 @@
 //! "Shortcuts" settings tab — agents-styled list of every rebindable
 //! action with click-to-record key capture.
 //!
-//! Layout: lowercase "Keyboard" eyebrow with an inline "Reset to defaults"
-//! button on the right, then a single `setting_card` containing one row
-//! per shortcut, separated by 1px hairlines. Click capture is driven by
-//! `settings::keyboard::handle_shortcut_recording`.
+//! Layout: a "Bindings" eyebrow with an inline "Reset to defaults" button on
+//! the right, then a single `setting_card` containing one row per shortcut,
+//! separated by 1px hairlines. Click capture is driven by
+//! `PaneFlowApp::handle_shortcut_recording` (in `app::settings`).
 
 use gpui::{
     ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, Styled, div,
@@ -14,11 +14,9 @@ use gpui::{
 use crate::settings::components::{
     hairline, secondary_button, section_header_with_action, setting_card,
 };
-use crate::{config_writer, keybindings};
+use crate::{PaneFlowApp, config_writer, keybindings};
 
-use super::super::window::SettingsWindow;
-
-impl SettingsWindow {
+impl PaneFlowApp {
     pub(crate) fn render_shortcuts_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
         let recording_idx = self.recording_shortcut_idx;
@@ -37,7 +35,7 @@ impl SettingsWindow {
             }),
         );
 
-        let header = section_header_with_action(ui, "Keyboard", reset_btn);
+        let header = section_header_with_action(ui, "Bindings", reset_btn);
 
         let mut list = setting_card(ui);
 

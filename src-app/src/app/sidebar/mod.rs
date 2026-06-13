@@ -11,9 +11,8 @@ mod context_menu;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, AppContext, ClickEvent, Context, FontWeight,
-    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Render,
-    SharedString, Styled, Transformation, Window, deferred, div, percentage, prelude::*, px, rgb,
-    svg,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
+    Transformation, Window, div, percentage, prelude::*, px, rgb, svg,
 };
 
 use crate::{
@@ -833,31 +832,13 @@ impl PaneFlowApp {
     fn cli_menu_items(&self) -> Vec<crate::app::sidebar_actions_menu::SidebarMenuItem> {
         use crate::app::sidebar_actions_menu::SidebarMenuItem;
         let mut items = vec![SidebarMenuItem {
-            id: "cli-menu-new-ws".into(),
-            icon: "icons/plus.svg",
-            label: "New workspace".into(),
-            on_click: Box::new(|app, w, cx| {
-                app.create_workspace_with_picker(w, cx);
-            }),
-        }];
-        if !self.workspaces.is_empty() {
-            items.push(SidebarMenuItem {
-                id: "cli-menu-clear-all".into(),
-                icon: "icons/trash.svg",
-                label: "Close all workspaces".into(),
-                on_click: Box::new(|app, _w, cx| {
-                    app.close_all_workspaces(cx);
-                }),
-            });
-        }
-        items.push(SidebarMenuItem {
             id: "cli-menu-themes".into(),
             icon: "icons/palette.svg",
             label: "Themes".into(),
             on_click: Box::new(|app, w, cx| {
                 app.open_theme_picker(w, cx);
             }),
-        });
+        }];
         items.push(SidebarMenuItem {
             id: "cli-menu-about".into(),
             icon: "icons/info-circle.svg",
@@ -896,116 +877,6 @@ impl PaneFlowApp {
             .flex_col()
             .min_h_0()
             .child(list)
-    }
-
-    /// Modal confirmation for "Close all workspaces". Same visual
-    /// language as `render_agents_confirm_delete_dialog` -- backdrop
-    /// dim, centred card, Cancel (subtle) + danger (red) buttons --
-    /// so the two destructive guards feel like one product. Rendered
-    /// from the top-level `Render` impl when
-    /// `confirm_close_all_workspaces` is set.
-    pub(crate) fn render_close_all_confirm_dialog(
-        &self,
-        ui: crate::theme::UiColors,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let count = self.workspaces.len();
-        let body = if count == 1 {
-            "Close the open workspace? Unsaved terminal state will be lost.".to_string()
-        } else {
-            format!("Close all {count} workspaces? Unsaved terminal state will be lost.")
-        };
-
-        deferred(
-            div()
-                .id("close-all-confirm-backdrop")
-                .occlude()
-                .absolute()
-                .top(px(0.))
-                .left(px(0.))
-                .size_full()
-                .bg(gpui::black().opacity(0.45))
-                .flex()
-                .items_center()
-                .justify_center()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.cancel_close_all_workspaces(cx);
-                    }),
-                )
-                .child(
-                    div()
-                        .id("close-all-confirm-dialog")
-                        .occlude()
-                        .w(px(360.))
-                        .bg(ui.overlay)
-                        .border_1()
-                        .border_color(ui.border)
-                        .rounded(px(10.))
-                        .shadow_lg()
-                        .p(px(16.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(ui.text)
-                                .child("Close all workspaces"),
-                        )
-                        .child(div().text_size(px(12.)).text_color(ui.muted).child(body))
-                        .child(
-                            div()
-                                .mt(px(6.))
-                                .flex()
-                                .flex_row()
-                                .justify_end()
-                                .gap(px(8.))
-                                .child(
-                                    div()
-                                        .id("close-all-confirm-cancel")
-                                        .px(px(14.))
-                                        .py(px(7.))
-                                        .rounded(px(6.))
-                                        .cursor_pointer()
-                                        .bg(ui.subtle)
-                                        .text_size(px(12.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(ui.text)
-                                        .hover(|s| {
-                                            let ui = crate::theme::ui_colors();
-                                            s.bg(ui.surface)
-                                        })
-                                        .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                                            this.cancel_close_all_workspaces(cx);
-                                        }))
-                                        .child("Cancel"),
-                                )
-                                .child(
-                                    div()
-                                        .id("close-all-confirm-go")
-                                        .px(px(14.))
-                                        .py(px(7.))
-                                        .rounded(px(6.))
-                                        .cursor_pointer()
-                                        .bg(rgb(0xf38ba8))
-                                        .text_size(px(12.))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(ui.base)
-                                        .hover(|s| s.opacity(0.88))
-                                        .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                                            this.execute_close_all_workspaces(cx);
-                                        }))
-                                        .child("Close all"),
-                                ),
-                        ),
-                ),
-        )
-        .priority(4)
-        .into_any_element()
     }
 }
 

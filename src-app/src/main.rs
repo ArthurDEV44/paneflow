@@ -62,7 +62,7 @@ use gpui::{
     App, Bounds, Context, CursorStyle, Decorations, Entity, FocusHandle, Focusable, HitboxBehavior,
     InteractiveElement, IntoElement, MouseButton, Pixels, Point, Render, ResizeEdge, Styled,
     Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, point, prelude::*, px,
-    rgb, size, svg, transparent_black,
+    rgb, size, transparent_black,
 };
 use gpui_platform::application;
 use notify::Watcher;
@@ -97,10 +97,29 @@ pub(crate) use app::bootstrap::{system_package_update_command, warn_if_legacy_ru
 // Root application view
 // ---------------------------------------------------------------------------
 
+/// A page in the embedded settings experience (Codex-style: grouped nav on the
+/// left rail, the section body on the right). `General` is the landing page.
+/// One source of truth — replaces the old 2-variant inline enum *and* the
+/// standalone window's copy, now that settings render inline (`settings::chrome`).
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum SettingsSection {
-    Shortcuts,
+    General,
     Appearance,
+    Shortcuts,
+    Terminal,
+    AiAgent,
+    McpServers,
+}
+
+/// Which Terminal-page enum dropdown is currently open (only one at a time).
+/// `None` = all closed. Distinct from `font_dropdown_open` (the Appearance
+/// page's font picker) so navigating away never leaves a ghost popover.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum TerminalDropdown {
+    CursorShape,
+    CursorBlink,
+    Bell,
+    Scrollback,
 }
 
 #[derive(Clone, Copy)]
@@ -410,6 +429,19 @@ struct PaneFlowApp {
     /// Scroll state for the inline settings page.
     settings_scroll: gpui::ScrollHandle,
     settings_drag: Option<crate::widgets::scrollbar::ScrollDragState>,
+    /// Codex settings nav search box (filters the section list). A real
+    /// single-line `TextInput`, observed so each keystroke re-renders the nav.
+    settings_search_input: gpui::Entity<crate::widgets::text_input::TextInput>,
+    /// Codex settings: which Terminal-page dropdown is open (`None` = closed).
+    terminal_dropdown: Option<TerminalDropdown>,
+    /// Codex settings: cached MCP-bridge status snapshot, refreshed off-thread
+    /// so the MCP page never does config I/O during a frame.
+    mcp_status: Option<Vec<paneflow_mcp_install::StatusReport>>,
+    /// Codex settings: result of the last MCP-bridge install (per-agent recap,
+    /// or a wholesale refusal message).
+    mcp_install: Option<Result<Vec<paneflow_mcp_install::InstallReport>, String>>,
+    /// Codex settings: an MCP-bridge install is running.
+    mcp_busy: bool,
     /// Cached HOME directory for sidebar display (avoids per-render syscall).
     home_dir: String,
     /// Scroll state for the persistent sidebar workspace list.
@@ -591,11 +623,6 @@ struct PaneFlowApp {
     /// US-053: Agents-view sidebar state (rename/menu/skills/filter +
     /// the terminal-thread cache), extracted from the god-struct.
     pub(crate) agents_view: AgentsViewState,
-    /// "Close all workspaces" guard. `true` while the confirmation
-    /// dialog is up; flipped back to `false` on cancel/confirm. Cheap
-    /// `bool` instead of `Option<()>` because the action is global --
-    /// there's only ever one pending confirm at a time.
-    pub(crate) confirm_close_all_workspaces: bool,
     /// US-048: memoized sidebar display order (worktree grouping). Recomputed
     /// only when the workspace set / order / repo roots change, keyed by a
     /// cheap content signature — `render_sidebar` runs on every app `notify()`,
@@ -704,7 +731,6 @@ impl Render for PaneFlowApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
         let theme = crate::theme::active_theme();
-        let is_window_active = window.is_window_active();
         // Every mode is cockpit now (Agents first, then Cli, then Diff): the
         // title bar always floats as a rail-confined overlay (never a flex
         // child), so the right panel rises to y=0 with rounded rail-side
@@ -712,13 +738,38 @@ impl Render for PaneFlowApp {
         // rail content clears the floating window controls.
         let title_bar_h = (1.75 * window.rem_size()).max(px(34.));
         let title_bar_spans_window = cfg!(target_os = "windows") || !self.primary_sidebar_visible;
+        let settings_open = self.settings_section.is_some();
+        // Every mode now renders the right area as ONE rounded-clipped panel
+        // (`panel_bg` fill + 16px rail-side radius + 5px inset), replacing the
+        // old Cli/Diff corner-mask trick. GPUI clips the panel's bg fill to the
+        // radius, so the window backdrop shows in the corner notch — a clean
+        // radius on every platform (Linux, macOS, Windows Mica), where a solid
+        // mask would read as a square patch. The 5px inset keeps opaque content
+        // (terminal cells, diff rows, settings cards) off the arc, since GPUI
+        // does NOT clip children to the radius. The Cli pane grid keeps the
+        // terminal background; Diff / Agents / Settings use the #181818 surface.
+        let panel_bg = if settings_open {
+            ui.base
+        } else {
+            match self.mode {
+                paneflow_config::schema::AppMode::Cli => theme.background,
+                paneflow_config::schema::AppMode::Diff
+                | paneflow_config::schema::AppMode::Agents => ui.base,
+            }
+        };
 
         // EP-003 US-009: focus the pane created by a drop-to-split. Deferred
         // here from the `DropSplit` subscription handler (no `Window` there).
         if let Some(pane) = self.pending_pane_focus.take() {
             pane.read(cx).focus_handle(cx).focus(window, cx);
         }
-        let main_content = if matches!(self.mode, paneflow_config::schema::AppMode::Agents) {
+        let main_content = if self.settings_section.is_some() {
+            // Embedded settings take precedence over the mode screen: the left
+            // rail becomes the settings nav (below) and this panel shows the
+            // active section body. Checked first so Settings opens correctly
+            // from Agents/Diff mode too.
+            self.render_settings_content_panel(cx).into_any_element()
+        } else if matches!(self.mode, paneflow_config::schema::AppMode::Agents) {
             // US-008 (prd-agents-view.md): mode is the source of truth
             // for which screen renders. The Agents view is terminal-only
             // — `render_agents_main` shows the selected thread's PTY, the
@@ -730,8 +781,6 @@ impl Render for PaneFlowApp {
             // force a Diff arm — it must be added by hand or the diff
             // mode would silently fall through to the terminal view.
             self.render_diff_main(cx)
-        } else if self.settings_section.is_some() {
-            self.render_settings_page(cx).into_any_element()
         } else if let Some(ws) = self.active_workspace() {
             if let Some(root) = &ws.root {
                 root.render(window, cx)
@@ -795,7 +844,11 @@ impl Render for PaneFlowApp {
         // mode the brand slot carries the thread/chat context instead, so the
         // center workspace breadcrumb is suppressed (a CLI workspace name is
         // meaningless in the Agents view). Cli/Diff keep it (diff visuel nul).
-        let ws_name = if matches!(self.mode, paneflow_config::schema::AppMode::Agents) {
+        let ws_name = if self.settings_section.is_some()
+            || matches!(self.mode, paneflow_config::schema::AppMode::Agents)
+        {
+            // Settings open: the title-bar center is left empty (the section
+            // title lives in the content panel), matching the Codex reference.
             None
         } else {
             self.active_workspace().map(|ws| ws.title.clone())
@@ -815,14 +868,20 @@ impl Render for PaneFlowApp {
         // Push the matching sidebar width (220 px CLI / 280 px Agents)
         // so the title bar's brand slot stays aligned with the sidebar
         // edge across mode swaps.
-        let sidebar_px = match self.mode {
-            paneflow_config::schema::AppMode::Agents => {
-                crate::app::agents_view_actions::AGENTS_SIDEBAR_WIDTH
+        let sidebar_px = if self.settings_section.is_some() {
+            // Settings nav rail width, so the title-bar brand slot stays aligned
+            // with the settings nav edge while settings is open.
+            crate::settings::chrome::SETTINGS_NAV_WIDTH
+        } else {
+            match self.mode {
+                paneflow_config::schema::AppMode::Agents => {
+                    crate::app::agents_view_actions::AGENTS_SIDEBAR_WIDTH
+                }
+                paneflow_config::schema::AppMode::Diff => {
+                    crate::app::diff_view_actions::DIFF_SIDEBAR_WIDTH
+                }
+                paneflow_config::schema::AppMode::Cli => SIDEBAR_WIDTH,
             }
-            paneflow_config::schema::AppMode::Diff => {
-                crate::app::diff_view_actions::DIFF_SIDEBAR_WIDTH
-            }
-            paneflow_config::schema::AppMode::Cli => SIDEBAR_WIDTH,
         };
         self.title_bar.update(cx, |tb, _| {
             tb.workspace_name = ws_name;
@@ -979,107 +1038,97 @@ impl Render for PaneFlowApp {
                     .bg(crate::app::constants::cockpit_backdrop_background(
                         theme.title_bar_background,
                     ))
-                    .when(self.primary_sidebar_visible, |row| {
-                        row.child(match self.mode {
-                            paneflow_config::schema::AppMode::Agents => div()
-                                .flex()
-                                .flex_col()
-                                .h_full()
-                                .flex_shrink_0()
-                                // Clear the transparent title-bar overlay so the
-                                // first rail row sits below the floating controls.
-                                .pt(title_bar_h)
-                                .child(self.render_agents_sidebar(window, cx))
-                                .into_any_element(),
-                            paneflow_config::schema::AppMode::Diff => div()
-                                .flex()
-                                .flex_col()
-                                .h_full()
-                                .flex_shrink_0()
-                                // Clear the transparent title-bar overlay so the
-                                // first sidebar row sits below the floating
-                                // window controls (mirrors the other rails).
-                                .pt(title_bar_h)
-                                .child(self.render_diff_sidebar(window, cx))
-                                .into_any_element(),
-                            paneflow_config::schema::AppMode::Cli => div()
-                                .flex()
-                                .flex_col()
-                                .h_full()
-                                .flex_shrink_0()
-                                // Clear the transparent title-bar overlay so the
-                                // first workspace card sits below the floating
-                                // window controls (mirrors the Agents rail).
-                                .pt(title_bar_h)
-                                .child(self.render_sidebar(window, cx))
-                                .into_any_element(),
-                        })
-                    })
+                    // While settings is open the left rail becomes the Codex
+                    // settings nav (kept visible even if the user had hidden the
+                    // primary rail, so the back button is always reachable).
+                    .when(
+                        self.primary_sidebar_visible || self.settings_section.is_some(),
+                        |row| {
+                            if self.settings_section.is_some() {
+                                return row.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .h_full()
+                                        .flex_shrink_0()
+                                        // Clear the transparent title-bar overlay so the
+                                        // back button sits below the floating controls.
+                                        .pt(title_bar_h)
+                                        .child(self.render_settings_nav(window, cx))
+                                        .into_any_element(),
+                                );
+                            }
+                            row.child(match self.mode {
+                                paneflow_config::schema::AppMode::Agents => div()
+                                    .flex()
+                                    .flex_col()
+                                    .h_full()
+                                    .flex_shrink_0()
+                                    // Clear the transparent title-bar overlay so the
+                                    // first rail row sits below the floating controls.
+                                    .pt(title_bar_h)
+                                    .child(self.render_agents_sidebar(window, cx))
+                                    .into_any_element(),
+                                paneflow_config::schema::AppMode::Diff => div()
+                                    .flex()
+                                    .flex_col()
+                                    .h_full()
+                                    .flex_shrink_0()
+                                    // Clear the transparent title-bar overlay so the
+                                    // first sidebar row sits below the floating
+                                    // window controls (mirrors the other rails).
+                                    .pt(title_bar_h)
+                                    .child(self.render_diff_sidebar(window, cx))
+                                    .into_any_element(),
+                                paneflow_config::schema::AppMode::Cli => div()
+                                    .flex()
+                                    .flex_col()
+                                    .h_full()
+                                    .flex_shrink_0()
+                                    // Clear the transparent title-bar overlay so the
+                                    // first workspace card sits below the floating
+                                    // window controls (mirrors the Agents rail).
+                                    .pt(title_bar_h)
+                                    .child(self.render_sidebar(window, cx))
+                                    .into_any_element(),
+                            })
+                        },
+                    )
                     .child(
                         div()
                             .flex_1()
                             .h_full()
                             .overflow_hidden()
-                            // Anchor the Cli corner-mask overlays (below).
+                            // Anchor the absolutely-positioned border contour (below).
                             .relative()
                             .flex()
                             .flex_col()
-                            // Codex cockpit: in Agents mode the right area is a
-                            // floating panel — a slightly-lighter bg sitting on
-                            // the chrome-dark body row, with the rail-side
-                            // corners rounded. The 4px inset keeps the panel's
-                            // opaque content (terminal base-fill, picker) off
-                            // the rounded corners: GPUI's content mask is
-                            // rectangular and does NOT clip children to the
-                            // radius, so a child painting to the edge would
-                            // overdraw the rounded quad. Other modes keep the
-                            // legacy flat bg with no inset.
-                            .when(
-                                !cfg!(target_os = "windows")
-                                    && matches!(
-                                        self.mode,
-                                        paneflow_config::schema::AppMode::Agents
-                                    ),
-                                |d| {
-                                    // Shared #181818 right panel on the #141414
-                                    // rail/chrome, plus
-                                    // a faint rail-side hairline so the panel
-                                    // edge reads even where rail and panel grays
-                                    // blur together.
-                                    // 16px matches the Cli/Diff corner-mask
-                                    // radius so the panel silhouette is the
-                                    // same in every mode. The inset must stay
-                                    // ≥ r·(1−1/√2) ≈ 4.7px or the content's
-                                    // square corner pokes through the arc
-                                    // (GPUI doesn't clip children to the
-                                    // radius) — hence 5px, not the old 4px.
-                                    d.bg(ui.base)
-                                        .rounded_tl(px(16.))
-                                        .rounded_bl(px(16.))
-                                        .p(px(5.))
-                                },
-                            )
-                            .when(
-                                !cfg!(target_os = "windows")
-                                    && matches!(self.mode, paneflow_config::schema::AppMode::Cli),
-                                // Cli cockpit: pane grid is flush (no inset). bg
-                                // is theme.background so panel + panes read as one
-                                // surface. The rounded rail-side corners come from
-                                // the corner-mask overlays added after the content
-                                // (GPUI can't clip the custom-painted terminal to
-                                // a radius, so we mask the corners on top instead
-                                // — no gutter needed).
-                                |d| d.bg(theme.background),
-                            )
-                            .when(
-                                !cfg!(target_os = "windows")
-                                    && matches!(self.mode, paneflow_config::schema::AppMode::Diff),
-                                // Diff cockpit: same flush panel as Cli. ui.base
-                                // (#181818) is the diff content's dominant root
-                                // fill (multi_view + file columns), so panel and
-                                // content read as one surface.
-                                |d| d.bg(ui.base),
-                            )
+                            // Codex cockpit: every mode renders the right area as a
+                            // floating panel — a slightly-lighter bg sitting on the
+                            // chrome-dark body row, with the rail-side corners
+                            // rounded. GPUI clips the panel's bg fill to the radius
+                            // but NOT its children, so the 5px inset keeps opaque
+                            // content (terminal cells, diff rows, settings cards)
+                            // off the arc; the window backdrop then shows in the
+                            // corner notch (a clean radius on every platform).
+                            .when(!cfg!(target_os = "windows"), |d| {
+                                // Shared #181818 right panel on the #141414
+                                // rail/chrome, plus
+                                // a faint rail-side hairline so the panel
+                                // edge reads even where rail and panel grays
+                                // blur together.
+                                // 16px matches the Cli/Diff corner-mask
+                                // radius so the panel silhouette is the
+                                // same in every mode. The inset must stay
+                                // ≥ r·(1−1/√2) ≈ 4.7px or the content's
+                                // square corner pokes through the arc
+                                // (GPUI doesn't clip children to the
+                                // radius) — hence 5px, not the old 4px.
+                                d.bg(panel_bg)
+                                    .rounded_tl(px(16.))
+                                    .rounded_bl(px(16.))
+                                    .p(px(5.))
+                            })
                             // A full-width title bar is used on Windows and
                             // whenever the primary rail is hidden. Reserve its
                             // strip so content never sits beneath the controls.
@@ -1091,130 +1140,17 @@ impl Render for PaneFlowApp {
                                     .flex_1()
                                     .min_h_0()
                                     .relative()
-                                    .when(
-                                        cfg!(target_os = "windows")
-                                            && matches!(
-                                                self.mode,
-                                                paneflow_config::schema::AppMode::Agents
-                                            ),
-                                        |d| {
-                                            d.bg(ui.base)
-                                                .rounded_tl(px(16.))
-                                                .rounded_bl(px(16.))
-                                                .p(px(5.))
-                                        },
-                                    )
-                                    .when(
-                                        cfg!(target_os = "windows")
-                                            && matches!(
-                                                self.mode,
-                                                paneflow_config::schema::AppMode::Cli
-                                            ),
-                                        |d| d.bg(theme.background),
-                                    )
-                                    .when(
-                                        cfg!(target_os = "windows")
-                                            && matches!(
-                                                self.mode,
-                                                paneflow_config::schema::AppMode::Diff
-                                            ),
-                                        |d| d.bg(ui.base),
-                                    )
+                                    .when(cfg!(target_os = "windows"), |d| {
+                                        d.bg(panel_bg)
+                                            .rounded_tl(px(16.))
+                                            .rounded_bl(px(16.))
+                                            .p(px(5.))
+                                    })
                                     .child(main_content),
                             )
-                            // Rounded rail-side corners WITHOUT a gutter (Cli +
-                            // Diff). GPUI can't clip custom-painted content
-                            // (terminal cells, diff rows) to a radius, so each
-                            // left corner is masked ON TOP by an inverted-corner
-                            // SVG — the curvilinear triangle OUTSIDE the 16px
-                            // arc — tinted #141414 (rail). Unlike a solid square
-                            // mask, the SVG covers nothing inside the arc, so
-                            // scrolled diff lines or terminal cells right at the
-                            // corner stay visible under the curve. 16px (vs
-                            // Agents' 10) because One Dark (#282c34) sits close
-                            // to the #141414 rail; the arc needs length to read.
-                            .when(
-                                matches!(
-                                    self.mode,
-                                    paneflow_config::schema::AppMode::Cli
-                                        | paneflow_config::schema::AppMode::Diff
-                                ),
-                                |d| {
-                                    // A full-width translucent title bar
-                                    // occupies the strip over the panel's
-                                    // top `title_bar_h` px, so a corner mask at
-                                    // y=0 is hidden under it and the VISIBLE
-                                    // top-left corner (where the panel content
-                                    // begins, at y=title_bar_h — see the
-                                    // main_content wrapper) is left square. Drop
-                                    // the mask down to that visible corner.
-                                    // A visible rail keeps it at y=0.
-                                    let tl_top = if title_bar_spans_window {
-                                        title_bar_h
-                                    } else {
-                                        px(0.)
-                                    };
-                                    d.child(
-                                        svg()
-                                            .absolute()
-                                            .top(tl_top)
-                                            .left_0()
-                                            .size(px(16.))
-                                            .path("icons/corner-tl.svg")
-                                            .text_color(
-                                                crate::app::constants::cockpit_chrome_background(
-                                                    theme.title_bar_background,
-                                                    is_window_active,
-                                                ),
-                                            ),
-                                    )
-                                    .child(
-                                        svg()
-                                            .absolute()
-                                            .bottom_0()
-                                            .left_0()
-                                            .size(px(16.))
-                                            .path("icons/corner-bl.svg")
-                                            .text_color(
-                                                crate::app::constants::cockpit_chrome_background(
-                                                    theme.title_bar_background,
-                                                    is_window_active,
-                                                ),
-                                            ),
-                                    )
-                                },
-                            )
-                            // A full-width title bar covers the Agents panel's
-                            // real y=0 radius. Mask the square background at the
-                            // visible content edge so only the rounded panel
-                            // remains.
-                            .when(
-                                title_bar_spans_window
-                                    && matches!(
-                                        self.mode,
-                                        paneflow_config::schema::AppMode::Agents
-                                    ),
-                                |d| {
-                                    d.child(
-                                        svg()
-                                            .absolute()
-                                            .top(title_bar_h)
-                                            .left_0()
-                                            .size(px(16.))
-                                            .path("icons/corner-tl.svg")
-                                            .text_color(
-                                                crate::app::constants::cockpit_chrome_background(
-                                                    theme.title_bar_background,
-                                                    is_window_active,
-                                                ),
-                                            ),
-                                    )
-                                },
-                            )
-                            // Draw the top + left border as one rounded
-                            // contour so the vertical stroke follows both
-                            // 16px rail-side corner radii. It is layered after
-                            // the corner masks so the arc remains visible.
+                            // Draw the top + left border as one rounded contour
+                            // tracing both 16px rail-side corner radii, so the
+                            // panel edge reads cleanly against the rail/backdrop.
                             .child(
                                 div()
                                     .absolute()
@@ -1363,9 +1299,6 @@ impl Render for PaneFlowApp {
         if let Some(target) = self.agents_view.agents_confirm_delete {
             app_content =
                 app_content.child(self.render_agents_confirm_delete_dialog(target, ui, cx));
-        }
-        if self.confirm_close_all_workspaces {
-            app_content = app_content.child(self.render_close_all_confirm_dialog(ui, cx));
         }
 
         // Outer backdrop div — provides the invisible resize border zone for CSD

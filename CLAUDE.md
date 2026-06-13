@@ -61,7 +61,7 @@ PaneFlowApp (Entity<Render>)           ← src-app/src/main.rs
 │   ├── ipc_handler.rs                 ← JSON-RPC handler dispatched to GPUI main thread
 │   ├── self_update_flow.rs            ← check/download/install orchestration
 │   ├── session.rs                     ← persist/restore workspaces to session.json
-│   ├── settings.rs                    ← legacy inline settings (being migrated to settings/)
+│   ├── settings.rs                    ← settings lifecycle: open/close, persist_setting, key handlers
 │   ├── sidebar/                       ← sidebar list + context menus
 │   └── workspace_ops/                 ← create/close/select/rename/reveal
 ├── window_chrome/
@@ -99,10 +99,10 @@ PaneFlowApp (Entity<Render>)           ← src-app/src/main.rs
 │   ├── defaults.rs / registry.rs      ← default bindings, action registry
 │   ├── apply.rs                       ← apply_keybindings() wires cx.bind_keys
 │   └── display.rs                     ← human-readable binding strings
-├── settings/                          ← settings window (extracted from settings_window.rs)
-│   ├── window.rs                      ← SettingsWindow root
-│   ├── sidebar.rs / keyboard.rs       ← sidebar nav, keyboard-shortcut editor
-│   └── tabs/                          ← appearance, shortcuts, …
+├── settings/                          ← embedded Codex-style settings (inline, not a window)
+│   ├── chrome.rs                      ← grouped nav rail + content panel (impl PaneFlowApp)
+│   ├── components.rs                  ← shared cards/toggles/section headers
+│   └── tabs/                          ← general, appearance, shortcuts, terminal, ai_agent, mcp
 ├── update/                            ← self-update (replaces self_update/)
 │   ├── checker.rs / error.rs          ← release checker, structured UpdateError
 │   ├── install_method.rs              ← detect install mode (AppImage / .deb / .msi / .app / .tar.gz)

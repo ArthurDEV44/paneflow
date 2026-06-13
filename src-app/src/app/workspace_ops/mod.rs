@@ -544,61 +544,6 @@ impl PaneFlowApp {
         cx.notify();
     }
 
-    /// Public entry point wired to the "Close all workspaces" menu
-    /// item. Opens the confirm dialog instead of clearing immediately
-    /// -- a misclick on this item used to wipe a session in one go.
-    /// The actual clear runs in [`Self::execute_close_all_workspaces`]
-    /// after the user clicks Confirm.
-    pub(crate) fn close_all_workspaces(&mut self, cx: &mut Context<Self>) {
-        if self.workspaces.is_empty() {
-            return;
-        }
-        self.workspace_menu_open = None;
-        self.confirm_close_all_workspaces = true;
-        cx.notify();
-    }
-
-    /// Dismiss the "Close all workspaces" confirm dialog without
-    /// touching state. Idempotent.
-    pub(crate) fn cancel_close_all_workspaces(&mut self, cx: &mut Context<Self>) {
-        if self.confirm_close_all_workspaces {
-            self.confirm_close_all_workspaces = false;
-            cx.notify();
-        }
-    }
-
-    /// Apply the close-all after the user confirms. Same logic as the
-    /// old single-step `close_all_workspaces`: unwatch git dirs, clear
-    /// the Vec, reset selection, persist the session, surface a toast.
-    pub(crate) fn execute_close_all_workspaces(&mut self, cx: &mut Context<Self>) {
-        self.confirm_close_all_workspaces = false;
-        if self.workspaces.is_empty() {
-            cx.notify();
-            return;
-        }
-        let count = self.workspaces.len();
-        let git_dirs: Vec<_> = self
-            .workspaces
-            .iter()
-            .filter_map(|ws| ws.git_dir.clone())
-            .collect();
-        for dir in &git_dirs {
-            self.unwatch_git_dir(dir);
-        }
-        self.workspaces.clear();
-        self.active_idx = 0;
-        self.save_session(cx);
-        let msg = if count == 1 {
-            "Workspace cleared".to_string()
-        } else {
-            format!("{count} workspaces cleared")
-        };
-        self.show_toast(msg, cx);
-        cx.notify();
-        // US-014: reconcile the diff (now empty) if in Diff mode.
-        self.reconcile_diff_after_workspace_change(cx);
-    }
-
     pub(crate) fn copy_workspace_path(&mut self, idx: usize, cx: &mut Context<Self>) {
         let Some(ws) = self.workspaces.get(idx) else {
             return;

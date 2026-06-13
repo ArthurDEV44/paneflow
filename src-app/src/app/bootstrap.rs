@@ -707,6 +707,12 @@ impl PaneFlowApp {
             cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Search threads", cx));
         cx.observe(&agents_filter_input, |_, _, cx| cx.notify())
             .detach();
+        // Codex settings nav search field — same pattern: a real single-line
+        // TextInput, observed so each keystroke re-renders the nav to re-filter.
+        let settings_search_input =
+            cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Search settings…", cx));
+        cx.observe(&settings_search_input, |_, _, cx| cx.notify())
+            .detach();
 
         let mut app = Self {
             workspaces,
@@ -729,6 +735,11 @@ impl PaneFlowApp {
             settings_section: None,
             settings_scroll: gpui::ScrollHandle::new(),
             settings_drag: None,
+            settings_search_input,
+            terminal_dropdown: None,
+            mcp_status: None,
+            mcp_install: None,
+            mcp_busy: false,
             // US-040: `$HOME` is unset by default on Windows (canonical home is
             // `%USERPROFILE%`), so the raw `var("HOME")` produced an empty
             // string and the sidebar never collapsed any cwd to `~`. `dirs`
@@ -873,7 +884,6 @@ impl PaneFlowApp {
                 sidebar_mode_picker_open: false,
                 agents_terminal_view_cache: std::collections::HashMap::new(),
             },
-            confirm_close_all_workspaces: false,
             // US-012: sidebar search/filter. Empty filter == show
             // everything; the focus handle is held here so the input
             // captures Backspace/Escape/Down without conflicting with

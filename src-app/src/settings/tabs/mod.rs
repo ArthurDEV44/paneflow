@@ -1,10 +1,12 @@
-//! Settings window tab content.
+//! Settings page bodies.
 //!
-//! Each submodule defines the body of one settings panel plus any
-//! action handlers that belong only to that panel. The sidebar and
-//! shell live in `settings::window`.
+//! Each submodule defines the body of one settings section plus any action
+//! handlers that belong only to that section, all `impl crate::PaneFlowApp`.
+//! The nav rail + content shell live in `settings::chrome`.
 
 pub mod ai_agent;
 pub mod appearance;
+pub mod general;
+pub mod mcp;
 pub mod shortcuts;
 pub mod terminal;

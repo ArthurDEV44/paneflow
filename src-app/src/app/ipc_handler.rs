@@ -527,9 +527,9 @@ impl PaneFlowApp {
             for ws in &self.workspaces {
                 ws.propagate_config(&self.cached_config, cx);
             }
-            // US-016: push to the open Settings window so its render cache +
-            // shortcut list reflect this external change (fixes désync).
-            Self::push_config_to_settings_window(&self.cached_config, cx);
+            // The embedded settings page reads `self.cached_config` directly and
+            // its shortcut list is refreshed above (`effective_shortcuts`), so an
+            // external `paneflow.json` edit reflects without any extra push.
             cx.notify();
         }
 
@@ -543,23 +543,6 @@ impl PaneFlowApp {
             .swap(false, std::sync::atomic::Ordering::AcqRel)
         {
             cx.notify();
-        }
-    }
-
-    /// US-016: push a refreshed config to the open Settings window (if any).
-    /// The window handle isn't stored anywhere, so we locate it among the
-    /// open windows by downcast — leak-free, no second `ConfigWatcher`.
-    fn push_config_to_settings_window(
-        config: &paneflow_config::schema::PaneFlowConfig,
-        cx: &mut Context<Self>,
-    ) {
-        for handle in cx.windows() {
-            if let Some(settings) = handle.downcast::<crate::settings::SettingsWindow>() {
-                let cfg = config.clone();
-                let _ = settings.update(cx, |settings, _window, cx| {
-                    settings.apply_external_config(cfg, cx);
-                });
-            }
         }
     }
 
@@ -1391,9 +1374,9 @@ impl PaneFlowApp {
                 });
                 // …but the keyboard focus needs a `&mut Window`, which the IPC
                 // dispatch doesn't carry. Defer one tick and re-enter through
-                // the main window handle (same pattern as
-                // `push_config_to_settings_window`); deferring keeps the
-                // re-entrant `PaneFlowApp` update out of this in-flight one.
+                // the main window handle (locate it among `cx.windows()` by
+                // downcast); deferring keeps the re-entrant `PaneFlowApp` update
+                // out of this in-flight one.
                 cx.defer(move |cx| {
                     for handle in cx.windows() {
                         if let Some(main) = handle.downcast::<PaneFlowApp>() {
