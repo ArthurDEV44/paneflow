@@ -392,7 +392,10 @@ revision = "1"
 # differs from cargo-generate-rpm below, which resolves relative to the
 # workspace root). cargo-deb auto-sets 755 on all control scripts.
 maintainer-scripts = "../packaging/debian"
-depends = "libc6, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libx11-6, libvulkan1, libfontconfig1, libfreetype6"
+# `fontconfig` (not just `libfontconfig1`) provides the `fc-list` BINARY the
+# settings font picker shells out to (`fonts.rs`); without it the picker is
+# empty on slim images.
+depends = "libc6, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libx11-6, libvulkan1, libfontconfig1, libfreetype6, fontconfig"
 extended-description = """\
 PaneFlow is a native Rust terminal workspace for running coding agents in
 parallel. Launch Claude Code, Codex, opencode, Pi, and other CLI agents in real
@@ -496,3 +499,7 @@ assets = [
 "libxkbcommon-x11.so.0()(64bit)" = "*"
 "libfontconfig.so.1()(64bit)" = "*"
 "libfreetype.so.6()(64bit)" = "*"
+# The `fc-list` BINARY (in the `fontconfig` package) the settings font picker
+# shells out to. A file dependency resolves the right package on every rpm
+# distro without per-distro package-name fan-out.
+"/usr/bin/fc-list" = "*"
