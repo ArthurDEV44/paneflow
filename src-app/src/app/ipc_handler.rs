@@ -202,8 +202,11 @@ fn turn_end_notify_command(body: &str) -> Option<std::process::Command> {
     let mut command = std::process::Command::new("notify-send");
     // `--` terminates GLib option parsing: a workspace title beginning with `-`
     // must be taken as the summary/body, never mis-parsed as a notify-send flag.
+    // `--icon` (before `--`) gives the notification PaneFlow's icon instead of a
+    // generic glyph; the `paneflow` icon name matches the `.desktop` Icon= key.
     command
         .arg("--app-name=Paneflow")
+        .arg("--icon=paneflow")
         .arg("--")
         .arg("Paneflow")
         .arg(body);
