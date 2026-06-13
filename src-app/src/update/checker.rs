@@ -117,10 +117,17 @@ fn url_host(after_scheme: &str) -> &str {
     }
 }
 
-/// Loopback host check covering `localhost`, the whole `127.0.0.0/8` block,
-/// and IPv6 `::1`.
+/// Loopback host check covering `localhost` and any loopback IP literal
+/// (`127.0.0.0/8`, IPv6 `::1`). The host is PARSED as an IP so a deceptive
+/// string like `127.example.com` or `127.0.0.1.evil.com` does NOT match — the
+/// old `starts_with("127.")` prefix test let those bypass the https allow-list.
 fn is_loopback_host(host: &str) -> bool {
-    host == "localhost" || host == "::1" || host == "127.0.0.1" || host.starts_with("127.")
+    if host == "localhost" {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
 }
 
 /// Detect the native host CPU architecture, seeing through emulation
