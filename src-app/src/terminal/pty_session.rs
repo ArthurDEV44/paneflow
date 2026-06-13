@@ -1266,6 +1266,13 @@ impl TerminalState {
         if self.exited.is_some() {
             return None;
         }
+        // Display-only terminal (no real PTY): `child_pid` is 0. Bail before the
+        // `/proc` lookup — the `highest_pid_child_via_ppid` fallback would
+        // otherwise match the kernel processes whose ppid is 0 (PID 1/2) and
+        // mis-name a display-only surface. Mirrors the macOS/Windows guards.
+        if self.child_pid == 0 {
+            return None;
+        }
         // The most-recently-spawned child of the shell approximates the
         // foreground job for the common interactive case (one job at a time).
         // With no children the shell is idle → report its own comm so naming
