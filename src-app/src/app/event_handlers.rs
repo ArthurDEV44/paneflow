@@ -177,6 +177,43 @@ impl PaneFlowApp {
                 self.emit_app_exited_and_flush();
                 cx.quit();
             }
+            title_bar::TitleBarEvent::ToggleSidebar => {
+                self.primary_sidebar_visible = !self.primary_sidebar_visible;
+                self.title_bar_files_menu_open = None;
+                self.title_bar_help_menu_open = None;
+                if !self.primary_sidebar_visible {
+                    self.workspace_menu_open = None;
+                    self.profile_menu_open = None;
+                    self.agents_view.agents_menu_open = None;
+                    self.agents_view.sidebar_actions_menu_open = false;
+                    self.agents_view.sidebar_mode_picker_open = false;
+                }
+                cx.notify();
+            }
+            title_bar::TitleBarEvent::ToggleFilesMenu(anchor) => {
+                self.title_bar_files_menu_open =
+                    self.title_bar_files_menu_open.is_none().then_some(*anchor);
+                self.title_bar_help_menu_open = None;
+                self.workspace_menu_open = None;
+                self.tab_menu_open = None;
+                self.profile_menu_open = None;
+                self.agents_view.agents_menu_open = None;
+                self.agents_view.sidebar_actions_menu_open = false;
+                self.agents_view.sidebar_mode_picker_open = false;
+                cx.notify();
+            }
+            title_bar::TitleBarEvent::ToggleHelpMenu(anchor) => {
+                self.title_bar_help_menu_open =
+                    self.title_bar_help_menu_open.is_none().then_some(*anchor);
+                self.title_bar_files_menu_open = None;
+                self.workspace_menu_open = None;
+                self.tab_menu_open = None;
+                self.profile_menu_open = None;
+                self.agents_view.agents_menu_open = None;
+                self.agents_view.sidebar_actions_menu_open = false;
+                self.agents_view.sidebar_mode_picker_open = false;
+                cx.notify();
+            }
         }
     }
 

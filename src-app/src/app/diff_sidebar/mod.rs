@@ -38,20 +38,24 @@ impl PaneFlowApp {
     /// Wired into the `main.rs` mode-dispatch `match`.
     pub(crate) fn render_diff_sidebar(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let ui = crate::theme::ui_colors();
+        let theme = crate::theme::active_theme();
 
         div()
             .relative()
             .w(px(DIFF_SIDEBAR_WIDTH))
             .flex_shrink_0()
             .h_full()
-            // Cockpit rail (#1d1d1d), matching the Cli/Agents sidebars. No
+            // Cockpit rail (#141414), matching the Cli/Agents sidebars. No
             // border-right: the rail and the ui.base panel separate by a
             // luminance step, not a drawn divider.
-            .bg(gpui::rgb(0x1d1d1d))
+            .bg(crate::app::constants::cockpit_chrome_background(
+                theme.title_bar_background,
+                window.is_window_active(),
+            ))
             .flex()
             .flex_col()
             .child(self.render_diff_files(ui, cx))

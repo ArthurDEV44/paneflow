@@ -203,38 +203,38 @@ impl PaneFlowApp {
         )
     }
 
-    /// Render the bottom Settings trigger + the popover overlay that
-    /// opens upward when `sidebar_actions_menu_open` is true. Wrap the
-    /// result inside a `relative()` container at the bottom of the
-    /// sidebar's flex column.
+    /// Render the bottom footer: Settings on the left and a compact interface
+    /// picker on the right. Both popovers open upward and are mutually
+    /// exclusive.
     pub(crate) fn render_sidebar_settings_footer(
         &self,
         items: Vec<SidebarMenuItem>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let ui = crate::theme::ui_colors();
-        let theme = crate::theme::active_theme();
-        let is_open = self.agents_view.sidebar_actions_menu_open;
+        use paneflow_config::schema::AppMode;
 
-        let trigger = div()
+        let ui = crate::theme::ui_colors();
+        let settings_open = self.agents_view.sidebar_actions_menu_open;
+        let mode_picker_open = self.agents_view.sidebar_mode_picker_open;
+        let mode = self.mode;
+
+        let settings_trigger = div()
             .id("sidebar-settings-trigger")
-            .mx(px(6.))
+            .flex_1()
+            .h(px(30.))
             .px(px(8.))
-            .py(px(6.))
-            .rounded(px(6.))
+            .rounded(px(9.))
             .cursor_pointer()
             .flex()
             .flex_row()
             .items_center()
             .gap(px(6.))
-            .when(is_open, |d| d.bg(ui.subtle))
-            .hover(|s| {
-                let ui = crate::theme::ui_colors();
-                s.bg(ui.subtle)
-            })
+            .when(settings_open, |d| d.bg(ui.subtle))
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                 this.agents_view.sidebar_actions_menu_open =
                     !this.agents_view.sidebar_actions_menu_open;
+                this.agents_view.sidebar_mode_picker_open = false;
                 cx.notify();
             }))
             .child(
@@ -255,34 +255,62 @@ impl PaneFlowApp {
                     .child("Settings"),
             );
 
-        let popover: Option<AnyElement> = if is_open {
-            // Vertical menu opening upward from the trigger. Each row
-            // matches the sidebar's row language (icon + label, ghost
-            // hover). Background uses the panel surface tint so the
-            // popover separates from the sidebar's `title_bar_background`.
+        let active_mode_icon = match mode {
+            AppMode::Cli => "icons/terminal.svg",
+            AppMode::Diff => "icons/git-pull-request.svg",
+            AppMode::Agents => "icons/sparkles.svg",
+        };
+        let mode_trigger_tooltip: SharedString = "Switch interface".into();
+        let mode_trigger = div()
+            .id("sidebar-mode-picker-trigger")
+            .flex_none()
+            .size(px(30.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .cursor_pointer()
+            .when(mode_picker_open, |d| {
+                d.bg(crate::app::constants::sidebar_tab_active_background())
+            })
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+            .tooltip(move |_window, cx| {
+                let label = mode_trigger_tooltip.clone();
+                cx.new(|_| crate::app::sidebar::SidebarTooltip { label })
+                    .into()
+            })
+            .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                this.agents_view.sidebar_mode_picker_open =
+                    !this.agents_view.sidebar_mode_picker_open;
+                this.agents_view.sidebar_actions_menu_open = false;
+                cx.notify();
+            }))
+            .child(
+                svg()
+                    .size(px(14.))
+                    .path(active_mode_icon)
+                    .text_color(ui.muted),
+            );
+
+        let settings_popover: Option<AnyElement> = if settings_open {
+            // Vertical menu opening upward from the trigger. Mirrors the
+            // title-bar "Files" / "Help" dropdowns (`profile_menu.rs`):
+            // same dark surface (`0x2b2b2c`), 12px radius, 6px padding,
+            // borderless with a soft drop shadow, so all three app menus
+            // read as one consistent menu language.
             let mut menu = div()
                 .id("sidebar-settings-popover")
                 .absolute()
                 .left(px(6.))
                 .right(px(6.))
-                // 38px = trigger total height (px8/py6 + 14px icon) plus
-                // a 6px gap. Adjust if the trigger padding changes.
-                .bottom(px(38.))
+                .bottom(px(42.))
                 .flex()
                 .flex_col()
-                .gap(px(1.))
-                .p(px(4.))
-                .rounded(px(8.))
-                .bg(theme.title_bar_background)
-                .border_1()
-                .border_color(ui.border)
-                .shadow(vec![gpui::BoxShadow {
-                    color: gpui::black().opacity(0.25),
-                    offset: gpui::point(px(0.), px(2.)),
-                    blur_radius: px(8.),
-                    spread_radius: px(0.),
-                    inset: false,
-                }])
+                .gap(px(2.))
+                .p(px(6.))
+                .rounded(px(12.))
+                .bg(gpui::rgb(0x2b2b2c))
+                .shadow_lg()
                 // Click anywhere outside the popover (or its trigger)
                 // dismisses it. Same pattern as `profile_menu.rs:128`.
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
@@ -299,8 +327,115 @@ impl PaneFlowApp {
             None
         };
 
+        type Activate = Box<dyn Fn(&mut PaneFlowApp, &mut gpui::Window, &mut Context<PaneFlowApp>)>;
+        let mode_button = |id: &'static str,
+                           label: &'static str,
+                           icon: &'static str,
+                           is_active: bool,
+                           activate: Activate| {
+            // Equal-width segment (icon + spelled-out name) so the three modes
+            // tile the footer row evenly. The name is always visible, so the
+            // old icon-only tooltip is gone.
+            let fg = if is_active { ui.text } else { ui.muted };
+            let mut button = div()
+                .id(id)
+                .flex_1()
+                .h(px(30.))
+                .px(px(4.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_center()
+                .gap(px(6.))
+                .rounded(px(8.))
+                .child(svg().size(px(14.)).flex_none().path(icon).text_color(fg))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(if is_active {
+                            FontWeight::MEDIUM
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .text_color(fg)
+                        .child(label),
+                );
+            // Same background design as the workspace cards / thread tabs:
+            // the tint fill when active, transparent at rest, and the lighter
+            // tint on hover for the inactive segments.
+            if is_active {
+                button = button.bg(crate::app::constants::sidebar_tab_active_background());
+            } else {
+                button = button
+                    .cursor_pointer()
+                    .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        activate(this, window, cx);
+                        this.agents_view.sidebar_mode_picker_open = false;
+                        cx.notify();
+                    }));
+            }
+            button.into_any_element()
+        };
+
+        // Interface picker, two states sharing the footer row.
+        //   Closed: the Settings trigger (flex_1) sits left of the mode trigger.
+        //   Open:   the three labeled mode buttons tile the WHOLE row as a
+        //           segmented control on the sidebar's solid background — the
+        //           mode trigger hides so "Review" / "Agents" never clip, and
+        //           every segment stays legible (the old upward popover floated
+        //           them over the translucent Diff content, where idle segments
+        //           washed out). Pick a segment or click outside to dismiss.
+        let footer_row: AnyElement = if mode_picker_open {
+            div()
+                .id("sidebar-mode-picker")
+                .mx(px(6.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    if this.agents_view.sidebar_mode_picker_open {
+                        this.agents_view.sidebar_mode_picker_open = false;
+                        cx.notify();
+                    }
+                }))
+                .child(mode_button(
+                    "sidebar-mode-cli",
+                    "CLI",
+                    "icons/terminal.svg",
+                    matches!(mode, AppMode::Cli),
+                    Box::new(|this, window, cx| this.enter_cli_mode(window, cx)),
+                ))
+                .child(mode_button(
+                    "sidebar-mode-diff",
+                    "Review",
+                    "icons/git-pull-request.svg",
+                    matches!(mode, AppMode::Diff),
+                    Box::new(|this, _window, cx| this.enter_diff_mode(cx)),
+                ))
+                .child(mode_button(
+                    "sidebar-mode-agents",
+                    "Agents",
+                    "icons/sparkles.svg",
+                    matches!(mode, AppMode::Agents),
+                    Box::new(|this, _window, cx| this.enter_agents_mode(cx)),
+                ))
+                .into_any_element()
+        } else {
+            div()
+                .mx(px(6.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.))
+                .child(settings_trigger)
+                .child(mode_trigger)
+                .into_any_element()
+        };
+
         let mut footer = div().relative().flex_none().py(px(6.));
-        if let Some(popover) = popover {
+        if let Some(popover) = settings_popover {
             footer = footer.child(popover);
         }
         // Cockpit homes of the old title-bar pills, right above the Settings
@@ -312,109 +447,13 @@ impl PaneFlowApp {
         if let Some(banner) = self.render_sidebar_update_banner(cx) {
             footer = footer.child(banner);
         }
-        footer.child(trigger).into_any_element()
+        footer.child(footer_row).into_any_element()
     }
 
-    /// CLI / Diff / Agents mode picker, rendered at the very bottom of each
-    /// sidebar (below the Settings footer). Codex redesign: a floating
-    /// fully-rounded pill (the ChatGPT model-picker language) — `ui.surface`
-    /// container with a faint hairline, the active segment a complete
-    /// brighter pill (#323232, the same "brightest fill" as the selected
-    /// workspace card), each segment carrying a small mode icon.
-    pub(crate) fn render_mode_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
-        use paneflow_config::schema::AppMode;
-        let ui = crate::theme::ui_colors();
-        let mode = self.mode;
-
-        let inactive_text = ui.text.opacity(0.45);
-        let inactive_hover_text = ui.text.opacity(0.85);
-
-        // US-002 (prd-git-diff-mode-2026-Q3.md): the control grew from a
-        // hardcoded 2-way CLI/Agents toggle to N segments, so each
-        // inactive segment carries its own `activate` callback instead
-        // of one shared `match self.mode`. Only inactive segments are
-        // clickable; switching modes means clicking a different segment.
-        type Activate = Box<dyn Fn(&mut PaneFlowApp, &mut gpui::Window, &mut Context<PaneFlowApp>)>;
-
-        let segment = |label: &'static str,
-                       icon: &'static str,
-                       is_active: bool,
-                       id: &'static str,
-                       activate: Activate| {
-            let mut seg = div()
-                .id(id)
-                .flex_1()
-                .h(px(24.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_center()
-                .gap(px(5.))
-                .rounded_full()
-                .text_size(px(11.));
-            if is_active {
-                seg = seg
-                    .bg(gpui::rgb(0x323232))
-                    .text_color(ui.text)
-                    .font_weight(FontWeight::SEMIBOLD);
-            } else {
-                seg = seg
-                    .text_color(inactive_text)
-                    .font_weight(FontWeight::MEDIUM)
-                    .cursor_pointer()
-                    .hover(move |s| s.text_color(inactive_hover_text))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _: &ClickEvent, w, cx| {
-                        cx.stop_propagation();
-                        activate(this, w, cx);
-                    }));
-            }
-            seg.child(
-                svg()
-                    .size(px(13.))
-                    .flex_none()
-                    .path(icon)
-                    .text_color(if is_active { ui.text } else { inactive_text }),
-            )
-            .child(label)
-            .into_any_element()
-        };
-
-        div()
-            .id("sidebar-mode-toggle")
-            .mx(px(6.))
-            .mb(px(6.))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(2.))
-            .p(px(3.))
-            .rounded_full()
-            .bg(ui.surface)
-            .border_1()
-            .border_color(ui.border.opacity(0.5))
-            .child(segment(
-                "CLI",
-                "icons/terminal.svg",
-                matches!(mode, AppMode::Cli),
-                "sidebar-mode-cli",
-                Box::new(|this, w, cx| this.enter_cli_mode(w, cx)),
-            ))
-            .child(segment(
-                "Diff",
-                "icons/git-pull-request.svg",
-                matches!(mode, AppMode::Diff),
-                "sidebar-mode-diff",
-                Box::new(|this, _w, cx| this.enter_diff_mode(cx)),
-            ))
-            .child(segment(
-                "Agents",
-                "icons/sessions.svg",
-                matches!(mode, AppMode::Agents),
-                "sidebar-mode-agents",
-                Box::new(|this, _w, cx| this.enter_agents_mode(cx)),
-            ))
-            .into_any_element()
+    /// Compatibility slot for existing sidebar call sites. The mode picker now
+    /// lives in the shared footer above.
+    pub(crate) fn render_mode_toggle(&self, _cx: &mut Context<Self>) -> AnyElement {
+        div().into_any_element()
     }
 }
 
@@ -437,18 +476,15 @@ fn render_menu_item(
     let handler = item.on_click;
     div()
         .id(item.id)
+        .h(px(30.))
         .px(px(8.))
-        .py(px(6.))
-        .rounded(px(5.))
+        .rounded(px(10.))
         .cursor_pointer()
         .flex()
         .flex_row()
         .items_center()
         .gap(px(8.))
-        .hover(|s| {
-            let ui = crate::theme::ui_colors();
-            s.bg(ui.subtle)
-        })
+        .hover(|s| s.bg(gpui::rgb(0x3a3a3c)))
         .on_click(cx.listener(move |this, _: &ClickEvent, w, cx| {
             handler(this, w, cx);
             this.agents_view.sidebar_actions_menu_open = false;

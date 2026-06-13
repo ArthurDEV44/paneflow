@@ -76,7 +76,6 @@ pub(crate) fn render_skills_page(
     cx: &mut Context<PaneFlowApp>,
 ) -> AnyElement {
     let ui = crate::theme::ui_colors();
-    let theme = crate::theme::active_theme();
     let all = discover_skills();
     let filtered: Vec<SkillEntry> = all
         .into_iter()
@@ -136,9 +135,8 @@ pub(crate) fn render_skills_page(
         .flex_col()
         .size_full()
         .overflow_y_scroll()
-        // Same panel bg as the Connect / welcome page so the cards'
-        // `ui.surface` background pops the way it does there.
-        .bg(theme.title_bar_background)
+        // Keep the entire Agents right panel on the shared #181818 surface.
+        .bg(ui.base)
         .text_color(ui.text)
         .px(px(20.))
         .py(px(16.))

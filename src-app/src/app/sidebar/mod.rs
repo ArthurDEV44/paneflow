@@ -104,7 +104,11 @@ impl PaneFlowApp {
         order
     }
 
-    pub(crate) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_sidebar(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
         let theme = crate::theme::active_theme();
         let mut sidebar = div()
@@ -112,11 +116,14 @@ impl PaneFlowApp {
             .w(px(SIDEBAR_WIDTH))
             .flex_shrink_0()
             .h_full()
-            // Cockpit rail (#1d1d1d), matching the Agents sidebar. The
+            // Cockpit rail (#141414), matching the Agents sidebar. The
             // border-right is gone: the rail and the #181818 content gutter
             // separate by a luminance step, not a drawn divider (the OpenAI
             // surface system — separation by luminance, not borders).
-            .bg(rgb(0x1d1d1d))
+            .bg(crate::app::constants::cockpit_chrome_background(
+                theme.title_bar_background,
+                window.is_window_active(),
+            ))
             .flex()
             .flex_col();
 
@@ -124,8 +131,6 @@ impl PaneFlowApp {
         // Open Settings) moved into the bottom-of-sidebar Settings
         // popover. The top of the CLI sidebar is now empty -- see
         // `cli_menu_items` for the popover contents.
-        let _ = theme;
-
         // Workspace list — scrollable area. Wheel-scroll comes from
         // `overflow_y_scroll + track_scroll`; the visible scroll bar
         // is gone, so the list uses the full sidebar width without a
@@ -138,7 +143,7 @@ impl PaneFlowApp {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .py_2();
+            .pb(px(8.));
 
         if self.workspaces.is_empty() {
             list = list.child(
@@ -252,21 +257,20 @@ impl PaneFlowApp {
                 .mx(px(8.))
                 .px(px(10.))
                 .py(px(8.))
-                .rounded(px(6.))
+                .rounded(crate::app::constants::SIDEBAR_TAB_CORNER_RADIUS)
                 .cursor_pointer()
                 // Quiet card (Codex/OpenAI sidebar row): dissolves into the
-                // #1d1d1d rail at rest. Selection is a fill only — the brightest
-                // neutral fill (#323232), no contour and no colored ring (the
+                // #141414 rail at rest. Selection is a fill only — the brightest
+                // translucent blue-grey fill, no contour and no colored ring (the
                 // accent stays reserved for agent status). At +21 luminance over
                 // the rail, the fill alone reads clearly. Hover is a quieter fill
-                // (ui.subtle), always below the selected fill so a hovered card
+                // from the same tint, always below the selected fill so a hovered card
                 // never out-shines the selected one.
-                .when(is_active, |d| d.bg(rgb(0x323232)))
+                .when(is_active, |d| {
+                    d.bg(crate::app::constants::sidebar_tab_active_background())
+                })
                 .when(!is_active, |d| {
-                    d.hover(|s| {
-                        let ui = crate::theme::ui_colors();
-                        s.bg(ui.subtle)
-                    })
+                    d.hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
                 })
                 .on_drag(
                     WorkspaceDrag {
