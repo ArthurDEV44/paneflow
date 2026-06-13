@@ -5,10 +5,113 @@
 //! existing `crate::SIDEBAR_WIDTH` / `crate::TOAST_HOLD_MS` references in
 //! sibling modules keep compiling without import churn.
 
-use gpui::{Pixels, px};
+use gpui::{Hsla, Pixels, WindowBackgroundAppearance, px};
 
 /// Sidebar width in pixels — shared between sidebar and title bar for alignment.
 pub(crate) const SIDEBAR_WIDTH: f32 = 240.;
+
+/// Original solid PaneFlow chrome tint used while the window is inactive.
+const CHROME_INACTIVE_TINT: u32 = 0x141414;
+
+/// Source tint for selected and hovered sidebar tabs.
+const SIDEBAR_TAB_TINT: u32 = 0x30373c;
+const SIDEBAR_TAB_ACTIVE_OPACITY: f32 = 0.82;
+const SIDEBAR_TAB_HOVER_OPACITY: f32 = 0.55;
+
+/// Generous circular radius approximating Codex's continuous Apple-style corners.
+pub(crate) const SIDEBAR_TAB_CORNER_RADIUS: Pixels = px(9.);
+
+/// Native material used behind the main application window.
+///
+/// GPUI provides acrylic/visual-effect blur on Windows and macOS. Linux keeps
+/// an opaque window because compositor blur support is not portable across
+/// Wayland and X11 environments.
+pub(crate) fn window_background_appearance() -> WindowBackgroundAppearance {
+    #[cfg(target_os = "windows")]
+    {
+        if windows_supports_system_backdrop() {
+            WindowBackgroundAppearance::MicaBackdrop
+        } else {
+            WindowBackgroundAppearance::Blurred
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        WindowBackgroundAppearance::Blurred
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        WindowBackgroundAppearance::Opaque
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_supports_system_backdrop() -> bool {
+    #[repr(C)]
+    struct RtlOsVersionInfo {
+        size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform_id: u32,
+        service_pack: [u16; 128],
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlGetVersion(version: *mut RtlOsVersionInfo) -> i32;
+    }
+
+    let mut version = RtlOsVersionInfo {
+        size: std::mem::size_of::<RtlOsVersionInfo>() as u32,
+        major: 0,
+        minor: 0,
+        build: 0,
+        platform_id: 0,
+        service_pack: [0; 128],
+    };
+
+    // NTSTATUS values greater than or equal to zero indicate success.
+    unsafe { RtlGetVersion(&mut version) >= 0 && version.build >= 22_621 }
+}
+
+/// Background used by the title bar and navigation rails.
+///
+/// Inactive windows keep PaneFlow's original solid `#141414`. Active windows
+/// leave the chrome transparent so the subtler standard Mica material shows
+/// through without an application tint.
+pub(crate) fn cockpit_chrome_background(background: Hsla, is_window_active: bool) -> Hsla {
+    if cfg!(any(target_os = "windows", target_os = "macos")) {
+        if is_window_active {
+            gpui::transparent_black()
+        } else {
+            Hsla::from(gpui::rgb(CHROME_INACTIVE_TINT))
+        }
+    } else {
+        background
+    }
+}
+
+/// Window-level backdrop behind the translucent chrome.
+pub(crate) fn cockpit_backdrop_background(background: Hsla) -> Hsla {
+    if cfg!(any(target_os = "windows", target_os = "macos")) {
+        gpui::transparent_black()
+    } else {
+        background
+    }
+}
+
+/// Background for the selected tab in the CLI and Agents sidebars.
+pub(crate) fn sidebar_tab_active_background() -> Hsla {
+    Hsla::from(gpui::rgb(SIDEBAR_TAB_TINT)).opacity(SIDEBAR_TAB_ACTIVE_OPACITY)
+}
+
+/// Background for a hovered, non-selected sidebar tab.
+pub(crate) fn sidebar_tab_hover_background() -> Hsla {
+    Hsla::from(gpui::rgb(SIDEBAR_TAB_TINT)).opacity(SIDEBAR_TAB_HOVER_OPACITY)
+}
 
 /// Claude Code spinner glyphs — same characters Claude renders in the terminal.
 /// Claude Code keeps this unique glyph spinner; every other agent uses the

@@ -118,16 +118,20 @@ impl PaneFlowApp {
         // hardware.
         let _render_canary = RenderTimeCanary::new(self.projects.len());
         let ui = crate::theme::ui_colors();
+        let theme = crate::theme::active_theme();
 
         let mut sidebar = div()
             .relative()
             .w(px(AGENTS_SIDEBAR_WIDTH))
             .flex_shrink_0()
             .h_full()
-            // Cockpit color (Arthur): #1d1d1d rail/chrome, a touch lighter than
-            // the near-black #111111 panel; no divider — the bg step + the
+            // Cockpit rail/chrome (#141414) against the #181818 right panel;
+            // no divider — the bg step + the
             // floating rounded panel provide the separation.
-            .bg(rgb(0x1d1d1d))
+            .bg(crate::app::constants::cockpit_chrome_background(
+                theme.title_bar_background,
+                window.is_window_active(),
+            ))
             .flex()
             .flex_col();
 
@@ -732,7 +736,7 @@ impl PaneFlowApp {
             .mx(px(6.))
             .px(px(8.))
             .py(px(6.))
-            .rounded(px(6.))
+            .rounded(crate::app::constants::SIDEBAR_TAB_CORNER_RADIUS)
             .cursor_pointer()
             .flex()
             .flex_row()
@@ -740,16 +744,13 @@ impl PaneFlowApp {
             .gap(px(6.));
 
         if is_active {
-            // Selection gray pinned against the rail's hardcoded #1d1d1d
+            // Selection gray pinned against the rail's #141414
             // cockpit color (not the theme's `ui.surface`, which sits too
             // close to it to read as selected) — Arthur: "#2c2c2c, un gris
             // plus clair que la sidebar".
-            row = row.bg(rgb(0x2c2c2c));
+            row = row.bg(crate::app::constants::sidebar_tab_active_background());
         } else {
-            row = row.hover(|s| {
-                let ui = crate::theme::ui_colors();
-                s.bg(ui.subtle)
-            });
+            row = row.hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()));
         }
 
         row = row

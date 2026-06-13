@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Decorations, EventEmitter, IntoElement,
-    MouseButton, Pixels, Render, Styled, Transformation, Window, WindowControlArea, div,
-    percentage, prelude::*, px, rgb, svg,
+    MouseButton, Render, Styled, Transformation, Window, WindowControlArea, div, percentage,
+    prelude::*, px, svg,
 };
 
 use super::csd::default_button_layout;
@@ -11,17 +11,18 @@ use super::csd::default_button_layout;
 pub struct TitleBar {
     should_move: bool,
     pub workspace_name: Option<String>,
-    pub sidebar_width: Pixels,
+    pub sidebar_visible: bool,
+    pub files_menu_open: bool,
+    pub help_menu_open: bool,
     pub ipc_state: crate::ipc::IpcState,
     /// Set by PaneFlowApp when a newer version is detected.
     pub update_available: Option<UpdateInfo>,
     /// US-010 (prd-agents-ui-codex-redesign-2026-Q3.md): the brand slot's
     /// primary text in Agents mode (current thread/chat title, or a neutral
-    /// "Agents"/project label in the picker state). `None` in Cli/Diff →
-    /// the brand renders the static "PaneFlow" (diff visuel nul). PUSHED by
-    /// `PaneFlowApp::render` only on the Agents arm; `TitleBar` never reads
-    /// `AppMode` — the render branch tests the presence of this field, not
-    /// the mode (push-only contract).
+    /// "Agents"/project label in the picker state). `None` in Cli/Diff leaves
+    /// the brand slot empty. PUSHED by `PaneFlowApp::render` only on the Agents
+    /// arm; `TitleBar` never reads `AppMode` — the render branch tests the
+    /// presence of this field, not the mode (push-only contract).
     pub agents_thread_title: Option<String>,
     /// US-010: the secondary "· context" text (project name for a project
     /// thread, "Chat" for a free chat). `None` in the picker state and in
@@ -36,13 +37,19 @@ pub struct TitleBar {
     /// seamless chrome. `false` in Cli/Diff keeps the divider (diff visuel
     /// nul). PUSHED by `PaneFlowApp::render`; `TitleBar` never reads `AppMode`.
     pub is_agents: bool,
-    /// Cockpit chrome for the Cli mode: paint the rail gray (`#1d1d1d`) and
+    /// Cockpit chrome for the Cli mode: paint the rail `#141414` and
     /// drop the bottom divider so the title bar + sidebar read as one
     /// continuous surface, matching the Agents cockpit. `false` in Diff keeps
     /// the themed chrome + divider (Diff stays frozen). Mutually exclusive with
     /// `is_agents` (Agents paints nothing). PUSHED by `PaneFlowApp::render`;
     /// `TitleBar` never reads `AppMode`.
     pub cockpit: bool,
+    /// #10: subscription that repaints the title bar when the desktop
+    /// environment relocates the window-control buttons (e.g. GNOME left↔right).
+    /// Registered lazily on the first `render` (where `window` is available, as
+    /// `new` has none); `None` until then. Dropping it on `TitleBar` drop
+    /// unregisters the observer.
+    button_layout_observer: Option<gpui::Subscription>,
 }
 
 #[derive(Clone)]
@@ -105,7 +112,9 @@ impl TitleBar {
         Self {
             should_move: false,
             workspace_name: None,
-            sidebar_width: px(220.),
+            sidebar_visible: true,
+            files_menu_open: false,
+            help_menu_open: false,
             ipc_state: crate::ipc::IpcState::Online,
             update_available: None,
             agents_thread_title: None,
@@ -113,29 +122,55 @@ impl TitleBar {
             agents_overflow: false,
             is_agents: false,
             cockpit: false,
+            button_layout_observer: None,
         }
     }
 }
 
 pub enum TitleBarEvent {
     CloseRequested,
+    ToggleSidebar,
+    ToggleFilesMenu(gpui::Point<gpui::Pixels>),
+    ToggleHelpMenu(gpui::Point<gpui::Pixels>),
 }
 
 impl EventEmitter<TitleBarEvent> for TitleBar {}
 
 impl Render for TitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // #10: repaint when the desktop environment relocates the window-control
+        // buttons (GNOME left↔right) so `cx.button_layout()` below is never
+        // stale until some unrelated repaint forces a frame. Registered once
+        // here (not in `new`, which has no `Window`); the `Subscription` lives
+        // in `self`. Mirrors Zed (`title_bar.rs:488`).
+        if self.button_layout_observer.is_none() {
+            self.button_layout_observer =
+                Some(cx.observe_button_layout_changed(window, |_, _, cx| cx.notify()));
+        }
+
         let height = (1.75 * window.rem_size()).max(px(34.));
         let decorations = window.window_decorations();
         let is_csd = matches!(decorations, Decorations::Client { .. });
+        // #9: under real server-side decorations (`window_decorations: server`,
+        // opt-in; e.g. KDE Plasma) the compositor draws its own caption bar AND
+        // this custom bar renders below it — they double up. We can't simply
+        // drop this bar under SSD: it carries app chrome the compositor caption
+        // does NOT (sidebar toggle, Files/Help menus, workspace tabs). The
+        // min/max/close pill IS gated on `is_csd` below so those don't double;
+        // the brand/menus row is best-effort under SSD. The default `client`
+        // (CSD) path — which PaneFlow uses everywhere it can — avoids this
+        // entirely, which is why it is the default.
 
         // --- Title bar background from theme, switching on window focus ---
         let theme = crate::theme::active_theme();
-        let bg_color = if window.is_window_active() {
+        let is_window_active = window.is_window_active();
+        let bg_color = if is_window_active {
             theme.title_bar_background
         } else {
             theme.title_bar_inactive_background
         };
+        let chrome_bg =
+            crate::app::constants::cockpit_chrome_background(bg_color, is_window_active);
 
         // --- Read DE button layout ---
         let layout = cx.button_layout().unwrap_or_else(default_button_layout);
@@ -186,37 +221,150 @@ impl Render for TitleBar {
             None
         };
 
-        // --- Left section: "PaneFlow" brand, fixed width aligned with sidebar ---
+        // --- Left section: brand slot, fixed width aligned with sidebar ---
         let ui = crate::theme::ui_colors();
         // US-011: on macOS, reserve the leftmost ~80px of the custom titlebar
         // for the native red/yellow/green traffic lights (positioned at
         // x=12,y=12 by WindowOptions::titlebar::traffic_light_position in
         // main.rs). On Linux the window controls are rendered elsewhere,
         // so the brand keeps the historical `pl_3()` (12px) padding.
-        let brand_pl = if cfg!(target_os = "macos") {
+        //
+        // In macOS fullscreen AppKit hides the traffic lights, so the 80px
+        // reservation would leave a dead gap before the brand cluster — drop
+        // back to 12px there (matches Zed's `is_fullscreen()` gate).
+        let brand_pl = if cfg!(target_os = "macos") && !window.is_fullscreen() {
             gpui::px(80.0)
         } else {
             gpui::px(12.0)
         };
+        let toggle_sidebar_handle = cx.entity().downgrade();
+        let toggle_files_menu_handle = cx.entity().downgrade();
+        let toggle_help_menu_handle = cx.entity().downgrade();
+        let sidebar_tooltip: gpui::SharedString = if self.sidebar_visible {
+            "Hide sidebar"
+        } else {
+            "Show sidebar"
+        }
+        .into();
         let mut brand = div()
-            .w(self.sidebar_width)
-            .flex_shrink_0()
+            .flex_none()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(6.))
+            .gap(px(2.))
             .pl(brand_pl)
-            .pr(px(8.))
-            .overflow_x_hidden();
+            .pr(px(2.))
+            .overflow_x_hidden()
+            .child(
+                div()
+                    .id("toggle-primary-sidebar")
+                    .flex_none()
+                    .w(px(24.))
+                    .h(px(24.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .when(!self.sidebar_visible, |d| d.bg(ui.subtle))
+                    .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+                    .tooltip(move |_window, cx| {
+                        let label = sidebar_tooltip.clone();
+                        cx.new(|_| crate::app::sidebar::SidebarTooltip { label })
+                            .into()
+                    })
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        cx.stop_propagation();
+                        if let Some(entity) = toggle_sidebar_handle.upgrade() {
+                            entity.update(cx, |_this, cx| {
+                                cx.emit(TitleBarEvent::ToggleSidebar);
+                            });
+                        }
+                    })
+                    .child(
+                        svg()
+                            .size(px(14.))
+                            .path("icons/sidebar.svg")
+                            .text_color(ui.muted),
+                    ),
+            )
+            .child(
+                div()
+                    .id("title-bar-files-menu-trigger")
+                    .flex_none()
+                    .h(px(24.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .font_weight(gpui::FontWeight::NORMAL)
+                    .text_color(if self.files_menu_open {
+                        ui.text
+                    } else {
+                        ui.muted
+                    })
+                    .when(self.files_menu_open, |d| d.bg(ui.subtle))
+                    .hover(|s| {
+                        let ui = crate::theme::ui_colors();
+                        s.bg(crate::app::constants::sidebar_tab_hover_background())
+                            .text_color(ui.text)
+                    })
+                    .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                        cx.stop_propagation();
+                        if let Some(entity) = toggle_files_menu_handle.upgrade() {
+                            let anchor = gpui::point(event.position.x, height);
+                            entity.update(cx, |_this, cx| {
+                                cx.emit(TitleBarEvent::ToggleFilesMenu(anchor));
+                            });
+                        }
+                    })
+                    .child("Files"),
+            )
+            .child(
+                div()
+                    .id("title-bar-help-menu-trigger")
+                    .flex_none()
+                    .h(px(24.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .font_weight(gpui::FontWeight::NORMAL)
+                    .text_color(if self.help_menu_open {
+                        ui.text
+                    } else {
+                        ui.muted
+                    })
+                    .when(self.help_menu_open, |d| d.bg(ui.subtle))
+                    .hover(|s| {
+                        let ui = crate::theme::ui_colors();
+                        s.bg(crate::app::constants::sidebar_tab_hover_background())
+                            .text_color(ui.text)
+                    })
+                    .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                        cx.stop_propagation();
+                        if let Some(entity) = toggle_help_menu_handle.upgrade() {
+                            let anchor = gpui::point(event.position.x, height);
+                            entity.update(cx, |_this, cx| {
+                                cx.emit(TitleBarEvent::ToggleHelpMenu(anchor));
+                            });
+                        }
+                    })
+                    .child("Help"),
+            );
         if self.is_agents {
             // Agents: no brand text in the chrome — the thread/chat name is
             // already shown in the rail (active row) and in the terminal
             // itself, and the rail-width title bar would only clip it. Keep the
             // slot empty so just the window controls remain top-left.
         } else if let Some(title) = self.agents_thread_title.clone() {
-            // US-010: contextual brand in Agents mode — `thread title · context`
-            // replaces the static "PaneFlow". The title truncates first; the
-            // context label and the `⋯` button stay pinned.
+            // US-010: contextual brand in Agents mode — `thread title · context`.
+            // The title truncates first; the context label and the `⋯` button
+            // stay pinned.
             let mut label_row = div()
                 .flex_1()
                 .min_w_0()
@@ -275,7 +423,8 @@ impl Render for TitleBar {
                         .text_size(px(15.))
                         .hover(|s| {
                             let ui = crate::theme::ui_colors();
-                            s.bg(ui.subtle).text_color(ui.text)
+                            s.bg(crate::app::constants::sidebar_tab_hover_background())
+                                .text_color(ui.text)
                         })
                         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                             cx.stop_propagation();
@@ -284,14 +433,6 @@ impl Render for TitleBar {
                         .child("⋯"),
                 );
             }
-        } else {
-            brand = brand.child(
-                div()
-                    .text_color(ui.text)
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child("PaneFlow"),
-            );
         }
         let brand = brand;
 
@@ -587,12 +728,9 @@ impl Render for TitleBar {
             .items_center()
             .w_full()
             .h(height)
-            // Agents: the title bar floats as a transparent overlay over the
-            // full-height rail + panel, so it paints no background. Cli cockpit:
-            // paint the rail gray (#1d1d1d) so the strip + sidebar fuse into one
-            // surface. Diff keeps the themed chrome.
-            .when(!self.is_agents && self.cockpit, |d| d.bg(rgb(0x1d1d1d)))
-            .when(!self.is_agents && !self.cockpit, |d| d.bg(bg_color))
+            // Windows/macOS use GPUI's native blurred material through this
+            // translucent fill. Linux keeps the same color fully opaque.
+            .bg(chrome_bg)
             // Windows: drop the right padding so the native-style caption
             // buttons sit flush in the top-right corner (Fitts's-law target).
             // Linux/macOS keep the 12px inset for the compact pill controls.
@@ -615,12 +753,11 @@ impl Render for TitleBar {
             // 1px border + negative margins fill transparent gap at rounded
             // corners. Match the cockpit gray in Cli so the corner fill blends
             // with the painted strip instead of showing the themed chrome.
-            bar = bar.mt(px(-1.)).mb(px(-1.)).border(px(1.));
-            bar = if self.cockpit {
-                bar.border_color(rgb(0x1d1d1d))
-            } else {
-                bar.border_color(bg_color)
-            };
+            bar = bar
+                .mt(px(-1.))
+                .mb(px(-1.))
+                .border(px(1.))
+                .border_color(chrome_bg);
         }
 
         bar
@@ -666,7 +803,7 @@ impl Render for TitleBar {
             .when(!self.is_agents && !self.cockpit, |this| {
                 // Codex cockpit: Agents + Cli drop the bottom divider so the
                 // chrome reads as one seamless surface (Cli fuses with its
-                // #1d1d1d sidebar); Diff keeps it (diff visuel nul).
+                // #141414 sidebar); Diff keeps it (diff visuel nul).
                 this.child(
                     div()
                         .absolute()

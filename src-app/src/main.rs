@@ -353,6 +353,8 @@ struct AgentsViewState {
     /// Shared between CLI and Agents sidebars — only one popover is
     /// ever visible because only one sidebar is rendered at a time.
     pub(crate) sidebar_actions_menu_open: bool,
+    /// Whether the compact interface picker above the sidebar footer is open.
+    pub(crate) sidebar_mode_picker_open: bool,
     /// Cache of every Terminal Thread surface mounted this session,
     /// keyed by [`crate::project::Thread::id`]. The Agents view is
     /// terminal-only: selecting a thread reuses the existing
@@ -389,6 +391,13 @@ struct PaneFlowApp {
     ipc_rx: std::sync::mpsc::Receiver<ipc::IpcRequest>,
     ipc_status: ipc::IpcStatus,
     title_bar: Entity<title_bar::TitleBar>,
+    /// Visibility of the primary left rail shared by CLI, Agents, and Diff.
+    /// Ephemeral by design: each launch starts with navigation visible.
+    primary_sidebar_visible: bool,
+    /// Anchor for the `Files` menu in the custom title bar.
+    title_bar_files_menu_open: Option<Point<Pixels>>,
+    /// Anchor for the `Help` menu in the custom title bar.
+    title_bar_help_menu_open: Option<Point<Pixels>>,
     /// File watcher for `.git/HEAD` and `.git/index` across all workspaces.
     /// `None` if the OS watcher could not be created (graceful degradation).
     git_watcher: Option<notify::RecommendedWatcher>,
@@ -695,12 +704,14 @@ impl Render for PaneFlowApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
         let theme = crate::theme::active_theme();
+        let is_window_active = window.is_window_active();
         // Every mode is cockpit now (Agents first, then Cli, then Diff): the
         // title bar always floats as a rail-confined overlay (never a flex
         // child), so the right panel rises to y=0 with rounded rail-side
         // corners. `title_bar_h` mirrors the title bar's own height so the
         // rail content clears the floating window controls.
         let title_bar_h = (1.75 * window.rem_size()).max(px(34.));
+        let title_bar_spans_window = cfg!(target_os = "windows") || !self.primary_sidebar_visible;
 
         // EP-003 US-009: focus the pane created by a drop-to-split. Deferred
         // here from the `DropSplit` subscription handler (no `Window` there).
@@ -815,16 +826,18 @@ impl Render for PaneFlowApp {
         };
         self.title_bar.update(cx, |tb, _| {
             tb.workspace_name = ws_name;
-            tb.sidebar_width = px(sidebar_px);
+            tb.sidebar_visible = self.primary_sidebar_visible;
+            tb.files_menu_open = self.title_bar_files_menu_open.is_some();
+            tb.help_menu_open = self.title_bar_help_menu_open.is_some();
             tb.update_available = update_info;
             tb.ipc_state = self.ipc_status.state();
             // US-010/US-011: push the Agents brand context (None/false on
-            // Cli/Diff frames so the brand reverts to "PaneFlow").
+            // Cli/Diff frames, leaving the brand slot empty).
             tb.agents_thread_title = agents_thread_title;
             tb.agents_context_label = agents_context_label;
             tb.agents_overflow = agents_overflow;
             tb.is_agents = matches!(self.mode, paneflow_config::schema::AppMode::Agents);
-            // Cockpit chrome (#1d1d1d + no divider) for Cli AND Diff; Agents
+            // Cockpit chrome (#141414 + no divider) for Cli AND Diff; Agents
             // paints nothing (is_agents wins).
             tb.cockpit = !matches!(self.mode, paneflow_config::schema::AppMode::Agents);
         });
@@ -961,43 +974,46 @@ impl Render for PaneFlowApp {
                     .flex_row()
                     .flex_1()
                     .overflow_hidden()
-                    // Cockpit backdrop: dark-gray (#1d1d1d) chrome behind the
-                    // body row in every mode (the rail + the panel corners read
-                    // against it as one continuous surface).
-                    .bg(rgb(0x1d1d1d))
-                    .child(match self.mode {
-                        paneflow_config::schema::AppMode::Agents => div()
-                            .flex()
-                            .flex_col()
-                            .h_full()
-                            .flex_shrink_0()
-                            // Clear the transparent title-bar overlay so the
-                            // first rail row sits below the floating controls.
-                            .pt(title_bar_h)
-                            .child(self.render_agents_sidebar(window, cx))
-                            .into_any_element(),
-                        paneflow_config::schema::AppMode::Diff => div()
-                            .flex()
-                            .flex_col()
-                            .h_full()
-                            .flex_shrink_0()
-                            // Clear the transparent title-bar overlay so the
-                            // first sidebar row sits below the floating
-                            // window controls (mirrors the other rails).
-                            .pt(title_bar_h)
-                            .child(self.render_diff_sidebar(window, cx))
-                            .into_any_element(),
-                        paneflow_config::schema::AppMode::Cli => div()
-                            .flex()
-                            .flex_col()
-                            .h_full()
-                            .flex_shrink_0()
-                            // Clear the transparent title-bar overlay so the
-                            // first workspace card sits below the floating
-                            // window controls (mirrors the Agents rail).
-                            .pt(title_bar_h)
-                            .child(self.render_sidebar(cx))
-                            .into_any_element(),
+                    // Reveal the native material behind the translucent chrome.
+                    // Linux receives the original opaque background.
+                    .bg(crate::app::constants::cockpit_backdrop_background(
+                        theme.title_bar_background,
+                    ))
+                    .when(self.primary_sidebar_visible, |row| {
+                        row.child(match self.mode {
+                            paneflow_config::schema::AppMode::Agents => div()
+                                .flex()
+                                .flex_col()
+                                .h_full()
+                                .flex_shrink_0()
+                                // Clear the transparent title-bar overlay so the
+                                // first rail row sits below the floating controls.
+                                .pt(title_bar_h)
+                                .child(self.render_agents_sidebar(window, cx))
+                                .into_any_element(),
+                            paneflow_config::schema::AppMode::Diff => div()
+                                .flex()
+                                .flex_col()
+                                .h_full()
+                                .flex_shrink_0()
+                                // Clear the transparent title-bar overlay so the
+                                // first sidebar row sits below the floating
+                                // window controls (mirrors the other rails).
+                                .pt(title_bar_h)
+                                .child(self.render_diff_sidebar(window, cx))
+                                .into_any_element(),
+                            paneflow_config::schema::AppMode::Cli => div()
+                                .flex()
+                                .flex_col()
+                                .h_full()
+                                .flex_shrink_0()
+                                // Clear the transparent title-bar overlay so the
+                                // first workspace card sits below the floating
+                                // window controls (mirrors the Agents rail).
+                                .pt(title_bar_h)
+                                .child(self.render_sidebar(window, cx))
+                                .into_any_element(),
+                        })
                     })
                     .child(
                         div()
@@ -1006,6 +1022,8 @@ impl Render for PaneFlowApp {
                             .overflow_hidden()
                             // Anchor the Cli corner-mask overlays (below).
                             .relative()
+                            .flex()
+                            .flex_col()
                             // Codex cockpit: in Agents mode the right area is a
                             // floating panel — a slightly-lighter bg sitting on
                             // the chrome-dark body row, with the rail-side
@@ -1017,10 +1035,14 @@ impl Render for PaneFlowApp {
                             // overdraw the rounded quad. Other modes keep the
                             // legacy flat bg with no inset.
                             .when(
-                                matches!(self.mode, paneflow_config::schema::AppMode::Agents),
+                                !cfg!(target_os = "windows")
+                                    && matches!(
+                                        self.mode,
+                                        paneflow_config::schema::AppMode::Agents
+                                    ),
                                 |d| {
-                                    // Cockpit colors (Arthur): near-black panel
-                                    // (#111111) on the #1d1d1d rail/chrome, plus
+                                    // Shared #181818 right panel on the #141414
+                                    // rail/chrome, plus
                                     // a faint rail-side hairline so the panel
                                     // edge reads even where rail and panel grays
                                     // blur together.
@@ -1031,16 +1053,15 @@ impl Render for PaneFlowApp {
                                     // square corner pokes through the arc
                                     // (GPUI doesn't clip children to the
                                     // radius) — hence 5px, not the old 4px.
-                                    d.bg(rgb(0x111111))
+                                    d.bg(ui.base)
                                         .rounded_tl(px(16.))
                                         .rounded_bl(px(16.))
                                         .p(px(5.))
-                                        .border_l_1()
-                                        .border_color(rgb(0x2c2c2c))
                                 },
                             )
                             .when(
-                                matches!(self.mode, paneflow_config::schema::AppMode::Cli),
+                                !cfg!(target_os = "windows")
+                                    && matches!(self.mode, paneflow_config::schema::AppMode::Cli),
                                 // Cli cockpit: pane grid is flush (no inset). bg
                                 // is theme.background so panel + panes read as one
                                 // surface. The rounded rail-side corners come from
@@ -1051,28 +1072,54 @@ impl Render for PaneFlowApp {
                                 |d| d.bg(theme.background),
                             )
                             .when(
-                                matches!(self.mode, paneflow_config::schema::AppMode::Diff),
+                                !cfg!(target_os = "windows")
+                                    && matches!(self.mode, paneflow_config::schema::AppMode::Diff),
                                 // Diff cockpit: same flush panel as Cli. ui.base
                                 // (#181818) is the diff content's dominant root
                                 // fill (multi_view + file columns), so panel and
                                 // content read as one surface.
                                 |d| d.bg(ui.base),
                             )
-                            // Windows: "descendre la partie droite" — inset the
-                            // panel content below the full-width title bar
-                            // (whose window controls sit at the window's
-                            // top-right corner, Codex / VS Code convention) by
-                            // wrapping `main_content` rather than padding the
-                            // panel div. Padding the panel would drag its
-                            // absolute rounded-corner masks (corner-tl.svg) down
-                            // and square off the top-left; the wrapper keeps the
-                            // masks pinned to the panel's true top-left (y=0)
-                            // while only the content descends. Linux/macOS keep
-                            // the rail-confined floating bar, so no top strip.
+                            // A full-width title bar is used on Windows and
+                            // whenever the primary rail is hidden. Reserve its
+                            // strip so content never sits beneath the controls.
+                            .when(title_bar_spans_window, |d| {
+                                d.child(div().h(title_bar_h).flex_none())
+                            })
                             .child(
                                 div()
-                                    .size_full()
-                                    .when(cfg!(target_os = "windows"), |d| d.pt(title_bar_h))
+                                    .flex_1()
+                                    .min_h_0()
+                                    .relative()
+                                    .when(
+                                        cfg!(target_os = "windows")
+                                            && matches!(
+                                                self.mode,
+                                                paneflow_config::schema::AppMode::Agents
+                                            ),
+                                        |d| {
+                                            d.bg(ui.base)
+                                                .rounded_tl(px(16.))
+                                                .rounded_bl(px(16.))
+                                                .p(px(5.))
+                                        },
+                                    )
+                                    .when(
+                                        cfg!(target_os = "windows")
+                                            && matches!(
+                                                self.mode,
+                                                paneflow_config::schema::AppMode::Cli
+                                            ),
+                                        |d| d.bg(theme.background),
+                                    )
+                                    .when(
+                                        cfg!(target_os = "windows")
+                                            && matches!(
+                                                self.mode,
+                                                paneflow_config::schema::AppMode::Diff
+                                            ),
+                                        |d| d.bg(ui.base),
+                                    )
                                     .child(main_content),
                             )
                             // Rounded rail-side corners WITHOUT a gutter (Cli +
@@ -1080,12 +1127,12 @@ impl Render for PaneFlowApp {
                             // (terminal cells, diff rows) to a radius, so each
                             // left corner is masked ON TOP by an inverted-corner
                             // SVG — the curvilinear triangle OUTSIDE the 16px
-                            // arc — tinted #1d1d1d (rail). Unlike a solid square
+                            // arc — tinted #141414 (rail). Unlike a solid square
                             // mask, the SVG covers nothing inside the arc, so
                             // scrolled diff lines or terminal cells right at the
                             // corner stay visible under the curve. 16px (vs
                             // Agents' 10) because One Dark (#282c34) sits close
-                            // to the #1d1d1d rail; the arc needs length to read.
+                            // to the #141414 rail; the arc needs length to read.
                             .when(
                                 matches!(
                                     self.mode,
@@ -1093,16 +1140,16 @@ impl Render for PaneFlowApp {
                                         | paneflow_config::schema::AppMode::Diff
                                 ),
                                 |d| {
-                                    // Windows: the full-width title bar paints
-                                    // an opaque #1d1d1d strip over the panel's
+                                    // A full-width translucent title bar
+                                    // occupies the strip over the panel's
                                     // top `title_bar_h` px, so a corner mask at
                                     // y=0 is hidden under it and the VISIBLE
                                     // top-left corner (where the panel content
                                     // begins, at y=title_bar_h — see the
                                     // main_content wrapper) is left square. Drop
                                     // the mask down to that visible corner.
-                                    // Linux/macOS keep it at y=0 (no strip).
-                                    let tl_top = if cfg!(target_os = "windows") {
+                                    // A visible rail keeps it at y=0.
+                                    let tl_top = if title_bar_spans_window {
                                         title_bar_h
                                     } else {
                                         px(0.)
@@ -1114,7 +1161,12 @@ impl Render for PaneFlowApp {
                                             .left_0()
                                             .size(px(16.))
                                             .path("icons/corner-tl.svg")
-                                            .text_color(rgb(0x1d1d1d)),
+                                            .text_color(
+                                                crate::app::constants::cockpit_chrome_background(
+                                                    theme.title_bar_background,
+                                                    is_window_active,
+                                                ),
+                                            ),
                                     )
                                     .child(
                                         svg()
@@ -1123,9 +1175,62 @@ impl Render for PaneFlowApp {
                                             .left_0()
                                             .size(px(16.))
                                             .path("icons/corner-bl.svg")
-                                            .text_color(rgb(0x1d1d1d)),
+                                            .text_color(
+                                                crate::app::constants::cockpit_chrome_background(
+                                                    theme.title_bar_background,
+                                                    is_window_active,
+                                                ),
+                                            ),
                                     )
                                 },
+                            )
+                            // A full-width title bar covers the Agents panel's
+                            // real y=0 radius. Mask the square background at the
+                            // visible content edge so only the rounded panel
+                            // remains.
+                            .when(
+                                title_bar_spans_window
+                                    && matches!(
+                                        self.mode,
+                                        paneflow_config::schema::AppMode::Agents
+                                    ),
+                                |d| {
+                                    d.child(
+                                        svg()
+                                            .absolute()
+                                            .top(title_bar_h)
+                                            .left_0()
+                                            .size(px(16.))
+                                            .path("icons/corner-tl.svg")
+                                            .text_color(
+                                                crate::app::constants::cockpit_chrome_background(
+                                                    theme.title_bar_background,
+                                                    is_window_active,
+                                                ),
+                                            ),
+                                    )
+                                },
+                            )
+                            // Draw the top + left border as one rounded
+                            // contour so the vertical stroke follows both
+                            // 16px rail-side corner radii. It is layered after
+                            // the corner masks so the arc remains visible.
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .top(if title_bar_spans_window {
+                                        title_bar_h
+                                    } else {
+                                        px(0.)
+                                    })
+                                    .rounded_tl(px(16.))
+                                    .rounded_bl(px(16.))
+                                    .border_t_1()
+                                    .border_l_1()
+                                    .border_color(ui.border),
                             ),
                     )
                     // Docked agent-sessions sidebar (right edge). A layout child
@@ -1164,7 +1269,7 @@ impl Render for PaneFlowApp {
                     // reserves a matching top strip below (see its `pt` guard)
                     // so its content clears this bar.
                     .map(|d| {
-                        if cfg!(target_os = "windows") {
+                        if title_bar_spans_window {
                             d.w_full()
                         } else {
                             d.w(px(sidebar_px))
@@ -1177,6 +1282,14 @@ impl Render for PaneFlowApp {
 
         if let Some(toast) = &self.toast {
             app_content = app_content.child(self.render_toast(toast, ui));
+        }
+
+        if let Some(anchor) = self.title_bar_files_menu_open {
+            app_content = app_content.child(self.render_title_bar_files_menu(anchor, window, cx));
+        }
+
+        if let Some(anchor) = self.title_bar_help_menu_open {
+            app_content = app_content.child(self.render_title_bar_help_menu(anchor, window, cx));
         }
 
         if let Some(anchor) = self.profile_menu_open {
@@ -1758,10 +1871,10 @@ fn main() {
             {
                 use ::theme::ActiveTheme as _;
                 let mut new_theme = (**cx.theme()).clone();
-                new_theme.styles.colors.title_bar_background = gpui::rgb(0x1f1f1f).into();
-                new_theme.styles.colors.panel_background = gpui::rgb(0x1c1c1c).into();
-                new_theme.styles.colors.border = gpui::rgb(0x2f2f2f).into();
-                new_theme.styles.colors.border_variant = gpui::rgb(0x2a2a2a).into();
+                new_theme.styles.colors.title_bar_background = gpui::rgb(0x141414).into();
+                new_theme.styles.colors.panel_background = gpui::rgb(0x181818).into();
+                new_theme.styles.colors.border = gpui::rgb(0x252525).into();
+                new_theme.styles.colors.border_variant = gpui::rgb(0x252525).into();
                 ::theme::GlobalTheme::update_theme(cx, std::sync::Arc::new(new_theme));
             }
 
@@ -1786,15 +1899,15 @@ fn main() {
 
             // US-011: reserve space on the left of the custom titlebar
             // for macOS traffic lights. The three red/yellow/green circles
-            // live at x≈12-78px; the brand text starts at x=80 (see
-            // title_bar.rs). `..Default::default()` is load-bearing on
+            // live at x≈12-78px; the sidebar-aligned title-bar slot starts at
+            // x=80 (see title_bar.rs). `..Default::default()` is load-bearing on
             // non-macOS (GPUI's TitlebarOptions may grow platform-specific
             // fields we don't set); clippy only flags it needless under
             // target_os = "macos" where traffic_light_position makes the
             // field list complete.
             #[cfg_attr(target_os = "macos", allow(clippy::needless_update))]
             let titlebar_options = gpui::TitlebarOptions {
-                title: Some("PaneFlow".into()),
+                title: None,
                 appears_transparent: true,
                 #[cfg(target_os = "macos")]
                 traffic_light_position: Some(point(px(12.0), px(12.0))),
@@ -1807,10 +1920,14 @@ fn main() {
                     window_min_size: Some(size(px(800.0), px(500.0))),
                     window_decorations: Some(decorations),
                     titlebar: Some(titlebar_options),
+                    window_background: crate::app::constants::window_background_appearance(),
                     app_id: Some("paneflow".into()),
                     ..Default::default()
                 },
                 |window, cx| {
+                    #[cfg(target_os = "windows")]
+                    crate::window_chrome::backdrop::apply_wallpaper_mica(window);
+
                     let view = cx.new(PaneFlowApp::new);
                     window.on_window_should_close(cx, {
                         let view = view.clone();
@@ -1834,10 +1951,11 @@ fn main() {
                     view.update(cx, |_, cx| {
                         let subscription = cx.observe_window_activation(
                             window,
-                            |_, window, _cx| {
+                            |_, window, cx| {
                                 crate::agents::notifications::set_window_active(
                                     window.is_window_active(),
                                 );
+                                cx.notify();
                             },
                         );
                         // Detach: the closure side-effect is what we

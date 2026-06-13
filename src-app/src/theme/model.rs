@@ -235,12 +235,9 @@ pub(super) fn ha(hex: u32, alpha: f32) -> Hsla {
 }
 
 const CHROME_BACKGROUND_HEX: u32 = 0x141414;
-// Cockpit colors (Arthur): near-black terminal background (#111111). Drives
-// `theme.background` + `theme.ansi_background` for all dark themes, so the
-// Agents panel (#111111) and the terminal surface read as one continuous area.
-// NOTE: global — CLI/Diff terminals also use this (a negligible 7-level darken
-// from the previous 0x181818). Scope per-view if CLI must stay 0x181818.
-const TERMINAL_BACKGROUND_HEX: u32 = 0x111111;
+// Shared right-panel background for terminals, tab bars, Diff, and Agents.
+const TERMINAL_BACKGROUND_HEX: u32 = 0x181818;
+const BORDER_HEX: u32 = 0x252525;
 
 fn is_light_theme(theme: &TerminalTheme) -> bool {
     theme.background.l > 0.5
@@ -454,7 +451,7 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
             base: h(0x181818),
             surface: h(0x212121),
             overlay: h(0x141414),
-            border: h(0x333333),
+            border: h(BORDER_HEX),
             subtle: h(0x2a2a2a),
             muted: h(0x888888),
             text: h(0xffffff),
@@ -566,6 +563,15 @@ mod tests {
         assert_eq!(theme.background.l, h(TERMINAL_BACKGROUND_HEX).l);
         assert_eq!(theme.ansi_background.l, h(TERMINAL_BACKGROUND_HEX).l);
         assert_eq!(theme.title_bar_background.l, h(CHROME_BACKGROUND_HEX).l);
+    }
+
+    #[test]
+    fn dark_ui_uses_cockpit_surface_palette() {
+        let ui = ui_colors_with(&one_dark());
+
+        assert_eq!(ui.base, h(TERMINAL_BACKGROUND_HEX));
+        assert_eq!(ui.overlay, h(CHROME_BACKGROUND_HEX));
+        assert_eq!(ui.border, h(BORDER_HEX));
     }
 
     /// US-007 invariant: for any theme exiting `apply_surface_overrides` or

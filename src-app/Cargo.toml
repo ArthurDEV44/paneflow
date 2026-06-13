@@ -293,6 +293,7 @@ core-foundation = "0.10"
 #   - Win32_System_Diagnostics{,_ToolHelp}: US-019 foreground-process naming
 #     walks the process tree via CreateToolhelp32Snapshot / Process32{First,Next}W.
 [target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
 windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_Foundation",
