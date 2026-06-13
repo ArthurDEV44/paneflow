@@ -38,6 +38,7 @@ mod keybindings;
 mod keys;
 mod layout;
 mod limits;
+mod login_shell_env;
 mod markdown;
 mod mouse;
 mod opencode_sessions;
@@ -1535,6 +1536,15 @@ fn main() {
             "parent_guard: failed to install Job Object -- kill -9 of Paneflow may orphan agent CLIs ({err})"
         );
     }
+
+    // Adopt the user's login-shell environment when launched from the GUI
+    // (Finder / Dock / `.desktop`), where the inherited launchd / systemd-user
+    // PATH omits Homebrew, Nix, version managers, and `~/.zprofile` additions.
+    // No-op on a terminal launch (stdin is a TTY) and on Windows. Runs FIRST so
+    // the static prepend below layers the per-user bin dirs on top of the real
+    // login PATH. Must run before any other thread spawns — it mutates the
+    // process environment (see the module's safety note).
+    login_shell_env::load_login_shell_env();
 
     // Patch PATH BEFORE GPUI starts so `which::which("bunx")` in
     // `paneflow_acp::discovery` finds binaries installed under `~/.bun/bin`
