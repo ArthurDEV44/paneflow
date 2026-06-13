@@ -14,6 +14,22 @@ use crate::terminal::types::Modes;
 /// Returns `Some(Cow::Borrowed(...))` for static keys (zero-alloc),
 /// `Some(Cow::Owned(...))` for modifier combos (one alloc),
 /// or `None` if the keystroke should be handled as printable character input.
+/// Platform default for `option_as_meta` when the user has not set it in
+/// `paneflow.json`.
+///
+/// - **macOS** → `false`: the Option key composes Unicode (é, ©, …); treating
+///   it as Meta (ESC-prefix) corrupts that input. This mirrors Zed, whose
+///   `option_as_meta` defaults off on macOS.
+/// - **Every other platform** → `true`: Alt-as-Meta (ESC-prefix) is the
+///   conventional terminal behavior.
+///
+/// A user can always override per-platform via `paneflow.json#option_as_meta`;
+/// `to_esc_str` then gates the ESC-prefix paths on the resolved flag while
+/// `alt_phys` keeps Alt+Arrow working regardless.
+pub fn default_option_as_meta() -> bool {
+    !cfg!(target_os = "macos")
+}
+
 pub fn to_esc_str(
     keystroke: &Keystroke,
     mode: &Modes,
@@ -234,6 +250,18 @@ pub fn to_esc_str(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn option_as_meta_default_is_platform_specific() {
+        // macOS composes Unicode on the Option key, so Alt-as-Meta (ESC-prefix)
+        // must default OFF there and ON everywhere else. Regression guard for
+        // the macOS "Option+e corrupts accents" bug.
+        assert_eq!(default_option_as_meta(), !cfg!(target_os = "macos"));
+        #[cfg(target_os = "macos")]
+        assert!(!default_option_as_meta());
+        #[cfg(not(target_os = "macos"))]
+        assert!(default_option_as_meta());
+    }
 
     #[test]
     fn page_keys_match_us009_alt_screen_constants() {

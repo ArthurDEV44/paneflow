@@ -590,7 +590,7 @@ impl TerminalView {
             search_regex_error: None,
             option_as_meta: paneflow_config::loader::load_config()
                 .option_as_meta
-                .unwrap_or(true),
+                .unwrap_or_else(crate::keys::default_option_as_meta),
             bell_mode: paneflow_config::loader::load_config()
                 .terminal
                 .unwrap_or_default()

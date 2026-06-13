@@ -42,7 +42,9 @@ impl SettingsWindow {
         let bell = terminal.bell.unwrap_or_default();
         let scrollback = terminal.resolved_scrollback_lines();
         let ligatures_on = terminal.ligatures.unwrap_or(false);
-        let meta_on = config.option_as_meta.unwrap_or(true);
+        let meta_on = config
+            .option_as_meta
+            .unwrap_or_else(crate::keys::default_option_as_meta);
         let font_size = config.font_size.unwrap_or(14.0) as f64;
         let line_height = config.line_height.unwrap_or(1.3) as f64;
 
