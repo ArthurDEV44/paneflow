@@ -1927,8 +1927,21 @@ fn main() {
                 |window, cx| {
                     #[cfg(target_os = "windows")]
                     crate::window_chrome::backdrop::apply_wallpaper_mica(window);
+                    #[cfg(target_os = "macos")]
+                    crate::window_chrome::macos_backdrop::apply_subtle_sidebar_material(window);
+                    #[cfg(target_os = "linux")]
+                    crate::window_chrome::linux_backdrop::apply_subtle_chrome_material(window);
 
                     let view = cx.new(PaneFlowApp::new);
+                    #[cfg(target_os = "linux")]
+                    view.update(cx, |_, cx| {
+                        let subscription =
+                            cx.observe_window_bounds(window, |_, window, cx| {
+                                crate::window_chrome::linux_backdrop::refresh_blur_region(window);
+                                cx.notify();
+                            });
+                        subscription.detach();
+                    });
                     window.on_window_should_close(cx, {
                         let view = view.clone();
                         move |_window, cx| {
@@ -1938,6 +1951,8 @@ fn main() {
                             // `app_exited` when the OS close button or a
                             // keyboard shortcut closes the last window.
                             app.emit_app_exited_and_flush();
+                            #[cfg(target_os = "linux")]
+                            crate::window_chrome::linux_backdrop::clear_subtle_chrome_material();
                             cx.quit();
                             false
                         }
@@ -1955,6 +1970,8 @@ fn main() {
                                 crate::agents::notifications::set_window_active(
                                     window.is_window_active(),
                                 );
+                                #[cfg(target_os = "linux")]
+                                crate::window_chrome::linux_backdrop::refresh_blur_region(window);
                                 cx.notify();
                             },
                         );
