@@ -8,10 +8,14 @@
 //!
 //! Extracted from `terminal_element.rs` per US-008 of the src-app refactor PRD.
 
+#[cfg(target_os = "macos")]
 use std::collections::HashSet;
+#[cfg(target_os = "macos")]
 use std::sync::LazyLock;
 
-use gpui::{App, Font, FontFeatures, FontStyle, FontWeight, Pixels, SharedString, Window, px};
+use gpui::{
+    App, Font, FontFallbacks, FontFeatures, FontStyle, FontWeight, Pixels, SharedString, Window, px,
+};
 
 use super::CellDimensions;
 
@@ -93,8 +97,11 @@ fn expand_paneflow_alias(name: &str) -> &str {
 // Zed's terminal uses `fallbacks: None` by default
 // (zed/crates/terminal_view/src/terminal_element.rs:908-912). It only
 // wraps `Some(...)` when the user explicitly configures
-// `terminal.font_fallbacks` in their settings. Paneflow now mirrors
-// that pattern.
+// `terminal.font_fallbacks` in their settings. Paneflow mirrors that
+// pattern: `base_font` emits `Some(FontFallbacks)` ONLY when the user sets
+// the top-level `font_fallbacks` array in `paneflow.json` (e.g. a Nerd
+// Font for Starship / oh-my-posh / Terminal-Icons glyphs that no Windows
+// system font carries), and `None` otherwise — never a hardcoded chain.
 //
 // Glyph fallback for codepoints Lilex doesn't cover (emoji, CJK,
 // symbols) still works: GPUI walks its built-in `fallback_font_stack`
@@ -104,13 +111,16 @@ fn expand_paneflow_alias(name: &str) -> &str {
 // chain is global, not per-`Font`, so it does NOT pollute the
 // per-Font CTFont cascade list.
 
-/// Registry of installed monospace families, queried via the per-OS
-/// `load_mono_fonts()` enumerator (fontconfig on Linux, Core Text on macOS,
-/// empty stub on Windows until DirectWrite is wired). Populated lazily on
-/// first access. An empty registry means enumeration is unavailable on this
-/// platform — callers must treat it as "skip validation, trust the caller"
-/// to avoid a regression on Windows where every name would otherwise be
-/// rejected.
+/// Registry of installed monospace families (Core Text), used ONLY on macOS to
+/// validate a configured `font_family` against the documented c3e2331
+/// empty-raster failure mode. Populated lazily on first access.
+///
+/// macOS-only by design: on Linux the equivalent `fc-list :spacing=mono`
+/// validation wrongly rejected real monospace fonts that fontconfig didn't tag
+/// (patched Nerd Fonts) and forked `fc-list` on the first terminal layout; on
+/// Windows the registry was always empty (no enumeration). `resolve_font_family`
+/// therefore trusts the configured family on those platforms.
+#[cfg(target_os = "macos")]
 static INSTALLED_MONO_FONTS: LazyLock<HashSet<String>> =
     LazyLock::new(|| crate::fonts::load_mono_fonts().into_iter().collect());
 
@@ -127,7 +137,24 @@ struct CachedFontConfig {
     /// picked up on the next `cached_font_config()` call without any
     /// extra wiring.
     ligatures: bool,
+    /// Sanitized user `font_fallbacks` (trimmed, empties dropped, `None`
+    /// when absent/all-empty). Hot-reloaded via the same 500 ms cache as
+    /// `family`/`size`/`ligatures`.
+    fallbacks: Option<Vec<String>>,
     last_check: std::time::Instant,
+}
+
+/// Normalize a configured `font_fallbacks` list before it reaches GPUI:
+/// trim each entry, drop empties, and collapse an absent / all-empty list to
+/// `None` so [`base_font`] emits `fallbacks: None` (GPUI's built-in stack
+/// only) rather than an empty `FontFallbacks`. Pure — unit-tested.
+fn sanitize_font_fallbacks(configured: Option<&Vec<String>>) -> Option<Vec<String>> {
+    let list: Vec<String> = configured?
+        .iter()
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    (!list.is_empty()).then_some(list)
 }
 
 static FONT_CONFIG_CACHE: std::sync::Mutex<Option<CachedFontConfig>> = std::sync::Mutex::new(None);
@@ -178,24 +205,28 @@ pub fn resolve_font_family(configured: Option<&str>) -> String {
         return candidate.to_string();
     }
 
-    // When the registry is non-empty, validate the configured family
-    // against it. When it's empty (platform without enumeration —
-    // Windows pre-DirectWrite-wiring) we have no way to validate and
-    // must trust the caller; the embedded fallback chain in
-    // FONT_FALLBACKS still guarantees something paints.
-    if INSTALLED_MONO_FONTS.is_empty() || INSTALLED_MONO_FONTS.contains(candidate) {
-        return candidate.to_string();
+    // The installed-monospace validation guards a macOS-specific Core Text
+    // failure mode (a system family that resolves but rasterizes empty — commit
+    // c3e2331), so it is gated to macOS. On Linux it wrongly rejected real
+    // monospace fonts fontconfig didn't tag `:spacing=mono` (patched Nerd
+    // Fonts) AND ran `fc-list` on the first terminal layout; on Windows the
+    // registry was always empty. Elsewhere we trust the configured family —
+    // GPUI's text system resolves it, and an unresolvable name already falls
+    // through to the embedded fallback stack.
+    #[cfg(target_os = "macos")]
+    if !INSTALLED_MONO_FONTS.is_empty() && !INSTALLED_MONO_FONTS.contains(candidate) {
+        let fallback = default_font_family();
+        log::warn!(
+            "font_family '{candidate}' is not an installed monospace family; using embedded '{fallback}'"
+        );
+        return fallback.to_string();
     }
 
-    let fallback = default_font_family();
-    log::warn!(
-        "font_family '{candidate}' is not an installed monospace family; using embedded '{fallback}'"
-    );
-    fallback.to_string()
+    candidate.to_string()
 }
 
 /// Read font config, cached for 500ms (same pattern as theme cache).
-pub(super) fn cached_font_config() -> (String, f32, f32, bool) {
+pub(super) fn cached_font_config() -> (String, f32, f32, bool, Option<Vec<String>>) {
     use std::time::{Duration, Instant};
     const CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -204,7 +235,13 @@ pub(super) fn cached_font_config() -> (String, f32, f32, bool) {
     if let Some(ref c) = *cache
         && c.last_check.elapsed() < CHECK_INTERVAL
     {
-        return (c.family.clone(), c.size, c.line_height, c.ligatures);
+        return (
+            c.family.clone(),
+            c.size,
+            c.line_height,
+            c.ligatures,
+            c.fallbacks.clone(),
+        );
     }
 
     let config = paneflow_config::loader::load_config();
@@ -249,6 +286,11 @@ pub(super) fn cached_font_config() -> (String, f32, f32, bool) {
         .and_then(|t| t.ligatures)
         .unwrap_or(false);
 
+    // User-configured fallback families (Nerd Font for icon glyphs, …),
+    // sanitized to `None` when absent/all-empty so `base_font` keeps GPUI's
+    // built-in stack in that case.
+    let fallbacks = sanitize_font_fallbacks(config.font_fallbacks.as_ref());
+
     // Diagnostic: log the effective resolved family the first time we
     // populate the cache, and on every subsequent change. This makes it
     // possible to confirm from `RUST_LOG=info` whether the embedded
@@ -267,14 +309,15 @@ pub(super) fn cached_font_config() -> (String, f32, f32, bool) {
         size,
         line_height,
         ligatures,
+        fallbacks: fallbacks.clone(),
         last_check: Instant::now(),
     });
 
-    (family, size, line_height, ligatures)
+    (family, size, line_height, ligatures, fallbacks)
 }
 
 pub(super) fn base_font() -> Font {
-    let (family, _, _, ligatures) = cached_font_config();
+    let (family, _, _, ligatures, fallbacks) = cached_font_config();
     // US-008: when the user opts into ligatures, hand GPUI the font's
     // native feature set untouched. Default behavior (and explicit
     // `ligatures: false`) keeps the historical `disable_ligatures()`
@@ -288,10 +331,12 @@ pub(super) fn base_font() -> Font {
         family: SharedString::from(family),
         features,
         // `None` matches Zed's terminal Font default
-        // (zed/crates/terminal_view/src/terminal_element.rs:908-912).
-        // See the long-form rationale on the removed `FONT_FALLBACKS`
-        // static above.
-        fallbacks: None,
+        // (zed/crates/terminal_view/src/terminal_element.rs:908-912) and is
+        // kept unless the user opts in via the top-level `font_fallbacks`
+        // array (already sanitized to non-empty-or-`None` by
+        // `cached_font_config`). See the long-form rationale on the removed
+        // `FONT_FALLBACKS` static above for why we never hardcode a chain.
+        fallbacks: fallbacks.map(FontFallbacks::from_fonts),
         weight: FontWeight::NORMAL,
         style: FontStyle::Normal,
     }
@@ -322,14 +367,14 @@ pub(super) fn font_size(size_override: Option<f32>) -> Pixels {
     if let Some(s) = size_override {
         return px(s);
     }
-    let (_, size, _, _) = cached_font_config();
+    let (_, size, _, _, _) = cached_font_config();
     px(size)
 }
 
 /// EP-006 US-019: the global (non-overridden) font size — the zoom
 /// handlers' baseline for a pane that has no override yet.
 pub fn global_font_size() -> f32 {
-    let (_, size, _, _) = cached_font_config();
+    let (_, size, _, _, _) = cached_font_config();
     size
 }
 
@@ -406,7 +451,7 @@ pub fn measure_cell(
 
     // Line height scales with the EFFECTIVE size (override or global) so a
     // zoomed pane keeps its configured line-height ratio.
-    let (_, global_size, multiplier, _) = cached_font_config();
+    let (_, global_size, multiplier, _, _) = cached_font_config();
     let size_f32 = size_override.unwrap_or(global_size);
     let line_height_raw = px(size_f32 * multiplier);
 
@@ -577,5 +622,55 @@ mod tests {
         // surfaces it loudly at the PR gate.
         assert_eq!(default_font_family(), EMBEDDED_MONO_FAMILY);
         assert_eq!(default_font_family(), "IBM Plex Mono");
+    }
+
+    // ─── font_fallbacks sanitization ─────────────────────────────────
+    // The wiring that lets a user keep IBM Plex Mono primary while adding
+    // a Nerd Font fallback for Starship / oh-my-posh icons. The sanitizer
+    // must collapse absent/all-empty lists to `None` so `base_font` emits
+    // `fallbacks: None` (GPUI's built-in stack) rather than an empty
+    // `FontFallbacks`, and must trim + drop blank entries.
+
+    #[test]
+    fn sanitize_font_fallbacks_absent_is_none() {
+        assert_eq!(sanitize_font_fallbacks(None), None);
+    }
+
+    #[test]
+    fn sanitize_font_fallbacks_empty_list_is_none() {
+        assert_eq!(sanitize_font_fallbacks(Some(&vec![])), None);
+    }
+
+    #[test]
+    fn sanitize_font_fallbacks_all_blank_is_none() {
+        let cfg = vec!["".to_string(), "   ".to_string(), "\t".to_string()];
+        assert_eq!(sanitize_font_fallbacks(Some(&cfg)), None);
+    }
+
+    #[test]
+    fn sanitize_font_fallbacks_trims_and_drops_blanks() {
+        let cfg = vec![
+            "  FiraCode Nerd Font Mono  ".to_string(),
+            "".to_string(),
+            "Segoe UI Emoji".to_string(),
+        ];
+        assert_eq!(
+            sanitize_font_fallbacks(Some(&cfg)),
+            Some(vec![
+                "FiraCode Nerd Font Mono".to_string(),
+                "Segoe UI Emoji".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn sanitize_font_fallbacks_preserves_order() {
+        // Fallback order is significant — GPUI consults entries in order,
+        // so the sanitizer must never reorder or dedupe.
+        let cfg = vec!["B".to_string(), "A".to_string(), "B".to_string()];
+        assert_eq!(
+            sanitize_font_fallbacks(Some(&cfg)),
+            Some(vec!["B".to_string(), "A".to_string(), "B".to_string()])
+        );
     }
 }

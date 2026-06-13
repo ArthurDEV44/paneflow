@@ -877,6 +877,7 @@ mod tests {
             window_decorations: None,
             line_height: None,
             font_family: None,
+            font_fallbacks: None,
             font_size: None,
             option_as_meta: None,
             shell_integration: None,

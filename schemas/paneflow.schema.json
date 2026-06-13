@@ -28,6 +28,13 @@
       "type": ["string", "null"],
       "description": "Font family. Accepts the special aliases '.PaneflowMono' (bundled Lilex) and '.PaneflowSans' (bundled IBM Plex Sans), the concrete embedded names ('Lilex', 'IBM Plex Sans'), or any installed system monospace family. Unknown families fall back to Lilex with a warning."
     },
+    "font_fallbacks": {
+      "type": ["array", "null"],
+      "description": "Ordered fallback font families consulted (in order) for glyphs the primary font_family does not cover — e.g. a Nerd Font for the Powerline/icon glyphs used by Starship, oh-my-posh or Terminal-Icons, which no system font provides on Windows. Null or an empty list keeps GPUI's built-in fallback stack only.",
+      "items": {
+        "type": "string"
+      }
+    },
     "font_size": {
       "type": ["number", "null"],
       "description": "Font size in pixels. Default 14.0.",

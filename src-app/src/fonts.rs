@@ -51,6 +51,13 @@ pub fn load_mono_fonts() -> Vec<String> {
     use core_text::font_descriptor::SymbolicTraitAccessors;
 
     let collection = font_collection::create_for_all_families();
+    // NOTE: core-text 21's `get_descriptors()` has a documented one-shot leak —
+    // it wraps the `CTFontCollectionCreateMatchingFontDescriptors` result under
+    // the Get rule when Apple returns it under the Create rule, so the CFArray
+    // is never released. Accepted here: this runs at most once per process
+    // (memoized by the `INSTALLED_MONO_FONTS` `LazyLock`) and leaks only a few
+    // KB. If it ever moves off the one-shot path, mirror Zed's direct FFI
+    // (`extern "C"` + `wrap_under_create_rule`, gpui_macos/src/text_system.rs).
     let Some(descriptors) = collection.get_descriptors() else {
         log::warn!("Core Text font enumeration failed: no descriptors returned");
         return Vec::new();
@@ -64,12 +71,55 @@ pub fn load_mono_fonts() -> Vec<String> {
         // `desc` (a `core_foundation::ItemRef`) yields `&CTFontDescriptor`
         // which matches the constructor's signature.
         let font = ct_font::new_from_descriptor(&desc, 0.0);
-        if font.symbolic_traits().is_monospace() {
-            families.insert(desc.family_name());
+        // `desc.family_name()` (core-text) panics via an internal `.expect()`
+        // on a font with no family-name attribute, which would poison the
+        // `LazyLock` registry and trip `panic = "deny"`. Use the panic-free
+        // reader and silently skip any descriptor without a usable name.
+        if font.symbolic_traits().is_monospace()
+            && let Some(name) = lenient_font_attributes::family_name(&desc)
+        {
+            families.insert(name);
         }
     }
 
     families.into_iter().collect()
+}
+
+/// Panic-free Core Text family-name read.
+///
+/// `core_text`'s `CTFontDescriptor::family_name` does `.expect(...)` on the
+/// attribute and asserts it is a `CFString`, so a single installed font with an
+/// absent or malformed family-name attribute panics — poisoning the `LazyLock`
+/// registry (every later read re-panics) and tripping the workspace's
+/// `panic = "deny"` lint. Mirrors Zed's `lenient_font_attributes`, but
+/// `downcast`s instead of asserting so it never panics on a non-string value.
+#[cfg(target_os = "macos")]
+mod lenient_font_attributes {
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::string::CFString;
+    use core_text::font_descriptor::{
+        CTFontDescriptor, CTFontDescriptorCopyAttribute, kCTFontFamilyNameAttribute,
+    };
+
+    pub(super) fn family_name(descriptor: &CTFontDescriptor) -> Option<String> {
+        // SAFETY: `CTFontDescriptorCopyAttribute` returns a +1 (Create-rule)
+        // `CFTypeRef` or NULL. We null-check, take ownership under the create
+        // rule, then `downcast` — never dereferencing NULL or a wrong-typed
+        // object, and never leaking (the temporary `CFType` releases the +1 if
+        // the downcast fails).
+        unsafe {
+            let value = CTFontDescriptorCopyAttribute(
+                descriptor.as_concrete_TypeRef(),
+                kCTFontFamilyNameAttribute,
+            );
+            if value.is_null() {
+                return None;
+            }
+            CFType::wrap_under_create_rule(value)
+                .downcast::<CFString>()
+                .map(|s| s.to_string())
+        }
+    }
 }
 
 /// Linux / FreeBSD / OpenBSD / NetBSD / other unixes.

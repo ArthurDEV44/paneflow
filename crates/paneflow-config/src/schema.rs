@@ -24,6 +24,14 @@ pub struct PaneFlowConfig {
     pub line_height: Option<f32>,
     /// Terminal font family (default: platform-specific monospace fallback).
     pub font_family: Option<String>,
+    /// Ordered fallback font families, consulted in order for glyphs the
+    /// primary `font_family` does not cover — e.g. a Nerd Font for the
+    /// Powerline / icon glyphs used by Starship, oh-my-posh or Terminal-Icons,
+    /// which no system font provides on Windows. `None` (or an empty list)
+    /// keeps GPUI's built-in fallback stack only. Mirrors Zed's
+    /// `terminal.font_fallbacks`. Hot-reloaded via the 500 ms font cache, so a
+    /// config edit takes effect on the next new terminal without a restart.
+    pub font_fallbacks: Option<Vec<String>>,
     /// Terminal font size in pixels (default: 14.0, valid range: 8.0–32.0).
     pub font_size: Option<f32>,
     /// Treat Alt key as Meta (send ESC prefix). Default: true on Linux.
@@ -1166,6 +1174,7 @@ mod tests {
             window_decorations: Some("client".to_string()),
             line_height: Some(1.3),
             font_family: Some("Lilex".to_string()),
+            font_fallbacks: Some(vec!["FiraCode Nerd Font Mono".to_string()]),
             font_size: Some(14.0),
             option_as_meta: Some(true),
             shell_integration: Some(true),

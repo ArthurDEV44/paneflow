@@ -279,6 +279,10 @@ gpui_platform = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow
 [target.'cfg(target_os = "macos")'.dependencies]
 libproc = "0.14"
 core-text = "21"
+# core-foundation 0.10 matches the version core-text 21 already pulls (so the
+# resolver dedupes and the `TCFType` trait stays coherent across both crates).
+# Powers the panic-free Core Text family-name reader in `fonts.rs`.
+core-foundation = "0.10"
 
 # Windows: windows-sys powers the TerminateProcess path in TerminalState::drop
 # (US-004 — prd-windows-port.md). Feature set kept minimal on purpose: adding
