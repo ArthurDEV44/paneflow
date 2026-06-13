@@ -284,9 +284,10 @@ impl Render for SettingsWindow {
         }
 
         // ── Settings title bar ──────────────────────────────────────────
-        // Reuses `window_chrome::csd::render_button_group`; only the brand
-        // and the centered "Settings" label are bespoke. Close dispatches
-        // `window.remove_window()` directly (no PaneFlowApp event bus).
+        // Reuses `window_chrome::csd::render_button_group`; only the empty
+        // sidebar-aligned slot and centered "Settings" label are bespoke.
+        // Close dispatches `window.remove_window()` directly (no PaneFlowApp
+        // event bus).
         let title_bar = {
             let height = (1.75 * window.rem_size()).max(px(34.));
             let is_csd = matches!(decorations, Decorations::Client { .. });
@@ -338,14 +339,7 @@ impl Render for SettingsWindow {
                 .flex_row()
                 .items_center()
                 .pl_3()
-                .overflow_x_hidden()
-                .child(
-                    div()
-                        .text_color(ui.text)
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .child("Paneflow"),
-                );
+                .overflow_x_hidden();
 
             let title = div()
                 .flex_1()

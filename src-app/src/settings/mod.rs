@@ -17,7 +17,9 @@ pub mod window;
 
 pub use window::SettingsWindow;
 
-use gpui::{AppContext, Context, Window, WindowBounds, WindowDecorations, WindowOptions, px, size};
+use gpui::{
+    AppContext, Context, Window, WindowBounds, WindowDecorations, WindowOptions, point, px, size,
+};
 
 /// Open the settings window, or activate + focus the existing one.
 pub fn open_or_focus<T>(_window: &mut Window, cx: &mut Context<T>) {
@@ -47,9 +49,13 @@ pub fn open_or_focus<T>(_window: &mut Window, cx: &mut Context<T>) {
         window_min_size: Some(size(px(900.), px(520.))),
         window_decorations: Some(decorations),
         titlebar: Some(gpui::TitlebarOptions {
-            title: Some("PaneFlow - Settings".into()),
+            title: Some("Settings".into()),
             appears_transparent: true,
-            ..Default::default()
+            // macOS: place the native traffic lights at the same (12,12) inset
+            // as the main window (main.rs) so both windows' caption buttons
+            // line up and clear the titlebar content. Ignored on platforms that
+            // draw their own controls.
+            traffic_light_position: Some(point(px(12.0), px(12.0))),
         }),
         app_id: Some("paneflow".into()),
         focus: true,
