@@ -168,9 +168,20 @@ pub fn run_update(source_path: &Path, asset_url: &str) -> Result<PathBuf> {
     // `gh-releases-zsync` channel could still deliver bad bytes. On failure we
     // delete the candidate and leave the live binary untouched: the caller
     // surfaces the "corrupt or tampered" toast and the user re-downloads.
-    if let Err(e) = super::super::signature::fetch_and_verify(&candidate, asset_url)
-        .context("verify updated AppImage signature")
-    {
+    // #6: `appimageupdatetool -O` resolves the `latest` GitHub release via the
+    // baked-in UPDATE_INFORMATION, which may briefly differ from the exact
+    // version the checker resolved (a publish race: the new release exists but
+    // is not yet promoted to `latest`). That divergence surfaces HERE as a
+    // signature mismatch — the bytes are a different (still-signed) release, so
+    // verification against THIS version's `asset_url` signature fails. The
+    // context turns the otherwise-confusing dead-end into an actionable hint.
+    // (We can't compare versions earlier without executing the unverified
+    // candidate, which would defeat the point of this gate.)
+    if let Err(e) = super::super::signature::fetch_and_verify(&candidate, asset_url).context(
+        "verify updated AppImage signature — if this recurs right after a release, the \
+         `latest` zsync channel may not yet point at the version the updater resolved; \
+         retry in a few minutes",
+    ) {
         let _ = std::fs::remove_file(&candidate);
         return Err(e);
     }
