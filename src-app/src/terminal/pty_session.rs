@@ -514,8 +514,10 @@ impl TerminalState {
     ) -> SpawnParams {
         // Fallback chain handled by `resolve_default_shell` (US-006):
         // Unix:    config → $SHELL → /bin/sh
-        // Windows: config → %ComSpec% → C:\Windows\System32\cmd.exe →
-        //          powershell.exe on PATH → bare "cmd.exe"
+        // Windows: config → pwsh.exe → powershell.exe → %ComSpec% →
+        //          C:\Windows\System32\cmd.exe → bare "cmd.exe"
+        //          (PowerShell preferred so we don't default to the legacy
+        //          cmd.exe console — mirrors Zed's get_windows_system_shell)
         let config = paneflow_config::loader::load_config();
         let shell = {
             let configured = config
@@ -607,8 +609,13 @@ impl TerminalState {
         let options = tty::Options {
             shell: Some(tty::Shell::new(params.shell, params.extra_args)),
             working_directory: Some(params.cwd),
-            // We close the master and signal the child ourselves in `Drop`;
-            // matches Zed (`drain_on_exit: false`).
+            // We close the master and signal the child ourselves in `Drop`, so
+            // the EventLoop stops on child exit rather than draining to EOF.
+            // NOTE: this DIVERGES from Zed, which sets `drain_on_exit: true`
+            // (zed/crates/terminal/src/alacritty.rs:168) to keep reading the
+            // PTY after the child exits so its final output isn't clipped.
+            // PaneFlow shows an exit overlay instead; if a shell's last output
+            // burst is ever truncated on exit, revisit this.
             drain_on_exit: false,
             env: params.env,
             #[cfg(windows)]
@@ -1264,14 +1271,20 @@ impl TerminalState {
         // With no children the shell is idle → report its own comm so naming
         // resolves to `shell`.
         let children_path = format!("/proc/{pid}/task/{pid}/children", pid = self.child_pid);
-        let target = std::fs::read_to_string(&children_path)
-            .ok()
-            .and_then(|s| {
-                s.split_whitespace()
-                    .last()
-                    .and_then(|p| p.parse::<u32>().ok())
-            })
-            .unwrap_or(self.child_pid);
+        let target = match std::fs::read_to_string(&children_path) {
+            // File present: empty means an idle shell (→ keep `child_pid`),
+            // otherwise the last (most-recent) child id.
+            Ok(content) => content
+                .split_whitespace()
+                .last()
+                .and_then(|p| p.parse::<u32>().ok())
+                .unwrap_or(self.child_pid),
+            // File MISSING (Err): the kernel lacks CONFIG_PROC_CHILDREN. Fall
+            // back to a ppid scan for the highest-pid child (≈ most recent,
+            // since pids are roughly monotonic) so naming still tracks the
+            // foreground job instead of always showing the shell.
+            Err(_) => highest_pid_child_via_ppid(self.child_pid).unwrap_or(self.child_pid),
+        };
         read_proc_command(target)
     }
 
@@ -1657,6 +1670,16 @@ fn assemble_pty_env(
         env.insert("PANEFLOW_SOCKET_PATH".into(), socket_path);
     }
 
+    // Propagate the opt-in hook-diagnostic log path explicitly so the whole
+    // chain (shell → shim → agent → ai-hook) appends to the same file even if
+    // a PTY backend ever clears the inherited env. No-op when unset.
+    if let Some(log_path) = std::env::var_os("PANEFLOW_HOOK_LOG")
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string_lossy().into_owned())
+    {
+        env.insert("PANEFLOW_HOOK_LOG".into(), log_path);
+    }
+
     // Explicit TERM so TUI apps detect capabilities correctly.
     env.insert("TERM".into(), "xterm-256color".into());
 
@@ -1726,25 +1749,37 @@ fn assemble_pty_env(
     env
 }
 
-/// Send SIGTERM to the child's process group, guarded by a no-op signal
-/// probe so a dead or empty group is a harmless no-op. Returns true if
-/// SIGTERM was delivered. Factored out of `Drop` so the graceful-shutdown
-/// step is unit-testable (US-001).
+/// True when `pid` is still the leader of its own process group — i.e. the
+/// session we spawned. alacritty's `tty::new` calls `setsid()` on the child, so
+/// `child_pid` is both the PID and the PGID of the session leader and
+/// `getpgid(pid) == pid` holds for as long as that session lives. After the
+/// child exits the kernel can recycle `pid` onto an unrelated process whose
+/// pgid differs; this identity check closes the PID-reuse window that a bare
+/// `kill(-pid, 0)` existence probe leaves open, so teardown never signals a
+/// stranger's group.
 #[cfg(unix)]
-fn terminate_process_group(pid: i32) -> bool {
+fn is_own_session_group(pid: i32) -> bool {
     if pid <= 0 {
         return false;
     }
-    // SAFETY: kill(-pid, 0) probes the group without delivering a signal;
-    // kill(-pid, SIGTERM) signals every member. Both are FFI-safe with a
-    // validated pid > 0.
-    unsafe {
-        if libc::kill(-pid, 0) == 0 {
-            libc::kill(-pid, libc::SIGTERM) == 0
-        } else {
-            false
-        }
+    // SAFETY: getpgid is a pure query; it returns the pgid, or -1 (ESRCH) when
+    // no such process exists — neither equals our positive `pid` unless `pid`
+    // is genuinely its own group leader.
+    unsafe { libc::getpgid(pid) == pid }
+}
+
+/// Send SIGTERM to the child's process group, guarded by the session-identity
+/// check ([`is_own_session_group`]) so a dead or recycled `pid` is a harmless
+/// no-op. Returns true if SIGTERM was delivered. Factored out of `Drop` so the
+/// graceful-shutdown step is unit-testable (US-001).
+#[cfg(unix)]
+fn terminate_process_group(pid: i32) -> bool {
+    if !is_own_session_group(pid) {
+        return false;
     }
+    // SAFETY: kill(-pid, SIGTERM) signals every member of the group; FFI-safe
+    // with the positive `pid` we just confirmed is our session leader.
+    unsafe { libc::kill(-pid, libc::SIGTERM) == 0 }
 }
 
 /// EP-002 US-005: format a numeric signal (from alacritty's native
@@ -1818,18 +1853,22 @@ impl Drop for TerminalState {
                     // Target the entire process group (`-pid`) so any
                     // sub-process the shell forked (cargo build, npm dev,
                     // long-running scripts) dies with the shell instead of
-                    // becoming an orphan reparented to PID 1. portable-pty
-                    // calls `setsid()` on the child (unix.rs:220), so
-                    // `child_pid` is both the PID and the PGID of the
-                    // session leader — `kill(-pgid, sig)` is the canonical
-                    // POSIX idiom to signal every process in that group.
+                    // becoming an orphan reparented to PID 1. alacritty's
+                    // `tty::new` calls `setsid()` on the child, so `child_pid`
+                    // is both the PID and the PGID of the session leader —
+                    // `kill(-pgid, sig)` is the canonical POSIX idiom to signal
+                    // every process in that group.
                     //
-                    // SAFETY: libc::kill(-pid, 0) is a no-op signal probe;
-                    // libc::kill(-pid, SIGKILL) signals every member of the
-                    // process group. Both calls are FFI-safe with a validated
-                    // pid > 0 captured by value into this closure.
-                    unsafe {
-                        if libc::kill(-pid, 0) == 0 {
+                    // Re-check identity at fire time: 100ms after the child
+                    // died the kernel may have recycled `pid` onto an unrelated
+                    // group, so confirm `getpgid(pid) == pid` (our setsid
+                    // session leader) before the SIGKILL — a bare `kill(-pid,0)`
+                    // existence probe would not catch the reuse.
+                    if is_own_session_group(pid) {
+                        // SAFETY: kill(-pid, SIGKILL) signals every member of
+                        // the process group; FFI-safe with the positive `pid`
+                        // captured by value and just confirmed to be ours.
+                        unsafe {
                             libc::kill(-pid, libc::SIGKILL);
                         }
                     }
@@ -1913,6 +1952,38 @@ impl Drop for TerminalState {
             }
         }
     }
+}
+
+/// Highest-pid direct child of `parent`, found by scanning `/proc/*/stat` ppid
+/// (proc(5) field 4, taken after the last `)` since the comm field is
+/// parenthesized). Fallback for `foreground_command` on kernels without
+/// `CONFIG_PROC_CHILDREN` (no `children` file); highest pid ≈ most recent child
+/// since pids are roughly monotonic. `None` when `parent` has no children.
+#[cfg(target_os = "linux")]
+fn highest_pid_child_via_ppid(parent: u32) -> Option<u32> {
+    let mut best: Option<u32> = None;
+    let entries = std::fs::read_dir("/proc").ok()?;
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            && let Some(after_comm) = stat.rfind(')').map(|i| &stat[i + 1..])
+            && after_comm
+                .split_whitespace()
+                .nth(1)
+                .and_then(|p| p.parse::<u32>().ok())
+                == Some(parent)
+            && best.is_none_or(|b| pid > b)
+        {
+            best = Some(pid);
+        }
+    }
+    best
 }
 
 /// Read a process's command line from `/proc/<pid>/cmdline`, falling back to
@@ -2490,7 +2561,8 @@ mod tests {
     #[test]
     fn terminate_process_group_is_noop_for_dead_or_invalid_group() {
         // US-001 AC (unhappy path): an empty/invalid group must be a harmless
-        // no-op guarded by the kill(-pid, 0) probe — no panic, returns false.
+        // no-op guarded by the `getpgid(pid) == pid` identity check — no panic,
+        // returns false.
         assert!(
             !terminate_process_group(0),
             "pid 0 must be rejected (would signal the caller's own group)"
@@ -2499,8 +2571,8 @@ mod tests {
             !terminate_process_group(-5),
             "negative pid must be rejected"
         );
-        // A very high pid is almost certainly not a live group; the probe
-        // returns ESRCH so SIGTERM is never sent.
+        // A very high pid is almost certainly not its own live group leader;
+        // getpgid returns ESRCH (≠ pid) so SIGTERM is never sent.
         assert!(
             !terminate_process_group(0x7FFF_FFF0),
             "non-existent group must be a no-op, not a panic"

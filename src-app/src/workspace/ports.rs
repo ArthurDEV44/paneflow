@@ -176,6 +176,16 @@ fn classify_frontend_argv<'a>(args: impl Iterator<Item = &'a str>) -> Option<&'s
 /// order, root first.
 #[cfg(target_os = "linux")]
 fn bfs_descendants_linux(root_pid: u32, visited: &mut std::collections::HashSet<u32>) -> Vec<u32> {
+    // Fast path: /proc/<pid>/task/<pid>/children. If that file is MISSING for
+    // the root (an `Err`, NOT an empty `Ok`), the kernel was built without
+    // CONFIG_PROC_CHILDREN (hardened / minimal / some container kernels) — fall
+    // back to a ppid map so agent-CLI and dev-server detection still work there
+    // instead of seeing only the shell.
+    let root_children = format!("/proc/{root_pid}/task/{root_pid}/children");
+    if read_capped(std::path::Path::new(&root_children), 4096).is_err() {
+        return bfs_descendants_via_ppid_linux(root_pid, visited);
+    }
+
     let mut result = Vec::new();
     if !visited.insert(root_pid) {
         return result;
@@ -199,6 +209,66 @@ fn bfs_descendants_linux(root_pid: u32, visited: &mut std::collections::HashSet<
         }
     }
     result
+}
+
+/// Fallback descendant walk for kernels without `CONFIG_PROC_CHILDREN` (the
+/// `children` file is absent): scan every `/proc/<pid>/stat` ppid (proc(5)
+/// field 4) once into a parent→children map, then BFS it. Same
+/// `MAX_PIDS_PER_ROOT` bound and shared-`visited` semantics as the fast path.
+/// Only reached on the rare no-`children` kernel, so the extra full `/proc`
+/// scan is acceptable.
+#[cfg(target_os = "linux")]
+fn bfs_descendants_via_ppid_linux(
+    root_pid: u32,
+    visited: &mut std::collections::HashSet<u32>,
+) -> Vec<u32> {
+    let mut children_of: std::collections::HashMap<u32, Vec<u32>> =
+        std::collections::HashMap::new();
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|s| s.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if let Some(ppid) = ppid_of_linux(pid) {
+                children_of.entry(ppid).or_default().push(pid);
+            }
+        }
+    }
+
+    let mut result = Vec::new();
+    if !visited.insert(root_pid) {
+        return result;
+    }
+    result.push(root_pid);
+    let mut queue = std::collections::VecDeque::from([root_pid]);
+    while let Some(pid) = queue.pop_front() {
+        if result.len() >= MAX_PIDS_PER_ROOT {
+            break;
+        }
+        if let Some(kids) = children_of.get(&pid) {
+            for &child in kids {
+                if visited.insert(child) {
+                    result.push(child);
+                    queue.push_back(child);
+                }
+            }
+        }
+    }
+    result
+}
+
+/// ppid (proc(5) field 4) of `pid` from `/proc/<pid>/stat`. Fields are taken
+/// after the LAST `)` because the comm field (field 2) is parenthesized and may
+/// itself contain spaces/parens — the kernel-documented safe parse.
+#[cfg(target_os = "linux")]
+fn ppid_of_linux(pid: u32) -> Option<u32> {
+    let stat = read_capped(std::path::Path::new(&format!("/proc/{pid}/stat")), 4096).ok()?;
+    let after_comm = &stat[stat.rfind(')')? + 1..];
+    after_comm.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// argv of a pid from `/proc/{pid}/cmdline` (NUL-separated). 4 KiB cap —
