@@ -122,7 +122,7 @@ PaneFlowApp (Entity<Render>)           ← src-app/src/main.rs
 
 - **Main thread**: GPUI event loop — owns all Entity state, rendering, input dispatch
 - **PTY I/O threads**: one per terminal (spawned by `alacritty_terminal::EventLoop::spawn()`)
-- **IPC thread**: Unix socket server at `$XDG_RUNTIME_DIR/paneflow/paneflow.sock` (JSON-RPC 2.0)
+- **IPC thread**: Unix socket server under a runtime dir resolved via a fallback chain — `$XDG_RUNTIME_DIR` → `dirs::runtime_dir()` → `$TMPDIR` (macOS) → `dirs::cache_dir()/run` — at `<runtime_dir>/paneflow/paneflow.sock` (JSON-RPC 2.0). Windows uses the named pipe `\\.\pipe\paneflow`. The composed path is rejected if it would exceed the `sun_path` limit (≤103 bytes usable).
 - **Shared state**: `Arc<FairMutex<Term<ZedListener>>>` is the only cross-thread data (terminal grid)
 
 ### Data flow: keystroke → pixel
@@ -214,7 +214,7 @@ Location: `~/.config/paneflow/paneflow.json` (Linux XDG).
 
 ## IPC (ipc.rs)
 
-Unix socket JSON-RPC 2.0 at `$XDG_RUNTIME_DIR/paneflow/paneflow.sock`. Methods:
+Unix socket JSON-RPC 2.0 at `<runtime_dir>/paneflow/paneflow.sock`, where `runtime_dir` resolves via `$XDG_RUNTIME_DIR` → `dirs::runtime_dir()` → `$TMPDIR` (macOS) → `dirs::cache_dir()/run` (Windows: the named pipe `\\.\pipe\paneflow`). Methods:
 
 | Method | Thread | Description |
 |--------|--------|-------------|
