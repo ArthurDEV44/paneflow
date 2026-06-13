@@ -297,9 +297,13 @@ pub fn ai_hook_binary_path() -> Option<PathBuf> {
 #[cfg(unix)]
 fn check_sun_path_fits(path: &std::path::Path) -> bool {
     let bytes = path.as_os_str().len();
-    if bytes > MAX_SOCKET_PATH_BYTES {
+    // `MAX_SOCKET_PATH_BYTES` is `sizeof(sun_path)`, and `bind()` needs room for
+    // the trailing NUL inside that array — so a path of *exactly* the array size
+    // does not fit. Reject `>=`, not `>` (the usable maximum is the array size
+    // minus one).
+    if bytes >= MAX_SOCKET_PATH_BYTES {
         log::warn!(
-            "paneflow: computed IPC socket path exceeds sun_path limit ({} > {} bytes): {} — IPC will be disabled. Set $XDG_RUNTIME_DIR (Linux) or shorten $TMPDIR (macOS) to enable it.",
+            "paneflow: computed IPC socket path does not fit sun_path ({} >= {} bytes, no room for the NUL terminator): {} — IPC will be disabled. Set $XDG_RUNTIME_DIR (Linux) or shorten $TMPDIR (macOS) to enable it.",
             bytes,
             MAX_SOCKET_PATH_BYTES,
             path.display()
