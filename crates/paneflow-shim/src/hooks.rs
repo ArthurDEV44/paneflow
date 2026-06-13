@@ -3,6 +3,7 @@
 
 use crate::locate_sibling_hook_binary;
 use std::env;
+use std::ffi::OsStr;
 // The cross-platform atomic writers call `tmp.flush()` (method form), which
 // needs the `Write` trait in scope on both platforms.
 use std::io::Write;
@@ -66,22 +67,60 @@ pub(crate) fn safe_path_display(path: &Path) -> String {
         .collect()
 }
 
-/// Returns true iff `$PANEFLOW_SOCKET_PATH` is set and points at an existing
-/// filesystem entry. We treat unset/unreachable as "PaneFlow not running":
-/// in that state, installing hook config is pointless (the hooks would
-/// invoke `paneflow-ai-hook`, which would fail silently per PRD constraint
-/// C4) and we instead sweep any orphan entries left by a previous SIGKILL'd
-/// session. Existence-only check keeps this cross-platform — Unix sockets
-/// and Windows named pipes both surface as `Path::exists() == true` when
-/// the listener is bound.
+/// Returns `true` iff PaneFlow's IPC channel looks usable for hook-config
+/// install. We treat "no channel" as "PaneFlow not running": in that state,
+/// installing hook config is pointless (the hooks would invoke
+/// `paneflow-ai-hook`, which fails silently per PRD constraint C4) and we
+/// instead sweep any orphan entries left by a previous SIGKILL'd session.
+///
+/// The probe is deliberately NOT a uniform `Path::exists()` — that is correct
+/// on Unix but actively wrong on Windows:
+///
+/// - **Unix**: `$PANEFLOW_SOCKET_PATH` is a domain-socket *filesystem node*,
+///   so `Path::exists()` is a passive, side-effect-free `stat(2)` — a correct
+///   liveness probe that is `true` exactly while the listener is bound.
+/// - **Windows**: the path is a named pipe (`\\.\pipe\paneflow`). There,
+///   `Path::exists()` is NOT passive — Rust's `fs::metadata` calls
+///   `CreateFileW`, which on a pipe path *opens a client connection*. That
+///   consumes the server's single pending pipe instance and returns
+///   `ERROR_PIPE_BUSY` (so `exists() == false`) whenever the next instance
+///   has not been re-created yet. Against the app's non-blocking accept loop
+///   (`src-app/src/ipc.rs`, which sleeps 10 ms between `accept()`s) that race
+///   is lost ~87% of the time, so the probe spuriously reported the *live*
+///   server as unreachable and the shim skipped hook install — leaving the
+///   sidebar agent status permanently dead on Windows while it worked on
+///   Unix. Every connect also polluted the server with a phantom connection.
+///   `$PANEFLOW_SOCKET_PATH` is only ever set by PaneFlow's own PTY
+///   (`pty_session::assemble_pty_env`), so its presence already proves we are
+///   inside a live PaneFlow session; we trust that and let the
+///   fire-and-forget hook delivery fail silently (C4) in the rare case the
+///   pipe is actually gone (app exited but the shell is still open).
 pub(crate) fn paneflow_ipc_reachable() -> bool {
-    let Some(raw) = env::var_os("PANEFLOW_SOCKET_PATH") else {
+    reachable_from_socket_env(env::var_os("PANEFLOW_SOCKET_PATH").as_deref())
+}
+
+/// Testable inner for [`paneflow_ipc_reachable`] — takes the raw env value so
+/// the policy is unit-testable without mutating the process-global env (the
+/// `detect_tool_from` / `read_ai_pid_from` convention). See the caller's doc
+/// for why the Windows branch skips the destructive `Path::exists()` probe.
+fn reachable_from_socket_env(raw: Option<&OsStr>) -> bool {
+    let Some(raw) = raw else {
         return false;
     };
     if raw.is_empty() {
         return false;
     }
-    Path::new(&raw).exists()
+    // Unix: passive `stat(2)`. Windows: presence of the PaneFlow-set env var
+    // is authoritative (a `Path::exists()` probe would connect-as-client and
+    // race the accept loop — see the caller's doc comment).
+    #[cfg(not(windows))]
+    {
+        Path::new(raw).exists()
+    }
+    #[cfg(windows)]
+    {
+        true
+    }
 }
 
 /// Returns `true` iff `dir` exists and is a symlink (i.e. `dir` itself is a
@@ -415,8 +454,39 @@ impl Drop for HookConfigGuard {
 /// detection and cleanup.
 pub(crate) fn resolve_hook_command(event: &str) -> String {
     match locate_sibling_hook_binary() {
-        Some(path) => format!("{} {}", path.display(), event),
+        Some(path) => format!("{} {}", display_hook_program(&path), event),
         None => format!("{HOOK_COMMAND_PREFIX}{event}"),
+    }
+}
+
+/// Render the hook binary's absolute path for the `command` string the agent
+/// writes into its hook config and later executes through a shell.
+///
+/// On Windows this MUST use forward slashes. Claude Code on Windows runs hook
+/// commands via bash (`/usr/bin/bash -c …`), and bash treats `\` as an escape
+/// character: a native `C:\Users\…\paneflow-ai-hook.exe` is de-escaped to
+/// `C:Users…paneflow-ai-hook.exe` → "command not found", so the hook never
+/// fires and the sidebar agent status stays dead on Windows (observed in the
+/// field). `C:/Users/…/paneflow-ai-hook.exe` is accepted verbatim by bash,
+/// cmd.exe, and PowerShell, and `Path::file_name` still extracts the basename
+/// (Windows `Path` treats `/` as a separator), so [`is_paneflow_hook_command`]
+/// keeps recognizing it for idempotent merge + cleanup — no detection change
+/// needed, and the legacy backslash form is still matched for cleanup.
+///
+/// Spaces in the path are not escaped here: the binary lives under
+/// `%LOCALAPPDATA%\paneflow…\bin\<ver>\`, which is space-free for the
+/// overwhelming majority of Windows profiles; quoting is avoided because the
+/// agent's shell wrapper (single vs double quotes) is not knowable here and a
+/// stray quote would reintroduce the very breakage this fixes.
+fn display_hook_program(path: &Path) -> String {
+    let rendered = path.display().to_string();
+    #[cfg(windows)]
+    {
+        rendered.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        rendered
     }
 }
 
@@ -485,10 +555,14 @@ fn merge_matcher_hooks_for_events(root: &mut serde_json::Value, events: &[&str])
             continue;
         };
 
-        let already_installed = array.iter().any(is_paneflow_matcher_group);
-        if already_installed {
-            continue;
-        }
+        // Self-healing instead of skip-if-present: drop any prior paneflow
+        // entry (possibly STALE — an older shim version, or the pre-fix
+        // Windows backslash command that bash de-escaped to "command not
+        // found") before adding the freshly-resolved one. A plain skip would
+        // otherwise pin a broken command across an upgrade until the next
+        // clean Drop-cleanup (which never runs if the prior session was
+        // hard-killed). Net effect stays idempotent: exactly one entry.
+        array.retain(|g| !is_paneflow_matcher_group(g));
 
         // The `_paneflow_managed` marker sits on the OUTER matcher-group
         // wrapper — that's where `is_paneflow_matcher_group` checks it.
@@ -626,9 +700,11 @@ fn merge_flat_hooks_for_events(
         let Some(array) = entry.as_array_mut() else {
             continue;
         };
-        if array.iter().any(is_paneflow_flat_entry) {
-            continue;
-        }
+        // Self-healing (see merge_matcher_hooks_for_events): replace any prior
+        // paneflow entry rather than skip it, so a stale command (old format /
+        // pre-fix Windows backslashes) is corrected on the next launch. Stays
+        // idempotent — exactly one paneflow entry per event.
+        array.retain(|e| !is_paneflow_flat_entry(e));
         array.push(serde_json::json!({
             "command": resolve_hook_command(canonical),
             "timeout": 5,
@@ -1326,11 +1402,14 @@ pub(crate) fn write_atomic(path: &Path, value: &serde_json::Value) -> std::io::R
 /// name, but it's only fired from Windows JSONL `error` events (see
 /// `parse_codex_event`), never from this hooks.json registration.
 ///
-/// Unix-only: the only callers (`merge_codex_hooks`, `remove_codex_hooks`,
-/// `CodexHookConfigGuard`) are all `#[cfg(unix)]`. On Windows the JSONL tee
-/// path takes over, so this list would otherwise be dead code under
-/// `-D warnings`.
-#[cfg(unix)]
+/// Cross-platform as of June 2026: Codex now supports hooks on **Windows**
+/// too (a `commandWindows` override field, and no `[features] hooks = true`
+/// flag is required — hooks are on by default). Codex's `hooks.json` uses the
+/// SAME matcher-group shape and the SAME event names as Claude Code, so the
+/// Windows build registers these via [`merge_codex_hooks_win`] (a plain
+/// `ManagedHookConfigGuard` over `.codex/hooks.json`), while Unix keeps
+/// `CodexHookConfigGuard` (which additionally toggles the `config.toml`
+/// feature flag still required there).
 pub(crate) const CODEX_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
@@ -1339,6 +1418,19 @@ pub(crate) const CODEX_HOOK_EVENTS: &[&str] = &[
     "PermissionRequest",
     "Stop",
 ];
+
+/// Windows Codex hook merge/remove. Reuses the shared Claude-format
+/// matcher-group helpers (Codex's `hooks.json` is byte-compatible) with the
+/// Codex event set. Unlike `CodexHookConfigGuard`, no `config.toml` feature
+/// flag is toggled — Codex enables hooks by default on Windows.
+#[cfg(not(unix))]
+pub(crate) fn merge_codex_hooks_win(root: &mut serde_json::Value) {
+    merge_matcher_hooks_for_events(root, CODEX_HOOK_EVENTS);
+}
+#[cfg(not(unix))]
+pub(crate) fn remove_codex_hooks_win(root: &mut serde_json::Value) {
+    remove_matcher_hooks_for_events(root, CODEX_HOOK_EVENTS);
+}
 
 /// Marker for the TOML comment placed above `hooks = true` in
 /// `~/.codex/config.toml`. Cleanup scans for this literal line.
@@ -1935,8 +2027,131 @@ pub(crate) fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> (ExitC
 
 #[cfg(test)]
 mod hooks_tests {
+    use super::display_hook_program;
+    use super::is_paneflow_hook_command;
+    use super::reachable_from_socket_env;
     use super::settings_has_managed_hook;
     use serde_json::json;
+    use std::ffi::OsStr;
+    use std::path::Path;
+
+    /// Regression (prd-windows-port): the hook `command` string is executed by
+    /// the agent through a shell. On Windows Claude Code uses bash, which
+    /// de-escapes `\` and mangled `C:\Users\…\paneflow-ai-hook.exe` into
+    /// `C:Users…` → "command not found", so the hook never fired and the
+    /// sidebar stayed dead. Forward slashes survive bash AND stay detectable.
+    #[cfg(windows)]
+    #[test]
+    fn windows_hook_program_uses_forward_slashes_and_stays_detectable() {
+        let p =
+            Path::new(r"C:\Users\Arthur\AppData\Local\paneflow-dev\bin\0.4.4\paneflow-ai-hook.exe");
+        let rendered = display_hook_program(p);
+        assert!(
+            !rendered.contains('\\'),
+            "no backslashes (bash mangles them): {rendered}"
+        );
+        assert!(
+            rendered.contains('/'),
+            "forward slashes expected: {rendered}"
+        );
+        // The full command must remain recognized for idempotent merge + cleanup.
+        let cmd = format!("{rendered} Stop");
+        assert!(
+            is_paneflow_hook_command(&cmd),
+            "forward-slash command must stay detectable: {cmd}"
+        );
+        // The legacy backslash form (left by an older shim) must ALSO still be
+        // detected so cleanup removes it.
+        assert!(is_paneflow_hook_command(
+            r"C:\Users\Arthur\AppData\Local\paneflow-dev\bin\0.4.4\paneflow-ai-hook.exe Stop"
+        ));
+    }
+
+    /// Unix path rendering is unchanged (no separator rewrite).
+    #[cfg(unix)]
+    #[test]
+    fn unix_hook_program_is_unchanged() {
+        let p = Path::new("/home/u/.cache/paneflow/bin/0.4.4/paneflow-ai-hook");
+        assert_eq!(
+            display_hook_program(p),
+            "/home/u/.cache/paneflow/bin/0.4.4/paneflow-ai-hook"
+        );
+    }
+
+    /// Windows Codex hooks (June 2026): `.codex/hooks.json` must carry one
+    /// paneflow matcher-group per Codex event, recognizable for cleanup, with
+    /// the command ending in the event name — and must NOT register
+    /// `Notification` (not a Codex event). Round-trips to empty on removal.
+    #[cfg(not(unix))]
+    #[test]
+    fn codex_win_merge_writes_detectable_matcher_groups() {
+        use super::{
+            is_paneflow_matcher_group, merge_codex_hooks_win, remove_codex_hooks_win,
+            CODEX_HOOK_EVENTS,
+        };
+        let mut root = json!({});
+        merge_codex_hooks_win(&mut root);
+        for event in CODEX_HOOK_EVENTS {
+            let arr = root["hooks"][*event]
+                .as_array()
+                .unwrap_or_else(|| panic!("missing event {event}"));
+            assert_eq!(arr.len(), 1, "{event}: exactly one paneflow entry");
+            assert!(is_paneflow_matcher_group(&arr[0]), "{event}: detectable");
+            let cmd = arr[0]["hooks"][0]["command"].as_str().unwrap();
+            assert!(cmd.ends_with(&format!(" {event}")), "{event}: {cmd}");
+        }
+        assert!(
+            root["hooks"].get("Notification").is_none(),
+            "Notification is not a Codex hook event"
+        );
+        // Idempotent + clean removal.
+        merge_codex_hooks_win(&mut root);
+        for event in CODEX_HOOK_EVENTS {
+            assert_eq!(root["hooks"][*event].as_array().unwrap().len(), 1);
+        }
+        remove_codex_hooks_win(&mut root);
+        assert_eq!(root, json!({}));
+    }
+
+    #[test]
+    fn unset_or_empty_socket_is_unreachable() {
+        // No PaneFlow PTY → no env var → not reachable (and the callers then
+        // sweep any orphan hook config).
+        assert!(!reachable_from_socket_env(None));
+        assert!(!reachable_from_socket_env(Some(OsStr::new(""))));
+    }
+
+    /// Regression (prd-windows-port): on Windows `$PANEFLOW_SOCKET_PATH` is a
+    /// named pipe. The former `Path::exists()` probe opened a client
+    /// connection that consumed the server's pending pipe instance and lost
+    /// the `ERROR_PIPE_BUSY` race ~87% of the time against the live accept
+    /// loop, so the shim skipped hook-config install and the sidebar agent
+    /// status never updated. Presence of the PaneFlow-set env var is now
+    /// authoritative on Windows — no destructive probe.
+    #[cfg(windows)]
+    #[test]
+    fn windows_named_pipe_env_is_reachable_without_probing() {
+        assert!(reachable_from_socket_env(Some(OsStr::new(
+            r"\\.\pipe\paneflow"
+        ))));
+        assert!(reachable_from_socket_env(Some(OsStr::new(
+            r"\\.\pipe\paneflow-dev"
+        ))));
+    }
+
+    /// On Unix the probe stays a passive `stat(2)`: a non-existent path is
+    /// unreachable; a real filesystem node is reachable.
+    #[cfg(unix)]
+    #[test]
+    fn unix_uses_passive_filesystem_probe() {
+        assert!(!reachable_from_socket_env(Some(OsStr::new(
+            "/nonexistent/paneflow/paneflow.sock"
+        ))));
+        let dir = tempfile::TempDir::new().unwrap();
+        let f = dir.path().join("paneflow.sock");
+        std::fs::File::create(&f).unwrap();
+        assert!(reachable_from_socket_env(Some(f.as_os_str())));
+    }
 
     // US-018: the shim defers to a persistent hook installed by
     // `paneflow hooks setup`. Detection must recognize the byte-identical

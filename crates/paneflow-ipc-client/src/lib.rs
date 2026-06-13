@@ -120,13 +120,33 @@ pub(crate) fn parse_response(line: &str) -> Result<Value, String> {
 /// agent retrying `read_pane` against a wedged Paneflow exhausted the
 /// long-lived bridge's threads/FDs. With an OS deadline, `read_line` returns
 /// the error itself, the owning `BufReader` drops, and the FD is released.
+/// Collapse an `ErrorKind::Unsupported` result to `Ok(())` — used for the
+/// optional socket-deadline setters, which Windows named pipes reject. Any
+/// other error is forwarded unchanged. See [`send_and_receive`] for why the
+/// timeout is best-effort.
+fn tolerate_unsupported(r: io::Result<()>) -> io::Result<()> {
+    match r {
+        Err(e) if e.kind() == io::ErrorKind::Unsupported => Ok(()),
+        other => other,
+    }
+}
+
 fn send_and_receive(socket: &Path, request: &Value) -> io::Result<String> {
     let name = socket.to_fs_name::<GenericFilePath>()?;
     let mut stream = Stream::connect(name)?;
     // Bound both directions on the same deadline: a peer that never drains our
     // write could otherwise wedge `write_all`.
-    stream.set_recv_timeout(Some(IPC_TIMEOUT))?;
-    stream.set_send_timeout(Some(IPC_TIMEOUT))?;
+    //
+    // BEST-EFFORT: Windows named pipes do not support I/O timeouts
+    // (`interprocess` -> `ErrorKind::Unsupported`). The `?` here used to fail
+    // the whole request on Windows, so the MCP bridge (`read_pane`, …) and
+    // every `paneflow` CLI subcommand reported "paneflow IPC unreachable" even
+    // with PaneFlow running. Tolerate Unsupported and proceed; the read below
+    // still has its own `MAX_RESPONSE_LEN` byte cap, and the server always
+    // writes a response, so the round-trip stays bounded in practice. Any
+    // other error still propagates.
+    tolerate_unsupported(stream.set_recv_timeout(Some(IPC_TIMEOUT)))?;
+    tolerate_unsupported(stream.set_send_timeout(Some(IPC_TIMEOUT)))?;
 
     let mut payload =
         serde_json::to_vec(request).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -196,8 +216,34 @@ fn default_socket_path() -> Option<PathBuf> {
             std::env::var_os("TMPDIR")
                 .map(PathBuf::from)
                 .filter(|p| !p.as_os_str().is_empty())
-        })?;
+        })
+        // 4th level, mirroring the server's `dirs::cache_dir().join("run")`
+        // (`runtime_paths::runtime_dir`). Without this, a client whose $TMPDIR
+        // is stripped (launchd/cron) returned None — "IPC unreachable" — even
+        // though the server had bound under the cache dir.
+        .or_else(cache_run_dir)?;
     Some(runtime.join("paneflow").join("paneflow.sock"))
+}
+
+/// Compute `<cache_dir>/run` from raw env, mirroring the server's last-resort
+/// fallback without taking a `dirs` dependency (the whole point of this crate's
+/// minimal tree). Linux: `$XDG_CACHE_HOME` or `$HOME/.cache`; macOS:
+/// `$HOME/Library/Caches`.
+#[cfg(unix)]
+fn cache_run_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join("Library").join("Caches").join("run"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty())
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+            .map(|c| c.join("run"))
+    }
 }
 
 /// Windows default: the release named-pipe path. Mirrors
@@ -210,6 +256,25 @@ fn default_socket_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tolerate_unsupported_swallows_only_unsupported() {
+        // Regression (prd-windows-port): Windows named pipes reject I/O
+        // deadlines with ErrorKind::Unsupported. That must NOT fail the IPC
+        // call (it silently broke the MCP bridge + CLI on Windows); any other
+        // error must still propagate.
+        assert!(tolerate_unsupported(Ok(())).is_ok());
+        assert!(
+            tolerate_unsupported(Err(io::Error::from(io::ErrorKind::Unsupported))).is_ok(),
+            "Unsupported (named-pipe timeout) must be tolerated"
+        );
+        let other = tolerate_unsupported(Err(io::Error::from(io::ErrorKind::PermissionDenied)));
+        assert_eq!(
+            other.unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied,
+            "a real error must still propagate unchanged"
+        );
+    }
 
     #[test]
     fn build_request_has_jsonrpc_envelope() {
@@ -248,9 +313,18 @@ mod tests {
 
     #[test]
     fn socket_path_from_env_requires_absolute() {
+        // "Absolute" is platform-specific: a Unix domain-socket path on Unix,
+        // the named-pipe device path on Windows (`Path::is_absolute` accepts
+        // `\\.\pipe\…`). The previous Unix-only literal made this test fail on
+        // Windows, where `/run/...` is NOT absolute (no drive) and
+        // `socket_path_from_env` correctly returned None.
+        #[cfg(not(windows))]
+        let absolute = "/run/user/1000/paneflow/paneflow.sock";
+        #[cfg(windows)]
+        let absolute = r"\\.\pipe\paneflow";
         assert_eq!(
-            socket_path_from_env(Some("/run/user/1000/paneflow/paneflow.sock")),
-            Some(PathBuf::from("/run/user/1000/paneflow/paneflow.sock"))
+            socket_path_from_env(Some(absolute)),
+            Some(PathBuf::from(absolute))
         );
         assert_eq!(socket_path_from_env(Some("relative/path.sock")), None);
         assert_eq!(socket_path_from_env(Some("")), None);
