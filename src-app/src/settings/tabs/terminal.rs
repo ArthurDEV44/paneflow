@@ -16,15 +16,16 @@
 //! their rows note "next new terminal"; font size and line height hot-reload.
 
 use gpui::{
-    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled, deferred, div, prelude::*, px, svg,
+    ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    SharedString, Styled, div, prelude::*, px,
 };
 use serde_json::{Value, json};
 
 use paneflow_config::schema::{CursorBlinkConfig, CursorShapeConfig, TerminalBellMode};
 
 use crate::settings::components::{
-    hairline, section_header, setting_card, setting_text, toggle_pill,
+    deferred_select_menu, hairline, section_header, select_chevron, select_item, select_menu,
+    select_trigger, setting_card, setting_text, toggle_pill,
 };
 
 use crate::{PaneFlowApp, TerminalDropdown};
@@ -243,9 +244,10 @@ impl PaneFlowApp {
             .child(input_card)
     }
 
-    /// One settings row: label/description on the left, a compact dropdown on
-    /// the right. `options` are `(label, json_value_to_write, is_selected)`.
-    /// `nested` routes the write to the `terminal` block vs. a top-level key.
+    /// One settings row: label/description on the left, a Codex-style select on
+    /// the right (shared `components::select_*` primitives). `options` are
+    /// `(label, json_value_to_write, is_selected)`. `nested` routes the write to
+    /// the `terminal` block vs. a top-level key.
     #[allow(clippy::too_many_arguments)]
     fn terminal_enum_row(
         &self,
@@ -258,36 +260,22 @@ impl PaneFlowApp {
         nested: bool,
         ui: crate::theme::UiColors,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::AnyElement {
         let is_open = self.terminal_dropdown == Some(which);
 
-        let mut trigger = div()
-            .id(SharedString::from(format!("term-dd-{config_key}")))
-            .relative()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .gap(px(8.))
-            .px(px(10.))
-            .py(px(5.))
-            .min_w(px(180.))
-            .max_w(px(260.))
-            .rounded(px(6.))
-            .border_1()
-            .border_color(ui.border)
-            .bg(ui.base)
-            .cursor(CursorStyle::PointingHand)
-            .hover(|s| s.border_color(ui.muted))
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.terminal_dropdown = if this.terminal_dropdown == Some(which) {
-                    None
-                } else {
-                    Some(which)
-                };
-                this.settings_focus.focus(window, cx);
-                cx.notify();
-            }))
+        // Decide open/close from the render-time `is_open` snapshot, not the live
+        // state: the menu's `on_mouse_down_out` fires on the same press and may
+        // have already cleared it, so a live toggle would re-open (see general.rs).
+        let mut trigger = select_trigger(SharedString::from(format!("term-dd-{config_key}")), ui)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.terminal_dropdown = if is_open { None } else { Some(which) };
+                    this.settings_focus.focus(window, cx);
+                    cx.notify();
+                }),
+            )
             .child(
                 div()
                     .flex_1()
@@ -297,79 +285,35 @@ impl PaneFlowApp {
                     .truncate()
                     .child(current_label),
             )
-            .child(
-                svg()
-                    .size(px(12.))
-                    .flex_none()
-                    .path("icons/chevron-down.svg")
-                    .text_color(ui.muted),
-            );
+            .child(select_chevron(ui));
 
         if is_open {
-            let mut dropdown = div()
-                .id(SharedString::from(format!("term-dd-list-{config_key}")))
-                .flex()
-                .flex_col()
-                .min_w(px(200.))
-                .max_w(px(280.))
-                .rounded(px(6.))
-                .bg(ui.overlay)
-                .border_1()
-                .border_color(ui.border)
-                .max_h(px(280.))
-                .overflow_y_scroll();
-
+            let mut menu =
+                select_menu(SharedString::from(format!("term-dd-list-{config_key}")), ui)
+                    .on_mouse_down_out(cx.listener(move |this, _, _w, cx| {
+                        if this.terminal_dropdown == Some(which) {
+                            this.terminal_dropdown = None;
+                            cx.notify();
+                        }
+                    }));
             for (i, (label, value, selected)) in options.into_iter().enumerate() {
                 let value_for_click = value;
-                dropdown = dropdown.child(
-                    div()
-                        .id((config_key, i))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(10.))
-                        .px(px(12.))
-                        .py(px(6.))
-                        .cursor(CursorStyle::PointingHand)
-                        .text_size(px(12.))
-                        .when(selected, |d| {
-                            d.bg(ui.subtle)
-                                .text_color(ui.text)
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                        })
-                        .when(!selected, |d| {
-                            d.text_color(ui.text).hover(|s| s.bg(ui.subtle))
-                        })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                            this.terminal_dropdown = None;
-                            // US-016: cache-mutate + notify + off-thread persist.
-                            this.persist_setting(nested, config_key, value_for_click.clone(), cx);
-                        }))
-                        .child(div().flex_1().min_w_0().truncate().child(label))
-                        .when(selected, |d| {
-                            d.child(
-                                svg()
-                                    .size(px(12.))
-                                    .flex_none()
-                                    .path("icons/checks.svg")
-                                    .text_color(ui.text),
-                            )
-                        }),
-                );
+                let item = select_item((config_key, i), selected, ui)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        this.terminal_dropdown = None;
+                        this.persist_setting(nested, config_key, value_for_click.clone(), cx);
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(ui.text)
+                            .child(label),
+                    );
+                menu = menu.child(item);
             }
-
-            trigger = trigger.child(
-                deferred(
-                    div()
-                        .absolute()
-                        .top(px(30.))
-                        .right(px(0.))
-                        .occlude()
-                        .child(dropdown),
-                )
-                .with_priority(1),
-            );
+            trigger = trigger.child(deferred_select_menu(menu));
         }
 
         div()
@@ -381,6 +325,7 @@ impl PaneFlowApp {
             .py(px(10.))
             .child(setting_text(ui, title, description))
             .child(div().flex_shrink_0().child(trigger))
+            .into_any_element()
     }
 
     /// A `−`/`+` numeric stepper row for a top-level float field. The value is
@@ -472,8 +417,9 @@ impl PaneFlowApp {
             )
     }
 
-    /// A full-width clickable toggle row. `nested` routes the write to the
-    /// `terminal` block (e.g. `ligatures`) vs. a top-level key (`option_as_meta`).
+    /// A toggle row — only the switch is interactive (the row itself does not
+    /// hover or click). `nested` routes the write to the `terminal` block (e.g.
+    /// `ligatures`) vs. a top-level key (`option_as_meta`).
     #[allow(clippy::too_many_arguments)]
     fn terminal_toggle_row(
         &self,
@@ -487,20 +433,23 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
-            .id(id)
             .flex()
             .flex_row()
             .items_center()
             .gap(px(16.))
             .px(px(12.))
             .py(px(10.))
-            .cursor(CursorStyle::PointingHand)
-            .hover(|s| s.bg(ui.subtle))
             .child(setting_text(ui, title, description))
-            .child(toggle_pill(current, ui))
-            .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                // US-016: cache-mutate + notify + off-thread persist.
-                this.persist_setting(nested, config_key, Value::Bool(!current), cx);
-            }))
+            .child(
+                div()
+                    .id(id)
+                    .flex_shrink_0()
+                    .cursor(CursorStyle::PointingHand)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        // US-016: cache-mutate + notify + off-thread persist.
+                        this.persist_setting(nested, config_key, Value::Bool(!current), cx);
+                    }))
+                    .child(toggle_pill(current, ui)),
+            )
     }
 }

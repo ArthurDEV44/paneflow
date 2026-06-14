@@ -3,7 +3,8 @@
 //!
 //! Two sections, each a lowercase eyebrow ("Tab bar buttons", "Permissions")
 //! followed by a `setting_card` of one row per toggle, separated by `hairline()`
-//! dividers. Each row is fully clickable; the switch is purely visual.
+//! dividers. Only the switch is interactive — the row itself does not hover or
+//! click.
 //!
 //! Persistence goes through [`PaneFlowApp::persist_setting`] — it mutates the
 //! cached config for instant feedback and writes `paneflow.json` off the main
@@ -296,20 +297,29 @@ fn setting_row(
     let target_value = !current;
 
     div()
-        .id(SharedString::from(id))
         .flex()
         .flex_row()
         .items_center()
         .gap(px(16.))
         .px(px(12.))
         .py(px(10.))
-        .cursor(CursorStyle::PointingHand)
-        .hover(|s| s.bg(ui.subtle))
         .when_some(icon, |d, agent| d.child(agent_icon_el(agent, ui)))
         .child(setting_text(ui, title, description))
-        .child(toggle_pill(current, ui))
-        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-            // cache-mutate + notify + off-thread persist.
-            this.persist_setting(false, config_key, serde_json::Value::Bool(target_value), cx);
-        }))
+        .child(
+            // Only the switch is interactive — the row no longer hovers/toggles.
+            div()
+                .id(SharedString::from(id))
+                .flex_shrink_0()
+                .cursor(CursorStyle::PointingHand)
+                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    // cache-mutate + notify + off-thread persist.
+                    this.persist_setting(
+                        false,
+                        config_key,
+                        serde_json::Value::Bool(target_value),
+                        cx,
+                    );
+                }))
+                .child(toggle_pill(current, ui)),
+        )
 }

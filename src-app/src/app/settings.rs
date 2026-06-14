@@ -28,6 +28,7 @@ impl PaneFlowApp {
         self.agents_view.sidebar_mode_picker_open = false;
         self.settings_section = Some(SettingsSection::General);
         self.terminal_dropdown = None;
+        self.general_dropdown = None;
         self.font_dropdown_open = false;
         self.font_search.clear();
         // Clear any stale nav search so the forced `General` landing row is
@@ -47,6 +48,7 @@ impl PaneFlowApp {
         self.font_dropdown_open = false;
         self.font_search.clear();
         self.terminal_dropdown = None;
+        self.general_dropdown = None;
         self.clear_settings_search(cx);
         if self.recording_shortcut_idx.is_some() {
             self.recording_shortcut_idx = None;
@@ -137,6 +139,8 @@ impl PaneFlowApp {
         if event.keystroke.key == "escape" && self.recording_shortcut_idx.is_none() {
             if self.terminal_dropdown.is_some() {
                 self.terminal_dropdown = None;
+            } else if self.general_dropdown.is_some() {
+                self.general_dropdown = None;
             } else {
                 self.close_settings(cx);
             }
