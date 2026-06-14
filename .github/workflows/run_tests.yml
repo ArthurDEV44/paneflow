@@ -793,6 +793,14 @@ jobs:
     needs: orchestrate
     if: needs.orchestrate.outputs.rust == 'true'
     runs-on: windows-2022
+    # cargo steps must run under pwsh, NOT the workflow-default bash: Git
+    # Bash prepends C:\Program Files\Git\usr\bin to PATH, whose coreutils
+    # `link.exe` shadows the MSVC linker and breaks every build-script link
+    # ("/usr/bin/link: extra operand"). pwsh keeps the msvc-dev-cmd PATH so
+    # the real link.exe wins. (The pwsh-explicit steps above are unchanged.)
+    defaults:
+      run:
+        shell: pwsh
     timeout-minutes: 30
     env:
       # US-009 (v0.2.1): `ilammy/msvc-dev-cmd@v1` (latest v1.13.0 as of
@@ -1197,6 +1205,14 @@ jobs:
     # runner image (watch
     # https://github.com/actions/runner-images/issues/10820).
     runs-on: windows-2022
+    # cargo steps must run under pwsh, NOT the workflow-default bash: Git
+    # Bash prepends C:\Program Files\Git\usr\bin to PATH, whose coreutils
+    # `link.exe` shadows the MSVC linker and breaks every build-script link
+    # ("/usr/bin/link: extra operand"). pwsh keeps the msvc-dev-cmd PATH so
+    # the real link.exe wins. (The pwsh-explicit steps above are unchanged.)
+    defaults:
+      run:
+        shell: pwsh
     timeout-minutes: 30
     env:
       # Same Node 24 forcing as windows_check above — ilammy/msvc-dev-cmd
