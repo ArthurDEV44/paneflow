@@ -751,7 +751,7 @@ impl PaneFlowApp {
             // workspace cards and settings nav (`sidebar_tab_active_background`).
             row = row.bg(crate::app::constants::sidebar_tab_active_background());
         } else {
-            row = row.hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()));
+            row = row.hover(|s| s.bg(crate::app::constants::sidebar_tab_active_background()));
         }
 
         row = row

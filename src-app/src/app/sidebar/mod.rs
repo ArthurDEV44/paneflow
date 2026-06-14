@@ -269,7 +269,7 @@ impl PaneFlowApp {
                     d.bg(crate::app::constants::sidebar_tab_active_background())
                 })
                 .when(!is_active, |d| {
-                    d.hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+                    d.hover(|s| s.bg(crate::app::constants::sidebar_tab_active_background()))
                 })
                 .on_drag(
                     WorkspaceDrag {
