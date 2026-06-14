@@ -769,7 +769,15 @@ impl Render for PaneFlowApp {
         // corners. `title_bar_h` mirrors the title bar's own height so the
         // rail content clears the floating window controls.
         let title_bar_h = (1.75 * window.rem_size()).max(px(34.));
-        let title_bar_spans_window = cfg!(target_os = "windows") || !self.primary_sidebar_visible;
+        // All three desktop platforms span the title bar full-width so the right
+        // panel reserves a top strip instead of rising into the title-bar band.
+        // Window controls land top-right on Windows, per-DE on Linux; macOS
+        // keeps its native traffic lights floating top-left over the spanned bar
+        // (AppKit paints them above the overlay, so there's no conflict).
+        let title_bar_spans_window = cfg!(target_os = "windows")
+            || cfg!(target_os = "linux")
+            || cfg!(target_os = "macos")
+            || !self.primary_sidebar_visible;
         let settings_open = self.settings_section.is_some();
         // Every mode now renders the right area as ONE rounded-clipped panel
         // (`panel_bg` fill + 16px rail-side radius + 5px inset), replacing the
@@ -1139,7 +1147,7 @@ impl Render for PaneFlowApp {
                             // content (terminal cells, diff rows, settings cards)
                             // off the arc; the window backdrop then shows in the
                             // corner notch (a clean radius on every platform).
-                            .when(!cfg!(target_os = "windows"), |d| {
+                            .when(!title_bar_spans_window, |d| {
                                 // Shared #181818 right panel on the #141414
                                 // rail/chrome, plus
                                 // a faint rail-side hairline so the panel
@@ -1168,7 +1176,7 @@ impl Render for PaneFlowApp {
                                     .flex_1()
                                     .min_h_0()
                                     .relative()
-                                    .when(cfg!(target_os = "windows"), |d| {
+                                    .when(title_bar_spans_window, |d| {
                                         d.bg(panel_bg)
                                             .rounded_tl(px(16.))
                                             .rounded_bl(px(16.))
