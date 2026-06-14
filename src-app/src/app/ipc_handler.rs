@@ -513,6 +513,7 @@ impl PaneFlowApp {
             keybindings::apply_keybindings(cx, &config.shortcuts);
             self.effective_shortcuts = keybindings::effective_shortcuts(&config.shortcuts);
             crate::theme::invalidate_theme_cache();
+            crate::theme::sync_markdown_global_theme(cx);
             // US-014 (telemetry): reconcile the telemetry consent state. On any
             // change, rebuild the `TelemetryClient` handle (Null ↔ Active) so
             // future emissions reflect the new choice; show a confirmation
@@ -542,6 +543,7 @@ impl PaneFlowApp {
             .theme_changed
             .swap(false, std::sync::atomic::Ordering::AcqRel)
         {
+            crate::theme::sync_markdown_global_theme(cx);
             cx.notify();
         }
     }
