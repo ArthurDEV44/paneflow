@@ -8,8 +8,8 @@
 //! - **Shell in the integrated terminal** (`default_shell`) — a curated set of
 //!   platform shells. Empty = fall back to `$SHELL` / the platform default.
 //!
-//! Both persist through [`PaneFlowApp::persist_setting`] (cache-mutate + repaint
-//! + off-thread write). Only one select is open at a time, tracked by
+//! Both persist through [`PaneFlowApp::persist_setting`] (cache-mutate, repaint,
+//! off-thread write). Only one select is open at a time, tracked by
 //! [`crate::GeneralDropdown`]; the menu closes on select, on click-outside, on
 //! the trigger, on Escape, and on a tab change.
 
