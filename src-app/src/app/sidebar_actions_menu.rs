@@ -295,9 +295,8 @@ impl PaneFlowApp {
         let settings_popover: Option<AnyElement> = if settings_open {
             // Vertical menu opening upward from the trigger. Mirrors the
             // title-bar "Files" / "Help" dropdowns (`profile_menu.rs`):
-            // same dark surface (`0x2b2b2c`), 12px radius, 6px padding,
-            // borderless with a soft drop shadow, so all three app menus
-            // read as one consistent menu language.
+            // same theme-aware overlay, 12px radius and 6px padding, so all
+            // three app menus read as one consistent menu language.
             let mut menu = div()
                 .id("sidebar-settings-popover")
                 .absolute()
@@ -309,8 +308,9 @@ impl PaneFlowApp {
                 .gap(px(2.))
                 .p(px(6.))
                 .rounded(px(12.))
-                .bg(gpui::rgb(0x2b2b2c))
-                .shadow_lg()
+                .bg(ui.overlay)
+                .border_1()
+                .border_color(ui.border)
                 // Click anywhere outside the popover (or its trigger)
                 // dismisses it. Same pattern as `profile_menu.rs:128`.
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
@@ -352,11 +352,7 @@ impl PaneFlowApp {
                 .child(
                     div()
                         .text_size(px(12.))
-                        .font_weight(if is_active {
-                            FontWeight::MEDIUM
-                        } else {
-                            FontWeight::NORMAL
-                        })
+                        .font_weight(FontWeight::NORMAL)
                         .text_color(fg)
                         .child(label),
                 );
@@ -484,7 +480,7 @@ fn render_menu_item(
         .flex_row()
         .items_center()
         .gap(px(8.))
-        .hover(|s| s.bg(gpui::rgb(0x3a3a3c)))
+        .hover(|s| s.bg(ui.subtle))
         .on_click(cx.listener(move |this, _: &ClickEvent, w, cx| {
             handler(this, w, cx);
             this.agents_view.sidebar_actions_menu_open = false;

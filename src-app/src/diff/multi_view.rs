@@ -225,11 +225,7 @@ impl Render for MultiRepoDiffView {
                     .child(
                         div()
                             .text_size(px(13.))
-                            .font_weight(if active {
-                                FontWeight::SEMIBOLD
-                            } else {
-                                FontWeight::NORMAL
-                            })
+                            .font_weight(FontWeight::NORMAL)
                             .text_color(if active { ui.text } else { ui.muted })
                             .child(g.repo_name.clone()),
                     ),

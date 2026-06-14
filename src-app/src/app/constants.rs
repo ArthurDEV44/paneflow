@@ -10,19 +10,30 @@ use gpui::{Hsla, Pixels, WindowBackgroundAppearance, px};
 /// Sidebar width in pixels — shared between sidebar and title bar for alignment.
 pub(crate) const SIDEBAR_WIDTH: f32 = 240.;
 
-/// Original solid PaneFlow chrome tint used while the window is inactive.
-const CHROME_INACTIVE_TINT: u32 = 0x141414;
+/// Dark cockpit tint used while the window is inactive.
+const DARK_CHROME_TINT: u32 = 0x141414;
 /// Linux-only: opacity of the neutral `#141414` veil applied over native blur
 /// while the window is active (see `cockpit_chrome_background`). Only referenced
 /// from the `#[cfg(target_os = "linux")]` branch, so gate the declaration too —
 /// otherwise it reads as dead code on the Windows/macOS builds.
 #[cfg(target_os = "linux")]
 const LINUX_CHROME_ACTIVE_OPACITY: f32 = 0.72;
+/// Linux blur protocols expose a region but no semantic light/dark material.
+/// A near-opaque cool tint keeps PaneFlow Light readable over every wallpaper
+/// while still leaving a restrained amount of compositor blur visible.
+#[cfg(target_os = "linux")]
+const LINUX_LIGHT_CHROME_TINT: u32 = 0xf5f7fd;
+#[cfg(target_os = "linux")]
+const LINUX_LIGHT_CHROME_OPACITY: f32 = 0.94;
 
-/// Source tint for selected and hovered sidebar tabs.
-const SIDEBAR_TAB_TINT: u32 = 0x30373c;
-const SIDEBAR_TAB_ACTIVE_OPACITY: f32 = 0.82;
-const SIDEBAR_TAB_HOVER_OPACITY: f32 = 0.55;
+/// Selected/hovered rows use a light lift in dark mode and a charcoal veil in
+/// light mode. This keeps the same quiet Codex treatment on both materials.
+const DARK_SIDEBAR_TAB_TINT: u32 = 0xffffff;
+const LIGHT_SIDEBAR_TAB_TINT: u32 = 0x25262b;
+const DARK_SIDEBAR_TAB_ACTIVE_OPACITY: f32 = 0.06;
+const DARK_SIDEBAR_TAB_HOVER_OPACITY: f32 = 0.03;
+const LIGHT_SIDEBAR_TAB_ACTIVE_OPACITY: f32 = 0.06;
+const LIGHT_SIDEBAR_TAB_HOVER_OPACITY: f32 = 0.025;
 
 /// Generous circular radius approximating Codex's continuous Apple-style corners.
 pub(crate) const SIDEBAR_TAB_CORNER_RADIUS: Pixels = px(9.);
@@ -89,25 +100,44 @@ fn windows_supports_system_backdrop() -> bool {
 /// Windows keeps PaneFlow's original solid `#141414` while inactive and leaves
 /// active chrome transparent for standard Mica. macOS always stays transparent
 /// so AppKit's semantic material can perform its native, subtler active/inactive
-/// transition. Linux applies a neutral `#141414` veil only when native blur is
-/// confirmed, keeping colorful wallpapers subtle and readable.
+/// transition. Linux adds a theme-aware tint because its Wayland/X11 blur
+/// protocols define regions, not semantic light/dark materials.
 pub(crate) fn cockpit_chrome_background(background: Hsla, is_window_active: bool) -> Hsla {
+    if background.l > 0.5 {
+        if cfg!(any(target_os = "windows", target_os = "macos")) {
+            return gpui::transparent_black();
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let tint = Hsla::from(gpui::rgb(LINUX_LIGHT_CHROME_TINT));
+            return if crate::window_chrome::linux_backdrop::native_blur_active() {
+                tint.opacity(LINUX_LIGHT_CHROME_OPACITY)
+            } else {
+                tint
+            };
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        return background;
+    }
+
     if cfg!(target_os = "macos") {
         return gpui::transparent_black();
     } else if cfg!(target_os = "windows") {
         return if is_window_active {
             gpui::transparent_black()
         } else {
-            Hsla::from(gpui::rgb(CHROME_INACTIVE_TINT))
+            Hsla::from(gpui::rgb(DARK_CHROME_TINT))
         };
     }
 
     #[cfg(target_os = "linux")]
     if crate::window_chrome::linux_backdrop::native_blur_active() {
         return if is_window_active {
-            Hsla::from(gpui::rgb(CHROME_INACTIVE_TINT)).opacity(LINUX_CHROME_ACTIVE_OPACITY)
+            Hsla::from(gpui::rgb(DARK_CHROME_TINT)).opacity(LINUX_CHROME_ACTIVE_OPACITY)
         } else {
-            Hsla::from(gpui::rgb(CHROME_INACTIVE_TINT))
+            Hsla::from(gpui::rgb(DARK_CHROME_TINT))
         };
     }
 
@@ -115,13 +145,26 @@ pub(crate) fn cockpit_chrome_background(background: Hsla, is_window_active: bool
 }
 
 /// Window-level backdrop behind the translucent chrome.
+///
+/// This is what the rounded panel corners reveal in their clip notch, so it MUST
+/// match the rail ([`cockpit_chrome_background`]) — otherwise the corner exposes
+/// a different surface than the rail and the radius reads as a square patch.
+/// Native semantic materials remain raw; Linux uses the same theme tint here as
+/// the rail because its blur protocols do not expose light/dark appearances.
 pub(crate) fn cockpit_backdrop_background(background: Hsla) -> Hsla {
     if cfg!(any(target_os = "windows", target_os = "macos")) {
         return gpui::transparent_black();
     }
 
     #[cfg(target_os = "linux")]
-    if crate::window_chrome::linux_backdrop::native_blur_active() {
+    if background.l > 0.5 {
+        let tint = Hsla::from(gpui::rgb(LINUX_LIGHT_CHROME_TINT));
+        return if crate::window_chrome::linux_backdrop::native_blur_active() {
+            tint.opacity(LINUX_LIGHT_CHROME_OPACITY)
+        } else {
+            tint
+        };
+    } else if crate::window_chrome::linux_backdrop::native_blur_active() {
         return gpui::transparent_black();
     }
 
@@ -130,12 +173,28 @@ pub(crate) fn cockpit_backdrop_background(background: Hsla) -> Hsla {
 
 /// Background for the selected tab in the CLI and Agents sidebars.
 pub(crate) fn sidebar_tab_active_background() -> Hsla {
-    Hsla::from(gpui::rgb(SIDEBAR_TAB_TINT)).opacity(SIDEBAR_TAB_ACTIVE_OPACITY)
+    sidebar_tab_background(
+        LIGHT_SIDEBAR_TAB_ACTIVE_OPACITY,
+        DARK_SIDEBAR_TAB_ACTIVE_OPACITY,
+    )
 }
 
 /// Background for a hovered, non-selected sidebar tab.
 pub(crate) fn sidebar_tab_hover_background() -> Hsla {
-    Hsla::from(gpui::rgb(SIDEBAR_TAB_TINT)).opacity(SIDEBAR_TAB_HOVER_OPACITY)
+    sidebar_tab_background(
+        LIGHT_SIDEBAR_TAB_HOVER_OPACITY,
+        DARK_SIDEBAR_TAB_HOVER_OPACITY,
+    )
+}
+
+fn sidebar_tab_background(light_opacity: f32, dark_opacity: f32) -> Hsla {
+    let is_light = crate::theme::active_theme().background.l > 0.5;
+    let (tint, opacity) = if is_light {
+        (LIGHT_SIDEBAR_TAB_TINT, light_opacity)
+    } else {
+        (DARK_SIDEBAR_TAB_TINT, dark_opacity)
+    };
+    Hsla::from(gpui::rgb(tint)).opacity(opacity)
 }
 
 /// Claude Code spinner glyphs — same characters Claude renders in the terminal.

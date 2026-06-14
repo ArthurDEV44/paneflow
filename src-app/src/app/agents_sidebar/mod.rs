@@ -744,10 +744,11 @@ impl PaneFlowApp {
             .gap(px(6.));
 
         if is_active {
-            // Selection gray pinned against the rail's #141414
-            // cockpit color (not the theme's `ui.surface`, which sits too
-            // close to it to read as selected) — Arthur: "#2c2c2c, un gris
-            // plus clair que la sidebar".
+            // Codex-style selection: a neutral, slightly translucent light-gray
+            // overlay (a low-opacity white lift) against the rail's #141414
+            // cockpit color — not the theme's `ui.surface` (too close to read as
+            // selected) nor an opaque blue-gray fill. Shared tint with the
+            // workspace cards and settings nav (`sidebar_tab_active_background`).
             row = row.bg(crate::app::constants::sidebar_tab_active_background());
         } else {
             row = row.hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()));
