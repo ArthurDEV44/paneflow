@@ -118,6 +118,17 @@ jobs:
           - target: aarch64-apple-darwin
             arch: aarch64
             runs-on: macos-14
+          # x86_64-pc-windows-msvc — OPEN since 2026-06-14. Azure Artifact
+          # Signing is provisioned for the Strivex subscription (account
+          # strivex-signing, cert profile StriveX-Release; the 6 AZURE_*
+          # secrets are set — see memory/project_windows_signing.md).
+          # best-effort (continue-on-error) for the first cuts; promote to
+          # hard-required after 2-3 green Windows releases. The historical
+          # closure note is kept further down for context.
+          - target: x86_64-pc-windows-msvc
+            arch: x86_64
+            runs-on: windows-2022
+            continue-on-error: true
           # CLOSED TARGET — x86_64-apple-darwin (Intel Mac / macos-13)
           # Decision: 2026-04-21 (US-008, v0.2.1). Removed from the
           # matrix entirely until v0.3.0's macOS release cut. Two
