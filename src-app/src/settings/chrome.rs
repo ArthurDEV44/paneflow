@@ -167,7 +167,7 @@ impl PaneFlowApp {
             .items_center()
             .gap(px(8.))
             .cursor(CursorStyle::PointingHand)
-            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_active_background()))
             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                 this.close_settings(cx);
                 cx.notify();
@@ -260,7 +260,7 @@ impl PaneFlowApp {
                 } else {
                     row = row
                         .cursor(CursorStyle::PointingHand)
-                        .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+                        .hover(|s| s.bg(crate::app::constants::sidebar_tab_active_background()))
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                             this.select_settings_section(section, window, cx);
                         }));

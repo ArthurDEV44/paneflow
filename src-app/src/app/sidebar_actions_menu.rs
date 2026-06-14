@@ -230,7 +230,10 @@ impl PaneFlowApp {
             .items_center()
             .gap(px(6.))
             .when(settings_open, |d| d.bg(ui.subtle))
-            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+            .hover(|s| {
+                let ui = crate::theme::ui_colors();
+                s.bg(ui.subtle)
+            })
             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                 this.agents_view.sidebar_actions_menu_open =
                     !this.agents_view.sidebar_actions_menu_open;
@@ -273,7 +276,7 @@ impl PaneFlowApp {
             .when(mode_picker_open, |d| {
                 d.bg(crate::app::constants::sidebar_tab_active_background())
             })
-            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_active_background()))
             .tooltip(move |_window, cx| {
                 let label = mode_trigger_tooltip.clone();
                 cx.new(|_| crate::app::sidebar::SidebarTooltip { label })
@@ -364,7 +367,7 @@ impl PaneFlowApp {
             } else {
                 button = button
                     .cursor_pointer()
-                    .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+                    .hover(|s| s.bg(crate::app::constants::sidebar_tab_active_background()))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         activate(this, window, cx);
                         this.agents_view.sidebar_mode_picker_open = false;
