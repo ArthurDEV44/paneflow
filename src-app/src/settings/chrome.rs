@@ -71,9 +71,9 @@ const NAV_GROUPS: &[NavGroup] = &[
             },
             NavItem {
                 section: SettingsSection::Appearance,
-                label: "Appearance",
+                label: "Themes",
                 icon: "icons/palette.svg",
-                keywords: &["theme", "font", "colors", "appearance"],
+                keywords: &["theme", "themes", "font", "colors", "appearance"],
             },
             NavItem {
                 section: SettingsSection::Shortcuts,
@@ -134,7 +134,7 @@ const NAV_GROUPS: &[NavGroup] = &[
 pub(crate) fn section_title(section: SettingsSection) -> &'static str {
     match section {
         SettingsSection::General => "General",
-        SettingsSection::Appearance => "Appearance",
+        SettingsSection::Appearance => "Themes",
         SettingsSection::Shortcuts => "Keyboard Shortcuts",
         SettingsSection::Terminal => "Terminal",
         SettingsSection::AiAgent => "AI Agent",
@@ -182,8 +182,8 @@ impl PaneFlowApp {
             .child(
                 div()
                     .text_size(px(13.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(ui.text)
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(ui.muted)
                     .child("Back to app"),
             );
 
@@ -228,7 +228,11 @@ impl PaneFlowApp {
             for it in items {
                 let section = it.section;
                 let is_active = section == active;
-                let fg = if is_active { ui.text } else { ui.muted };
+                // Every section row renders in full-strength text (white),
+                // active or not — Codex keeps all labels at one legible color
+                // and signals the active row through the pill fill + the medium
+                // font weight alone, not a muted/bright color split.
+                let fg = ui.text;
                 let mut row = div()
                     .id(SharedString::from(format!("settings-nav-{}", it.label)))
                     .mx(px(8.))
@@ -246,11 +250,7 @@ impl PaneFlowApp {
                             .flex_1()
                             .min_w_0()
                             .text_size(px(13.))
-                            .font_weight(if is_active {
-                                FontWeight::MEDIUM
-                            } else {
-                                FontWeight::NORMAL
-                            })
+                            .font_weight(FontWeight::NORMAL)
                             .text_color(fg)
                             .truncate()
                             .child(it.label),
@@ -308,41 +308,27 @@ impl PaneFlowApp {
     fn render_settings_search(
         &self,
         ui: crate::theme::UiColors,
-        window: &Window,
+        _window: &Window,
         cx: &mut Context<Self>,
         // Returns a concrete `AnyElement` (not `impl IntoElement`) so the
         // value does not capture `cx`'s borrow under edition-2024 RPIT — the
         // nav loop reborrows `cx` for its per-row `on_click` listeners.
     ) -> AnyElement {
-        let has_focus = self
-            .settings_search_input
-            .read(cx)
-            .focus_handle
-            .is_focused(window);
-
-        let mut field = div()
+        // Codex-style search pill: a filled `ui.subtle` gray, borderless, and
+        // fully inert — nothing changes on focus or hover. Matches the select
+        // triggers so the settings chrome reads as one system; the blinking
+        // caret is the only focus cue.
+        div()
             .id("settings-search")
-            .px(px(8.))
-            .py(px(5.))
-            .rounded(px(7.))
-            .border_1()
-            .bg(ui.surface)
+            .px(px(10.))
+            .py(px(6.))
+            .rounded(px(8.))
+            .bg(ui.subtle)
             .flex()
             .flex_row()
             .items_center()
             .gap(px(6.))
-            .cursor_text();
-
-        if has_focus {
-            field = field.border_color(ui.muted);
-        } else {
-            field = field.border_color(ui.border).hover(|s| {
-                let ui = crate::theme::ui_colors();
-                s.border_color(ui.muted)
-            });
-        }
-
-        field
+            .cursor_text()
             // Two-stage Escape (keyboard parity with the Back button): clear the
             // query if any, otherwise — already empty — close settings outright.
             // Cursor movement / Delete / Ctrl+A,C,V,X / mouse selection are
@@ -539,6 +525,7 @@ impl PaneFlowApp {
         self.font_dropdown_open = false;
         self.font_search.clear();
         self.terminal_dropdown = None;
+        self.general_dropdown = None;
         if self.recording_shortcut_idx.is_some() {
             self.recording_shortcut_idx = None;
             let config = paneflow_config::loader::load_config();
