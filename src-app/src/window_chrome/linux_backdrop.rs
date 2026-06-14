@@ -313,7 +313,7 @@ fn setup_wayland(surface_ptr: *mut c_void, display_ptr: *mut c_void) -> Result<L
         .context("Wayland compositor global is unavailable")?;
     let surface_id = unsafe {
         wayland_client::backend::ObjectId::from_ptr(
-            &wl_surface::WlSurface::interface(),
+            wl_surface::WlSurface::interface(),
             surface_ptr.cast(),
         )
     }
