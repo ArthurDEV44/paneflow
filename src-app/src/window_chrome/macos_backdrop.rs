@@ -61,6 +61,11 @@ pub(crate) fn sync_subtle_sidebar_material_theme(is_light: bool) {
     });
 }
 
+// The `objc` 0.2 `msg_send!` macro expands to `cfg(feature = "cargo-clippy")`,
+// which rustc's `unexpected_cfgs` check flags in this (the destination) crate
+// since we declare no such feature. The cfg is internal to the macro, not ours
+// — silence it for the only function that invokes `msg_send!`.
+#[allow(unexpected_cfgs)]
 fn try_apply_subtle_sidebar_material(
     window: &gpui::Window,
     is_light: bool,
