@@ -566,7 +566,6 @@ impl PaneFlowApp {
             .border_1()
             .border_color(ui.border)
             .rounded(px(10.))
-            .shadow_lg()
             .overflow_hidden()
             .child(
                 div()

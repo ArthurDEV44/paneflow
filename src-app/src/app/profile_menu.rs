@@ -59,7 +59,7 @@ impl PaneFlowApp {
                 .gap(px(8.))
                 .rounded(px(10.))
                 .cursor_pointer()
-                .hover(|s| s.bg(gpui::rgb(0x3a3a3c)))
+                .hover(|s| s.bg(ui.subtle))
                 .on_click(on_click)
                 .child(
                     svg()
@@ -111,8 +111,9 @@ impl PaneFlowApp {
                 .flex_col()
                 .gap(px(2.))
                 .rounded(px(12.))
-                .bg(gpui::rgb(0x2b2b2c))
-                .shadow_lg()
+                .bg(ui.overlay)
+                .border_1()
+                .border_color(ui.border)
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.title_bar_files_menu_open = None;
                     cx.notify();
@@ -153,7 +154,7 @@ impl PaneFlowApp {
                 .gap(px(8.))
                 .rounded(px(10.))
                 .cursor_pointer()
-                .hover(|s| s.bg(gpui::rgb(0x3a3a3c)))
+                .hover(|s| s.bg(ui.subtle))
                 .on_click(on_click)
                 .child(
                     svg()
@@ -246,8 +247,9 @@ impl PaneFlowApp {
                 .flex_col()
                 .gap(px(2.))
                 .rounded(px(12.))
-                .bg(gpui::rgb(0x2b2b2c))
-                .shadow_lg()
+                .bg(ui.overlay)
+                .border_1()
+                .border_color(ui.border)
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.title_bar_help_menu_open = None;
                     cx.notify();
@@ -259,13 +261,7 @@ impl PaneFlowApp {
                 .child(automations)
                 .child(review)
                 .child(troubleshooting)
-                .child(
-                    div()
-                        .mx(px(8.))
-                        .my(px(3.))
-                        .h(px(1.))
-                        .bg(gpui::rgb(0x454547)),
-                )
+                .child(div().mx(px(8.)).my(px(3.)).h(px(1.)).bg(ui.border))
                 .child(about),
         )
         .with_priority(4)
@@ -377,7 +373,6 @@ impl PaneFlowApp {
                 .border_1()
                 .border_color(ui.border)
                 .rounded(px(8.))
-                .shadow_lg()
                 .flex()
                 .flex_col()
                 .p(px(4.))
