@@ -144,11 +144,15 @@ pub(crate) fn render_window_button(
         WindowButton::Close => "wc-close",
     };
 
-    let icon_path = match button {
-        WindowButton::Minimize => "icons/generic_minimize.svg",
-        WindowButton::Maximize if is_maximized => "icons/generic_restore.svg",
-        WindowButton::Maximize => "icons/generic_maximize.svg",
-        WindowButton::Close => "icons/generic_close.svg",
+    let icon_path = match (cfg!(target_os = "windows"), button, is_maximized) {
+        (true, WindowButton::Minimize, _) => "icons/windows_minimize.svg",
+        (true, WindowButton::Maximize, true) => "icons/windows_restore.svg",
+        (true, WindowButton::Maximize, false) => "icons/windows_maximize.svg",
+        (true, WindowButton::Close, _) => "icons/windows_close.svg",
+        (false, WindowButton::Minimize, _) => "icons/generic_minimize.svg",
+        (false, WindowButton::Maximize, true) => "icons/generic_restore.svg",
+        (false, WindowButton::Maximize, false) => "icons/generic_maximize.svg",
+        (false, WindowButton::Close, _) => "icons/generic_close.svg",
     };
 
     let control_area = match button {
@@ -157,7 +161,8 @@ pub(crate) fn render_window_button(
         WindowButton::Close => WindowControlArea::Close,
     };
 
-    let element_id = format!("{id}-{side}");
+    let element_id = SharedString::from(format!("{id}-{side}"));
+    let hover_group = SharedString::from(format!("{id}-{side}-hover"));
     let is_left = side == "l";
 
     // Windows: native Win11 caption buttons — 46px wide, full title-bar
@@ -179,7 +184,8 @@ pub(crate) fn render_window_button(
     };
 
     let btn = div()
-        .id(SharedString::from(element_id))
+        .id(element_id)
+        .group(hover_group.clone())
         .window_control_area(control_area)
         .flex()
         .items_center()
@@ -202,8 +208,8 @@ pub(crate) fn render_window_button(
             btn.hover(|s| s.bg(gpui::rgb(0xc42b1c)))
                 .active(|s| s.bg(gpui::rgb(0xc84c3f)))
         } else {
-            btn.hover(|s| s.bg(gpui::rgba(0xffffff14)))
-                .active(|s| s.bg(gpui::rgba(0xffffff0a)))
+            btn.hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+                .active(|s| s.bg(crate::app::constants::sidebar_tab_active_background()))
         }
     } else {
         let hover_bg = crate::theme::ui_colors().subtle;
@@ -215,11 +221,19 @@ pub(crate) fn render_window_button(
 
     btn.child({
         let ui = crate::theme::ui_colors();
-        svg()
-            .size(px(16.))
+        let icon = svg()
+            .size(if is_windows { px(12.) } else { px(16.) })
             .flex_none()
             .path(icon_path)
-            .text_color(ui.text)
+            .text_color(ui.text);
+
+        // Windows paints the close glyph white over its native red hover and
+        // pressed states. All other states inherit the active theme's text
+        // color, yielding dark controls in light mode and light controls in
+        // dark mode across both the main and Settings title bars.
+        icon.when(is_windows && is_close, |icon| {
+            icon.group_hover(hover_group, |s| s.text_color(gpui::rgb(0xffffff)))
+        })
     })
     .into_any_element()
 }
