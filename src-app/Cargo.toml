@@ -363,6 +363,16 @@ unwrap_used = "allow"
 expect_used = "allow"
 unwrap_in_result = "allow"
 
+[lints.rust]
+# The `objc` 0.2 `msg_send!` / `sel_impl` macro expands to
+# `cfg(feature = "cargo-clippy")` (its old clippy-detection trick). rustc's
+# check-cfg flags that as an unexpected `feature` value in this (the
+# destination) crate, and a local `#[allow(unexpected_cfgs)]` does NOT silence a
+# cfg originating inside an external macro's expansion (rust-lang/rust#124735).
+# Declaring the value expected here clears the macOS `cargo clippy` gate (objc
+# is macOS-only) while keeping the lint live for our own code.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
 # Windows MSI packaging (US-013 — prd-windows-port.md). Source WXS +
 # License.rtf + paneflow.ico live under `packaging/wix/` (kept alongside
 # `packaging/{apt,rpm,homebrew,debian}/` per project convention).
