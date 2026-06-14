@@ -737,6 +737,7 @@ impl PaneFlowApp {
             settings_drag: None,
             settings_search_input,
             terminal_dropdown: None,
+            general_dropdown: None,
             mcp_status: None,
             mcp_install: None,
             mcp_busy: false,
@@ -756,6 +757,14 @@ impl PaneFlowApp {
             mono_font_names: Vec::new(),
             font_dropdown_open: false,
             font_search: String::new(),
+            // Reflect the persisted theme in the Themes-page selector: a light
+            // theme shows the Light segment active, anything else Dark. (A prior
+            // "System" choice resolves to whichever concrete theme it picked.)
+            theme_mode: if crate::theme::active_theme().background.l > 0.5 {
+                crate::ThemeMode::Light
+            } else {
+                crate::ThemeMode::Dark
+            },
             workspace_menu_open: None,
             tab_menu_open: None,
             pending_pane_focus: None,

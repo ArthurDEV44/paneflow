@@ -62,7 +62,7 @@ use gpui::{
     App, Bounds, Context, CursorStyle, Decorations, Entity, FocusHandle, Focusable, HitboxBehavior,
     InteractiveElement, IntoElement, MouseButton, Pixels, Point, Render, ResizeEdge, Styled,
     Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, point, prelude::*, px,
-    rgb, size, transparent_black,
+    size, transparent_black,
 };
 use gpui_platform::application;
 use notify::Watcher;
@@ -111,6 +111,17 @@ pub(crate) enum SettingsSection {
     McpServers,
 }
 
+/// Light / dark / system selector shown at the top of the Themes settings page.
+/// UI state for now — the light theme is still being built; selecting a segment
+/// highlights it and is ready to drive theme resolution once the light theme
+/// lands.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum ThemeMode {
+    Light,
+    Dark,
+    System,
+}
+
 /// Which Terminal-page enum dropdown is currently open (only one at a time).
 /// `None` = all closed. Distinct from `font_dropdown_open` (the Appearance
 /// page's font picker) so navigating away never leaves a ghost popover.
@@ -120,6 +131,15 @@ pub(crate) enum TerminalDropdown {
     CursorBlink,
     Bell,
     Scrollback,
+}
+
+/// Which General-page select dropdown is currently open (only one at a time).
+/// `None` = all closed. Mirrors `TerminalDropdown` so navigating away or opening
+/// the other select never leaves a ghost popover.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum GeneralDropdown {
+    Editor,
+    Shell,
 }
 
 #[derive(Clone, Copy)]
@@ -434,6 +454,8 @@ struct PaneFlowApp {
     settings_search_input: gpui::Entity<crate::widgets::text_input::TextInput>,
     /// Codex settings: which Terminal-page dropdown is open (`None` = closed).
     terminal_dropdown: Option<TerminalDropdown>,
+    /// Codex settings: which General-page select is open (`None` = closed).
+    general_dropdown: Option<GeneralDropdown>,
     /// Codex settings: cached MCP-bridge status snapshot, refreshed off-thread
     /// so the MCP page never does config I/O during a frame.
     mcp_status: Option<Vec<paneflow_mcp_install::StatusReport>>,
@@ -462,6 +484,10 @@ struct PaneFlowApp {
     font_dropdown_open: bool,
     /// Filter text for the font dropdown.
     font_search: String,
+    /// Selected segment on the Themes page (Light/Dark/System). UI state for
+    /// now — highlights the active segment, ready to drive theme resolution
+    /// once the light theme lands.
+    theme_mode: ThemeMode,
     /// Workflow action menu currently open in the sidebar (`None` = closed).
     workspace_menu_open: Option<WorkspaceContextMenu>,
     /// "Move to pane…" tab context menu (EP-002 US-006), or `None` when closed.
@@ -731,6 +757,12 @@ impl Render for PaneFlowApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = crate::theme::ui_colors();
         let theme = crate::theme::active_theme();
+        #[cfg(target_os = "windows")]
+        crate::window_chrome::backdrop::sync_wallpaper_mica_theme(window, theme.background.l > 0.5);
+        #[cfg(target_os = "macos")]
+        crate::window_chrome::macos_backdrop::sync_subtle_sidebar_material_theme(
+            theme.background.l > 0.5,
+        );
         // Every mode is cockpit now (Agents first, then Cli, then Diff): the
         // title bar always floats as a rail-confined overlay (never a flex
         // child), so the right panel rises to y=0 with rounded rail-side
@@ -790,11 +822,7 @@ impl Render for PaneFlowApp {
                     .items_center()
                     .justify_center()
                     .size_full()
-                    .child(
-                        div()
-                            .text_color(rgb(0xffffff))
-                            .child("No terminal panes open"),
-                    )
+                    .child(div().text_color(ui.text).child("No terminal panes open"))
                     .into_any_element()
             }
         } else {
@@ -814,7 +842,7 @@ impl Render for PaneFlowApp {
                         .px(px(24.))
                         .child(
                             div()
-                                .text_color(rgb(0xffffff))
+                                .text_color(ui.text)
                                 .text_size(px(20.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child("Welcome to PaneFlow"),
@@ -1693,10 +1721,11 @@ fn main() {
         .run(|cx: &mut App| {
             // Load config early — needed for keybindings and window decorations
             let config = paneflow_config::loader::load_config();
+            // `apply_keybindings` clears the whole registry, so it now also
+            // (re-)registers the TextInput / TextArea widget bindings itself
+            // (US-016: agents composer textarea included) — no separate startup
+            // call is needed, and a later re-apply can no longer strip them.
             keybindings::apply_keybindings(cx, &config.shortcuts);
-            widgets::text_input::register_keybindings(cx);
-            // US-016: agents-view composer textarea bindings.
-            widgets::text_area::register_keybindings(cx);
 
             // Register every embedded `.ttf` under `assets/fonts/` BEFORE
             // any window opens, so GPUI's text system can resolve the
@@ -1794,22 +1823,10 @@ fn main() {
                 cx,
             );
 
-            // Override the table-cell colors the `markdown` crate reads
-            // from the global theme. Its table renderer paints header
-            // rows with `cx.theme().colors().title_bar_background` and
-            // alternating body rows with `panel_background` — Zed's
-            // defaults are blue-tinted (One Dark). We replace both
-            // with neutral greys so tables render monochrome and blend
-            // with Paneflow's terminal-mode palette.
-            {
-                use ::theme::ActiveTheme as _;
-                let mut new_theme = (**cx.theme()).clone();
-                new_theme.styles.colors.title_bar_background = gpui::rgb(0x141414).into();
-                new_theme.styles.colors.panel_background = gpui::rgb(0x181818).into();
-                new_theme.styles.colors.border = gpui::rgb(0x252525).into();
-                new_theme.styles.colors.border_variant = gpui::rgb(0x252525).into();
-                ::theme::GlobalTheme::update_theme(cx, std::sync::Arc::new(new_theme));
-            }
+            // The Markdown renderer reads table surfaces from Zed's global
+            // theme rather than PaneFlow's palette. Synchronize those slots at
+            // startup; config/theme watcher reloads keep them current later.
+            crate::theme::sync_markdown_global_theme(cx);
 
             // US-012: macOS native menu bar. On Linux/Windows the call is
             // elided — GPUI's non-macOS platforms don't render a menu bar
@@ -1859,9 +1876,15 @@ fn main() {
                 },
                 |window, cx| {
                     #[cfg(target_os = "windows")]
-                    crate::window_chrome::backdrop::apply_wallpaper_mica(window);
+                    crate::window_chrome::backdrop::apply_wallpaper_mica(
+                        window,
+                        crate::theme::active_theme().background.l > 0.5,
+                    );
                     #[cfg(target_os = "macos")]
-                    crate::window_chrome::macos_backdrop::apply_subtle_sidebar_material(window);
+                    crate::window_chrome::macos_backdrop::apply_subtle_sidebar_material(
+                        window,
+                        crate::theme::active_theme().background.l > 0.5,
+                    );
                     #[cfg(target_os = "linux")]
                     crate::window_chrome::linux_backdrop::apply_subtle_chrome_material(window);
 
