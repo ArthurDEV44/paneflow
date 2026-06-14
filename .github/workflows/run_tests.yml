@@ -791,8 +791,7 @@ jobs:
     # `needs.orchestrate.outputs.rust == 'true'` expression preserved
     # in the next line as a comment.
     needs: orchestrate
-    if: false
-    # if: needs.orchestrate.outputs.rust == 'true'
+    if: needs.orchestrate.outputs.rust == 'true'
     runs-on: windows-2022
     timeout-minutes: 30
     env:
@@ -969,8 +968,7 @@ jobs:
     # the `needs:` chain; this explicit `if: false` makes the
     # disabled state self-documenting and survives re-enabling
     # windows_check (re-enable both together).
-    if: false
-    # if: needs.orchestrate.outputs.rendering == 'true'
+    if: needs.orchestrate.outputs.rendering == 'true'
     runs-on: windows-2022
     timeout-minutes: 15
     steps:
@@ -1188,8 +1186,7 @@ jobs:
     # DISABLED until Azure Trusted Signing is provisioned (same posture
     # as windows_check / windows_render_smoke). Re-enable by flipping
     # `if: false` back to the original expression preserved below.
-    if: false
-    # if: needs.orchestrate.outputs.rust == 'true'
+    if: needs.orchestrate.outputs.rust == 'true'
     # US-012 AC explicitly defers integration tests on Windows aarch64
     # because no native Windows-arm64 hosted runner is available on
     # GitHub-hosted Actions as of 2026-04. This leg cross-compiles from
