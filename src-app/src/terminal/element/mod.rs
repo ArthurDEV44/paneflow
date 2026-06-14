@@ -2065,6 +2065,10 @@ mod golden_frame_tests {
     /// The full fixture corpus. One test so a `BLESS` run regenerates every
     /// golden in a single pass; each fixture still asserts independently.
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "render golden is OS-sensitive (font metrics + text shaping); blessed on Linux, drifts on Windows. Per-OS Windows goldens tracked as a follow-up."
+    )]
     fn golden_frame_corpus() {
         // plain ASCII
         assert_golden(
