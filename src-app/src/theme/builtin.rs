@@ -4,30 +4,27 @@ use super::model::{SyntaxPalette, TerminalTheme, h, ha};
 
 pub type ThemeEntry = (&'static str, fn() -> TerminalTheme);
 
-// "PaneFlow Light" was pulled from the bundled set (2026-06-10) pending a
-// full light-theme redesign. A config still naming it falls back to One Dark
-// via `theme_by_name` → `watcher.rs`'s `one_dark()` default. The fixture
-// below stays test-only: it exercises the light branch of `ui_colors()` and
-// the APCA machinery, which the redesigned theme will reuse.
-pub static THEMES: &[ThemeEntry] = &[("One Dark", one_dark)];
+pub static THEMES: &[ThemeEntry] = &[("One Dark", one_dark), ("PaneFlow Light", paneflow_light)];
 
-#[cfg(test)]
 pub fn paneflow_light() -> TerminalTheme {
     TerminalTheme {
-        background: h(0xf5f5f5),
-        foreground: h(0x383a42),
-        bright_foreground: h(0x383a42),
-        dim_foreground: h(0x9ca0b0),
-        ansi_background: h(0xf5f5f5),
-        cursor: h(0x526fff),
-        selection: ha(0x4078f2, 0.25),
+        // Keep the work surface fully opaque and exactly white. Native
+        // translucency is reserved for the navigation rail and title bar.
+        background: h(0xffffff),
+        foreground: h(0x25262b),
+        bright_foreground: h(0x25262b),
+        dim_foreground: h(0x777984),
+        ansi_background: h(0xffffff),
+        cursor: h(0x4c6fff),
+        selection: ha(0x4c6fff, 0.20),
         // Placeholder — replaced with the APCA-validated value by
         // `apply_surface_overrides()` / `recompute_selection_foreground()`.
         selection_foreground: gpui::Hsla::default(),
-        scrollbar_thumb: ha(0x383a42, 0.35),
-        link_text: h(0x4078f2),
-        title_bar_background: h(0xe8e8e8),
-        title_bar_inactive_background: h(0xededed),
+        scrollbar_thumb: ha(0x25262b, 0.28),
+        link_text: h(0x315ecf),
+        // Opaque fallback for Linux compositors without blur support.
+        title_bar_background: h(0xf3f4f9),
+        title_bar_inactive_background: h(0xf5f5f8),
         black: h(0x383a42),
         red: h(0xe45649),
         green: h(0x50a14f),
@@ -51,7 +48,7 @@ pub fn paneflow_light() -> TerminalTheme {
         dim_blue: h(0x7da0d6),
         dim_magenta: h(0xb881b8),
         dim_cyan: h(0x6aa9c0),
-        dim_white: h(0x9ca0b0),
+        dim_white: h(0x777984),
         syntax: SyntaxPalette::catppuccin_latte(),
     }
 }

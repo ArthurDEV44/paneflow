@@ -59,7 +59,7 @@ impl PaneFlowApp {
         cx.notify();
     }
 
-    fn apply_theme_by_name(name: &str) {
+    pub(crate) fn apply_theme_by_name(name: &str) {
         config_writer::save_config_value("theme", serde_json::Value::String(name.to_string()));
         crate::theme::invalidate_theme_cache();
     }
@@ -288,7 +288,6 @@ impl PaneFlowApp {
                         .border_1()
                         .border_color(ui.border)
                         .rounded(px(8.))
-                        .shadow_lg()
                         .overflow_hidden()
                         .child(search_input)
                         .child(list_wrapper),

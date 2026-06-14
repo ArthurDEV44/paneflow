@@ -141,12 +141,8 @@ impl SyntaxPalette {
         }
     }
 
-    /// Catppuccin Latte — the light-theme syntax palette. Test-only since
-    /// "PaneFlow Light" left the bundled set (pending the light redesign):
-    /// it feeds the `paneflow_light()` fixture that keeps the light branch
-    /// of `ui_colors()` + the APCA gates under test. Darker, saturated hues
-    /// that read on a light editor surface; ≥ 18 distinct values.
-    #[cfg(test)]
+    /// Catppuccin Latte — the light-theme syntax palette. Darker, saturated
+    /// hues that read on the white editor surface; ≥ 18 distinct values.
     pub fn catppuccin_latte() -> Self {
         Self {
             comment: h(0x9ca0b0),             // Overlay0
@@ -403,19 +399,21 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
     let is_light = is_light_theme(theme);
     let colors = if is_light {
         UiColors {
-            base: h(0xefefef),
-            surface: h(0xf8f8f8),
+            // Codex-style light shell: the right-hand work area is pure white,
+            // while controls use cool, near-white layers for hierarchy.
+            base: h(0xffffff),
+            surface: h(0xf7f7f9),
             overlay: h(0xffffff),
-            border: h(0xd4d4d8),
-            subtle: h(0xe4e4e7),
-            muted: h(0x71717a),
-            text: h(0x27272a),
-            accent: h(0x4078f2),
+            border: h(0xe5e5ed),
+            subtle: h(0xedeef2),
+            muted: h(0x686a73),
+            text: h(0x25262b),
+            accent: h(0x4c6fff),
             // Light theme: a slightly warmer surface with a faint
             // accent tint so the awaiting-confirmation row stands
             // out from neutral card surfaces without overwhelming
             // the chat stream.
-            tool_card_header_bg: h(0xe8effb),
+            tool_card_header_bg: h(0xeff1f8),
             // Curated diff palette (Catppuccin Latte family) — darker,
             // saturated hues that read on a light surface.
             vc_added: h(0x40a02b),
@@ -552,8 +550,21 @@ mod tests {
         let theme = apply_surface_overrides(paneflow_light());
 
         assert!(theme.background.l > 0.5);
+        assert_eq!(theme.background, h(0xffffff));
         assert!(theme.ansi_background.l > 0.5);
         assert!(theme.title_bar_background.l > 0.5);
+    }
+
+    #[test]
+    fn light_ui_keeps_the_work_area_pure_white() {
+        let ui = ui_colors_with(&paneflow_light());
+
+        assert_eq!(ui.base, h(0xffffff));
+        assert_eq!(ui.overlay, h(0xffffff));
+        assert_eq!(ui.border, h(0xe5e5ed));
+        assert_ne!(ui.surface, ui.base);
+        assert_ne!(ui.border, ui.base);
+        assert_ne!(ui.text, ui.base);
     }
 
     #[test]
@@ -605,18 +616,11 @@ mod tests {
     fn theme_by_name_returns_invariant_satisfying_themes() {
         // theme_by_name is the public entry point; users may call it without
         // going through apply_surface_overrides, so it must finalize on the
-        // way out. Iterate the live table so the test tracks the bundled set
-        // (PaneFlow Light left it pending the light redesign).
+        // way out. Iterate the live table so the test tracks the bundled set.
         for (name, _) in crate::theme::builtin::THEMES {
             let theme = theme_by_name(name).expect("bundled theme not found");
             assert_selection_invariant(&theme, name);
         }
-        // The light fixture no longer ships, but its finalization path must
-        // keep satisfying the invariant for when the redesigned light theme
-        // returns — exercise it directly.
-        let mut light = paneflow_light();
-        light.recompute_selection_foreground();
-        assert_selection_invariant(&light, "PaneFlow Light (test fixture)");
     }
 
     #[test]
