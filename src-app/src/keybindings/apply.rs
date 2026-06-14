@@ -162,6 +162,17 @@ pub fn apply_keybindings(cx: &mut App, user_shortcuts: &HashMap<String, String>)
             cx.bind_keys([binding]);
         }
     }
+
+    // `cx.clear_key_bindings()` at the top wiped EVERY binding, including the
+    // global `TextInput` / `TextArea` widget bindings (caret movement, Home/End,
+    // selection, Backspace/Delete, clipboard) that are registered once at
+    // startup. Re-register them on every apply so text fields keep working after
+    // a shortcut rebind, config reload, settings navigation, or IPC-driven
+    // re-apply — otherwise a re-apply silently degrades every input to IME-only
+    // typing (the field accepts characters but ignores arrows, selection, and
+    // clipboard).
+    crate::widgets::text_input::register_keybindings(cx);
+    crate::widgets::text_area::register_keybindings(cx);
 }
 
 #[cfg(test)]
