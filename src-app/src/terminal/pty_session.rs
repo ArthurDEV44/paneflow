@@ -934,9 +934,18 @@ impl TerminalState {
                 }
                 self.dirty = true;
             }
-            AlacEvent::Title(t) => {
+            AlacEvent::Title(t) if !is_executable_path_title(&t) => {
                 self.title = t;
             }
+            // Windows consoles (pwsh/powershell/cmd) set their initial window
+            // title to their own executable path before the user's profile runs
+            // — e.g. `C:\Program Files\PowerShell\7\pwsh.exe`. Adopted verbatim
+            // that leaks the shell install dir as the surface label (tab title,
+            // Agents thread title, persisted session `name`) and is never a
+            // meaningful name, so a title that is just an absolute path to an
+            // `.exe` is dropped — keep the previous/default name. Real titles
+            // (Claude Code, prompt-driven labels) take the guarded arm above.
+            AlacEvent::Title(_) => {}
             AlacEvent::ResetTitle => {
                 self.title = String::from("Terminal");
             }
@@ -1673,6 +1682,42 @@ fn is_loader_influencing_env_key(key: &str) -> bool {
 /// keys.
 fn is_valid_env_name(key: &str) -> bool {
     !key.is_empty() && !key.contains('=') && !key.contains('\0')
+}
+
+/// True for an OSC 0/2 title that is merely an absolute path to an `.exe` — the
+/// self-title Windows shells (`pwsh.exe`, `powershell.exe`, `cmd.exe`) emit at
+/// startup before the user's profile runs. Such a title is never a human-facing
+/// surface label, so callers drop it and keep the previous (or default) name.
+/// Matches nothing on a Unix title (a backslash path is not absolute there, and
+/// a `/usr/bin/pwsh` title has no `.exe` extension), so it is a Windows-targeted
+/// filter with no false positives on real labels (e.g. `Claude Code`) or on a
+/// prompt that sets the title to a bare cwd (no `.exe`).
+fn is_executable_path_title(title: &str) -> bool {
+    let p = std::path::Path::new(title);
+    p.is_absolute()
+        && p.extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+}
+
+#[cfg(all(test, windows))]
+mod title_filter_tests {
+    use super::is_executable_path_title;
+
+    #[test]
+    fn drops_shell_self_path_title_but_keeps_human_labels() {
+        // The exact pwsh self-title that leaked into the sidebar / tabs.
+        assert!(is_executable_path_title(
+            r"C:\Program Files\PowerShell\7\pwsh.exe"
+        ));
+        assert!(is_executable_path_title(r"C:\Windows\System32\cmd.exe"));
+        // Real labels and cwd-as-title prompts must survive.
+        assert!(!is_executable_path_title("Claude Code"));
+        assert!(!is_executable_path_title(r"C:\dev\paneflow"));
+        assert!(!is_executable_path_title(""));
+        // A bare relative name is not an absolute path → kept (only the
+        // absolute self-path is the offender).
+        assert!(!is_executable_path_title("pwsh.exe"));
+    }
 }
 
 /// Assemble the child PTY environment: PaneFlow identity vars, explicit TERM /
