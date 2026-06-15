@@ -12,7 +12,8 @@ use gpui::{
 };
 
 use crate::settings::components::{
-    hairline, secondary_button, section_header_with_action, setting_card,
+    SETTINGS_CONTROL_CORNER_RADIUS, hairline, secondary_button, section_header_with_action,
+    setting_card,
 };
 use crate::{PaneFlowApp, config_writer, keybindings};
 
@@ -48,7 +49,7 @@ impl PaneFlowApp {
                 div()
                     .px(px(10.))
                     .py(px(3.))
-                    .rounded(px(5.))
+                    .rounded(SETTINGS_CONTROL_CORNER_RADIUS)
                     .bg(ui.accent)
                     .text_size(px(11.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -58,7 +59,7 @@ impl PaneFlowApp {
                 div()
                     .px(px(10.))
                     .py(px(3.))
-                    .rounded(px(5.))
+                    .rounded(SETTINGS_CONTROL_CORNER_RADIUS)
                     .bg(ui.subtle)
                     .text_size(px(11.))
                     .font_weight(gpui::FontWeight::MEDIUM)

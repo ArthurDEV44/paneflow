@@ -230,11 +230,10 @@ impl PaneFlowApp {
             .flex_row()
             .items_center()
             .gap(px(6.))
-            .when(settings_open, |d| d.bg(ui.subtle))
-            .hover(|s| {
-                let ui = crate::theme::ui_colors();
-                s.bg(ui.subtle)
+            .when(settings_open, |d| {
+                d.bg(crate::app::constants::sidebar_tab_active_background())
             })
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                 this.agents_view.sidebar_actions_menu_open =
                     !this.agents_view.sidebar_actions_menu_open;
@@ -277,7 +276,7 @@ impl PaneFlowApp {
             .when(mode_picker_open, |d| {
                 d.bg(crate::app::constants::sidebar_tab_active_background())
             })
-            .hover(|s| s.bg(crate::app::constants::sidebar_tab_active_background()))
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
             .tooltip(move |_window, cx| {
                 let label = mode_trigger_tooltip.clone();
                 cx.new(|_| crate::app::sidebar::SidebarTooltip { label })
@@ -319,7 +318,6 @@ impl PaneFlowApp {
                 .bg(select_menu_surface(ui))
                 .border_1()
                 .border_color(with_alpha(ui.border, 0.6))
-                .shadow_md()
                 // Click anywhere outside the popover (or its trigger)
                 // dismisses it. Same pattern as `profile_menu.rs`.
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
@@ -365,15 +363,14 @@ impl PaneFlowApp {
                         .text_color(fg)
                         .child(label),
                 );
-            // Same background design as the workspace cards / thread tabs:
-            // the tint fill when active, transparent at rest, and the lighter
-            // tint on hover for the inactive segments.
+            // Same interaction tint as the workspace cards / thread tabs.
+            // Active and hover deliberately match in dark mode.
             if is_active {
                 button = button.bg(crate::app::constants::sidebar_tab_active_background());
             } else {
                 button = button
                     .cursor_pointer()
-                    .hover(|s| s.bg(crate::app::constants::sidebar_tab_active_background()))
+                    .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         activate(this, window, cx);
                         this.agents_view.sidebar_mode_picker_open = false;

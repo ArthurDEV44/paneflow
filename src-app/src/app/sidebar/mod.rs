@@ -256,20 +256,16 @@ impl PaneFlowApp {
                 .mx(px(8.))
                 .px(px(10.))
                 .py(px(8.))
-                .rounded(crate::app::constants::SIDEBAR_TAB_CORNER_RADIUS)
+                .rounded(crate::app::constants::WORKSPACE_CARD_CORNER_RADIUS)
                 .cursor_pointer()
-                // Quiet card (Codex/OpenAI sidebar row): dissolves into the
-                // #141414 rail at rest. Selection is a fill only — the brightest
-                // translucent blue-grey fill, no contour and no colored ring (the
-                // accent stays reserved for agent status). At +21 luminance over
-                // the rail, the fill alone reads clearly. Hover is a quieter fill
-                // from the same tint, always below the selected fill so a hovered card
-                // never out-shines the selected one.
+                // Quiet card (Codex/OpenAI sidebar row): transparent at rest,
+                // with the same subtle translucent tint for selection and hover
+                // in dark mode. The accent stays reserved for agent status.
                 .when(is_active, |d| {
                     d.bg(crate::app::constants::sidebar_tab_active_background())
                 })
                 .when(!is_active, |d| {
-                    d.hover(|s| s.bg(crate::app::constants::sidebar_tab_active_background()))
+                    d.hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
                 })
                 .on_drag(
                     WorkspaceDrag {

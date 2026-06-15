@@ -786,6 +786,8 @@ impl Render for PaneFlowApp {
             || cfg!(target_os = "macos")
             || !self.primary_sidebar_visible;
         let settings_open = self.settings_section.is_some();
+        let secondary_sidebar_open =
+            self.agent_sessions.sessions_sidebar_open || self.files_sidebar_open;
         // Every mode now renders the right area as ONE rounded-clipped panel
         // (`panel_bg` fill + 16px rail-side radius + 5px inset), replacing the
         // old Cli/Diff corner-mask trick. GPUI clips the panel's bg fill to the
@@ -1170,6 +1172,9 @@ impl Render for PaneFlowApp {
                                 d.bg(panel_bg)
                                     .rounded_tl(px(16.))
                                     .rounded_bl(px(16.))
+                                    .when(secondary_sidebar_open, |d| {
+                                        d.rounded_tr(px(16.)).rounded_br(px(16.))
+                                    })
                                     .p(px(5.))
                             })
                             // A full-width title bar is used on Windows and
@@ -1187,13 +1192,17 @@ impl Render for PaneFlowApp {
                                         d.bg(panel_bg)
                                             .rounded_tl(px(16.))
                                             .rounded_bl(px(16.))
+                                            .when(secondary_sidebar_open, |d| {
+                                                d.rounded_tr(px(16.)).rounded_br(px(16.))
+                                            })
                                             .p(px(5.))
                                     })
                                     .child(main_content),
                             )
-                            // Draw the top + left border as one rounded contour
-                            // tracing both 16px rail-side corner radii, so the
-                            // panel edge reads cleanly against the rail/backdrop.
+                            // Draw the panel contour. The right edge joins the
+                            // contour only while a secondary sidebar is open,
+                            // giving the tabs/terminal matching corners on both
+                            // sides without changing the normal full-width view.
                             .child(
                                 div()
                                     .absolute()
@@ -1209,6 +1218,9 @@ impl Render for PaneFlowApp {
                                     .rounded_bl(px(16.))
                                     .border_t_1()
                                     .border_l_1()
+                                    .when(secondary_sidebar_open, |d| {
+                                        d.rounded_tr(px(16.)).rounded_br(px(16.)).border_r_1()
+                                    })
                                     .border_color(ui.border),
                             ),
                     )
@@ -1216,13 +1228,35 @@ impl Render for PaneFlowApp {
                     // — not an overlay — so it reflows the content and persists
                     // while the user works (PRD agent-sessions-sidebar EP-001).
                     .when(self.agent_sessions.sessions_sidebar_open, |row| {
-                        row.child(self.render_sessions_sidebar(cx))
+                        row.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .h_full()
+                                .flex_shrink_0()
+                                // Keep the right rail below the full-width
+                                // title bar, aligned with the main panel.
+                                .when(title_bar_spans_window, |d| d.pt(title_bar_h))
+                                .child(self.render_sessions_sidebar(window, cx))
+                                .into_any_element(),
+                        )
                     })
                     // Docked Files sidebar (right edge) — same layout child as
                     // the sessions sidebar, mutually exclusive with it (PRD
                     // files-tree EP-001).
                     .when(self.files_sidebar_open, |row| {
-                        row.child(self.render_files_sidebar(cx))
+                        row.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .h_full()
+                                .flex_shrink_0()
+                                // Keep the right rail below the full-width
+                                // title bar, aligned with the main panel.
+                                .when(title_bar_spans_window, |d| d.pt(title_bar_h))
+                                .child(self.render_files_sidebar(window, cx))
+                                .into_any_element(),
+                        )
                     }),
             );
 

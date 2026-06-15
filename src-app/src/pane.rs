@@ -894,10 +894,7 @@ impl Pane {
             .h(px(22.))
             .rounded(px(4.))
             .cursor_pointer()
-            .hover(|s| {
-                let ui = tab_colors();
-                s.bg(ui.subtle)
-            })
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
             .on_click(move |e, w, cx| handler(e, w, cx))
             .child(Self::command_icon(icon_path, tint, multicolor))
     }

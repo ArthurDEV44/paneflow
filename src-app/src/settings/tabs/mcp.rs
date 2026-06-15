@@ -19,7 +19,8 @@ use paneflow_mcp_install::{InstallKind, OverallState, StatusKind};
 
 use crate::PaneFlowApp;
 use crate::settings::components::{
-    hairline, section_header, setting_card, setting_text, with_alpha,
+    SETTINGS_CONTROL_CORNER_RADIUS, hairline, section_header, setting_card, setting_text,
+    with_alpha,
 };
 
 impl PaneFlowApp {
@@ -49,7 +50,7 @@ impl PaneFlowApp {
             .flex_shrink_0()
             .px(px(12.))
             .py(px(6.))
-            .rounded(px(6.))
+            .rounded(SETTINGS_CONTROL_CORNER_RADIUS)
             .text_size(px(12.))
             .font_weight(FontWeight::MEDIUM);
         button = if enabled {

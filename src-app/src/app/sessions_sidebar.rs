@@ -16,7 +16,7 @@
 
 use gpui::{
     AnyElement, ClickEvent, Context, FontWeight, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Pixels, SharedString, Styled, div, prelude::*, px, rgb, svg,
+    ParentElement, Pixels, SharedString, Styled, Window, div, prelude::*, px, rgb, svg,
 };
 
 use crate::PaneFlowApp;
@@ -175,8 +175,13 @@ impl PaneFlowApp {
 
     /// Render the docked sessions sidebar (right edge of the root `flex_row`).
     /// Only called when `sessions_sidebar_open` is true.
-    pub(crate) fn render_sessions_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_sessions_sidebar(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let ui = crate::theme::ui_colors();
+        let theme = crate::theme::active_theme();
         div()
             .id("sessions-sidebar")
             .flex()
@@ -184,11 +189,12 @@ impl PaneFlowApp {
             .w(SIDEBAR_WIDTH)
             .flex_shrink_0()
             .h_full()
-            // Cockpit rail (#1d1d1d), mirroring the left sidebar: ui.surface
-            // is the system's SELECTED fill — painting a whole panel in it
-            // out-shouted every selection in the app. No border-left either:
-            // the rail and the terminal panel separate by a luminance step.
-            .bg(gpui::rgb(0x1d1d1d))
+            // Match the app's other navigation rails: theme-aware native
+            // material on Windows/macOS and a light/dark tint on Linux.
+            .bg(crate::app::constants::cockpit_chrome_background(
+                theme.title_bar_background,
+                window.is_window_active(),
+            ))
             .child(self.sessions_sidebar_header(ui, cx))
             .child(self.sessions_sidebar_body(ui, cx))
             .into_any_element()
@@ -235,8 +241,8 @@ impl PaneFlowApp {
                     .text_size(px(14.))
                     .text_color(ui.muted)
                     .hover(|s| {
-                        let ui = crate::theme::ui_colors();
-                        s.bg(ui.subtle).text_color(ui.text)
+                        s.bg(crate::app::constants::sidebar_tab_hover_background())
+                            .text_color(ui.text)
                     })
                     .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                         this.close_sessions_sidebar(cx);
@@ -420,8 +426,8 @@ impl PaneFlowApp {
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(ui.muted)
                         .hover(|s| {
-                            let ui = crate::theme::ui_colors();
-                            s.bg(ui.subtle).text_color(ui.text)
+                            s.bg(crate::app::constants::sidebar_tab_hover_background())
+                                .text_color(ui.text)
                         })
                         .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
                             this.agent_sessions.sessions_group_show_all[idx] =
@@ -490,10 +496,7 @@ impl PaneFlowApp {
                     icon: drag.icon.clone(),
                 })
             })
-            .hover(|s| {
-                let ui = crate::theme::ui_colors();
-                s.bg(ui.subtle)
-            })
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
             // US-007 (partial): resume into the bound pane; the docked sidebar
             // stays open (unlike the old popover).
             .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {

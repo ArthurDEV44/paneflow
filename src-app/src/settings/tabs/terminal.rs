@@ -26,8 +26,8 @@ use serde_json::{Value, json};
 use paneflow_config::schema::{CursorBlinkConfig, CursorShapeConfig, TerminalBellMode};
 
 use crate::settings::components::{
-    deferred_select_menu, hairline, section_header, select_chevron, select_item, select_menu,
-    select_trigger, setting_card, setting_text, toggle_pill,
+    SETTINGS_CONTROL_CORNER_RADIUS, deferred_select_menu, hairline, section_header, select_chevron,
+    select_item, select_menu, select_trigger, setting_card, setting_text, toggle_pill,
 };
 
 use crate::{PaneFlowApp, TerminalDropdown};
@@ -535,7 +535,7 @@ impl PaneFlowApp {
                 .justify_center()
                 .w(px(24.))
                 .h(px(24.))
-                .rounded(px(6.))
+                .rounded(SETTINGS_CONTROL_CORNER_RADIUS)
                 .border_1()
                 .border_color(ui.border)
                 .bg(ui.base)

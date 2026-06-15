@@ -26,17 +26,24 @@ const LINUX_LIGHT_CHROME_TINT: u32 = 0xf5f7fd;
 #[cfg(target_os = "linux")]
 const LINUX_LIGHT_CHROME_OPACITY: f32 = 0.94;
 
-/// Selected/hovered rows use a light lift in dark mode and a charcoal veil in
-/// light mode. This keeps the same quiet Codex treatment on both materials.
+/// Selected/hovered rows use a translucent light lift in dark mode and a
+/// charcoal veil in light mode. The dark values are intentionally brighter
+/// than the old near-black fills so controls read like Codex's soft material
+/// highlights instead of opaque gray patches.
 const DARK_SIDEBAR_TAB_TINT: u32 = 0xffffff;
 const LIGHT_SIDEBAR_TAB_TINT: u32 = 0x25262b;
-const DARK_SIDEBAR_TAB_ACTIVE_OPACITY: f32 = 0.06;
-const DARK_SIDEBAR_TAB_HOVER_OPACITY: f32 = 0.03;
+const DARK_SIDEBAR_TAB_ACTIVE_OPACITY: f32 = 0.07;
+const DARK_SIDEBAR_TAB_HOVER_OPACITY: f32 = 0.07;
 const LIGHT_SIDEBAR_TAB_ACTIVE_OPACITY: f32 = 0.06;
 const LIGHT_SIDEBAR_TAB_HOVER_OPACITY: f32 = 0.025;
 
-/// Generous circular radius approximating Codex's continuous Apple-style corners.
-pub(crate) const SIDEBAR_TAB_CORNER_RADIUS: Pixels = px(9.);
+/// Shared radius for the Agents search field and its primary navigation rows.
+pub(crate) const SIDEBAR_TAB_CORNER_RADIUS: Pixels = px(8.);
+
+/// Larger radius for workspace cards. GPUI currently renders circular arcs
+/// rather than true Apple-style continuous corners, so the extra radius gives
+/// the closest restrained Codex treatment without changing the card geometry.
+pub(crate) const WORKSPACE_CARD_CORNER_RADIUS: Pixels = px(12.);
 
 /// Native material used behind the main application window.
 ///

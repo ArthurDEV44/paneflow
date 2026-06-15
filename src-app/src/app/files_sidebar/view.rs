@@ -59,8 +59,8 @@ impl PaneFlowApp {
                     .text_size(px(14.))
                     .text_color(ui.muted)
                     .hover(|s| {
-                        let ui = crate::theme::ui_colors();
-                        s.bg(ui.subtle).text_color(ui.text)
+                        s.bg(crate::app::constants::sidebar_tab_hover_background())
+                            .text_color(ui.text)
                     })
                     .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                         this.close_files_sidebar(cx);

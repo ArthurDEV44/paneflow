@@ -12,7 +12,7 @@
 //! - **hairline** — 1px row separator (border at ~50% alpha), used inside
 //!   cards to split rows without competing with the card border.
 //! - **toggle_pill** — Codex/iOS switch: a 36x22 pill, solid `#339cff` track
-//!   when on / soft neutral when off, white thumb with a subtle shadow.
+//!   when on / soft neutral when off, with a white thumb.
 //! - **secondary_button** — filled, agents cancel-button style
 //!   (`ui.subtle` bg, no border).
 //!
@@ -22,8 +22,11 @@
 
 use gpui::{
     AnyElement, ClickEvent, CursorStyle, Div, ElementId, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Stateful, Styled, deferred, div, img, prelude::*, px, svg,
+    ParentElement, Pixels, Stateful, Styled, deferred, div, img, prelude::*, px, svg,
 };
+
+pub(crate) const SETTINGS_CONTROL_CORNER_RADIUS: Pixels = px(8.);
+const SETTINGS_CARD_CORNER_RADIUS: Pixels = px(18.);
 
 /// Apply an alpha override to an `Hsla` color. GPUI's `Hsla` has no
 /// dedicated builder method for alpha, so we update the field manually.
@@ -100,7 +103,7 @@ pub fn setting_card(_ui: crate::theme::UiColors) -> Div {
         .bg(bg)
         .border_1()
         .border_color(border)
-        .rounded(px(16.))
+        .rounded(SETTINGS_CARD_CORNER_RADIUS)
         .overflow_hidden()
 }
 
@@ -113,8 +116,8 @@ pub fn hairline(ui: crate::theme::UiColors) -> impl IntoElement {
 
 /// Pure-visual pill toggle, Codex / iOS style: a solid `#339cff` track when on
 /// (fixed in both themes, per design), a soft neutral gray when off, and a white
-/// thumb with a subtle shadow sliding between the ends — borderless for the
-/// clean filled look. The parent row owns the `id` + `on_click`.
+/// thumb sliding between the ends — borderless for the clean filled look. The
+/// parent row owns the `id` + `on_click`.
 pub fn toggle_pill(on: bool, ui: crate::theme::UiColors) -> impl IntoElement {
     let track_bg = if on {
         Hsla::from(gpui::rgb(0x339cff))
@@ -133,14 +136,7 @@ pub fn toggle_pill(on: bool, ui: crate::theme::UiColors) -> impl IntoElement {
         .bg(track_bg)
         .when(on, |s| s.justify_end())
         .when(!on, |s| s.justify_start())
-        .child(
-            div()
-                .w(px(18.))
-                .h(px(18.))
-                .rounded_full()
-                .bg(gpui::white())
-                .shadow_sm(),
-        );
+        .child(div().w(px(18.)).h(px(18.)).rounded_full().bg(gpui::white()));
 
     div().flex_shrink_0().child(track)
 }
@@ -187,7 +183,7 @@ pub fn secondary_button(
         .id(id)
         .px(px(10.))
         .py(px(4.))
-        .rounded(px(6.))
+        .rounded(SETTINGS_CONTROL_CORNER_RADIUS)
         .cursor(CursorStyle::PointingHand)
         .bg(ui.subtle)
         .text_size(px(12.))
@@ -202,7 +198,7 @@ pub fn secondary_button(
 //
 // Shared by the General, Themes (font picker) and Terminal settings pages so
 // every settings dropdown is identical: a subtle-gray trigger pill with an
-// up/down selector glyph, opening an elevated, hairline-bordered, soft-shadowed
+// up/down selector glyph, opening an elevated, hairline-bordered
 // menu with whisper-soft row highlights and click-outside-to-close. Callers own
 // the "which dropdown is open" state and wire the handlers; these only style.
 
@@ -256,7 +252,7 @@ pub fn select_trigger(id: impl Into<ElementId>, ui: crate::theme::UiColors) -> S
         .py(px(6.))
         .min_w(px(190.))
         .max_w(px(260.))
-        .rounded(px(8.))
+        .rounded(SETTINGS_CONTROL_CORNER_RADIUS)
         .bg(ui.subtle)
         .cursor(CursorStyle::PointingHand)
         .hover(move |s| s.bg(hover_bg))
@@ -290,8 +286,8 @@ pub fn menu_divider_color(ui: crate::theme::UiColors) -> Hsla {
     with_alpha(ui.text, 0.12)
 }
 
-/// Apply the elevated floating-menu *skin* — radius, lifted surface, hairline
-/// border at 0.6 alpha, soft shadow — to any element. The single source of
+/// Apply the elevated floating-menu *skin* — radius, lifted surface, and a
+/// hairline border at 0.6 alpha — to any element. The single source of
 /// truth for the Settings "Shell" select look, shared by [`select_menu`] (the
 /// fixed-width container) and by every variable-width app menu/popover that
 /// anchors to its own trigger (context menus, the diff scope/base pickers, the
@@ -302,7 +298,6 @@ pub fn menu_surface<E: Styled>(el: E, ui: crate::theme::UiColors) -> E {
         .bg(select_menu_surface(ui))
         .border_1()
         .border_color(with_alpha(ui.border, 0.6))
-        .shadow_md()
 }
 
 /// The elevated floating menu container: the [`menu_surface`] skin plus tight
@@ -334,7 +329,7 @@ pub fn select_item(
         .id(id.into())
         .h(px(28.))
         .px(px(8.))
-        .rounded(px(7.))
+        .rounded(SETTINGS_CONTROL_CORNER_RADIUS)
         .flex()
         .flex_row()
         .items_center()

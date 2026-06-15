@@ -7,7 +7,8 @@ use gpui::{
 
 use crate::PaneFlowApp;
 use crate::settings::components::{
-    secondary_button, section_header_with_action, setting_card, setting_text,
+    SETTINGS_CONTROL_CORNER_RADIUS, secondary_button, section_header_with_action, setting_card,
+    setting_text,
 };
 
 impl PaneFlowApp {
@@ -62,7 +63,7 @@ impl PaneFlowApp {
                 .py(px(5.))
                 // Generous radius approximating Codex's Apple-style corner
                 // smoothing (GPUI draws circular-arc corners — no true squircle).
-                .rounded(crate::app::constants::SIDEBAR_TAB_CORNER_RADIUS)
+                .rounded(SETTINGS_CONTROL_CORNER_RADIUS)
                 .child(svg().size(px(14.)).flex_none().path(icon).text_color(fg))
                 .child(
                     div()

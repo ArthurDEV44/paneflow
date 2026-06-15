@@ -266,11 +266,10 @@ impl Render for TitleBar {
                     .justify_center()
                     .rounded(px(5.))
                     .cursor_pointer()
-                    .when(!self.sidebar_visible, |d| d.bg(ui.subtle))
-                    .hover(|s| {
-                        let ui = crate::theme::ui_colors();
-                        s.bg(ui.subtle)
+                    .when(!self.sidebar_visible, |d| {
+                        d.bg(crate::app::constants::sidebar_tab_active_background())
                     })
+                    .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
                     .tooltip(move |_window, cx| {
                         let label = sidebar_tooltip.clone();
                         cx.new(|_| crate::app::sidebar::SidebarTooltip { label })
@@ -308,10 +307,12 @@ impl Render for TitleBar {
                     } else {
                         ui.muted
                     })
-                    .when(self.files_menu_open, |d| d.bg(ui.subtle))
+                    .when(self.files_menu_open, |d| {
+                        d.bg(crate::app::constants::sidebar_tab_active_background())
+                    })
                     .hover(|s| {
-                        let ui = crate::theme::ui_colors();
-                        s.bg(ui.subtle).text_color(ui.text)
+                        s.bg(crate::app::constants::sidebar_tab_hover_background())
+                            .text_color(ui.text)
                     })
                     .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                         cx.stop_propagation();
@@ -341,10 +342,12 @@ impl Render for TitleBar {
                     } else {
                         ui.muted
                     })
-                    .when(self.help_menu_open, |d| d.bg(ui.subtle))
+                    .when(self.help_menu_open, |d| {
+                        d.bg(crate::app::constants::sidebar_tab_active_background())
+                    })
                     .hover(|s| {
-                        let ui = crate::theme::ui_colors();
-                        s.bg(ui.subtle).text_color(ui.text)
+                        s.bg(crate::app::constants::sidebar_tab_hover_background())
+                            .text_color(ui.text)
                     })
                     .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                         cx.stop_propagation();
@@ -423,8 +426,8 @@ impl Render for TitleBar {
                         .text_color(ui.muted)
                         .text_size(px(15.))
                         .hover(|s| {
-                            let ui = crate::theme::ui_colors();
-                            s.bg(ui.subtle).text_color(ui.text)
+                            s.bg(crate::app::constants::sidebar_tab_hover_background())
+                                .text_color(ui.text)
                         })
                         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                             cx.stop_propagation();

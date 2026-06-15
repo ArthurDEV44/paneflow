@@ -457,16 +457,13 @@ impl PaneFlowApp {
             .mx(px(6.))
             .px(px(8.))
             .py(px(6.))
-            .rounded(px(6.))
+            .rounded(crate::app::constants::SIDEBAR_TAB_CORNER_RADIUS)
             .cursor_pointer()
             .flex()
             .flex_row()
             .items_center()
             .gap(px(6.))
-            .hover(|s| {
-                let ui = crate::theme::ui_colors();
-                s.bg(ui.subtle)
-            })
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                 this.start_new_chat(cx);
             }))
@@ -541,16 +538,13 @@ impl PaneFlowApp {
             .mx(px(6.))
             .px(px(8.))
             .py(px(6.))
-            .rounded(px(6.))
+            .rounded(crate::app::constants::SIDEBAR_TAB_CORNER_RADIUS)
             .cursor_pointer()
             .flex()
             .flex_row()
             .items_center()
             .gap(px(6.))
-            .hover(|s| {
-                let ui = crate::theme::ui_colors();
-                s.bg(ui.subtle)
-            })
+            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
             .on_click(cx.listener(move |this, e: &ClickEvent, w, cx| {
                 this.close_agents_menu(cx);
                 let is_double = matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2);
@@ -752,7 +746,7 @@ impl PaneFlowApp {
             // workspace cards and settings nav (`sidebar_tab_active_background`).
             row = row.bg(crate::app::constants::sidebar_tab_active_background());
         } else {
-            row = row.hover(|s| s.bg(crate::app::constants::sidebar_tab_active_background()));
+            row = row.hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()));
         }
 
         row = row
@@ -859,7 +853,7 @@ impl PaneFlowApp {
             .id("agents-sidebar-filter")
             .px(px(10.))
             .py(px(6.))
-            .rounded(px(8.))
+            .rounded(crate::app::constants::SIDEBAR_TAB_CORNER_RADIUS)
             .bg(ui.subtle)
             .flex()
             .flex_row()
@@ -1102,8 +1096,8 @@ fn section_eyebrow(
                 .cursor_pointer()
                 .text_color(ui.muted)
                 .hover(|s| {
-                    let ui = crate::theme::ui_colors();
-                    s.bg(ui.subtle).text_color(ui.text)
+                    s.bg(crate::app::constants::sidebar_tab_hover_background())
+                        .text_color(ui.text)
                 })
                 .tooltip(|_w, cx| {
                     cx.new(|_| HoverActionTooltip {
@@ -1331,15 +1325,13 @@ fn hover_actions_cluster(
         .justify_center()
         .rounded(px(4.))
         .cursor_pointer()
-        // The ★/☆ glyph sits well inside its em box, so it reads smaller than
-        // its point size — bump it so it doesn't look squished next to the
-        // 12px trash svg. The 20px box has no overflow clip, so the glyph can
-        // exceed it without being cut.
-        .text_size(px(18.))
+        // Keep the glyph optically aligned with the neighboring 12px trash
+        // icon inside the same 20px action box.
+        .text_size(px(14.))
         .text_color(if is_pinned { ui.accent } else { ui.muted })
         .hover(|s| {
-            let ui = crate::theme::ui_colors();
-            s.bg(ui.subtle).text_color(ui.text)
+            s.bg(crate::app::constants::sidebar_tab_hover_background())
+                .text_color(ui.text)
         })
         .tooltip(move |_w, cx| {
             cx.new(|_| HoverActionTooltip {
@@ -1367,8 +1359,8 @@ fn hover_actions_cluster(
         .cursor_pointer()
         .text_color(ui.muted)
         .hover(|s| {
-            let ui = crate::theme::ui_colors();
-            s.bg(ui.subtle).text_color(ui.text)
+            s.bg(crate::app::constants::sidebar_tab_hover_background())
+                .text_color(ui.text)
         })
         .tooltip(|_w, cx| {
             cx.new(|_| HoverActionTooltip {

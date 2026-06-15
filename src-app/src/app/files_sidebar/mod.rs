@@ -21,8 +21,8 @@ mod watch;
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, div,
-    prelude::*, px,
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, Window,
+    div, prelude::*, px,
 };
 
 use crate::PaneFlowApp;
@@ -162,8 +162,13 @@ impl PaneFlowApp {
     }
 
     /// Render the docked Files sidebar. Only called when `files_sidebar_open`.
-    pub(crate) fn render_files_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_files_sidebar(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let ui = crate::theme::ui_colors();
+        let theme = crate::theme::active_theme();
         div()
             .id("files-sidebar")
             .flex()
@@ -171,11 +176,12 @@ impl PaneFlowApp {
             .w(SIDEBAR_WIDTH)
             .flex_shrink_0()
             .h_full()
-            // Cockpit rail (#1d1d1d), mirroring the left + sessions sidebars:
-            // ui.surface is the system's SELECTED fill — a whole panel in it
-            // out-shouted every selection. No border-left: the rail and the
-            // terminal panel separate by a luminance step.
-            .bg(gpui::rgb(0x1d1d1d))
+            // Match the app's other navigation rails: theme-aware native
+            // material on Windows/macOS and a light/dark tint on Linux.
+            .bg(crate::app::constants::cockpit_chrome_background(
+                theme.title_bar_background,
+                window.is_window_active(),
+            ))
             .child(self.files_sidebar_header(ui, cx))
             .child(self.files_sidebar_body(ui, cx))
             .into_any_element()
