@@ -10,7 +10,8 @@
 #   assets/icons/paneflow-{16,24,32,48,64,128,256,512}.png   hicolor sizes for cargo-deb / cargo-generate-rpm
 #   assets/icons/paneflow.png                                alias of -128 used by some packaging paths
 #   assets/PaneFlow.icns                                     consumed by scripts/bundle-macos.sh
-#   assets/PaneFlow.ico                                      consumed by Windows MSI (cargo-wix)
+#   assets/PaneFlow.ico                                      canonical multi-res Windows .ico (build output)
+#   packaging/wix/paneflow.ico                               mirror of assets/PaneFlow.ico; the .ico cargo-wix's main.wxs actually reads
 #   src-app/assets/icons/paneflow.png                        runtime-embedded GPUI window icon (rust-embed)
 #   assets/icons/paneflowTemplate{,@2x}.png                  macOS menubar templates (only if template master exists)
 #
@@ -48,6 +49,7 @@ MASTER_DIR="$REPO_ROOT/assets/icons/master"
 OUT_ICONS_DIR="$REPO_ROOT/assets/icons"
 OUT_ICNS="$REPO_ROOT/assets/PaneFlow.icns"
 OUT_ICO="$REPO_ROOT/assets/PaneFlow.ico"
+OUT_WIX_ICO="$REPO_ROOT/packaging/wix/paneflow.ico"
 OUT_RUNTIME_ICON="$REPO_ROOT/src-app/assets/icons/paneflow.png"
 
 log()  { printf '%s\n' "$*" >&2; }
@@ -310,6 +312,17 @@ elif command -v convert >/dev/null 2>&1; then
 else
     die "need ImageMagick to assemble $OUT_ICO"
 fi
+
+# Mirror the multi-res .ico into the WiX packaging dir. cargo-wix's
+# main.wxs sources the installer / Start-Menu shortcut / Add-or-Remove-
+# Programs icon from packaging/wix/paneflow.ico -- NOT assets/PaneFlow.ico.
+# Without this copy a new logo refreshes the runtime, Linux and macOS
+# icons but leaves the Windows installer icon frozen at the previous
+# artwork (the split-brain that shipped the old logo in the v0.5.0 MSI).
+# A plain cp keeps the two byte-identical.
+mkdir -p "$(dirname "$OUT_WIX_ICO")"
+cp "$OUT_ICO" "$OUT_WIX_ICO"
+log "  $OUT_WIX_ICO  (mirror of $OUT_ICO for cargo-wix)"
 
 # --- macOS menubar Template PNGs (optional) ------------------------------
 # AppKit auto-tints images whose filename ends in `Template.png` /

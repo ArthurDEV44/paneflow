@@ -2,7 +2,8 @@
 
 Source PNGs for `scripts/build-icons.sh`. Drop your masters here, run the script,
 commit the regenerated outputs under `assets/icons/`, `assets/PaneFlow.icns`,
-`assets/PaneFlow.ico`, and `src-app/assets/icons/paneflow.png`.
+`assets/PaneFlow.ico`, `packaging/wix/paneflow.ico`, and
+`src-app/assets/icons/paneflow.png`.
 
 | File | Required | Used for |
 |---|---|---|
@@ -14,7 +15,7 @@ commit the regenerated outputs under `assets/icons/`, `assets/PaneFlow.icns`,
 
 ```bash
 bash scripts/build-icons.sh
-git add assets/ src-app/assets/icons/paneflow.png
+git add assets/ packaging/wix/paneflow.ico src-app/assets/icons/paneflow.png
 git commit -m "chore(brand): regenerate icons from master"
 ```
 
