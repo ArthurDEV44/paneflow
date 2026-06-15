@@ -5,6 +5,46 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-06-15
+
+A Windows quality pass: new terminals now open in the right directory, the
+font picker is wired end-to-end, and two stray-window/log annoyances are gone.
+No changes on Linux or macOS.
+
+### Added
+
+- Font picker on Windows. The Settings font list was empty on Windows because
+  family enumeration was never implemented; it now enumerates installed
+  fixed-pitch families via GDI (`EnumFontFamiliesExW`), alongside the fonts
+  PaneFlow embeds. GDI is used only for discovery; GPUI/DirectWrite still does
+  the rendering.
+- Cascadia Mono as the Windows default font. A fresh install now defaults to
+  the system Cascadia Mono, matching Windows Terminal, instead of the embedded
+  IBM Plex Mono. Linux and macOS still default to the embedded mono, which also
+  stays available everywhere as the fallback. Pick any installed font (or
+  return to the default) from the Settings list.
+
+### Changed
+
+- The font-family picker moved from the Themes page to the Terminal page, next
+  to font size, line height and ligatures. Searching "font" in Settings now
+  jumps to the Terminal page, and the Themes page is theme-only.
+
+### Fixed
+
+- New terminals open in the workspace directory on Windows. Opening a new tab,
+  splitting a pane, or duplicating a tab spawned the shell in
+  `C:\Program Files\PaneFlow` (the install directory) instead of the project
+  folder, because Windows can't introspect a child process's working
+  directory. New panes now fall back to the workspace's own root, so every new
+  terminal lands where you'd expect.
+- No more console window flashing on Windows. Background helpers PaneFlow runs
+  (git status polling, agent CLIs, MCP probes) each briefly popped an empty
+  console window; they now spawn with `CREATE_NO_WINDOW`.
+- No more spurious warning when a Windows shell closes. Typing `exit` logged a
+  harmless-but-noisy `TerminateProcess failed` warning on every shell close;
+  PaneFlow now detects the already-exited child and skips the kill path.
+
 ## [0.5.2] - 2026-06-15
 
 A Windows hotfix: the in-app updater now works on MSI installs. No changes on
