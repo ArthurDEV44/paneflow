@@ -801,7 +801,7 @@ jobs:
     defaults:
       run:
         shell: pwsh
-    timeout-minutes: 30
+    timeout-minutes: 50
     env:
       # US-009 (v0.2.1): `ilammy/msvc-dev-cmd@v1` (latest v1.13.0 as of
       # 2026-04-21) still declares `runs: using: node20` in its
@@ -928,6 +928,15 @@ jobs:
       # embed cleanly via rust-embed and the AI-hook pipeline compiles
       # end-to-end on MSVC.
       - name: cargo build --workspace --release
+        # LTO ("thin") + codegen-units=1 from [profile.release] are runtime-perf
+        # knobs, irrelevant to a CI compile gate, and roughly double the link
+        # time. From a cold cache the release build blew past the 30-min timeout
+        # — and the kill skips the rust-cache save step, so every run restarted
+        # cold (a vicious cycle). Override them here to keep the gate fast; the
+        # real LTO release build is still validated by release.yml on every tag.
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: cargo build --workspace --release --target x86_64-pc-windows-msvc
 
       # Mirror of the macos_check `Upload aarch64 binary artifact` step:
@@ -1213,7 +1222,7 @@ jobs:
     defaults:
       run:
         shell: pwsh
-    timeout-minutes: 30
+    timeout-minutes: 50
     env:
       # Same Node 24 forcing as windows_check above — ilammy/msvc-dev-cmd
       # hasn't shipped a node24-native tag yet.
