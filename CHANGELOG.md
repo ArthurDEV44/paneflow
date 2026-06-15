@@ -5,6 +5,55 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-15
+
+This release brings Paneflow to Windows and lands a ground-up redesign of the
+app shell.
+
+### Added
+
+- Windows support. Paneflow now runs on Windows 10 and 11. The title bar
+  carries native Windows 11 caption buttons and a full-width inset panel, new
+  terminals default to PowerShell, and live agent-status updates are delivered
+  reliably over named pipes.
+- Inline settings. The settings window is replaced by a Codex-style settings
+  surface embedded directly in the app, built on a shared set of select,
+  toggle and card primitives, with every page rebuilt on those controls.
+- The PaneFlow Light theme returns, paired with a light app shell, and the
+  window backdrop now seeds itself from the active theme mode.
+- Configurable font fallbacks. A user-editable font_fallbacks list lets you
+  control the monospace fallback chain.
+
+### Changed
+
+- Cockpit chrome redesign. A reworked window chrome with a native backdrop,
+  title-bar Files and Help menus, a Profile menu, and a sidebar toggle. The
+  title bar now spans the full window width on every desktop platform.
+- One menu language across the app. The title-bar dropdowns, the workspace and
+  agents context menus, the theme picker, and the diff scope, project, branch
+  and base pickers all share a single elevated surface and select-row style.
+- The agent launcher is laid out as a grid of filled tiles, and the agents
+  sidebar search field matches the settings search pill.
+- The About dialog is restyled as a native app dialog, and hover backgrounds
+  align with the active selected state.
+- The option-as-meta default is now platform specific.
+
+### Fixed
+
+- Self-update reliability across platforms: the macOS app bundle relaunches
+  correctly and handles translocation, AppImage installs are detected via
+  $APPIMAGE with the right package-manager routing, the Fedora upgrade path
+  refreshes its metadata first, and a mismatched-signature install surfaces a
+  clearer hint.
+- Terminal teardown is guarded against PID reuse and works on kernels built
+  without CONFIG_PROC_CHILDREN.
+- The GUI now adopts the login-shell PATH on launch, so tools on your shell
+  PATH are found when Paneflow is started from a launcher.
+- Turn-end desktop notifications carry the Paneflow icon, and widget text
+  keybindings are re-registered on every keymap apply.
+- Linux packages depend on fontconfig so the settings font picker is
+  populated.
+
 ## [0.4.4] - 2026-06-11
 
 ### Changed
@@ -298,7 +347,8 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 - Opened the 0.3.x release line. See the GitHub compare link for the full commit
   list.
 
-[Unreleased]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/ArthurDEV44/paneflow/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/ArthurDEV44/paneflow/compare/v0.4.1...v0.4.2
