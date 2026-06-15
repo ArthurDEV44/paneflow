@@ -359,6 +359,9 @@ impl PaneFlowApp {
                         .get(source_idx)
                         .and_then(crate::pane::TabContent::as_terminal)
                         .and_then(|t| t.read(cx).terminal.cwd_now());
+                    // Windows `cwd_now()` is always `None`; fall back to the
+                    // workspace root instead of the process `current_dir()`.
+                    let cwd = self.new_terminal_cwd(cwd);
                     let term = cx.new(|cx| TerminalView::with_cwd(ws_id, cwd, None, cx));
                     self.create_pane(term, ws_id, cx)
                 } else {
@@ -395,6 +398,30 @@ impl PaneFlowApp {
                 // Focus the new pane on next render (no Window here).
                 self.pending_pane_focus = Some(new_pane);
                 self.save_session(cx);
+                cx.notify();
+            }
+            pane::PaneEvent::NewTerminalTab => {
+                // The Pane can't spawn its own terminal at the right cwd (it
+                // knows its `workspace_id` but not the directory) nor wire the
+                // app-level CWD/port/service subscription, so it routes here.
+                // Resolve the owning workspace by id and spawn at its cwd; on
+                // Windows this is what keeps a new tab out of the process
+                // `current_dir()` (`C:\Program Files\PaneFlow`).
+                let ws_id = pane.read(cx).workspace_id;
+                let cwd = self
+                    .workspaces
+                    .iter()
+                    .find(|ws| ws.id == ws_id)
+                    .map(|ws| ws.cwd.as_str())
+                    .filter(|c| !c.is_empty())
+                    .map(std::path::PathBuf::from);
+                let terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, cwd, None, cx));
+                // App-level subscription so CWD/port/service events route
+                // (mirrors `create_pane` / `DuplicateTabInto`); `add_tab` wires
+                // the pane-level subscription.
+                cx.subscribe(&terminal, Self::handle_terminal_event)
+                    .detach();
+                pane.update(cx, |p, cx| p.add_tab(terminal, cx));
                 cx.notify();
             }
             pane::PaneEvent::DuplicateTabInto {
@@ -434,6 +461,9 @@ impl PaneFlowApp {
                     .get(source_idx)
                     .and_then(crate::pane::TabContent::as_terminal)
                     .and_then(|t| t.read(cx).terminal.cwd_now());
+                // Windows `cwd_now()` is always `None`; fall back to the workspace
+                // root instead of the process `current_dir()`.
+                let cwd = self.new_terminal_cwd(cwd);
                 let term = cx.new(|cx| TerminalView::with_cwd(ws_id, cwd, None, cx));
                 // App-level subscription so CWD/port/service events route
                 // (mirrors `create_pane`); the pane-level subscription is wired
@@ -625,13 +655,16 @@ impl PaneFlowApp {
                         };
                         (cwd, size)
                     }
-                    None => {
-                        let cwd = self
-                            .active_workspace()
-                            .map(|ws| std::path::PathBuf::from(&ws.cwd));
-                        (cwd, (80, 24))
-                    }
+                    // Markdown pane (US-020): no terminal to read a cwd from, and
+                    // a default grid. `new_terminal_cwd` supplies the workspace
+                    // root below, exactly like a terminal whose `cwd_now()` is `None`.
+                    None => (None, (80, 24)),
                 };
+                // `cwd_now()` is `None` for a markdown source and on platforms
+                // without child-cwd introspection (always on Windows); fall back
+                // to the workspace root so the split never lands in the process
+                // `current_dir()` (`C:\Program Files\PaneFlow` when installed).
+                let source_cwd = self.new_terminal_cwd(source_cwd);
                 let ws_id = self.active_workspace().map(|ws| ws.id).unwrap_or(0);
                 let new_terminal =
                     cx.new(|cx| TerminalView::with_cwd(ws_id, source_cwd, Some(initial_size), cx));

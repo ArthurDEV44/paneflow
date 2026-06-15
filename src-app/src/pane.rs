@@ -135,6 +135,13 @@ pub enum PaneEvent {
     Remove,
     /// Request a split in the given direction from this pane.
     Split(crate::layout::SplitDirection),
+    /// Request a fresh terminal tab in this pane. Routed to `PaneFlowApp` (not
+    /// handled in the `Pane`) so the new terminal spawns at the owning
+    /// workspace's cwd — the `Pane` knows only its `workspace_id`, not the
+    /// directory — and gets the app-level CWD/port/service subscription wired,
+    /// exactly like `DropSplit` / `DuplicateTabInto`. Without this, a new tab on
+    /// Windows opened in the process `current_dir()` (`C:\Program Files\PaneFlow`).
+    NewTerminalTab,
     /// Toggle the docked agent-sessions sidebar for the active terminal's cwd
     /// (PRD `prd-agent-sessions-sidebar-2026-Q3`). The parent resolves the cwd,
     /// binds this pane, and spawns the per-agent scans; no anchor is needed
@@ -1203,12 +1210,12 @@ impl Pane {
                     style
                 }
             })
-            .on_click(cx.listener(|this, e: &ClickEvent, _window, cx| {
+            .on_click(cx.listener(|_this, e: &ClickEvent, _window, cx| {
                 if matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2) {
-                    let ws_id = this.workspace_id;
-                    let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
-                    this.add_tab(terminal, cx);
-                    cx.notify();
+                    // Routed to PaneFlowApp so the new terminal spawns at the
+                    // workspace cwd (the Pane doesn't know it) with app-level
+                    // subscriptions wired — see `PaneEvent::NewTerminalTab`.
+                    cx.emit(PaneEvent::NewTerminalTab);
                 }
             }));
 
@@ -1897,11 +1904,10 @@ impl Pane {
             .child(Self::action_button(
                 "pane-btn-new-tab",
                 "icons/terminal.svg",
-                cx.listener(|this, _, _window, cx| {
-                    let ws_id = this.workspace_id;
-                    let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
-                    this.add_tab(terminal, cx);
-                    cx.notify();
+                cx.listener(|_this, _, _window, cx| {
+                    // See `PaneEvent::NewTerminalTab`: spawning in the app gives
+                    // the new terminal the workspace cwd + app-level subscriptions.
+                    cx.emit(PaneEvent::NewTerminalTab);
                 }),
             ))
             // Split vertical (panes side by side)

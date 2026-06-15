@@ -189,6 +189,27 @@ impl PaneFlowApp {
 
     // --- Split/close/focus handlers (operate on active workspace) ---
 
+    /// Working directory for a terminal spawned into the active workspace.
+    /// `source_cwd` is the focused/source pane's live cwd (`cwd_now()`), which
+    /// is `None` for a markdown pane (US-020) and on every platform that can't
+    /// introspect a child's cwd — notably *always* on Windows, where
+    /// `cwd_now()` is a stub. Left unhandled, that `None` lets the PTY spawn
+    /// drop to the process `current_dir()` (`C:\Program Files\PaneFlow` for an
+    /// installed build), stranding new panes outside the project. Fall back to
+    /// the workspace's own root directory so a split / new pane always lands in
+    /// the directory the workspace points at.
+    pub(crate) fn new_terminal_cwd(
+        &self,
+        source_cwd: Option<std::path::PathBuf>,
+    ) -> Option<std::path::PathBuf> {
+        source_cwd.or_else(|| {
+            self.active_workspace()
+                .map(|ws| ws.cwd.as_str())
+                .filter(|cwd| !cwd.is_empty())
+                .map(std::path::PathBuf::from)
+        })
+    }
+
     pub(crate) fn split(
         &mut self,
         direction: SplitDirection,
@@ -207,10 +228,11 @@ impl PaneFlowApp {
         {
             return;
         }
-        // Inherit CWD from the focused pane's active terminal (fresh /proc read).
-        // US-020: focused pane may be a markdown viewer with no terminal —
-        // fall through to `None` and let `TerminalView::with_cwd(..., None)`
-        // resolve to the workspace's root cwd.
+        // Inherit CWD from the focused pane's active terminal. `cwd_now()` is
+        // best-effort: `None` for a markdown pane (US-020) and on platforms
+        // without child-cwd introspection (always on Windows). `new_terminal_cwd`
+        // then falls back to the workspace root, so the new pane never drops to
+        // the process `current_dir()` (`C:\Program Files\PaneFlow` when installed).
         let source_cwd = self
             .active_workspace()
             .and_then(|ws| ws.root.as_ref())
@@ -220,6 +242,7 @@ impl PaneFlowApp {
                     .active_terminal_opt()
                     .and_then(|tv| tv.read(cx).terminal.cwd_now())
             });
+        let source_cwd = self.new_terminal_cwd(source_cwd);
         let ws_id = self.active_workspace().map(|ws| ws.id).unwrap_or(0);
         let new_terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, source_cwd, None, cx));
         let new_pane = self.create_pane(new_terminal, ws_id, cx);
