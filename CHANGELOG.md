@@ -5,6 +5,41 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-06-16
+
+A visual polish pass on the app chrome plus two Windows session fixes. The
+chrome refresh lands on every platform; the session and title-bar fixes are
+Windows-only.
+
+### Fixed
+
+- The agent-sessions sidebar now populates on Windows. Claude Code, Codex and
+  opencode sessions for the open workspace were never listed because three
+  things were wrong at once: the project-directory slug kept the drive
+  letter's `:` (so `C:\dev\paneflow` looked for `C:-dev-paneflow` instead of
+  the real `C--dev-paneflow`), the working-directory filter was case- and
+  separator-sensitive, and the active terminal's cwd was never seeded on
+  Windows. All three are fixed, so the sidebar resolves the same sessions your
+  agent CLIs actually wrote.
+- Terminal tabs and Agents threads no longer take the shell's own path as
+  their name on Windows. PowerShell and cmd briefly title their window with
+  their executable path (e.g. `C:\Program Files\PowerShell\7\pwsh.exe`) before
+  your profile runs; PaneFlow now ignores a title that is merely a path to an
+  `.exe` and keeps the real label.
+
+### Changed
+
+- A chrome refresh across the sidebars, title bar, context menus and settings.
+  Hovered and selected rows now share one slightly brighter translucent
+  material (closer to Codex/OpenAI's soft highlights), drop-shadows are gone
+  for a flatter look, and the docked sessions and files rails use the same
+  native window material as the rest of the app instead of a flat dark fill.
+  Corner radii are unified across cards, rows and settings controls.
+- Quieter logs. A failed update check from a transient network or GitHub
+  hiccup, and a diff column superseded by a newer load, now log at debug
+  instead of warn; only an actionable update failure (a persistent 4xx) still
+  warns.
+
 ## [0.5.3] - 2026-06-15
 
 A Windows quality pass: new terminals now open in the right directory, the
