@@ -73,7 +73,7 @@ const NAV_GROUPS: &[NavGroup] = &[
                 section: SettingsSection::Appearance,
                 label: "Themes",
                 icon: "icons/palette.svg",
-                keywords: &["theme", "themes", "font", "colors", "appearance"],
+                keywords: &["theme", "themes", "colors", "appearance"],
             },
             NavItem {
                 section: SettingsSection::Shortcuts,
@@ -94,6 +94,8 @@ const NAV_GROUPS: &[NavGroup] = &[
                 "bell",
                 "scrollback",
                 "ligatures",
+                "font",
+                "font family",
                 "font size",
                 "line height",
                 "option as meta",

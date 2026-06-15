@@ -1,11 +1,13 @@
 //! "Terminal" settings tab (US-016) — cursor shape/blink, bell mode,
-//! scrollback, font size, line height, ligatures, and option-as-meta.
+//! scrollback, font family, font size, line height, ligatures, and
+//! option-as-meta.
 //!
 //! Controls map to config like so:
 //! - **cursor_shape / cursor_blink / bell / scrollback_lines** → enum/preset
-//!   dropdowns (deferred popover, same recipe as the font picker in
-//!   `appearance.rs`), persisted into the `terminal` block via
+//!   dropdowns (deferred popovers), persisted into the `terminal` block via
 //!   [`config_writer::save_terminal_field`].
+//! - **font_family** → searchable monospace-font dropdown, persisted as a
+//!   top-level field via [`config_writer::save_config_value`].
 //! - **font_size / line_height** → `−`/`+` steppers that clamp by construction
 //!   (so an out-of-range value can never be entered), persisted as top-level
 //!   fields via [`config_writer::save_config_value`].
@@ -43,6 +45,8 @@ impl PaneFlowApp {
         let bell = terminal.bell.unwrap_or_default();
         let scrollback = terminal.resolved_scrollback_lines();
         let ligatures_on = terminal.ligatures.unwrap_or(false);
+        let current_font =
+            crate::terminal::element::resolve_font_family(config.font_family.as_deref());
         let meta_on = config
             .option_as_meta
             .unwrap_or_else(crate::keys::default_option_as_meta);
@@ -179,6 +183,8 @@ impl PaneFlowApp {
                 cx,
             ))
             .child(hairline(ui))
+            .child(self.terminal_font_family_row(current_font, ui, cx))
+            .child(hairline(ui))
             .child(self.terminal_stepper_row(
                 "term-font-size",
                 "Font size",
@@ -244,6 +250,165 @@ impl PaneFlowApp {
             .child(input_card)
     }
 
+    fn terminal_font_family_row(
+        &self,
+        current_font: String,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let default_font = crate::terminal::element::resolve_font_family(None);
+        let trigger_label = if self.font_dropdown_open {
+            if self.font_search.is_empty() {
+                "Search fonts…".to_string()
+            } else {
+                format!("{}|", self.font_search)
+            }
+        } else {
+            current_font.clone()
+        };
+        let trigger_label_color = if self.font_dropdown_open && self.font_search.is_empty() {
+            ui.muted
+        } else {
+            ui.text
+        };
+
+        let font_open = self.font_dropdown_open;
+        let mut trigger = select_trigger("terminal-font-family-trigger", ui)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.terminal_dropdown = None;
+                    this.font_dropdown_open = !font_open;
+                    this.font_search.clear();
+                    if this.font_dropdown_open && this.mono_font_names.is_empty() {
+                        cx.spawn(async move |this, cx| {
+                            let fonts = smol::unblock(crate::fonts::load_mono_fonts).await;
+                            let _ = this.update(cx, |this, cx| {
+                                this.mono_font_names = fonts;
+                                cx.notify();
+                            });
+                        })
+                        .detach();
+                    }
+                    this.settings_focus.focus(window, cx);
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(12.))
+                    .text_color(trigger_label_color)
+                    .truncate()
+                    .child(trigger_label),
+            )
+            .child(select_chevron(ui));
+
+        if self.font_dropdown_open {
+            let search = self.font_search.to_lowercase();
+            let default_label = format!("PaneFlow default — {default_font}");
+            let default_matches =
+                search.is_empty() || default_label.to_lowercase().contains(&search);
+            let filtered: Vec<&String> = self
+                .mono_font_names
+                .iter()
+                .filter(|name| {
+                    name.as_str() != default_font.as_str()
+                        && (search.is_empty() || name.to_lowercase().contains(&search))
+                })
+                .collect();
+
+            let mut menu = select_menu("terminal-font-dropdown", ui).on_mouse_down_out(
+                cx.listener(|this, _, _w, cx| {
+                    if this.font_dropdown_open {
+                        this.font_dropdown_open = false;
+                        this.font_search.clear();
+                        cx.notify();
+                    }
+                }),
+            );
+
+            if default_matches {
+                menu = menu.child(
+                    select_item(
+                        ("terminal-font-default", 0usize),
+                        current_font == default_font,
+                        ui,
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                        this.font_dropdown_open = false;
+                        this.font_search.clear();
+                        this.persist_setting(false, "font_family", Value::Null, cx);
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(ui.text)
+                            .child(default_label),
+                    ),
+                );
+            }
+
+            for (i, name) in filtered.iter().enumerate() {
+                let name_owned = (*name).clone();
+                let is_current = **name == current_font;
+                menu = menu.child(
+                    select_item(("terminal-font", i), is_current, ui)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                            this.font_dropdown_open = false;
+                            this.font_search.clear();
+                            this.persist_setting(
+                                false,
+                                "font_family",
+                                Value::String(name_owned.clone()),
+                                cx,
+                            );
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(ui.text)
+                                .child((*name).clone()),
+                        ),
+                );
+            }
+
+            if !default_matches && filtered.is_empty() {
+                menu = menu.child(
+                    div()
+                        .px(px(8.))
+                        .py(px(8.))
+                        .text_size(px(12.))
+                        .text_color(ui.muted)
+                        .child("No matching fonts"),
+                );
+            }
+
+            trigger = trigger.child(deferred_select_menu(menu));
+        }
+
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(16.))
+            .px(px(12.))
+            .py(px(10.))
+            .child(setting_text(
+                ui,
+                "Font family",
+                "Choose the monospace font used by every terminal. Hot-reloads.",
+            ))
+            .child(div().flex_shrink_0().child(trigger))
+            .into_any_element()
+    }
+
     /// One settings row: label/description on the left, a Codex-style select on
     /// the right (shared `components::select_*` primitives). `options` are
     /// `(label, json_value_to_write, is_selected)`. `nested` routes the write to
@@ -271,6 +436,8 @@ impl PaneFlowApp {
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
+                    this.font_dropdown_open = false;
+                    this.font_search.clear();
                     this.terminal_dropdown = if is_open { None } else { Some(which) };
                     this.settings_focus.focus(window, cx);
                     cx.notify();

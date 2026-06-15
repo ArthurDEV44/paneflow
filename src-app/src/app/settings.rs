@@ -106,7 +106,7 @@ impl PaneFlowApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Font dropdown typeahead (Appearance page).
+        // Font dropdown typeahead (Terminal page).
         if self.font_dropdown_open {
             let key = event.keystroke.key.as_str();
             match key {
