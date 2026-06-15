@@ -262,32 +262,62 @@ pub fn select_trigger(id: impl Into<ElementId>, ui: crate::theme::UiColors) -> S
         .hover(move |s| s.bg(hover_bg))
 }
 
-/// The elevated floating menu container: a surface lifted above the card (white
-/// in light, a touch lighter than the card in dark), a hairline border, a soft
-/// shadow, and tight geometry. A press inside is swallowed (stop_propagation);
-/// the caller adds the rows and an `on_mouse_down_out` to close.
-pub fn select_menu(id: impl Into<ElementId>, ui: crate::theme::UiColors) -> Stateful<Div> {
-    let menu_bg = if ui.surface.l > 0.5 {
+/// The elevated surface color used by [`select_menu`]: white-ish lift in light,
+/// a touch lighter than the card in dark. Exposed so menus that cannot reuse the
+/// fixed-width [`select_menu`] container (e.g. a stretch-to-width sidebar
+/// popover) can still match its surface exactly.
+pub fn select_menu_surface(ui: crate::theme::UiColors) -> Hsla {
+    if ui.surface.l > 0.5 {
         ui.overlay
     } else {
         Hsla {
             l: (ui.surface.l + 0.035).min(1.0),
             ..ui.surface
         }
-    };
-    div()
-        .id(id.into())
+    }
+}
+
+/// Hairline color for dividers *inside* a menu (between item groups). A whisper
+/// of `ui.text`, NOT `ui.border`: the menu sits on the elevated surface (see
+/// [`select_menu_surface`]), which in dark themes is lighter than `ui.border`
+/// (`0x2a2a2a` vs `0x252525`), so a `ui.border` divider has near-zero contrast
+/// and vanishes. The structural app borders (sidebar/terminal divider, title
+/// bar) read as `ui.border` only because they sit on the near-black terminal —
+/// same color, far darker backdrop. A text-tint lifts off the menu surface in
+/// either theme; at 0.12 it lands on ~`ui.border` over a light theme's white
+/// menu (no regression there) while staying clearly visible on the dark menu.
+pub fn menu_divider_color(ui: crate::theme::UiColors) -> Hsla {
+    with_alpha(ui.text, 0.12)
+}
+
+/// Apply the elevated floating-menu *skin* — radius, lifted surface, hairline
+/// border at 0.6 alpha, soft shadow — to any element. The single source of
+/// truth for the Settings "Shell" select look, shared by [`select_menu`] (the
+/// fixed-width container) and by every variable-width app menu/popover that
+/// anchors to its own trigger (context menus, the diff scope/base pickers, the
+/// sidebar Settings popover). Layout (flex, gap, padding, width, interactivity)
+/// stays with the caller; this only paints the surface.
+pub fn menu_surface<E: Styled>(el: E, ui: crate::theme::UiColors) -> E {
+    el.rounded(px(10.))
+        .bg(select_menu_surface(ui))
+        .border_1()
+        .border_color(with_alpha(ui.border, 0.6))
+        .shadow_md()
+}
+
+/// The elevated floating menu container: the [`menu_surface`] skin plus tight
+/// geometry and a fixed 200-280px width clamp. A press inside is swallowed
+/// (stop_propagation); the caller adds the rows and an `on_mouse_down_out` to
+/// close. Menus that must size to their own content use [`menu_surface`]
+/// directly instead (the width clamp here would fight a stretch/auto width).
+pub fn select_menu(id: impl Into<ElementId>, ui: crate::theme::UiColors) -> Stateful<Div> {
+    menu_surface(div().id(id.into()), ui)
         .flex()
         .flex_col()
         .gap(px(1.))
         .p(px(4.))
         .min_w(px(200.))
         .max_w(px(280.))
-        .rounded(px(10.))
-        .bg(menu_bg)
-        .border_1()
-        .border_color(with_alpha(ui.border, 0.6))
-        .shadow_md()
         .max_h(px(320.))
         .overflow_y_scroll()
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())

@@ -16,6 +16,7 @@ use gpui::{
 };
 
 use crate::PaneFlowApp;
+use crate::settings::components::{select_item, select_menu_surface, with_alpha};
 use crate::window_chrome::title_bar::{SelfUpdatePillState, SystemPackageKind, UpdatePillKind};
 
 impl PaneFlowApp {
@@ -297,9 +298,13 @@ impl PaneFlowApp {
 
         let settings_popover: Option<AnyElement> = if settings_open {
             // Vertical menu opening upward from the trigger. Mirrors the
-            // title-bar "Files" / "Help" dropdowns (`profile_menu.rs`):
-            // same theme-aware overlay, 12px radius and 6px padding, so all
-            // three app menus read as one consistent menu language.
+            // Settings "Shell" select menu (`components::select_menu`) that the
+            // title-bar "Files" / "Help" dropdowns also use: the same elevated
+            // surface, hairline border at 0.6 alpha, soft shadow, 10px radius
+            // and 4px padding, so every app menu reads as one consistent menu
+            // language. The container is open-coded (not `select_menu`) because
+            // this popover stretches to the sidebar width via left/right, which
+            // would fight `select_menu`'s fixed 200-280px clamp.
             let mut menu = div()
                 .id("sidebar-settings-popover")
                 .absolute()
@@ -308,14 +313,15 @@ impl PaneFlowApp {
                 .bottom(px(42.))
                 .flex()
                 .flex_col()
-                .gap(px(2.))
-                .p(px(6.))
-                .rounded(px(12.))
-                .bg(ui.overlay)
+                .gap(px(1.))
+                .p(px(4.))
+                .rounded(px(10.))
+                .bg(select_menu_surface(ui))
                 .border_1()
-                .border_color(ui.border)
+                .border_color(with_alpha(ui.border, 0.6))
+                .shadow_md()
                 // Click anywhere outside the popover (or its trigger)
-                // dismisses it. Same pattern as `profile_menu.rs:128`.
+                // dismisses it. Same pattern as `profile_menu.rs`.
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     if this.agents_view.sidebar_actions_menu_open {
                         this.agents_view.sidebar_actions_menu_open = false;
@@ -473,17 +479,7 @@ fn render_menu_item(
     cx: &mut Context<PaneFlowApp>,
 ) -> AnyElement {
     let handler = item.on_click;
-    div()
-        .id(item.id)
-        .h(px(30.))
-        .px(px(8.))
-        .rounded(px(10.))
-        .cursor_pointer()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(8.))
-        .hover(|s| s.bg(ui.subtle))
+    select_item(item.id, false, ui)
         .on_click(cx.listener(move |this, _: &ClickEvent, w, cx| {
             handler(this, w, cx);
             this.agents_view.sidebar_actions_menu_open = false;
@@ -500,8 +496,6 @@ fn render_menu_item(
             div()
                 .flex_1()
                 .min_w_0()
-                .text_size(px(12.))
-                .font_weight(FontWeight::NORMAL)
                 .text_color(ui.text)
                 .truncate()
                 .child(item.label),
