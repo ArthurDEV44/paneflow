@@ -1911,7 +1911,12 @@ impl Drop for TerminalState {
             const SYNCHRONIZE: u32 = 0x0010_0000;
 
             let pid = self.child_pid;
-            if pid != 0 {
+            // US-034 (mirrors the Unix path above): skip the kill ladder entirely
+            // once the child has exited. Without this guard a normal exit (the
+            // user typed `exit`) still ran the deferred `TerminateProcess`, which
+            // fails with `ERROR_ACCESS_DENIED` on an already-dead process and
+            // logged a spurious warning every time a shell closed.
+            if pid != 0 && self.exited.is_none() {
                 // US-001 asymmetry: Windows console processes have no
                 // SIGTERM-equivalent graceful signal. TerminateProcess is a
                 // hard kill and serves as the escalation; there is no Windows
@@ -1927,8 +1932,19 @@ impl Drop for TerminalState {
                             );
                             return;
                         }
+                        // The child can still exit on its own during the 100 ms
+                        // grace window (the `self.exited` guard only covers exits
+                        // already observed at Drop time). TerminateProcess on an
+                        // exited process fails with ACCESS_DENIED; a zero-timeout
+                        // wait detects that cleanly so we neither call it nor warn.
+                        if WaitForSingleObject(handle, 0) == WAIT_OBJECT_0 {
+                            let _ = CloseHandle(handle);
+                            return;
+                        }
                         if TerminateProcess(handle, 1) == 0 {
-                            log::warn!("paneflow: TerminateProcess({pid}) failed");
+                            log::debug!(
+                                "paneflow: TerminateProcess({pid}) failed (child exited during grace window)"
+                            );
                             let _ = CloseHandle(handle);
                             return;
                         }
