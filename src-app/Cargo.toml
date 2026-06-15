@@ -310,6 +310,8 @@ raw-window-handle = "0.6"
 windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_Foundation",
+    # Native fixed-pitch font discovery for the Terminal settings picker.
+    "Win32_Graphics_Gdi",
     "Win32_System_Diagnostics",
     "Win32_System_Diagnostics_ToolHelp",
     # US-009 (prd-audit-remediation): IsWow64Process2 + IMAGE_FILE_MACHINE_*
