@@ -13,6 +13,13 @@
         clippy::panic
     )
 )]
+// Windows: build as a GUI-subsystem binary so launching PaneFlow from
+// Explorer / a shortcut / the Start Menu does NOT make the OS allocate a
+// stray console window (on Windows 11 that console is hosted by Windows
+// Terminal and pops up next to the app). The scriptable CLI keeps working
+// because `main()` re-attaches to the parent console when there is one —
+// see `attach_parent_console`. No-op on Linux/macOS (no subsystem concept).
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! PaneFlow — native terminal workspace for coding agents.
 //!
 //! App shell with sidebar workspace list, terminal panes, agent surfaces, and
@@ -1525,7 +1532,34 @@ fn run_update_and_exit() -> i32 {
 // App entry point
 // ---------------------------------------------------------------------------
 
+/// Re-attach the process to its parent console on Windows, when one exists.
+///
+/// PaneFlow is a GUI-subsystem binary (`windows_subsystem = "windows"`) so a
+/// GUI launch (Explorer / Start Menu) never allocates a console window. The
+/// trade-off is that a GUI-subsystem process started *from a terminal* is
+/// detached from that terminal's console, so the scriptable CLI (`paneflow mcp
+/// install`, `paneflow ls`, `--version`, …) would print into the void.
+/// [`AttachConsole(ATTACH_PARENT_PROCESS)`] re-binds stdio to the parent
+/// console when there is one (the CLI case) and fails harmlessly when there is
+/// not (the GUI case). We deliberately never call `AllocConsole`, which would
+/// recreate the very window this whole change removes.
+#[cfg(windows)]
+fn attach_parent_console() {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    // SAFETY: a plain FFI call with no aliasing or memory-safety concerns. A
+    // 0 (FALSE) return means there is no parent console — exactly the GUI
+    // launch we intentionally leave alone.
+    unsafe {
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
 fn main() {
+    // Restore CLI stdout/stderr when launched from a terminal (no-op on a GUI
+    // launch). Must run before the first `println!` below — see the fn docs.
+    #[cfg(windows)]
+    attach_parent_console();
+
     // Handle --help and --version before initializing GPUI
     let args: Vec<String> = std::env::args().collect();
     // US-038: detect the `mcp` subcommand BEFORE the global flag scans. Those

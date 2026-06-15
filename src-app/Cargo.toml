@@ -323,6 +323,11 @@ windows-sys = { version = "0.59", features = [
     # required; WINTRUST_FILE_INFO + the WTD_* consts live under _WinTrust.
     "Win32_Security_WinTrust",
     "Win32_Security_Cryptography",
+    # GUI-subsystem console handling: AttachConsole(ATTACH_PARENT_PROCESS) in
+    # `main()` re-binds stdio to the parent terminal for the scriptable CLI,
+    # since `windows_subsystem = "windows"` otherwise detaches it (and stops
+    # the OS from popping a stray console window on a GUI launch).
+    "Win32_System_Console",
 ] }
 # US-003: process-wide Job Object with KILL_ON_JOB_CLOSE so a kill -9
 # of Paneflow (or any uncaught crash) takes all spawned agent CLIs and
