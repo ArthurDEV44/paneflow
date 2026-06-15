@@ -580,11 +580,21 @@ impl PaneFlowApp {
             return;
         }
 
-        if matches!(
-            &method,
-            update::install_method::InstallMethod::TarGz { .. }
-                | update::install_method::InstallMethod::Unknown
-        ) {
+        // `Unknown` (dev builds, legacy `.run` migrations) routes through the
+        // tar.gz updater only on Unix, where `$HOME` exists and
+        // `~/.local/paneflow.app/` is a real install target. On Windows
+        // `targz::run_update` reads an unset `$HOME` and fails with a cryptic
+        // "HOME environment variable is not set" — so an `Unknown` Windows
+        // install must fall through to the manual-download path below instead.
+        // `TarGz` itself is only ever produced on Linux by `detect()`.
+        #[cfg(unix)]
+        const UNKNOWN_USES_TARGZ: bool = true;
+        #[cfg(not(unix))]
+        const UNKNOWN_USES_TARGZ: bool = false;
+        let route_to_targz = matches!(&method, update::install_method::InstallMethod::TarGz { .. })
+            || (UNKNOWN_USES_TARGZ
+                && matches!(&method, update::install_method::InstallMethod::Unknown));
+        if route_to_targz {
             // Atomic directory swap under `$HOME/.local/paneflow.app/`.
             // `run_update` derives the target paths from `$HOME` internally,
             // so we only need to hand it the release asset URL.
