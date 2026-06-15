@@ -287,6 +287,13 @@ esac
 # --- Windows .ico (multi-resolution) -------------------------------------
 log "  $OUT_ICO"
 TMP_ICO="$(mktemp -d)"
+# Same MSYS->Windows conversion as REPO_ROOT above: mktemp yields /tmp/tmp.XXXX
+# under Git Bash, which native magick.exe can't open. Convert so the .ico
+# assembly resolves; the trap still removes it fine via the Windows path.
+# No-op on Linux/macOS (cygpath absent).
+if command -v cygpath >/dev/null 2>&1; then
+    TMP_ICO="$(cygpath -m "$TMP_ICO")"
+fi
 trap 'rm -rf "$TMP_ICO"' EXIT
 for size in 16 24 32 48 64 128 256; do
     src="$(src_for_size "$size")"
