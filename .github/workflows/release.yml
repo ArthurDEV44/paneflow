@@ -999,18 +999,15 @@ jobs:
           # a cold runner. Matches the macOS pattern where
           # bundle-macos.sh consumes a pre-built binary.
           #
-          # `--target` MUST be passed explicitly: cargo-wix 0.3.x reads
-          # the triple from its own `--target` flag for binary-path
-          # resolution and does NOT inherit `CARGO_BUILD_TARGET` env.
-          # Without the flag, cargo-wix looks for the .exe at
-          # `target/release/paneflow.exe` (no triple segment) which
-          # doesn't exist in a cross-build → fails with
-          # `Error[3] (Io): The 'build' path does not exist`. Verified
-          # against cargo-wix 0.3.x source (target_bin_dir() in
-          # create.rs constructs the path from the CLI flag, not the env
-          # var). The previous attempt to route through CARGO_BUILD_TARGET
-          # was based on wrong training-knowledge speculation.
-          cargo wix build \
+          # cargo-wix has NO `build` subcommand: `cargo wix` (the default) IS
+          # the create-MSI action. Writing `cargo wix build` makes clap treat
+          # `build` as the positional INPUT (a Cargo.toml/.wxs path), which
+          # does not exist -> `Error[3] (Io): The 'build' path does not exist`.
+          # `--target` still MUST be passed explicitly: cargo-wix 0.3.x resolves
+          # the binary path from this flag
+          # (target/x86_64-pc-windows-msvc/release/paneflow.exe), NOT from a
+          # `CARGO_BUILD_TARGET` env var.
+          cargo wix \
             --no-build \
             --package paneflow-app \
             --target x86_64-pc-windows-msvc \
