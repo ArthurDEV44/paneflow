@@ -274,13 +274,12 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --target ${{ matrix.target }} -- -D warnings
 
-      - name: cargo test
-        # --target pins the test binary to the matrix-leg triple. On today's
-        # native runners the host and target match (so the flag is
-        # effectively a no-op), but declaring it explicitly keeps the step
-        # consistent with `cargo build --release --target ...` below and
-        # future-proofs against anyone introducing a `cross`-based leg.
-        run: cargo test --workspace --target ${{ matrix.target }}
+      # cargo test is intentionally NOT run here. run_tests.yml is the required
+      # test gate on every PR; by the time release.yml runs (tag-push from main,
+      # or a dry-run) the code has already passed it. Re-running the suite on the
+      # release path added no signal and turned timing-sensitive PTY/IO tests
+      # into flaky release failures on loaded Windows runners. release.yml builds,
+      # packages and signs already-tested code.
 
       # Regenerate every icon asset (.png hicolor set, .icns, .ico,
       # rust-embed runtime icon) from the master PNGs under
