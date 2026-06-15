@@ -171,7 +171,7 @@ fn record_to_session(record: &Value, cwd: &str) -> Option<SessionMeta> {
         .get("directory")
         .and_then(|v| v.as_str())?
         .to_string();
-    if record_cwd != cwd {
+    if !crate::agent_sessions::cwd_matches(&record_cwd, cwd) {
         return None;
     }
 

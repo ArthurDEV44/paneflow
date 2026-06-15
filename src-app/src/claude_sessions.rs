@@ -52,11 +52,22 @@ struct FirstLineEnvelope {
 }
 
 /// Convert an absolute path into the slug Claude Code uses as the directory
-/// name under `~/.claude/projects/`. Algorithm: every `/` becomes `-`,
-/// every `\` becomes `-`. Spaces, dots, and non-ASCII characters are
-/// preserved literally — there is no percent-encoding or hashing.
+/// name under `~/.claude/projects/`. Algorithm (matches Claude Code's own
+/// encoder): every character that is **not** ASCII alphanumeric becomes `-`.
+/// That covers `/`, `\`, the Windows drive `:` (so `C:\dev\paneflow` →
+/// `C--dev-paneflow`, NOT `C:-dev-paneflow`), spaces (`C:\Program Files\..`
+/// → `C--Program-Files-..`), and `.` (so `/home/u/.claude` → `-home-u--claude`,
+/// the dir Claude Code actually writes). Runs of separators are NOT collapsed —
+/// `C:\` produces the literal `C--`. No percent-encoding or hashing.
+///
+/// The previous encoder only replaced `/` and `\`, leaving the drive `:`
+/// intact: on Windows it produced `C:-dev-paneflow` while the on-disk dir is
+/// `C--dev-paneflow`, so `read_dir` opened a path that never existed and the
+/// sessions sidebar came up empty.
 pub fn slug_for_cwd(cwd: &str) -> String {
-    cwd.replace(['/', '\\'], "-")
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 /// Compute the absolute path of `~/.claude/projects/<slug>/`. Returns
@@ -68,10 +79,12 @@ pub fn project_dir_for_cwd(cwd: &str) -> Option<PathBuf> {
 }
 
 /// Read all Claude Code session metadata for the given working directory.
-/// Sessions are sorted by timestamp descending (most recent first) and
-/// only those whose first-line `cwd` matches `cwd` exactly are kept —
-/// dedupes the rare slug collision where two distinct paths produce the
-/// same directory name (`/a/b-c` and `/a/b/c` both slug to `-a-b-c`).
+/// Sessions are sorted by timestamp descending (most recent first) and only
+/// those whose first-line `cwd` matches `cwd` (via
+/// [`cwd_matches`](crate::agent_sessions::cwd_matches): exact on Unix,
+/// case/separator-insensitive on Windows) are kept — dedupes the rare slug
+/// collision where two distinct paths produce the same directory name
+/// (`/a/b-c` and `/a/b/c` both slug to `-a-b-c`).
 ///
 /// **Blocking I/O** — call from inside `smol::unblock` or
 /// `cx.background_executor`. Never invoke on the GPUI main thread.
@@ -99,7 +112,8 @@ pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
             if !is_jsonl_file(&path) {
                 return None;
             }
-            read_session_meta(&path).filter(|meta| meta.cwd == cwd)
+            read_session_meta(&path)
+                .filter(|meta| crate::agent_sessions::cwd_matches(&meta.cwd, cwd))
         })
         .collect();
 
@@ -343,24 +357,40 @@ mod tests {
     }
 
     #[test]
-    fn slug_preserves_spaces() {
+    fn slug_replaces_spaces() {
+        // Spaces are non-alphanumeric, so they become `-` like every other
+        // separator (real example: `C:\Program Files\PaneFlow` →
+        // `C--Program-Files-PaneFlow`).
         assert_eq!(
             slug_for_cwd("/home/alice/my project"),
-            "-home-alice-my project"
+            "-home-alice-my-project"
         );
     }
 
     #[test]
-    fn slug_preserves_dots() {
-        assert_eq!(slug_for_cwd("/home/alice/.config"), "-home-alice-.config");
+    fn slug_replaces_dots() {
+        // A leading-dot segment is NOT preserved: the `.` becomes `-`, so a
+        // dotfile dir produces a double dash (`/home/arthur/.claude` →
+        // `-home-arthur--claude`, the dir Claude Code writes on Linux).
+        assert_eq!(slug_for_cwd("/home/alice/.config"), "-home-alice--config");
     }
 
     #[test]
-    fn slug_windows_path() {
+    fn slug_windows_path_replaces_drive_colon() {
+        // Regression guard: the drive `:` MUST become `-`. The old encoder left
+        // it as `C:-Users-alice-myapp`, which never matched the on-disk
+        // `C--Users-alice-myapp` and emptied the sidebar on Windows.
         assert_eq!(
             slug_for_cwd("C:\\Users\\alice\\myapp"),
-            "C:-Users-alice-myapp"
+            "C--Users-alice-myapp"
         );
+    }
+
+    #[test]
+    fn slug_matches_real_windows_project_dir() {
+        // Verified against a real install: Claude Code stores `C:\dev\paneflow`
+        // sessions under `~/.claude/projects/C--dev-paneflow/`.
+        assert_eq!(slug_for_cwd("C:\\dev\\paneflow"), "C--dev-paneflow");
     }
 
     #[test]

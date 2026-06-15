@@ -430,6 +430,35 @@ pub(crate) fn is_valid_session_id(id: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// Compare a session's recorded working directory against the directory the
+/// sidebar is scanning for. Case-sensitive on Unix (paths there are
+/// case-sensitive); case- and separator-insensitive on Windows, where NTFS /
+/// ReFS are case-insensitive and the cwd can reach us with either separator
+/// (PowerShell's `(Get-Location).ProviderPath` yields `\`, while a session an
+/// agent recorded under a POSIX-flavoured shell may carry `/`).
+///
+/// Without this the filter was a raw `==`: a workspace opened as
+/// `C:\Dev\Paneflow` would silently fail to match a session Claude Code
+/// recorded as `C:\dev\paneflow`, so the sidebar looked empty on Windows even
+/// though the sessions exist. All three readers (`claude` / `codex` /
+/// `opencode`) route their cwd filter through here.
+pub(crate) fn cwd_matches(recorded: &str, scanned: &str) -> bool {
+    #[cfg(windows)]
+    {
+        // ASCII case-fold is sufficient for real paths (drive letters + the
+        // ASCII dir names that dominate); both sides fold identically so the
+        // comparison stays symmetric.
+        fn normalize(path: &str) -> String {
+            path.replace('/', "\\").to_ascii_lowercase()
+        }
+        normalize(recorded) == normalize(scanned)
+    }
+    #[cfg(not(windows))]
+    {
+        recorded == scanned
+    }
+}
+
 /// Unified session metadata. Anything the UI needs to render a row +
 /// resume the session is here; the heavier message payload stays on disk.
 #[derive(Debug, Clone)]

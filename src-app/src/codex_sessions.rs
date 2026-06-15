@@ -56,7 +56,7 @@ pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
     let mut sessions = Vec::new();
     walk_jsonl_files(&root, &mut |path| {
         if let Some(meta) = read_session_meta(path)
-            && meta.cwd == cwd
+            && crate::agent_sessions::cwd_matches(&meta.cwd, cwd)
         {
             sessions.push(meta);
         }

@@ -389,12 +389,17 @@ pub(super) struct SpawnParams {
 }
 
 /// The live PTY handles produced by [`TerminalState::open_pty_and_eventloop`]:
-/// the `EventLoop` write channel, the child PID, and (macOS) the master fd.
-/// Crosses the background→main boundary to [`TerminalState::promote`]; all
-/// fields are `Send`.
+/// the `EventLoop` write channel, the child PID, the resolved launch cwd, and
+/// (macOS) the master fd. Crosses the background→main boundary to
+/// [`TerminalState::promote`]; all fields are `Send`.
 pub(super) struct SpawnedPty {
     channel: EventLoopSender,
     child_pid: u32,
+    /// The directory the shell was spawned in. Seeds [`TerminalState::current_cwd`]
+    /// at promotion so the sessions sidebar can resolve a project before the
+    /// first `cwd_now()` poll — and at all on Windows, where `cwd_now()` is a
+    /// stub.
+    cwd: std::path::PathBuf,
     #[cfg(target_os = "macos")]
     pty_master_fd: Option<i32>,
 }
@@ -606,6 +611,9 @@ impl TerminalState {
             cell_width: 0,
             cell_height: 0,
         };
+        // Keep the resolved launch cwd to seed `current_cwd` at promotion;
+        // `params.cwd` is moved into `working_directory` just below.
+        let launch_cwd = params.cwd.clone();
         let options = tty::Options {
             shell: Some(tty::Shell::new(params.shell, params.extra_args)),
             working_directory: Some(params.cwd),
@@ -681,6 +689,7 @@ impl TerminalState {
         Ok(SpawnedPty {
             channel,
             child_pid,
+            cwd: launch_cwd,
             #[cfg(target_os = "macos")]
             pty_master_fd,
         })
@@ -695,6 +704,15 @@ impl TerminalState {
     pub(super) fn promote(&mut self, spawned: SpawnedPty) {
         self.notifier = PtyNotifier(PtySender::pty(spawned.channel));
         self.child_pid = spawned.child_pid;
+        // Seed the working directory from the launch cwd. On Unix `sync_channels`
+        // refines this to the live shell cwd within a few poll ticks via
+        // `cwd_now()` (/proc, libproc); on Windows `cwd_now()` is a stub, so this
+        // launch-dir seed is the ONLY source of `current_cwd` — without it the
+        // value stayed `None` and the agent-sessions sidebar, which scans the
+        // active terminal's cwd, had nothing to resolve and rendered empty.
+        if self.current_cwd.is_none() {
+            self.current_cwd = Some(spawned.cwd.to_string_lossy().into_owned());
+        }
         #[cfg(target_os = "macos")]
         {
             self.pty_master_fd = spawned.pty_master_fd;
