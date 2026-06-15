@@ -42,6 +42,7 @@ use gpui::{
 };
 
 use crate::PaneFlowApp;
+use crate::settings::components::with_alpha;
 
 use super::agents_view_actions::AGENTS_SIDEBAR_WIDTH;
 
@@ -156,7 +157,7 @@ impl PaneFlowApp {
             // US-005: "New chat" replaces the old "New threads" row.
             .child(self.new_chat_row(ui, cx))
             // US-009: search migrates into the rail, inline under New chat.
-            .child(self.render_agents_filter_row(ui, window, cx));
+            .child(self.render_agents_filter_row(ui, cx));
 
         // US-010 (audit P1-4): lowercase the needle exactly once per render
         // (the matchers all take a pre-lowered needle). `query` keeps the
@@ -814,7 +815,6 @@ impl PaneFlowApp {
     pub(crate) fn render_agents_filter_row(
         &self,
         ui: crate::theme::UiColors,
-        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         div()
@@ -827,7 +827,7 @@ impl PaneFlowApp {
             .child(
                 div()
                     .flex_1()
-                    .child(self.render_agents_filter_input(ui, window, cx)),
+                    .child(self.render_agents_filter_input(ui, cx)),
             )
             .into_any_element()
     }
@@ -839,18 +839,11 @@ impl PaneFlowApp {
     pub(crate) fn render_agents_filter_input(
         &self,
         ui: crate::theme::UiColors,
-        window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         // Real single-line text input: cursor, arrow keys, Delete, Ctrl+A/C/V/X,
         // mouse selection / click-to-position all come from `TextInput` and its
         // registered keybindings. The needle is read from `value()` at render.
-        let has_focus = self
-            .agents_view
-            .agents_filter_input
-            .read(cx)
-            .focus_handle
-            .is_focused(window);
         let is_empty = self
             .agents_view
             .agents_filter_input
@@ -858,29 +851,21 @@ impl PaneFlowApp {
             .value()
             .is_empty();
 
+        // Mirrors the Settings "Search settings…" pill (`settings/chrome.rs`):
+        // a filled `ui.subtle` gray, borderless, and fully inert — nothing
+        // changes on focus or hover, the blinking caret is the only focus cue —
+        // so both app search fields read as one system.
         let mut field = div()
             .id("agents-sidebar-filter")
-            .px(px(8.))
-            .py(px(5.))
-            .rounded(px(6.))
-            .border_1()
-            .bg(ui.surface)
+            .px(px(10.))
+            .py(px(6.))
+            .rounded(px(8.))
+            .bg(ui.subtle)
             .flex()
             .flex_row()
             .items_center()
             .gap(px(6.))
             .cursor_text();
-
-        if has_focus {
-            // Minimalist focus ring: a neutral muted border, not the loud blue
-            // accent — a subtle lift over the default border.
-            field = field.border_color(ui.muted);
-        } else {
-            field = field.border_color(ui.border).hover(|s| {
-                let ui = crate::theme::ui_colors();
-                s.border_color(ui.muted)
-            });
-        }
 
         field = field
             // Escape clears the query; Enter jumps to the first matching thread.
@@ -930,7 +915,7 @@ impl PaneFlowApp {
             .child(
                 // Magnifier icon (Zed's FilterEditor uses MagnifyingGlass).
                 svg()
-                    .size(px(12.))
+                    .size(px(13.))
                     .flex_none()
                     .path("icons/tool_search.svg")
                     .text_color(ui.muted),
@@ -959,10 +944,9 @@ impl PaneFlowApp {
                     .rounded(px(3.))
                     .cursor_pointer()
                     .text_color(ui.muted)
-                    .hover(|s| {
-                        let ui = crate::theme::ui_colors();
-                        s.bg(ui.subtle).text_color(ui.text)
-                    })
+                    // Visible hover on the now-`ui.subtle` field (a plain
+                    // `ui.subtle` bg would blend into the pill).
+                    .hover(move |s| s.bg(with_alpha(ui.text, 0.10)).text_color(ui.text))
                     .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                         this.agents_view.agents_filter_input.update(cx, |inp, cx| {
                             inp.content = SharedString::default();

@@ -218,7 +218,14 @@ impl PaneFlowApp {
         let config = paneflow_config::loader::load_config();
         let agents = TerminalAgent::visible(&config);
 
-        let rows: Vec<gpui::AnyElement> = agents
+        // Codex-style hover: a whisper darken of the filled `ui.subtle` tile,
+        // mirroring the settings `select_trigger` — no border, no accent ring.
+        let hover_bg = gpui::Hsla {
+            l: (ui.subtle.l - 0.04).max(0.0),
+            ..ui.subtle
+        };
+
+        let tiles: Vec<gpui::AnyElement> = agents
             .into_iter()
             .map(|agent| {
                 let name = agent.display_name();
@@ -229,22 +236,20 @@ impl PaneFlowApp {
                         "agents-launcher-{}",
                         agent.tag()
                     )))
+                    // Equal-width grid cell (3 per row); `min_w_0` lets a long
+                    // agent name truncate instead of widening the column.
+                    .flex_1()
+                    .min_w_0()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(12.))
-                    .px(px(14.))
-                    .py(px(12.))
-                    .my(px(4.))
+                    .gap(px(10.))
+                    .px(px(12.))
+                    .py(px(10.))
                     .rounded(px(10.))
-                    .bg(ui.surface)
-                    .border_1()
-                    .border_color(ui.border)
+                    .bg(ui.subtle)
                     .cursor(CursorStyle::PointingHand)
-                    .hover(|s| {
-                        let ui = crate::theme::ui_colors();
-                        s.bg(ui.subtle).border_color(ui.accent)
-                    })
+                    .hover(move |s| s.bg(hover_bg))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
                     })
@@ -275,23 +280,20 @@ impl PaneFlowApp {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
+                            .overflow_x_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
                             .text_size(px(13.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(ui.text)
                             .child(SharedString::from(name)),
                     )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(12.))
-                            .text_color(ui.muted)
-                            .child("Open"),
-                    )
                     .into_any_element()
             })
             .collect();
 
-        let body: gpui::AnyElement = if rows.is_empty() {
+        let body: gpui::AnyElement = if tiles.is_empty() {
             div()
                 .text_size(px(13.))
                 .text_color(ui.muted)
@@ -300,7 +302,28 @@ impl PaneFlowApp {
                 )
                 .into_any_element()
         } else {
-            div().flex().flex_col().children(rows).into_any_element()
+            // Three-column grid: rows of 3 equal-width tiles, the final row
+            // padded with flex spacers so its tiles keep their 1/3 width
+            // instead of stretching.
+            let mut grid = div().flex().flex_col().gap(px(10.));
+            let mut row = div().flex().flex_row().gap(px(10.));
+            let mut in_row = 0u32;
+            for tile in tiles {
+                row = row.child(tile);
+                in_row += 1;
+                if in_row == 3 {
+                    grid = grid.child(row);
+                    row = div().flex().flex_row().gap(px(10.));
+                    in_row = 0;
+                }
+            }
+            if in_row > 0 {
+                for _ in in_row..3 {
+                    row = row.child(div().flex_1().min_w_0());
+                }
+                grid = grid.child(row);
+            }
+            grid.into_any_element()
         };
 
         div()
