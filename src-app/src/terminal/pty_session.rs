@@ -2907,8 +2907,13 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(250));
         state.notifier.notify(b"echo PANEFLOW_GEN_OK\n".to_vec());
 
+        // Up to 12s. This test runs on every OS, and PowerShell (the Windows
+        // default shell) can cold-start slowly on a loaded CI runner before
+        // emitting its banner — output_generation only advances once the PTY
+        // produces any output. The loop breaks immediately on success, so the
+        // larger budget only costs wall-time when the signal never arrives.
         let mut advanced = false;
-        for _ in 0..60 {
+        for _ in 0..240 {
             std::thread::sleep(std::time::Duration::from_millis(50));
             state.sync();
             if state.output_generation > 0 {
