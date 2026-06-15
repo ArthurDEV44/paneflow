@@ -461,6 +461,26 @@ pub fn pick_asset<'a>(
     Some(picked)
 }
 
+/// Whether an update-check transport error is a transient hiccup rather than
+/// an actionable, config-shaped failure.
+///
+/// A failed update check is never fatal (the pill just stays idle), and the
+/// overwhelming majority of failures are environmental: GitHub 5xx (the `504`
+/// gateway timeout seen in the wild), `429` rate limiting, a `408`, or a
+/// transport-level fault (DNS, refused/dropped socket, TLS, read timeout).
+/// None of those are the user's to fix and all clear on a later check, so they
+/// belong at `debug`, not `warn`. Only a persistent `4xx` (a `404` on
+/// `releases/latest`, a `401/403`) points at broken packaging or config worth
+/// a `warn`. `ureq::Error` is `#[non_exhaustive]`; matching only the stable
+/// `StatusCode` variant keeps this compiling across point releases — every
+/// other (transport) error falls through to `true`.
+fn transient_update_error(e: &ureq::Error) -> bool {
+    match e {
+        ureq::Error::StatusCode(code) => *code == 408 || *code == 429 || (500..600).contains(code),
+        _ => true,
+    }
+}
+
 /// Blocking entry point used by both the background `spawn_check` thread
 /// and the synchronous `--update-and-exit` CLI flag (US-005). The
 /// `telemetry` handle drives the `update_available` event (US-007 AC2)
@@ -498,7 +518,11 @@ pub(crate) fn check_github_release(
     let mut response = match response {
         Ok(r) => r,
         Err(e) => {
-            log::warn!("update check failed: {e}");
+            if transient_update_error(&e) {
+                log::debug!("update check skipped (transient): {e}");
+            } else {
+                log::warn!("update check failed: {e}");
+            }
             return UpdateStatus::Failed;
         }
     };

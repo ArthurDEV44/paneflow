@@ -809,8 +809,14 @@ impl DiffView {
                             return;
                         };
                         if col.generation != generation {
-                            log::warn!(
-                                "diff: col {i} ({branch}) DISCARDED — task gen={generation} != col gen={}",
+                            // Not an error: a newer load (bootstrap + watcher
+                            // overlap, base-branch switch, resize) bumped this
+                            // column's generation while we were off-thread, so
+                            // last-write-wins drops the stale result. Trace it
+                            // at debug — a WARN here just cried wolf on the
+                            // race guard doing its job.
+                            log::debug!(
+                                "diff: col {i} ({branch}) superseded — task gen={generation} != col gen={}",
                                 col.generation
                             );
                             return; // superseded by a newer load of this column
