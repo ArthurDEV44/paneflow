@@ -1007,11 +1007,18 @@ jobs:
           # the binary path from this flag
           # (target/x86_64-pc-windows-msvc/release/paneflow.exe), NOT from a
           # `CARGO_BUILD_TARGET` env var.
+          # cargo-wix 0.3.9 does NOT read a `wxs` key from
+          # [package.metadata.wix] (verified against create.rs) - it only
+          # auto-discovers `<package>/wix/*.wxs`, i.e. src-app/wix/, which does
+          # not exist here -> `Error[2]: There are no WXS files`. Point it at
+          # the real source explicitly with --include. Path is relative to the
+          # CWD (repo root in the checkout).
           cargo wix \
             --no-build \
             --package paneflow-app \
             --target x86_64-pc-windows-msvc \
-            --install-version "$version"
+            --install-version "$version" \
+            --include packaging/wix/main.wxs
           ls -la target/wix/
 
       # ─── US-016 AC-2 / US-024 AC-1+AC-3: Sign MSI via Azure Trusted Signing ───
