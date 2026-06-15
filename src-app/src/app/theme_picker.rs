@@ -8,6 +8,7 @@ use gpui::{
     div, prelude::*, px,
 };
 
+use crate::settings::components::{menu_divider_color, menu_surface, select_item};
 use crate::widgets::scrollbar;
 use crate::{PaneFlowApp, config_writer};
 
@@ -143,13 +144,16 @@ impl PaneFlowApp {
             .text_size(px(13.))
             .text_color(query_color)
             .border_b_1()
-            .border_color(ui.border)
+            .border_color(menu_divider_color(ui))
             .child(query_text);
 
         let mut list = div()
             .id("theme-picker-list")
             .flex()
             .flex_col()
+            .gap(px(1.))
+            .pl(px(6.))
+            .py(px(4.))
             .pr(scrollbar::SCROLLBAR_GUTTER)
             .max_h(px(360.))
             .overflow_y_scroll()
@@ -158,7 +162,7 @@ impl PaneFlowApp {
         if matches.is_empty() {
             list = list.child(
                 div()
-                    .px(px(14.))
+                    .px(px(8.))
                     .py(px(12.))
                     .text_size(px(12.))
                     .text_color(ui.muted)
@@ -166,6 +170,10 @@ impl PaneFlowApp {
             );
         } else {
             for (idx, name) in matches.iter().enumerate() {
+                // `is_selected` is the keyboard cursor (what Enter applies);
+                // `is_current` is the theme already in effect. The cursor reads
+                // as the `select_item` whisper highlight, the current theme as a
+                // neutral trailing check — no accent-blue focus text.
                 let is_selected = idx == self.theme_picker_selected_idx;
                 let is_current = *name == current_name.as_str();
                 let label = if *name == "One Dark" {
@@ -176,23 +184,30 @@ impl PaneFlowApp {
                 let name_owned = name.to_string();
 
                 list = list.child(
-                    div()
-                        .id(SharedString::from(format!("theme-picker-row-{idx}")))
-                        .px(px(14.))
-                        .py(px(6.))
-                        .cursor_pointer()
-                        .text_size(px(13.))
-                        .when(is_selected, |d| d.bg(ui.subtle))
-                        .when(!is_selected, |d| d.hover(|s| s.bg(ui.subtle)))
-                        .when(is_current, |d| d.text_color(ui.accent))
-                        .when(!is_current, |d| d.text_color(ui.text))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                            Self::apply_theme_by_name(&name_owned);
-                            this.close_theme_picker(cx);
-                            cx.stop_propagation();
-                        }))
-                        .child(label),
+                    select_item(
+                        SharedString::from(format!("theme-picker-row-{idx}")),
+                        is_selected,
+                        ui,
+                    )
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        Self::apply_theme_by_name(&name_owned);
+                        this.close_theme_picker(cx);
+                        cx.stop_propagation();
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_x_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(ui.text)
+                            .child(label),
+                    )
+                    .when(is_current, |d| {
+                        d.child(div().flex_none().text_color(ui.muted).child("✓"))
+                    }),
                 );
             }
         }
@@ -250,8 +265,7 @@ impl PaneFlowApp {
                 .pt(px(96.))
                 .bg(gpui::hsla(0., 0., 0., 0.4))
                 .child(
-                    div()
-                        .id("theme-picker")
+                    menu_surface(div().id("theme-picker"), ui)
                         .occlude()
                         .track_focus(&self.theme_picker_focus)
                         .on_key_down(cx.listener(Self::handle_theme_picker_key_down))
@@ -284,10 +298,6 @@ impl PaneFlowApp {
                         .w(px(520.))
                         .flex()
                         .flex_col()
-                        .bg(ui.overlay)
-                        .border_1()
-                        .border_color(ui.border)
-                        .rounded(px(8.))
                         .overflow_hidden()
                         .child(search_input)
                         .child(list_wrapper),
