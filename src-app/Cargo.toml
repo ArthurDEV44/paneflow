@@ -338,6 +338,9 @@ windows-sys = { version = "0.59", features = [
 # result. Kept Windows-only via the target.cfg gate.
 win32job = "2.0.3"
 
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.31"
+
 [dev-dependencies]
 gpui = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-append-fix", features = ["test-support"] }
 # US-001: the sign-capable counterpart to `minisign-verify`. Test-only — used
