@@ -30,7 +30,7 @@ Each workspace holds its layout, its terminals, and its sessions. You switch bet
 
 Paneflow is written in Rust and uses GPUI, Zed's rendering engine. Panes and terminals are drawn directly by the application, with no embedded browser around processes that can run for hours.
 
-The project is open source under the GPL-3.0-or-later license and runs on Linux and macOS. A native Windows build is on the roadmap.
+The project is open source under the GPL-3.0-or-later license and runs on Linux, macOS, and Windows.
 
 ## Run your next agent in Paneflow [#run-your-next-agent-in-paneflow]
 

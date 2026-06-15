@@ -175,15 +175,16 @@ running *inside* a pane (e.g. Claude Code) calls its own API — that
 traffic is between the agent process and its provider, never through
 Paneflow. Offline workspaces work normally.
 
-### Why does Paneflow not run on Windows yet? [#why-does-paneflow-not-run-on-windows-yet]
+### Does Paneflow run on Windows? [#does-paneflow-run-on-windows]
 
-Windows builds target Q3 2026. The blockers are GPUI's Windows
-backend maturity (Zed's GPUI ships Windows support but Paneflow's
-PTY layer needs a `ConPTY` integration that is not yet upstream)
-and CI signing for Windows binaries. Today's workaround: run the
-Linux build under WSL2 with WSLg (Wayland forwarding). Track the
-[Windows port issue](https://github.com/ArthurDEV44/paneflow/issues)
-for the actual ship date.
+Yes. Paneflow ships a signed native Windows `.msi` (since v0.5.0),
+code-signed by StriveX via Azure Trusted Signing. It is a best-effort
+rollout while the Windows CI leg is hardened, so on first launch
+Microsoft Defender SmartScreen may show a "Windows protected your PC"
+reputation prompt — expected for a new publisher, not a signing
+failure. See [Paneflow on Windows](installation/windows.md) for the
+installer, the SmartScreen "Run anyway" steps, and the WSL2 + WSLg
+alternative.
 
 ## Help and feedback [#help-and-feedback]
 

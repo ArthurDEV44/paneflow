@@ -19,7 +19,7 @@
 - [Install Paneflow](installation.md): Install Paneflow on Linux or macOS in under two minutes.
 - [Install Paneflow on Linux](installation/linux.md): Install Paneflow on Ubuntu, Debian, Fedora, Arch, or any modern Linux via .deb, AppImage, or tarball.
 - [Install Paneflow on macOS](installation/macos.md): Install Paneflow on macOS 13 Ventura or later via the signed and notarized .dmg.
-- [Paneflow on Windows](installation/windows.md): Windows native builds target Q3 2026. Today, run Paneflow on Windows via WSL2 with the Linux build.
+- [Paneflow on Windows](installation/windows.md): Install the signed native .msi (since v0.5.0), or run the Linux build under WSL2 + WSLg. Covers the SmartScreen "Windows protected your PC" prompt and the "Run anyway" steps.
 - [Resume a Claude Code, Codex, or OpenCode session in one click](blog/agent-sessions.md): Paneflow finds every agent session tied to your current project and brings any of them back, history intact, without hunting for the right command.
 - [Have multiple agents review your branch diff](blog/diff-viewer.md): Open your branch diff, launch Claude Code, Codex, OpenCode, or Pi underneath it, and compare their feedback without leaving Paneflow.
 - [Browse your project files without leaving Paneflow](blog/files-sidebar.md): Navigate your project and open a README or PRD in a pane right next to the agent working from it, without switching tools or losing your layout.
