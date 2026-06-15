@@ -5,6 +5,35 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-15
+
+A Windows polish patch on top of 0.5.0: the app and installer now carry the
+right icon, and the stray console window is gone. No changes on Linux or macOS.
+
+### Fixed
+
+- No more stray console window on Windows. paneflow.exe is now built as a
+  GUI-subsystem binary, so launching it from Explorer, a shortcut or the Start
+  Menu no longer opens an empty extra terminal window beside the app. The
+  scriptable CLI (paneflow mcp install, paneflow ls, --version, …) still works:
+  the process re-attaches to the parent console when started from a terminal.
+- The paneflow.exe icon in Explorer. The bare executable embedded no Windows
+  resource and fell back to the generic Windows icon; it now ships the same
+  multi-resolution PaneFlow icon as the installer.
+- The Windows installer icon. The 0.5.0 MSI still showed the old logo on its
+  Start Menu shortcut and Add-or-Remove-Programs entry — the WiX icon was the
+  one output the new-logo regeneration had missed. It is now regenerated from
+  the new logo, and the icon pipeline mirrors it on every run so it can no
+  longer go stale.
+
+### Documentation
+
+- Refreshed the Windows install docs for the signed v0.5.0 .msi: the native
+  installer is now documented as an available path (WSL2 kept as the
+  alternative), with a SmartScreen "Run anyway" walkthrough (publisher:
+  StriveX) and signature-verification steps, replacing the stale "no native
+  build / Q3 2026" framing across the docs.
+
 ## [0.5.0] - 2026-06-15
 
 This release brings Paneflow to Windows and lands a ground-up redesign of the
