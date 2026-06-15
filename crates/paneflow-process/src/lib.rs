@@ -30,6 +30,18 @@ const STDERR_CAP: u64 = 64 * 1024;
 /// does not spin the CPU.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// Windows `CREATE_NO_WINDOW` process-creation flag (`winbase.h`, `0x0800_0000`).
+/// Paneflow runs as a GUI-subsystem process with no console of its own, so every
+/// console subprocess it spawns (the `git diff --shortstat` poller, agent CLIs,
+/// MCP probes) would otherwise get a freshly-allocated, *visible* console window
+/// that flashes open and shut for the child's lifetime. Suppressing it is always
+/// correct for `run_with_timeout` callers: they pipe stdout/stderr and null
+/// stdin, so the child is non-interactive by construction and never needs a
+/// console. Kept as a raw literal so this crate stays `std`-only / zero-dep (it
+/// is embedded in `paneflow-shim`).
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Why a bounded run did not produce a normal [`Output`].
 #[derive(Debug)]
 pub enum ProcError {
@@ -84,6 +96,17 @@ pub fn run_with_timeout(
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    // GUI-subsystem callers have no console of their own, so a console child
+    // spawned without this flag pops a visible window that flashes open and shut
+    // for the child's lifetime. The crate-level note on CREATE_NO_WINDOW explains
+    // why suppression is always correct here (piped stdio + null stdin → the child
+    // is non-interactive by construction and never needs a console).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
     let mut child = cmd.spawn().map_err(ProcError::Spawn)?;
 
