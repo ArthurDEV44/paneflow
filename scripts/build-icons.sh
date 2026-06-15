@@ -34,6 +34,16 @@ export OMP_NUM_THREADS=1
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 
+# On Windows CI this runs under Git Bash, where pwd yields an MSYS path
+# (/d/a/paneflow/...). The preinstalled ImageMagick is the NATIVE magick.exe,
+# which cannot open such paths ("No such file or directory"). Convert to a
+# mixed Windows path (D:/a/paneflow/...) that both magick.exe and Git Bash
+# accept. cygpath exists only under Git Bash/Cygwin, so this is a no-op on
+# Linux/macOS.
+if command -v cygpath >/dev/null 2>&1; then
+    REPO_ROOT="$(cygpath -m "$REPO_ROOT")"
+fi
+
 MASTER_DIR="$REPO_ROOT/assets/icons/master"
 OUT_ICONS_DIR="$REPO_ROOT/assets/icons"
 OUT_ICNS="$REPO_ROOT/assets/PaneFlow.icns"
