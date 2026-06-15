@@ -26,8 +26,9 @@ use super::CellDimensions;
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.3;
 
-/// Embedded monospace family — the **default** terminal/code font on every
-/// platform. Files: `assets/fonts/IBMPlexMono-{Regular,SemiBold,Italic,SemiBoldItalic}.ttf`,
+/// Embedded monospace family — the default terminal/code font on Linux and
+/// macOS, and the cross-platform fallback available on every platform. Files:
+/// `assets/fonts/IBMPlexMono-{Regular,SemiBold,Italic,SemiBoldItalic}.ttf`,
 /// registered with GPUI at startup (`main.rs` → `Assets::load_fonts` →
 /// `cx.text_system().add_fonts`).
 ///
@@ -42,6 +43,11 @@ const DEFAULT_LINE_HEIGHT: f32 = 1.3;
 /// Zed uses with `.ZedMono` → "Lilex"; Lilex also ships as an opt-in ligature
 /// alternate — see `resolve_font_family` — but is no longer the default.)
 pub(crate) const EMBEDDED_MONO_FAMILY: &str = "IBM Plex Mono";
+
+/// Windows Terminal's default font. PaneFlow follows the platform convention
+/// on Windows while retaining the embedded mono as GPUI's fallback.
+#[cfg(target_os = "windows")]
+const WINDOWS_DEFAULT_FONT_FAMILY: &str = "Cascadia Mono";
 
 /// Embedded UI/sans family. Files:
 /// `assets/fonts/IBMPlexSans-{Regular,SemiBold,Italic,SemiBoldItalic}.ttf`.
@@ -159,29 +165,29 @@ fn sanitize_font_fallbacks(configured: Option<&Vec<String>>) -> Option<Vec<Strin
 
 static FONT_CONFIG_CACHE: std::sync::Mutex<Option<CachedFontConfig>> = std::sync::Mutex::new(None);
 
-/// The default monospace family Paneflow ships out of the box.
+/// The default monospace family PaneFlow uses out of the box.
 ///
-/// Returns the **embedded** IBM Plex Mono family on every platform (see
-/// [`EMBEDDED_MONO_FAMILY`]) — the same embedded-primary strategy Zed uses
-/// with `.ZedMono` → "Lilex" (hardcoded in `assets/settings/default.json:29`
-/// and resolved by GPUI at `crates/gpui/src/text_system.rs:1170`). System
-/// fonts (Menlo /
-/// Cascadia Mono / DejaVu) used to be the per-OS default but were
-/// dropped after commit c3e2331 proved that Core Text on a signed
-/// macOS .app could resolve "Menlo" yet rasterize empty glyphs in
-/// production, with no fallback path firing because GPUI's per-Font
-/// fallback chain only walks on missing-glyph not on empty-raster.
+/// Windows uses the system-provided `Cascadia Mono`, matching Windows
+/// Terminal. Linux and macOS use the embedded [`EMBEDDED_MONO_FAMILY`].
+/// Keeping macOS on an embedded primary avoids the Core Text empty-raster
+/// failure documented by commit c3e2331.
 ///
 /// Users can still override with any system font via
 /// `paneflow.json#font_family` — `resolve_font_family` validates the
 /// override against the installed-mono registry (when populated) and
 /// degrades back to this default with a warning otherwise.
 pub(crate) fn default_font_family() -> &'static str {
-    // Embedded mono is the always-resolvable default. Registered with
-    // GPUI's text system at boot via `Assets::load_fonts` — bypasses
-    // every OS font-enumeration path (Core Text, DirectWrite,
-    // fontconfig) and the failure modes that come with them.
-    EMBEDDED_MONO_FAMILY
+    #[cfg(target_os = "windows")]
+    {
+        WINDOWS_DEFAULT_FONT_FAMILY
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Registered with GPUI's text system at boot via
+        // `Assets::load_fonts`, bypassing OS font-enumeration failures.
+        EMBEDDED_MONO_FAMILY
+    }
 }
 
 pub fn resolve_font_family(configured: Option<&str>) -> String {
@@ -584,14 +590,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_font_family_default_returns_embedded_mono() {
-        // The whole point of the c3e2331 follow-up: a fresh install
-        // with no `font_family` configured must land on the embedded
-        // mono, never on a system font that Core Text / DirectWrite
-        // could fail to rasterize.
-        assert_eq!(resolve_font_family(None), EMBEDDED_MONO_FAMILY);
-        assert_eq!(resolve_font_family(Some("")), EMBEDDED_MONO_FAMILY);
-        assert_eq!(resolve_font_family(Some("   ")), EMBEDDED_MONO_FAMILY);
+    fn resolve_font_family_default_returns_platform_default() {
+        assert_eq!(resolve_font_family(None), default_font_family());
+        assert_eq!(resolve_font_family(Some("")), default_font_family());
+        assert_eq!(resolve_font_family(Some("   ")), default_font_family());
     }
 
     #[test]
@@ -615,13 +617,17 @@ mod tests {
     }
 
     #[test]
-    fn default_font_family_is_embedded_mono() {
-        // Belt for the c3e2331 follow-up: never default to a system
-        // font. If a future change sets `default_font_family` back to
-        // a per-OS chain (Menlo / Cascadia / DejaVu), this test
-        // surfaces it loudly at the PR gate.
+    #[cfg(not(target_os = "windows"))]
+    fn default_font_family_is_embedded_mono_on_linux_and_macos() {
         assert_eq!(default_font_family(), EMBEDDED_MONO_FAMILY);
         assert_eq!(default_font_family(), "IBM Plex Mono");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn default_font_family_matches_windows_terminal() {
+        assert_eq!(default_font_family(), WINDOWS_DEFAULT_FONT_FAMILY);
+        assert_eq!(default_font_family(), "Cascadia Mono");
     }
 
     // ─── font_fallbacks sanitization ─────────────────────────────────
