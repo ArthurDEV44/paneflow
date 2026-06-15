@@ -14,6 +14,7 @@ use gpui::{
 
 use super::state::{AgentsContextMenu, AgentsDeleteTarget};
 use crate::PaneFlowApp;
+use crate::settings::components::{menu_divider_color, select_menu};
 
 impl PaneFlowApp {
     /// Build the deferred element for the project-row right-click
@@ -42,8 +43,8 @@ impl PaneFlowApp {
                 "Open in Windsurf",
             ),
         ];
-        // ~9 items, ~25px tall, 2 separators ~7px, 8px padding => ~257px
-        let menu_height = px(260.);
+        // ~9 items, ~28px tall, 2 separators ~9px, 8px padding => ~280px
+        let menu_height = px(280.);
         let win_h = window.window_bounds().get_bounds().size.height;
         let menu_y = if position.y + menu_height > win_h {
             (position.y - menu_height).max(px(0.))
@@ -51,29 +52,19 @@ impl PaneFlowApp {
             position.y
         };
 
-        let mut menu = div()
-            .id("agents-project-context-menu")
+        let mut menu = select_menu("agents-project-context-menu", ui)
             .occlude()
             .absolute()
             .left(position.x)
             .top(menu_y)
             .w(px(248.))
-            .bg(ui.overlay)
-            .border_1()
-            .border_color(ui.border)
-            .rounded(px(8.))
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .p(px(4.))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.close_agents_menu(cx);
             }))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
 
         // New thread
-        menu = menu.child(self.render_context_menu_item(
+        menu = menu.child(self.render_select_menu_item(
             "agents-project-new-thread".into(),
             "New thread",
             None,
@@ -89,7 +80,7 @@ impl PaneFlowApp {
         // opens a PTY surface in the main area instead of a chat, so
         // the user can run any CLI agent or long-running process as a
         // first-class sidebar entry).
-        menu = menu.child(self.render_context_menu_item(
+        menu = menu.child(self.render_select_menu_item(
             "agents-project-new-terminal-thread".into(),
             "New terminal thread",
             None,
@@ -102,7 +93,7 @@ impl PaneFlowApp {
         ));
 
         // Rename
-        menu = menu.child(self.render_context_menu_item(
+        menu = menu.child(self.render_select_menu_item(
             "agents-project-rename".into(),
             "Rename project",
             None,
@@ -119,7 +110,13 @@ impl PaneFlowApp {
         ));
 
         // ── Separator ──
-        menu = menu.child(div().mx(px(-4.)).my(px(3.)).h(px(1.)).bg(ui.border));
+        menu = menu.child(
+            div()
+                .mx(px(6.))
+                .my(px(4.))
+                .h(px(1.))
+                .bg(menu_divider_color(ui)),
+        );
 
         // Editor entries
         for &(id, label, command, shortcut_desc) in editors {
@@ -128,7 +125,7 @@ impl PaneFlowApp {
                 .map(|s| SharedString::from(s.to_string()));
             let command = command.to_string();
             let label_owned = label.to_string();
-            menu = menu.child(self.render_context_menu_item(
+            menu = menu.child(self.render_select_menu_item(
                 SharedString::from(format!("agents-project-{id}")),
                 label,
                 shortcut,
@@ -144,7 +141,7 @@ impl PaneFlowApp {
         let reveal_shortcut = self
             .shortcut_for_description("Reveal in file manager")
             .map(|s| SharedString::from(s.to_string()));
-        menu = menu.child(self.render_context_menu_item(
+        menu = menu.child(self.render_select_menu_item(
             "agents-project-reveal".into(),
             "Reveal in File Manager",
             reveal_shortcut,
@@ -156,12 +153,18 @@ impl PaneFlowApp {
         ));
 
         // ── Separator ──
-        menu = menu.child(div().mx(px(-4.)).my(px(3.)).h(px(1.)).bg(ui.border));
+        menu = menu.child(
+            div()
+                .mx(px(6.))
+                .my(px(4.))
+                .h(px(1.))
+                .bg(menu_divider_color(ui)),
+        );
 
         // Delete project (always available -- confirmation is owned by
         // `render_agents_confirm_delete_dialog`, gated on whether the
         // project has threads).
-        menu = menu.child(self.render_context_menu_item(
+        menu = menu.child(self.render_select_menu_item(
             "agents-project-delete".into(),
             "Delete project",
             None,
@@ -221,30 +224,20 @@ impl PaneFlowApp {
             "Pin"
         };
 
-        let mut menu = div()
-            .id("agents-thread-context-menu")
+        let mut menu = select_menu("agents-thread-context-menu", ui)
             .occlude()
             .absolute()
             .left(position.x)
             .top(menu_y)
             .w(px(220.))
-            .bg(ui.overlay)
-            .border_1()
-            .border_color(ui.border)
-            .rounded(px(8.))
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .p(px(4.))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.close_agents_menu(cx);
             }))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
 
         // US-014: Pin/Unpin first — the primary "keep this on top" action,
         // consistent with the hover ★. Toggles `thread.pinned` + saves.
-        menu = menu.child(self.render_context_menu_item(
+        menu = menu.child(self.render_select_menu_item(
             "agents-thread-pin".into(),
             pin_label,
             None,
@@ -256,7 +249,7 @@ impl PaneFlowApp {
             }),
         ));
 
-        menu = menu.child(self.render_context_menu_item(
+        menu = menu.child(self.render_select_menu_item(
             "agents-thread-rename".into(),
             rename_label,
             None,
@@ -268,7 +261,7 @@ impl PaneFlowApp {
             }),
         ));
 
-        menu = menu.child(self.render_context_menu_item(
+        menu = menu.child(self.render_select_menu_item(
             "agents-thread-duplicate".into(),
             "Duplicate",
             None,
@@ -283,7 +276,7 @@ impl PaneFlowApp {
         // US-011: Reveal the target's cwd (the project dir for a thread, the
         // home dir for a chat). Surfaced both here (right-click) and in the
         // title-bar `⋯` overflow menu (same renderer).
-        menu = menu.child(self.render_context_menu_item(
+        menu = menu.child(self.render_select_menu_item(
             "agents-thread-reveal".into(),
             "Reveal in File Manager",
             None,
@@ -294,9 +287,15 @@ impl PaneFlowApp {
             }),
         ));
 
-        menu = menu.child(div().mx(px(-4.)).my(px(3.)).h(px(1.)).bg(ui.border));
+        menu = menu.child(
+            div()
+                .mx(px(6.))
+                .my(px(4.))
+                .h(px(1.))
+                .bg(menu_divider_color(ui)),
+        );
 
-        menu = menu.child(self.render_context_menu_item(
+        menu = menu.child(self.render_select_menu_item(
             "agents-thread-delete".into(),
             "Delete",
             None,

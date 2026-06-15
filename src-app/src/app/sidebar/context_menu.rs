@@ -10,6 +10,7 @@ use gpui::{
 };
 
 use crate::pane::Pane;
+use crate::settings::components::{menu_divider_color, select_item, select_menu, with_alpha};
 use crate::{PaneFlowApp, TabContextMenu, WorkspaceContextMenu};
 
 impl PaneFlowApp {
@@ -65,6 +66,42 @@ impl PaneFlowApp {
             })
     }
 
+    /// One workspace-menu row in the shared Settings "Shell" select look
+    /// (`components::select_item`): 28px tall, 7px radius, 12px label flex-filled
+    /// with the optional shortcut pinned right, and the whisper hover highlight
+    /// (`text @ 0.05`) instead of the older flat `ui.subtle`. Keeps every app
+    /// menu reading as one consistent menu language.
+    pub(crate) fn render_select_menu_item(
+        &self,
+        id: SharedString,
+        label: &str,
+        shortcut: Option<SharedString>,
+        ui: crate::theme::UiColors,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        select_item(id, false, ui)
+            .on_click(on_click)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_x_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(ui.text)
+                    .child(label.to_string()),
+            )
+            .when_some(shortcut, |d, shortcut| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(10.))
+                        .text_color(ui.muted)
+                        .child(shortcut),
+                )
+            })
+    }
+
     /// Build the deferred element that paints the right-click workspace
     /// context menu. Caller is responsible for the
     /// `if let Some(menu) = self.workspace_menu_open && menu.idx < self.workspaces.len()`
@@ -92,8 +129,8 @@ impl PaneFlowApp {
             ),
         ];
 
-        // Estimated menu height: 8 items × 25px + 2 separators × 7px + 8px padding
-        let menu_height = px(228.);
+        // Estimated menu height: 8 items × 28px + 2 separators × 9px + 8px padding
+        let menu_height = px(250.);
         let win_h = window.window_bounds().get_bounds().size.height;
         // Flip: if not enough space below the click, show the menu above it
         let menu_y = if menu.position.y + menu_height > win_h {
@@ -102,26 +139,16 @@ impl PaneFlowApp {
             menu.position.y
         };
 
-        let mut context_menu = div()
-            .id("workspace-context-menu")
+        let mut context_menu = select_menu("workspace-context-menu", ui)
             .occlude()
             .absolute()
             .left(menu.position.x)
             .top(menu_y)
             .w(px(248.))
-            .bg(ui.overlay)
-            .border_1()
-            .border_color(ui.border)
-            .rounded(px(8.))
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .p(px(4.))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.workspace_menu_open = None;
                 cx.notify();
             }))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
 
         for &(id, label, command, shortcut_desc) in editors {
@@ -130,7 +157,7 @@ impl PaneFlowApp {
                 .map(|s| SharedString::from(s.to_string()));
             let command = command.to_string();
             let label_owned = label.to_string();
-            context_menu = context_menu.child(self.render_context_menu_item(
+            context_menu = context_menu.child(self.render_select_menu_item(
                 SharedString::from(format!("workspace-context-{id}")),
                 label,
                 shortcut,
@@ -143,13 +170,19 @@ impl PaneFlowApp {
         }
 
         // ── Separator ──
-        context_menu = context_menu.child(div().mx(px(-4.)).my(px(3.)).h(px(1.)).bg(ui.border));
+        context_menu = context_menu.child(
+            div()
+                .mx(px(6.))
+                .my(px(4.))
+                .h(px(1.))
+                .bg(menu_divider_color(ui)),
+        );
 
         // Reveal in file manager
         let reveal_shortcut = self
             .shortcut_for_description("Reveal in file manager")
             .map(|s| SharedString::from(s.to_string()));
-        context_menu = context_menu.child(self.render_context_menu_item(
+        context_menu = context_menu.child(self.render_select_menu_item(
             "workspace-context-reveal".into(),
             "Reveal in File Manager",
             reveal_shortcut,
@@ -164,7 +197,7 @@ impl PaneFlowApp {
         let copy_shortcut = self
             .shortcut_for_description("Copy path")
             .map(|s| SharedString::from(s.to_string()));
-        context_menu = context_menu.child(self.render_context_menu_item(
+        context_menu = context_menu.child(self.render_select_menu_item(
             "workspace-context-copy".into(),
             "Copy Path",
             copy_shortcut,
@@ -176,7 +209,7 @@ impl PaneFlowApp {
         ));
 
         // Manage Custom Buttons — opens the per-workspace button editor modal.
-        context_menu = context_menu.child(self.render_context_menu_item(
+        context_menu = context_menu.child(self.render_select_menu_item(
             "workspace-context-custom-buttons".into(),
             "Manage Custom Buttons…",
             None,
@@ -188,7 +221,13 @@ impl PaneFlowApp {
         ));
 
         // ── Separator ──
-        context_menu = context_menu.child(div().mx(px(-4.)).my(px(3.)).h(px(1.)).bg(ui.border));
+        context_menu = context_menu.child(
+            div()
+                .mx(px(6.))
+                .my(px(4.))
+                .h(px(1.))
+                .bg(menu_divider_color(ui)),
+        );
 
         // Delete workspace (conditionally disabled)
         let close_shortcut = self
@@ -197,22 +236,19 @@ impl PaneFlowApp {
         context_menu = context_menu.child(
             div()
                 .id("workspace-context-delete")
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(10.))
+                .h(px(28.))
                 .px(px(8.))
-                .py(px(5.))
-                .rounded(px(4.))
-                .when(can_delete, |d| d.cursor_pointer())
-                .text_size(px(11.))
+                .rounded(px(7.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .text_size(px(12.))
                 .text_color(ui.muted)
                 .when(can_delete, |d| d.text_color(ui.text))
                 .when(can_delete, |d| {
-                    d.hover(|s| {
-                        let ui = crate::theme::ui_colors();
-                        s.bg(ui.subtle)
-                    })
+                    d.cursor_pointer()
+                        .hover(move |s| s.bg(with_alpha(ui.text, 0.05)))
                 })
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
