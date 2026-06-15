@@ -68,7 +68,7 @@
                     <Component Id='License' Guid='*'>
                         <File Id='LicenseFile'
                             DiskId='1'
-                            Source='License.rtf'
+                            Source='packaging/wix/License.rtf'
                             KeyPath='yes'/>
                     </Component>
 
@@ -162,7 +162,7 @@
              from "Apps & features" and the legacy "Programs and Features"
              control panel. Multi-resolution (16/32/48/128/256) built
              from packaging/wix/paneflow.ico. -->
-        <Icon Id='PaneflowICO' SourceFile='paneflow.ico'/>
+        <Icon Id='PaneflowICO' SourceFile='packaging/wix/paneflow.ico'/>
         <Property Id='ARPPRODUCTICON' Value='PaneflowICO'/>
 
         <Property Id='ARPHELPLINK' Value='https://github.com/ArthurDEV44/paneflow'/>
@@ -172,7 +172,7 @@
             <UIRef Id='WixUI_FeatureTree'/>
         </UI>
 
-        <WixVariable Id='WixUILicenseRtf' Value='License.rtf'/>
+        <WixVariable Id='WixUILicenseRtf' Value='packaging/wix/License.rtf'/>
 
     </Product>
 

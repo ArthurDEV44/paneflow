@@ -1013,7 +1013,12 @@ jobs:
           # not exist here -> `Error[2]: There are no WXS files`. Point it at
           # the real source explicitly with --include. Path is relative to the
           # CWD (repo root in the checkout).
+          # --nocapture surfaces candle/light output (otherwise cargo-wix
+          # swallows LGHT/CNDL errors). The .wxs references License.rtf and
+          # paneflow.ico, which light resolves from the CWD (repo root), so
+          # they carry the packaging/wix/ prefix in main.wxs.
           cargo wix \
+            --nocapture \
             --no-build \
             --package paneflow-app \
             --target x86_64-pc-windows-msvc \
