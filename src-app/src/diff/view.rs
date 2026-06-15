@@ -26,6 +26,7 @@ use gpui::{
 use notify::RecommendedWatcher;
 
 use crate::pane_drag::{DropEdge, SPLIT_EDGE_BAND, TabDragPreview, compute_drop_edge};
+use crate::settings::components::{menu_divider_color, menu_surface, select_item, with_alpha};
 use crate::widgets::text_input::TextInput;
 
 use super::arrange::{Arrange, Axis};
@@ -1491,17 +1492,12 @@ impl DiffView {
         let has_hunk = menu.scope.hunk_idx.is_some();
         let col_idx = menu.col_idx;
         let scope = menu.scope;
-        let panel = div()
-            .id("diff-body-context-menu")
+        let panel = menu_surface(div().id("diff-body-context-menu"), ui)
             .occlude()
             .w(px(230.))
-            .bg(ui.overlay)
-            .border_1()
-            .border_color(ui.border)
-            .rounded(px(8.))
-            .shadow_lg()
             .flex()
             .flex_col()
+            .gap(px(1.))
             .p(px(4.))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.body_menu = None;
@@ -1513,40 +1509,36 @@ impl DiffView {
             // ask about it (a changed LINE is sent by left-clicking it directly).
             .when(has_hunk, |panel| {
                 panel.child(
-                    div()
-                        .id("diff-menu-ask-hunk")
-                        .px(px(8.))
-                        .py(px(4.))
-                        .rounded(px(4.))
-                        .text_size(px(12.))
-                        .text_color(ui.text)
-                        .cursor_pointer()
-                        .hover(|s| {
-                            let ui = crate::theme::ui_colors();
-                            s.bg(ui.subtle)
-                        })
+                    select_item("diff-menu-ask-hunk", false, ui)
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                             this.body_menu = None;
                             this.ask_review_about_hunk(col_idx, scope, window, cx);
                             cx.stop_propagation();
                         }))
-                        .child("Ask the CLI about this hunk"),
+                        .child(
+                            div()
+                                .text_color(ui.text)
+                                .child("Ask the CLI about this hunk"),
+                        ),
                 )
             })
             .child(
+                // Conditionally disabled, so kept as a bespoke row (matching the
+                // `select_item` geometry) rather than `select_item` itself, which
+                // always advertises a hover/cursor affordance.
                 div()
                     .id("diff-menu-copy-hunk")
+                    .h(px(28.))
                     .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(4.))
+                    .rounded(px(7.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
                     .text_size(px(12.))
                     .text_color(if has_hunk { ui.text } else { ui.muted })
                     .when(has_hunk, |d| {
                         d.cursor_pointer()
-                            .hover(|s| {
-                                let ui = crate::theme::ui_colors();
-                                s.bg(ui.subtle)
-                            })
+                            .hover(move |s| s.bg(with_alpha(ui.text, 0.05)))
                             .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                                 this.body_menu = None;
                                 this.copy_scope(col_idx, scope, true, cx);
@@ -1556,24 +1548,13 @@ impl DiffView {
                     .child("Copy hunk"),
             )
             .child(
-                div()
-                    .id("diff-menu-copy-file")
-                    .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(4.))
-                    .text_size(px(12.))
-                    .text_color(ui.text)
-                    .cursor_pointer()
-                    .hover(|s| {
-                        let ui = crate::theme::ui_colors();
-                        s.bg(ui.subtle)
-                    })
+                select_item("diff-menu-copy-file", false, ui)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                         this.body_menu = None;
                         this.copy_scope(col_idx, scope, false, cx);
                         cx.stop_propagation();
                     }))
-                    .child("Copy file diff"),
+                    .child(div().text_color(ui.text).child("Copy file diff")),
             );
         deferred(
             anchored()
@@ -1895,19 +1876,13 @@ impl DiffView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let clis = super::review_terminal::ReviewCli::all();
-        let mut menu = div()
-            .id("diff-review-menu")
+        let mut menu = menu_surface(div().id("diff-review-menu"), ui)
             .occlude()
             .absolute()
             // Anchored just below this branch's header.
             .top(px(COL_HEADER_HEIGHT))
             .right(px(6.))
             .w(px(256.))
-            .bg(ui.overlay)
-            .border_1()
-            .border_color(ui.border)
-            .rounded(px(8.))
-            .shadow_lg()
             .flex()
             .flex_col()
             .p(px(6.))
@@ -1929,49 +1904,34 @@ impl DiffView {
             let checked = self.review_picks.get(i).copied().unwrap_or(true);
             let label = cli.label();
             menu = menu.child(
-                div()
-                    .id(SharedString::from(format!("diff-review-pick-{i}")))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.))
-                    .px(px(6.))
-                    .py(px(4.))
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .hover(|s| {
-                        let ui = crate::theme::ui_colors();
-                        s.bg(ui.subtle)
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                        this.toggle_review_pick(i, cx);
-                    }))
-                    .child(
-                        div()
-                            .flex_none()
-                            .size(px(14.))
-                            .rounded(px(3.))
-                            .border_1()
-                            .border_color(ui.border)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .when(checked, |d| {
-                                d.bg(ui.accent.opacity(0.18)).child(
-                                    gpui::svg()
-                                        .size(px(10.))
-                                        .path("icons/check.svg")
-                                        .text_color(ui.accent),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(12.))
-                            .text_color(ui.text)
-                            .child(label),
-                    ),
+                select_item(
+                    SharedString::from(format!("diff-review-pick-{i}")),
+                    false,
+                    ui,
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                    this.toggle_review_pick(i, cx);
+                }))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(14.))
+                        .rounded(px(3.))
+                        .border_1()
+                        .border_color(ui.border)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(checked, |d| {
+                            d.bg(ui.accent.opacity(0.18)).child(
+                                gpui::svg()
+                                    .size(px(10.))
+                                    .path("icons/check.svg")
+                                    .text_color(ui.accent),
+                            )
+                        }),
+                )
+                .child(div().flex_1().text_color(ui.text).child(label)),
             );
         }
         menu = menu.child(
@@ -2927,7 +2887,7 @@ impl DiffView {
             .px(px(10.))
             .py(px(7.))
             .border_b_1()
-            .border_color(ui.border)
+            .border_color(menu_divider_color(ui))
             .child(
                 gpui::svg()
                     .size(px(13.))
@@ -2990,57 +2950,45 @@ impl DiffView {
                 let is_current = *branch == self.base_ref;
                 let branch_owned = branch.clone();
                 list = list.child(
-                    div()
-                        .id(SharedString::from(format!("diff-base-opt-{bi}")))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(8.))
-                        .px(px(8.))
-                        .py(px(5.))
-                        .rounded(px(5.))
-                        .cursor_pointer()
-                        .when(is_current, |d| d.bg(ui.subtle))
-                        .hover(|s| {
-                            let ui = crate::theme::ui_colors();
-                            s.bg(ui.subtle)
-                        })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            this.set_base(branch_owned.clone(), cx);
-                            window.focus(&this.focus_handle, cx);
-                        }))
-                        .child(
+                    select_item(
+                        SharedString::from(format!("diff-base-opt-{bi}")),
+                        is_current,
+                        ui,
+                    )
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.set_base(branch_owned.clone(), cx);
+                        window.focus(&this.focus_handle, cx);
+                    }))
+                    .child(
+                        gpui::svg()
+                            .size(px(13.))
+                            .flex_none()
+                            .path("icons/git-branch.svg")
+                            .text_color(if is_current { ui.accent } else { ui.muted }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_color(ui.text)
+                            .child(branch.clone()),
+                    )
+                    .when(is_current, |d| {
+                        d.child(
                             gpui::svg()
                                 .size(px(13.))
                                 .flex_none()
-                                .path("icons/git-branch.svg")
-                                .text_color(if is_current { ui.accent } else { ui.muted }),
+                                .path("icons/check.svg")
+                                .text_color(ui.accent),
                         )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_size(px(12.))
-                                .text_color(ui.text)
-                                .child(branch.clone()),
-                        )
-                        .when(is_current, |d| {
-                            d.child(
-                                gpui::svg()
-                                    .size(px(13.))
-                                    .flex_none()
-                                    .path("icons/check.svg")
-                                    .text_color(ui.accent),
-                            )
-                        }),
+                    }),
                 );
             }
         }
 
-        div()
-            .id("diff-base-popover")
+        menu_surface(div().id("diff-base-popover"), ui)
             .occlude()
             .absolute()
             .left(px(8.))
@@ -3048,11 +2996,6 @@ impl DiffView {
             .w(px(288.))
             .flex()
             .flex_col()
-            .rounded(px(8.))
-            .bg(ui.overlay)
-            .border_1()
-            .border_color(ui.border)
-            .shadow_lg()
             .on_mouse_down_out(cx.listener(|this, _, window, cx| {
                 this.close_base_picker(window, cx);
             }))

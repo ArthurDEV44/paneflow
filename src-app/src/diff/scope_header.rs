@@ -11,6 +11,7 @@
 
 use crate::PaneFlowApp;
 use crate::diff::DiffScope;
+use crate::settings::components::{menu_surface, select_item};
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
     Styled, deferred, div, prelude::*, px, svg,
@@ -63,8 +64,7 @@ impl PaneFlowApp {
             );
 
         let popover: Option<AnyElement> = if open {
-            let mut menu = div()
-                .id("diff-scope-popover")
+            let mut menu = menu_surface(div().id("diff-scope-popover"), ui)
                 .occlude()
                 .absolute()
                 .left(px(8.))
@@ -73,10 +73,6 @@ impl PaneFlowApp {
                 .flex_col()
                 .gap(px(1.))
                 .p(px(4.))
-                .rounded(px(6.))
-                .bg(ui.overlay)
-                .border_1()
-                .border_color(ui.border)
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     if this.diff_mode.diff_scope_picker_open {
                         this.diff_mode.diff_scope_picker_open = false;
@@ -86,41 +82,34 @@ impl PaneFlowApp {
             for scope in DiffScope::all() {
                 let is_active = scope == active;
                 menu = menu.child(
-                    div()
-                        .id(SharedString::from(format!("diff-scope-{}", scope.label())))
-                        .px(px(8.))
-                        .py(px(3.))
-                        .rounded(px(4.))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.))
-                        .cursor_pointer()
-                        .text_size(px(12.))
-                        .text_color(if is_active { ui.text } else { ui.muted })
-                        .hover(|s| {
-                            let ui = crate::theme::ui_colors();
-                            s.bg(ui.subtle)
-                        })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                            this.diff_mode.diff_scope_picker_open = false;
-                            this.diff_mode.diff_project_picker_open = false;
-                            this.diff_mode.diff_worktree_picker_open = false;
-                            if this.diff_mode.diff_scope != scope {
-                                this.diff_mode.diff_scope = scope;
-                                this.rebuild_diff_view(cx);
-                            } else {
-                                cx.notify();
-                            }
-                        }))
-                        .child(
-                            div()
-                                .flex_none()
-                                .w(px(12.))
-                                .text_color(ui.accent)
-                                .child(if is_active { "✓" } else { "" }),
-                        )
-                        .child(scope.label()),
+                    select_item(
+                        SharedString::from(format!("diff-scope-{}", scope.label())),
+                        is_active,
+                        ui,
+                    )
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        this.diff_mode.diff_scope_picker_open = false;
+                        this.diff_mode.diff_project_picker_open = false;
+                        this.diff_mode.diff_worktree_picker_open = false;
+                        if this.diff_mode.diff_scope != scope {
+                            this.diff_mode.diff_scope = scope;
+                            this.rebuild_diff_view(cx);
+                        } else {
+                            cx.notify();
+                        }
+                    }))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(12.))
+                            .text_color(ui.accent)
+                            .child(if is_active { "✓" } else { "" }),
+                    )
+                    .child(
+                        div()
+                            .text_color(if is_active { ui.text } else { ui.muted })
+                            .child(scope.label()),
+                    ),
                 );
             }
             // Paint in the top layer: as a plain `.absolute()` child the popover
@@ -190,8 +179,7 @@ impl PaneFlowApp {
             );
 
         let project_popover: Option<AnyElement> = if project_open {
-            let mut menu = div()
-                .id("diff-project-popover")
+            let mut menu = menu_surface(div().id("diff-project-popover"), ui)
                 .occlude()
                 .absolute()
                 .left(px(0.))
@@ -200,10 +188,6 @@ impl PaneFlowApp {
                 .flex_col()
                 .gap(px(1.))
                 .p(px(4.))
-                .rounded(px(6.))
-                .bg(ui.overlay)
-                .border_1()
-                .border_color(ui.border)
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     if this.diff_mode.diff_project_picker_open {
                         this.diff_mode.diff_project_picker_open = false;
@@ -238,52 +222,41 @@ impl PaneFlowApp {
                 for (idx, name, branch) in repo_workspaces {
                     let is_active = idx == self.active_idx;
                     menu = menu.child(
-                        div()
-                            .id(SharedString::from(format!("diff-project-{idx}")))
-                            .px(px(8.))
-                            .py(px(3.))
-                            .rounded(px(4.))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(6.))
-                            .cursor_pointer()
-                            .text_size(px(12.))
-                            .when(is_active, |d| d.bg(ui.subtle))
-                            .hover(|s| {
-                                let ui = crate::theme::ui_colors();
-                                s.bg(ui.subtle)
-                            })
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.diff_mode.diff_project_picker_open = false;
-                                // Routes through the standard workspace switch
-                                // (re-roots files tree, saves session, rebuilds
-                                // the diff via `reconcile_diff_after_workspace_change`).
-                                this.select_workspace(idx, window, cx);
-                                cx.notify();
-                            }))
-                            .child(
+                        select_item(
+                            SharedString::from(format!("diff-project-{idx}")),
+                            is_active,
+                            ui,
+                        )
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.diff_mode.diff_project_picker_open = false;
+                            // Routes through the standard workspace switch
+                            // (re-roots files tree, saves session, rebuilds
+                            // the diff via `reconcile_diff_after_workspace_change`).
+                            this.select_workspace(idx, window, cx);
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .flex_none()
+                                .w(px(12.))
+                                .text_color(ui.accent)
+                                .child(if is_active { "✓" } else { "" }),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(if is_active { ui.text } else { ui.muted })
+                                .child(name),
+                        )
+                        .when(!branch.is_empty(), |d| {
+                            d.child(
                                 div()
                                     .flex_none()
-                                    .w(px(12.))
-                                    .text_color(ui.accent)
-                                    .child(if is_active { "✓" } else { "" }),
+                                    .text_size(px(11.))
+                                    .text_color(ui.muted)
+                                    .child(format!("· {branch}")),
                             )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_color(if is_active { ui.text } else { ui.muted })
-                                    .child(name),
-                            )
-                            .when(!branch.is_empty(), |d| {
-                                d.child(
-                                    div()
-                                        .flex_none()
-                                        .text_size(px(11.))
-                                        .text_color(ui.muted)
-                                        .child(format!("· {branch}")),
-                                )
-                            }),
+                        }),
                     );
                 }
             }
@@ -354,8 +327,7 @@ impl PaneFlowApp {
                         );
 
                     let popover: Option<AnyElement> = if branches_open {
-                        let mut menu = div()
-                            .id("diff-branches-popover")
+                        let mut menu = menu_surface(div().id("diff-branches-popover"), ui)
                             .occlude()
                             .absolute()
                             .left(px(0.))
@@ -366,10 +338,6 @@ impl PaneFlowApp {
                             .p(px(4.))
                             .max_h(px(320.))
                             .overflow_y_scroll()
-                            .rounded(px(6.))
-                            .bg(ui.overlay)
-                            .border_1()
-                            .border_color(ui.border)
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                                 if this.diff_mode.diff_worktree_picker_open {
                                     this.diff_mode.diff_worktree_picker_open = false;
@@ -397,55 +365,42 @@ impl PaneFlowApp {
                                     .map(|p| p.to_string_lossy().into_owned())
                                     .unwrap_or_default();
                                 menu = menu.child(
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "diff-branch-opt-{path_str}"
-                                        )))
-                                        .px(px(8.))
-                                        .py(px(4.))
-                                        .rounded(px(4.))
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .gap(px(7.))
-                                        .cursor_pointer()
-                                        .hover(|s| {
-                                            let ui = crate::theme::ui_colors();
-                                            s.bg(ui.subtle)
-                                        })
-                                        .on_click(cx.listener(
-                                            move |this, _: &ClickEvent, _w, cx| {
-                                                this.toggle_chosen_worktree(
-                                                    row_root.clone(),
-                                                    row_path.clone(),
-                                                    cx,
-                                                );
-                                            },
-                                        ))
-                                        .child(
-                                            div()
-                                                .flex_none()
-                                                .w(px(13.))
-                                                .text_size(px(12.))
-                                                .text_color(ui.accent)
-                                                .child(if chosen { "✓" } else { "" }),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex_none()
-                                                .text_size(px(12.))
-                                                .text_color(if chosen { ui.text } else { ui.muted })
-                                                .child(w.branch.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .truncate()
-                                                .text_size(px(11.))
-                                                .text_color(ui.muted)
-                                                .child(dir_tail),
-                                        ),
+                                    select_item(
+                                        SharedString::from(format!("diff-branch-opt-{path_str}")),
+                                        chosen,
+                                        ui,
+                                    )
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                        this.toggle_chosen_worktree(
+                                            row_root.clone(),
+                                            row_path.clone(),
+                                            cx,
+                                        );
+                                    }))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .w(px(13.))
+                                            .text_size(px(12.))
+                                            .text_color(ui.accent)
+                                            .child(if chosen { "✓" } else { "" }),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_size(px(12.))
+                                            .text_color(if chosen { ui.text } else { ui.muted })
+                                            .child(w.branch.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_size(px(11.))
+                                            .text_color(ui.muted)
+                                            .child(dir_tail),
+                                    ),
                                 );
                             }
                         }
