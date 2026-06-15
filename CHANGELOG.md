@@ -5,6 +5,28 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-06-15
+
+A Windows hotfix: the in-app updater now works on MSI installs. No changes on
+Linux or macOS.
+
+### Fixed
+
+- Windows self-update. Clicking "Update" on an MSI install failed with "HOME
+  environment variable is not set" and never updated. The running binary's
+  install location was misdetected — `std::fs::canonicalize` returns the
+  extended-length `\\?\C:\…` path on Windows, which did not match
+  `%ProgramFiles%`, so the install was classified as unknown and the updater
+  fell back to the Linux tar.gz path (which reads `$HOME`). MSI installs are
+  now detected correctly and the update runs through msiexec end-to-end. As a
+  safety net, an unknown install on Windows no longer routes to the Linux
+  updater either.
+
+  Note: because the currently-running build carries the old, broken detection,
+  it cannot self-update to this fix — install the 0.5.2 `.msi` manually once
+  from the releases page, and the in-app updater will work for every release
+  after it.
+
 ## [0.5.1] - 2026-06-15
 
 A Windows polish patch on top of 0.5.0: the app and installer now carry the
