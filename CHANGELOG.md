@@ -5,6 +5,34 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-06-16
+
+The Agents git diff dock becomes resizable and scrolls each file on its own,
+and every diff surface in the app now draws from one color source.
+Cross-platform.
+
+### Added
+
+- The Agents git diff dock is now resizable: drag its left edge to widen or
+  narrow it. The width is clamped between a readable floor and a
+  window-friendly ceiling so the dock can never swallow the terminal column or
+  shrink below a usable code width.
+- Each file in the Agents diff dock now scrolls horizontally on its own, so a
+  long line in one file no longer drags the short files into the blank. Files
+  that overflow grow a per-file horizontal scrollbar (click the track or drag
+  the thumb) and accept horizontal wheel scrolling, while vertical scrolling
+  stays shared across the dock.
+
+### Changed
+
+- Every diff surface now reads its +/- colors from a single shared source:
+  Codex green/red on dark themes, the theme's version-control colors on light
+  themes. The Agents diff dock, the Diff/Review view, the CLI workspace sidebar
+  diffstat and the diff sidebar previously each inlined their own hex and could
+  drift apart; they are now guaranteed to match.
+- The Agents environment toolbar's editor split-button now shares the rounded
+  radius of the toggle buttons beside it.
+
 ## [0.5.5] - 2026-06-16
 
 The Agents view gains a Codex-style environment surface, and the CLI tab strip
