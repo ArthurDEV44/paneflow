@@ -5,6 +5,37 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-06-16
+
+The Agents view gains a Codex-style environment surface, and the CLI tab strip
+is restyled to match it. Cross-platform.
+
+### Added
+
+- An environment card in the Agents view. It carries a per-repository git branch
+  picker (a live-filtered, focus-trapped search field that also names a new
+  branch) and an external-editor selector that reuses the same editor list and
+  logos as the General settings tab. The card is scoped to the active thread's
+  working directory, so project threads and free chats can each point at their
+  own repository.
+- A full-width bottom terminal dock in the Agents view, toggled from the
+  environment toolbar. It hosts a tab strip of shell terminals: open as many as
+  you like with `+`, close each one independently, and drag the dock's top edge
+  to resize it. Every terminal is a real PTY whose scrollback and I/O survive tab
+  switches and closing or reopening the dock, so coming back is always warm.
+- A right-side git diff dock in the Agents view. It renders an off-thread diff
+  snapshot for the active thread's working directory, with a unified or
+  side-by-side split view, per-file fold state that survives re-renders, and an
+  uncommitted-files count surfaced from `git diff --shortstat`.
+
+### Changed
+
+- The CLI multiplexer's terminal tabs are now floating, rounded chips instead of
+  full-height bordered tabs. The active chip lifts on a whisper of the text
+  color, inactive chips wash in on hover, and the chrome separators are gone, so
+  the strip melts into the terminal body and speaks the same tab language as the
+  new Agents bottom dock.
+
 ## [0.5.4] - 2026-06-16
 
 A visual polish pass on the app chrome plus two Windows session fixes. The
