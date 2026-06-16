@@ -2017,13 +2017,17 @@ impl DiffView {
 }
 
 impl DiffView {
-    /// US-009 (prd-git-diff-mode-2026-Q3.md): the hunk palette is sourced
-    /// entirely from the curated `vc_*` theme slots (US-007) — zero hardcoded
-    /// hex. Because `render_column` rebuilds this from `ui_colors()` every
-    /// render, a theme switch re-colors the diff live. `element.rs` only
-    /// consumes the `RowPalette` it is handed, so the single color source is
-    /// here.
+    /// US-009 (prd-git-diff-mode-2026-Q3.md): the hunk palette's added/deleted
+    /// hues come from [`crate::theme::UiColors::diff_colors`] — the single diff
+    /// color source shared with the Agents diff dock and the diff sidebar, so
+    /// the Review surface matches the dock (Codex green/red on dark, theme
+    /// `vc_*` on light). The neutral slots (text, surfaces, borders, modified,
+    /// phantom) still track the theme directly. Because `render_column` rebuilds
+    /// this from `ui_colors()` every render, a theme switch re-colors the diff
+    /// live. `element.rs` only consumes the `RowPalette` it is handed, so the
+    /// single color source is here.
     fn palette(ui: crate::theme::UiColors) -> RowPalette {
+        let diff = ui.diff_colors();
         RowPalette {
             text: ui.text,
             muted: ui.muted,
@@ -2034,26 +2038,29 @@ impl DiffView {
             // element that sank instead of lifting.)
             sticky_header_bg: ui.surface,
             border: ui.border,
-            add_bg: ui.vc_added_background,
-            del_bg: ui.vc_deleted_background,
-            add_fg: ui.vc_added,
-            del_fg: ui.vc_deleted,
+            add_bg: diff.added_background,
+            del_bg: diff.deleted_background,
+            add_fg: diff.added,
+            del_fg: diff.deleted,
             // Gutter numbers for changed lines: the status hue softened toward
             // the gutter's muted baseline so they tint without shouting over the
             // line wash they sit on.
-            gutter_add: ui.muted.blend(ui.vc_added.opacity(0.75)),
-            gutter_del: ui.muted.blend(ui.vc_deleted.opacity(0.75)),
+            gutter_add: ui.muted.blend(diff.added.opacity(0.75)),
+            gutter_del: ui.muted.blend(diff.deleted.opacity(0.75)),
             mod_fg: ui.vc_modified,
             // Zed paints the gutter hunk strip as `editor_background.blend(version_control_*)`
             // so it reads solid; pre-blend against the diff body surface (`ui.base`,
             // what context lines sit on) so the bar is opaque, not faint at the wash alpha.
-            add_bar: ui.base.blend(ui.vc_added),
-            del_bar: ui.base.blend(ui.vc_deleted),
+            add_bar: ui.base.blend(diff.added),
+            del_bar: ui.base.blend(diff.deleted),
             // Neutral alignment-row fill, derived from `muted` so it tracks the
             // theme instead of a hardcoded slate hex.
             phantom_bg: ui.muted.opacity(0.12),
-            add_word_bg: ui.vc_word_added,
-            del_word_bg: ui.vc_word_deleted,
+            // Intra-line word emphasis follows the same source at the theme's
+            // 0.40 wash alpha (matches `vc_word_*` exactly on light, Codex-tinted
+            // on dark) so the word band never clashes with its line hue.
+            add_word_bg: diff.added.opacity(0.40),
+            del_word_bg: diff.deleted.opacity(0.40),
         }
     }
 

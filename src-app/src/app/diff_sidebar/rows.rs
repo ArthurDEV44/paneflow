@@ -27,10 +27,13 @@ impl PaneFlowApp {
         ui: UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // Shared diff palette (Codex green/red on dark, theme vc_* on light) so
+        // the sidebar status hues match the diff body and the Agents dock.
+        let diff = ui.diff_colors();
         let (letter, color) = match entry.change {
-            FileChange::Added => ("A", ui.vc_added),
+            FileChange::Added => ("A", diff.added),
             FileChange::Modified => ("M", ui.vc_modified),
-            FileChange::Deleted => ("D", ui.vc_deleted),
+            FileChange::Deleted => ("D", diff.deleted),
             FileChange::Renamed => ("R", ui.vc_modified),
         };
         let (dir, name) = match entry.path.rfind('/') {
@@ -157,14 +160,14 @@ impl PaneFlowApp {
                         .when(entry.added > 0, |d| {
                             d.child(
                                 div()
-                                    .text_color(ui.vc_added)
+                                    .text_color(diff.added)
                                     .child(format!("+{}", entry.added)),
                             )
                         })
                         .when(entry.removed > 0, |d| {
                             d.child(
                                 div()
-                                    .text_color(ui.vc_deleted)
+                                    .text_color(diff.deleted)
                                     .child(format!("-{}", entry.removed)),
                             )
                         }),

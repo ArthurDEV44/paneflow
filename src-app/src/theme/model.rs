@@ -360,7 +360,50 @@ pub struct UiColors {
     pub agent_codex: Hsla,
 }
 
+/// Effective version-control diff colors for the Git Diff / Review surfaces.
+///
+/// On dark themes the foreground plus the line and gutter washes are the
+/// Codex-app-sampled green/red, a deliberate override of the muted `vc_*` theme
+/// slots (which read too desaturated on the dense diff body). On light themes
+/// they fall through to the theme `vc_*` slots. Single source for the Agents
+/// diff dock, the Diff/Review view, and the diff sidebar so the three never
+/// drift.
+#[derive(Clone, Copy)]
+pub struct DiffColors {
+    pub added: Hsla,
+    pub deleted: Hsla,
+    pub added_background: Hsla,
+    pub deleted_background: Hsla,
+    pub added_gutter_background: Hsla,
+    pub deleted_gutter_background: Hsla,
+}
+
 impl UiColors {
+    /// Resolve the canonical diff color set (see [`DiffColors`]). Dark/light is
+    /// keyed off `base.l` so any render path holding a `UiColors` can call it
+    /// without re-locking the theme cache.
+    pub fn diff_colors(&self) -> DiffColors {
+        if self.base.l > 0.5 {
+            return DiffColors {
+                added: self.vc_added,
+                deleted: self.vc_deleted,
+                added_background: self.vc_added_background,
+                deleted_background: self.vc_deleted_background,
+                added_gutter_background: self.vc_added_background,
+                deleted_gutter_background: self.vc_deleted_background,
+            };
+        }
+        DiffColors {
+            // Sampled from Codex App's dark diff panel.
+            added: h(0x40c977),
+            deleted: h(0xfa423e),
+            added_background: h(0x1f3124),
+            deleted_background: h(0x3b1f1a),
+            added_gutter_background: h(0x1c291f),
+            deleted_gutter_background: h(0x311c18),
+        }
+    }
+
     /// Stripe color for broadcast-group slot `idx` (0-based). Wraps modulo 8
     /// so an out-of-range index (impossible via the picker, which caps group
     /// creation at 8) can never panic the render path.

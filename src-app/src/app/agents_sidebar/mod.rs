@@ -582,8 +582,10 @@ impl PaneFlowApp {
             .when(!git_stats.is_empty(), |d| {
                 // Trailing `+N -N` badge — git diff --shortstat of the
                 // project's cwd, cached + refreshed on the 30 s poller
-                // in `app/bootstrap.rs`. Catppuccin Green / Red match
-                // the workspace sidebar palette at `app/sidebar/mod.rs:464-470`.
+                // in `app/bootstrap.rs`. Shared diff palette (Codex green/red on
+                // dark, theme vc_* on light) so it matches the diff dock, the
+                // Diff/Review view, and the CLI sidebar diffstat.
+                let diff = ui.diff_colors();
                 d.child(
                     div()
                         .flex_none()
@@ -595,12 +597,12 @@ impl PaneFlowApp {
                         .font_weight(FontWeight::MEDIUM)
                         .child(
                             div()
-                                .text_color(rgb(0xa6e3a1))
+                                .text_color(diff.added)
                                 .child(format!("+{}", git_stats.insertions)),
                         )
                         .child(
                             div()
-                                .text_color(rgb(0xf38ba8))
+                                .text_color(diff.deleted)
                                 .child(format!("-{}", git_stats.deletions)),
                         ),
                 )

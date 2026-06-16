@@ -463,19 +463,23 @@ impl PaneFlowApp {
                 if has_stats {
                     let ins = ws.git_stats.insertions;
                     let del = ws.git_stats.deletions;
+                    // Shared diff palette (Codex green/red on dark, theme vc_* on
+                    // light) so the CLI sidebar diffstat matches the Diff/Review
+                    // view and the Agents dock instead of inlining its own hex.
+                    let diff = ui.diff_colors();
                     meta_row = meta_row
                         .child(
                             div()
                                 .flex_none()
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(rgb(0xa6e3a1)) // Catppuccin Green
+                                .text_color(diff.added)
                                 .child(format!("+{ins}")),
                         )
                         .child(
                             div()
                                 .flex_none()
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(rgb(0xf38ba8)) // Catppuccin Red
+                                .text_color(diff.deleted)
                                 .child(format!("-{del}")),
                         );
                 }

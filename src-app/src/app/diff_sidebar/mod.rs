@@ -218,14 +218,14 @@ impl PaneFlowApp {
                         .when(total_added > 0, |d| {
                             d.child(
                                 div()
-                                    .text_color(ui.vc_added)
+                                    .text_color(ui.diff_colors().added)
                                     .child(format!("+{total_added}")),
                             )
                         })
                         .when(total_removed > 0, |d| {
                             d.child(
                                 div()
-                                    .text_color(ui.vc_deleted)
+                                    .text_color(ui.diff_colors().deleted)
                                     .child(format!("-{total_removed}")),
                             )
                         }),
@@ -655,7 +655,7 @@ impl PaneFlowApp {
                     div()
                         .flex_none()
                         .text_size(px(10.))
-                        .text_color(ui.vc_added)
+                        .text_color(ui.diff_colors().added)
                         .child(format!("+{added}")),
                 )
             })
@@ -664,7 +664,7 @@ impl PaneFlowApp {
                     div()
                         .flex_none()
                         .text_size(px(10.))
-                        .text_color(ui.vc_deleted)
+                        .text_color(ui.diff_colors().deleted)
                         .child(format!("-{removed}")),
                 )
             });

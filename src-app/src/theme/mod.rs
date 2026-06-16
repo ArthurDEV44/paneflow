@@ -6,14 +6,14 @@ mod model;
 mod watcher;
 
 pub use builtin::{THEMES, ThemeEntry, one_dark, paneflow_light, theme_by_name};
-pub use model::{SyntaxPalette, TerminalTheme, UiColors, ui_colors, ui_colors_with};
+pub use model::{DiffColors, SyntaxPalette, TerminalTheme, UiColors, ui_colors, ui_colors_with};
 pub use watcher::{ThemeWatcher, active_theme, config_mtime, invalidate_theme_cache};
 
 /// Keep the small subset of Zed's global theme used by the Markdown renderer
 /// aligned with PaneFlow's active palette. The renderer reads these slots for
 /// table rows and borders instead of PaneFlow's own [`UiColors`].
 pub fn sync_markdown_global_theme(cx: &mut gpui::App) {
-    use ::theme::ActiveTheme as _;
+    use theme::ActiveTheme as _;
 
     let ui = ui_colors();
     let already_synced = {
