@@ -1355,8 +1355,8 @@ fn render_agents_editor_split_button(
         .items_center()
         // Codex shell: a hairline border wraps both halves; the two hover
         // backgrounds meet flush at the center (square inner corners) while the
-        // outer corners follow the shell radius.
-        .rounded(px(8.))
+        // outer corners follow the shell radius (matches the toggle buttons).
+        .rounded(px(10.))
         .border_1()
         .border_color(crate::settings::components::with_alpha(ui.text, 0.14))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1371,8 +1371,8 @@ fn render_agents_editor_split_button(
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded_tl(px(7.))
-                .rounded_bl(px(7.))
+                .rounded_tl(px(9.))
+                .rounded_bl(px(9.))
                 .cursor(CursorStyle::PointingHand)
                 .hover(move |d| d.bg(hover_bg))
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -1395,8 +1395,8 @@ fn render_agents_editor_split_button(
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded_tr(px(7.))
-                .rounded_br(px(7.))
+                .rounded_tr(px(9.))
+                .rounded_br(px(9.))
                 .cursor(CursorStyle::PointingHand)
                 .hover(move |d| d.bg(hover_bg))
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
