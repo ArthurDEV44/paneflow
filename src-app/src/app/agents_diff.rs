@@ -32,16 +32,25 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, ClickEvent, Context, CursorStyle, Entity, FontWeight, Hsla, InteractiveElement,
-    IntoElement, ListAlignment, ListState, MouseButton, ParentElement, Rgba, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, list, px, svg,
+    IntoElement, ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    list, px, svg,
 };
 
 use crate::PaneFlowApp;
 use crate::settings::components::with_alpha;
 
-/// Fixed width of the docked panel. Wide enough to read code without constant
-/// wrapping, narrow enough to leave the terminal column usable beside it.
+/// Default width of the docked panel. Wide enough to read code without constant
+/// wrapping, narrow enough to leave the terminal column usable beside it. The
+/// panel is user-resizable by dragging its left edge; the live width lives on
+/// [`crate::AgentsViewState::agents_diff_width`], clamped to the bounds below.
 pub(crate) const AGENTS_DIFF_PANEL_WIDTH: f32 = 540.0;
+
+/// Resize clamp for the diff dock's user-dragged width. The floor keeps the
+/// gutters plus a readable code column; the ceiling stops the dock from
+/// swallowing the whole main area on a wide window.
+pub(crate) const AGENTS_DIFF_PANEL_MIN_WIDTH: f32 = 360.0;
+pub(crate) const AGENTS_DIFF_PANEL_MAX_WIDTH: f32 = 1100.0;
 
 /// Per-kind row heights for the variable-height `list`. Tall file headers sit
 /// over compact hunk headers and code lines; `list` measures each row, so the
@@ -74,44 +83,87 @@ const MAX_LINES_PER_FILE: usize = 4_000;
 
 const CHANGE_BAR_WIDTH: f32 = 3.0;
 
+/// Estimated advance width of one monospace cell at the panel's 12px code text.
+/// The mono families used here (JetBrains Mono, Menlo, Consolas, DejaVu Sans
+/// Mono…) advance at ~0.6em; 7.5px keeps a small safety margin so the longest
+/// line is always fully reachable rather than clipped a few px short. Used only
+/// to bound the manual horizontal scroll offset, never for real glyph layout.
+const DIFF_CHAR_WIDTH: f32 = 7.5;
+
+/// Estimated width of the code text column in unified view: panel width minus
+/// the left border and the fixed prefix (change bar + two line-number gutters +
+/// sign cell). Drives the max horizontal scroll only, so a few px of slop is
+/// harmless (it just allows a sliver of trailing whitespace to scroll into view).
+/// Takes the live panel width so the bound stays correct as the dock is resized.
+fn unified_text_viewport(panel_width: f32) -> f32 {
+    panel_width - 92.0
+}
+
+/// Same estimate for one half of the split view (one gutter instead of two,
+/// plus the half-width groove and the cell's own horizontal padding).
+fn split_text_viewport(panel_width: f32) -> f32 {
+    (panel_width - 1.0) / 2.0 - 55.0
+}
+
+/// Max horizontal scroll (px) for the longest line in the current view mode.
+/// Zero when everything fits the text column, so the dock never overscrolls
+/// into empty space on a short diff.
+fn max_h_scroll(max_line_chars: usize, split: bool, panel_width: f32) -> f32 {
+    let content_w = max_line_chars as f32 * DIFF_CHAR_WIDTH + 12.0;
+    (content_w - h_text_viewport(split, panel_width)).max(0.0)
+}
+
+/// Estimated visible width (px) of the code text column for the current mode.
+fn h_text_viewport(split: bool, panel_width: f32) -> f32 {
+    if split {
+        split_text_viewport(panel_width)
+    } else {
+        unified_text_viewport(panel_width)
+    }
+}
+
+/// Horizontal scrollbar geometry. The band is a thin strip under the `list`;
+/// the track spans the panel and the thumb is sized to the visible fraction.
+const H_SCROLLBAR_BAND_HEIGHT: f32 = 12.0;
+const H_SCROLLBAR_THUMB_HEIGHT: f32 = 6.0;
+const H_SCROLLBAR_MIN_THUMB: f32 = 24.0;
+const H_SCROLLBAR_INSET: f32 = 6.0;
+
+/// `(thumb_left, thumb_width)` in px for the horizontal scrollbar thumb, given
+/// the live offset, the max offset, the visible text-column width and the
+/// rendered track width. The thumb reflects the visible fraction of the content
+/// (clamped to a grabbable minimum) and slides across the leftover track range.
+fn h_thumb_geometry(h_offset: f32, max_scroll: f32, viewport_w: f32, track_w: f32) -> (f32, f32) {
+    if max_scroll <= 0.0 || track_w <= 0.0 {
+        return (0.0, track_w.max(0.0));
+    }
+    let content_w = viewport_w + max_scroll;
+    let fraction = (viewport_w / content_w).clamp(0.05, 1.0);
+    let thumb_w = (track_w * fraction).max(H_SCROLLBAR_MIN_THUMB).min(track_w);
+    let progress = (h_offset / max_scroll).clamp(0.0, 1.0);
+    let thumb_left = progress * (track_w - thumb_w);
+    (thumb_left, thumb_w)
+}
+
+/// Drag pose for a file's horizontal scrollbar thumb, captured on `mouse_down`
+/// so a move applies `start_offset + (mouse_x - start_mouse_x) * scale` without
+/// the thumb jumping to the cursor. `file_idx` pins the drag to one file.
 #[derive(Clone, Copy)]
-struct AgentsDiffPalette {
-    added: Hsla,
-    deleted: Hsla,
-    added_background: Hsla,
-    deleted_background: Hsla,
-    added_gutter_background: Hsla,
-    deleted_gutter_background: Hsla,
+pub(crate) struct AgentsDiffHDrag {
+    file_idx: usize,
+    start_mouse_x: f32,
+    start_offset: f32,
 }
 
-fn agents_diff_palette(ui: crate::theme::UiColors) -> AgentsDiffPalette {
-    if ui.base.l > 0.5 {
-        return AgentsDiffPalette {
-            added: ui.vc_added,
-            deleted: ui.vc_deleted,
-            added_background: ui.vc_added_background,
-            deleted_background: ui.vc_deleted_background,
-            added_gutter_background: ui.vc_added_background,
-            deleted_gutter_background: ui.vc_deleted_background,
-        };
-    }
-
-    AgentsDiffPalette {
-        // Sampled from Codex App's dark diff panel.
-        added: color_from_hex(0x40c977),
-        deleted: color_from_hex(0xfa423e),
-        added_background: color_from_hex(0x1f3124),
-        deleted_background: color_from_hex(0x3b1f1a),
-        added_gutter_background: color_from_hex(0x1c291f),
-        deleted_gutter_background: color_from_hex(0x311c18),
-    }
-}
-
-fn color_from_hex(hex: u32) -> Hsla {
-    let r = ((hex >> 16) & 0xff) as f32 / 255.0;
-    let g = ((hex >> 8) & 0xff) as f32 / 255.0;
-    let b = (hex & 0xff) as f32 / 255.0;
-    Hsla::from(Rgba { r, g, b, a: 1.0 })
+/// Added/deleted *text* colors for diff counters rendered outside the diff
+/// panel (e.g. the Environment card's "Changes" row), kept in lockstep with the
+/// panel's own palette so the +/- counts match the washes on every theme. The
+/// canonical diff palette now lives on [`crate::theme::UiColors::diff_colors`]
+/// so the Agents dock, the Diff/Review view, and the diff sidebar share one
+/// source.
+pub(crate) fn agents_diff_count_colors(ui: crate::theme::UiColors) -> (Hsla, Hsla) {
+    let diff = ui.diff_colors();
+    (diff.added, diff.deleted)
 }
 
 /// How a file changed, mapped to the file-icon tint via [`status_color`].
@@ -177,6 +229,10 @@ pub(crate) struct AgentsDiffFile {
     added: u32,
     removed: u32,
     is_binary: bool,
+    /// Length (in chars) of this file's longest code line, computed off-thread.
+    /// Bounds the file's own horizontal scroll so each block reveals the full
+    /// width of its widest line independently of the other files.
+    max_line_chars: usize,
 }
 
 /// Render-ready snapshot of the panel's data. Cheap to clone every frame: the
@@ -372,7 +428,8 @@ impl PaneFlowApp {
         let body = self.render_agents_diff_body(&data, ui, cx);
 
         div()
-            .w(px(AGENTS_DIFF_PANEL_WIDTH))
+            .relative()
+            .w(px(self.agents_view.agents_diff_width))
             .h_full()
             .flex_none()
             .flex()
@@ -380,9 +437,37 @@ impl PaneFlowApp {
             .bg(ui.base)
             .border_l_1()
             .border_color(ui.border)
+            .child(render_diff_resize_handle(ui, cx))
             .child(header)
             .child(body)
             .into_any_element()
+    }
+
+    /// Apply a live resize drag: set the dock width so its left edge tracks the
+    /// cursor. Driven by the Agents main area's `on_mouse_move` (a full-height
+    /// capture surface, so the drag survives the cursor leaving the dock for the
+    /// terminal column beside it). No-op when no drag is in progress.
+    pub(crate) fn drag_agents_diff_resize(&mut self, cursor_x: f32, cx: &mut Context<Self>) {
+        if let Some((anchor_x, anchor_w)) = self.agents_view.agents_diff_resize {
+            // The panel docks right and the handle is on its left edge, so
+            // dragging left (cursor_x shrinks) widens the dock.
+            let delta = anchor_x - cursor_x;
+            self.agents_view.agents_diff_width =
+                (anchor_w + delta).clamp(AGENTS_DIFF_PANEL_MIN_WIDTH, AGENTS_DIFF_PANEL_MAX_WIDTH);
+            cx.notify();
+        }
+    }
+
+    /// End a diff-dock resize drag (mouse up / button released mid-move). Returns
+    /// whether a drag was actually in progress, so the caller can skip a
+    /// redundant notify.
+    pub(crate) fn end_agents_diff_resize(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.agents_view.agents_diff_resize.take().is_some() {
+            cx.notify();
+            true
+        } else {
+            false
+        }
     }
 
     /// The diff body: a thin files toolbar over the virtualized `list`. Empty,
@@ -415,10 +500,11 @@ impl PaneFlowApp {
         let entity = cx.entity();
         let collapsed = self.agents_view.agents_diff_collapsed.clone();
         let split = self.agents_view.agents_diff_split;
+        let panel_width = self.agents_view.agents_diff_width;
         let toolbar = render_diff_files_toolbar(data, &collapsed, ui, &entity);
 
         let files = data.files.clone();
-        let rows = Rc::new(flatten_rows(&files, &collapsed, split));
+        let rows = Rc::new(flatten_rows(&files, &collapsed, split, panel_width));
 
         // `uniform_list` can't host two row heights, so the panel uses `list`.
         // Its scroll/measure state persists on the view and is reset only when
@@ -435,32 +521,157 @@ impl PaneFlowApp {
                     Some(ListState::new(count, ListAlignment::Top, px(400.)));
             }
             self.agents_view.agents_diff_list_rev = rev;
+            // New content / layout: drop any prior per-file horizontal scroll
+            // and reseat one offset slot per file (indexed by position).
+            self.agents_view.agents_diff_h_offsets = vec![0.0; files.len()];
+            self.agents_view.agents_diff_h_drag = None;
         }
         let Some(state) = self.agents_view.agents_diff_list.clone() else {
             return diff_panel_centered("icons/triangle-alert.svg", "Diff unavailable.", ui);
         };
 
+        // Per-file horizontal scroll: each code row reads its own offset slot and
+        // captures horizontal wheel deltas for its file; the body only continues
+        // an in-flight scrollbar drag (vertical scroll stays the `list`'s).
         let mono: SharedString = crate::terminal::element::resolve_font_family(None).into();
         let list_rows = rows.clone();
         let list_files = files.clone();
         let list_entity = entity.clone();
+        let offsets = self.agents_view.agents_diff_h_offsets.clone();
+        let track = self.agents_view.agents_diff_h_track.clone();
         let body_list = list(state, move |i, _window, _cx| {
-            render_flat_row(&list_rows[i], &list_files, &mono, ui, &list_entity)
+            render_flat_row(
+                &list_rows[i],
+                &list_files,
+                &mono,
+                ui,
+                &list_entity,
+                &offsets,
+                split,
+                panel_width,
+                &track,
+            )
         })
         .flex_1()
         .min_h(px(0.))
         .w_full();
 
         div()
+            .id("agents-diff-body")
             .flex_1()
             .min_h(px(0.))
             .w_full()
             .flex()
             .flex_col()
+            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _w, cx| {
+                let Some(drag) = this.agents_view.agents_diff_h_drag else {
+                    return;
+                };
+                let value = this.agents_diff_drag_offset(&drag, f32::from(ev.position.x));
+                this.set_agents_diff_file_offset(drag.file_idx, value, cx);
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _ev: &MouseUpEvent, _w, cx| {
+                    if this.agents_view.agents_diff_h_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .child(toolbar)
             .child(body_list)
             .into_any_element()
     }
+
+    /// Target offset (px) for an in-flight scrollbar drag given the live pointer
+    /// x. Delta-based off the captured pose so the thumb doesn't jump, scaled by
+    /// the dragged file's own track range.
+    fn agents_diff_drag_offset(&self, drag: &AgentsDiffHDrag, mouse_x: f32) -> f32 {
+        let split = self.agents_view.agents_diff_split;
+        let panel_width = self.agents_view.agents_diff_width;
+        let max_scroll = self
+            .agents_view
+            .agents_diff
+            .as_ref()
+            .and_then(|d| d.files.get(drag.file_idx))
+            .map(|f| max_h_scroll(f.max_line_chars, split, panel_width))
+            .unwrap_or(0.0);
+        let track_w = {
+            let w = f32::from(self.agents_view.agents_diff_h_track.bounds().size.width);
+            if w > 0.0 {
+                w
+            } else {
+                panel_width - 1.0 - 2.0 * H_SCROLLBAR_INSET
+            }
+        };
+        let (_, thumb_w) = h_thumb_geometry(
+            drag.start_offset,
+            max_scroll,
+            h_text_viewport(split, panel_width),
+            track_w,
+        );
+        let range = track_w - thumb_w;
+        if range <= 0.0 {
+            return drag.start_offset;
+        }
+        drag.start_offset + (mouse_x - drag.start_mouse_x) * max_scroll / range
+    }
+
+    /// Set one file's horizontal scroll offset, clamped to that file's overflow.
+    /// Shared by wheel gestures, scrollbar drag and track clicks.
+    pub(crate) fn set_agents_diff_file_offset(
+        &mut self,
+        file_idx: usize,
+        value: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let max_scroll = {
+            let split = self.agents_view.agents_diff_split;
+            let panel_width = self.agents_view.agents_diff_width;
+            self.agents_view
+                .agents_diff
+                .as_ref()
+                .and_then(|d| d.files.get(file_idx))
+                .map(|f| max_h_scroll(f.max_line_chars, split, panel_width))
+                .unwrap_or(0.0)
+        };
+        let Some(slot) = self.agents_view.agents_diff_h_offsets.get_mut(file_idx) else {
+            return;
+        };
+        let next = value.clamp(0.0, max_scroll);
+        if next != *slot {
+            *slot = next;
+            cx.notify();
+        }
+    }
+}
+
+/// The thin, column-resize hit target straddling the panel's left border.
+/// Captures the drag anchor `(cursor_x, width_at_grab)`; the actual resize math
+/// runs in the Agents main area's `on_mouse_move` (a wide capture surface, so
+/// the drag survives the cursor leaving the dock).
+fn render_diff_resize_handle(
+    ui: crate::theme::UiColors,
+    cx: &mut Context<PaneFlowApp>,
+) -> AnyElement {
+    div()
+        .id("agents-diff-resize")
+        .absolute()
+        .left(px(-3.))
+        .top_0()
+        .bottom_0()
+        .w(px(7.))
+        .cursor(CursorStyle::ResizeLeftRight)
+        .hover(move |d| d.bg(with_alpha(ui.text, 0.06)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, event: &MouseDownEvent, _w, cx| {
+                let w = this.agents_view.agents_diff_width;
+                this.agents_view.agents_diff_resize = Some((f32::from(event.position.x), w));
+                cx.notify();
+            }),
+        )
+        .into_any_element()
 }
 
 /// Toolbar button (sibling to the environment-panel toggle) that opens the diff
@@ -514,7 +725,7 @@ fn render_diff_panel_header(
         .as_ref()
         .map(|d| (d.added, d.removed))
         .unwrap_or((0, 0));
-    let diff = agents_diff_palette(ui);
+    let diff = ui.diff_colors();
 
     let mut title_row = div()
         .flex_1()
@@ -758,7 +969,9 @@ fn diff_panel_centered(
 
 // -- flattened virtualized row model --------------------------------------
 
-/// One row in the flattened, collapse-resolved list fed to `list`.
+/// One row in the flattened, collapse-resolved list fed to `list`. Code rows
+/// carry their owning file's index so each scrolls horizontally on its own
+/// [`PaneFlowApp::agents_diff_h_offsets`] entry.
 enum FlatRow {
     /// A file header; `idx` indexes the shared `files` vector, `collapsed` drives
     /// the chevron direction.
@@ -767,11 +980,22 @@ enum FlatRow {
         collapsed: bool,
     },
     Hunk(SharedString),
-    Line(DiffLine),
+    Line {
+        file_idx: usize,
+        line: DiffLine,
+    },
     /// A side-by-side row: old text on the left, new on the right.
-    SplitLine(SplitRow),
+    SplitLine {
+        file_idx: usize,
+        row: SplitRow,
+    },
     /// A muted note row (binary file / truncation).
     Note(SharedString),
+    /// The per-file horizontal scrollbar, anchored at the end of a file's block
+    /// when its longest line overflows the text column (GitHub-style).
+    FileScrollbar {
+        file_idx: usize,
+    },
 }
 
 /// Pair a hunk's sequential lines into side-by-side rows. Removed lines stack on
@@ -840,6 +1064,7 @@ fn flatten_rows(
     files: &[AgentsDiffFile],
     collapsed: &HashSet<String>,
     split: bool,
+    panel_width: f32,
 ) -> Vec<FlatRow> {
     let mut rows = Vec::new();
     for (idx, file) in files.iter().enumerate() {
@@ -876,7 +1101,10 @@ fn flatten_rows(
                     if rendered >= MAX_LINES_PER_FILE {
                         hidden += 1;
                     } else {
-                        rows.push(FlatRow::SplitLine(srow));
+                        rows.push(FlatRow::SplitLine {
+                            file_idx: idx,
+                            row: srow,
+                        });
                         rendered += 1;
                     }
                 }
@@ -885,7 +1113,10 @@ fn flatten_rows(
                     if rendered >= MAX_LINES_PER_FILE {
                         hidden += 1;
                     } else {
-                        rows.push(FlatRow::Line(line.clone()));
+                        rows.push(FlatRow::Line {
+                            file_idx: idx,
+                            line: line.clone(),
+                        });
                         rendered += 1;
                     }
                 }
@@ -897,26 +1128,65 @@ fn flatten_rows(
                 if hidden == 1 { "" } else { "s" }
             ))));
         }
+        // Per-file scrollbar at the bottom of the block when the file overflows.
+        if max_h_scroll(file.max_line_chars, split, panel_width) > 0.0 {
+            rows.push(FlatRow::FileScrollbar { file_idx: idx });
+        }
     }
     rows
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_flat_row(
     row: &FlatRow,
     files: &[AgentsDiffFile],
     mono: &SharedString,
     ui: crate::theme::UiColors,
     entity: &Entity<PaneFlowApp>,
+    offsets: &[f32],
+    split: bool,
+    panel_width: f32,
+    track: &gpui::ScrollHandle,
 ) -> AnyElement {
+    let offset_of = |i: usize| offsets.get(i).copied().unwrap_or(0.0);
     match row {
         FlatRow::File { idx, collapsed } => files
             .get(*idx)
             .map(|file| render_flat_file_header(file, *collapsed, ui, entity))
             .unwrap_or_else(|| div().h(px(FILE_ROW_HEIGHT)).into_any_element()),
         FlatRow::Hunk(text) => render_flat_hunk(text.clone(), mono.clone(), ui),
-        FlatRow::Line(line) => render_flat_line(line, mono.clone(), ui),
-        FlatRow::SplitLine(row) => render_flat_split_line(row, mono.clone(), ui),
+        FlatRow::Line { file_idx, line } => render_flat_line(
+            line,
+            *file_idx,
+            offset_of(*file_idx),
+            mono.clone(),
+            ui,
+            entity,
+        ),
+        FlatRow::SplitLine { file_idx, row } => render_flat_split_line(
+            row,
+            *file_idx,
+            offset_of(*file_idx),
+            mono.clone(),
+            ui,
+            entity,
+        ),
         FlatRow::Note(text) => render_flat_note(text.clone(), ui),
+        FlatRow::FileScrollbar { file_idx } => {
+            let max_scroll = files
+                .get(*file_idx)
+                .map(|f| max_h_scroll(f.max_line_chars, split, panel_width))
+                .unwrap_or(0.0);
+            render_flat_file_scrollbar(
+                *file_idx,
+                offset_of(*file_idx),
+                max_scroll,
+                h_text_viewport(split, panel_width),
+                track,
+                ui,
+                entity,
+            )
+        }
     }
 }
 
@@ -926,7 +1196,7 @@ fn render_flat_file_header(
     ui: crate::theme::UiColors,
     entity: &Entity<PaneFlowApp>,
 ) -> AnyElement {
-    let diff = agents_diff_palette(ui);
+    let diff = ui.diff_colors();
     let icon_color = status_color(file.status, ui, diff);
     let (dir, name) = split_path(&file.path);
     let chevron = if collapsed {
@@ -1053,8 +1323,42 @@ fn render_flat_hunk(
         .into_any_element()
 }
 
-fn render_flat_line(line: &DiffLine, mono: SharedString, ui: crate::theme::UiColors) -> AnyElement {
-    let diff = agents_diff_palette(ui);
+/// Per-file horizontal wheel handler shared by code rows. A horizontal gesture
+/// shifts only this file's offset; vertical deltas are left untouched so they
+/// bubble to the `list` for normal vertical scrolling.
+fn file_h_wheel(
+    file_idx: usize,
+    entity: &Entity<PaneFlowApp>,
+) -> impl Fn(&gpui::ScrollWheelEvent, &mut Window, &mut gpui::App) + 'static {
+    let entity = entity.clone();
+    move |ev, window, cx| {
+        let dx = f32::from(ev.delta.pixel_delta(window.line_height()).x);
+        if dx == 0.0 {
+            return;
+        }
+        entity.update(cx, |this, cx| {
+            let cur = this
+                .agents_view
+                .agents_diff_h_offsets
+                .get(file_idx)
+                .copied()
+                .unwrap_or(0.0);
+            // GPUI scroll deltas go negative toward the end; subtract to grow
+            // our positive offset and reveal the right of the line.
+            this.set_agents_diff_file_offset(file_idx, cur - dx, cx);
+        });
+    }
+}
+
+fn render_flat_line(
+    line: &DiffLine,
+    file_idx: usize,
+    h_offset: f32,
+    mono: SharedString,
+    ui: crate::theme::UiColors,
+    entity: &Entity<PaneFlowApp>,
+) -> AnyElement {
+    let diff = ui.diff_colors();
     let transparent = with_alpha(ui.text, 0.0);
     let (sign, sign_color, gutter_color, text_color, row_bg, gutter_bg, bar_color) = match line.kind
     {
@@ -1094,6 +1398,7 @@ fn render_flat_line(line: &DiffLine, mono: SharedString, ui: crate::theme::UiCol
         .flex_row()
         .items_center()
         .bg(row_bg)
+        .on_scroll_wheel(file_h_wheel(file_idx, entity))
         .child(
             div()
                 .flex_none()
@@ -1132,16 +1437,28 @@ fn render_flat_line(line: &DiffLine, mono: SharedString, ui: crate::theme::UiCol
                 ),
         )
         .child(
+            // Clipping viewport: fills the remaining width and masks the line.
             div()
                 .flex_1()
                 .min_w_0()
-                .pr(px(12.))
+                .h_full()
+                .flex()
+                .flex_row()
+                .items_center()
                 .overflow_x_hidden()
-                .whitespace_nowrap()
-                .font_family(mono)
-                .text_size(px(12.))
-                .text_color(text_color)
-                .child(line.text.clone()),
+                .child(
+                    // Natural-width line text, slid left by the shared offset so
+                    // its right edge scrolls into view (gutters stay fixed).
+                    div()
+                        .flex_none()
+                        .ml(px(-h_offset))
+                        .pr(px(12.))
+                        .whitespace_nowrap()
+                        .font_family(mono)
+                        .text_size(px(12.))
+                        .text_color(text_color)
+                        .child(line.text.clone()),
+                ),
         )
         .into_any_element()
 }
@@ -1151,8 +1468,11 @@ fn render_flat_line(line: &DiffLine, mono: SharedString, ui: crate::theme::UiCol
 /// gutter and wash; a `None` cell renders as a faint filler.
 fn render_flat_split_line(
     row: &SplitRow,
+    file_idx: usize,
+    h_offset: f32,
     mono: SharedString,
     ui: crate::theme::UiColors,
+    entity: &Entity<PaneFlowApp>,
 ) -> AnyElement {
     div()
         .h(px(LINE_ROW_HEIGHT))
@@ -1160,9 +1480,15 @@ fn render_flat_split_line(
         .flex()
         .flex_row()
         .items_center()
-        .child(render_split_half(row.left.as_ref(), mono.clone(), ui))
+        .on_scroll_wheel(file_h_wheel(file_idx, entity))
+        .child(render_split_half(
+            row.left.as_ref(),
+            mono.clone(),
+            ui,
+            h_offset,
+        ))
         .child(div().flex_none().w(px(1.)).h_full().bg(ui.base))
-        .child(render_split_half(row.right.as_ref(), mono, ui))
+        .child(render_split_half(row.right.as_ref(), mono, ui, h_offset))
         .into_any_element()
 }
 
@@ -1170,8 +1496,9 @@ fn render_split_half(
     cell: Option<&SplitCell>,
     mono: SharedString,
     ui: crate::theme::UiColors,
+    h_offset: f32,
 ) -> AnyElement {
-    let diff = agents_diff_palette(ui);
+    let diff = ui.diff_colors();
     let transparent = with_alpha(ui.text, 0.0);
     let Some(cell) = cell else {
         return div()
@@ -1233,13 +1560,22 @@ fn render_split_half(
             div()
                 .flex_1()
                 .min_w_0()
+                .h_full()
+                .flex()
+                .flex_row()
+                .items_center()
                 .px(px(8.))
                 .overflow_x_hidden()
-                .whitespace_nowrap()
-                .font_family(mono)
-                .text_size(px(12.))
-                .text_color(text_color)
-                .child(cell.text.clone()),
+                .child(
+                    div()
+                        .flex_none()
+                        .ml(px(-h_offset))
+                        .whitespace_nowrap()
+                        .font_family(mono)
+                        .text_size(px(12.))
+                        .text_color(text_color)
+                        .child(cell.text.clone()),
+                ),
         )
         .into_any_element()
 }
@@ -1260,6 +1596,106 @@ fn render_flat_note(text: SharedString, ui: crate::theme::UiColors) -> AnyElemen
         .into_any_element()
 }
 
+/// A single file's horizontal scrollbar row, anchored at the end of its block.
+/// `track` is bound to the track only to read its laid-out bounds (origin +
+/// width) back; the actual scroll is the file's [`PaneFlowApp::agents_diff_h_offsets`]
+/// entry. The thumb arms a drag (continued on the body); a track click jumps.
+#[allow(clippy::too_many_arguments)]
+fn render_flat_file_scrollbar(
+    file_idx: usize,
+    h_offset: f32,
+    max_scroll: f32,
+    viewport_w: f32,
+    track: &gpui::ScrollHandle,
+    ui: crate::theme::UiColors,
+    entity: &Entity<PaneFlowApp>,
+) -> AnyElement {
+    let track_w = {
+        let w = f32::from(track.bounds().size.width);
+        if w > 0.0 {
+            w
+        } else {
+            AGENTS_DIFF_PANEL_WIDTH - 1.0 - 2.0 * H_SCROLLBAR_INSET
+        }
+    };
+    let (thumb_left, thumb_w) = h_thumb_geometry(h_offset, max_scroll, viewport_w, track_w);
+    let track_entity = entity.clone();
+    let thumb_entity = entity.clone();
+
+    div()
+        .h(px(H_SCROLLBAR_BAND_HEIGHT))
+        .w_full()
+        .flex()
+        .items_center()
+        .px(px(H_SCROLLBAR_INSET))
+        .child(
+            div()
+                .id(SharedString::from(format!(
+                    "agents-diff-hscroll-track-{file_idx}"
+                )))
+                .relative()
+                .h(px(H_SCROLLBAR_THUMB_HEIGHT))
+                .w_full()
+                .track_scroll(track)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    move |ev: &MouseDownEvent, _w: &mut Window, cx: &mut gpui::App| {
+                        let ev_x = f32::from(ev.position.x);
+                        track_entity.update(cx, |this, cx| {
+                            // Click on the track (the thumb stops propagation):
+                            // centre the thumb on the click and jump there.
+                            let bounds = this.agents_view.agents_diff_h_track.bounds();
+                            let tw = f32::from(bounds.size.width);
+                            let range = tw - thumb_w;
+                            if range <= 0.0 {
+                                return;
+                            }
+                            let local = ev_x - f32::from(bounds.origin.x);
+                            let target = (local - thumb_w / 2.0).clamp(0.0, range);
+                            let value = target / range * max_scroll;
+                            this.set_agents_diff_file_offset(file_idx, value, cx);
+                        });
+                    },
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "agents-diff-hscroll-thumb-{file_idx}"
+                        )))
+                        .absolute()
+                        .left(px(thumb_left))
+                        .top_0()
+                        .h(px(H_SCROLLBAR_THUMB_HEIGHT))
+                        .w(px(thumb_w))
+                        .rounded(px(3.))
+                        .bg(ui.muted)
+                        .hover(|s| s.bg(ui.text))
+                        .cursor(CursorStyle::PointingHand)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            move |ev: &MouseDownEvent, _w: &mut Window, cx: &mut gpui::App| {
+                                let ev_x = f32::from(ev.position.x);
+                                thumb_entity.update(cx, |this, cx| {
+                                    let start_offset = this
+                                        .agents_view
+                                        .agents_diff_h_offsets
+                                        .get(file_idx)
+                                        .copied()
+                                        .unwrap_or(0.0);
+                                    this.agents_view.agents_diff_h_drag = Some(AgentsDiffHDrag {
+                                        file_idx,
+                                        start_mouse_x: ev_x,
+                                        start_offset,
+                                    });
+                                    cx.stop_propagation();
+                                });
+                            },
+                        ),
+                ),
+        )
+        .into_any_element()
+}
+
 fn render_gutter(number: SharedString, mono: SharedString, color: Hsla) -> AnyElement {
     div()
         .flex_none()
@@ -1277,7 +1713,11 @@ fn render_gutter(number: SharedString, mono: SharedString, color: Hsla) -> AnyEl
 /// Status → file-icon tint. The glyph itself comes from [`file_icon`] (by
 /// extension); its color carries the git status the way Codex's panel does, so
 /// the old single-letter A/M/D/R badge is gone.
-fn status_color(status: DiffStatus, ui: crate::theme::UiColors, diff: AgentsDiffPalette) -> Hsla {
+fn status_color(
+    status: DiffStatus,
+    ui: crate::theme::UiColors,
+    diff: crate::theme::DiffColors,
+) -> Hsla {
     match status {
         DiffStatus::Added => diff.added,
         DiffStatus::Modified => ui.vc_modified,
@@ -1325,7 +1765,8 @@ fn split_path(path: &str) -> (&str, &str) {
 
 /// Compute the panel's diff: tracked changes vs `HEAD` (staged + unstaged),
 /// parsed from `git diff`, plus untracked files synthesised as all-added.
-/// Returns `(files, total_added, total_removed)`. Runs off the main thread.
+/// Returns `(files, total_added, total_removed)`; each file carries its own
+/// `max_line_chars` for per-file horizontal scroll. Runs off the main thread.
 fn compute_agents_diff(cwd: &str) -> Result<(Vec<AgentsDiffFile>, u32, u32), String> {
     // `-M` makes git surface renames as `rename from/to` instead of delete+add.
     // On a repo with no commits `HEAD` doesn't resolve, so fall back to the
@@ -1348,6 +1789,15 @@ fn compute_agents_diff(cwd: &str) -> Result<(Vec<AgentsDiffFile>, u32, u32), Str
     }
 
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    for file in &mut files {
+        file.max_line_chars = file
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .map(|l| l.text.chars().count())
+            .max()
+            .unwrap_or(0);
+    }
     let added = files.iter().map(|f| f.added).sum();
     let removed = files.iter().map(|f| f.removed).sum();
     Ok((files, added, removed))
@@ -1393,6 +1843,7 @@ fn read_untracked_file(cwd: &str, rel: &str) -> Option<AgentsDiffFile> {
             added: 0,
             removed: 0,
             is_binary: true,
+            max_line_chars: 0,
         });
     }
 
@@ -1416,6 +1867,7 @@ fn read_untracked_file(cwd: &str, rel: &str) -> Option<AgentsDiffFile> {
         added,
         removed: 0,
         is_binary: false,
+        max_line_chars: 0,
     })
 }
 
@@ -1442,6 +1894,7 @@ fn parse_unified_diff(patch: &str) -> Vec<AgentsDiffFile> {
                 added: 0,
                 removed: 0,
                 is_binary: false,
+                max_line_chars: 0,
             });
             continue;
         }
@@ -1626,6 +2079,39 @@ mod tests {
     }
 
     #[test]
+    fn max_h_scroll_zero_when_fits_then_grows() {
+        let w = AGENTS_DIFF_PANEL_WIDTH;
+        // Short lines fit the text column in both modes → no horizontal scroll.
+        assert_eq!(max_h_scroll(0, false, w), 0.0);
+        assert_eq!(max_h_scroll(10, false, w), 0.0);
+        assert_eq!(max_h_scroll(10, true, w), 0.0);
+        // A long line overflows; the narrower split half scrolls further.
+        let unified = max_h_scroll(300, false, w);
+        let split = max_h_scroll(300, true, w);
+        assert!(unified > 0.0);
+        assert!(split > unified);
+        // A narrower dock shrinks the text column → the same line scrolls further.
+        assert!(max_h_scroll(300, false, AGENTS_DIFF_PANEL_MIN_WIDTH) > unified);
+    }
+
+    #[test]
+    fn h_thumb_geometry_spans_and_slides() {
+        let track = 500.0;
+        let viewport = 450.0;
+        let max_scroll = 1000.0;
+        // At rest the thumb sits at the left and is narrower than the track
+        // (content is wider than the viewport).
+        let (left0, w0) = h_thumb_geometry(0.0, max_scroll, viewport, track);
+        assert_eq!(left0, 0.0);
+        assert!(w0 >= H_SCROLLBAR_MIN_THUMB && w0 < track);
+        // Fully scrolled, the thumb's right edge reaches the track's right edge.
+        let (left1, w1) = h_thumb_geometry(max_scroll, max_scroll, viewport, track);
+        assert!((left1 + w1 - track).abs() < 0.01);
+        // No overflow → thumb fills the track.
+        assert_eq!(h_thumb_geometry(0.0, 0.0, viewport, track), (0.0, track));
+    }
+
+    #[test]
     fn hunk_header_line_numbers() {
         assert_eq!(parse_hunk_header("@@ -12,7 +15,9 @@ context"), (12, 15));
         assert_eq!(parse_hunk_header("@@ -1 +1 @@"), (1, 1));
@@ -1643,10 +2129,16 @@ mod tests {
         let files = parse_unified_diff(patch);
         let mut collapsed = HashSet::new();
         // Expanded: header + hunk header + 2 lines = 4 rows.
-        assert_eq!(flatten_rows(&files, &collapsed, false).len(), 4);
+        assert_eq!(
+            flatten_rows(&files, &collapsed, false, AGENTS_DIFF_PANEL_WIDTH).len(),
+            4
+        );
         // Collapsed: just the header row.
         collapsed.insert("a.rs".to_string());
-        assert_eq!(flatten_rows(&files, &collapsed, false).len(), 1);
+        assert_eq!(
+            flatten_rows(&files, &collapsed, false, AGENTS_DIFF_PANEL_WIDTH).len(),
+            1
+        );
     }
 
     #[test]

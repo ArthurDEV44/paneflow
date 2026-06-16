@@ -430,6 +430,28 @@ struct AgentsViewState {
     pub(crate) agents_diff_list: Option<gpui::ListState>,
     /// The `agents_diff_rev` value the current `agents_diff_list` was built for.
     pub(crate) agents_diff_list_rev: u64,
+    /// Per-file horizontal scroll offsets (px, `>= 0`), one slot per file by
+    /// position. Each diff block scrolls on its own slot so a long file doesn't
+    /// drag short files into the blank; the virtualized `list` owns vertical
+    /// scroll, and GPUI can't layer `overflow_x_scroll` on a `list`, so code
+    /// rows translate their text by `-offset`. Reseated to `vec![0.0; files]`
+    /// whenever `agents_diff_rev` moves (refresh / collapse / split toggle).
+    pub(crate) agents_diff_h_offsets: Vec<f32>,
+    /// Scroll handle bound to every per-file scrollbar *track* only to read its
+    /// laid-out bounds back (origin.x + width); the actual scroll is
+    /// `agents_diff_h_offsets`, not this handle's offset. All tracks share one
+    /// handle because they share identical X geometry (same column, same width);
+    /// only their Y differs, which the click/drag math never reads.
+    pub(crate) agents_diff_h_track: gpui::ScrollHandle,
+    /// Active drag of a file's horizontal scrollbar thumb, captured on
+    /// `mouse_down` (carries the dragged file's index).
+    pub(crate) agents_diff_h_drag: Option<crate::app::agents_diff::AgentsDiffHDrag>,
+    /// Width in px of the diff dock; user-resizable by dragging its left edge.
+    /// Clamped to `[AGENTS_DIFF_PANEL_MIN_WIDTH, AGENTS_DIFF_PANEL_MAX_WIDTH]`.
+    pub(crate) agents_diff_width: f32,
+    /// Live drag anchor `(cursor_x, width_at_grab)` while the dock's left edge is
+    /// being dragged to resize; `None` when not resizing.
+    pub(crate) agents_diff_resize: Option<(f32, f32)>,
     /// Whether the Codex-style full-width bottom terminal dock is open. Toggled
     /// by the `layout-bottombar` toolbar button (and its own × button).
     pub(crate) bottom_panel_open: bool,

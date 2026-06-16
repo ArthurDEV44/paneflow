@@ -162,28 +162,35 @@ impl PaneFlowApp {
             .size_full()
             .flex()
             .flex_col()
+            // Both panel resizes (the bottom dock's top edge and the diff dock's
+            // left edge) are captured here, on the full-height main area, so a
+            // drag keeps tracking even when the cursor outruns its handle and
+            // crosses into the surface beside it.
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _w, cx| {
+                if this.agents_view.bottom_panel_drag.is_some() {
+                    if event.pressed_button == Some(MouseButton::Left) {
+                        this.drag_bottom_panel_resize(f32::from(event.position.y), cx);
+                    } else {
+                        this.end_bottom_panel_resize(cx);
+                    }
+                } else if this.agents_view.agents_diff_resize.is_some() {
+                    if event.pressed_button == Some(MouseButton::Left) {
+                        this.drag_agents_diff_resize(f32::from(event.position.x), cx);
+                    } else {
+                        this.end_agents_diff_resize(cx);
+                    }
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _e: &gpui::MouseUpEvent, _w, cx| {
+                    this.end_bottom_panel_resize(cx);
+                    this.end_agents_diff_resize(cx);
+                }),
+            )
             .child(div().flex_1().min_h(px(0.)).child(body));
         if self.agents_view.bottom_panel_open {
-            // The dock's top-edge resize is captured here, on the full-height
-            // main area, so the drag keeps tracking even when the cursor outruns
-            // the dock and crosses into the surface above it.
-            root = root
-                .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _w, cx| {
-                    if this.agents_view.bottom_panel_drag.is_some() {
-                        if event.pressed_button == Some(MouseButton::Left) {
-                            this.drag_bottom_panel_resize(f32::from(event.position.y), cx);
-                        } else {
-                            this.end_bottom_panel_resize(cx);
-                        }
-                    }
-                }))
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|this, _e: &gpui::MouseUpEvent, _w, cx| {
-                        this.end_bottom_panel_resize(cx);
-                    }),
-                )
-                .child(self.render_agents_bottom_panel(cx));
+            root = root.child(self.render_agents_bottom_panel(cx));
         }
         root.into_any_element()
     }
@@ -1614,6 +1621,9 @@ fn render_agents_environment_changes_row(
 ) -> gpui::AnyElement {
     let insertions = summary.git_stats.insertions;
     let deletions = summary.git_stats.deletions;
+    // Reuse the right diff panel's palette so the +/- counts match the washes
+    // there (Codex green/red on dark themes, theme vc_* on light).
+    let (added_color, deleted_color) = crate::app::agents_diff::agents_diff_count_colors(ui);
     div()
         .h(px(20.))
         .flex()
@@ -1635,12 +1645,12 @@ fn render_agents_environment_changes_row(
                 .text_size(px(13.))
                 .child(
                     div()
-                        .text_color(ui.vc_added)
+                        .text_color(added_color)
                         .child(format!("+{insertions}")),
                 )
                 .child(
                     div()
-                        .text_color(ui.vc_deleted)
+                        .text_color(deleted_color)
                         .child(format!("-{deletions}")),
                 ),
         )
