@@ -42,16 +42,7 @@ impl PaneFlowApp {
             .external_editor
             .clone()
             .unwrap_or_else(|| "auto".to_string());
-        let editor_presets: &[(&str, &str)] = &[
-            ("Auto-detect", "auto"),
-            ("Zed", "zed"),
-            ("Cursor", "cursor"),
-            ("Windsurf", "windsurf"),
-            ("VS Code", "code"),
-            ("Visual Studio", "visual_studio"),
-            ("System default", "system"),
-        ];
-        let editor_opts: Vec<SelectOption> = editor_presets
+        let editor_opts: Vec<SelectOption> = EDITOR_PRESETS
             .iter()
             .map(|(label, val)| {
                 (
@@ -256,7 +247,17 @@ impl PaneFlowApp {
 /// (Zed / VS Code / Visual Studio) are PNGs rendered in full color; Cursor and
 /// Windsurf ship as monochrome `currentColor` SVGs that follow the theme.
 /// `auto` / `system` have no logo.
-fn editor_icon(value: &str) -> Option<Logo> {
+pub(crate) const EDITOR_PRESETS: &[(&str, &str)] = &[
+    ("Auto-detect", "auto"),
+    ("Zed", "zed"),
+    ("Cursor", "cursor"),
+    ("Windsurf", "windsurf"),
+    ("VS Code", "code"),
+    ("Visual Studio", "visual_studio"),
+    ("System default", "system"),
+];
+
+pub(crate) fn editor_icon(value: &str) -> Option<Logo> {
     match value {
         "zed" => Some(("icons/editor-zed.png", true)),
         "code" => Some(("icons/editor-vscode.png", true)),
