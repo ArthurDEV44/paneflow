@@ -401,6 +401,52 @@ struct AgentsViewState {
     pub(crate) sidebar_actions_menu_open: bool,
     /// Whether the compact interface picker above the sidebar footer is open.
     pub(crate) sidebar_mode_picker_open: bool,
+    /// Open branch selector for the Agents environment card. The menu is
+    /// scoped to a cwd because project threads and free chats can point at
+    /// different repositories.
+    pub(crate) agents_branch_menu: Option<AgentsBranchMenuState>,
+    /// Whether the floating Agents environment card is visible. The toolbar
+    /// remains visible so the same button can reopen it.
+    pub(crate) agents_environment_panel_open: bool,
+    /// Whether the editor selector attached to the Agents toolbar is open.
+    pub(crate) agents_editor_menu_open: bool,
+    /// Whether the Codex-style git diff dock is open on the right of the thread
+    /// surface (toggled by the `layout-sidebar-right` toolbar button).
+    pub(crate) agents_diff_open: bool,
+    /// The diff snapshot rendered by the dock, computed off-thread for the
+    /// active thread's cwd. `None` until the dock is first opened.
+    pub(crate) agents_diff: Option<crate::app::agents_diff::AgentsDiffData>,
+    /// Paths of files folded shut in the diff dock, so a fold survives re-renders.
+    pub(crate) agents_diff_collapsed: std::collections::HashSet<String>,
+    /// Diff dock view mode: `false` = unified (inline), `true` = split (old left,
+    /// new right). Toggled from the header; switching bumps `agents_diff_rev`.
+    pub(crate) agents_diff_split: bool,
+    /// Monotonic revision of the diff dock's flattened row set. Bumped on refresh
+    /// and on collapse changes so the variable-height `list` state is rebuilt only
+    /// when the rows actually change, not on every repaint.
+    pub(crate) agents_diff_rev: u64,
+    /// Persisted `gpui::list` scroll/measure state for the diff dock (tall file
+    /// headers over compact code lines). Rebuilt when `agents_diff_rev` moves.
+    pub(crate) agents_diff_list: Option<gpui::ListState>,
+    /// The `agents_diff_rev` value the current `agents_diff_list` was built for.
+    pub(crate) agents_diff_list_rev: u64,
+    /// Whether the Codex-style full-width bottom terminal dock is open. Toggled
+    /// by the `layout-bottombar` toolbar button (and its own × button).
+    pub(crate) bottom_panel_open: bool,
+    /// Height in px of the bottom dock; user-resizable by dragging its top edge.
+    pub(crate) bottom_panel_height: f32,
+    /// The active terminal tab in the bottom dock, by [`BottomTerminal::id`].
+    /// `None` only when the dock holds no terminals (its empty state).
+    pub(crate) bottom_panel_active: Option<u64>,
+    /// Terminals hosted as tabs in the bottom dock. Kept alive while the dock is
+    /// hidden so reopening is warm (mirrors [`Self::agents_terminal_view_cache`]).
+    pub(crate) bottom_terminals: Vec<BottomTerminal>,
+    /// Monotonic counter seeding each bottom terminal's stable tab id and its PTY
+    /// env id (offset into a namespace disjoint from threads/workspaces).
+    pub(crate) bottom_terminal_seq: u64,
+    /// Live drag anchor `(cursor_y, height_at_grab)` while the dock's top edge is
+    /// being dragged to resize; `None` when not resizing.
+    pub(crate) bottom_panel_drag: Option<(f32, f32)>,
     /// Cache of every Terminal Thread surface mounted this session,
     /// keyed by [`crate::project::Thread::id`]. The Agents view is
     /// terminal-only: selecting a thread reuses the existing
@@ -410,6 +456,28 @@ struct AgentsViewState {
     /// cleanup) or on app shutdown.
     pub(crate) agents_terminal_view_cache:
         std::collections::HashMap<u64, gpui::Entity<crate::terminal::view::TerminalView>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentsBranchMenuState {
+    pub(crate) cwd: String,
+    pub(crate) current: String,
+    pub(crate) branches: Vec<String>,
+    pub(crate) loading: bool,
+    pub(crate) error: Option<String>,
+    /// Codex branch picker: the live search query that filters the branch list.
+    pub(crate) query: String,
+}
+
+/// One shell terminal hosted as a tab in the Agents bottom dock. The `view`
+/// entity owns the PTY; dropping this struct (tab close / app shutdown) tears
+/// the shell down via [`crate::terminal::view::TerminalView`]'s `Drop`.
+pub(crate) struct BottomTerminal {
+    /// Stable id: the tab's identity and the seed for its PTY env id.
+    pub(crate) id: u64,
+    /// Tab label. Seeded as "Terminal N", then tracks the PTY's OSC title.
+    pub(crate) title: String,
+    pub(crate) view: gpui::Entity<crate::terminal::view::TerminalView>,
 }
 
 struct PaneFlowApp {
@@ -587,6 +655,10 @@ struct PaneFlowApp {
     /// that has no `Window` — consumed in `render`, like
     /// `pending_pane_focus`).
     fleet_search_pending_focus: bool,
+    /// Keyboard focus for the Agents environment branch picker so its Codex-style
+    /// search field captures typing (live filter + new-branch name). Focused on
+    /// open; focus returns to the active thread terminal on close.
+    agents_branch_menu_focus: FocusHandle,
     /// EP-002 US-005 (cli-cockpit): Launch Pad modal state, `None` = closed.
     launch_pad: Option<app::launch_pad::LaunchPadState>,
     launch_pad_focus: FocusHandle,

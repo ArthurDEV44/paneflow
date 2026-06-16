@@ -4,6 +4,8 @@
 
 pub mod about_dialog;
 pub mod actions;
+pub mod agents_bottom_panel;
+pub mod agents_diff;
 pub mod agents_sidebar;
 pub mod agents_view_actions;
 pub mod attention_queue;
