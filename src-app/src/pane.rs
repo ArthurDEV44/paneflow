@@ -24,6 +24,8 @@ use gpui::{
 };
 use paneflow_config::schema::ButtonCommand;
 
+use crate::settings::components::with_alpha;
+
 use crate::diff::DiffView;
 use crate::markdown::MarkdownView;
 use crate::pane_drag::{
@@ -88,19 +90,30 @@ fn peek_badge_line(message: &str) -> String {
     line
 }
 
-/// Tab bar total height (matches Zed's 32px at default density)
-const TAB_BAR_HEIGHT: f32 = 32.0;
-/// Inner content height (bar height minus 1px bottom border compensation)
-const TAB_CONTENT_HEIGHT: f32 = 31.0;
-/// Horizontal padding inside each tab
-const TAB_PX: f32 = 12.0;
-/// Gap between tab children (icon, label, close button)
-const TAB_GAP: f32 = 6.0;
-/// Max tab width — longer labels get truncated with ellipsis
+/// Tab bar total height. Matches the Agents bottom-panel strip so the CLI and
+/// Agents views speak one tab language: rounded chips floating with even
+/// breathing room above the terminal body.
+const TAB_BAR_HEIGHT: f32 = 40.0;
+/// Chip height inside the bar. The slack on each side (bar 40 vs chip 28) is the
+/// vertical float gap that makes a tab read as a chip, not a full-height slab.
+const TAB_HEIGHT: f32 = 28.0;
+/// Chip corner radius (rounded chip, not a square editor tab).
+const TAB_RADIUS: f32 = 8.0;
+/// Leading inner padding of a chip, before the icon.
+const TAB_PL: f32 = 11.0;
+/// Trailing inner padding of a chip, after the close button.
+const TAB_PR: f32 = 5.0;
+/// Gap between a chip's children (icon, label, adornments, close).
+const TAB_GAP: f32 = 7.0;
+/// Gap between adjacent chips in the strip.
+const STRIP_GAP: f32 = 4.0;
+/// Leading inset of the strip so the first chip isn't flush to the edge.
+const STRIP_PL: f32 = 8.0;
+/// Max chip width. Longer labels get truncated with ellipsis.
 const TAB_MAX_WIDTH: f32 = 200.0;
-/// Close button container size (matches Zed's end_slot: 14×14)
-const CLOSE_SIZE: f32 = 14.0;
-/// Section padding (start/end areas)
+/// Close-button container size inside a chip.
+const CLOSE_SIZE: f32 = 18.0;
+/// Section padding (start/end areas of the bar).
 const SECTION_PX: f32 = 6.0;
 /// Uniform gap (px) between the drop-to-split preview overlay and its region's
 /// edges, so the blue box floats inside the target half/pane (EP-003 US-008).
@@ -1088,7 +1101,7 @@ impl Pane {
                 .px_1()
                 .rounded_sm()
                 .text_color(ui.text)
-                .text_align(gpui::TextAlign::Center)
+                .text_size(px(12.5))
                 .on_key_down(cx.listener(
                     |this, e: &gpui::KeyDownEvent, window: &mut Window, cx| {
                         if this.rename.is_none() {
@@ -1130,7 +1143,7 @@ impl Pane {
                 .overflow_x_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .text_align(gpui::TextAlign::Center)
+                .text_size(px(12.5))
                 .child(Self::tab_title(&self.tabs[i], cx))
                 .into_any_element()
         }
@@ -1165,7 +1178,6 @@ impl Pane {
         let tab_count = self.tabs.len();
         let ui = tab_colors();
         let theme = crate::theme::active_theme();
-        let chrome_border = ui.border;
         // Handle to this pane, captured once for the per-tab drag closures
         // (EP-001): same-pane vs cross-pane is decided by comparing the
         // drag's `source_pane` to this entity. `accent` tints the insertion
@@ -1178,11 +1190,13 @@ impl Pane {
         // pane-focus signal either.
         let bar_bg = theme.background;
 
-        // Outer container: full-width, fixed height, tab_bar background
+        // Outer container: full-width, fixed height, tab_bar background. The
+        // chips are shorter than the bar, so center them vertically to float.
         let bar = div()
             .flex()
             .flex_none()
             .flex_row()
+            .items_center()
             .w_full()
             .h(px(TAB_BAR_HEIGHT))
             .bg(bar_bg);
@@ -1220,12 +1234,14 @@ impl Pane {
             .id("pane-tabs-scroll")
             .flex()
             .flex_row()
+            .items_center()
             .h_full()
+            .gap(px(STRIP_GAP))
+            .pl(px(STRIP_PL))
             .overflow_x_scroll();
 
-        let selected_bg = theme.background;
         for i in 0..tab_count {
-            tabs_row = tabs_row.child(self.render_tab(i, ui, selected_bg, bar_bg, cx));
+            tabs_row = tabs_row.child(self.render_tab(i, ui, cx));
         }
 
         // Trailing drop zone (EP-001 US-002): the leftover strip space after
@@ -1266,34 +1282,22 @@ impl Pane {
             }),
         ));
 
-        let tabs_area = tabs_area
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .border_b_1()
-                    .border_color(chrome_border),
-            )
-            .child(tabs_row);
+        let tabs_area = tabs_area.child(tabs_row);
 
         bar.child(tabs_area).child(self.render_end_section(cx))
     }
 
     /// Render a single tab chip (US-051: code-motion out of `render_tab_bar`).
-    /// `selected_bg` / `bar_bg` are the bar's resolved background slots; the
-    /// palette-derived `chrome_border` / `accent` and the pane handle are
-    /// recomputed here so the loop call site stays a one-liner.
+    /// The chip skin matches the Agents bottom-panel tabs: a rounded, translucent
+    /// pill that lifts when active and washes in on hover. The palette-derived
+    /// `accent` and the pane handle are recomputed here so the loop call site
+    /// stays a one-liner.
     fn render_tab(
         &self,
         i: usize,
         ui: crate::theme::UiColors,
-        selected_bg: Hsla,
-        bar_bg: Hsla,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let chrome_border = ui.border;
         let accent = ui.accent;
         let self_entity = cx.entity();
         let is_selected = i == self.selected_idx;
@@ -1301,7 +1305,16 @@ impl Pane {
         // US-020: stable identity for the close button's click closure, so
         // it survives a vec mutation between render and click.
         let tab_id = self.tabs[i].entity_id();
-        let group_name = SharedString::from(format!("tab-{i}"));
+        // Chip skin shared with the Agents bottom-panel tabs: the active chip
+        // lifts on a whisper of the text color; inactive chips are bare and only
+        // wash in on hover. Foreground tracks the same active/idle split.
+        let (chip_bg, chip_fg) = if is_selected {
+            (with_alpha(ui.text, 0.09), ui.text)
+        } else {
+            (with_alpha(ui.text, 0.0), ui.muted)
+        };
+        let chip_hover = with_alpha(ui.text, if is_selected { 0.09 } else { 0.05 });
+        let close_hover = with_alpha(ui.text, 0.14);
 
         // US-006: a small accent dot when this tab's terminal has an
         // unacknowledged bell. Zero-size placeholder otherwise so tab
@@ -1429,12 +1442,11 @@ impl Pane {
 
         let mut tab = div()
             .id(SharedString::from(format!("pane-tab-{i}")))
-            .group(group_name.clone())
             .relative()
             .flex()
             .flex_row()
             .items_center()
-            .h_full()
+            .h(px(TAB_HEIGHT))
             .flex_shrink_0()
             .max_w(px(TAB_MAX_WIDTH))
             // Belt-and-suspenders against text-ellipsis miss: even if
@@ -1442,26 +1454,15 @@ impl Pane {
             // grows past `max_w`, the visual paint is clipped here so
             // the title never bleeds into the next tab. CSS flex with
             // `max-width` on the parent doesn't always propagate a
-            // definite size to flex_1 children — and GPUI inherits
-            // that quirk from Taffy.
+            // definite size to flex_1 children; GPUI inherits that
+            // quirk from Taffy.
             .overflow_x_hidden()
+            .rounded(px(TAB_RADIUS))
             .cursor_pointer()
-            .text_size(px(14.));
-
-        if is_selected {
-            tab = tab
-                .bg(selected_bg)
-                .text_color(ui.text)
-                .border_r_1()
-                .border_color(chrome_border);
-        } else {
-            tab = tab
-                .bg(bar_bg)
-                .text_color(ui.muted)
-                .border_r_1()
-                .border_b_1()
-                .border_color(chrome_border);
-        }
+            .text_size(px(12.5))
+            .text_color(chip_fg)
+            .bg(chip_bg)
+            .hover(move |d| d.bg(chip_hover));
 
         // EP-001 drag wiring. GPUI's managed drag applies its own movement
         // threshold before firing `on_drag`, so a plain click (select) and
@@ -1546,30 +1547,21 @@ impl Pane {
                 );
         }
 
-        // Close button — always visible on active tab, hover-only on inactive.
-        // The close button container is always present (to reserve space), but
-        // the SVG icon inside uses group_hover to control visibility.
-        let close_icon = svg()
-            .size(px(12.))
-            .flex_none()
-            .path("icons/close.svg")
-            .text_color(ui.muted);
-
+        // Close button — chip style (matches the Agents bottom-panel tabs):
+        // always visible, a muted glyph in a rounded hit target that washes in
+        // on hover. `on_mouse_down` swallows the press so closing never selects
+        // the tab underneath.
         let close_btn = div()
             .id(SharedString::from(format!("pane-tab-close-{i}")))
+            .flex_none()
+            .size(px(CLOSE_SIZE))
             .flex()
-            .flex_shrink_0()
-            .ml(px(6.))
             .items_center()
             .justify_center()
-            .w(px(CLOSE_SIZE))
-            .h(px(CLOSE_SIZE))
-            .rounded(px(3.))
+            .rounded(px(5.))
             .cursor_pointer()
-            .hover(|s| {
-                let ui = tab_colors();
-                s.bg(ui.subtle).text_color(rgb(0xf38ba8))
-            })
+            .hover(move |d| d.bg(close_hover))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |this, _, _window, cx| {
                 // US-020: resolve the live index by identity, not by the
                 // stale render-time `tab_idx`. A `ChildExited` on another
@@ -1581,37 +1573,32 @@ impl Pane {
                 }
                 cx.stop_propagation();
             }))
-            .opacity(0.)
-            .group_hover(group_name, |s| s.opacity(1.))
-            .child(close_icon);
-
-        // Inner content row: [icon] [centered label] [close button]
-        // The icon (terminal vs markdown) lives in the left slot — its
-        // 14px footprint plus the 6px gap mirrors the close button +
-        // its 6px ml on the right, so the label stays visually centered.
-        let icon_path = Self::tab_icon(&self.tabs[i]);
-        let leading_icon = div()
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .justify_center()
-            .w(px(CLOSE_SIZE))
-            .h(px(CLOSE_SIZE))
             .child(
                 svg()
-                    .size(px(12.))
+                    .size(px(11.))
                     .flex_none()
-                    .path(icon_path)
-                    .text_color(if is_selected { ui.text } else { ui.muted }),
+                    .path("icons/close.svg")
+                    .text_color(ui.muted),
             );
+
+        // Inner content row: [icon] [label] [adornments] [close]. The icon
+        // (terminal vs markdown vs diff) is a bare 13px glyph tinted to the
+        // chip foreground, matching the Agents bottom-panel tab.
+        let icon_path = Self::tab_icon(&self.tabs[i]);
+        let leading_icon = svg()
+            .size(px(13.))
+            .flex_none()
+            .path(icon_path)
+            .text_color(chip_fg);
         let content = div()
             .id(SharedString::from(format!("pane-tab-content-{i}")))
             .flex()
             .flex_row()
             .items_center()
             .gap(px(TAB_GAP))
-            .h(px(TAB_CONTENT_HEIGHT))
-            .px(px(TAB_PX))
+            .h_full()
+            .pl(px(TAB_PL))
+            .pr(px(TAB_PR))
             // Critical: as the only flex child of `tab` (which uses
             // `max_w(TAB_MAX_WIDTH)`), `content` defaults to
             // `min-width: auto` and refuses to shrink below its
@@ -1849,17 +1836,15 @@ impl Pane {
     /// custom buttons. Self-contained — recomputes the palette it needs.
     fn render_end_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = tab_colors();
-        let chrome_border = ui.border;
-        // End section: action buttons
+        // End section: action buttons. No separator rules: the chip strip melts
+        // into the terminal body, so the action cluster floats on the same
+        // surface as the tabs.
         let mut end_section = div()
             .flex()
             .flex_none()
             .flex_row()
             .items_center()
             .h_full()
-            .border_l_1()
-            .border_b_1()
-            .border_color(chrome_border)
             .px(px(SECTION_PX))
             .gap(px(TAB_GAP));
 
