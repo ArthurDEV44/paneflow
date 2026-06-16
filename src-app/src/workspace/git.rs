@@ -8,6 +8,7 @@
 /// Git diff statistics for a workspace directory.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitDiffStats {
+    pub files_changed: usize,
     pub insertions: usize,
     pub deletions: usize,
 }
@@ -56,12 +57,17 @@ impl GitDiffStats {
     /// Parse `git diff --shortstat` output, e.g.:
     /// " 3 files changed, 42 insertions(+), 7 deletions(-)"
     fn parse_shortstat(text: &str) -> Self {
+        let mut files_changed = 0usize;
         let mut insertions = 0usize;
         let mut deletions = 0usize;
 
         for part in text.split(',') {
             let trimmed = part.trim();
-            if trimmed.contains("insertion") {
+            if trimmed.contains("file") {
+                if let Some(n) = trimmed.split_whitespace().next() {
+                    files_changed = n.parse().unwrap_or(0);
+                }
+            } else if trimmed.contains("insertion") {
                 if let Some(n) = trimmed.split_whitespace().next() {
                     insertions = n.parse().unwrap_or(0);
                 }
@@ -73,6 +79,7 @@ impl GitDiffStats {
         }
 
         Self {
+            files_changed,
             insertions,
             deletions,
         }
@@ -580,9 +587,16 @@ mod tests {
     fn parse_shortstat_extracts_insertions_and_deletions() {
         let stats =
             GitDiffStats::parse_shortstat(" 3 files changed, 42 insertions(+), 7 deletions(-)");
+        assert_eq!(stats.files_changed, 3);
         assert_eq!(stats.insertions, 42);
         assert_eq!(stats.deletions, 7);
         assert!(!stats.is_empty());
+
+        // Singular "1 file changed" with only a deletion still parses the count.
+        let single = GitDiffStats::parse_shortstat(" 1 file changed, 2 deletions(-)");
+        assert_eq!(single.files_changed, 1);
+        assert_eq!(single.insertions, 0);
+        assert_eq!(single.deletions, 2);
     }
 
     #[test]
