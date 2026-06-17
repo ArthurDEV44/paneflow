@@ -232,6 +232,10 @@ impl PaneFlowApp {
             terminal_agent: None,
             pinned: false,
             agent_pid: None,
+            // Legacy Agent-kind row (not a Terminal Thread): no forced
+            // session id, no manual-rename lock.
+            session_id: None,
+            title_user_set: false,
         };
         let id = thread.id;
         project.threads.push(thread);

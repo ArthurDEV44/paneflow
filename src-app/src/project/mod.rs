@@ -216,6 +216,20 @@ pub struct Thread {
     /// `None` for legacy hook shims that omit `pid`; the sweep then keeps
     /// the state conservatively (same policy as workspace sessions).
     pub agent_pid: Option<u32>,
+    /// Forced agent session UUID for a Claude Terminal Thread. Generated
+    /// at creation for agents that support `--session-id`
+    /// ([`crate::agent_launcher::TerminalAgent::supports_forced_session_id`])
+    /// and injected into the launch command so the live thread maps 1:1 to
+    /// its on-disk session file. Round-trips through
+    /// [`ThreadSession::session_id`]; `None` for bare shells and non-Claude
+    /// agents.
+    pub session_id: Option<String>,
+    /// Whether the user manually renamed this row. When `true`,
+    /// [`PaneFlowApp::handle_terminal_thread_title_changed`] and the
+    /// `ai-title` backfill leave the title untouched so a deliberate name
+    /// survives agent activity. Round-trips through
+    /// [`ThreadSession::title_user_set`].
+    pub title_user_set: bool,
 }
 
 impl Thread {
@@ -236,6 +250,8 @@ impl Thread {
             terminal_agent: None,
             pinned: false,
             agent_pid: None,
+            session_id: None,
+            title_user_set: false,
         }
     }
 
@@ -249,6 +265,13 @@ impl Thread {
         cwd: impl Into<String>,
         terminal_agent: Option<crate::agent_launcher::TerminalAgent>,
     ) -> Self {
+        // Mint a forced session UUID for agents that accept `--session-id`
+        // (Claude only today). This binds the live thread to a known
+        // on-disk session file so the sidebar can adopt its `ai-title`
+        // (parity with `/resume`) even when several threads share a cwd.
+        let session_id = terminal_agent
+            .filter(|a| a.supports_forced_session_id())
+            .map(|_| uuid::Uuid::new_v4().to_string());
         Self {
             id: next_thread_id(),
             title: title.into(),
@@ -263,6 +286,8 @@ impl Thread {
             terminal_agent,
             pinned: false,
             agent_pid: None,
+            session_id,
+            title_user_set: false,
         }
     }
 }
@@ -336,6 +361,11 @@ pub fn thread_to_session(t: &Thread) -> ThreadSession {
         // US-001: persist the pin flag so a restart restores the
         // PINNED section.
         pinned: t.pinned,
+        // Persist the forced Claude session id so a restart relaunches the
+        // SAME session (resume + append), and the manual-rename lock so a
+        // deliberate title is never re-clobbered after restore.
+        session_id: t.session_id.clone(),
+        title_user_set: t.title_user_set,
     }
 }
 
@@ -395,6 +425,16 @@ pub fn thread_from_session(s: &ThreadSession) -> Option<Thread> {
         // via `#[serde(default)]`, so this restores cleanly.
         pinned: s.pinned,
         agent_pid: None,
+        // Re-gate the restored session id through the same allow-list the
+        // PTY-injection path uses: a tampered session.json must never
+        // smuggle a flag-shaped value into `claude --session-id`. An
+        // invalid id collapses to `None` — the thread relaunches as a fresh
+        // session rather than refusing to open.
+        session_id: s
+            .session_id
+            .clone()
+            .filter(|id| crate::agent_sessions::is_valid_session_id(id)),
+        title_user_set: s.title_user_set,
     })
 }
 
@@ -615,6 +655,8 @@ mod tests {
                 kind: None,
                 terminal_agent: None,
                 pinned: false,
+                session_id: None,
+                title_user_set: false,
             }],
         };
         let restored = project_from_session(&session);
@@ -637,6 +679,64 @@ mod tests {
         assert!(session.pinned, "pin flag persists into the session shape");
         let restored = thread_from_session(&session).expect("terminal thread restores");
         assert!(restored.pinned, "pin flag restores from the session shape");
+    }
+
+    #[test]
+    fn claude_thread_mints_session_id_others_do_not() {
+        let claude = Thread::new_terminal(
+            "c",
+            "/home/me",
+            Some(crate::agent_launcher::TerminalAgent::ClaudeCode),
+        );
+        let id = claude.session_id.as_deref().expect("Claude mints a uuid");
+        assert!(
+            crate::agent_sessions::is_valid_session_id(id),
+            "minted id {id} must pass the PTY allow-list"
+        );
+
+        let codex = Thread::new_terminal(
+            "x",
+            "/home/me",
+            Some(crate::agent_launcher::TerminalAgent::Codex),
+        );
+        assert!(
+            codex.session_id.is_none(),
+            "only forced-session-id agents mint an id"
+        );
+        let shell = Thread::new_terminal("s", "/home/me", None);
+        assert!(shell.session_id.is_none());
+    }
+
+    #[test]
+    fn session_id_and_rename_lock_round_trip() {
+        let mut thread = Thread::new_terminal(
+            "Backfilled",
+            "/home/me",
+            Some(crate::agent_launcher::TerminalAgent::ClaudeCode),
+        );
+        thread.title_user_set = true;
+        let session = thread_to_session(&thread);
+        let restored = thread_from_session(&session).expect("terminal thread restores");
+        assert_eq!(restored.session_id, thread.session_id, "forced id persists");
+        assert!(restored.title_user_set, "manual-rename lock persists");
+    }
+
+    #[test]
+    fn tampered_session_id_is_dropped_on_restore() {
+        // A flag-shaped id smuggled into session.json collapses to None so
+        // it can never reach `claude --session-id`.
+        let mut thread = Thread::new_terminal(
+            "T",
+            "/home/me",
+            Some(crate::agent_launcher::TerminalAgent::ClaudeCode),
+        );
+        thread.session_id = Some("--dangerously-skip-permissions".to_string());
+        let session = thread_to_session(&thread);
+        let restored = thread_from_session(&session).expect("restores");
+        assert!(
+            restored.session_id.is_none(),
+            "a flag-shaped session id must not survive restore"
+        );
     }
 
     /// US-002: free chats draw IDs from the same `next_thread_id` counter as

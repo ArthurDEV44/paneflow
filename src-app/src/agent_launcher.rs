@@ -335,10 +335,70 @@ impl TerminalAgent {
         }
     }
 
+    /// Whether the CLI accepts a caller-forced session UUID via
+    /// `--session-id <uuid>`. Only Claude Code does (verified against the
+    /// CLI: a fresh id starts a new session, an existing id resumes +
+    /// appends, so a stable per-thread id is safe across restarts). Other
+    /// agents fall back to the newest-session heuristic in the title
+    /// backfill.
+    pub fn supports_forced_session_id(self) -> bool {
+        matches!(self, TerminalAgent::ClaudeCode)
+    }
+
+    /// Map this launcher to the on-disk session store it writes, when one
+    /// is readable ([`crate::claude_sessions`] / `codex_sessions` /
+    /// `opencode_sessions`). `None` for agents with no session reader, so
+    /// the sidebar `ai-title` backfill simply skips them.
+    pub fn session_agent(self) -> Option<crate::agent_sessions::SessionAgent> {
+        use crate::agent_sessions::SessionAgent;
+        match self {
+            TerminalAgent::ClaudeCode => Some(SessionAgent::Claude),
+            TerminalAgent::Codex => Some(SessionAgent::Codex),
+            TerminalAgent::OpenCode => Some(SessionAgent::OpenCode),
+            _ => None,
+        }
+    }
+
+    /// Like [`Self::command`] but injects a forced `--session-id <uuid>` for
+    /// Claude when `session_id` is `Some` and passes the PTY allow-list. The
+    /// flag lands right after the binary so it composes with the optional
+    /// `--permission-mode bypassPermissions` already baked into the base
+    /// command. Any other agent (or `None`) yields the plain base command.
+    fn command_with_session(self, config: &PaneFlowConfig, session_id: Option<&str>) -> String {
+        let base = self.command(config);
+        match (self, session_id) {
+            (TerminalAgent::ClaudeCode, Some(id))
+                if crate::agent_sessions::is_valid_session_id(id) =>
+            {
+                // `base` is "claude" or "claude --permission-mode
+                // bypassPermissions"; splice the id after the leading token
+                // so both arms keep "claude" as the launch command's first
+                // token (the PATH-probe invariant).
+                format!(
+                    "claude --session-id {id}{}",
+                    base.strip_prefix("claude").unwrap_or("")
+                )
+            }
+            _ => base.to_string(),
+        }
+    }
+
     /// Shell-aware launch command. The clear prefix is selected for the
     /// configured shell (`clear`, `cls`, or `Clear-Host`) so the agent TUI owns
     /// the viewport from the first frame on every platform.
     pub fn launch_command(self, config: &PaneFlowConfig) -> String {
+        self.launch_command_with_session(config, None)
+    }
+
+    /// [`Self::launch_command`] with a forced agent session id (Claude
+    /// only — see [`Self::command_with_session`]). The Agents-view PTY
+    /// mount passes the thread's bound `session_id` here so the live thread
+    /// maps 1:1 to its on-disk session file.
+    pub fn launch_command_with_session(
+        self,
+        config: &PaneFlowConfig,
+        session_id: Option<&str>,
+    ) -> String {
         // US-042: trim + drop-empty exactly like the PTY session does when it
         // resolves the shell (`pty_session.rs:442`). A config such as
         // `"default_shell": "  pwsh  "` otherwise reaches `clear_then`
@@ -349,7 +409,7 @@ impl TerminalAgent {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        crate::terminal::shell::clear_then(self.command(config), shell)
+        crate::terminal::shell::clear_then(&self.command_with_session(config, session_id), shell)
     }
 
     /// Visible variants for the given config, in display order. Drives
@@ -492,5 +552,104 @@ mod tests {
         assert_eq!(TerminalAgent::Codex.command(&config), "codex");
         assert_eq!(TerminalAgent::Pi.command(&config), "pi");
         assert_eq!(TerminalAgent::Hermes.command(&config), "hermes");
+    }
+
+    const SAMPLE_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
+
+    #[test]
+    fn only_claude_supports_forced_session_id() {
+        assert!(TerminalAgent::ClaudeCode.supports_forced_session_id());
+        for agent in TerminalAgent::ALL
+            .into_iter()
+            .filter(|a| *a != TerminalAgent::ClaudeCode)
+        {
+            assert!(
+                !agent.supports_forced_session_id(),
+                "{} must not force a session id",
+                agent.display_name()
+            );
+        }
+    }
+
+    #[test]
+    fn session_agent_maps_only_readable_stores() {
+        use crate::agent_sessions::SessionAgent;
+        assert_eq!(
+            TerminalAgent::ClaudeCode.session_agent(),
+            Some(SessionAgent::Claude)
+        );
+        assert_eq!(
+            TerminalAgent::Codex.session_agent(),
+            Some(SessionAgent::Codex)
+        );
+        assert_eq!(
+            TerminalAgent::OpenCode.session_agent(),
+            Some(SessionAgent::OpenCode)
+        );
+        assert_eq!(TerminalAgent::Pi.session_agent(), None);
+        assert_eq!(TerminalAgent::Gemini.session_agent(), None);
+    }
+
+    #[test]
+    fn claude_session_id_is_injected_after_binary() {
+        let cfg = PaneFlowConfig::default();
+        let cmd = TerminalAgent::ClaudeCode.command_with_session(&cfg, Some(SAMPLE_UUID));
+        assert_eq!(cmd, format!("claude --session-id {SAMPLE_UUID}"));
+        // Leading token stays `claude` (the PATH-probe invariant).
+        assert_eq!(cmd.split_whitespace().next(), Some("claude"));
+    }
+
+    #[test]
+    fn claude_session_id_composes_with_bypass() {
+        let cfg = PaneFlowConfig {
+            claude_code_bypass_permissions: Some(true),
+            ..Default::default()
+        };
+        let cmd = TerminalAgent::ClaudeCode.command_with_session(&cfg, Some(SAMPLE_UUID));
+        assert_eq!(
+            cmd,
+            format!("claude --session-id {SAMPLE_UUID} --permission-mode bypassPermissions")
+        );
+    }
+
+    #[test]
+    fn invalid_session_id_is_not_injected() {
+        // Flag-shaped / shell-meta ids fail the allow-list, so a tampered
+        // session.json can never smuggle a second argument into the launch.
+        let cfg = PaneFlowConfig::default();
+        for hostile in [
+            "--dangerously-skip-permissions",
+            "-x",
+            "x; rm -rf ~",
+            "$(reboot)",
+        ] {
+            assert_eq!(
+                TerminalAgent::ClaudeCode.command_with_session(&cfg, Some(hostile)),
+                "claude",
+                "hostile id {hostile:?} must be dropped"
+            );
+        }
+    }
+
+    #[test]
+    fn non_claude_ignores_forced_session_id() {
+        let cfg = PaneFlowConfig::default();
+        assert_eq!(
+            TerminalAgent::Codex.command_with_session(&cfg, Some(SAMPLE_UUID)),
+            "codex"
+        );
+        assert_eq!(
+            TerminalAgent::OpenCode.command_with_session(&cfg, Some(SAMPLE_UUID)),
+            "opencode"
+        );
+    }
+
+    #[test]
+    fn claude_without_session_id_is_bare_command() {
+        let cfg = PaneFlowConfig::default();
+        assert_eq!(
+            TerminalAgent::ClaudeCode.command_with_session(&cfg, None),
+            "claude"
+        );
     }
 }

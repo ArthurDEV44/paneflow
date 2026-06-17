@@ -1913,8 +1913,21 @@ impl PaneFlowApp {
                     t.agent_pid = None;
                     let title = crate::project::clean_sidebar_title(&t.title)
                         .unwrap_or_else(|| t.title.clone());
+                    // Snapshot what the off-thread ai-title backfill needs
+                    // before the &mut borrow on `self` ends.
+                    let thread_id = t.id;
+                    let cwd = t.cwd.clone();
+                    let session_agent = t.terminal_agent.and_then(|a| a.session_agent());
+                    let bound_session = t.session_id.clone();
+                    let title_locked = t.title_user_set;
                     cx.notify();
                     fire_turn_end_notification(&title, cx.background_executor().clone());
+                    // Parity with `/resume`: at turn end the session's LLM
+                    // `ai-title` exists on disk — adopt it as the sidebar
+                    // label, unless the user pinned the name via a rename.
+                    if !title_locked && let Some(agent) = session_agent {
+                        self.spawn_thread_title_backfill(thread_id, cwd, agent, bound_session, cx);
+                    }
                     serde_json::json!({"status": "idle"})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})

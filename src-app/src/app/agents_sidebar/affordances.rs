@@ -251,12 +251,16 @@ impl PaneFlowApp {
                     .and_then(|p| p.threads.get_mut(thread_idx))
                 {
                     thread.title = text;
+                    // Lock the label: OSC updates and the ai-title backfill
+                    // must not clobber a deliberate name.
+                    thread.title_user_set = true;
                 }
                 self.save_session(cx);
             }
             AgentsRenameTarget::Chat { chat_idx } => {
                 if let Some(chat) = self.chats.get_mut(chat_idx) {
                     chat.title = text;
+                    chat.title_user_set = true;
                 }
                 self.save_session(cx);
             }

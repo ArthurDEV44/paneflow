@@ -6072,6 +6072,7 @@ dependencies = [
  "ui",
  "unicode-segmentation",
  "ureq",
+ "uuid",
  "wayland-client",
  "wayland-protocols",
  "which 8.0.2",

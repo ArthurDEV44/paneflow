@@ -196,9 +196,11 @@ tree-sitter-ruby = "0.23" # US-005: P2
 # a std Iterator.
 streaming-iterator = "0.1"
 semver = "1"
-# `uuid` removed as a direct src-app dep in US-003 — only the telemetry id
-# subsystem consumed it, and that lives in `paneflow-telemetry` now. If a
-# future non-telemetry caller needs UUID generation, re-add it here.
+# Re-added as a direct dep: forced per-thread Claude session IDs
+# (`claude --session-id <uuid>`) so a live Agents thread maps 1:1 to its
+# on-disk session file and can adopt the LLM `ai-title` for its sidebar
+# row. `v4` only — already in the build graph via `paneflow-telemetry`.
+uuid = { version = "1", features = ["v4"] }
 # Resolve `appimageupdatetool` on $PATH before falling back to download (US-010).
 which = "8"
 # tar.gz self-update: SHA-256 verification + in-process extraction (US-011).

@@ -848,6 +848,10 @@ impl PaneFlowApp {
             return Some(cached.clone());
         }
         let cwd = std::path::PathBuf::from(&thread.cwd);
+        // The thread's forced agent session id (Claude only), spliced into
+        // the launch command below so the live PTY binds 1:1 to its on-disk
+        // session file (and resumes the same session after a restart).
+        let bound_session = thread.session_id.clone();
         // Explicit per-thread agent wins; legacy `Agent`-kind chat rows
         // fall back to their stored ACP agent so reopening them launches
         // the same CLI in a terminal. Plain Terminal Threads stay a bare
@@ -879,7 +883,10 @@ impl PaneFlowApp {
         // Cache hits (in-session re-selection) skip this, so a running
         // agent is never relaunched on navigation.
         if let Some(agent) = terminal_agent {
-            let cmd = agent.launch_command(&paneflow_config::loader::load_config());
+            let cmd = agent.launch_command_with_session(
+                &paneflow_config::loader::load_config(),
+                bound_session.as_deref(),
+            );
             view.read(cx).send_command(&cmd);
         }
         // Mirror Zed's `AgentTerminal::refresh_terminal_metadata`
@@ -1046,7 +1053,9 @@ impl PaneFlowApp {
         }
         for project in self.projects.iter_mut() {
             if let Some(thread) = project.threads.iter_mut().find(|t| t.id == thread_id) {
-                if thread.title == normalized {
+                // A manual rename is authoritative: neither an OSC update nor
+                // the `ai-title` backfill may clobber a deliberate label.
+                if thread.title_user_set || thread.title == normalized {
                     return;
                 }
                 thread.title = normalized;
@@ -1059,7 +1068,7 @@ impl PaneFlowApp {
         // like a project thread, so the same label-sync applies to the
         // free `chats` list.
         if let Some(thread) = self.chats.iter_mut().find(|t| t.id == thread_id) {
-            if thread.title == normalized {
+            if thread.title_user_set || thread.title == normalized {
                 return;
             }
             thread.title = normalized;
@@ -1068,9 +1077,63 @@ impl PaneFlowApp {
         }
     }
 
+    /// Adopt the live agent session's LLM `ai-title` as the thread's sidebar
+    /// label at turn end — the same summary `/resume` surfaces. Reads the
+    /// on-disk session store off the main thread, picks the bound session
+    /// when the thread forced a `--session-id` (Claude, exact) or the newest
+    /// session for the cwd otherwise (Codex/OpenCode heuristic), then routes
+    /// the result through [`Self::handle_terminal_thread_title_changed`]
+    /// (which re-checks the manual-rename lock and skips a no-op write).
+    pub(crate) fn spawn_thread_title_backfill(
+        &self,
+        thread_id: u64,
+        cwd: String,
+        agent: crate::agent_sessions::SessionAgent,
+        bound_session: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if cwd.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let sessions = smol::unblock(move || read_sessions_for(agent, &cwd)).await;
+            let summary = match bound_session {
+                // Claude: exact match on the forced id — correct even when
+                // several threads share a cwd.
+                Some(id) => sessions
+                    .into_iter()
+                    .find(|s| s.session_id == id)
+                    .and_then(|s| s.summary),
+                // Heuristic: the list is sorted timestamp-desc, so the first
+                // entry is the most recently touched session for this cwd.
+                None => sessions.into_iter().next().and_then(|s| s.summary),
+            };
+            if let Some(summary) = summary.filter(|s| !s.is_empty()) {
+                let _ = this.update(cx, |app, cx| {
+                    app.handle_terminal_thread_title_changed(thread_id, summary, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
     // Sidebar render branch for [`AppMode::Agents`] now lives in
     // [`crate::app::agents_sidebar`] -- US-010 replaced the
     // placeholder shipped here in US-008.
+}
+
+/// Dispatch a cwd-scoped session scan to the matching on-disk reader.
+/// **Blocking I/O** — call from inside `smol::unblock`.
+fn read_sessions_for(
+    agent: crate::agent_sessions::SessionAgent,
+    cwd: &str,
+) -> Vec<crate::agent_sessions::SessionMeta> {
+    use crate::agent_sessions::SessionAgent;
+    match agent {
+        SessionAgent::Claude => crate::claude_sessions::read_sessions_for_cwd(cwd),
+        SessionAgent::Codex => crate::codex_sessions::read_sessions_for_cwd(cwd),
+        SessionAgent::OpenCode => crate::opencode_sessions::read_sessions_for_cwd(cwd),
+    }
 }
 
 /// US-005: where the agent picker creates its launched agent. Drives the

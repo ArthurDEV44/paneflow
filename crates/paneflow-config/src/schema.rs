@@ -1074,6 +1074,21 @@ pub struct ThreadSession {
     /// this field deserialises cleanly as `false` — no migration.
     #[serde(default)]
     pub pinned: bool,
+    /// Forced agent session UUID for a Claude Terminal Thread, passed as
+    /// `claude --session-id <uuid>` on launch so the thread binds 1:1 to
+    /// its on-disk session file (`~/.claude/projects/<slug>/<uuid>.jsonl`).
+    /// Persisting it means a restart relaunches the SAME session (Claude
+    /// resumes + appends on an existing id) and the sidebar can backfill
+    /// that session's LLM `ai-title`. `None` for agents that don't support
+    /// a forced id (everything but Claude) and pre-feature sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Whether the user manually renamed this row. Once set, OSC title
+    /// updates and the `ai-title` backfill stop overwriting the label so a
+    /// deliberate name is never clobbered by agent activity. `#[serde(default)]`
+    /// so older session.json files restore as `false`.
+    #[serde(default)]
+    pub title_user_set: bool,
 }
 
 fn default_true() -> bool {
