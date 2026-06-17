@@ -5,6 +5,45 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-06-17
+
+A macOS reliability pass. The headline is the DMG self-updater, which froze
+on every attempt because the codesign Team-ID pin silently failed; this also
+relights the workspace agent dot, resolves bare configured shells under a GUI
+launch, and stops a spurious "shell may have exited" warning. The pid-0 guard
+lands on Linux too; the rest is macOS-only or dev-only.
+
+### Fixed
+
+- The DMG self-updater no longer freezes on macOS. The codesign Team-ID pin
+  passed its requirement as a separate `-R <req>` argument, which macOS 15+/26
+  read as a *file path*: codesign tried to open the inline requirement text as
+  a file and aborted, so every DMG update failed and the updater stalled at the
+  three-strikes "Update keeps failing" toast. The requirement now uses the
+  attached `-R=<req>` form (a single argv element) that every supported macOS
+  parses as inline requirement source.
+- The workspace card now lights its agent dot on macOS again. `proc_listchildpids`
+  returns zero children for an unprivileged caller on modern macOS, so the
+  per-node subtree walk found nothing. Agent detection now builds a
+  parent-to-children map from `proc_bsdinfo.pbi_ppid` once per scan and walks
+  it breadth-first, mirroring the existing Linux fallback.
+- A bare configured shell name (e.g. `"pwsh"`) is now resolved under a GUI
+  launch whose inherited PATH omits `/opt/homebrew/bin`, instead of silently
+  falling back to `/bin/sh`. After the PATH search misses, Paneflow probes the
+  well-known Unix install dirs (Homebrew prefixes and system dirs), the macOS
+  parallel to the Windows well-known-location probe.
+- Display-only terminals no longer probe a bogus process. A display-only pane
+  has no real PTY (`child_pid == 0`); on Linux that meant reading `/proc/0/cwd`,
+  and on macOS `proc_pidinfo(0, …)` targeted the kernel swapper, failed with
+  EPERM, and spammed a misleading "shell may have exited" warning on every poll
+  tick. The cwd probe now bails before the syscall, matching the existing
+  foreground-command guards on every platform.
+- Debug builds no longer warn about running outside a `.app` bundle. A
+  `target/debug/` binary is never inside a bundle (the expected dev path), so
+  that message is now logged at debug level in debug builds; release binaries
+  running outside a bundle still warn, since that is a genuine ad-hoc extraction
+  worth surfacing.
+
 ## [0.5.6] - 2026-06-16
 
 The Agents git diff dock becomes resizable and scrolls each file on its own,
