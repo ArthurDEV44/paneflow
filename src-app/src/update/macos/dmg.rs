@@ -134,6 +134,26 @@ fn is_translocated_path(path: &Path) -> bool {
 #[cfg(target_os = "macos")]
 const APPLE_TEAM_ID: &str = "228F9H5P95";
 
+/// Build the `codesign` argument that pins the signing identity to our Apple
+/// Team ID, using the attached `-R=<requirement>` form.
+///
+/// This MUST stay the attached form. macOS 15+/26 interpret a *separate*
+/// `-R <requirement>` argument as a file path: codesign tries to open the
+/// inline requirement text as a file and aborts ("No such file or directory /
+/// invalid requirement specification"), so the Team-ID pin silently failed on
+/// every run — which froze the DMG self-update at the 3-strikes "Update keeps
+/// failing" toast (in-app updates worked on Linux/Windows, which have no such
+/// codesign gate). The attached form is parsed as inline requirement source on
+/// every supported macOS.
+///
+/// Pure string builder — gated `#[cfg(any(target_os = "macos", test))]` so the
+/// regression test runs on Linux CI without a signed fixture, while non-macOS
+/// release builds don't carry it as dead code.
+#[cfg(any(target_os = "macos", test))]
+fn team_id_requirement_arg(team_id: &str) -> String {
+    format!("-R=anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\"")
+}
+
 /// Gatekeeper / code-signature verification of `bundle` (US-004), fail-closed.
 /// `codesign --verify --strict --deep` proves the signature is intact and
 /// covers every nested item; the Team-ID designated-requirement check (US-018)
@@ -152,16 +172,16 @@ fn verify_macos_bundle(bundle: &Path) -> Result<()> {
         bundle,
     )?;
     // US-018: pin the signing identity to our Team ID via a designated
-    // requirement (`-R`). `codesign --verify -R <req>` fails closed if the
-    // leaf cert's OU is not our Team ID, so a foreign-but-notarised bundle is
-    // rejected even though it passes the plain `--verify` and `spctl` checks.
-    let team_requirement =
-        format!("anchor apple generic and certificate leaf[subject.OU] = \"{APPLE_TEAM_ID}\"");
-    run_gatekeeper_tool(
-        "codesign",
-        &["--verify", "-R", team_requirement.as_str()],
-        bundle,
-    )?;
+    // requirement. Fails closed if the leaf cert's OU is not our Team ID, so a
+    // foreign-but-notarised bundle is rejected even though it passes the plain
+    // `--verify` and `spctl` checks.
+    //
+    // The requirement MUST be passed as the attached `-R=<req>` form (see
+    // `team_id_requirement_arg`): macOS 15+/26 interpret a *separate*
+    // `-R <req>` argument as a file path, silently failing this pin on every
+    // DMG self-update.
+    let team_arg = team_id_requirement_arg(APPLE_TEAM_ID);
+    run_gatekeeper_tool("codesign", &["--verify", team_arg.as_str()], bundle)?;
     run_gatekeeper_tool("spctl", &["--assess", "--type", "execute"], bundle)?;
     Ok(())
 }
@@ -649,6 +669,26 @@ mod tests {
         let (old, new) = staging_dirs(Path::new("/Applications/PaneFlow.app")).unwrap();
         assert_eq!(old, PathBuf::from("/Applications/PaneFlow.app.old"));
         assert_eq!(new, PathBuf::from("/Applications/PaneFlow.app.new"));
+    }
+
+    #[test]
+    fn team_id_requirement_uses_attached_form() {
+        // Regression: macOS 15+/26 codesign treats a SEPARATE `-R <arg>` as a
+        // file path, so the inline requirement was opened as a (missing) file
+        // ("No such file or directory / invalid requirement specification") and
+        // the Team-ID pin failed every DMG self-update — pinning the updater at
+        // the "Update keeps failing" toast. The arg MUST be the attached
+        // `-R=<requirement>` form (one argv element), which codesign parses as
+        // inline requirement source.
+        let arg = team_id_requirement_arg("228F9H5P95");
+        assert!(
+            arg.starts_with("-R="),
+            "must be the attached form, got: {arg}"
+        );
+        assert!(
+            arg.contains("certificate leaf[subject.OU] = \"228F9H5P95\""),
+            "requirement must pin the leaf OU to the Team ID, got: {arg}"
+        );
     }
 
     #[test]
