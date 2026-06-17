@@ -55,6 +55,21 @@ pub struct PaneFlowConfig {
     /// clamped to `[30, 86400]`. Checked by the 30 s sweep, so the
     /// effective granularity is threshold ± 30 s.
     pub agent_stall_threshold_secs: Option<u64>,
+    /// EP-003 US-011 (prd-review-redesign-2026-Q3.md): delay in milliseconds
+    /// before the Review view pre-fills a freshly-launched review CLI's input
+    /// (tmux send-keys style). `None` resolves to 2000 ms; values are clamped to
+    /// `[250, 10000]`.
+    ///
+    /// The fixed delay exists because there is no reliable cross-platform
+    /// "readline is ready" signal: firing too early (on the shell's echo of the
+    /// launch command, before the CLI's prompt exists) sends the prefill into a
+    /// not-ready buffer and LOSES it — a regression impossible to verify on
+    /// Windows ConPTY cold-start from here. The prompt is therefore ALWAYS copied
+    /// to the clipboard as a synchronous safety net (surfaced in the review
+    /// terminal header), so a missed window degrades to a one-keystroke paste
+    /// rather than silent failure. This setting lets a user on a slow cold-start
+    /// raise the delay instead of fighting the race.
+    pub review_prefill_delay_ms: Option<u64>,
     /// External editor used to open markdown links (file paths shipped
     /// by the agent as `[foo](src/foo.rs)` or `[foo](src/foo.rs:42)`).
     ///
@@ -185,6 +200,18 @@ impl PaneFlowConfig {
     /// use [`PaneFlowConfig::agent_stall_detection`] instead.
     pub const MAX_AGENT_STALL_THRESHOLD_SECS: u64 = 86_400;
 
+    /// EP-003 US-011: default review-prefill delay. 2000 ms is a slightly safer
+    /// floor than the historical 1800 ms — enough headroom for `claude` /
+    /// `codex` / `opencode` / `pi` to boot their readline on a warm start, while
+    /// the clipboard fallback covers any cold-start miss.
+    pub const DEFAULT_REVIEW_PREFILL_DELAY_MS: u64 = 2000;
+    /// Lower bound: below this the prefill almost certainly races the CLI's own
+    /// boot echo and lands in a not-ready buffer.
+    pub const MIN_REVIEW_PREFILL_DELAY_MS: u64 = 250;
+    /// Upper bound: past this the wait is more annoying than the race it avoids;
+    /// the clipboard fallback already covers the long tail.
+    pub const MAX_REVIEW_PREFILL_DELAY_MS: u64 = 10_000;
+
     /// Resolve the Stalled-detection master switch (default ON).
     pub fn agent_stall_detection_enabled(&self) -> bool {
         self.agent_stall_detection.unwrap_or(true)
@@ -208,6 +235,29 @@ impl PaneFlowConfig {
                 "agent_stall_threshold_secs out of range [{min}, {max}], clamped",
                 min = Self::MIN_AGENT_STALL_THRESHOLD_SECS,
                 max = Self::MAX_AGENT_STALL_THRESHOLD_SECS,
+            );
+        }
+        clamped
+    }
+
+    /// EP-003 US-011: resolve `review_prefill_delay_ms`: default 2000, clamped to
+    /// `[250, 10000]` with a `warn!` so an out-of-range value is noticed.
+    pub fn resolved_review_prefill_delay_ms(&self) -> u64 {
+        let raw = self
+            .review_prefill_delay_ms
+            .unwrap_or(Self::DEFAULT_REVIEW_PREFILL_DELAY_MS);
+        let clamped = raw.clamp(
+            Self::MIN_REVIEW_PREFILL_DELAY_MS,
+            Self::MAX_REVIEW_PREFILL_DELAY_MS,
+        );
+        if clamped != raw {
+            tracing::warn!(
+                target: "paneflow_config::review",
+                requested = raw,
+                clamped,
+                "review_prefill_delay_ms out of range [{min}, {max}], clamped",
+                min = Self::MIN_REVIEW_PREFILL_DELAY_MS,
+                max = Self::MAX_REVIEW_PREFILL_DELAY_MS,
             );
         }
         clamped
@@ -1180,6 +1230,7 @@ mod tests {
             shell_integration: Some(true),
             agent_stall_detection: Some(true),
             agent_stall_threshold_secs: Some(300),
+            review_prefill_delay_ms: Some(2000),
             external_editor: Some("auto".to_string()),
             claude_code_bypass_permissions: Some(false),
             claude_code_button_visible: Some(true),

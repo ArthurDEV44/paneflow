@@ -883,6 +883,7 @@ mod tests {
             shell_integration: None,
             agent_stall_detection: None,
             agent_stall_threshold_secs: None,
+            review_prefill_delay_ms: None,
             claude_code_bypass_permissions: None,
             claude_code_button_visible: None,
             codex_button_visible: None,
