@@ -87,6 +87,42 @@ fn sanitize_ref_for_prompt(reference: &str) -> String {
         .collect()
 }
 
+/// EP-005: the per-hunk "act" intents surfaced by the hover action cluster.
+/// Each builds a distinct PRE-FILLED prompt (the human reviews + submits — no
+/// auto-submit, no native git write by Paneflow). Distinct from the review
+/// framing of [`build_cli_review_prompt`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum HunkAction {
+    /// US-018: open-ended "direct the agent at this hunk" — pastes the hunk as
+    /// context, the human types the directive.
+    Direct,
+    /// US-019: apply the good parts + stage selectively, agent-run.
+    FixStage,
+    /// US-020: discard the hunk from the working tree, agent-run (the armed
+    /// two-step gate lives in the UI, not here).
+    Discard,
+}
+
+/// EP-005 US-018/019/020: build the PRE-FILLED prompt for a per-hunk act
+/// intent. The hunk's unified diff is pasted inline (it is hunk-specific, unlike
+/// the whole-branch review which references git), matching the existing
+/// `ask_review_about_hunk` paste. Copy never claims Paneflow itself stages or
+/// discards — the agent performs any git write in the witnessed terminal.
+pub(crate) fn build_cli_hunk_prompt(action: HunkAction, path: &str, hunk_diff: &str) -> String {
+    match action {
+        HunkAction::Direct => format!("Here is a hunk from `{path}` to act on:\n\n{hunk_diff}\n"),
+        HunkAction::FixStage => format!(
+            "Apply the good parts of this change in `{path}` and stage it selectively \
+             (use `git add -p` or `git apply` on the relevant lines). Explain what you kept, \
+             what you dropped, and why:\n\n{hunk_diff}\n"
+        ),
+        HunkAction::Discard => format!(
+            "Discard this change in `{path}` from the working tree (e.g. `git restore` / \
+             `git checkout -p` the relevant lines). Show me the exact command before you run it:\n\n{hunk_diff}\n"
+        ),
+    }
+}
+
 /// Build the compact, human-in-loop review prompt to PRE-FILL into the CLI input.
 /// The CLI runs in the worktree cwd, so it inspects the diff itself via git —
 /// transparent (you see it run `git diff`) and tiny (no pasted diff). When
@@ -140,6 +176,27 @@ mod tests {
         assert!(p.contains("path:line"));
         assert!(!p.contains("@@")); // no pasted diff
         assert!(!p.contains("skeptical second reviewer"));
+    }
+
+    #[test]
+    fn hunk_prompts_differ_by_intent_and_never_promise_native_staging() {
+        let diff = "@@ -1,2 +1,2 @@\n-old\n+new\n";
+        let direct = build_cli_hunk_prompt(HunkAction::Direct, "src/x.rs", diff);
+        let fix = build_cli_hunk_prompt(HunkAction::FixStage, "src/x.rs", diff);
+        let discard = build_cli_hunk_prompt(HunkAction::Discard, "src/x.rs", diff);
+        // All paste the hunk + reference the path.
+        for p in [&direct, &fix, &discard] {
+            assert!(p.contains("src/x.rs"));
+            assert!(p.contains("+new"));
+        }
+        // Fix directs selective staging BY THE AGENT (git add -p / git apply).
+        assert!(fix.contains("git add -p") || fix.contains("git apply"));
+        // Discard directs a working-tree restore and asks to confirm first.
+        assert!(discard.to_lowercase().contains("discard"));
+        assert!(discard.contains("git restore") || discard.contains("git checkout"));
+        // The three intents produce distinct copy.
+        assert_ne!(direct, fix);
+        assert_ne!(fix, discard);
     }
 
     #[test]

@@ -1,74 +1,8 @@
 //! Render-oriented helpers shared by the DiffView host and its column model.
 
 use super::*;
-
-pub(super) fn apply_collapse_unified(
-    rows: &[DisplayRow],
-    anchors: &[(String, usize)],
-    collapsed: &std::collections::HashSet<String>,
-) -> (Vec<DisplayRow>, Vec<(String, usize)>) {
-    let mut out = Vec::with_capacity(rows.len());
-    let mut out_anchors = Vec::with_capacity(anchors.len());
-    for (index, (path, start)) in anchors.iter().enumerate() {
-        let Some(header) = rows.get(*start) else {
-            continue;
-        };
-        let end = anchors
-            .get(index + 1)
-            .map(|(_, next_start)| *next_start)
-            .unwrap_or(rows.len())
-            .min(rows.len());
-        out_anchors.push((path.clone(), out.len()));
-        if collapsed.contains(path) {
-            out.push(header.clone());
-        } else if let Some(segment) = rows.get(*start..end) {
-            out.extend_from_slice(segment);
-        }
-    }
-    (out, out_anchors)
-}
-
-pub(super) fn apply_collapse_split(
-    rows: &[SplitRow],
-    anchors: &[(String, usize)],
-    collapsed: &std::collections::HashSet<String>,
-) -> (Vec<SplitRow>, Vec<(String, usize)>) {
-    let mut out = Vec::with_capacity(rows.len());
-    let mut out_anchors = Vec::with_capacity(anchors.len());
-    for (index, (path, start)) in anchors.iter().enumerate() {
-        let end = anchors
-            .get(index + 1)
-            .map(|(_, next_start)| *next_start)
-            .unwrap_or(rows.len())
-            .min(rows.len());
-        out_anchors.push((path.clone(), out.len()));
-        if collapsed.contains(path) {
-            match rows.get(*start) {
-                Some(row @ SplitRow::Header(_)) => out.push(row.clone()),
-                _ => {
-                    out_anchors.pop();
-                    continue;
-                }
-            }
-        } else if let Some(segment) = rows.get(*start..end) {
-            out.extend_from_slice(segment);
-        }
-    }
-    (out, out_anchors)
-}
-
-pub(super) fn centered(color: Hsla, message: String) -> AnyElement {
-    div()
-        .flex_1()
-        .min_h_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(12.))
-        .text_color(color)
-        .child(message)
-        .into_any_element()
-}
+use crate::ui_primitives::{BODY, LABEL_SM, LABEL_XS, panel_empty_state};
+use crate::widgets::callout::{Callout, CalloutIcon, CalloutSeverity};
 
 impl DiffView {
     fn render_arrange(&self, node: &Arrange, mode: ViewMode, cx: &mut Context<Self>) -> AnyElement {
@@ -133,7 +67,8 @@ impl DiffView {
             .h(height)
             .bg(ui.accent.opacity(0.22))
             .border_2()
-            .border_color(gpui::rgba(0x0ea5e9bf))
+            // EP-002 US-008: theme accent instead of a hardcoded sky-blue hex.
+            .border_color(ui.accent.opacity(0.75))
             .rounded(px(6.));
         let overlay = overlay
             .invisible()
@@ -224,6 +159,26 @@ impl Render for DiffView {
             .on_action(cx.listener(|this, _: &crate::CopyDiffHunk, window, cx| {
                 this.copy_hovered_hunk(window, cx);
             }))
+            // EP-003 US-009: keyboard-first review loop (DiffView && !Terminal).
+            .on_action(cx.listener(|this, _: &crate::DiffNextHunk, window, cx| {
+                this.goto_hunk(true, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::DiffPrevHunk, window, cx| {
+                this.goto_hunk(false, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::DiffToggleView, _window, cx| {
+                this.toggle_view_mode(cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::DiffToggleSync, _window, cx| {
+                this.toggle_sync(cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::DiffDismiss, window, cx| {
+                this.dismiss_overlays(window, cx);
+            }))
+            // EP-005 US-018: direct the agent at the hunk under the cursor.
+            .on_action(cx.listener(|this, _: &crate::DiffActOnHunk, window, cx| {
+                this.act_on_hunk_under_cursor(window, cx);
+            }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
                 if let Some((column_index, start_y, start_height)) = this.review_resizing
                     && let Some(column) = this.columns.get_mut(column_index)
@@ -258,7 +213,13 @@ impl Render for DiffView {
         if self.columns.is_empty() {
             return root
                 .child(self.render_toolbar(mode, scope_slot, cx))
-                .child(centered(ui.muted, "No sibling worktrees to diff".into()));
+                .child(panel_empty_state(
+                    ui,
+                    Some("icons/git-branch.svg"),
+                    Some("Nothing to compare".into()),
+                    "This repository has no sibling worktrees to diff.",
+                    false,
+                ));
         }
 
         self.broadcast_scroll(mode);
@@ -267,6 +228,7 @@ impl Render for DiffView {
         let body = self.render_arrange(&self.arrange, mode, cx);
 
         let root = root.child(self.render_toolbar(mode, scope_slot, cx));
+        let root = root.children(self.render_ask_hint(mode, ui, cx));
         let mut root = root.child(div().flex_1().min_h_0().flex().child(body));
         if let Some(menu) = &self.body_menu {
             root = root.child(self.render_body_menu(menu, ui, cx));
@@ -274,6 +236,847 @@ impl Render for DiffView {
         if let Some(flash) = &self.flash {
             root = root.child(self.render_flash(flash.clone(), ui));
         }
+        // EP-005: the per-hunk act cluster floats over the body when hovering a
+        // changed line on a resolvable hunk.
+        if let Some(cluster) = self.render_hunk_actions(mode, ui, cx) {
+            root = root.child(cluster);
+        }
         root
+    }
+}
+
+impl DiffView {
+    /// EP-003 US-009: flip Unified ⇄ Split (the `u` binding). Mirrors the
+    /// segmented control's inline writes.
+    fn toggle_view_mode(&mut self, cx: &mut Context<Self>) {
+        self.mode = match self.mode {
+            ViewMode::Unified => ViewMode::Split,
+            ViewMode::Split => ViewMode::Unified,
+        };
+        cx.notify();
+    }
+
+    /// EP-003 US-009: `Esc` — close any open popover/menu and refocus the body so
+    /// the keyboard loop continues. Order-independent.
+    fn dismiss_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.base_picker_open = false;
+        self.review_menu_open = None;
+        self.body_menu = None;
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    /// EP-003 US-010: a one-line onboarding bar naming the click-to-ask
+    /// capability. Shown on first entry — while at least one column has changes
+    /// to ask about, no review CLI is running yet (the capability is otherwise
+    /// self-evident), in Unified mode (where click-to-ask works), and not
+    /// dismissed. `None` otherwise.
+    fn render_ask_hint(
+        &self,
+        mode: ViewMode,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.ask_hint_dismissed || mode != ViewMode::Unified {
+            return None;
+        }
+        let any_changes = self.columns.iter().any(Self::column_has_changes);
+        let any_review = self.columns.iter().any(|c| !c.review_terminals.is_empty());
+        if !any_changes || any_review {
+            return None;
+        }
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .mx(px(10.))
+                .mb(px(4.))
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(6.))
+                .bg(ui.accent.opacity(0.10))
+                .child(
+                    gpui::svg()
+                        .size(px(13.))
+                        .flex_none()
+                        .path("icons/sparkles.svg")
+                        .text_color(ui.accent),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(LABEL_SM)
+                        .text_color(ui.text)
+                        .child("Click any changed line to ask an agent about it."),
+                )
+                .child(
+                    crate::ui_primitives::icon_button_sm(
+                        "diff-ask-hint-dismiss",
+                        "icons/close.svg",
+                        ui.muted,
+                        ui.text.opacity(0.12),
+                    )
+                    .tooltip(crate::ui_primitives::text_tooltip("Dismiss"))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                        this.ask_hint_dismissed = true;
+                        cx.notify();
+                    })),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn render_column(
+        &self,
+        idx: usize,
+        col: &Column,
+        mode: ViewMode,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let ui = crate::theme::ui_colors();
+        let palette = palette(ui);
+
+        // Review is offered per branch: live only when this column has changes,
+        // highlighted while its own CLI-picker popover is open.
+        let col_has_changes = Self::column_has_changes(col);
+        let review_open = self.review_menu_open == Some(idx);
+
+        let summary = match &col.state {
+            ColumnState::Loading => "loading…".to_string(),
+            ColumnState::Failed(_) => "error".to_string(),
+            ColumnState::Loaded { file_count, .. } => match file_count {
+                0 => "no changes".to_string(),
+                1 => "1 file".to_string(),
+                n => format!("{n} files"),
+            },
+        };
+
+        // Selected column drives the sidebar file list + jump-to-file. Only
+        // visually distinguished when there is more than one column.
+        let selected = self.selected_column == idx && self.visible_count() > 1;
+        // Per-column base toggle chip: shows what this column diffs against (the
+        // shared base, or `HEAD~1` when overridden) and flips between the two on
+        // click — one branch can show just its latest-commit delta while siblings
+        // keep the whole-branch-vs-base view.
+        let overridden = col.base_override.is_some();
+        let eff_base = col
+            .base_override
+            .clone()
+            .unwrap_or_else(|| self.base_ref.clone());
+        let has_base = !eff_base.is_empty();
+        let base_short: String = if eff_base.chars().count() > 12 {
+            let s: String = eff_base.chars().take(11).collect();
+            format!("{s}…")
+        } else {
+            eff_base
+        };
+        let base_chip = div()
+            .id(SharedString::from(format!("diff-col-base-{idx}")))
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(3.))
+            .px(px(5.))
+            .py(px(1.))
+            .rounded(px(4.))
+            .when(overridden, |d| d.bg(ui.accent.opacity(0.18)))
+            .cursor_pointer()
+            .hover(|s| {
+                let ui = crate::theme::ui_colors();
+                s.bg(ui.subtle)
+            })
+            .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                this.toggle_column_base(idx, cx);
+            }))
+            .child(
+                gpui::svg()
+                    .size(px(10.))
+                    .flex_none()
+                    .path("icons/git-pull-request.svg")
+                    .text_color(if overridden { ui.accent } else { ui.muted }),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(LABEL_XS)
+                    .text_color(if overridden { ui.accent } else { ui.muted })
+                    .child(base_short),
+            );
+        // EP-002 US-005: three-tier surface scale. The column header sits at a
+        // distinct chrome tier from the body (`ui.base`) and the file cards
+        // (`ui.surface`) on BOTH themes — `overlay` is darker than the body on
+        // dark, but equal to it on light, so light falls back to `subtle`.
+        let chrome_tier = if ui.base.l > 0.5 {
+            ui.subtle
+        } else {
+            ui.overlay
+        };
+        // Grab handle for drag-to-rearrange (inc 5): the branch name is the drag
+        // payload's ghost label. Click still selects (GPUI distinguishes click
+        // from drag by a move threshold).
+        let branch_drag = SharedString::from(col.branch.clone());
+        let header = div()
+            .id(SharedString::from(format!("diff-col-head-{idx}")))
+            // Positioned ancestor for the Review CLI-picker popover below.
+            .relative()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.))
+            .px(px(8.))
+            .py(px(4.))
+            // EP-002 US-008: selected = accent-tinted header + a 3px left accent
+            // bar (below), replacing the ~invisible 1px bottom accent border.
+            // The bottom border is now a neutral hierarchy divider only.
+            .bg(if selected {
+                ui.accent.opacity(0.08)
+            } else {
+                chrome_tier
+            })
+            .border_b_1()
+            .border_color(ui.border)
+            .cursor_pointer()
+            .when(selected, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(3.))
+                        .bg(ui.accent),
+                )
+            })
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.select_column(idx, cx);
+                // US-009: focus the body so the keyboard review loop is live.
+                window.focus(&this.focus_handle, cx);
+            }))
+            .on_drag(
+                DiffColumnDrag { source_idx: idx },
+                move |_drag, _offset, _window, cx| {
+                    cx.new(|_| TabDragPreview {
+                        title: branch_drag.clone(),
+                        icon: "icons/git-branch.svg".into(),
+                    })
+                },
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(BODY)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(if selected { ui.accent } else { ui.text })
+                    .child(col.branch.clone()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(LABEL_XS)
+                    .text_color(ui.muted)
+                    .child(summary),
+            )
+            // EP-004 US-015: agent attribution badge between the file-count chip
+            // and the base chip. Zero-width slot when no session matched.
+            .children(self.render_attribution_badge(col, ui))
+            .when(has_base, move |d| d.child(base_chip))
+            // Review this branch: launch one or more CLIs against its diff. Sits
+            // beside the terminal button (prd-ai-in-diff-2026-Q3.md); live only
+            // when the column has changes.
+            // EP-003 US-010: the signature "Review this branch" action is a
+            // labeled pill (sparkles + text), not a bare eye icon — it reads as
+            // the primary AI affordance instead of a mystery glyph.
+            .when(col_has_changes, |d| {
+                d.child(
+                    crate::ui_primitives::toolbar_pill(
+                        SharedString::from(format!("diff-col-review-{idx}")),
+                        ui,
+                        review_open,
+                    )
+                    .tooltip(crate::ui_primitives::text_tooltip(
+                        "Review this branch with an AI agent",
+                    ))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        this.toggle_review_menu(idx, cx);
+                    }))
+                    .child(
+                        gpui::svg()
+                            .size(px(12.))
+                            .flex_none()
+                            .path("icons/sparkles.svg")
+                            .text_color(if review_open { ui.text } else { ui.muted }),
+                    )
+                    .child("Review"),
+                )
+            })
+            // Open a plain terminal in this branch's worktree, embedded under the
+            // diff (prd-ai-in-diff-2026-Q3.md).
+            .child(
+                div()
+                    .id(SharedString::from(format!("diff-col-term-{idx}")))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(18.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|s| {
+                        let ui = crate::theme::ui_colors();
+                        s.bg(ui.text.opacity(0.12))
+                    })
+                    .tooltip(crate::ui_primitives::text_tooltip(
+                        "Open a shell here to run git commands in this worktree",
+                    ))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.open_terminal_for_column(idx, window, cx);
+                    }))
+                    .child(
+                        gpui::svg()
+                            .size(px(12.))
+                            .flex_none()
+                            .path("icons/terminal.svg")
+                            .text_color(ui.muted),
+                    ),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("diff-col-hide-{idx}")))
+                    .flex_none()
+                    .px(px(4.))
+                    .text_size(BODY)
+                    .text_color(ui.muted)
+                    .cursor_pointer()
+                    .hover(|s| {
+                        let ui = crate::theme::ui_colors();
+                        s.text_color(ui.text)
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        // Worktree scope: deselect the branch from the scope (the
+                        // host drops it + rebuilds) so it's strictly shown-or-not.
+                        // Other scopes keep the in-place hide.
+                        if this.close_removes {
+                            if let Some(col) = this.columns.get(idx) {
+                                cx.emit(DiffViewEvent::CloseColumn {
+                                    path: col.path.clone(),
+                                });
+                            }
+                        } else {
+                            this.hide_column(idx, cx);
+                        }
+                    }))
+                    .child("×"),
+            )
+            // Per-branch Review CLI-picker popover, anchored under this header.
+            .when(review_open, |d| {
+                d.child(self.render_review_menu(idx, ui, cx))
+            });
+
+        let body: AnyElement = match &col.state {
+            // EP-002 US-008: designed loading + failure states, not raw strings.
+            ColumnState::Loading => crate::ui_primitives::panel_empty_state(
+                ui,
+                Some("icons/loader-circle.svg"),
+                None,
+                "Computing diff…",
+                true,
+            )
+            .into_any_element(),
+            ColumnState::Failed(e) => div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p(px(16.))
+                .child(
+                    Callout::new(CalloutSeverity::Error, "Diff failed")
+                        .icon(CalloutIcon::TriangleAlert)
+                        .description(e.clone())
+                        .render(),
+                )
+                .into_any_element(),
+            ColumnState::Loaded { file_count, .. } if *file_count == 0 => {
+                let b = col.base_override.as_deref().unwrap_or(&self.base_ref);
+                // EP-003 US-012 / edge case #4: a designed "Clean" state, not a
+                // raw centered string.
+                panel_empty_state(
+                    ui,
+                    Some("icons/check.svg"),
+                    Some("Clean".into()),
+                    format!("No changes vs {b}"),
+                    false,
+                )
+                .into_any_element()
+            }
+            ColumnState::Loaded { .. } => {
+                // Custom direct-paint element hosted in an overflow-scroll div:
+                // the element reports full content height; the div clips/scrolls
+                // and supplies the viewport clip the element culls against. Renders
+                // the collapse-filtered views (`disp_*`). The scroll-wheel listener
+                // marks this column the sync driver; the click listener maps the
+                // click Y to a row and toggles that file's collapse if it landed
+                // on a file header.
+                let body = match mode {
+                    ViewMode::Split => DiffBody::Split {
+                        rows: col.disp_split.clone(),
+                        offsets: col.disp_split_offsets.clone(),
+                        max_line_no: col.disp_split_max_no,
+                    },
+                    ViewMode::Unified => DiffBody::Unified {
+                        rows: col.disp_unified.clone(),
+                        offsets: col.disp_unified_offsets.clone(),
+                        max_line_no: col.disp_unified_max_no,
+                    },
+                };
+                // EP-003 US-010: hover-to-ask affordance over a changed line. In
+                // Unified the line is clickable (pointer + highlight); in Split
+                // click-to-ask is unavailable, so we keep the named tooltip but
+                // drop the pointer/highlight and the tooltip explains the
+                // Unified-only limitation instead (AC: split parity).
+                let hover = self.hover_line.filter(|(c, _)| *c == idx).map(|(_, r)| r);
+                let unified = mode == ViewMode::Unified;
+                let hover_row = if unified { hover } else { None };
+                let ask_tooltip = hover.is_some();
+                let tip = if unified {
+                    "Click to ask an agent about this line"
+                } else {
+                    "Switch to Unified view to ask an agent about this line"
+                };
+                div()
+                    .id(SharedString::from(format!("diff-col-{idx}")))
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&col.el_scroll)
+                    .on_scroll_wheel(cx.listener(
+                        move |this, _: &gpui::ScrollWheelEvent, _w, _cx| {
+                            this.scroll_driver = idx;
+                        },
+                    ))
+                    .when(hover_row.is_some(), |d| d.cursor(CursorStyle::PointingHand))
+                    .when(ask_tooltip, |d| {
+                        d.tooltip(crate::ui_primitives::text_tooltip(tip))
+                    })
+                    .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
+                        this.handle_body_click(idx, ev, window, cx);
+                    }))
+                    // Track the pointer for `Ctrl+Shift+C` (hunk under cursor) AND
+                    // for the hover-to-ask highlight (changed line under cursor while
+                    // a review CLI runs). Only re-renders on a hover-row transition.
+                    .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, window, cx| {
+                        this.last_body_pos = Some((idx, ev.position));
+                        let mode = this.effective_mode(window);
+                        let new_hover = this
+                            .actionable_row_at(idx, ev.position, mode)
+                            .map(|r| (idx, r));
+                        if this.hover_line != new_hover {
+                            this.hover_line = new_hover;
+                            // EP-005 US-020: moving to a different line disarms a
+                            // pending discard (the two-step armed pattern).
+                            this.hunk_discard_armed = None;
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                            let mode = this.effective_mode(window);
+                            this.open_body_menu(idx, ev.position, mode, cx);
+                        }),
+                    )
+                    .child(DiffElement::new(body, palette).hover_row(hover_row))
+                    .into_any_element()
+            }
+        };
+
+        div()
+            .flex_1()
+            // `h_full` + `min_h_0`: pin the column to the (definite) height of the
+            // horizontally-scrolling columns row. Without a definite height the
+            // `overflow_y_scroll` host can't clip, so `DiffElement` (which reports
+            // full content height) would paint every row instead of culling to the
+            // viewport — the scroll lag. With it, only the ~viewport rows paint.
+            .h_full()
+            .min_h_0()
+            // Panes shrink to share the split evenly (inc 5); the DiffElement
+            // clips long lines per-pane, so a narrow pane shows fewer columns of
+            // code rather than overflowing. Borders are drawn by the arrangement
+            // walk between siblings, so the column itself draws none.
+            .min_w_0()
+            .flex()
+            .flex_col()
+            // Codex redesign: the column header only earns its row when there
+            // are multiple columns to tell apart. Solo column: the branch is
+            // already in the breadcrumb + sidebar; its Review/Terminal actions
+            // live in the toolbar (see `render_toolbar`).
+            .children((self.visible_count() > 1).then_some(header))
+            .child(body)
+            // Embedded review CLIs render UNDER the diff body, in the Diff
+            // interface (prd-ai-in-diff-2026-Q3.md, terminal-launch revision).
+            .children(self.render_review_terminals(idx, col, ui, cx))
+    }
+
+    /// The single Diff-mode chrome row (Codex redesign): scope breadcrumb
+    /// (host-pushed `scope_slot`) › base selector on the left; hunk nav +
+    /// list actions + view-mode on the right. No own background and no
+    /// border — it sits directly on the panel (`ui.base`), separation by
+    /// spacing. The diffstat is gone from here: it lives ONCE, in the
+    /// sidebar "Changes" header. In single-column scopes the per-column
+    /// Review/Terminal buttons migrate here (the column header is hidden).
+    fn render_toolbar(
+        &self,
+        effective: ViewMode,
+        scope_slot: Option<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let ui = crate::theme::ui_colors();
+        let hidden = self.columns.len() - self.visible_count();
+        // Derived live (not a cached flag) so the chip can never disagree with the
+        // real per-column collapse state.
+        let all_collapsed = self.all_visible_collapsed();
+
+        // Single-column scope: the column header row is not rendered, so its
+        // Review / Terminal actions surface here instead.
+        let solo_idx = (self.visible_count() == 1)
+            .then(|| self.selected_or_first_visible())
+            .flatten();
+
+        // Hunk-nav state for the selected column: (total hunks, current index by
+        // scroll position). `None` / total 0 hides the control. Stateless — read
+        // from the live scroll offset so it tracks manual scrolling.
+        let hunk_nav = self
+            .selected_or_first_visible()
+            .and_then(|i| self.columns.get(i))
+            .map(|col| {
+                let tops = col.hunk_tops(effective);
+                let cur_y = f32::from(-col.el_scroll.offset().y).max(0.0);
+                // US-009: report the hunk parked at/above the viewport top by
+                // `goto_hunk` (it lands a hunk's first line HUNK_JUMP_MARGIN px
+                // below the top), NOT a cumulative count of every hunk scrolled
+                // past. Pivoting on `cur_y + HUNK_JUMP_MARGIN` makes the counter
+                // read exactly the hunk the nav last jumped to.
+                let pivot = cur_y + HUNK_JUMP_MARGIN;
+                let current = tops.iter().filter(|&&t| t <= pivot + 4.0).count();
+                (tops.len(), current)
+            })
+            .filter(|(total, _)| *total > 0);
+
+        // Pill control (icon + label). `active` paints the resting highlight
+        // (open popover / toggle on).
+        let control =
+            |id: &'static str, active: bool| crate::ui_primitives::toolbar_pill(id, ui, active);
+        let icon = |path: &'static str| {
+            gpui::svg()
+                .size(px(13.))
+                .flex_none()
+                .path(path)
+                .text_color(ui.muted)
+        };
+
+        // One segment of the Unified|Split control. Monochrome translucent
+        // language (matches the CLI/Diff/Agents toggle) so it adapts to any
+        // theme; the active segment is filled. Captures only `ui` (not `cx`) so
+        // it can't tangle with the `cx` borrows elsewhere in the chain — the
+        // click is attached by the caller for the inactive segment only.
+        let seg =
+            |id: &'static str, label: &'static str, icon_path: &'static str, is_active: bool| {
+                let mut s = div()
+                    .id(id)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.))
+                    .h(px(20.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .text_size(BODY);
+                if is_active {
+                    s = s
+                        .bg(ui.text.opacity(0.10))
+                        .text_color(ui.text)
+                        .font_weight(FontWeight::SEMIBOLD);
+                } else {
+                    s = s
+                        .text_color(ui.text.opacity(0.5))
+                        .cursor_pointer()
+                        .hover(|st| {
+                            let ui = crate::theme::ui_colors();
+                            st.text_color(ui.text)
+                        });
+                }
+                s.child(
+                    gpui::svg()
+                        .size(px(12.))
+                        .flex_none()
+                        .path(icon_path)
+                        .text_color(if is_active {
+                            ui.text
+                        } else {
+                            ui.text.opacity(0.5)
+                        }),
+                )
+                .child(label)
+            };
+
+        div()
+            .relative()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.))
+            .h(px(36.))
+            .flex_none()
+            .px(px(10.))
+            // --- left: scope breadcrumb (host slot) › base branch ---
+            .when_some(scope_slot, |d, slot| {
+                d.child(slot).child(
+                    gpui::svg()
+                        .size(px(13.))
+                        .flex_none()
+                        .path("icons/chevron-right.svg")
+                        .text_color(ui.muted),
+                )
+            })
+            .child(
+                control("diff-base-chip", self.base_picker_open)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.toggle_base_picker(window, cx);
+                    }))
+                    .child(icon("icons/git-branch.svg"))
+                    .child(
+                        div()
+                            .text_color(if self.base_ref.is_empty() {
+                                ui.muted
+                            } else {
+                                ui.text
+                            })
+                            .child(if self.base_ref.is_empty() {
+                                "pick a branch".to_string()
+                            } else {
+                                self.base_ref.clone()
+                            }),
+                    )
+                    .child(icon("icons/chevron-down.svg")),
+            )
+            .when(self.base_picker_open, |d| {
+                d.child(deferred(self.render_base_popover(cx)).with_priority(10))
+            })
+            // (No diffstat / proportion bar here — purely informational; it
+            // lives once, in the sidebar "Changes" header.)
+            // --- hunk navigation: prev / counter / next ---
+            .when_some(hunk_nav, |d, (total, current)| {
+                let shown = current.clamp(1, total);
+                let nav_btn = |id: &'static str, icon_path: &'static str| {
+                    crate::ui_primitives::icon_button_sm(id, icon_path, ui.muted, ui.subtle)
+                };
+                d.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(1.))
+                        .ml(px(4.))
+                        .child(nav_btn("diff-hunk-prev", "icons/chevron_up.svg").on_click(
+                            cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.goto_hunk(false, window, cx);
+                            }),
+                        ))
+                        .child(
+                            div()
+                                .flex_none()
+                                .px(px(3.))
+                                .text_size(LABEL_SM)
+                                .text_color(ui.muted)
+                                .child(format!("{shown}/{total}")),
+                        )
+                        .child(
+                            nav_btn("diff-hunk-next", "icons/chevron-down.svg").on_click(
+                                cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    this.goto_hunk(true, window, cx);
+                                }),
+                            ),
+                        ),
+                )
+            })
+            // EP-004 US-017: aggregated estimated cost across attributed
+            // worktrees. Hidden when nothing is priced (no fabricated total).
+            .when_some(self.attribution_total(), |d, (total, n)| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.))
+                        .ml(px(6.))
+                        .text_size(LABEL_SM)
+                        .text_color(ui.muted)
+                        .child(
+                            gpui::svg()
+                                .size(px(12.))
+                                .flex_none()
+                                .path("icons/sparkles.svg")
+                                .text_color(ui.muted),
+                        )
+                        .child(format!(
+                            "Total {} (est.) · {n} worktree{}",
+                            crate::pricing::format_cost(total),
+                            if n == 1 { "" } else { "s" }
+                        )),
+                )
+            })
+            // --- spacer ---
+            .child(div().flex_1())
+            // --- single-column: per-branch Review / Terminal actions, migrated
+            // from the (hidden) column header. The Review popover anchors to
+            // its button's relative wrapper.
+            .when_some(solo_idx, |d, idx| {
+                let col_has_changes = self.columns.get(idx).is_some_and(Self::column_has_changes);
+                let review_open = self.review_menu_open == Some(idx);
+                d.when(col_has_changes, |d| {
+                    d.child(
+                        div()
+                            .relative()
+                            .child(
+                                // EP-003 US-010: labeled Review pill (sparkles +
+                                // text), matching the per-column header action.
+                                crate::ui_primitives::toolbar_pill(
+                                    "diff-toolbar-review",
+                                    ui,
+                                    review_open,
+                                )
+                                .tooltip(crate::ui_primitives::text_tooltip(
+                                    "Review this branch with an AI agent",
+                                ))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                    this.toggle_review_menu(idx, cx);
+                                }))
+                                .child(
+                                    gpui::svg()
+                                        .size(px(12.))
+                                        .flex_none()
+                                        .path("icons/sparkles.svg")
+                                        .text_color(if review_open { ui.text } else { ui.muted }),
+                                )
+                                .child("Review"),
+                            )
+                            .when(review_open, |d| {
+                                d.child(self.render_review_menu(idx, ui, cx))
+                            }),
+                    )
+                })
+                .child(
+                    crate::ui_primitives::icon_button_md(
+                        "diff-toolbar-terminal",
+                        "icons/terminal.svg",
+                        ui.muted,
+                        ui.text.opacity(0.12),
+                    )
+                    .tooltip(crate::ui_primitives::text_tooltip(
+                        "Open a shell here to run git commands in this worktree",
+                    ))
+                    .on_click(cx.listener(
+                        move |this, _: &ClickEvent, window, cx| {
+                            this.open_terminal_for_column(idx, window, cx);
+                        },
+                    )),
+                )
+            })
+            // --- right: list actions ---
+            .child(
+                control("diff-collapse-all", false)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                        this.toggle_collapse_all(cx);
+                    }))
+                    .text_color(ui.muted)
+                    .child(icon(if all_collapsed {
+                        "icons/chevron-down.svg"
+                    } else {
+                        "icons/chevron_up.svg"
+                    }))
+                    .child(if all_collapsed {
+                        "Expand all"
+                    } else {
+                        "Collapse all"
+                    }),
+            )
+            .when(hidden > 0, |d| {
+                d.child(
+                    control("diff-show-hidden", false)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                            this.show_all_columns(cx);
+                        }))
+                        .text_color(ui.muted)
+                        .child(format!("{hidden} hidden")),
+                )
+            })
+            .when(self.visible_count() > 1, |d| {
+                d.child(
+                    control("diff-sync-toggle", self.sync_scroll)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| this.toggle_sync(cx)))
+                        .child(icon("icons/link.svg"))
+                        .child(if self.sync_scroll {
+                            "Linked"
+                        } else {
+                            "Independent"
+                        }),
+                )
+            })
+            // --- right: view-mode segmented control ---
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(1.))
+                    .h(px(16.))
+                    .mx(px(2.))
+                    .bg(ui.border),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(2.))
+                    .p(px(2.))
+                    .rounded(px(6.))
+                    .bg(ui.text.opacity(0.05))
+                    .child(
+                        seg(
+                            "diff-mode-unified",
+                            "Unified",
+                            "icons/list.svg",
+                            effective == ViewMode::Unified,
+                        )
+                        .when(effective != ViewMode::Unified, |d| {
+                            d.on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                                this.mode = ViewMode::Unified;
+                                cx.notify();
+                            }))
+                        }),
+                    )
+                    .child(
+                        seg(
+                            "diff-mode-split",
+                            "Split",
+                            "icons/split_vertical.svg",
+                            effective == ViewMode::Split,
+                        )
+                        .when(effective != ViewMode::Split, |d| {
+                            d.on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                                this.mode = ViewMode::Split;
+                                cx.notify();
+                            }))
+                        }),
+                    ),
+            )
     }
 }

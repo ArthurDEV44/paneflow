@@ -51,6 +51,7 @@ mod mouse;
 mod opencode_sessions;
 mod pane;
 mod pane_drag;
+mod pricing;
 mod project;
 mod runtime_paths;
 mod search;
@@ -58,6 +59,7 @@ mod settings;
 mod telemetry;
 mod terminal;
 pub mod theme;
+mod ui_primitives;
 mod update;
 mod widgets;
 mod window_chrome;
@@ -419,33 +421,12 @@ struct AgentsViewState {
     /// Paths of files folded shut in the diff dock, so a fold survives re-renders.
     pub(crate) agents_diff_collapsed: std::collections::HashSet<String>,
     /// Diff dock view mode: `false` = unified (inline), `true` = split (old left,
-    /// new right). Toggled from the header; switching bumps `agents_diff_rev`.
+    /// new right). Toggled from the header.
     pub(crate) agents_diff_split: bool,
-    /// Monotonic revision of the diff dock's flattened row set. Bumped on refresh
-    /// and on collapse changes so the variable-height `list` state is rebuilt only
-    /// when the rows actually change, not on every repaint.
-    pub(crate) agents_diff_rev: u64,
-    /// Persisted `gpui::list` scroll/measure state for the diff dock (tall file
-    /// headers over compact code lines). Rebuilt when `agents_diff_rev` moves.
-    pub(crate) agents_diff_list: Option<gpui::ListState>,
-    /// The `agents_diff_rev` value the current `agents_diff_list` was built for.
-    pub(crate) agents_diff_list_rev: u64,
-    /// Per-file horizontal scroll offsets (px, `>= 0`), one slot per file by
-    /// position. Each diff block scrolls on its own slot so a long file doesn't
-    /// drag short files into the blank; the virtualized `list` owns vertical
-    /// scroll, and GPUI can't layer `overflow_x_scroll` on a `list`, so code
-    /// rows translate their text by `-offset`. Reseated to `vec![0.0; files]`
-    /// whenever `agents_diff_rev` moves (refresh / collapse / split toggle).
-    pub(crate) agents_diff_h_offsets: Vec<f32>,
-    /// Scroll handle bound to every per-file scrollbar *track* only to read its
-    /// laid-out bounds back (origin.x + width); the actual scroll is
-    /// `agents_diff_h_offsets`, not this handle's offset. All tracks share one
-    /// handle because they share identical X geometry (same column, same width);
-    /// only their Y differs, which the click/drag math never reads.
-    pub(crate) agents_diff_h_track: gpui::ScrollHandle,
-    /// Active drag of a file's horizontal scrollbar thumb, captured on
-    /// `mouse_down` (carries the dragged file's index).
-    pub(crate) agents_diff_h_drag: Option<crate::app::agents_diff::AgentsDiffHDrag>,
+    /// Vertical scroll handle for the diff dock's [`crate::diff::DiffElement`]
+    /// (hosted in an `overflow_y_scroll` div, the same render path as the Review
+    /// view's columns). Survives ordinary repaints so scroll position is kept.
+    pub(crate) agents_diff_scroll: gpui::ScrollHandle,
     /// Width in px of the diff dock; user-resizable by dragging its left edge.
     /// Clamped to `[AGENTS_DIFF_PANEL_MIN_WIDTH, AGENTS_DIFF_PANEL_MAX_WIDTH]`.
     pub(crate) agents_diff_width: f32,

@@ -196,6 +196,14 @@ impl PaneFlowApp {
                 let key = DiffViewKey::new(&root, DiffScope::Worktree, &open);
                 let (view, miss) = self.mount_or_resume_diff(key, root.clone(), open.clone(), cx);
                 self.diff_mode.diff_view = Some(view);
+                // EP-003 US-012: eagerly fetch this repo's worktree list (off the
+                // main thread) so the scope header's branch badge can read
+                // "chosen/total" without the picker ever being opened. Guarded so
+                // it fetches at most once per repo (the picker-open path refreshes
+                // it too); the data is a best-effort hint, not load-bearing.
+                if self.diff_mode.diff_available_repo.as_deref() != Some(root.as_path()) {
+                    self.refresh_diff_available_worktrees(root.clone(), cx);
+                }
                 if miss {
                     self.spawn_worktree_discovery(root, open, chosen, cx);
                 }

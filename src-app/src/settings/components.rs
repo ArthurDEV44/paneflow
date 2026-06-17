@@ -157,7 +157,7 @@ pub fn setting_text(
         .gap(px(2.))
         .child(
             div()
-                .text_size(px(13.))
+                .text_size(crate::ui_primitives::BODY_EMPHASIS)
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(ui.text)
                 .child(title),

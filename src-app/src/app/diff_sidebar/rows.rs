@@ -58,6 +58,12 @@ impl PaneFlowApp {
         let selected =
             is_active && self.diff_mode.diff_selected_file.as_deref() == Some(entry.path.as_str());
         let path = entry.path.clone();
+        // EP-003 US-013: per-file hover actions (collapse + copy) route to the
+        // active host the same way the row click does; each closure owns its
+        // path clone.
+        let path_collapse = entry.path.clone();
+        let path_copy = entry.path.clone();
+        let group = SharedString::from(format!("diff-file-grp-{col_idx}-{}", entry.path));
         let show_counts = !entry.is_binary && (entry.added > 0 || entry.removed > 0);
 
         div()
@@ -67,6 +73,9 @@ impl PaneFlowApp {
                 "diff-file-{col_idx}-{}",
                 entry.path
             )))
+            // Positioned ancestor + hover group for the trailing actions cluster.
+            .relative()
+            .group(group.clone())
             .flex_none()
             .h(px(28.))
             // 2px leading bar: accent when selected, transparent otherwise
@@ -112,7 +121,7 @@ impl PaneFlowApp {
                     .flex_none()
                     .w(px(14.))
                     .text_color(color)
-                    .text_size(px(11.))
+                    .text_size(crate::ui_primitives::LABEL_SM)
                     .font_weight(FontWeight::BOLD)
                     .child(letter),
             )
@@ -131,7 +140,7 @@ impl PaneFlowApp {
                         div()
                             .flex_none()
                             .text_color(name_color)
-                            .text_size(px(13.))
+                            .text_size(crate::ui_primitives::BODY_EMPHASIS)
                             .when(matches!(entry.change, FileChange::Deleted), |d| {
                                 d.line_through()
                             })
@@ -144,7 +153,7 @@ impl PaneFlowApp {
                                 .min_w_0()
                                 .truncate()
                                 .text_color(ui.muted)
-                                .text_size(px(11.))
+                                .text_size(crate::ui_primitives::LABEL_SM)
                                 .child(dir),
                         )
                     }),
@@ -156,7 +165,7 @@ impl PaneFlowApp {
                         .flex()
                         .flex_row()
                         .gap(px(5.))
-                        .text_size(px(11.))
+                        .text_size(crate::ui_primitives::LABEL_SM)
                         .when(entry.added > 0, |d| {
                             d.child(
                                 div()
@@ -173,6 +182,94 @@ impl PaneFlowApp {
                         }),
                 )
             })
+            // EP-003 US-013: hover-revealed per-file actions, right-anchored over
+            // the +/- counts (matching the Agents sidebar's hover cluster). Each
+            // button routes to the active host (single DiffView or the selected
+            // repo of the multi-project view) like the row click does.
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(px(6.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(2.))
+                    .pl(px(8.))
+                    .bg(ui.subtle)
+                    .invisible()
+                    .group_hover(group.clone(), |s| s.visible())
+                    .child(
+                        crate::ui_primitives::icon_button_sm(
+                            SharedString::from(format!(
+                                "diff-file-collapse-{col_idx}-{}",
+                                entry.path
+                            )),
+                            "icons/chevron_up.svg",
+                            ui.muted,
+                            ui.text.opacity(0.12),
+                        )
+                        .tooltip(crate::ui_primitives::text_tooltip(
+                            "Collapse / expand this file",
+                        ))
+                        .on_click(cx.listener(
+                            move |this, _: &ClickEvent, _w, cx| {
+                                match this.diff_mode.diff_scope {
+                                    crate::diff::DiffScope::MultiProject => {
+                                        if let Some(mv) = this.diff_mode.multi_diff_view.clone() {
+                                            mv.update(cx, |mv, cx| {
+                                                mv.active_toggle_file_collapse(
+                                                    col_idx,
+                                                    &path_collapse,
+                                                    cx,
+                                                )
+                                            });
+                                        }
+                                    }
+                                    _ => {
+                                        if let Some(dv) = this.diff_mode.diff_view.clone() {
+                                            dv.update(cx, |dv, cx| {
+                                                dv.toggle_file_collapse(col_idx, &path_collapse, cx)
+                                            });
+                                        }
+                                    }
+                                }
+                                cx.stop_propagation();
+                            },
+                        )),
+                    )
+                    .child(
+                        crate::ui_primitives::icon_button_sm(
+                            SharedString::from(format!("diff-file-copy-{col_idx}-{}", entry.path)),
+                            "icons/file-text.svg",
+                            ui.muted,
+                            ui.text.opacity(0.12),
+                        )
+                        .tooltip(crate::ui_primitives::text_tooltip("Copy this file's diff"))
+                        .on_click(cx.listener(
+                            move |this, _: &ClickEvent, _w, cx| {
+                                match this.diff_mode.diff_scope {
+                                    crate::diff::DiffScope::MultiProject => {
+                                        if let Some(mv) = this.diff_mode.multi_diff_view.clone() {
+                                            mv.update(cx, |mv, cx| {
+                                                mv.active_copy_file_diff(col_idx, &path_copy, cx)
+                                            });
+                                        }
+                                    }
+                                    _ => {
+                                        if let Some(dv) = this.diff_mode.diff_view.clone() {
+                                            dv.update(cx, |dv, cx| {
+                                                dv.copy_file_diff(col_idx, &path_copy, cx)
+                                            });
+                                        }
+                                    }
+                                }
+                                cx.stop_propagation();
+                            },
+                        )),
+                    ),
+            )
             .into_any_element()
     }
 }

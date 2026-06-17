@@ -37,3 +37,18 @@ pub use scope::{DiffScope, RepoGroup};
 pub use view::{
     DiffView, DiffViewEvent, DiffWorktree, FileEntry, FileListState, aggregate_file_lists,
 };
+
+// EP-001 (prd-review-redesign-2026-Q3.md, US-001/US-002): the Agents diff dock
+// (`crate::app::agents_diff`) renders through the SAME `DiffElement` + git
+// pipeline + row model as the Review view, so these are exposed crate-internally
+// rather than re-implemented. Kept `pub(crate)` (not `pub`) so the unification
+// surface stays inside the binary.
+pub(crate) use element::{DiffBody, DiffElement};
+pub(crate) use git::compute_head_diff;
+pub(crate) use hit_test::row_at_offset;
+pub(crate) use rows::{
+    DisplayRow, RowKind, SplitRow, apply_collapse_split, apply_collapse_unified,
+    build_display_rows, build_split_rows, palette, split_max_line_no, split_offsets,
+    unified_max_line_no, unified_offsets,
+};
+pub(crate) use syntax::DiffSyntax;

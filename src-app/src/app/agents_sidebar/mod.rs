@@ -37,12 +37,11 @@ pub(crate) use state::{AgentsContextMenu, AgentsDeleteTarget, AgentsRenameTarget
 
 use gpui::{
     Animation, AnimationExt, ClickEvent, Context, Font, FontFeatures, FontStyle, FontWeight, Hsla,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
-    StyledText, TextRun, Transformation, Window, div, percentage, prelude::*, px, rgb, svg,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, SharedString, Styled, StyledText,
+    TextRun, Transformation, div, percentage, prelude::*, px, rgb, svg,
 };
 
 use crate::PaneFlowApp;
-use crate::settings::components::with_alpha;
 
 use super::agents_view_actions::AGENTS_SIDEBAR_WIDTH;
 
@@ -851,116 +850,63 @@ impl PaneFlowApp {
         // a filled `ui.subtle` gray, borderless, and fully inert — nothing
         // changes on focus or hover, the blinking caret is the only focus cue —
         // so both app search fields read as one system.
-        let mut field = div()
-            .id("agents-sidebar-filter")
-            .px(px(10.))
-            .py(px(6.))
-            .rounded(crate::app::constants::SIDEBAR_TAB_CORNER_RADIUS)
-            .bg(ui.subtle)
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.))
-            .cursor_text();
-
-        field = field
-            // Escape clears the query; Enter jumps to the first matching thread.
-            // Cursor movement / Delete / Ctrl+A,C,V,X / mouse selection are all
-            // handled inside the focused TextInput via its own keybindings; the
-            // unbound Escape/Enter bubble up to this container.
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _w, cx| {
-                match ev.keystroke.key.as_str() {
-                    "escape" => {
-                        this.agents_view.agents_filter_input.update(cx, |inp, cx| {
-                            inp.content = SharedString::default();
-                            inp.selected_range = 0..0;
-                            cx.notify();
-                        });
-                        cx.stop_propagation();
-                    }
-                    "enter" => {
-                        let q = this
-                            .agents_view
-                            .agents_filter_input
-                            .read(cx)
-                            .value()
-                            .to_lowercase();
-                        if let Some((p, t)) = filter::first_matching_thread(&this.projects, &q) {
-                            let _ = this.select_thread(p, t, cx);
-                        }
-                        cx.stop_propagation();
-                    }
-                    _ => {}
-                }
-            }))
-            // Clicking outside drops focus so the caret disappears and keys stop
-            // being captured. Guarded so a click elsewhere never blurs another
-            // focused element.
-            .on_mouse_down_out(cx.listener(|this, _, window, cx| {
-                if this
-                    .agents_view
-                    .agents_filter_input
-                    .read(cx)
-                    .focus_handle
-                    .is_focused(window)
-                {
-                    window.blur();
+        // Mirrors the Settings "Search settings…" pill via the shared
+        // [`filter_pill`] primitive (same recipe as the diff sidebar filter).
+        // Escape clears the query; Enter jumps to the first matching thread;
+        // clicking outside drops focus. Cursor movement / Delete / Ctrl+A,C,V,X /
+        // mouse selection are all handled inside the focused TextInput via its
+        // own keybindings; the unbound Escape/Enter bubble up to this container.
+        crate::ui_primitives::filter_pill(
+            "agents-sidebar-filter",
+            ui,
+            self.agents_view.agents_filter_input.clone(),
+            !is_empty,
+            cx.listener(|this, _: &ClickEvent, _w, cx| {
+                this.agents_view.agents_filter_input.update(cx, |inp, cx| {
+                    inp.content = SharedString::default();
+                    inp.selected_range = 0..0;
                     cx.notify();
+                });
+            }),
+        )
+        .on_key_down(cx.listener(
+            |this, ev: &KeyDownEvent, _w, cx| match ev.keystroke.key.as_str() {
+                "escape" => {
+                    this.agents_view.agents_filter_input.update(cx, |inp, cx| {
+                        inp.content = SharedString::default();
+                        inp.selected_range = 0..0;
+                        cx.notify();
+                    });
+                    cx.stop_propagation();
                 }
-            }))
-            .child(
-                // Magnifier icon (Zed's FilterEditor uses MagnifyingGlass).
-                svg()
-                    .size(px(13.))
-                    .flex_none()
-                    .path("icons/tool_search.svg")
-                    .text_color(ui.muted),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(px(12.))
-                    .text_color(ui.text)
-                    .child(self.agents_view.agents_filter_input.clone()),
-            );
-
-        // Trailing "clear filter" button when the field has content, so mouse
-        // users do not have to hit Escape.
-        if !is_empty {
-            field = field.child(
-                div()
-                    .id("agents-sidebar-filter-clear")
-                    .flex_none()
-                    .w(px(16.))
-                    .h(px(16.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(3.))
-                    .cursor_pointer()
-                    .text_color(ui.muted)
-                    // Visible hover on the now-`ui.subtle` field (a plain
-                    // `ui.subtle` bg would blend into the pill).
-                    .hover(move |s| s.bg(with_alpha(ui.text, 0.10)).text_color(ui.text))
-                    .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                        this.agents_view.agents_filter_input.update(cx, |inp, cx| {
-                            inp.content = SharedString::default();
-                            inp.selected_range = 0..0;
-                            cx.notify();
-                        });
-                    }))
-                    .child(
-                        svg()
-                            .size(px(10.))
-                            .flex_none()
-                            .path("icons/close.svg")
-                            .text_color(ui.muted),
-                    ),
-            );
-        }
-
-        field.into_any_element()
+                "enter" => {
+                    let q = this
+                        .agents_view
+                        .agents_filter_input
+                        .read(cx)
+                        .value()
+                        .to_lowercase();
+                    if let Some((p, t)) = filter::first_matching_thread(&this.projects, &q) {
+                        let _ = this.select_thread(p, t, cx);
+                    }
+                    cx.stop_propagation();
+                }
+                _ => {}
+            },
+        ))
+        .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+            if this
+                .agents_view
+                .agents_filter_input
+                .read(cx)
+                .focus_handle
+                .is_focused(window)
+            {
+                window.blur();
+                cx.notify();
+            }
+        }))
+        .into_any_element()
     }
 }
 
@@ -1075,14 +1021,10 @@ fn section_eyebrow(
         .px(px(14.))
         .py(px(2.))
         .child(
-            div()
+            crate::ui_primitives::section_eyebrow(label.to_string(), ui)
                 .flex_1()
                 .min_w_0()
-                .text_size(px(11.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(ui.muted)
-                .truncate()
-                .child(SharedString::from(label.to_string())),
+                .truncate(),
         );
     if let Some(id) = add_button_id {
         row = row.child(
@@ -1101,12 +1043,7 @@ fn section_eyebrow(
                     s.bg(crate::app::constants::sidebar_tab_hover_background())
                         .text_color(ui.text)
                 })
-                .tooltip(|_w, cx| {
-                    cx.new(|_| HoverActionTooltip {
-                        label: SharedString::from("New project"),
-                    })
-                    .into()
-                })
+                .tooltip(crate::ui_primitives::text_tooltip("New project"))
                 .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                     this.create_agents_project_with_picker(cx);
                 }))
@@ -1335,12 +1272,7 @@ fn hover_actions_cluster(
             s.bg(crate::app::constants::sidebar_tab_hover_background())
                 .text_color(ui.text)
         })
-        .tooltip(move |_w, cx| {
-            cx.new(|_| HoverActionTooltip {
-                label: SharedString::from(pin_tooltip),
-            })
-            .into()
-        })
+        .tooltip(crate::ui_primitives::text_tooltip(pin_tooltip))
         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
             this.toggle_pin_for_target(target, cx);
             cx.stop_propagation();
@@ -1364,12 +1296,7 @@ fn hover_actions_cluster(
             s.bg(crate::app::constants::sidebar_tab_hover_background())
                 .text_color(ui.text)
         })
-        .tooltip(|_w, cx| {
-            cx.new(|_| HoverActionTooltip {
-                label: SharedString::from("Delete"),
-            })
-            .into()
-        })
+        .tooltip(crate::ui_primitives::text_tooltip("Delete"))
         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
             // First click arms the inline delete-confirm (no dialog): the row's
             // cluster flips to a red "Delete" button (see the `armed` branch).
@@ -1399,28 +1326,6 @@ fn hover_actions_cluster(
         .child(pin_btn)
         .child(trash_btn)
         .into_any_element()
-}
-
-/// US-023: tooltip body for the per-row Delete hover button.
-struct HoverActionTooltip {
-    label: SharedString,
-}
-
-impl Render for HoverActionTooltip {
-    fn render(&mut self, _w: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = crate::theme::active_theme();
-        let ui = crate::theme::ui_colors();
-        div()
-            .px(px(8.))
-            .py(px(6.))
-            .rounded(px(6.))
-            .bg(theme.title_bar_background)
-            .border_1()
-            .border_color(ui.border)
-            .text_color(ui.text)
-            .text_size(px(11.))
-            .child(self.label.clone())
-    }
 }
 
 #[cfg(test)]

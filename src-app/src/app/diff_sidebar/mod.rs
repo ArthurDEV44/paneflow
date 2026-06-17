@@ -67,24 +67,22 @@ impl PaneFlowApp {
     /// The "Changes" section + the changed-files list (or a centered
     /// loading / error / empty / no-repo message). US-008.
     fn render_diff_files(&self, ui: UiColors, cx: &mut Context<Self>) -> AnyElement {
-        let centered = |msg: String| {
-            div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .p(px(12.))
-                .child(div().text_color(ui.muted).text_size(px(12.)).child(msg))
-                .into_any_element()
-        };
-
         let mounted = match self.diff_mode.diff_scope {
             crate::diff::DiffScope::MultiProject => self.diff_mode.multi_diff_view.is_some(),
             _ => self.diff_mode.diff_view.is_some(),
         };
         if !mounted {
-            return centered("No git repository in the active workspace".into());
+            // EP-003 US-012 / edge case #1: a designed no-repo state — an icon, a
+            // title, and a one-line positioning hint. The "open a project"
+            // affordance is the scope-header project picker in the breadcrumb.
+            return crate::ui_primitives::panel_empty_state(
+                ui,
+                Some("icons/git-branch.svg"),
+                Some("No Git repository".into()),
+                "Open a workspace backed by a Git repo to review its changes here.",
+                false,
+            )
+            .into_any_element();
         }
 
         // Per-branch (column) file lists + the active column, for the scope's
@@ -116,17 +114,39 @@ impl PaneFlowApp {
 
         if lists.is_empty() {
             // Mounted but no columns yet — the brief cold-mount / discovery window.
-            return centered(
-                if self.diff_mode.diff_discovering {
-                    "Discovering worktrees…"
-                } else {
-                    "Computing diff…"
+            // EP-003 US-012 / edge case #2: animated loader + the active branch
+            // being diffed, not a bare string.
+            let branch = self
+                .workspaces
+                .get(self.active_idx)
+                .map(|ws| ws.git_branch.clone())
+                .filter(|b| !b.is_empty());
+            let msg = if self.diff_mode.diff_discovering {
+                "Discovering worktrees…".to_string()
+            } else {
+                match branch {
+                    Some(b) => format!("Computing diff for {b}…"),
+                    None => "Computing diff…".to_string(),
                 }
-                .into(),
-            );
+            };
+            return crate::ui_primitives::panel_empty_state(
+                ui,
+                Some("icons/loader-circle.svg"),
+                None,
+                msg,
+                true,
+            )
+            .into_any_element();
         }
 
         let collapsed = self.diff_mode.diff_files_collapsed;
+
+        // EP-003 US-012: the filter field renders only when a file list actually
+        // exists (≥ 1 changed file across the loaded columns) — filtering an
+        // empty / still-loading list is meaningless chrome.
+        let has_files = lists
+            .iter()
+            .any(|(_, _, _, st)| matches!(st, FileListState::Loaded(f) if !f.is_empty()));
 
         // Aggregate diffstat across every branch's files — an at-a-glance sense
         // of the total changeset, shown in the header even when collapsed. Same
@@ -164,17 +184,10 @@ impl PaneFlowApp {
                 div()
                     .flex_none()
                     .text_color(ui.muted)
-                    .text_size(px(9.))
+                    .text_size(crate::ui_primitives::LABEL_XS)
                     .child(if collapsed { "▸" } else { "▾" }),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .text_color(ui.muted)
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Changes"),
-            )
+            .child(crate::ui_primitives::section_eyebrow("Changes", ui).flex_none())
             .child(div().flex_1())
             // Flat-list ⇄ directory-tree toggle. `stop_propagation` so toggling
             // the layout doesn't also collapse the whole "Changes" section.
@@ -214,7 +227,7 @@ impl PaneFlowApp {
                         .flex_row()
                         .items_center()
                         .gap(px(6.))
-                        .text_size(px(11.))
+                        .text_size(crate::ui_primitives::LABEL_SM)
                         .when(total_added > 0, |d| {
                             d.child(
                                 div()
@@ -233,71 +246,33 @@ impl PaneFlowApp {
             });
 
         // Always-on filter field (cursor-aware TextInput). Escape clears it; a
-        // clear-(×) button appears once it has content.
-        let filter_field = div()
-            .flex_none()
-            .h(px(32.))
-            .px(px(10.))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(7.))
-            .border_b_1()
-            .border_color(ui.border)
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _w, cx| {
-                if ev.keystroke.key.as_str() == "escape" {
-                    this.diff_mode.diff_file_filter.update(cx, |inp, cx| {
-                        inp.content = SharedString::default();
-                        inp.selected_range = 0..0;
-                        cx.notify();
-                    });
-                    cx.stop_propagation();
-                }
-            }))
-            .child(
-                gpui::svg()
-                    .size(px(13.))
-                    .flex_none()
-                    .path("icons/tool_search.svg")
-                    .text_color(ui.muted),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(px(12.))
-                    .text_color(ui.text)
-                    .child(self.diff_mode.diff_file_filter.clone()),
-            )
-            .when(filtering, |d| {
-                d.child(
-                    div()
-                        .id("diff-filter-clear")
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w(px(18.))
-                        .h(px(18.))
-                        .rounded(px(4.))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(ui.subtle))
-                        .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                            this.diff_mode.diff_file_filter.update(cx, |inp, cx| {
-                                inp.content = SharedString::default();
-                                inp.selected_range = 0..0;
-                                cx.notify();
-                            });
-                        }))
-                        .child(
-                            gpui::svg()
-                                .size(px(10.))
-                                .flex_none()
-                                .path("icons/close.svg")
-                                .text_color(ui.muted),
-                        ),
-                )
-            });
+        // clear-(×) button appears once it has content. Shares the [`filter_pill`]
+        // primitive with the Agents sidebar filter.
+        let filter_field = crate::ui_primitives::filter_pill(
+            "diff-files-filter",
+            ui,
+            self.diff_mode.diff_file_filter.clone(),
+            filtering,
+            cx.listener(|this, _: &ClickEvent, _w, cx| {
+                this.diff_mode.diff_file_filter.update(cx, |inp, cx| {
+                    inp.content = SharedString::default();
+                    inp.selected_range = 0..0;
+                    cx.notify();
+                });
+            }),
+        )
+        .mx(px(8.))
+        .mb(px(6.))
+        .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _w, cx| {
+            if ev.keystroke.key.as_str() == "escape" {
+                this.diff_mode.diff_file_filter.update(cx, |inp, cx| {
+                    inp.content = SharedString::default();
+                    inp.selected_range = 0..0;
+                    cx.notify();
+                });
+                cx.stop_propagation();
+            }
+        }));
 
         // Single column ⇒ flat list (Project / one worktree); multiple ⇒ one
         // collapsible section per branch so all branches are visible at once.
@@ -335,7 +310,7 @@ impl PaneFlowApp {
             .flex_col()
             .overflow_hidden()
             .child(header);
-        if !collapsed {
+        if !collapsed && has_files {
             container = container.child(filter_field);
         }
         container
@@ -373,7 +348,7 @@ impl PaneFlowApp {
                 .pr(px(12.))
                 .py(px(8.))
                 .text_color(ui.muted)
-                .text_size(px(12.))
+                .text_size(crate::ui_primitives::BODY)
                 .child(msg)
                 .into_any_element()
         };
@@ -516,7 +491,9 @@ impl PaneFlowApp {
         div()
             .id(SharedString::from(format!("diff-dir-{col_idx}-{full}")))
             .flex_none()
-            .h(px(24.))
+            // EP-003 US-013: match the 28px file-row height so the tree reads on
+            // one consistent vertical rhythm (file + folder rows interleave).
+            .h(px(28.))
             .pl(px(10. + depth as f32 * INDENT))
             .pr(px(12.))
             .flex()
@@ -535,7 +512,7 @@ impl PaneFlowApp {
                 div()
                     .flex_none()
                     .text_color(ui.muted)
-                    .text_size(px(9.))
+                    .text_size(crate::ui_primitives::LABEL_XS)
                     .child(if collapsed { "▸" } else { "▾" }),
             )
             .child(
@@ -554,7 +531,7 @@ impl PaneFlowApp {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(12.))
+                    .text_size(crate::ui_primitives::BODY)
                     .text_color(ui.text)
                     .child(disp.to_string()),
             )
@@ -623,7 +600,7 @@ impl PaneFlowApp {
                 div()
                     .flex_none()
                     .text_color(ui.muted)
-                    .text_size(px(9.))
+                    .text_size(crate::ui_primitives::LABEL_XS)
                     .child(if section_collapsed { "▸" } else { "▾" }),
             )
             .child(
@@ -638,7 +615,7 @@ impl PaneFlowApp {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(12.))
+                    .text_size(crate::ui_primitives::BODY)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(if is_active { ui.accent } else { ui.text })
                     .child(branch.to_string()),
@@ -646,7 +623,7 @@ impl PaneFlowApp {
             .child(
                 div()
                     .flex_none()
-                    .text_size(px(10.))
+                    .text_size(crate::ui_primitives::LABEL_XS)
                     .text_color(ui.muted)
                     .child(format!("{count}")),
             )
@@ -654,7 +631,7 @@ impl PaneFlowApp {
                 d.child(
                     div()
                         .flex_none()
-                        .text_size(px(10.))
+                        .text_size(crate::ui_primitives::LABEL_XS)
                         .text_color(ui.diff_colors().added)
                         .child(format!("+{added}")),
                 )
@@ -663,7 +640,7 @@ impl PaneFlowApp {
                 d.child(
                     div()
                         .flex_none()
-                        .text_size(px(10.))
+                        .text_size(crate::ui_primitives::LABEL_XS)
                         .text_color(ui.diff_colors().deleted)
                         .child(format!("-{removed}")),
                 )

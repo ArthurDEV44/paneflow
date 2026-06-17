@@ -554,18 +554,45 @@ pub fn compute_worktree_diff(worktree_dir: &Path, base_ref: &str) -> WorktreeDif
     };
     log::debug!("git: merge_base={merge_base}");
 
+    compute_diff_against(worktree_dir, &merge_base)
+}
+
+/// Git's well-known empty-tree object hash. Diffing against it (used when `HEAD`
+/// is unborn — a repo with no commits yet) shows every tracked file as a pure
+/// addition, so a first changeset still renders in the Agents dock.
+const EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// Compute the diff of `worktree_dir` against `HEAD`: the working tree vs the
+/// last commit (staged + unstaged tracked changes) plus untracked files — the
+/// "what did the agent just touch" semantic used by the Agents diff dock
+/// ([`crate::app::agents_diff`]). When `HEAD` is unborn, everything is diffed
+/// against the empty tree. Reuses [`compute_diff_against`], so the lockfile /
+/// size / count / binary guards are identical to [`compute_worktree_diff`].
+///
+/// Runs entirely via subprocess; safe to call off the main thread.
+pub fn compute_head_diff(worktree_dir: &Path) -> WorktreeDiff {
+    let toplevel = worktree_toplevel(worktree_dir);
+    let worktree_dir = toplevel.as_path();
+    log::debug!("git: compute_head_diff dir={}", worktree_dir.display());
+    // HEAD's commit SHA, or the empty tree when HEAD is unborn (no commits yet).
+    let base = match run_git(worktree_dir, &["rev-parse", "--verify", "HEAD"]) {
+        Ok(out) => String::from_utf8_lossy(&out).trim().to_string(),
+        Err(_) => EMPTY_TREE_SHA.to_string(),
+    };
+    compute_diff_against(worktree_dir, &base)
+}
+
+/// Shared core of [`compute_worktree_diff`] and [`compute_head_diff`]: diff the
+/// working tree against the already-resolved commit-ish `base`. `worktree_dir`
+/// must already be the worktree toplevel (both callers resolve it first).
+/// Oversized / lockfile / over-count files are shown as stubs rather than
+/// loaded, bounding peak RAM.
+fn compute_diff_against(worktree_dir: &Path, base: &str) -> WorktreeDiff {
     let name_status = match run_git(
         worktree_dir,
         // `-M` enables rename detection so a moved file reads as one `R` record
         // (old → new) instead of a delete + add pair — de-noises task-branch diffs.
-        &[
-            "diff",
-            "--name-status",
-            "-M",
-            "-z",
-            "--no-color",
-            &merge_base,
-        ],
+        &["diff", "--name-status", "-M", "-z", "--no-color", base],
     ) {
         Ok(out) => out,
         Err(e) => {
@@ -607,7 +634,7 @@ pub fn compute_worktree_diff(worktree_dir: &Path, base_ref: &str) -> WorktreeDif
         };
         let (base_text, base_bin) = match change {
             FileChange::Added => (String::new(), false),
-            _ => load_base_text(worktree_dir, &merge_base, base_lookup),
+            _ => load_base_text(worktree_dir, base, base_lookup),
         };
         let (new_text, new_bin) = match change {
             FileChange::Deleted => (String::new(), false),

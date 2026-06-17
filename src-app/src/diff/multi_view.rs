@@ -162,6 +162,26 @@ impl MultiRepoDiffView {
             view.update(cx, |v, cx| v.select_and_jump(col_idx, path, window, cx));
         }
     }
+
+    /// EP-003 US-013: toggle a file's collapse in the selected repo's `DiffView`
+    /// (sidebar per-file collapse action in a multi-branch section).
+    pub fn active_toggle_file_collapse(&self, col_idx: usize, path: &str, cx: &mut Context<Self>) {
+        if let Some(g) = self.groups.get(self.selected)
+            && let Some(view) = g.view.clone()
+        {
+            view.update(cx, |v, cx| v.toggle_file_collapse(col_idx, path, cx));
+        }
+    }
+
+    /// EP-003 US-013: copy a file's diff from the selected repo's `DiffView`
+    /// (sidebar per-file copy action in a multi-branch section).
+    pub fn active_copy_file_diff(&self, col_idx: usize, path: &str, cx: &mut Context<Self>) {
+        if let Some(g) = self.groups.get(self.selected)
+            && let Some(view) = g.view.clone()
+        {
+            view.update(cx, |v, cx| v.copy_file_diff(col_idx, path, cx));
+        }
+    }
 }
 
 impl Render for MultiRepoDiffView {
@@ -224,7 +244,7 @@ impl Render for MultiRepoDiffView {
                     }))
                     .child(
                         div()
-                            .text_size(px(13.))
+                            .text_size(crate::ui_primitives::BODY_EMPHASIS)
                             .font_weight(FontWeight::NORMAL)
                             .text_color(if active { ui.text } else { ui.muted })
                             .child(g.repo_name.clone()),
@@ -247,7 +267,7 @@ impl Render for MultiRepoDiffView {
                     .child(
                         div()
                             .text_color(ui.muted)
-                            .text_size(px(13.))
+                            .text_size(crate::ui_primitives::BODY_EMPHASIS)
                             .child("No repository selected"),
                     )
                     .into_any_element()

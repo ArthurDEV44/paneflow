@@ -22,10 +22,12 @@ use gpui::{
 };
 
 use super::align::CellKind;
-use super::rows::{DisplayRow, HalfCell, ROW_HEIGHT, RowKind, RowPalette, SplitRow};
+use super::rows::{DisplayRow, HalfCell, HeaderParts, ROW_HEIGHT, RowKind, RowPalette, SplitRow};
 
 const PAD: f32 = 6.0; // file-header text inset
 const CHEVRON_W: f32 = 14.0; // collapsible-section chevron column on file headers
+const SIGIL_GAP: f32 = 8.0; // gap between the status sigil and the path (US-006)
+const STAT_GAP: f32 = 16.0; // min gap between the path region and the right-aligned diffstat (US-006)
 const HALF_PAD: f32 = 4.0; // split half-cell left padding (after the bar)
 const GUTTER_W: f32 = 36.0; // single line-number column FLOOR width (widened per max digits)
 const NUM_GAP: f32 = 6.0; // right padding inside the gutter (number → code gap)
@@ -222,37 +224,154 @@ impl DiffElement {
             .shape_line(text.clone(), self.font_size, &runs, None)
     }
 
-    /// US-010 (prd-git-diff-mode-2026-Q3.md): color run for a file-header
-    /// line's leading status sigil — `A`/`M`/`D` painted with the curated
-    /// `vc_*` slot, the rest left at the header text color. Returned as a
-    /// single `(0..1, color)` run consumed by [`Self::shape`], so the header
-    /// stays one fixed-height shaped line (no layout change).
-    fn header_sigil_runs(&self, text: &str) -> Vec<(std::ops::Range<usize>, Hsla)> {
+    /// Shape a single line in a specific font weight (EP-002 US-006: the
+    /// semibold basename segment of a file header). One run, one color.
+    fn shape_weighted(
+        &self,
+        window: &mut Window,
+        text: SharedString,
+        color: Hsla,
+        weight: FontWeight,
+    ) -> ShapedLine {
+        let font = Font {
+            weight,
+            ..self.font.clone()
+        };
+        let runs = [TextRun {
+            len: text.len(),
+            font,
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }];
+        window
+            .text_system()
+            .shape_line(text, self.font_size, &runs, None)
+    }
+
+    /// EP-002 US-006: paint a structured file-header row — colored status
+    /// sigil, muted directory prefix, emphasized (semibold) basename, and a
+    /// right-aligned green/red diffstat — replacing the old single fused
+    /// monospace string. Drives BOTH the inline file card (`sticky = false`:
+    /// taller, top separator, `header_bg`) and the pinned sticky bar
+    /// (`sticky = true`: slim, bottom hairline, elevated `sticky_header_bg`),
+    /// so the two never drift.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_file_header(
+        &self,
+        window: &mut Window,
+        parts: &HeaderParts,
+        origin: Point<Pixels>,
+        width: Pixels,
+        row_h: Pixels,
+        collapsed: bool,
+        sticky: bool,
+        quads: &mut Vec<Quad>,
+        glyphs: &mut Vec<Glyphs>,
+    ) {
         let p = &self.palette;
-        let mut runs: Vec<(std::ops::Range<usize>, Hsla)> = Vec::new();
-        // Leading A/M/D status sigil.
-        match text.as_bytes().first() {
-            Some(b'A') => runs.push((0..1, p.add_fg)),
-            Some(b'D') => runs.push((0..1, p.del_fg)),
-            Some(b'M') => runs.push((0..1, p.mod_fg)),
-            _ => {}
-        }
-        // Trailing "+{added} -{removed}" diff stat: +N green, -N red. They are
-        // the last two whitespace tokens, so `rfind` from the end is robust to
-        // paths containing `+` / `-`. Pushed in byte order (sigil < +N < -N) so
-        // the run list stays sorted + non-overlapping for `text_runs`.
-        let is_digit = |s: &str| s.chars().next().is_some_and(|c| c.is_ascii_digit());
-        if let Some(dash) = text.rfind(" -")
-            && is_digit(&text[dash + 2..])
-        {
-            if let Some(plus) = text[..dash].rfind(" +")
-                && is_digit(&text[plus + 2..])
-            {
-                runs.push((plus + 1..dash, p.add_fg));
+        let lh = self.line_height;
+        let bounds = Bounds::new(origin, size(width, row_h));
+        // Card / sticky background.
+        quads.push(Quad {
+            bounds,
+            color: if sticky {
+                p.sticky_header_bg
+            } else {
+                p.header_bg
+            },
+        });
+        // A sticky bar floats with a bottom hairline; an inline card is divided
+        // from the row above it by a top separator.
+        let sep_y = if sticky {
+            origin.y + row_h - px(1.)
+        } else {
+            origin.y
+        };
+        quads.push(Quad {
+            bounds: Bounds::new(point(origin.x, sep_y), size(width, px(1.))),
+            color: p.border,
+        });
+
+        let ty = origin.y + (row_h - lh) / 2.0;
+        // Collapse chevron (a pinned/sticky file is, by definition, expanded).
+        glyphs.push(Glyphs {
+            origin: point(origin.x + px(PAD), ty),
+            line: self.shape_plain(window, if collapsed { "▸" } else { "▾" }.into(), p.muted),
+            clip: Some(bounds),
+        });
+
+        // Status sigil in its status color (A green, D red, M/R modified).
+        let sigil_color = match parts.sigil {
+            'A' => p.add_fg,
+            'D' => p.del_fg,
+            _ => p.mod_fg,
+        };
+        let sigil_x = origin.x + px(PAD + CHEVRON_W);
+        let sigil_line = self.shape_plain(window, parts.sigil.to_string().into(), sigil_color);
+        let sigil_w = sigil_line.width();
+        glyphs.push(Glyphs {
+            origin: point(sigil_x, ty),
+            line: sigil_line,
+            clip: Some(bounds),
+        });
+
+        // Right-aligned diffstat: "+N" (added, green) then "-N" (deleted, red).
+        let stat_text = format!("+{} -{}", parts.added, parts.removed);
+        let split = stat_text.find(" -").unwrap_or(stat_text.len());
+        let stat_runs = [(0..split, p.add_fg), (split..stat_text.len(), p.del_fg)];
+        let stat_ss: SharedString = stat_text.into();
+        let stat_line = self.shape(window, &stat_ss, &stat_runs, p.muted);
+        let stat_w = stat_line.width();
+        let path_x = sigil_x + sigil_w + px(SIGIL_GAP);
+        let stat_x = (bounds.right() - px(PAD) - stat_w).max(path_x);
+        glyphs.push(Glyphs {
+            origin: point(stat_x, ty),
+            line: stat_line,
+            clip: Some(bounds),
+        });
+
+        // Path region [path_x, region_right). The basename is emphasized and
+        // NEVER truncated; the directory prefix is muted and gives way first —
+        // trailing-aligned into its shrunken slot so the immediate parent dir
+        // survives the clip.
+        let region_right = (stat_x - px(STAT_GAP)).max(path_x);
+        let avail = (region_right - path_x).max(px(0.));
+        let base_line =
+            self.shape_weighted(window, parts.basename.clone(), p.text, FontWeight::SEMIBOLD);
+        let dir_line = self.shape_plain(window, parts.dir_prefix.clone(), p.muted);
+        let bw = base_line.width().min(avail);
+        let dir_avail = (avail - bw).max(px(0.));
+        let dw = dir_line.width();
+        if dw <= dir_avail {
+            let base_x = path_x + dw;
+            if dw > px(0.) {
+                glyphs.push(Glyphs {
+                    origin: point(path_x, ty),
+                    line: dir_line,
+                    clip: Some(bounds),
+                });
             }
-            runs.push((dash + 1..text.len(), p.del_fg));
+            glyphs.push(Glyphs {
+                origin: point(base_x, ty),
+                line: base_line,
+                clip: Some(Bounds::new(point(base_x, origin.y), size(bw, row_h))),
+            });
+        } else {
+            let base_x = path_x + dir_avail;
+            let dir_origin_x = base_x - dw; // overflows left; masked by the clip
+            glyphs.push(Glyphs {
+                origin: point(dir_origin_x, ty),
+                line: dir_line,
+                clip: Some(Bounds::new(point(path_x, origin.y), size(dir_avail, row_h))),
+            });
+            glyphs.push(Glyphs {
+                origin: point(base_x, ty),
+                line: base_line,
+                clip: Some(Bounds::new(point(base_x, origin.y), size(bw, row_h))),
+            });
         }
-        runs
     }
 
     /// Shape a single-color string (gutter numbers, signs, headers).
@@ -288,39 +407,25 @@ impl DiffElement {
         let row_bounds = Bounds::new(origin, size(width, row_h));
 
         match row.kind {
-            RowKind::FileHeader => {
-                quads.push(Quad {
-                    bounds: row_bounds,
-                    color: p.header_bg,
-                });
-                // 1px separator above each file header so files read as distinct
-                // collapsible "cards" (Zed buffer-subheader separation).
-                quads.push(Quad {
-                    bounds: Bounds::new(origin, size(width, px(1.))),
-                    color: p.border,
-                });
-                // Vertically center the header content within the taller card.
-                let ty = origin.y + (row_h - lh) / 2.0;
-                // Collapsible-section chevron: ▸ when folded (next row is another
-                // header / EOF), ▾ when expanded. Painted as a glyph; the header
-                // text shifts right by CHEVRON_W.
-                glyphs.push(Glyphs {
-                    origin: point(origin.x + px(PAD), ty),
-                    line: self.shape_plain(
-                        window,
-                        if collapsed { "▸" } else { "▾" }.into(),
-                        p.muted,
-                    ),
-                    clip: Some(row_bounds),
-                });
-                // US-010: status-colored sigil, the rest at header text color.
-                let runs = self.header_sigil_runs(&row.text);
-                glyphs.push(Glyphs {
-                    origin: point(origin.x + px(PAD + CHEVRON_W), ty),
-                    line: self.shape(window, &row.text, &runs, p.text),
-                    clip: Some(row_bounds),
-                });
-            }
+            RowKind::FileHeader => match &row.header {
+                // EP-002 US-006: structured header (sigil + dir + basename +
+                // right-aligned diffstat). Always present for header rows.
+                Some(parts) => self.paint_file_header(
+                    window, parts, origin, width, row_h, collapsed, false, quads, glyphs,
+                ),
+                // Defensive fallback for the impossible header-less case.
+                None => {
+                    quads.push(Quad {
+                        bounds: row_bounds,
+                        color: p.header_bg,
+                    });
+                    glyphs.push(Glyphs {
+                        origin: point(origin.x + px(PAD), origin.y + (row_h - lh) / 2.0),
+                        line: self.shape_plain(window, row.text.clone(), p.text),
+                        clip: Some(row_bounds),
+                    });
+                }
+            },
             RowKind::Binary | RowKind::Truncated => {
                 glyphs.push(Glyphs {
                     origin: point(origin.x + px(PAD), origin.y),
@@ -345,11 +450,13 @@ impl DiffElement {
                 });
             }
             RowKind::Context | RowKind::Added | RowKind::Removed => {
-                // (row-bg wash, opaque hunk-bar color, word-diff bg). Context = none.
+                // (row-bg wash, opaque hunk-bar color, word-diff bg). EP-002
+                // US-007: context now gets a faint document wash instead of the
+                // bare window background.
                 let (bg, bar_color, word_bg) = match row.kind {
                     RowKind::Added => (Some(p.add_bg), Some(p.add_bar), Some(p.add_word_bg)),
                     RowKind::Removed => (Some(p.del_bg), Some(p.del_bar), Some(p.del_word_bg)),
-                    _ => (None, None, None),
+                    _ => (Some(p.context_bg), None, None),
                 };
                 if let Some(bg) = bg {
                     quads.push(Quad {
@@ -357,6 +464,13 @@ impl DiffElement {
                         color: bg,
                     });
                 }
+                // EP-002 US-007: gutter rail — a slightly stronger tint over the
+                // line-number column (incl. the hunk-bar lane) so the gutter
+                // reads as a structural rail on every content row.
+                quads.push(Quad {
+                    bounds: Bounds::new(origin, size(px(BAR_W + PAD2) + self.gutter_w, row_h)),
+                    color: p.gutter_bg,
+                });
                 // Zed-style colored hunk-indicator bar at the far left.
                 if let Some(c) = bar_color {
                     quads.push(Quad {
@@ -426,32 +540,11 @@ impl DiffElement {
         let row_bounds = Bounds::new(origin, size(width, row_h));
 
         match row {
-            SplitRow::Header(text) => {
-                quads.push(Quad {
-                    bounds: row_bounds,
-                    color: p.header_bg,
-                });
-                quads.push(Quad {
-                    bounds: Bounds::new(origin, size(width, px(1.))),
-                    color: p.border,
-                });
-                let ty = origin.y + (row_h - lh) / 2.0;
-                glyphs.push(Glyphs {
-                    origin: point(origin.x + px(PAD), ty),
-                    line: self.shape_plain(
-                        window,
-                        if collapsed { "▸" } else { "▾" }.into(),
-                        p.muted,
-                    ),
-                    clip: Some(row_bounds),
-                });
-                // US-010: status-colored sigil, the rest at header text color.
-                let runs = self.header_sigil_runs(text);
-                glyphs.push(Glyphs {
-                    origin: point(origin.x + px(PAD + CHEVRON_W), ty),
-                    line: self.shape(window, text, &runs, p.text),
-                    clip: Some(row_bounds),
-                });
+            // EP-002 US-006: same structured header as the unified view.
+            SplitRow::Header(parts) => {
+                self.paint_file_header(
+                    window, parts, origin, width, row_h, collapsed, false, quads, glyphs,
+                );
             }
             SplitRow::Note(text) => {
                 glyphs.push(Glyphs {
@@ -512,7 +605,8 @@ impl DiffElement {
             CellKind::Added => (Some(p.add_bg), Some(p.add_bar), Some(p.add_word_bg)),
             CellKind::Removed => (Some(p.del_bg), Some(p.del_bar), Some(p.del_word_bg)),
             CellKind::Phantom => (Some(p.phantom_bg), None, None),
-            CellKind::Context => (None, None, None),
+            // EP-002 US-007: faint document wash on unchanged code.
+            CellKind::Context => (Some(p.context_bg), None, None),
         };
         if let Some(bg) = bg {
             quads.push(Quad {
@@ -523,6 +617,11 @@ impl DiffElement {
         if matches!(cell.kind, CellKind::Phantom) {
             return; // dimmed empty gap, no bar/gutter/text
         }
+        // EP-002 US-007: gutter rail over this half's line-number column.
+        quads.push(Quad {
+            bounds: Bounds::new(origin, size(px(BAR_W + HALF_PAD) + self.gutter_w, lh)),
+            color: p.gutter_bg,
+        });
         // Zed-style colored hunk-indicator bar at the half's left edge.
         if let Some(c) = bar_color {
             quads.push(Quad {
@@ -619,51 +718,6 @@ impl DiffElement {
                 color,
             });
         }
-    }
-
-    /// Emit the pinned sticky file header — an opaque bar at viewport-local
-    /// `y_top` carrying the current file's status sigil + path, so the file you
-    /// are reading never scrolls out of sight on a long diff. Painted last (over
-    /// the body) by `paint`. `header_text` is the same pre-formatted header
-    /// string the inline card uses, so the sigil/stat coloring matches.
-    #[allow(clippy::too_many_arguments)]
-    fn sticky_header(
-        &self,
-        window: &mut Window,
-        header_text: &SharedString,
-        x: Pixels,
-        y_top: Pixels,
-        width: Pixels,
-        quads: &mut Vec<Quad>,
-        glyphs: &mut Vec<Glyphs>,
-    ) {
-        let p = &self.palette;
-        let lh = self.line_height;
-        let h = px(STICKY_HEADER_HEIGHT);
-        let bounds = Bounds::new(point(x, y_top), size(width, h));
-        quads.push(Quad {
-            bounds,
-            color: p.sticky_header_bg,
-        });
-        // Bottom hairline so the pinned bar reads as a distinct, floating layer.
-        quads.push(Quad {
-            bounds: Bounds::new(point(x, y_top + h - px(1.)), size(width, px(1.))),
-            color: p.border,
-        });
-        let ty = y_top + (h - lh) / 2.0;
-        // A pinned file is, by definition, expanded (you are inside its body), so
-        // the chevron is always the open glyph.
-        glyphs.push(Glyphs {
-            origin: point(x + px(PAD), ty),
-            line: self.shape_plain(window, "▾".into(), p.muted),
-            clip: Some(bounds),
-        });
-        let runs = self.header_sigil_runs(header_text);
-        glyphs.push(Glyphs {
-            origin: point(x + px(PAD + CHEVRON_W), ty),
-            line: self.shape(window, header_text, &runs, p.text),
-            clip: Some(bounds),
-        });
     }
 }
 
@@ -821,14 +875,17 @@ impl Element for DiffElement {
                             sticky_y = nh_abs - px(STICKY_HEADER_HEIGHT);
                         }
                     }
-                    if sticky_y + px(STICKY_HEADER_HEIGHT) > mask.bounds.origin.y {
-                        let text = rows[hidx].text.clone();
-                        self.sticky_header(
+                    if sticky_y + px(STICKY_HEADER_HEIGHT) > mask.bounds.origin.y
+                        && let Some(parts) = rows[hidx].header.as_ref()
+                    {
+                        self.paint_file_header(
                             window,
-                            &text,
-                            bounds.origin.x,
-                            sticky_y,
+                            parts,
+                            point(bounds.origin.x, sticky_y),
                             width,
+                            px(STICKY_HEADER_HEIGHT),
+                            false,
+                            true,
                             &mut sticky_quads,
                             &mut sticky_glyphs,
                         );
@@ -884,15 +941,16 @@ impl Element for DiffElement {
                         }
                     }
                     if sticky_y + px(STICKY_HEADER_HEIGHT) > mask.bounds.origin.y
-                        && let SplitRow::Header(text) = &rows[hidx]
+                        && let SplitRow::Header(parts) = &rows[hidx]
                     {
-                        let text = text.clone();
-                        self.sticky_header(
+                        self.paint_file_header(
                             window,
-                            &text,
-                            bounds.origin.x,
-                            sticky_y,
+                            parts,
+                            point(bounds.origin.x, sticky_y),
                             width,
+                            px(STICKY_HEADER_HEIGHT),
+                            false,
+                            true,
                             &mut sticky_quads,
                             &mut sticky_glyphs,
                         );

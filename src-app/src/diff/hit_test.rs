@@ -9,7 +9,7 @@
 /// the total content height (a click below the last row). `offsets` is the
 /// `len + 1` prefix sum from `Column::recompute_display`; the lookup is
 /// O(log rows) instead of the previous linear walk.
-pub(super) fn row_at_offset(offsets: &[f32], y: f32) -> Option<usize> {
+pub(crate) fn row_at_offset(offsets: &[f32], y: f32) -> Option<usize> {
     // `partition_point` is the count of offsets ≤ y = index of the first offset
     // strictly greater than y, so the containing row is `pp - 1`. `pp == len`
     // means y is past the last band (no hit); `pp == 0` can't happen for y ≥ 0

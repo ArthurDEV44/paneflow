@@ -206,6 +206,43 @@ pub struct DisplayRow {
     /// Per-token foreground syntax runs (US-017), computed off-thread; empty
     /// when syntax highlighting is disabled or the line is plain.
     pub syntax_runs: Vec<(Range<usize>, Hsla)>,
+    /// EP-002 US-006: typed file-header segments for [`RowKind::FileHeader`]
+    /// rows (`None` for every other kind). Decomposes the header into a status
+    /// sigil + directory prefix + basename + diffstat so the element paints
+    /// each as its own typed run instead of one fused monospace string.
+    pub header: Option<HeaderParts>,
+}
+
+/// EP-002 US-006: the file-header row, split into typed segments at build time
+/// (off the render path) so [`super::element::DiffElement`] paints a structured
+/// header — colored status sigil, muted directory prefix, emphasized basename,
+/// right-aligned green/red diffstat — instead of one undifferentiated mono
+/// string. Shared by the Review view and the Agents diff dock.
+#[derive(Clone)]
+pub struct HeaderParts {
+    /// Leading status sigil: `A`/`M`/`D`/`R`. Colored by status in the element.
+    pub sigil: char,
+    /// Directory portion including the trailing `/`, or `""` at the repo root.
+    /// The element truncates HERE under width pressure, never on the basename.
+    pub dir_prefix: SharedString,
+    /// File basename (a rename shows `old → new`). Never truncated.
+    pub basename: SharedString,
+    pub added: u32,
+    pub removed: u32,
+}
+
+/// Split a display path into `(dir_prefix_with_trailing_slash, basename)`.
+/// For a rename (`"old → new"`) the last `/` lands inside the new path, so the
+/// new file's basename is emphasized and the `old → newdir/` lead falls into the
+/// muted directory prefix — readable, allocation-cheap, never panics.
+fn split_header_path(shown_path: &str) -> (String, String) {
+    match shown_path.rfind('/') {
+        Some(i) => (
+            shown_path[..=i].to_string(),
+            shown_path[i + 1..].to_string(),
+        ),
+        None => (String::new(), shown_path.to_string()),
+    }
 }
 
 /// Diff colors, snapshotted once per render and copied into the (`'static`)
@@ -244,6 +281,12 @@ pub struct RowPalette {
     /// Stronger backgrounds for word-diff-highlighted spans (US-010).
     pub add_word_bg: Hsla,
     pub del_word_bg: Hsla,
+    /// EP-002 US-007: faint document wash on context (unchanged) code so the
+    /// diff body reads as a surface, not the bare window background.
+    pub context_bg: Hsla,
+    /// EP-002 US-007: persistent line-number-rail tint, painted over every
+    /// content row's gutter region so the gutter reads as a structural column.
+    pub gutter_bg: Hsla,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -268,6 +311,7 @@ fn content_row(
         new_no,
         word_ranges,
         syntax_runs,
+        header: None,
     }
 }
 
@@ -299,6 +343,57 @@ fn line_syntax(side: &[Vec<(Range<usize>, Hsla)>], idx: u32) -> Vec<(Range<usize
     side.get(idx as usize).cloned().unwrap_or_default()
 }
 
+/// Resolve a [`RowPalette`] from the active theme's UI colors. The single color
+/// source for [`super::element::DiffElement`], shared by the Review view
+/// ([`super::view`]) and the Agents diff dock ([`crate::app::agents_diff`]) so
+/// both render with identical washes.
+pub fn palette(ui: crate::theme::UiColors) -> RowPalette {
+    let diff = ui.diff_colors();
+    let is_light = ui.base.l > 0.5;
+    RowPalette {
+        text: ui.text,
+        muted: ui.muted,
+        // EP-002 US-005: file card at the `surface` tier (one step off the
+        // `base` body), so each file reads as an elevated card over the body.
+        header_bg: ui.surface,
+        // EP-002 US-005/US-008: the sticky bar is the file header pinned to the
+        // viewport top; it must read as FLOATING above the inline card, not
+        // identical to it. A faint text-tint lift shifts it off `surface` on
+        // both themes (lighter on dark, defined on light); the bottom hairline
+        // the element paints completes the "floating layer" read.
+        sticky_header_bg: ui.surface.blend(ui.text.opacity(0.06)),
+        border: ui.border,
+        add_bg: diff.added_background,
+        del_bg: diff.deleted_background,
+        add_fg: diff.added,
+        del_fg: diff.deleted,
+        // Gutter numbers for changed lines: the status hue softened toward
+        // the gutter's muted baseline so they tint without shouting over the
+        // line wash they sit on.
+        gutter_add: ui.muted.blend(diff.added.opacity(0.75)),
+        gutter_del: ui.muted.blend(diff.deleted.opacity(0.75)),
+        mod_fg: ui.vc_modified,
+        // Zed paints the gutter hunk strip as `editor_background.blend(version_control_*)`
+        // so it reads solid; pre-blend against the diff body surface (`ui.base`,
+        // what context lines sit on) so the bar is opaque, not faint at the wash alpha.
+        add_bar: ui.base.blend(diff.added),
+        del_bar: ui.base.blend(diff.deleted),
+        // Neutral alignment-row fill, derived from `muted` so it tracks the
+        // theme instead of a hardcoded slate hex.
+        phantom_bg: ui.muted.opacity(0.12),
+        // EP-002 US-007: intra-line word emphasis. Light keeps the theme's 0.40
+        // `vc_word_*` alpha; dark drops to 0.28 — 0.40 read too hot over the
+        // Codex-sampled dark line wash.
+        add_word_bg: diff.added.opacity(if is_light { 0.40 } else { 0.28 }),
+        del_word_bg: diff.deleted.opacity(if is_light { 0.40 } else { 0.28 }),
+        // EP-002 US-007: a 2-3% document wash on unchanged code and a slightly
+        // stronger (~4.5%) gutter rail so the body reads as a surface with a
+        // structural line-number column. Derived from `muted` to track theme.
+        context_bg: ui.muted.opacity(0.025),
+        gutter_bg: ui.muted.opacity(0.045),
+    }
+}
+
 /// Build the flat, virtualization-ready row list for a column's files. Returns
 /// the rows plus the number of content lines dropped by the `MAX_DISPLAY_ROWS`
 /// cap (0 when nothing was truncated).
@@ -325,6 +420,7 @@ pub fn build_display_rows(
             (FileChange::Renamed, Some(old)) => format!("{old} → {}", file.path),
             _ => file.path.clone(),
         };
+        let (dir_prefix, basename) = split_header_path(&shown_path);
         rows.push(DisplayRow {
             kind: RowKind::FileHeader,
             text: format!("{sigil}  {shown_path}   +{added} -{removed}").into(),
@@ -332,6 +428,13 @@ pub fn build_display_rows(
             new_no: None,
             word_ranges: Vec::new(),
             syntax_runs: Vec::new(),
+            header: Some(HeaderParts {
+                sigil,
+                dir_prefix: dir_prefix.into(),
+                basename: basename.into(),
+                added,
+                removed,
+            }),
         });
 
         if file.is_binary {
@@ -342,6 +445,7 @@ pub fn build_display_rows(
                 new_no: None,
                 word_ranges: Vec::new(),
                 syntax_runs: Vec::new(),
+                header: None,
             });
             continue;
         }
@@ -386,6 +490,7 @@ pub fn build_display_rows(
             new_no: None,
             word_ranges: Vec::new(),
             syntax_runs: Vec::new(),
+            header: None,
         };
 
         let mut first_gap = true;
@@ -462,6 +567,7 @@ pub fn build_display_rows(
             new_no: None,
             word_ranges: Vec::new(),
             syntax_runs: Vec::new(),
+            header: None,
         });
     }
     (rows, dropped)
@@ -485,7 +591,10 @@ pub struct HalfCell {
 /// share one row (and therefore one scroll offset — US-011 sync scroll is free).
 #[derive(Clone)]
 pub enum SplitRow {
-    Header(SharedString),
+    /// File-section header. EP-002 US-006: carries the same typed
+    /// [`HeaderParts`] as the unified [`DisplayRow::header`] so split + unified
+    /// paint identical structured headers.
+    Header(HeaderParts),
     Note(SharedString),
     /// Collapsed run of unchanged lines (Zed-style fold), spanning both halves.
     Fold(SharedString),
@@ -555,9 +664,14 @@ pub fn build_split_rows(files: &[FileDiff], syntax: Option<&DiffSyntax>) -> (Vec
             (FileChange::Renamed, Some(old)) => format!("{old} → {}", file.path),
             _ => file.path.clone(),
         };
-        rows.push(SplitRow::Header(
-            format!("{sigil}  {shown_path}   +{added} -{removed}").into(),
-        ));
+        let (dir_prefix, basename) = split_header_path(&shown_path);
+        rows.push(SplitRow::Header(HeaderParts {
+            sigil,
+            dir_prefix: dir_prefix.into(),
+            basename: basename.into(),
+            added,
+            removed,
+        }));
 
         if file.is_binary {
             rows.push(SplitRow::Note(
@@ -649,9 +763,118 @@ pub fn build_split_rows(files: &[FileDiff], syntax: Option<&DiffSyntax>) -> (Vec
     (rows, dropped)
 }
 
+/// Filter a unified row set by a per-file collapse set: a collapsed file keeps
+/// only its header row, an expanded file keeps its full segment. `anchors` maps
+/// each file path to its header row index (file order). Returns the filtered
+/// rows plus rebuilt anchors (header index in the output). Shared by the Review
+/// view ([`super::view`]) and the Agents diff dock ([`crate::app::agents_diff`]).
+pub fn apply_collapse_unified(
+    rows: &[DisplayRow],
+    anchors: &[(String, usize)],
+    collapsed: &std::collections::HashSet<String>,
+) -> (Vec<DisplayRow>, Vec<(String, usize)>) {
+    let mut out = Vec::with_capacity(rows.len());
+    let mut out_anchors = Vec::with_capacity(anchors.len());
+    for (index, (path, start)) in anchors.iter().enumerate() {
+        let Some(header) = rows.get(*start) else {
+            continue;
+        };
+        let end = anchors
+            .get(index + 1)
+            .map(|(_, next_start)| *next_start)
+            .unwrap_or(rows.len())
+            .min(rows.len());
+        out_anchors.push((path.clone(), out.len()));
+        if collapsed.contains(path) {
+            out.push(header.clone());
+        } else if let Some(segment) = rows.get(*start..end) {
+            out.extend_from_slice(segment);
+        }
+    }
+    (out, out_anchors)
+}
+
+/// Split-view counterpart of [`apply_collapse_unified`].
+pub fn apply_collapse_split(
+    rows: &[SplitRow],
+    anchors: &[(String, usize)],
+    collapsed: &std::collections::HashSet<String>,
+) -> (Vec<SplitRow>, Vec<(String, usize)>) {
+    let mut out = Vec::with_capacity(rows.len());
+    let mut out_anchors = Vec::with_capacity(anchors.len());
+    for (index, (path, start)) in anchors.iter().enumerate() {
+        let end = anchors
+            .get(index + 1)
+            .map(|(_, next_start)| *next_start)
+            .unwrap_or(rows.len())
+            .min(rows.len());
+        out_anchors.push((path.clone(), out.len()));
+        if collapsed.contains(path) {
+            match rows.get(*start) {
+                Some(row @ SplitRow::Header(_)) => out.push(row.clone()),
+                _ => {
+                    out_anchors.pop();
+                    continue;
+                }
+            }
+        } else if let Some(segment) = rows.get(*start..end) {
+            out.extend_from_slice(segment);
+        }
+    }
+    (out, out_anchors)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_header_path_separates_dir_from_basename() {
+        // EP-002 US-006: the directory prefix keeps its trailing slash and the
+        // basename is the last segment — root files have an empty prefix.
+        assert_eq!(
+            split_header_path("src/app/view.rs"),
+            ("src/app/".to_string(), "view.rs".to_string())
+        );
+        assert_eq!(
+            split_header_path("Cargo.toml"),
+            (String::new(), "Cargo.toml".to_string())
+        );
+        // A rename ("old → new"): the last `/` is in the new path, so the new
+        // file's basename is emphasized and the arrow lead falls into the
+        // (muted) directory prefix.
+        assert_eq!(
+            split_header_path("old/a.rs → new/b.rs"),
+            ("old/a.rs → new/".to_string(), "b.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn file_header_row_carries_typed_segments() {
+        // EP-002 US-006: build_display_rows must populate the structured header
+        // for the file-header row (sigil + split path + diffstat), so the
+        // element paints typed segments instead of re-parsing a fused string.
+        let file = FileDiff {
+            path: "src/diff/rows.rs".into(),
+            change: FileChange::Modified,
+            old_path: None,
+            base_text: "a\n".into(),
+            new_text: "b\n".into(),
+            hunks: crate::diff::engine::compute_hunks("a\n", "b\n"),
+            is_binary: false,
+        };
+        let (added, removed) = file.line_counts();
+        let (rows, _) = build_display_rows(&[file], None);
+        let header = rows
+            .iter()
+            .find(|r| r.kind == RowKind::FileHeader)
+            .and_then(|r| r.header.as_ref())
+            .expect("file-header row must carry HeaderParts");
+        assert_eq!(header.sigil, 'M');
+        assert_eq!(header.dir_prefix.as_ref(), "src/diff/");
+        assert_eq!(header.basename.as_ref(), "rows.rs");
+        assert_eq!((header.added, header.removed), (added, removed));
+    }
 
     #[test]
     fn unified_collapses_distant_context_into_fold() {

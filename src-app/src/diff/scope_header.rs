@@ -35,7 +35,7 @@ impl PaneFlowApp {
             .rounded(px(5.))
             .when(open, |d| d.bg(ui.subtle))
             .cursor_pointer()
-            .text_size(px(12.))
+            .text_size(crate::ui_primitives::BODY)
             .text_color(ui.text)
             .hover(|s| {
                 let ui = crate::theme::ui_colors();
@@ -150,8 +150,10 @@ impl PaneFlowApp {
             .rounded(px(5.))
             .when(project_open, |d| d.bg(ui.subtle))
             .cursor_pointer()
-            .text_size(px(12.))
-            .text_color(ui.text)
+            .text_size(crate::ui_primitives::BODY)
+            // EP-003 US-012: secondary context label — muted, demoted under the
+            // primary scope chip in the `scope › project › branches` hierarchy.
+            .text_color(ui.muted)
             .hover(|s| {
                 let ui = crate::theme::ui_colors();
                 s.bg(ui.subtle)
@@ -214,7 +216,7 @@ impl PaneFlowApp {
                     div()
                         .px(px(8.))
                         .py(px(3.))
-                        .text_size(px(12.))
+                        .text_size(crate::ui_primitives::BODY)
                         .text_color(ui.muted)
                         .child("No git projects open"),
                 );
@@ -252,7 +254,7 @@ impl PaneFlowApp {
                             d.child(
                                 div()
                                     .flex_none()
-                                    .text_size(px(11.))
+                                    .text_size(crate::ui_primitives::LABEL_SM)
                                     .text_color(ui.muted)
                                     .child(format!("· {branch}")),
                             )
@@ -277,9 +279,20 @@ impl PaneFlowApp {
         let (branches_trigger, branches_popover): (Option<AnyElement>, Option<AnyElement>) =
             match repo_root.clone().filter(|_| show_branches) {
                 Some(root) => {
-                    let label = match self.diff_mode.diff_chosen_worktrees.get(&root) {
-                        Some(s) => format!("{} branches", s.len()),
-                        None => "All branches".to_string(),
+                    // EP-003 US-012: a state badge ("4/6 branches") readable
+                    // WITHOUT opening the picker. The total comes from the
+                    // available-worktrees list eagerly fetched on Worktree-scope
+                    // entry (`rebuild_diff_view`); when it isn't yet known for
+                    // this repo, degrade to the chosen count / "All branches".
+                    let total = (self.diff_mode.diff_available_repo.as_deref()
+                        == Some(root.as_path()))
+                    .then_some(self.diff_mode.diff_available_worktrees.len())
+                    .filter(|n| *n > 0);
+                    let label = match (self.diff_mode.diff_chosen_worktrees.get(&root), total) {
+                        (Some(s), Some(t)) => format!("{}/{t} branches", s.len()),
+                        (Some(s), None) => format!("{} branches", s.len()),
+                        (None, Some(t)) => format!("All {t} branches"),
+                        (None, None) => "All branches".to_string(),
                     };
                     let trig_root = root.clone();
                     let trigger = div()
@@ -294,8 +307,9 @@ impl PaneFlowApp {
                         .rounded(px(5.))
                         .when(branches_open, |d| d.bg(ui.subtle))
                         .cursor_pointer()
-                        .text_size(px(12.))
-                        .text_color(ui.text)
+                        .text_size(crate::ui_primitives::BODY)
+                        // EP-003 US-012: secondary context label — muted, demoted.
+                        .text_color(ui.muted)
                         .hover(|s| {
                             let ui = crate::theme::ui_colors();
                             s.bg(ui.subtle)
@@ -349,7 +363,7 @@ impl PaneFlowApp {
                                 div()
                                     .px(px(8.))
                                     .py(px(4.))
-                                    .text_size(px(12.))
+                                    .text_size(crate::ui_primitives::BODY)
                                     .text_color(ui.muted)
                                     .child("Loading worktrees…"),
                             );
@@ -381,14 +395,14 @@ impl PaneFlowApp {
                                         div()
                                             .flex_none()
                                             .w(px(13.))
-                                            .text_size(px(12.))
+                                            .text_size(crate::ui_primitives::BODY)
                                             .text_color(ui.accent)
                                             .child(if chosen { "✓" } else { "" }),
                                     )
                                     .child(
                                         div()
                                             .flex_none()
-                                            .text_size(px(12.))
+                                            .text_size(crate::ui_primitives::BODY)
                                             .text_color(if chosen { ui.text } else { ui.muted })
                                             .child(w.branch.clone()),
                                     )
@@ -397,7 +411,7 @@ impl PaneFlowApp {
                                             .flex_1()
                                             .min_w_0()
                                             .truncate()
-                                            .text_size(px(11.))
+                                            .text_size(crate::ui_primitives::LABEL_SM)
                                             .text_color(ui.muted)
                                             .child(dir_tail),
                                     ),
