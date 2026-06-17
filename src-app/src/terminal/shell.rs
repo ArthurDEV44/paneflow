@@ -163,7 +163,15 @@ fn configured_shell_if_usable(path: &str) -> Option<String> {
     let candidate: std::path::PathBuf = if has_separator {
         std::path::PathBuf::from(path)
     } else {
-        which::which(path).ok()?
+        // PATH search first; on Unix, fall back to well-known install dirs so a
+        // bare `"pwsh"` configured shell still resolves under a GUI launch whose
+        // inherited PATH omits `/opt/homebrew/bin` (the macOS parallel to the
+        // Windows `find_windows_powershell` well-known-location probe). Without
+        // this, the entry was silently rejected and the shell fell back to
+        // `/bin/sh`.
+        which::which(path)
+            .ok()
+            .or_else(|| well_known_shell_dir_lookup(path))?
     };
     let is_executable = candidate.is_file() && {
         #[cfg(unix)]
@@ -181,6 +189,28 @@ fn configured_shell_if_usable(path: &str) -> Option<String> {
     if is_executable {
         Some(candidate.to_string_lossy().into_owned())
     } else {
+        None
+    }
+}
+
+/// Probe a small set of well-known Unix install directories for a bare shell
+/// name that the PATH search (`which`) missed. Covers the Homebrew prefixes
+/// (`/opt/homebrew/bin` on Apple Silicon, `/usr/local/bin` on Intel) plus the
+/// system dirs, so a configured `"pwsh"` / `"fish"` / etc. resolves even when a
+/// GUI-launched process inherited a minimal PATH. Returns `None` on Windows,
+/// where the configured-bare-name case is already served by `which` +
+/// `find_windows_powershell`. The executable-bit check is left to the caller.
+fn well_known_shell_dir_lookup(name: &str) -> Option<std::path::PathBuf> {
+    #[cfg(unix)]
+    {
+        const DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
+        DIRS.iter()
+            .map(|dir| std::path::Path::new(dir).join(name))
+            .find(|candidate| candidate.is_file())
+    }
+    #[cfg(windows)]
+    {
+        let _ = name;
         None
     }
 }
@@ -476,6 +506,28 @@ pub(super) fn setup_shell_integration(
 #[cfg(test)]
 mod tests {
     use super::clear_then_for_shell;
+
+    // (B) Unix well-known-dir shell lookup: a bare name not on PATH still
+    // resolves from a standard install dir (the macOS pwsh-under-Homebrew gap),
+    // while a bogus name yields None. `/bin/sh` exists on every Unix target.
+    #[cfg(unix)]
+    #[test]
+    fn well_known_shell_lookup_finds_sh_and_rejects_bogus() {
+        // Resolves to a real `sh` file from some standard dir — the exact dir
+        // varies (`/bin/sh` on macOS, `/usr/bin/sh` on many Linux distros), so
+        // assert the basename, not the full path.
+        let found = super::well_known_shell_dir_lookup("sh");
+        assert!(
+            found
+                .as_deref()
+                .is_some_and(|p| p.is_file() && p.file_name() == Some(std::ffi::OsStr::new("sh"))),
+            "a bare `sh` must resolve from the well-known Unix dirs, got {found:?}"
+        );
+        assert!(
+            super::well_known_shell_dir_lookup("definitely-not-a-real-shell-xyz").is_none(),
+            "a non-existent bare name must not resolve"
+        );
+    }
 
     #[test]
     fn clear_then_uses_cmd_syntax() {
