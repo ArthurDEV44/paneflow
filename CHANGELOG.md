@@ -5,6 +5,27 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-06-17
+
+An Agents sidebar cleanup. Thread status is now driven solely by the agent
+hook lifecycle (Claude Code / Codex shims), removing the output-activity
+heuristic that lit a "thinking" spinner from raw PTY traffic and produced
+false positives. The environment panel also sits flush against the right edge.
+
+### Changed
+
+- Agents thread status now comes only from `ai.*` hook frames. The fallback
+  heuristic that inferred "thinking" from PTY output bursts (for agents without
+  a hook integration, such as OpenCode, Pi, and Hermes) is gone: it lit false
+  spinners on dev-server output streaming under a bare-shell thread and on TUI
+  redraws, and never matched the precise hook lifecycle that the Claude Code and
+  Codex shims already provide.
+
+### Fixed
+
+- The Agents environment panel now sits flush against the right edge, tightened
+  from a 38px to a 12px inset now that nothing reserves the gutter.
+
 ## [0.5.7] - 2026-06-17
 
 A macOS reliability pass. The headline is the DMG self-updater, which froze
