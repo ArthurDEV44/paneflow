@@ -216,17 +216,6 @@ pub struct Thread {
     /// `None` for legacy hook shims that omit `pid`; the sweep then keeps
     /// the state conservatively (same policy as workspace sessions).
     pub agent_pid: Option<u32>,
-    /// `true` once any `ai.*` hook frame has been routed to this thread.
-    /// The hook lifecycle (Claude Code / Codex shims) then owns `status`
-    /// exactly, and the PTY output-activity heuristic — the fallback that
-    /// drives the spinner for agents without hook integration (OpenCode,
-    /// Pi, Hermes, …) — stands down for good. Transient, never persisted.
-    pub hook_managed: bool,
-    /// Monotonic counter bumped on every PTY output burst attributed to
-    /// agent work (heuristic threads only). The quiescence loop snapshots
-    /// it to detect "no output for the quiet window" and demote `status`
-    /// back to Idle. Transient, never persisted.
-    pub activity_gen: u64,
 }
 
 impl Thread {
@@ -247,8 +236,6 @@ impl Thread {
             terminal_agent: None,
             pinned: false,
             agent_pid: None,
-            hook_managed: false,
-            activity_gen: 0,
         }
     }
 
@@ -276,8 +263,6 @@ impl Thread {
             terminal_agent,
             pinned: false,
             agent_pid: None,
-            hook_managed: false,
-            activity_gen: 0,
         }
     }
 }
@@ -410,8 +395,6 @@ pub fn thread_from_session(s: &ThreadSession) -> Option<Thread> {
         // via `#[serde(default)]`, so this restores cleanly.
         pinned: s.pinned,
         agent_pid: None,
-        hook_managed: false,
-        activity_gen: 0,
     })
 }
 

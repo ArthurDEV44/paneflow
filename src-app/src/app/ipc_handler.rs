@@ -1670,12 +1670,9 @@ impl PaneFlowApp {
                     // process dies before its first prompt.
                     let _ = (pid, tool, ws);
                     serde_json::json!({"registered": true})
-                } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
+                } else if self.agents_thread_mut_by_env_id(workspace_id).is_some() {
                     // Same no-op policy for an Agents thread: the spinner
-                    // only appears once a prompt is actually in flight. The
-                    // frame itself proves the hook lifecycle is live, so the
-                    // output-activity heuristic stands down for this thread.
-                    t.hook_managed = true;
+                    // only appears once a prompt is actually in flight.
                     serde_json::json!({"registered": true})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
@@ -1713,7 +1710,6 @@ impl PaneFlowApp {
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     // The row spinner self-animates (declarative GPUI
                     // Animation in `thread_row`) — no loader-loop start here.
-                    t.hook_managed = true;
                     t.status = crate::project::ThreadStatus::Thinking;
                     if pid.is_some() {
                         t.agent_pid = pid;
@@ -1765,7 +1761,6 @@ impl PaneFlowApp {
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     // tool_use keeps (or promotes) the thread spinner —
                     // same Finished-revival rationale as the workspace arm.
-                    t.hook_managed = true;
                     t.status = crate::project::ThreadStatus::Thinking;
                     if pid.is_some() {
                         t.agent_pid = pid;
@@ -1824,7 +1819,6 @@ impl PaneFlowApp {
                     self.agent_sessions_changed(cx);
                     serde_json::json!({"status": "waiting"})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
-                    t.hook_managed = true;
                     t.status = crate::project::ThreadStatus::WaitingForInput;
                     if pid.is_some() {
                         t.agent_pid = pid;
@@ -1915,7 +1909,6 @@ impl PaneFlowApp {
                     // ends and the relative timestamp returns. No Finished
                     // hold state — `ThreadStatus` has no such variant and
                     // the row's timestamp is the natural rest indicator.
-                    t.hook_managed = true;
                     t.status = crate::project::ThreadStatus::Idle;
                     t.agent_pid = None;
                     let title = crate::project::clean_sidebar_title(&t.title)
@@ -1987,7 +1980,6 @@ impl PaneFlowApp {
                     // Agents view (out of this PRD's cockpit scope): the
                     // thread model has no Errored status — treat like
                     // `ai.session_end` so the spinner never sticks.
-                    t.hook_managed = true;
                     t.status = crate::project::ThreadStatus::Idle;
                     t.agent_pid = None;
                     cx.notify();
@@ -2067,7 +2059,6 @@ impl PaneFlowApp {
                     serde_json::json!({"cleared": removed})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     let was_active = t.status != crate::project::ThreadStatus::Idle;
-                    t.hook_managed = true;
                     t.status = crate::project::ThreadStatus::Idle;
                     t.agent_pid = None;
                     if was_active {
