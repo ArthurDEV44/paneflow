@@ -17,6 +17,64 @@ pub enum SessionAgent {
     OpenCode,
 }
 
+impl SessionAgent {
+    /// Brand glyph path (multicolor SVG — render via `img()`, not a tinted
+    /// `svg()`). Shared by the sessions popover and the Review attribution badge
+    /// (EP-004 US-015).
+    pub(crate) fn icon_path(self) -> &'static str {
+        match self {
+            SessionAgent::Claude => "icons/claude-color.svg",
+            SessionAgent::Codex => "icons/codex-color.svg",
+            SessionAgent::OpenCode => "icons/opencode-color.svg",
+        }
+    }
+
+    /// Human-readable agent name.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            SessionAgent::Claude => "Claude Code",
+            SessionAgent::Codex => "Codex",
+            SessionAgent::OpenCode => "OpenCode",
+        }
+    }
+}
+
+/// EP-004 US-016: token usage aggregated across a session's assistant turns.
+/// Additive on [`SessionMeta`]; `None` when the agent records no usage
+/// (OpenCode) or the deeper scan was not run (the title-only popover path).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AssistantUsage {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_creation: u64,
+}
+
+impl AssistantUsage {
+    /// Sum across all tiers — the headline token count for a tooltip.
+    pub fn total(&self) -> u64 {
+        self.input
+            .saturating_add(self.output)
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_creation)
+    }
+
+    /// Fold another turn's usage in (saturating). Used by the scanners to
+    /// aggregate `message.usage` across assistant turns.
+    pub fn add(&mut self, other: &AssistantUsage) {
+        self.input = self.input.saturating_add(other.input);
+        self.output = self.output.saturating_add(other.output);
+        self.cache_read = self.cache_read.saturating_add(other.cache_read);
+        self.cache_creation = self.cache_creation.saturating_add(other.cache_creation);
+    }
+
+    /// True when no tier carries a count — a parsed-but-empty usage block,
+    /// treated as "no usage data" by the attribution UI.
+    pub fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+}
+
 /// US-017 (audit P2-5): module-level mtime-keyed cache for the
 /// session readers. The popover scan currently re-walks the on-disk
 /// JSONL store on every workspace switch -- a 100-session project
@@ -475,14 +533,78 @@ pub struct SessionMeta {
     pub cwd: String,
     /// Git branch — empty string when the session was outside a git repo
     /// (Claude Code) or when the agent doesn't record one (Codex CLI).
-    /// Retained in the data contract (the scans still populate it) but no
-    /// longer surfaced in the sidebar UI.
-    #[allow(dead_code)]
+    /// EP-004 US-014 consumes this in [`match_sessions_to_column`] (branch is
+    /// the 2nd-tier ranking key after exact cwd), so the `#[allow(dead_code)]`
+    /// it carried while only the sidebar read it is gone.
     pub git_branch: String,
     /// Human-readable session label. Sourced from an LLM-generated title
     /// when available, falling back to the cleaned first user message
     /// otherwise. `None` if neither could be extracted.
     pub summary: Option<String>,
+    /// EP-004 US-016: model name from the session transcript (e.g.
+    /// `claude-opus-4-...`, `gpt-5`). `None` on the title-only popover scan or
+    /// when the agent doesn't record one. Drives the attribution badge label +
+    /// pricing lookup.
+    pub model: Option<String>,
+    /// EP-004 US-016: aggregated token usage across assistant turns. `None` on
+    /// the title-only popover scan, when the agent records no usage (OpenCode),
+    /// or when the deeper scan found none. Drives the estimated-cost figure.
+    pub usage: Option<AssistantUsage>,
+}
+
+/// EP-004 US-014: rank already-cwd-filtered sessions for one diff column by
+/// `exact-cwd > branch > recency`. A pure function (no I/O, no clock) so it is
+/// unit-testable; the readers have already filtered to `col_path`'s cwd, so the
+/// cwd tier is enforced defensively here and the live discriminators are branch
+/// match then ISO-8601 timestamp (lexical == chronological). Most-relevant
+/// session first.
+pub fn match_sessions_to_column(
+    sessions: Vec<SessionMeta>,
+    col_path: &str,
+    col_branch: &str,
+) -> Vec<SessionMeta> {
+    let mut matched: Vec<SessionMeta> = sessions
+        .into_iter()
+        .filter(|s| cwd_matches(&s.cwd, col_path))
+        .collect();
+    // Branch match is a bonus tier: a session whose recorded branch equals the
+    // column's branch outranks one that doesn't (Codex records no branch, so it
+    // never wins this tier — cwd-only by design). Within a tier, most recent
+    // first. `sort_by` is stable, so equal keys keep reader order.
+    matched.sort_by(|a, b| {
+        let branch_rank = |s: &SessionMeta| -> u8 {
+            u8::from(!col_branch.is_empty() && s.git_branch == col_branch)
+        };
+        branch_rank(b)
+            .cmp(&branch_rank(a))
+            .then_with(|| b.timestamp.cmp(&a.timestamp))
+    });
+    matched
+}
+
+/// EP-004 US-014: gather every enabled agent's sessions for a worktree `cwd`
+/// (usage-enriched where the agent supports it — US-016) and rank them against
+/// the column's `(cwd, branch)`. **Blocking I/O** — call from inside
+/// `smol::unblock` (it is folded into the off-thread diff-load task so
+/// attribution never blocks first paint and is re-fetched only on re-diff).
+pub fn attribution_for_column(cwd: &str, branch: &str) -> Vec<SessionMeta> {
+    let mut all = Vec::new();
+    for agent in enabled_session_agents() {
+        match agent {
+            SessionAgent::Claude => all.extend(
+                crate::claude_sessions::read_sessions_with_usage_for_cwd(cwd),
+            ),
+            SessionAgent::Codex => {
+                all.extend(crate::codex_sessions::read_sessions_with_usage_for_cwd(cwd))
+            }
+            // OpenCode's CLI contract carries no token usage; agent + recency
+            // only (graceful degradation), so the title-only scan is enough.
+            SessionAgent::OpenCode => {
+                all.extend(crate::opencode_sessions::read_sessions_for_cwd(cwd))
+            }
+        }
+    }
+    match_sessions_to_column(all, cwd, branch)
 }
 
 /// Format an ISO 8601 timestamp into a short relative label. Pure string
@@ -753,6 +875,69 @@ mod tests {
     /// US-026 (cli-hardening-followup-2026-Q3): the fallback must
     /// be safe against malformed inputs that would otherwise blow
     /// up the sidebar layout (newlines, oversize strings, multi-byte).
+    fn meta(id: &str, branch: &str, ts: &str) -> SessionMeta {
+        SessionMeta {
+            agent: SessionAgent::Claude,
+            session_id: id.into(),
+            timestamp: ts.into(),
+            cwd: "/repo".into(),
+            git_branch: branch.into(),
+            summary: None,
+            model: None,
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn match_ranks_branch_then_recency() {
+        // EP-004 US-014: among cwd-matched sessions, a branch match outranks a
+        // non-match; within a tier, most recent first.
+        let sessions = vec![
+            meta("old-branch", "feature", "2026-01-01T00:00:00Z"),
+            meta("new-other", "main", "2026-06-01T00:00:00Z"),
+            meta("new-branch", "feature", "2026-05-01T00:00:00Z"),
+        ];
+        let ranked = match_sessions_to_column(sessions, "/repo", "feature");
+        // Both "feature" sessions rank above the "main" one; within feature,
+        // the more recent (2026-05) precedes the older (2026-01).
+        let order: Vec<&str> = ranked.iter().map(|s| s.session_id.as_str()).collect();
+        assert_eq!(order, vec!["new-branch", "old-branch", "new-other"]);
+    }
+
+    #[test]
+    fn match_drops_non_cwd_and_handles_empty_branch() {
+        // A session in a different cwd is dropped; with an empty column branch
+        // (Codex-style), ranking falls back to pure recency.
+        let mut wrong = meta("wrong", "feature", "2026-06-01T00:00:00Z");
+        wrong.cwd = "/elsewhere".into();
+        let sessions = vec![
+            wrong,
+            meta("older", "", "2026-01-01T00:00:00Z"),
+            meta("newer", "", "2026-06-01T00:00:00Z"),
+        ];
+        let ranked = match_sessions_to_column(sessions, "/repo", "");
+        let order: Vec<&str> = ranked.iter().map(|s| s.session_id.as_str()).collect();
+        assert_eq!(order, vec!["newer", "older"]);
+    }
+
+    #[test]
+    fn assistant_usage_total_and_add_saturate() {
+        let mut u = AssistantUsage {
+            input: 10,
+            output: 5,
+            cache_read: 2,
+            cache_creation: 1,
+        };
+        assert_eq!(u.total(), 18);
+        u.add(&AssistantUsage {
+            input: u64::MAX,
+            ..Default::default()
+        });
+        assert_eq!(u.input, u64::MAX, "add must saturate, not overflow-panic");
+        assert!(!u.is_empty());
+        assert!(AssistantUsage::default().is_empty());
+    }
+
     #[test]
     fn iso8601_date_trims_to_10_chars() {
         // Well-formed: behaves as before.

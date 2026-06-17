@@ -17,13 +17,19 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
-use crate::agent_sessions::{SessionAgent, SessionMeta};
+use crate::agent_sessions::{AssistantUsage, SessionAgent, SessionMeta};
 
 /// Maximum number of leading lines to scan for the first user message.
 /// In practice this lands within the first ~10 lines (after
 /// `session_meta` + `turn_context` + a few state events). The cap is
 /// generous so unusual prelude sequences still produce a label.
 const TITLE_SCAN_LIMIT: usize = 256;
+
+/// EP-004 US-016: deeper line cap for the attribution scan, which walks the
+/// whole rollout to capture the model (`turn_context.payload.model`) and the
+/// last cumulative `token_count` usage event. Bounded, and run ONLY on the
+/// attribution path (the diff column load), never on the popover title scan.
+const MODEL_USAGE_SCAN_LIMIT: usize = 20_000;
 
 // US-013: per-line JSONL read cap, centralized (see `crate::limits`).
 use crate::limits::MAX_LINE_BYTES;
@@ -49,13 +55,25 @@ pub fn sessions_root() -> Option<PathBuf> {
 /// per-file fast bail-out (we stop after the session_meta line if cwd
 /// doesn't match).
 pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
+    read_sessions_for_cwd_inner(cwd, false)
+}
+
+/// EP-004 US-014/US-016: like [`read_sessions_for_cwd`] but each rollout is
+/// scanned deeper to populate `model` (`turn_context`) + cumulative `usage`
+/// (last `token_count` event). **Blocking I/O** — call from inside
+/// `smol::unblock`.
+pub fn read_sessions_with_usage_for_cwd(cwd: &str) -> Vec<SessionMeta> {
+    read_sessions_for_cwd_inner(cwd, true)
+}
+
+fn read_sessions_for_cwd_inner(cwd: &str, scan_usage: bool) -> Vec<SessionMeta> {
     let Some(root) = sessions_root() else {
         return Vec::new();
     };
 
     let mut sessions = Vec::new();
     walk_jsonl_files(&root, &mut |path| {
-        if let Some(meta) = read_session_meta(path)
+        if let Some(meta) = read_session_meta_inner(path, scan_usage)
             && crate::agent_sessions::cwd_matches(&meta.cwd, cwd)
         {
             sessions.push(meta);
@@ -110,9 +128,18 @@ fn is_jsonl_file(path: &Path) -> bool {
             .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
 }
 
-/// Read the head of a rollout file: extract the `session_meta` envelope
-/// (line 1) and the first user message (typically a few lines later).
+/// Title-only wrapper, used by the unit tests (production routes through
+/// [`read_sessions_for_cwd_inner`] → [`read_session_meta_inner`] directly).
+#[cfg(test)]
 fn read_session_meta(path: &Path) -> Option<SessionMeta> {
+    read_session_meta_inner(path, false)
+}
+
+/// Read the head of a rollout file: extract the `session_meta` envelope
+/// (line 1) and the first user message (typically a few lines later). When
+/// `scan_usage` (EP-004 attribution path) the tail scan also captures the model
+/// (`turn_context`) and the last cumulative `token_count` usage.
+fn read_session_meta_inner(path: &Path, scan_usage: bool) -> Option<SessionMeta> {
     let file = fs::File::open(path).ok()?;
     let mut reader = BufReader::new(file);
     let mut buf = String::new();
@@ -175,7 +202,13 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
         .unwrap_or("")
         .to_string();
 
-    let summary = scan_first_user_message(&mut reader);
+    // Title-only path keeps the cheap first-user-message scan untouched. The
+    // attribution path runs the deeper tail scan (model + usage).
+    let (summary, model, usage) = if scan_usage {
+        scan_tail_with_usage(&mut reader)
+    } else {
+        (scan_first_user_message(&mut reader), None, None)
+    };
 
     Some(SessionMeta {
         agent: SessionAgent::Codex,
@@ -187,7 +220,101 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
         // sees when they run `codex resume`.
         git_branch: String::new(),
         summary,
+        model,
+        usage,
     })
+}
+
+/// EP-004 US-016: deeper tail scan for the attribution path. Walks up to
+/// [`MODEL_USAGE_SCAN_LIMIT`] lines capturing the first user message (label),
+/// the model (`turn_context.payload.model`), and the LAST cumulative
+/// `token_count` usage event. Codex reports `token_count` as a running total,
+/// so the last one wins (not summed). Usage is normalized to the shared
+/// [`AssistantUsage`] tier semantics (input = uncached input, cache_read =
+/// cached subset) so the pricing table treats Claude and Codex uniformly.
+fn scan_tail_with_usage(
+    reader: &mut BufReader<fs::File>,
+) -> (Option<String>, Option<String>, Option<AssistantUsage>) {
+    let mut summary: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut usage: Option<AssistantUsage> = None;
+    let mut buf = String::new();
+    for _ in 0..MODEL_USAGE_SCAN_LIMIT {
+        buf.clear();
+        let n = match reader.by_ref().take(MAX_LINE_BYTES).read_line(&mut buf) {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n == 0 {
+            break;
+        }
+        let trimmed = buf.trim_end();
+        if !trimmed.starts_with('{') {
+            continue;
+        }
+        let value: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        match value.get("type").and_then(|v| v.as_str()) {
+            Some("turn_context") => {
+                if model.is_none()
+                    && let Some(m) = value
+                        .get("payload")
+                        .and_then(|p| p.get("model"))
+                        .and_then(|v| v.as_str())
+                    && !m.is_empty()
+                {
+                    model = Some(m.to_string());
+                }
+            }
+            Some("event_msg") => {
+                let Some(payload) = value.get("payload") else {
+                    continue;
+                };
+                match payload.get("type").and_then(|v| v.as_str()) {
+                    Some("user_message") if summary.is_none() => {
+                        if let Some(message) = payload.get("message").and_then(|v| v.as_str())
+                            && let Some(cleaned) = clean_user_message(message)
+                        {
+                            summary = Some(cleaned);
+                        }
+                    }
+                    Some("token_count") => {
+                        if let Some(total) =
+                            payload.get("info").and_then(|i| i.get("total_token_usage"))
+                        {
+                            let input_total = total
+                                .get("input_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let cached = total
+                                .get("cached_input_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let output = total
+                                .get("output_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let u = AssistantUsage {
+                                input: input_total.saturating_sub(cached),
+                                output,
+                                cache_read: cached,
+                                cache_creation: 0,
+                            };
+                            // Cumulative — last non-empty wins.
+                            if !u.is_empty() {
+                                usage = Some(u);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    (summary, model, usage)
 }
 
 /// Scan up to [`TITLE_SCAN_LIMIT`] lines looking for the first
@@ -289,6 +416,45 @@ mod tests {
         assert_eq!(meta.timestamp, "2026-04-26T13:11:03.694Z");
         assert!(meta.git_branch.is_empty());
         assert_eq!(meta.summary.as_deref(), Some("Explique le projet stp"));
+    }
+
+    #[test]
+    fn usage_scan_captures_model_and_normalizes_token_count() {
+        // EP-004 US-016: scan_usage=true captures `turn_context.payload.model`
+        // and the LAST cumulative `token_count`, normalized to the shared tier
+        // semantics (input = uncached input, cache_read = cached subset). The
+        // title-only path leaves model/usage None.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rollout-usage.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"timestamp":"2026-04-26T13:11:10.338Z","type":"session_meta","payload":{"id":"019dc9ea-38d7-7372-9cc4-253ce944d41b","timestamp":"2026-04-26T13:11:03.694Z","cwd":"/home/arthur/dev/paneflow"}}"#,
+                "\n",
+                r#"{"type":"turn_context","payload":{"model":"gpt-5"}}"#,
+                "\n",
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"hi"}}"#,
+                "\n",
+                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":200,"output_tokens":80}}}}"#,
+                "\n",
+                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900,"cached_input_tokens":300,"output_tokens":150}}}}"#,
+                "\n",
+            ),
+        )
+        .expect("write fixture");
+
+        let title_only = read_session_meta_inner(&path, false).expect("meta");
+        assert!(title_only.model.is_none());
+        assert!(title_only.usage.is_none());
+
+        let with_usage = read_session_meta_inner(&path, true).expect("meta");
+        assert_eq!(with_usage.model.as_deref(), Some("gpt-5"));
+        let usage = with_usage.usage.expect("usage parsed");
+        // Last cumulative event wins: 900 total input, 300 cached → 600 uncached.
+        assert_eq!(usage.input, 600);
+        assert_eq!(usage.cache_read, 300);
+        assert_eq!(usage.output, 150);
+        assert_eq!(usage.cache_creation, 0);
     }
 
     #[test]

@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::agent_sessions::{SessionAgent, SessionMeta};
+use crate::agent_sessions::{AssistantUsage, SessionAgent, SessionMeta};
 
 /// Maximum number of leading lines to scan for envelope + title. The
 /// first lines of a Claude Code session file are typically
@@ -28,6 +28,14 @@ use crate::agent_sessions::{SessionAgent, SessionMeta};
 /// 256 covers >95% of files in the wild without the scan being visible
 /// to the user.
 const TITLE_SCAN_LIMIT: usize = 256;
+
+/// EP-004 US-016: deeper line cap for the attribution scan, which walks PAST
+/// the title break to aggregate `message.usage` across assistant turns. A
+/// session's turns are spread through the file, so this is much larger than
+/// [`TITLE_SCAN_LIMIT`] — but still bounded, and it runs ONLY on the attribution
+/// path (the diff column load), never on the popover title scan. 20k lines
+/// covers very long sessions while keeping a pathological file bounded.
+const MODEL_USAGE_SCAN_LIMIT: usize = 20_000;
 
 // US-013: per-line JSONL read cap, centralized (see `crate::limits`).
 use crate::limits::MAX_LINE_BYTES;
@@ -122,6 +130,34 @@ pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
     sessions
 }
 
+/// EP-004 US-014/US-016: like [`read_sessions_for_cwd`] but each session is
+/// scanned deeper to populate `model` + aggregated `usage` (the attribution
+/// path). Deliberately bypasses the title-scan mtime cache — that cache stores
+/// usage-less rows for the popover, and the attribution result is instead cached
+/// on the diff `Column` keyed to its diff fingerprint (re-fetched only on
+/// re-diff). **Blocking I/O** — call from inside `smol::unblock`.
+pub fn read_sessions_with_usage_for_cwd(cwd: &str) -> Vec<SessionMeta> {
+    let Some(project_dir) = project_dir_for_cwd(cwd) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(&project_dir) else {
+        return Vec::new();
+    };
+    let mut sessions: Vec<SessionMeta> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !is_jsonl_file(&path) {
+                return None;
+            }
+            read_session_meta_inner(&path, true)
+                .filter(|meta| crate::agent_sessions::cwd_matches(&meta.cwd, cwd))
+        })
+        .collect();
+    sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    sessions
+}
+
 fn is_jsonl_file(path: &Path) -> bool {
     path.is_file()
         && path
@@ -142,6 +178,15 @@ fn is_jsonl_file(path: &Path) -> bool {
 /// 2. First `type:"user"` message, with `<command-*>` boilerplate
 ///    collapsed into `/<name> <args>` when present.
 fn read_session_meta(path: &Path) -> Option<SessionMeta> {
+    read_session_meta_inner(path, false)
+}
+
+/// Shared session-head scan. `scan_usage = false` is the title-only popover
+/// path: bounded by [`TITLE_SCAN_LIMIT`], it stops as soon as the envelope +
+/// title are known. `scan_usage = true` is the EP-004 attribution path: it
+/// walks past the title (bounded by [`MODEL_USAGE_SCAN_LIMIT`]) aggregating
+/// `message.usage` across assistant turns and capturing `message.model`.
+fn read_session_meta_inner(path: &Path, scan_usage: bool) -> Option<SessionMeta> {
     let file = fs::File::open(path).ok()?;
     let mut reader = BufReader::new(file);
     let mut buf = String::new();
@@ -149,8 +194,17 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
     let mut envelope: Option<FirstLineEnvelope> = None;
     let mut ai_title: Option<String> = None;
     let mut user_fallback: Option<String> = None;
+    // US-016: model + aggregated usage (attribution path only).
+    let mut model: Option<String> = None;
+    let mut usage = AssistantUsage::default();
+    let mut saw_usage = false;
 
-    for _ in 0..TITLE_SCAN_LIMIT {
+    let scan_limit = if scan_usage {
+        MODEL_USAGE_SCAN_LIMIT
+    } else {
+        TITLE_SCAN_LIMIT
+    };
+    for _ in 0..scan_limit {
         buf.clear();
         // US-010 (cli-hardening-followup-2026-Q3): cap each line read
         // at MAX_LINE_BYTES. An agent can write to
@@ -263,7 +317,9 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
                     && !title.is_empty()
                 {
                     ai_title = Some(title.to_string());
-                    if envelope.is_some() {
+                    // Title-only path: stop as soon as we have envelope + title.
+                    // Attribution path: keep walking to aggregate usage/model.
+                    if envelope.is_some() && !scan_usage {
                         break;
                     }
                 }
@@ -273,6 +329,37 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
                     && let Some(cleaned) = clean_user_message(&text)
                 {
                     user_fallback = Some(cleaned);
+                }
+            }
+            // US-016: assistant turns carry `message.model` + `message.usage`.
+            // Aggregate usage across turns; keep the most recent non-empty model
+            // (overwrite — a session that switched models reports the last one,
+            // which is the most representative for a single-figure estimate).
+            Some("assistant") if scan_usage => {
+                if let Some(message) = value.get("message") {
+                    if let Some(m) = message.get("model").and_then(|v| v.as_str())
+                        && !m.is_empty()
+                    {
+                        model = Some(m.to_string());
+                    }
+                    if let Some(u) = message.get("usage") {
+                        let turn = AssistantUsage {
+                            input: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                            output: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                            cache_read: u
+                                .get("cache_read_input_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
+                            cache_creation: u
+                                .get("cache_creation_input_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
+                        };
+                        if !turn.is_empty() {
+                            usage.add(&turn);
+                            saw_usage = true;
+                        }
+                    }
                 }
             }
             _ => {}
@@ -289,6 +376,8 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
         cwd: envelope.cwd,
         git_branch: envelope.git_branch,
         summary,
+        model,
+        usage: saw_usage.then_some(usage),
     })
 }
 
@@ -482,6 +571,47 @@ mod tests {
     }
 
     #[test]
+    fn usage_scan_aggregates_across_assistant_turns_and_captures_model() {
+        // EP-004 US-016: the deeper scan (scan_usage=true) walks past the title
+        // break, sums `message.usage` across assistant turns, and captures the
+        // model. The title-only scan (false) leaves both None.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("usage.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"parentUuid":null,"type":"user","message":{"role":"user","content":"hi"},"uuid":"u","timestamp":"2026-04-26T13:38:41.095Z","cwd":"/tmp/proj","sessionId":"550e8400-e29b-41d4-a716-446655440000","gitBranch":"main"}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"model":"claude-opus-4-8-20260101","usage":{"input_tokens":100,"output_tokens":40,"cache_read_input_tokens":10,"cache_creation_input_tokens":5}}}"#,
+                "\n",
+                r#"{"type":"ai-title","aiTitle":"Some title"}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"model":"claude-opus-4-8-20260101","usage":{"input_tokens":200,"output_tokens":60,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+                "\n",
+            ),
+        )
+        .expect("write fixture");
+
+        // Title-only path: no model/usage.
+        let title_only = read_session_meta_inner(&path, false).expect("meta");
+        assert!(title_only.model.is_none());
+        assert!(title_only.usage.is_none());
+        assert_eq!(title_only.summary.as_deref(), Some("Some title"));
+
+        // Attribution path: aggregated usage + model.
+        let with_usage = read_session_meta_inner(&path, true).expect("meta");
+        assert_eq!(
+            with_usage.model.as_deref(),
+            Some("claude-opus-4-8-20260101")
+        );
+        let usage = with_usage.usage.expect("usage aggregated");
+        assert_eq!(usage.input, 300);
+        assert_eq!(usage.output, 100);
+        assert_eq!(usage.cache_read, 10);
+        assert_eq!(usage.cache_creation, 5);
+    }
+
+    #[test]
     fn truncate_label_caps_long_text() {
         let long = "a".repeat(120);
         let label = truncate_label(&long);
@@ -608,6 +738,8 @@ mod tests {
             cwd: cwd.into(),
             git_branch: String::new(),
             summary: None,
+            model: None,
+            usage: None,
         }];
         cache::store_result(SessionAgent::Claude, cwd, project_dir, &fixture);
 
