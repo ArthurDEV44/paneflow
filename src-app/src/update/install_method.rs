@@ -195,10 +195,20 @@ pub fn detect() -> InstallMethod {
     // startup instead of silently showing a never-firing update prompt.
     #[cfg(target_os = "macos")]
     if matches!(result, InstallMethod::Unknown) {
-        log::warn!(
+        // In a debug build the binary lives under `target/debug/` and is never
+        // inside a .app — this is the expected dev path, so log it at debug
+        // level to avoid spamming a warning on every `cargo run`. A release
+        // binary running outside a bundle is a genuine ad-hoc extraction worth
+        // surfacing at warn level.
+        let msg = format!(
             "paneflow: running binary at {} is not inside a .app bundle — in-app updates disabled",
             canonical.display()
         );
+        if cfg!(debug_assertions) {
+            log::debug!("{msg}");
+        } else {
+            log::warn!("{msg}");
+        }
     }
 
     result
