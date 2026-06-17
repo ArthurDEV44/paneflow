@@ -71,3 +71,7 @@ LOG_*.text
 
 # Local-only LinkedIn post drafts (personal marketing, not project source).
 /linkedin/
+
+# Local-only distribution/growth strategy notes (personal marketing, not
+# project source) — never publish to the OSS repo.
+/DISTRIBUTION.md
