@@ -420,14 +420,66 @@ pub fn scan_panes(
 // macOS
 // ---------------------------------------------------------------------------
 
-/// macOS descendant walker — kernel equivalent of the Linux
-/// `/proc/{pid}/task/{pid}/children` traversal. BFS via
-/// `libc::proc_listchildpids`; `visited` shared across roots (same
-/// single-walk contract as Linux). Returns pids in breadth-first order.
+/// macOS ppid→children map over every visible process, built once per scan.
+///
+/// `libc::proc_listchildpids` is deliberately NOT used: on modern macOS it
+/// returns 0 children for an unprivileged caller, so the old per-node subtree
+/// walk found nothing and the workspace card never lit its agent dot. Instead
+/// we enumerate all pids (`listpids(ProcAllPIDS)`) and read each one's parent
+/// from `proc_bsdinfo.pbi_ppid` — the very same `proc_pidinfo(PROC_PIDTBSDINFO)`
+/// query that `name()` already succeeds with for same-user processes. Mirrors
+/// the Linux `bfs_descendants_via_ppid_linux` fallback. Processes we can't
+/// inspect (EPERM on SIP-protected / other-user pids, dead-pid races) are
+/// skipped — our agents are same-user PTY children, always readable.
 #[cfg(target_os = "macos")]
-fn bfs_descendants_macos(root_pid: u32, visited: &mut std::collections::HashSet<u32>) -> Vec<u32> {
-    const MAX_CHILDREN_PER_PROC: usize = 256;
+fn macos_children_map() -> std::collections::HashMap<u32, Vec<u32>> {
+    use libproc::libproc::bsd_info::BSDInfo;
+    use libproc::libproc::proc_pid::pidinfo;
+    use libproc::processes::{ProcFilter, pids_by_type};
 
+    let mut children_of: std::collections::HashMap<u32, Vec<u32>> =
+        std::collections::HashMap::new();
+    let pids = match pids_by_type(ProcFilter::All) {
+        Ok(pids) => pids,
+        Err(e) => {
+            // Wholesale enumeration failure — NOT a routine per-pid EPERM skip:
+            // every port badge and agent dot on macOS goes dark at once. This
+            // is the `proc_listchildpids`-class failure mode, so make it
+            // diagnosable in paneflow-debug.log. Latched to log ONCE: this runs
+            // on the periodic scan, and a per-tick warn would be the very noise
+            // the `cwd_now(pid=0)` fix removed.
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                log::warn!(
+                    "macos process enumeration failed (pids_by_type: {e}) — port \
+                     badges and agent detection will be unavailable"
+                );
+            }
+            return children_of;
+        }
+    };
+    for pid in pids {
+        if pid == 0 {
+            continue;
+        }
+        if let Ok(info) = pidinfo::<BSDInfo>(pid as i32, 0) {
+            children_of.entry(info.pbi_ppid).or_default().push(pid);
+        }
+    }
+    children_of
+}
+
+/// macOS descendant walker — BFS over the prebuilt `children_of` ppid map
+/// (see [`macos_children_map`]). Kernel equivalent of the Linux
+/// `/proc/{pid}/task/{pid}/children` traversal; `visited` is shared across
+/// roots (same single-walk contract as Linux). Returns pids in BFS order.
+#[cfg(target_os = "macos")]
+fn bfs_descendants_macos(
+    root_pid: u32,
+    children_of: &std::collections::HashMap<u32, Vec<u32>>,
+    visited: &mut std::collections::HashSet<u32>,
+) -> Vec<u32> {
     let mut result = Vec::new();
     if !visited.insert(root_pid) {
         return result;
@@ -439,38 +491,12 @@ fn bfs_descendants_macos(root_pid: u32, visited: &mut std::collections::HashSet<
         if result.len() >= MAX_PIDS_PER_ROOT {
             break;
         }
-
-        let mut children_buf = vec![0i32; MAX_CHILDREN_PER_PROC];
-        let buf_size = (children_buf.len() * std::mem::size_of::<i32>()) as libc::c_int;
-
-        // SAFETY: `children_buf` is a mutable Vec<i32> with its full capacity
-        // written (len == MAX_CHILDREN_PER_PROC). The kernel writes at most
-        // `buf_size` bytes of `pid_t` (== i32) values; any tail beyond the
-        // return value is ignored and truncated below.
-        let written = unsafe {
-            libc::proc_listchildpids(
-                pid as libc::pid_t,
-                children_buf.as_mut_ptr() as *mut libc::c_void,
-                buf_size,
-            )
-        };
-
-        if written <= 0 {
-            // Either no children or the kernel denied the call (EPERM under
-            // sandbox / SIP). Either way, skip this PID — no panic and no
-            // noise on a routine permission denial.
-            continue;
-        }
-
-        let count = (written as usize) / std::mem::size_of::<i32>();
-        for &child_i32 in &children_buf[..count.min(MAX_CHILDREN_PER_PROC)] {
-            if child_i32 <= 0 {
-                continue;
-            }
-            let child = child_i32 as u32;
-            if visited.insert(child) {
-                result.push(child);
-                queue.push_back(child);
+        if let Some(kids) = children_of.get(&pid) {
+            for &child in kids {
+                if visited.insert(child) {
+                    result.push(child);
+                    queue.push_back(child);
+                }
             }
         }
     }
@@ -631,9 +657,13 @@ pub fn scan_panes(
         return results;
     }
 
+    // One ppid→children snapshot for the whole scan — every root's subtree is
+    // carved out of it, so the full `listpids` enumeration happens once, not
+    // per pane.
+    let children_of = macos_children_map();
     let mut visited: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for &(key, root_pid) in roots {
-        let pids = bfs_descendants_macos(root_pid, &mut visited);
+        let pids = bfs_descendants_macos(root_pid, &children_of, &mut visited);
 
         // `libproc::name` returns the kernel's `p_comm` — same semantics
         // and 16-char limit as Linux `/proc/<pid>/comm`. EPERM (sandbox /
@@ -785,5 +815,35 @@ mod tests {
         assert!(parse_procargs2(&[]).is_empty());
         assert!(parse_procargs2(&[1, 0, 0]).is_empty());
         assert!(parse_procargs2(&0i32.to_ne_bytes()).is_empty());
+    }
+
+    // Regression for the workspace-card blue dot on Apple: the macOS subtree
+    // scan must find a live PTY descendant and resolve its `p_comm`. This
+    // failed silently while the walk relied on `proc_listchildpids`, which
+    // returns 0 children for an unprivileged caller — `detected_agents` stayed
+    // empty and the dot never lit. We spawn the real, signed `/bin/sleep`
+    // (p_comm == "sleep"; no code-signing confound) as a child of the test
+    // process and assert it surfaces.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_scan_panes_detects_live_child_subtree() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        // Let the kernel register the new process's BSD info before we probe.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+
+        let roots = [(1u64, std::process::id())];
+        let scan = scan_panes(&roots, &["sleep"]);
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let agents = scan.get(&1).map(|s| s.agents.clone()).unwrap_or_default();
+        assert!(
+            agents.iter().any(|a| a == "sleep"),
+            "macOS subtree scan must detect the live `sleep` child; got {agents:?}"
+        );
     }
 }
