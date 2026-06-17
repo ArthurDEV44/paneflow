@@ -1028,6 +1028,11 @@ impl TerminalState {
         if self.exited.is_some() {
             return None;
         }
+        // Display-only terminal (no real PTY): `child_pid` is 0 → `/proc/0/cwd`
+        // doesn't exist. Bail explicitly to match the macOS/Windows guards.
+        if self.child_pid == 0 {
+            return None;
+        }
         let proc_path = format!("/proc/{}/cwd", self.child_pid);
         std::fs::read_link(&proc_path).ok()
     }
@@ -1044,6 +1049,15 @@ impl TerminalState {
         // US-034: after exit, `child_pid` may have been reused — `proc_pidinfo`
         // would return an unrelated process's CWD. Bail.
         if self.exited.is_some() {
+            return None;
+        }
+
+        // Display-only terminal (no real PTY) or a child whose pid hasn't been
+        // resolved yet: `child_pid` is 0. Bail before the FFI — `proc_pidinfo(0,
+        // …)` targets the kernel swapper (pid 0), fails with EPERM, and would
+        // spam a misleading "shell may have exited" warning on every poll tick.
+        // Mirrors the `foreground_command` guards on every platform.
+        if self.child_pid == 0 {
             return None;
         }
 
@@ -2820,6 +2834,20 @@ mod tests {
         assert!(
             state.foreground_command().is_none(),
             "display-only terminal has no foreground process to resolve"
+        );
+    }
+
+    // A display-only terminal (child_pid == 0, no real PTY) must resolve no CWD
+    // and, critically, must NOT reach the platform process-table FFI: on macOS
+    // `proc_pidinfo(0, …)` targets the kernel swapper, fails with EPERM, and
+    // would spam a misleading "shell may have exited" warning on every poll.
+    #[test]
+    fn cwd_now_none_for_display_only() {
+        let state = TerminalState::new_display_only(24, 80);
+        assert_eq!(state.child_pid, 0);
+        assert!(
+            state.cwd_now().is_none(),
+            "display-only terminal has no shell CWD to resolve"
         );
     }
 
