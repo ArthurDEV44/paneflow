@@ -333,6 +333,46 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "copy_diff_hunk",
         context: Some("DiffView"),
     },
+    // EP-003 US-009 (prd-review-redesign-2026-Q3.md): keyboard-first review loop.
+    // Bare keys, scoped to `DiffView && !Terminal && !TextInput` so neither an
+    // embedded review/shell terminal NOR the base-branch filter input (both focus
+    // children of the DiffView) loses a keystroke — the `!` clauses are what make
+    // bare letters safe here. Chosen scheme: `[`/`]` step hunks (the Open-Question
+    // pick over `J`/`K`), `u` unified/split, `s` sync, `Esc` dismiss. All
+    // remappable like every entry in this table.
+    DefaultBinding {
+        key: "]",
+        action_name: "diff_next_hunk",
+        context: Some("DiffView && !Terminal && !TextInput"),
+    },
+    DefaultBinding {
+        key: "[",
+        action_name: "diff_prev_hunk",
+        context: Some("DiffView && !Terminal && !TextInput"),
+    },
+    DefaultBinding {
+        key: "u",
+        action_name: "diff_toggle_view",
+        context: Some("DiffView && !Terminal && !TextInput"),
+    },
+    DefaultBinding {
+        key: "s",
+        action_name: "diff_toggle_sync",
+        context: Some("DiffView && !Terminal && !TextInput"),
+    },
+    DefaultBinding {
+        key: "escape",
+        action_name: "diff_dismiss",
+        context: Some("DiffView && !Terminal && !TextInput"),
+    },
+    // EP-005 US-018: `a` = "act" on the hunk under the cursor (or the viewport
+    // hunk for a keyboard-only loop). Same guarded context as the other
+    // review-loop bare keys.
+    DefaultBinding {
+        key: "a",
+        action_name: "diff_act_on_hunk",
+        context: Some("DiffView && !Terminal && !TextInput"),
+    },
     // EP-001 (prd-cli-cockpit-ergonomics-2026-Q3.md): Composer + broadcast
     // groups. All three are unclaimed `secondary-shift-…` slots (taken set
     // before this block: d/e/w/n/q/j/t/z/=/s/a/g) and none shadows a common

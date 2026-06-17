@@ -114,6 +114,23 @@ actions!(
         // US-003 of tasks/prd-ai-in-diff-2026-Q3.md — copy the hunk under the
         // cursor as a unified diff (Ctrl+Shift+C inside the DiffView context).
         CopyDiffHunk,
+        // EP-003 US-009 (prd-review-redesign-2026-Q3.md) — keyboard-first review
+        // loop. All scoped to `DiffView && !Terminal && !TextInput` so they drive
+        // the diff body without stealing keystrokes from an embedded review/shell
+        // terminal or the base-branch filter input.
+        // `[`/`]` step hunks (wired to `goto_hunk`), `u` toggles unified/split,
+        // `s` toggles cross-column scroll sync, `Esc` dismisses any open
+        // popover/menu and refocuses the body.
+        DiffNextHunk,
+        DiffPrevHunk,
+        DiffToggleView,
+        DiffToggleSync,
+        DiffDismiss,
+        // EP-005 US-018 (prd-review-redesign-2026-Q3.md) — direct the active
+        // review CLI at the hunk under the cursor (or the viewport hunk, for a
+        // keyboard-only loop). Same `DiffView && !Terminal && !TextInput` context
+        // as the rest of the review-loop keys.
+        DiffActOnHunk,
         // US-011 of tasks/prd-agents-ui-codex-redesign-2026-Q3.md — open the
         // overflow (`⋯`) menu for the current Agents thread/chat. Dispatched
         // by the title-bar `⋯` button (a SEPARATE `TitleBar` entity with no
