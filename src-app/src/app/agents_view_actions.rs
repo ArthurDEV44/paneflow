@@ -1163,7 +1163,7 @@ fn render_agents_environment_overlay(
     div()
         .absolute()
         .top(px(10.))
-        .right(px(38.))
+        .right(px(12.))
         .w(px(AGENTS_ENVIRONMENT_PANEL_WIDTH))
         .flex()
         .flex_col()
