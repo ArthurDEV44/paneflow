@@ -40,6 +40,8 @@ initialization.
 | `ls`                                | List the active workspace's panes (JSON; `--human` for a table)         | No                |
 | `read <target>`                     | Print a pane's scrollback (`--lines`, `--offset`, `--json`)             | No                |
 | `search <target> <pattern>`         | Search a pane's scrollback (`--max`, `--human`)                         | No                |
+| `ps`                                | List running agents across the fleet (default table; `--json`)          | No                |
+| `status <target>`                   | Read one pane's agent state: thinking / waiting / idle (`--json`)       | No                |
 | `new`                               | Create a workspace (`--name`, `--cwd`)                                  | No                |
 | `select <index>`                    | Select a workspace by zero-based index                                  | No                |
 | `split <h\|v>`                      | Split a pane (`--target` to pick which one)                             | No                |
@@ -119,6 +121,15 @@ paneflow read cmdline:vite --lines 80
 
 # Did the test suite pass anywhere in this pane's history?
 paneflow search backend "test result: ok" --max 5
+
+# Which agents are running, and what is each one doing?
+paneflow ps
+
+# Is the agent in the backend pane waiting on me, and what did it ask?
+paneflow status backend
+
+# surface.read / surface.status also return `output_generation`, a monotonic
+# counter a script can poll to detect a pane going idle without a timer guess.
 
 # Workspace with two panes, focus the editor side
 paneflow new --name api --cwd ~/dev/api

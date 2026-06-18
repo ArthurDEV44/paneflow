@@ -38,7 +38,8 @@ pub const EXIT_TIMEOUT: i32 = 4;
 /// manual `--help`/`--version` scans) on membership here so the GUI launch
 /// path stays byte-for-byte unchanged for any other `argv[1]`.
 const VERBS: &[&str] = &[
-    "ls", "read", "search", "new", "select", "split", "send", "up", "wait", "focus", "key", "flow",
+    "ls", "read", "search", "ps", "status", "new", "select", "split", "send", "up", "wait",
+    "focus", "key", "flow",
 ];
 
 /// True when `argv[1]` names one of our subcommands.
@@ -96,6 +97,20 @@ enum Commands {
         /// Human-readable lines instead of the default JSON.
         #[arg(long)]
         human: bool,
+    },
+    /// List running agents across the fleet (pid, tool, state, pane).
+    Ps {
+        /// Emit the `{agents:[…]}` envelope as JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read one pane's agent state (thinking / waiting / idle / errored / …).
+    Status {
+        /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
+        target: String,
+        /// Emit the status envelope as JSON instead of a one-line summary.
+        #[arg(long)]
+        json: bool,
     },
     /// Create a new workspace.
     New {
@@ -320,6 +335,8 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             max,
             human,
         } => read_cmds::search(client, &target, &pattern, max, human),
+        Commands::Ps { json } => read_cmds::ps(client, json),
+        Commands::Status { target, json } => read_cmds::status(client, &target, json),
         Commands::New { name, cwd } => {
             control_cmds::new_workspace(client, name.as_deref(), cwd.as_deref())
         }
@@ -404,6 +421,23 @@ mod tests {
         assert!(!is_cli_verb(Some("mcp")));
         assert!(!is_cli_verb(Some("--version")));
         assert!(!is_cli_verb(None));
+    }
+
+    #[test]
+    fn ps_parses_with_optional_json_flag() {
+        let cli = Cli::try_parse_from(["paneflow", "ps", "--json"]).expect("parse");
+        assert!(matches!(cli.command, Some(Commands::Ps { json: true })));
+        // Default is the human table (like Unix `ps`), JSON is opt-in.
+        let cli = Cli::try_parse_from(["paneflow", "ps"]).expect("parse");
+        assert!(matches!(cli.command, Some(Commands::Ps { json: false })));
+    }
+
+    #[test]
+    fn status_requires_a_target() {
+        let err = Cli::try_parse_from(["paneflow", "status"]).expect_err("usage");
+        assert_eq!(err.exit_code(), 2);
+        let cli = Cli::try_parse_from(["paneflow", "status", "backend"]).expect("parse");
+        assert!(matches!(cli.command, Some(Commands::Status { .. })));
     }
 
     #[test]
