@@ -13,13 +13,15 @@
 //! remains a single function here; if future additions push it over the
 //! module's LOC budget, split by namespace per the PRD's fallback spec.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{App, AppContext, Context, Entity, Focusable};
 use paneflow_config::schema::LayoutNode;
 
+use crate::agent_launcher::TerminalAgent;
+use crate::ai_types::AgentSession;
 use crate::layout::LayoutTree;
 use crate::layout::{MAX_PANES, SplitDirection};
 use crate::pane::Pane;
@@ -481,6 +483,119 @@ pub(crate) fn parse_rename_name(params: &serde_json::Value) -> Option<String> {
         .collect();
     let cleaned = cleaned.trim().to_string();
     (!cleaned.is_empty()).then_some(cleaned)
+}
+
+/// EP-001 US-001 (agent-control-plane): one workspace's fleet inputs, borrowed
+/// for the pure [`build_fleet_rows`]. Keeps row-building free of GPUI so it can
+/// be unit-tested directly.
+struct WsFleet<'a> {
+    idx: usize,
+    sessions: &'a HashMap<u32, AgentSession>,
+    detected: &'a HashSet<String>,
+}
+
+/// EP-001 US-001: build the sorted `fleet.list` agent rows. Pure.
+///
+/// Hooked sessions are emitted with full state (`hooked: true`); then every
+/// detected binary whose tool has NO hook session is appended once as
+/// `unknown_running` (`hooked: false`) so the 6 hookless agents stay visible.
+/// Sorted by `(workspace, tool display_rank, pid)` for a stable order across the
+/// `HashMap`'s nondeterministic iteration.
+fn build_fleet_rows(
+    workspaces: &[WsFleet],
+    name_by_sid: &HashMap<u64, String>,
+    now: std::time::Instant,
+) -> Vec<serde_json::Value> {
+    let mut rows: Vec<(usize, usize, u32, serde_json::Value)> = Vec::new();
+    for ws in workspaces {
+        let mut tools_seen: HashSet<TerminalAgent> = HashSet::new();
+        for (pid, s) in ws.sessions {
+            tools_seen.insert(s.tool);
+            let surface_name = s
+                .surface_id
+                .and_then(|sid| name_by_sid.get(&sid).map(String::as_str));
+            rows.push((
+                ws.idx,
+                s.tool.display_rank(),
+                *pid,
+                serde_json::json!({
+                    "pid": *pid,
+                    "tool": s.tool.binary(),
+                    "state": s.state.wire_str(),
+                    "hooked": true,
+                    "surface_id": s.surface_id,
+                    "surface_name": surface_name,
+                    "workspace": ws.idx,
+                    "active_tool_name": s.active_tool_name,
+                    "message": s.message,
+                    "waiting_ms": s
+                        .waiting_since
+                        .map(|w| now.saturating_duration_since(w).as_millis() as u64),
+                    "idle_ms": now.saturating_duration_since(s.last_activity).as_millis() as u64,
+                }),
+            ));
+        }
+        // Detected-but-unhooked: a binary the /proc scan saw whose tool has no
+        // hook session. Appended last within the workspace (pid sentinel).
+        let mut unhooked: Vec<TerminalAgent> = ws
+            .detected
+            .iter()
+            .filter_map(|b| TerminalAgent::from_binary(b))
+            .filter(|t| !tools_seen.contains(t))
+            .collect();
+        unhooked.sort_by_key(|t| t.display_rank());
+        for tool in unhooked {
+            rows.push((
+                ws.idx,
+                tool.display_rank(),
+                u32::MAX,
+                serde_json::json!({
+                    "pid": serde_json::Value::Null,
+                    "tool": tool.binary(),
+                    "state": "unknown_running",
+                    "hooked": false,
+                    "surface_id": serde_json::Value::Null,
+                    "surface_name": serde_json::Value::Null,
+                    "workspace": ws.idx,
+                    "active_tool_name": serde_json::Value::Null,
+                    "message": serde_json::Value::Null,
+                    "waiting_ms": serde_json::Value::Null,
+                    "idle_ms": serde_json::Value::Null,
+                }),
+            ));
+        }
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    rows.into_iter().map(|(_, _, _, v)| v).collect()
+}
+
+/// EP-001 US-002 (agent-control-plane): the `surface.status` response for a
+/// pane, given the session living in it (if any). Pure. `idle` when `None`.
+fn surface_status_value(
+    sid: u64,
+    session: Option<&AgentSession>,
+    output_generation: u64,
+    now: std::time::Instant,
+) -> serde_json::Value {
+    match session {
+        Some(s) => serde_json::json!({
+            "surface_id": sid,
+            "state": s.state.wire_str(),
+            "tool": s.tool.binary(),
+            "active_tool_name": s.active_tool_name,
+            "message": s.message,
+            "waiting_ms": s
+                .waiting_since
+                .map(|w| now.saturating_duration_since(w).as_millis() as u64),
+            "idle_ms": now.saturating_duration_since(s.last_activity).as_millis() as u64,
+            "output_generation": output_generation,
+        }),
+        None => serde_json::json!({
+            "surface_id": sid,
+            "state": "idle",
+            "output_generation": output_generation,
+        }),
+    }
 }
 
 impl PaneFlowApp {
@@ -1277,6 +1392,10 @@ impl PaneFlowApp {
                     .and_then(|v| v.as_u64())
                     .map(|n| n as usize)
                     .unwrap_or(0);
+                // EP-001 US-003 (agent-control-plane): expose the output
+                // generation counter so a client detects pane-idle without a
+                // timer heuristic (kills the flow engine's settling poll).
+                let output_generation = terminal.read(cx).terminal.output_generation;
                 let full = terminal
                     .read(cx)
                     .terminal
@@ -1298,7 +1417,45 @@ impl PaneFlowApp {
                     "lines": returned,
                     "total_lines": total,
                     "eof": eof,
+                    "output_generation": output_generation,
                 })
+            }
+            "fleet.list" => {
+                // EP-001 US-001 (agent-control-plane): snapshot every running
+                // agent across all workspaces. Read-only, no scripting gate.
+                let name_by_sid: HashMap<u64, String> = self
+                    .collect_surface_meta(cx)
+                    .into_iter()
+                    .map(|m| (m.surface_id, m.name))
+                    .collect();
+                let fleets: Vec<WsFleet> = self
+                    .workspaces
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, ws)| WsFleet {
+                        idx,
+                        sessions: &ws.agent_sessions,
+                        detected: &ws.detected_agents,
+                    })
+                    .collect();
+                let agents = build_fleet_rows(&fleets, &name_by_sid, std::time::Instant::now());
+                serde_json::json!({ "agents": agents })
+            }
+            "surface.status" => {
+                // EP-001 US-002 (agent-control-plane): one pane's agent state.
+                // Read-only; `idle` when no agent session lives in the pane.
+                let terminal = match self.resolve_surface(params, cx) {
+                    Ok(t) => t,
+                    Err(e) => return e.into_value(),
+                };
+                let sid = terminal.entity_id().as_u64();
+                let output_generation = terminal.read(cx).terminal.output_generation;
+                let session = self
+                    .workspaces
+                    .iter()
+                    .flat_map(|ws| ws.agent_sessions.values())
+                    .find(|s| s.surface_id == Some(sid));
+                surface_status_value(sid, session, output_generation, std::time::Instant::now())
             }
             "surface.search" => {
                 // US-004: locate a pattern in a surface's scrollback without
@@ -2927,5 +3084,97 @@ mod tests {
         let long = "x".repeat(200);
         let p = serde_json::json!({ "new_name": long });
         assert_eq!(super::parse_rename_name(&p).map(|s| s.len()), Some(64));
+    }
+
+    // EP-001 US-001: fleet rows are pure — a conductor's snapshot.
+    #[test]
+    fn build_fleet_rows_empty_is_empty() {
+        let sessions = HashMap::new();
+        let detected = HashSet::new();
+        let fleets = [WsFleet {
+            idx: 0,
+            sessions: &sessions,
+            detected: &detected,
+        }];
+        let rows = build_fleet_rows(&fleets, &HashMap::new(), std::time::Instant::now());
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn build_fleet_rows_lists_hooked_session_with_surface_name() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::ai_types::{AgentSession, AgentState};
+        let mut sessions = HashMap::new();
+        let mut s = AgentSession::new(TerminalAgent::ClaudeCode, AgentState::WaitingForInput);
+        s.surface_id = Some(42);
+        sessions.insert(1234u32, s);
+        let detected = HashSet::new();
+        let fleets = [WsFleet {
+            idx: 0,
+            sessions: &sessions,
+            detected: &detected,
+        }];
+        let mut names = HashMap::new();
+        names.insert(42u64, "backend".to_string());
+        let rows = build_fleet_rows(&fleets, &names, std::time::Instant::now());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["pid"], 1234);
+        assert_eq!(rows[0]["tool"], "claude");
+        assert_eq!(rows[0]["state"], "waiting_for_input");
+        assert_eq!(rows[0]["hooked"], true);
+        assert_eq!(rows[0]["surface_id"], 42);
+        assert_eq!(rows[0]["surface_name"], "backend");
+    }
+
+    #[test]
+    fn build_fleet_rows_appends_unhooked_only_when_tool_has_no_session() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::ai_types::{AgentSession, AgentState};
+        // Claude is hooked AND detected; Copilot is only detected (no hooks).
+        let mut sessions = HashMap::new();
+        sessions.insert(
+            10u32,
+            AgentSession::new(TerminalAgent::ClaudeCode, AgentState::Thinking),
+        );
+        let mut detected = HashSet::new();
+        detected.insert(TerminalAgent::ClaudeCode.binary().to_string());
+        detected.insert(TerminalAgent::Copilot.binary().to_string());
+        let fleets = [WsFleet {
+            idx: 0,
+            sessions: &sessions,
+            detected: &detected,
+        }];
+        let rows = build_fleet_rows(&fleets, &HashMap::new(), std::time::Instant::now());
+        // Claude once (hooked), Copilot once (unhooked) — Claude NOT doubled.
+        assert_eq!(rows.len(), 2);
+        let hooked: Vec<_> = rows.iter().filter(|r| r["hooked"] == true).collect();
+        assert_eq!(hooked.len(), 1);
+        assert_eq!(hooked[0]["tool"], "claude");
+        let unhooked: Vec<_> = rows.iter().filter(|r| r["hooked"] == false).collect();
+        assert_eq!(unhooked.len(), 1);
+        assert_eq!(unhooked[0]["tool"], "copilot");
+        assert_eq!(unhooked[0]["state"], "unknown_running");
+        assert_eq!(unhooked[0]["pid"], serde_json::Value::Null);
+    }
+
+    // EP-001 US-002: surface.status is pure — idle vs live session.
+    #[test]
+    fn surface_status_value_idle_when_no_session() {
+        let v = surface_status_value(7, None, 99, std::time::Instant::now());
+        assert_eq!(v["surface_id"], 7);
+        assert_eq!(v["state"], "idle");
+        assert_eq!(v["output_generation"], 99);
+        assert!(v.get("tool").is_none());
+    }
+
+    #[test]
+    fn surface_status_value_reports_session_state() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::ai_types::{AgentSession, AgentState};
+        let s = AgentSession::new(TerminalAgent::Codex, AgentState::Thinking);
+        let v = surface_status_value(7, Some(&s), 12, std::time::Instant::now());
+        assert_eq!(v["state"], "thinking");
+        assert_eq!(v["tool"], "codex");
+        assert_eq!(v["output_generation"], 12);
     }
 }

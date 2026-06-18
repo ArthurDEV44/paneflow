@@ -49,6 +49,22 @@ pub enum AgentState {
     Stalled,
 }
 
+impl AgentState {
+    /// Stable wire string for IPC (`fleet.list` / `surface.status`,
+    /// prd-agent-control-plane EP-001). These are machine ids a conductor
+    /// matches on, distinct from `display_name` — never shown to a human, never
+    /// localised.
+    pub fn wire_str(&self) -> &'static str {
+        match self {
+            AgentState::Thinking => "thinking",
+            AgentState::WaitingForInput => "waiting_for_input",
+            AgentState::Finished => "finished",
+            AgentState::Errored => "errored",
+            AgentState::Stalled => "stalled",
+        }
+    }
+}
+
 /// EP-004 US-010: classify the agent binary's raw exit code into the
 /// session state it produces. Exit codes are reported by the shim with the
 /// shell convention `128 + signum` for signal terminations (see
@@ -277,6 +293,16 @@ mod tests {
             next_waiting_since(Some((&WaitingForInput, None)), &WaitingForInput, later),
             Some(later)
         );
+    }
+
+    #[test]
+    fn wire_str_is_stable_for_every_state() {
+        use AgentState::*;
+        assert_eq!(Thinking.wire_str(), "thinking");
+        assert_eq!(WaitingForInput.wire_str(), "waiting_for_input");
+        assert_eq!(Finished.wire_str(), "finished");
+        assert_eq!(Errored.wire_str(), "errored");
+        assert_eq!(Stalled.wire_str(), "stalled");
     }
 
     #[test]

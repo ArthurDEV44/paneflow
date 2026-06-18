@@ -110,3 +110,73 @@ fn print_surfaces_table(result: &Value) {
         println!("{id:>4}  {name:<20}  {cmd:<24}  {cwd}");
     }
 }
+
+/// `paneflow ps [--json]` — list running agents across the fleet (EP-001
+/// US-001). Defaults to a human table (like Unix `ps`); `--json` emits the
+/// `{agents:[…]}` envelope for scripts.
+pub fn ps(client: &impl IpcTransport, json_out: bool) -> Result<i32, CliError> {
+    let result = super::reject_legacy_error(
+        client
+            .call("fleet.list", json!({}))
+            .map_err(CliError::runtime)?,
+    )?;
+    if json_out {
+        super::print_json(&result)?;
+    } else {
+        print_agents_table(&result);
+    }
+    Ok(EXIT_OK)
+}
+
+/// `paneflow status <target> [--json]` — read one pane's agent state (EP-001
+/// US-002). Defaults to a one-line summary; `--json` emits the full envelope.
+pub fn status(client: &impl IpcTransport, target: &str, json_out: bool) -> Result<i32, CliError> {
+    let surface_id = resolve_target(client, target)?;
+    let result = super::reject_legacy_error(
+        client
+            .call("surface.status", json!({ "surface_id": surface_id }))
+            .map_err(CliError::runtime)?,
+    )?;
+    if json_out {
+        super::print_json(&result)?;
+    } else {
+        let state = result
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        match result.get("tool").and_then(Value::as_str) {
+            Some(tool) => println!("{state} ({tool})"),
+            None => println!("{state}"),
+        }
+        if let Some(msg) = result.get("message").and_then(Value::as_str) {
+            println!("{msg}");
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+fn print_agents_table(result: &Value) {
+    let agents = result
+        .get("agents")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty());
+    let Some(agents) = agents else {
+        println!("(no agents)");
+        return;
+    };
+    println!(
+        "{:>7}  {:<10}  {:<18}  {:>2}  PANE",
+        "PID", "TOOL", "STATE", "WS"
+    );
+    for a in agents {
+        let pid = a
+            .get("pid")
+            .and_then(Value::as_u64)
+            .map_or_else(|| "-".to_string(), |p| p.to_string());
+        let tool = a.get("tool").and_then(Value::as_str).unwrap_or("");
+        let state = a.get("state").and_then(Value::as_str).unwrap_or("");
+        let ws = a.get("workspace").and_then(Value::as_u64).unwrap_or(0);
+        let pane = a.get("surface_name").and_then(Value::as_str).unwrap_or("-");
+        println!("{pid:>7}  {tool:<10}  {state:<18}  {ws:>2}  {pane}");
+    }
+}
