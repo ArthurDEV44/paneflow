@@ -5,6 +5,49 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-06-18
+
+A review-workflow release. The Agents diff dock and the Review view now render
+through one shared diff pipeline, the review loop is fully keyboard-driven, and
+the Review attribution badge can show which agent wrote a change alongside an
+estimated, fully local token cost.
+
+### Added
+
+- Keyboard-first review loop. `]` / `[` jump between hunks, `u` toggles the
+  unified/split view, `s` toggles cross-column scroll sync, `Esc` dismisses,
+  and `a` acts on the focused hunk. Bindings are scoped to
+  `DiffView && !Terminal && !TextInput` so an embedded review or shell terminal
+  and the base-branch filter input keep their own keystrokes, and they are
+  remappable through the action registry.
+- Per-hunk act-on-hunk actions in the Review view, with prompts pre-filled into
+  a freshly launched review CLI rather than auto-submitted.
+- Agent attribution and estimated cost on the Review badge. Per-session token
+  usage is folded across assistant turns by the Claude Code, Codex, and
+  OpenCode scanners, and a build-time-embedded, versioned pricing table turns
+  it into an estimated cost. It is 100% local with no network lookup; unknown
+  models show their token counts with no fabricated cost.
+- A `review_prefill_delay_ms` setting (default 2000 ms, clamped to
+  [250, 10000]) with a `-` / `+` stepper under Settings > AI Agent > Review,
+  tuning how long Paneflow waits before auto-typing a prompt into a freshly
+  launched review CLI. The clipboard fallback keeps any value safe.
+
+### Changed
+
+- The Agents diff dock now renders through the same `DiffElement`, git pipeline,
+  and row model as the Review view. The bespoke horizontal-scroll state was
+  replaced by a single shared scroll handle, and the monolithic diff view was
+  split into focused submodules (loader, scroller, interaction, review,
+  attribution, render).
+- New-chat thread titles are now derived from the on-disk session ai-title
+  instead of staying on the generic agent label. Each Claude thread is bound to
+  a forced `claude --session-id <uuid>` minted at creation so it maps 1:1 to its
+  session file (resuming the same id appends, so a restart continues the same
+  session); at turn end the polished ai-title is backfilled into the sidebar row
+  off the main thread. A manual rename locks the title against later OSC updates
+  and backfills. Every session id is re-validated before it reaches the command
+  line, so a tampered `session.json` cannot inject an argument.
+
 ## [0.5.8] - 2026-06-17
 
 An Agents sidebar cleanup. Thread status is now driven solely by the agent
