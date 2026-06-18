@@ -5,13 +5,13 @@
   <a href="https://github.com/ArthurDEV44/paneflow/actions/workflows/run_tests.yml"><img alt="Tests" src="https://github.com/ArthurDEV44/paneflow/actions/workflows/run_tests.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/ArthurDEV44/paneflow"></a>
   <a href="https://github.com/ArthurDEV44/paneflow/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/ArthurDEV44/paneflow/total"></a>
-  <img alt="Platforms" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%20next-informational">
+  <img alt="Platforms" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-informational">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-1.95-orange?logo=rust">
 </p>
 
-**The native terminal workspace for running coding agents in parallel.** Launch Claude Code, Codex, opencode, Pi, and any CLI agent in real terminal panes; keep each session visible; and see when an agent finishes, stalls, or needs input.
+**The native workspace for running coding agents in parallel.** Launch Claude Code, Codex, opencode, and any CLI agent in real terminal panes, keep every session visible, and see at a glance which agent is thinking, which is waiting on you, and which is done.
 
-Paneflow turns “one terminal per agent” into a branch-aware workspace: panes, tabs, sidebars, session restore, in-app diffs, review prompts, and a JSON-RPC event stream that your own tooling can react to. It is open source, written in Rust on [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), native on Linux and macOS today, with Windows support in progress.
+Paneflow turns "one terminal per agent" into a branch-aware workspace: panes, tabs, sidebars, session restore, side-by-side diff review with per-agent cost tracking, a read-only MCP bridge so agents can read each other's panes, and a JSON-RPC control plane your own tooling can script. It is open source, written in Rust on [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), and runs natively on Linux, macOS, and Windows. No Electron, no WSL.
 
 <p align="center">
   <a href="#quickstart">Quickstart</a> ·
@@ -27,7 +27,7 @@ Paneflow turns “one terminal per agent” into a branch-aware workspace: panes
   <img src="assets/images/demo.gif" alt="Paneflow running several coding agents in parallel panes, with live per-session status in the sidebar" width="100%" />
 </p>
 <p align="center">
-  <sub>A real session, sped up: several coding agents working in parallel panes, with live per-session status in the sidebar — who is thinking, who is running, who needs you.</sub>
+  <sub>A real session, sped up: several coding agents working in parallel panes, with live per-session status in the sidebar: who is thinking, who is running, who needs you.</sub>
 </p>
 
 ## Quickstart
@@ -53,7 +53,7 @@ Need `.deb`, `.rpm`, `.tar.gz`, or macOS DMG? Jump to [Install](#install).
 | Setup | Best for | Paneflow focus |
 |---|---|---|
 | Terminal tabs or tmux | Shell-native multiplexing | Native panes plus agent status, workspace metadata, and app-level sidebars |
-| cmux-style agent workspaces | Coordinating several coding agents | Independent Rust/GPUI app with Linux support today |
+| cmux-style agent workspaces | Coordinating several coding agents | Independent Rust/GPUI app, cross-platform (Linux, macOS, Windows) |
 | AI terminal apps | Polished single-terminal AI workflows | Keeps raw CLI agents visible in real PTY panes |
 | Paneflow | Parallel agent sessions inside one project window | Branch-aware panes, review flows, MCP pane reading, IPC automation |
 
@@ -62,9 +62,10 @@ Side-by-side comparisons live at [paneflow.dev/compare](https://paneflow.dev/com
 ## Features
 
 - **Agent orchestration**: one-click Claude Code, Codex, opencode, and Pi launchers in the tab bar, per-session tracking, and an `ai.*` JSON-RPC event stream (`session_start`, `tool_use`, `notification`, `stop`) that the interface and your own tooling can react to the moment an agent needs you
-- **In-app code review**: Git diff viewer, hunk navigation, branch review prompts, and copy-as-diff actions without leaving the workspace
-- **MCP pane reading**: `paneflow mcp install` lets capable agents inspect other panes through `list_panes`, `read_pane`, and `search_pane`
-- **Cross-platform by design**: one native Rust core on Linux (Wayland + X11) and macOS 13 Ventura+ (Apple Silicon) today, Windows 10 1809+ next, where the other agent terminals in this space ship macOS-only
+- **In-app code review**: side-by-side diff viewer (one column per worktree), hunk navigation, branch review prompts, and a per-agent cost estimate (model plus a running dollar total across worktrees) so you can see what each agent spent
+- **MCP pane reading**: `paneflow mcp install` wires a read-only bridge into Claude Code, Codex, Gemini, and opencode, so one agent can inspect another's output through `list_panes`, `read_pane`, and `search_pane` with no copy-paste
+- **Scriptable control plane**: a `paneflow` CLI (`up`, `send`, `read`, `search`, `split`, `flow`, and more) plus a JSON-RPC socket drive panes, prompts, and layouts; `paneflow flow run` executes a `flow.toml` DAG of agent steps with regex-gated handoffs and captured variables
+- **Cross-platform by design**: one native Rust core on Linux (Wayland + X11), macOS 13 Ventura+ (Apple Silicon), and Windows 10 1809+, where the other agent terminals in this space ship macOS-only
 - **Parallel panes**: horizontal and vertical splits, drag-to-resize, layout presets (even, main+stack, tiled), up to 32 panes
 - **Branch-aware workspaces**: up to 20 workspaces with rename, quick-switch (`Ctrl+1`-`9`), undo close; the sidebar surfaces the active git branch per workspace
 - **Session restore**: save/restore layouts, CWD, workspace names, and custom buttons; resume yesterday's setup with one launch
@@ -102,7 +103,7 @@ One-shot install of the `.deb`. The package's `postinst` automatically wires `pk
 curl -LO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-X.Y.Z-<ARCH>.deb
 # Verify the signature BEFORE `apt install`: postinst runs as root,
 # so an unsigned/tampered .deb could write arbitrary repo sources.
-# Import the release key first (cross-check the fingerprint — see
+# Import the release key first (cross-check the fingerprint, see
 # Troubleshooting > Verifying releases), then:
 #   Debian / Ubuntu <= 23.10:
 sudo apt install -y dpkg-sig && dpkg-sig --verify paneflow-X.Y.Z-<ARCH>.deb   # expect: GOODSIG
@@ -187,7 +188,9 @@ Gatekeeper accepts the signed DMG offline; no `xattr -cr` workaround is needed f
 
 ### Windows
 
-A signed `.msi` for `x86_64-pc-windows-msvc` (Windows 10 1809+ and Windows 11) is on the release roadmap; the Azure Trusted Signing pipeline is in place but the artifact is not yet attached to releases. winget (`winget install ArthurDev44.PaneFlow`) follows the first signed MSI submission to Microsoft. See [`docs/WINDOWS.md`](docs/WINDOWS.md) for the supported-versions matrix and known limitations, and the contributor build instructions below for building locally in the meantime.
+A signed `.msi` for `x86_64-pc-windows-msvc` (Windows 10 1809+ and Windows 11) is attached to every [release](https://github.com/ArthurDEV44/paneflow/releases/latest). Download it and double-click to install. The MSI is signed with Azure Trusted Signing; verify it with `signtool verify /pa /v paneflow-X.Y.Z-x86_64-pc-windows-msvc.msi`.
+
+A winget package (`ArthurDev44.PaneFlow`) tracks the same releases; see [`docs/WINDOWS.md`](docs/WINDOWS.md) for winget status, the supported-versions matrix, and known limitations.
 
 ## Prerequisites
 
@@ -642,7 +645,7 @@ Paneflow overlaps with terminals, multiplexers, and agent workspaces, but the de
 | tmux / terminal tabs | Universal shell workflow, scriptable, lightweight | Adds app-level panes, session restore, agent state, and sidebars |
 | WezTerm / iTerm2 | Mature terminal emulation and customization | Focuses on agent orchestration, branch workspaces, and review flows |
 | Warp-style AI terminals | Polished AI-assisted command entry | Keeps Claude Code, Codex, opencode, Pi, and other CLIs as visible PTY sessions |
-| cmux-style agent workspaces | Multi-agent coordination | Independent Rust/GPUI codebase with Linux support today |
+| cmux-style agent workspaces | Multi-agent coordination | Independent Rust/GPUI codebase, cross-platform (Linux, macOS, Windows) |
 
 Detailed comparisons:
 
@@ -661,25 +664,25 @@ Paneflow is one Rust binary: GPUI for GPU-accelerated UI (Vulkan / Metal / Direc
 ## FAQ
 
 **Why not tmux with one agent per pane?**
-That works — until you run more than two agents. Paneflow's value is the state layer on top of the panes: it knows when an agent is thinking, waiting on a question (and what the question is), finished, errored, or stalled, and routes that to tab dots, sidebar status, an attention queue, desktop notifications, and `Ctrl+Shift+J` to jump to the next agent that needs you. Add per-agent git worktrees, an in-app diff viewer, session restore, and an IPC API, and the comparison stops being about splitting a screen.
+That works, until you run more than two agents. Paneflow's value is the state layer on top of the panes: it knows when an agent is thinking, waiting on a question (and what the question is), finished, errored, or stalled, and routes that to tab dots, sidebar status, an attention queue, desktop notifications, and `Ctrl+Shift+J` to jump to the next agent that needs you. Add per-agent git worktrees, an in-app diff viewer, session restore, and an IPC API, and the comparison stops being about splitting a screen.
 
 **Is this another Electron app?**
 No. Paneflow is native Rust on Zed's GPUI: Vulkan on Linux, Metal on macOS, DirectX on Windows. No Chromium, no Node runtime.
 
 **Does it phone home?**
-Not unless you say yes. Telemetry is opt-in via a first-run consent modal and disabled by default. When enabled it sends five app-lifecycle events (app started/exited, update check/installed, session corrupted) — never terminal content, paths, or prompts. `PANEFLOW_NO_TELEMETRY=1` is an unconditional kill switch, and the entire client is auditable in [`crates/paneflow-telemetry/`](crates/paneflow-telemetry/).
+Not unless you say yes. Telemetry is opt-in via a first-run consent modal and disabled by default. When enabled it sends five app-lifecycle events (app started/exited, update check/installed, session corrupted), never terminal content, paths, or prompts. `PANEFLOW_NO_TELEMETRY=1` is an unconditional kill switch, and the entire client is auditable in [`crates/paneflow-telemetry/`](crates/paneflow-telemetry/).
 
 **Is it a fork of Zed or cmux?**
 No. Paneflow is an independent codebase that uses Zed's GPUI as its UI framework and upstream `alacritty_terminal` for emulation. The cmux comparison is about the category (agent workspaces), not the code.
 
 **Does it drive agents for me?**
-No, and that's deliberate. Agents run as real CLI processes in real PTY panes you can see and interrupt. Paneflow pre-fills prompts (Composer, Launch Pad, broadcast groups) but a human presses Enter — there is no headless mode that submits prompts on your behalf.
+No, and that's deliberate. Agents run as real CLI processes in real PTY panes you can see and interrupt. Paneflow pre-fills prompts (Composer, Launch Pad, broadcast groups) but a human presses Enter; there is no headless mode that submits prompts on your behalf.
 
 **Why GPL-3.0?**
 Paneflow is free and open source by design, and GPL keeps it that way: improvements to the app stay in the commons.
 
 **What about Windows?**
-In progress and actively worked on — the codebase is cross-platform by policy (every platform-specific path has a Windows branch or a documented stub). See [docs/WINDOWS.md](docs/WINDOWS.md) for current status.
+Live. A signed `.msi` ships with every release for Windows 10 1809+ and Windows 11. The codebase is cross-platform by policy (every platform-specific path has a Windows branch). See [docs/WINDOWS.md](docs/WINDOWS.md) for the supported-versions matrix and known limitations.
 
 **Is the terminal itself any good?**
 It is upstream alacritty's VT emulation with GPU rendering, so: fast. Find-in-buffer with regex, fleet-wide grep across every pane, OSC 8 hyperlinks, per-pane font zoom, ligatures, themes with hot reload. The multiplexing does not tax the basics.
