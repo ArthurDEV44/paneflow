@@ -7,8 +7,8 @@ use gpui::Hsla;
 
 use super::git::AgentsDiffBuilt;
 use crate::diff::{
-    DisplayRow, SplitRow, apply_collapse_split, apply_collapse_unified, split_max_line_no,
-    split_offsets, unified_max_line_no, unified_offsets,
+    DisplayRow, FileSpan, SplitRow, apply_collapse_split, apply_collapse_unified, split_file_spans,
+    split_max_line_no, split_offsets, unified_file_spans, unified_max_line_no, unified_offsets,
 };
 
 /// Default width of the docked panel. Wide enough to read code without constant
@@ -60,6 +60,11 @@ pub(crate) struct AgentsDiffData {
     pub(super) disp_split_offsets: Rc<Vec<f32>>,
     pub(super) disp_unified_max_no: u32,
     pub(super) disp_split_max_no: u32,
+    /// Per-file horizontal-scroll spans (widest code line per file), kept in
+    /// lockstep with the display rows so `DiffElement` bounds each file's
+    /// horizontal offset without re-measuring rows per frame.
+    pub(super) disp_unified_spans: Rc<Vec<FileSpan>>,
+    pub(super) disp_split_spans: Rc<Vec<FileSpan>>,
     pub(super) paths: Vec<String>,
     pub(super) file_count: usize,
     pub(super) added: u32,
@@ -84,6 +89,8 @@ impl AgentsDiffData {
             disp_split_offsets: Rc::new(vec![0.0]),
             disp_unified_max_no: 0,
             disp_split_max_no: 0,
+            disp_unified_spans: Rc::new(Vec::new()),
+            disp_split_spans: Rc::new(Vec::new()),
             paths: Vec::new(),
             file_count: 0,
             added: 0,
@@ -108,6 +115,8 @@ impl AgentsDiffData {
             disp_split_offsets: Rc::new(vec![0.0]),
             disp_unified_max_no: 0,
             disp_split_max_no: 0,
+            disp_unified_spans: Rc::new(Vec::new()),
+            disp_split_spans: Rc::new(Vec::new()),
             paths: built.paths,
             file_count: built.file_count,
             added: built.added,
@@ -146,6 +155,8 @@ impl AgentsDiffData {
         self.disp_split_offsets = Rc::new(split_offsets(&self.disp_split));
         self.disp_unified_max_no = unified_max_line_no(&self.disp_unified);
         self.disp_split_max_no = split_max_line_no(&self.disp_split);
+        self.disp_unified_spans = Rc::new(unified_file_spans(&self.disp_unified));
+        self.disp_split_spans = Rc::new(split_file_spans(&self.disp_split));
     }
 
     /// The file paths in this snapshot, used to drive "collapse all".

@@ -55,9 +55,10 @@ pub struct DiffColumnDrag {
     pub source_idx: usize,
 }
 use super::rows::{
-    DisplayRow, RowKind, SplitRow, apply_collapse_split, apply_collapse_unified,
-    build_display_rows, build_split_rows, palette, split_hunk_tops, split_max_line_no,
-    split_offsets, unified_hunk_tops, unified_max_line_no, unified_offsets,
+    DisplayRow, FileSpan, RowKind, SplitRow, apply_collapse_split, apply_collapse_unified,
+    build_display_rows, build_split_rows, palette, split_file_spans, split_hunk_tops,
+    split_max_line_no, split_offsets, unified_file_spans, unified_hunk_tops, unified_max_line_no,
+    unified_offsets,
 };
 
 /// When jumping to a hunk, leave this much room above its first changed line so
@@ -88,9 +89,9 @@ const REFRESH_COOLDOWN: Duration = Duration::from_millis(1000);
 
 /// Syntax highlighting (prd-diff-syntax-highlight-2026-Q3.md). ON.
 ///
-/// History: a full-file `syntect` pass cost 0.3–2.8 s/file (×4 builders ≈
+/// History: a full-file `syntect` pass cost 0.3-2.8 s/file (×4 builders ≈
 /// ~30 s/column), so it shipped gated. Replaced by tree-sitter
-/// ([`super::highlighter`]) — the same engine Zed uses — whose parse is
+/// ([`super::highlighter`]) - the same engine Zed uses - whose parse is
 /// ms-scale, so the eager full-file highlight is now cheap enough to run at
 /// build time off-thread. `super::syntax::DiffSyntax` supplies theme-derived
 /// (ANSI) colors; unknown grammars fall back to monochrome.
@@ -200,6 +201,11 @@ struct Column {
     disp_split_offsets: Rc<Vec<f32>>,
     disp_unified_max_no: u32,
     disp_split_max_no: u32,
+    /// Per-file horizontal-scroll spans (widest code line per file), lockstep
+    /// with the display rows; `DiffElement` bounds each file's horizontal offset
+    /// against `max_chars` instead of re-measuring rows per frame.
+    disp_unified_spans: Rc<Vec<FileSpan>>,
+    disp_split_spans: Rc<Vec<FileSpan>>,
     /// US-046: cumulative top offsets of each hunk's first changed row, cached
     /// in lockstep with the row sets (recomputed only in `recompute_display`).
     /// The toolbar's hunk counter renders every frame, so deriving these per
@@ -237,6 +243,13 @@ struct Column {
     /// per-frame render reads it O(1). Empty = no matching session (the
     /// attribution slot collapses to zero width, US-015).
     attribution: Vec<SessionMeta>,
+    /// Per-file horizontal scroll offsets (px), indexed by stable file position.
+    /// Restored after the unified pipeline dropped per-file h-scroll; lazily
+    /// resized to the file count in `recompute_display`. Consumed by the shared
+    /// `DiffElement` (offset applied per file); the Review view's own wheel +
+    /// scrollbar that drive these are a follow-up - until then they stay 0, so
+    /// the Review body clips long lines exactly as before (no regression).
+    h_offsets: Vec<f32>,
 }
 
 impl Column {
@@ -257,6 +270,8 @@ impl Column {
             disp_split_offsets: Rc::new(vec![0.0]),
             disp_unified_max_no: 0,
             disp_split_max_no: 0,
+            disp_unified_spans: Rc::new(Vec::new()),
+            disp_split_spans: Rc::new(Vec::new()),
             disp_hunk_tops_unified: Rc::new(Vec::new()),
             disp_hunk_tops_split: Rc::new(Vec::new()),
             fingerprint: None,
@@ -265,6 +280,7 @@ impl Column {
             review_terminals: Vec::new(),
             review_height: REVIEW_DEFAULT_HEIGHT,
             attribution: Vec::new(),
+            h_offsets: Vec::new(),
         }
     }
 
@@ -308,6 +324,14 @@ impl Column {
             self.disp_split_offsets = Rc::new(split_offsets(&self.disp_split));
             self.disp_unified_max_no = unified_max_line_no(&self.disp_unified);
             self.disp_split_max_no = split_max_line_no(&self.disp_split);
+            self.disp_unified_spans = Rc::new(unified_file_spans(&self.disp_unified));
+            self.disp_split_spans = Rc::new(split_file_spans(&self.disp_split));
+            // Resize per-file horizontal offsets to the file count (stable across
+            // collapse/split, so this is a no-op except on a fresh diff load).
+            let file_count = self.disp_unified_spans.len();
+            if self.h_offsets.len() != file_count {
+                self.h_offsets.resize(file_count, 0.0);
+            }
             // US-046: hunk-start offsets cached alongside the row offsets so the
             // toolbar counter and hunk-nav never re-walk the rows per frame.
             self.disp_hunk_tops_unified = Rc::new(unified_hunk_tops(&self.disp_unified));
