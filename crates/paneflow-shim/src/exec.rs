@@ -171,6 +171,12 @@ pub(crate) fn run_real(tool: &str, path: &Path, args: &[OsString]) -> (ExitCode,
     // guard's reparent detection. SAFETY: `getppid` is a trivial syscall.
     #[cfg(target_os = "macos")]
     let parent_pid = unsafe { libc::getppid() } as u32;
+    // EP-005 US-017: flipped the instant `child.wait()` reaps the agent, so the
+    // guard thread stops probing/signalling before the OS can recycle the child
+    // PID - otherwise a late `kill(child_pid, …)` could hit an unrelated same-UID
+    // process (mis-kill) or never return (the probe sees a recycled-live PID).
+    #[cfg(target_os = "macos")]
+    let child_reaped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -180,13 +186,18 @@ pub(crate) fn run_real(tool: &str, path: &Path, args: &[OsString]) -> (ExitCode,
         }
     };
 
-    // EP-005 US-017: macOS parity for the Linux `PR_SET_PDEATHSIG` guard — kill
+    // EP-005 US-017: macOS parity for the Linux `PR_SET_PDEATHSIG` guard - kill
     // the agent if Paneflow dies, so a `kill -9` of Paneflow leaves no orphan.
     // Spawned after we hold the child PID.
     #[cfg(target_os = "macos")]
-    spawn_parent_death_guard(child.id(), parent_pid);
+    spawn_parent_death_guard(child.id(), parent_pid, std::sync::Arc::clone(&child_reaped));
 
-    match child.wait() {
+    let wait_result = child.wait();
+    // EP-005 US-017: tell the guard the agent is reaped BEFORE its PID can be
+    // recycled, so its next tick returns without touching a possibly-reused PID.
+    #[cfg(target_os = "macos")]
+    child_reaped.store(true, std::sync::atomic::Ordering::Release);
+    match wait_result {
         Ok(status) => (
             exit_code_from_status(&status),
             Some(raw_exit_code_from_status(&status)),
@@ -420,17 +431,33 @@ pub(crate) fn install_ctrl_c_handler(tool: &str) {
 /// Paneflow, confirm no orphaned agent survives) is still required before it is
 /// trusted.
 #[cfg(target_os = "macos")]
-pub(crate) fn spawn_parent_death_guard(child_pid: u32, parent_pid: u32) {
+pub(crate) fn spawn_parent_death_guard(
+    child_pid: u32,
+    parent_pid: u32,
+    child_reaped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(std::time::Duration::from_millis(500));
+            // Once `run_real` has reaped the agent (`child.wait()` returned), the
+            // child PID is recyclable by the OS. Bail before probing or signalling
+            // it: otherwise a `kill(child_pid, SIGKILL)` could hit an unrelated
+            // same-UID process, or the liveness probe could see a recycled-live
+            // PID and never return (a leaked thread per agent run). The PARENT-pid
+            // reparent check is immune to this (a parent is never our child's
+            // recycled PID), but the CHILD-pid probe is not - hence this guard.
+            if child_reaped.load(Ordering::Acquire) {
+                return;
+            }
             // SAFETY: `getppid`/`kill` are async-signal-safe, argument-free or
             // scalar-argument syscalls with no pointer aliasing.
             //
             // A changed parent means Paneflow exited and the kernel reparented
-            // us to launchd (PID 1) — never a recycled PID, since reparenting
-            // always targets the subreaper — so the agent is now an orphan:
-            // SIGKILL it and stop.
+            // us to launchd (PID 1) - never a recycled PID, since reparenting
+            // always targets the subreaper. The agent is not yet reaped (checked
+            // above; `run_real` is still blocked in `child.wait()` on the live
+            // orphan), so `child_pid` is unambiguously the agent: SIGKILL + stop.
             let reparented = unsafe { libc::getppid() } as u32 != parent_pid;
             if reparented {
                 unsafe {
