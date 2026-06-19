@@ -145,6 +145,13 @@ pub struct AgentSession {
     /// so the session is dead. `None` (synthetic PID, probe failure) keeps
     /// the conservative liveness-only check.
     pub proc_start: Option<u64>,
+    /// EP-004 US-015 (agent-control-plane): an optional summary of the agent's
+    /// last completed turn, surfaced by `fleet.list` / `surface.status` so a
+    /// conductor reads structured context instead of scraping the scrollback.
+    /// Best-effort: populated on `ai.stop` from the stop hook payload when it
+    /// carries a summary; `None` (the common case today) when the hook provides
+    /// none. UNTRUSTED, display-only (same provenance as `message`).
+    pub last_result: Option<String>,
 }
 
 impl AgentSession {
@@ -158,6 +165,7 @@ impl AgentSession {
             waiting_since: None,
             last_activity: std::time::Instant::now(),
             proc_start: None,
+            last_result: None,
         }
     }
 }
