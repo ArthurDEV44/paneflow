@@ -177,20 +177,67 @@ fn next_context_file_path() -> std::path::PathBuf {
 /// reading `PANEFLOW_CONTEXT_FILE` sees the whole file or nothing. Best-effort:
 /// a failure is logged, not fatal (the agent simply finds no file). Blocking, so
 /// callers run it via `smol::unblock` off the render thread.
+///
+/// The blob is a conductor's inter-agent payload (task text, code, possibly
+/// secrets). `std::env::temp_dir()` can resolve to a world-traversable root
+/// (e.g. `/tmp`), so the dir is locked owner-only (0700) and the file is created
+/// 0600 - parity with the IPC socket dir hardening in `ipc.rs`. `create_new`
+/// also means the staging write never follows a pre-planted symlink (CWE-59).
+/// Unix-only mode bits; Windows `%TEMP%` is already per-user ACL'd.
 fn write_context_file(path: &std::path::Path, content: &str) {
     let Some(dir) = path.parent() else { return };
-    if let Err(e) = std::fs::create_dir_all(dir) {
+    if let Err(e) = create_private_dir(dir) {
         log::warn!("context file: cannot create {}: {e}", dir.display());
         return;
     }
     let tmp = path.with_extension("tmp");
-    if std::fs::write(&tmp, content)
+    // Clear any stale tmp from a same-PID crash so `create_new` below can own the
+    // path (and so it can't fail on, or follow, a leftover/planted entry).
+    let _ = std::fs::remove_file(&tmp);
+    if write_private_file(&tmp, content)
         .and_then(|()| std::fs::rename(&tmp, path))
         .is_err()
     {
         log::warn!("context file: failed to stage {}", path.display());
         let _ = std::fs::remove_file(&tmp);
     }
+}
+
+/// Create `dir` (recursively) owner-only - 0700 on Unix - so a context blob in a
+/// world-traversable temp root is unreachable by other local users. Idempotent;
+/// re-pins the mode if the dir already existed at looser perms.
+fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+        // `recursive` does not re-chmod a pre-existing dir; pin it 0700 regardless.
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
+    }
+}
+
+/// Write `content` to a freshly created (never pre-existing) `path`, 0600 on Unix
+/// so the inter-agent blob is owner-only even within the temp dir. `create_new`
+/// refuses to open an existing path, so the write cannot follow a symlink an
+/// attacker planted at the predictable temp name (CWE-59).
+fn write_private_file(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    opts.open(path)?.write_all(content.as_bytes())
 }
 
 /// EP-004 US-015 AC4: drop stale spawn-time context files left by a prior run
@@ -3720,8 +3767,38 @@ mod tests {
         let _ = std::fs::remove_file(&p1);
     }
 
+    /// US-015 hardening: the inter-agent context blob must be owner-only on disk
+    /// (the staging dir can resolve to a shared `/tmp`), parity with the IPC
+    /// socket. The file is 0600 and the containing dir 0700 - no group/other bits.
+    #[cfg(unix)]
+    #[test]
+    fn context_file_and_dir_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = super::next_context_file_path();
+        super::write_context_file(&path, "secret inter-agent context");
+        let file_mode = std::fs::metadata(&path)
+            .expect("file staged")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            file_mode, 0o600,
+            "context file must be 0600, got {file_mode:o}"
+        );
+        let dir_mode = std::fs::metadata(super::context_dir())
+            .expect("dir exists")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            dir_mode, 0o700,
+            "context dir must be 0700, got {dir_mode:o}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
     // -----------------------------------------------------------------
-    // US-013 (prd-pane-context-bridge) — surface.rename name parsing
+    // US-013 (prd-pane-context-bridge) - surface.rename name parsing
     // -----------------------------------------------------------------
 
     #[test]
