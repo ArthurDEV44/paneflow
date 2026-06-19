@@ -50,6 +50,10 @@ impl PaneFlowApp {
         let qoder_visible = TerminalAgent::Qoder.is_visible(config);
         let openclaw_visible = TerminalAgent::Openclaw.is_visible(config);
         let bypass = config.claude_code_bypass_permissions.unwrap_or(false);
+        // EP-003 US-009 (agent-control-plane): AI free-access mode + the
+        // independent injection fence. Defaults: unrestricted OFF, fence ON.
+        let unrestricted = config.ai_unrestricted_enabled();
+        let fence = config.ai_injection_fence_enabled();
 
         let buttons_card = setting_card(ui)
             .child(setting_row(
@@ -256,6 +260,63 @@ impl PaneFlowApp {
             .child(section_header(ui, "Permissions"))
             .child(permissions_card);
 
+        // EP-003 US-009: AI access (free-access mode + injection fence). The
+        // fence sub-toggle only appears once free-access is on: with the mode
+        // off, surface.read is always fenced and there is nothing to relax.
+        let mut access_card = setting_card(ui).child(setting_row(
+            "row-ai-unrestricted",
+            "AI free access",
+            "Lets a conductor (a CLI agent or external orchestrator) auto-submit \
+             prompts to your other panes without the PANEFLOW_IPC_SCRIPTING env \
+             gate. Off by default. Best on isolated worktrees or throwaway \
+             branches: an agent driving its peers has a wide blast radius. Every \
+             write it makes is logged.",
+            None,
+            unrestricted,
+            "ai_unrestricted",
+            ui,
+            cx,
+        ));
+        if unrestricted {
+            access_card = access_card.child(hairline(ui)).child(setting_row(
+                "row-ai-injection-fence",
+                "Injection fence",
+                "Keeps a peer pane's output wrapped as untrusted when a conductor \
+                 reads it (surface.read / paneflow read), so a malicious repo \
+                 cannot hijack the conductor. On by default even here: it \
+                 protects the AI, it does not restrict it. Turning it off opens a \
+                 hijack vector that resuming control by hand will not catch in time.",
+                None,
+                fence,
+                "ai_injection_fence",
+                ui,
+                cx,
+            ));
+            // AC #3: once the fence is OFF, surface the active risk in red so
+            // the trade-off is explicit and impossible to miss.
+            if !fence {
+                access_card = access_card.child(hairline(ui)).child(
+                    div()
+                        .px(px(12.))
+                        .py(px(8.))
+                        .text_size(px(12.))
+                        .text_color(rgb(0xE0_6C_75))
+                        .child(
+                            "Fence disabled: a malicious pane can redirect your \
+                             conductor, and resuming control by hand will not undo \
+                             a fast, silent injection. Re-enable it unless you fully \
+                             trust every repo your agents read.",
+                        ),
+                );
+            }
+        }
+        let access_section = div()
+            .mt(px(24.))
+            .flex()
+            .flex_col()
+            .child(section_header(ui, "AI access"))
+            .child(access_card);
+
         // EP-003 US-011: review-prefill delay stepper.
         let prefill_delay = config.resolved_review_prefill_delay_ms();
         let review_section = div()
@@ -270,6 +331,7 @@ impl PaneFlowApp {
             .flex_col()
             .child(buttons_section)
             .child(permissions_section)
+            .child(access_section)
             .child(review_section)
     }
 
