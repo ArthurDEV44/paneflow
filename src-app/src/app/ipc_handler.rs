@@ -60,6 +60,9 @@ struct PlannedPane {
     /// (sanitized; de-duplicated within the batch). `None` keeps the
     /// auto-derived name.
     label: Option<String>,
+    /// EP-004 US-015: optional context blob staged to a temp file and passed to
+    /// the spawned agent via `PANEFLOW_CONTEXT_FILE` (no inline 64 KiB cap).
+    context: Option<String>,
 }
 
 /// Parse a JSON `{ "K": "V", … }` object into an env map, dropping non-string
@@ -121,6 +124,129 @@ fn fire_attention_notification(
 /// US-020 AC5 — same precedent as the markdown viewer). Pure → unit-tested.
 fn sanitize_notification_message(raw: &str) -> String {
     crate::markdown::strip_bidi_zero_width(raw.chars().take(512).collect())
+}
+
+/// EP-004 US-015 (agent-control-plane): best-effort extraction of a last-turn
+/// summary from an `ai.stop` frame, for the session's `last_result`. Checks the
+/// top-level params then the hook payload for a `last_result` / `summary` /
+/// `result` string; returns `None` when none is present (the common case today
+/// — Claude Code's Stop hook carries only a transcript path, not the turn
+/// text). Sanitized (bidi-strip + a 2 KiB cap) like the question, since it is
+/// untrusted, display-only text a conductor may surface.
+fn read_last_result(params: &serde_json::Value) -> Option<String> {
+    let hook = params.get("hook_payload");
+    let raw = ["last_result", "summary", "result"].iter().find_map(|k| {
+        params
+            .get(*k)
+            .or_else(|| hook.and_then(|h| h.get(*k)))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+    })?;
+    Some(crate::markdown::strip_bidi_zero_width(
+        raw.chars().take(2048).collect(),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// EP-004 US-015 (agent-control-plane): structured context channel.
+//
+// A conductor passes a (possibly large) context blob to a spawned agent via the
+// `context` param of `surface.split` / `workspace.up`. Inlining it would hit the
+// 64 KiB `send_text` cap and silently truncate; instead it is staged to a temp
+// file and the path is handed to the agent through `PANEFLOW_CONTEXT_FILE`. The
+// write is off the render thread; the agent reads the file at startup. Files are
+// age-swept on the next launch, so a crash never leaks disk unboundedly.
+// ---------------------------------------------------------------------------
+
+/// Per-process monotonic counter for unique context-file names.
+static CONTEXT_FILE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Directory holding spawn-time context files, under the per-user OS temp dir.
+fn context_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("paneflow-context")
+}
+
+/// Allocate a unique (not-yet-created) path for a new context file. Namespaced
+/// by PID so two concurrent Paneflow instances never collide.
+fn next_context_file_path() -> std::path::PathBuf {
+    let seq = CONTEXT_FILE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    context_dir().join(format!("ctx-{}-{seq}.txt", std::process::id()))
+}
+
+/// Write `content` to `path` atomically (temp + rename) so a fast-booting agent
+/// reading `PANEFLOW_CONTEXT_FILE` sees the whole file or nothing. Best-effort:
+/// a failure is logged, not fatal (the agent simply finds no file). Blocking, so
+/// callers run it via `smol::unblock` off the render thread.
+fn write_context_file(path: &std::path::Path, content: &str) {
+    let Some(dir) = path.parent() else { return };
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        log::warn!("context file: cannot create {}: {e}", dir.display());
+        return;
+    }
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, content)
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .is_err()
+    {
+        log::warn!("context file: failed to stage {}", path.display());
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// EP-004 US-015 AC4: drop stale spawn-time context files left by a prior run
+/// (an agent reads its file at startup; the file is ephemeral). Age-bounded at
+/// 6 h so a concurrently-running instance's fresh files are spared. Blocking, so
+/// it is run via `smol::unblock` the first time the context channel is used.
+fn sweep_orphaned_context_files() {
+    let Ok(entries) = std::fs::read_dir(context_dir()) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age > std::time::Duration::from_secs(6 * 3600));
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Stage a `context` blob (when present) to a temp file off the render thread
+/// and return `env` with `PANEFLOW_CONTEXT_FILE` set to its path. Absent/empty
+/// context returns `env` unchanged.
+fn stage_context_file(
+    context: Option<&str>,
+    env: Option<HashMap<String, String>>,
+    cx: &mut gpui::Context<crate::PaneFlowApp>,
+) -> Option<HashMap<String, String>> {
+    let mut env = env;
+    if let Some(content) = context.filter(|c| !c.is_empty()) {
+        // AC4: lazily sweep stale files from a prior run, once per process, the
+        // first time the context channel is actually used (off the render
+        // thread). Lazy rather than at boot so an unused feature costs nothing
+        // and so this stays self-contained in the handler module.
+        static CONTEXT_SWEEP_ONCE: std::sync::Once = std::sync::Once::new();
+        CONTEXT_SWEEP_ONCE.call_once(|| {
+            cx.background_spawn(async {
+                smol::unblock(sweep_orphaned_context_files).await;
+            })
+            .detach();
+        });
+        let path = next_context_file_path();
+        let path_str = path.to_string_lossy().into_owned();
+        let content = content.to_string();
+        cx.background_spawn(async move {
+            smol::unblock(move || write_context_file(&path, &content)).await;
+        })
+        .detach();
+        env.get_or_insert_with(HashMap::new)
+            .insert("PANEFLOW_CONTEXT_FILE".to_string(), path_str);
+    }
+    env
 }
 
 /// Pure body composition (unit-tested): "title: question", falling back to
@@ -615,6 +741,7 @@ fn build_fleet_rows(
                     "workspace": ws.idx,
                     "active_tool_name": s.active_tool_name,
                     "message": s.message,
+                    "last_result": s.last_result,
                     "waiting_ms": s
                         .waiting_since
                         .map(|w| now.saturating_duration_since(w).as_millis() as u64),
@@ -646,6 +773,7 @@ fn build_fleet_rows(
                     "workspace": ws.idx,
                     "active_tool_name": serde_json::Value::Null,
                     "message": serde_json::Value::Null,
+                    "last_result": serde_json::Value::Null,
                     "waiting_ms": serde_json::Value::Null,
                     "idle_ms": serde_json::Value::Null,
                 }),
@@ -671,6 +799,7 @@ fn surface_status_value(
             "tool": s.tool.binary(),
             "active_tool_name": s.active_tool_name,
             "message": s.message,
+            "last_result": s.last_result,
             "waiting_ms": s
                 .waiting_since
                 .map(|w| now.saturating_duration_since(w).as_millis() as u64),
@@ -1139,6 +1268,11 @@ impl PaneFlowApp {
                     .or_else(|| spec.get("name"))
                     .and_then(|v| v.as_str())
                     .and_then(sanitize_pane_name),
+                // EP-004 US-015: per-pane context blob (staged to a file).
+                context: spec
+                    .get("context")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string),
             });
         }
 
@@ -1180,9 +1314,11 @@ impl PaneFlowApp {
         let mut launches: Vec<(Entity<TerminalView>, Option<String>, Option<String>)> =
             Vec::with_capacity(planned.len());
         for pp in &planned {
-            let terminal = cx.new(|cx| {
-                TerminalView::with_cwd_and_env(ws_id, pp.cwd.clone(), None, pp.env.clone(), cx)
-            });
+            // EP-004 US-015: stage any per-pane context blob to a file and pass
+            // its path via PANEFLOW_CONTEXT_FILE (merged into the pane's env).
+            let env = stage_context_file(pp.context.as_deref(), pp.env.clone(), cx);
+            let terminal =
+                cx.new(|cx| TerminalView::with_cwd_and_env(ws_id, pp.cwd.clone(), None, env, cx));
             // EP-004 US-012: pose the label as `custom_name` on the same GPUI
             // tick, before the PTY (spawned off-thread) can emit an OSC title —
             // no race with the auto-name. Mirrors `surface.split`.
@@ -1973,7 +2109,14 @@ impl PaneFlowApp {
                     },
                     None => None,
                 };
-                let spawn_env = parse_env_object(params.get("env"));
+                // EP-004 US-015: stage a (possibly large) `context` blob to a
+                // temp file and pass its path via PANEFLOW_CONTEXT_FILE, instead
+                // of prefilling it inline (capped at 64 KiB by send_text).
+                let spawn_env = stage_context_file(
+                    params.get("context").and_then(|c| c.as_str()),
+                    parse_env_object(params.get("env")),
+                    cx,
+                );
                 let spawn_command = params
                     .get("command")
                     .and_then(|c| c.as_str())
@@ -2325,6 +2468,11 @@ impl PaneFlowApp {
                     // ghost message may survive into the next state.
                     if let Some(s) = ws.agent_sessions.get_mut(&session_key) {
                         s.message = None;
+                        // EP-004 US-015: capture a best-effort summary of the
+                        // just-finished turn when the stop hook carried one, so
+                        // a conductor reads it via fleet.list / surface.status.
+                        // None when the hook provides nothing (the common case).
+                        s.last_result = read_last_result(params);
                     }
                     // EP-004 US-020: notify the user the turn ended if they're
                     // looking elsewhere. Read the title before the borrow ends.
@@ -3516,6 +3664,60 @@ mod tests {
             key >= super::SYNTHETIC_SESSION_PID_BASE,
             "synthetic key lands in the reserved band"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // EP-004 US-015 (agent-control-plane) — last_result + context channel
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn read_last_result_best_effort_or_none() {
+        // AC1: a recognizable summary in the hook payload is extracted; AC3:
+        // nothing recognizable resolves to None (not an error).
+        let p = serde_json::json!({"hook_payload": {"summary": "wrote 3 files"}});
+        assert_eq!(
+            super::read_last_result(&p).as_deref(),
+            Some("wrote 3 files")
+        );
+        let p = serde_json::json!({"last_result": "done"});
+        assert_eq!(super::read_last_result(&p).as_deref(), Some("done"));
+        let p = serde_json::json!({"hook_payload": {"transcript_path": "/tmp/x.jsonl"}});
+        assert!(super::read_last_result(&p).is_none());
+        assert!(super::read_last_result(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn surface_status_value_exposes_last_result() {
+        // AC1/AC3: the status carries last_result, null when the session has none.
+        use crate::agent_launcher::TerminalAgent;
+        use crate::ai_types::{AgentSession, AgentState};
+        let mut s = AgentSession::new(TerminalAgent::ClaudeCode, AgentState::Finished);
+        let v = super::surface_status_value(7, Some(&s), 1, std::time::Instant::now());
+        assert!(
+            v["last_result"].is_null(),
+            "absent resolves to null, not missing"
+        );
+        s.last_result = Some("compiled clean".into());
+        let v = super::surface_status_value(7, Some(&s), 1, std::time::Instant::now());
+        assert_eq!(v["last_result"], "compiled clean");
+    }
+
+    #[test]
+    fn context_file_round_trips_without_truncation_and_paths_unique() {
+        // AC2: a context blob larger than the 64 KiB inline cap is written
+        // verbatim (no silent truncation), and each spawn gets a unique path.
+        let p1 = super::next_context_file_path();
+        let p2 = super::next_context_file_path();
+        assert_ne!(p1, p2, "each context file gets a distinct path");
+        let big = "x".repeat(128 * 1024);
+        super::write_context_file(&p1, &big);
+        let read = std::fs::read_to_string(&p1).expect("context file staged");
+        assert_eq!(
+            read.len(),
+            big.len(),
+            "no truncation past the 64 KiB inline cap"
+        );
+        let _ = std::fs::remove_file(&p1);
     }
 
     // -----------------------------------------------------------------
