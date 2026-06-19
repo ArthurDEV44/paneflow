@@ -51,9 +51,9 @@ pub struct PaneFlowConfig {
     /// `false` = kill switch — no `Stalled` state is ever produced.
     pub agent_stall_detection: Option<bool>,
     /// EP-004 US-011: silence threshold in seconds before a `Thinking`
-    /// session is flagged `Stalled`. `None` resolves to 300 s; values are
+    /// session is flagged `Stalled`. `None` resolves to 60 s; values are
     /// clamped to `[30, 86400]`. Checked by the 30 s sweep, so the
-    /// effective granularity is threshold ± 30 s.
+    /// effective detection latency is threshold + up to 30 s.
     pub agent_stall_threshold_secs: Option<u64>,
     /// EP-003 US-011 (prd-review-redesign-2026-Q3.md): delay in milliseconds
     /// before the Review view pre-fills a freshly-launched review CLI's input
@@ -211,11 +211,13 @@ pub struct PaneFlowConfig {
 }
 
 impl PaneFlowConfig {
-    /// EP-004 US-011: default Stalled silence threshold. 300 s tolerates a
-    /// long tool-free reasoning stretch while still surfacing a wedged
-    /// agent within minutes (CI no-output watchdogs sit at 10 min; an
-    /// interactive cockpit warrants half that).
-    pub const DEFAULT_AGENT_STALL_THRESHOLD_SECS: u64 = 300;
+    /// EP-004 US-011 (cli-cockpit) + US-013 (agent-control-plane): default
+    /// Stalled silence threshold. Tightened from 300 s to 60 s so a likely-lost
+    /// `ai.stop` surfaces in seconds, not minutes (a wedged Thinking agent was
+    /// ~330 s = 300 s + the 30 s sweep before this). 60 s still tolerates a
+    /// normal tool-free reasoning stretch; the flip is non-sticky, so a long
+    /// legitimate think that resumes activity clears itself at the next hook.
+    pub const DEFAULT_AGENT_STALL_THRESHOLD_SECS: u64 = 60;
     /// Lower bound: below the 30 s sweep cadence the threshold cannot be
     /// honored and every long tool call would false-positive.
     pub const MIN_AGENT_STALL_THRESHOLD_SECS: u64 = 30;
@@ -240,7 +242,7 @@ impl PaneFlowConfig {
         self.agent_stall_detection.unwrap_or(true)
     }
 
-    /// Resolve `agent_stall_threshold_secs`: default 300, clamped to
+    /// Resolve `agent_stall_threshold_secs`: default 60, clamped to
     /// `[30, 86400]` with a `warn!` so an out-of-range value is noticed.
     pub fn resolved_agent_stall_threshold_secs(&self) -> u64 {
         let raw = self
@@ -1391,10 +1393,11 @@ mod tests {
 
     #[test]
     fn agent_stall_settings_resolve_with_defaults_and_clamp() {
-        // EP-004 US-011: default ON, threshold 300 s.
+        // EP-004 US-011 + US-013: default ON, threshold 60 s (tightened from
+        // 300 s so a lost ai.stop surfaces in seconds, not minutes).
         let cfg = PaneFlowConfig::default();
         assert!(cfg.agent_stall_detection_enabled());
-        assert_eq!(cfg.resolved_agent_stall_threshold_secs(), 300);
+        assert_eq!(cfg.resolved_agent_stall_threshold_secs(), 60);
 
         // Kill switch.
         let cfg = PaneFlowConfig {
