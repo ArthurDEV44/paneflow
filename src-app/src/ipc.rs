@@ -124,6 +124,11 @@ pub struct IpcRequest {
     /// client gave up — otherwise a client retry would create duplicate
     /// workspaces/panes.
     pub cancelled: Arc<AtomicBool>,
+    /// EP-003 US-010 (agent-control-plane): the socket peer's PID, captured
+    /// from `SO_PEERCRED` once per connection (None on macOS/Windows, where
+    /// the local-socket peer PID is not exposed). Used only to trace writes
+    /// granted by AI free-access mode; never an authorization input.
+    pub caller_pid: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -646,6 +651,25 @@ fn reject_overloaded(mut stream: Stream) {
     let _ = stream.flush();
 }
 
+/// EP-003 US-010 (agent-control-plane): the connected peer's PID, for tracing
+/// writes granted by AI free-access mode. `SO_PEERCRED` exposes it on Linux;
+/// macOS `LOCAL_PEERCRED` and Windows named pipes do not, so this returns None
+/// there. Best-effort and advisory only — never an authorization input (the
+/// peer-UID check in `auth::check_peer` is the security boundary).
+#[cfg(unix)]
+fn peer_pid(stream: &Stream) -> Option<i64> {
+    stream
+        .peer_creds()
+        .ok()
+        .and_then(|c| c.pid())
+        .map(|p| p as i64)
+}
+
+#[cfg(not(unix))]
+fn peer_pid(_stream: &Stream) -> Option<i64> {
+    None
+}
+
 fn handle_connection(
     stream: Stream,
     request_tx: mpsc::Sender<IpcRequest>,
@@ -710,6 +734,11 @@ fn handle_connection(
             }
         }
     }
+
+    // EP-003 US-010: capture the peer PID once, while `stream` is still the
+    // bare socket (peer_creds is unreachable through the BufReader wrapper
+    // below). Threaded into each IpcRequest for the free-access write trace.
+    let caller_pid = peer_pid(&stream);
 
     // US-022: drop a peer that opens a connection and then goes mute, so it
     // can't pin this handler thread forever. Enforced at the OS level; a
@@ -850,7 +879,7 @@ fn handle_connection(
                     }
                     _ => {
                         // Dispatch to GPUI thread and wait for response
-                        dispatch_to_gpui(&request_tx, method, params, id)
+                        dispatch_to_gpui(&request_tx, method, params, id, caller_pid)
                     }
                 }
             }
@@ -949,6 +978,7 @@ fn dispatch_to_gpui(
     method: String,
     params: Value,
     id: Value,
+    caller_pid: Option<i64>,
 ) -> Value {
     let (resp_tx, resp_rx) = mpsc::channel();
     // U-053: shared cancel flag — set if we time out below so the GPUI
@@ -960,6 +990,7 @@ fn dispatch_to_gpui(
         _id: id.clone(),
         response_tx: resp_tx,
         cancelled: Arc::clone(&cancelled),
+        caller_pid,
     };
 
     if request_tx.send(ipc_req).is_err() {

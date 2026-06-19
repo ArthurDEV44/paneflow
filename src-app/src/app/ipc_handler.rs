@@ -265,6 +265,15 @@ fn scripting_enabled_from(value: Option<&str>) -> bool {
     matches!(value, Some("1"))
 }
 
+/// EP-003 US-010 (agent-control-plane): the `surface.send_text` write gate is
+/// open when EITHER the process-wide env gate is set OR AI free-access mode
+/// (`ai_unrestricted`) is on. With free-access off this reduces to the legacy
+/// env-only rule, so the gate-off behavior is strictly unchanged. Pure truth
+/// table, extracted so the rule is unit-tested without a running app.
+fn send_text_gate_open(scripting_enabled: bool, unrestricted: bool) -> bool {
+    scripting_enabled || unrestricted
+}
+
 /// Write text to the first leaf pane's active terminal PTY in a layout tree.
 /// US-020: silently skips markdown leaves (no PTY to write to).
 pub(crate) fn send_text_to_first_leaf(node: &LayoutTree, text: &str, cx: &App) {
@@ -684,7 +693,7 @@ impl PaneFlowApp {
             if req.cancelled.load(std::sync::atomic::Ordering::Acquire) {
                 continue;
             }
-            let result = self.handle_ipc(&req.method, &req.params, cx);
+            let result = self.handle_ipc(&req.method, &req.params, req.caller_pid, cx);
             // EP-002 US-006: mirror a SUCCESSFUL ai.* lifecycle frame to event-
             // bus subscribers. Broadcast after the handler so the looked-up
             // session carries the just-applied state.
@@ -1354,6 +1363,9 @@ impl PaneFlowApp {
         &mut self,
         method: &str,
         params: &serde_json::Value,
+        // EP-003 US-010 (agent-control-plane): socket peer PID for the
+        // free-access write trace; None on macOS/Windows. Advisory only.
+        caller_pid: Option<i64>,
         cx: &mut Context<Self>,
     ) -> serde_json::Value {
         match method {
@@ -1734,13 +1746,15 @@ impl PaneFlowApp {
                 serde_json::json!({"focused": true, "surface_id": sid, "workspace": ws_idx})
             }
             "surface.send_text" => {
-                // US-012 (cli-hardening-followup-2026-Q3): same-UID
-                // RCE primitive gate. See ipc.rs module doc for the
-                // blast-radius rationale. Opt-in via env var; default
-                // off. Returning JSON-RPC error code mirrors a
-                // disabled-method shape so generic clients can
-                // surface a clean "feature disabled" message.
-                if !ipc_scripting_enabled() {
+                // US-012 (cli-hardening-followup-2026-Q3): same-UID RCE
+                // primitive gate. See ipc.rs module doc for the blast-radius
+                // rationale. Default off. EP-003 US-010 (agent-control-plane)
+                // adds a SECOND way through: AI free-access mode
+                // (`ai_unrestricted`, Settings -> AI Agent). When BOTH the env
+                // gate and free-access are off the behavior is strictly
+                // unchanged — the same -32601 refusal, verbatim, as before.
+                let unrestricted = self.cached_config.ai_unrestricted_enabled();
+                if !send_text_gate_open(ipc_scripting_enabled(), unrestricted) {
                     return JsonRpcError {
                         code: -32601,
                         message:
@@ -1759,39 +1773,60 @@ impl PaneFlowApp {
                 }
                 // US-005 (orchestration-v2): `submit: true` appends a CR after
                 // the text — the ONLY sanctioned submission path. It is
-                // unreachable when the scripting gate is off (the whole method
-                // returns -32601 above, before params are even read), so a
-                // submission can never happen silently; the default stays
+                // unreachable unless the gate above passes (env OR free-access),
+                // so a submission can never happen silently; the default stays
                 // strict inject-without-CR.
                 let submit = params
                     .get("submit")
                     .and_then(|s| s.as_bool())
                     .unwrap_or(false);
-                // Route by surface_id if provided, otherwise use first leaf
-                if let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64()) {
-                    if let Some(terminal) = find_terminal_by_surface_id(&self.workspaces, sid, cx) {
-                        terminal.read(cx).send_text(text);
-                        if submit {
-                            terminal.read(cx).send_text("\r");
+                // Route by surface_id if provided, otherwise the active
+                // workspace's first writable leaf (US-020 skips markdown
+                // leaves). `wrote_sid` is the resolved pane for the US-010
+                // capability trace; the first-leaf fallback has no single id.
+                let wrote_sid: Option<u64> =
+                    if let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64()) {
+                        match find_terminal_by_surface_id(&self.workspaces, sid, cx) {
+                            Some(terminal) => {
+                                terminal.read(cx).send_text(text);
+                                if submit {
+                                    terminal.read(cx).send_text("\r");
+                                }
+                                Some(sid)
+                            }
+                            // US-010 AC5: targeting a vanished pane is an error, not
+                            // a partial send — nothing was written above.
+                            None => return serde_json::json!({"error": "Surface not found"}),
                         }
-                        return serde_json::json!({
-                            "sent": true, "length": text.len(), "submitted": submit
-                        });
-                    }
-                    return serde_json::json!({"error": "Surface not found"});
+                    } else if let Some(ws) = self.active_workspace()
+                        && let Some(root) = &ws.root
+                    {
+                        send_text_to_first_leaf(root, text, cx);
+                        if submit {
+                            send_text_to_first_leaf(root, "\r", cx);
+                        }
+                        None
+                    } else {
+                        return serde_json::json!({"error": "No active terminal"});
+                    };
+                // EP-003 US-010: trace every write granted by free-access mode
+                // as a per-pane capability grant (vs the process-wide env gate),
+                // so the octroi is never a silent global open. Re-evaluated per
+                // call, so flipping the mode off leaves no residual capability.
+                if unrestricted {
+                    tracing::info!(
+                        target: "paneflow::ipc::unrestricted",
+                        method = "surface.send_text",
+                        surface_id = ?wrote_sid,
+                        caller_pid = ?caller_pid,
+                        length = text.len() as u64,
+                        submit = submit,
+                        "ai_unrestricted: authorized PTY write to pane"
+                    );
                 }
-                if let Some(ws) = self.active_workspace()
-                    && let Some(root) = &ws.root
-                {
-                    send_text_to_first_leaf(root, text, cx);
-                    if submit {
-                        send_text_to_first_leaf(root, "\r", cx);
-                    }
-                    return serde_json::json!({
-                        "sent": true, "length": text.len(), "submitted": submit
-                    });
-                }
-                serde_json::json!({"error": "No active terminal"})
+                serde_json::json!({
+                    "sent": true, "length": text.len(), "submitted": submit
+                })
             }
             "surface.send_keystroke" => {
                 // US-012 (cli-hardening-followup-2026-Q3): same gate
@@ -3087,6 +3122,26 @@ mod tests {
         assert_eq!(envelope["error"]["code"], -32601);
         assert!(envelope.get("result").is_none());
         assert_eq!(envelope["id"], 42);
+    }
+
+    #[test]
+    fn send_text_gate_opens_for_env_or_free_access() {
+        // EP-003 US-010 AC #1: with free-access OFF the gate matches the legacy
+        // env-only rule exactly — closed unless PANEFLOW_IPC_SCRIPTING=1.
+        assert!(
+            !super::send_text_gate_open(false, false),
+            "both off must stay closed (unchanged legacy behavior)"
+        );
+        assert!(
+            super::send_text_gate_open(true, false),
+            "the env gate alone still opens it"
+        );
+        // AC #2: free-access opens the write gate without the env var.
+        assert!(
+            super::send_text_gate_open(false, true),
+            "free-access mode opens it without the env gate"
+        );
+        assert!(super::send_text_gate_open(true, true));
     }
 
     /// AC #4 corollary: even when scripting IS enabled,
