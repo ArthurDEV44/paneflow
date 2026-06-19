@@ -56,6 +56,10 @@ struct PlannedPane {
     prompt: Option<String>,
     env: Option<HashMap<String, String>>,
     focus: bool,
+    /// EP-004 US-012: stable label posed atomically as `custom_name` at spawn
+    /// (sanitized; de-duplicated within the batch). `None` keeps the
+    /// auto-derived name.
+    label: Option<String>,
 }
 
 /// Parse a JSON `{ "K": "V", … }` object into an env map, dropping non-string
@@ -528,8 +532,17 @@ fn wrap_untrusted(header_attrs: &str, body: &str) -> String {
 /// whitespace, strips control characters, and caps length; an empty/absent
 /// value yields `None` (clear the custom name, reverting to auto-derived).
 pub(crate) fn parse_rename_name(params: &serde_json::Value) -> Option<String> {
-    const MAX_NAME_LEN: usize = 64;
     let raw = params.get("new_name").and_then(|v| v.as_str())?;
+    sanitize_pane_name(raw)
+}
+
+/// EP-004 US-012 (agent-control-plane): sanitize a user-supplied pane
+/// name/label: trim, strip control characters, cap at 64 chars. Returns `None`
+/// for an empty/blank result (clears the custom name / no label). Shared by
+/// `surface.rename` (`new_name`) and the atomic spawn label on
+/// `surface.split`/`workspace.up`.
+pub(crate) fn sanitize_pane_name(raw: &str) -> Option<String> {
+    const MAX_NAME_LEN: usize = 64;
     let cleaned: String = raw
         .trim()
         .chars()
@@ -1100,8 +1113,46 @@ impl PaneFlowApp {
                     .map(str::to_string),
                 env: parse_env_object(spec.get("env")),
                 focus: spec.get("focus").and_then(|f| f.as_bool()).unwrap_or(false),
+                // EP-004 US-012: per-pane label (accept `label`, fall back to
+                // `name`), sanitized like a `surface.rename`.
+                label: spec
+                    .get("label")
+                    .or_else(|| spec.get("name"))
+                    .and_then(|v| v.as_str())
+                    .and_then(sanitize_pane_name),
             });
         }
+
+        // EP-004 US-012 AC3: disambiguate duplicate labels WITHIN this batch
+        // (the second "logs" becomes "logs-2") and warn, reusing the same
+        // suffix algorithm the query-time surface-name resolver uses, so a
+        // conductor's labels stay stable and distinct instead of colliding.
+        {
+            let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for pp in &mut planned {
+                if let Some(label) = pp.label.take() {
+                    let unique = crate::workspace::surface_naming::claim_unique(&mut taken, &label);
+                    if unique != label {
+                        log::warn!(
+                            "workspace.up: duplicate label '{label}' in batch, using '{unique}'"
+                        );
+                    }
+                    pp.label = Some(unique);
+                }
+            }
+        }
+
+        // EP-004 US-012: capture the final (de-duplicated) labels in pane order
+        // so the response associates each returned `surface_id` with its stable
+        // label; `null` for an unlabeled pane.
+        let labels: Vec<serde_json::Value> = planned
+            .iter()
+            .map(|p| {
+                p.label
+                    .clone()
+                    .map_or(serde_json::Value::Null, serde_json::Value::String)
+            })
+            .collect();
 
         // Phase 2: spawn every pane (cwd + env honored). `self.workspaces` is
         // untouched until the tree is built, so a failed layout strands nothing.
@@ -1113,6 +1164,14 @@ impl PaneFlowApp {
             let terminal = cx.new(|cx| {
                 TerminalView::with_cwd_and_env(ws_id, pp.cwd.clone(), None, pp.env.clone(), cx)
             });
+            // EP-004 US-012: pose the label as `custom_name` on the same GPUI
+            // tick, before the PTY (spawned off-thread) can emit an OSC title —
+            // no race with the auto-name. Mirrors `surface.split`.
+            if let Some(label) = pp.label.clone() {
+                terminal.update(cx, |view, _cx| {
+                    view.terminal.custom_name = Some(label);
+                });
+            }
             let pane = self.create_pane(terminal.clone(), ws_id, cx);
             launches.push((terminal, pp.command.clone(), pp.prompt.clone()));
             panes.push(pane);
@@ -1157,7 +1216,8 @@ impl PaneFlowApp {
         self.save_session(cx);
         cx.notify();
         serde_json::json!({
-            "index": idx, "title": name, "panes": panes_n, "surface_ids": surface_ids
+            "index": idx, "title": name, "panes": panes_n,
+            "surface_ids": surface_ids, "labels": labels
         })
     }
 
@@ -1906,11 +1966,13 @@ impl PaneFlowApp {
                     .and_then(|c| c.as_str())
                     .filter(|c| !c.is_empty())
                     .map(str::to_string);
+                // EP-004 US-012: accept `label` (the agent-control-plane term),
+                // falling back to `name`; sanitized like a `surface.rename`.
                 let spawn_name = params
-                    .get("name")
+                    .get("label")
+                    .or_else(|| params.get("name"))
                     .and_then(|n| n.as_str())
-                    .filter(|n| !n.is_empty())
-                    .map(str::to_string);
+                    .and_then(sanitize_pane_name);
                 let spawn_prompt = params
                     .get("prompt")
                     .and_then(|p| p.as_str())
@@ -3370,6 +3432,28 @@ mod tests {
         let long = "x".repeat(200);
         let p = serde_json::json!({ "new_name": long });
         assert_eq!(super::parse_rename_name(&p).map(|s| s.len()), Some(64));
+    }
+
+    #[test]
+    fn workspace_up_dedups_duplicate_labels_in_batch() {
+        // EP-004 US-012 AC3: two identical labels in one `workspace.up` batch
+        // resolve to distinct stable names (the second gets a `-2` suffix),
+        // reusing the shared suffix algorithm the handler calls.
+        use crate::workspace::surface_naming::claim_unique;
+        use std::collections::HashSet;
+        let mut taken: HashSet<String> = HashSet::new();
+        let resolved: Vec<String> = ["logs", "api", "logs", "logs"]
+            .iter()
+            .map(|l| claim_unique(&mut taken, l))
+            .collect();
+        assert_eq!(resolved, vec!["logs", "api", "logs-2", "logs-3"]);
+        // AC1/AC4: a sanitized label survives, an empty one clears to None
+        // (auto-name applies).
+        assert_eq!(
+            super::sanitize_pane_name("  reviewer  ").as_deref(),
+            Some("reviewer")
+        );
+        assert_eq!(super::sanitize_pane_name("   "), None);
     }
 
     // EP-001 US-001: fleet rows are pure — a conductor's snapshot.
