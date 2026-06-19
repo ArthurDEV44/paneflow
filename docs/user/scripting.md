@@ -354,30 +354,74 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"system.capabilities","params":{},"id":
 
 | Method                                                                                                     | Params                                                                                          | Returns / notes                                                                                  |
 | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `system.ping`                                                                                              | —                                                                                               | Liveness check                                                                                   |
-| `system.capabilities`                                                                                      | —                                                                                               | `{scripting, methods[]}` — agent discovery entry point                                           |
-| `system.identify`                                                                                          | —                                                                                               | `{name: "PaneFlow", version, protocol}`                                                          |
-| `workspace.list`                                                                                           | —                                                                                               | Workspaces with indexes and titles                                                               |
-| `workspace.current`                                                                                        | —                                                                                               | Active workspace                                                                                 |
+| `system.ping`                                                                                              | -                                                                                               | Liveness check                                                                                   |
+| `system.capabilities`                                                                                      | -                                                                                               | `{scripting, methods[]}` - agent discovery entry point                                           |
+| `system.identify`                                                                                          | -                                                                                               | `{name: "PaneFlow", version, protocol}`                                                          |
+| `workspace.list`                                                                                           | -                                                                                               | Workspaces with indexes and titles                                                               |
+| `workspace.current`                                                                                        | -                                                                                               | Active workspace                                                                                 |
 | `workspace.create`                                                                                         | `name?`, `cwd?`, `layout?`                                                                      | `cwd` canonicalised, must be a directory; optional layout tree                                   |
 | `workspace.select`                                                                                         | `index`                                                                                         | Switch workspace                                                                                 |
 | `workspace.close`                                                                                          | `index?`                                                                                        | Close a workspace                                                                                |
 | `workspace.up`                                                                                             | `name`, `layout`, `panes[]`                                                                     | Declarative spawn (used by `paneflow up`/`flow`); returns `{index, title, panes, surface_ids[]}` |
 | `workspace.restore_layout`                                                                                 | `layout`                                                                                        | Apply a layout tree to the active workspace                                                      |
-| `surface.list`                                                                                             | —                                                                                               | `{surfaces: [{surface_id, name, title, cwd, cmd, workspace}]}`                                   |
+| `surface.list`                                                                                             | -                                                                                               | `{surfaces: [{surface_id, name, title, cwd, cmd, workspace}]}`                                   |
+| `fleet.list`                                                                                               | -                                                                                               | Read-only fleet snapshot: `{agents: [{pid, tool, state, hooked, surface_id, surface_name, workspace, active_tool_name, message, last_result, waiting_ms, idle_ms}]}`. Hookless detected agents appear as `{state: "unknown_running", hooked: false, pid: null}`. Empty fleet is `{agents: []}` (not an error). |
+| `surface.status`                                                                                           | `surface_id`                                                                                     | One pane's agent state: `{surface_id, state, tool, active_tool_name, message, last_result, waiting_ms, idle_ms, output_generation}`, or `{surface_id, state: "idle", output_generation}` for a bare shell. `message` is bidi-stripped + capped 512 |
 | `surface.read`                                                                                             | `surface_id`, `lines?`, `offset?`, `fenced?`                                                    | `{text, lines, total_lines, eof, output_generation}`; `text` fenced as `<untrusted_terminal_output>` unless `fenced:false` |
-| `surface.search`                                                                                           | `surface_id`, `pattern`, `max_matches?`                                                         | Substring search; `max_matches` clamped to 1–1000                                                |
+| `surface.search`                                                                                           | `surface_id`, `pattern`, `max_matches?`                                                         | Substring search; `max_matches` clamped to 1-1000                                                |
 | `surface.rename`                                                                                           | `surface_id`, `name`                                                                            | Rename a pane                                                                                    |
 | `surface.focus`                                                                                            | `surface_id`                                                                                    | Focus a pane (switches workspace/tab)                                                            |
 | `surface.send_text`                                                                                        | `surface_id`, `text`, `submit?`                                                                 | **Gated**; 64 KiB cap; `submit` appends the carriage return                                      |
 | `surface.send_keystroke`                                                                                   | `surface_id`, `keystroke`                                                                       | **Gated**; refuses submitting keys; CRLF bytes rejected unconditionally                          |
 | `surface.split`                                                                                            | `direction`, `surface_id?`, `cwd?`, `command?`, `prompt?`, `env?`, `name?`, `managed_worktree?` | Returns the new `surface_id`; bounded by the pane cap                                            |
+| `events.subscribe`                                                                                         | `surfaces?: [id…]`, `types?: [type…]`                                                            | **Unix only.** Turns the connection into a persistent event stream (see below). Read-only, no scripting gate. An unknown `types` value is rejected with `-32602`; on Windows the method returns `-32004` (stream over the Unix socket instead). |
 | `ai.session_start` / `ai.prompt_submit` / `ai.tool_use` / `ai.notification` / `ai.stop` / `ai.session_end` | hook payloads                                                                                   | Lifecycle telemetry from `paneflow-ai-hook` (see below); read-only on the UI side                |
 
 Handlers signal structured failures as JSON-RPC `error` envelopes
 (`-32602` invalid params, `-32601` gated method, `-32001` permission,
 `-32000` backpressure); a few legacy validation errors arrive as
-`{"error": "<message>"}` inside `result` — treat both as failures.
+`{"error": "<message>"}` inside `result` - treat both as failures.
+
+### What is the event-bus wire format? [#what-is-the-event-bus-wire-format]
+
+`events.subscribe` is how `paneflow watch` (and any raw client) receives
+server-initiated push instead of polling. Unlike every other method it does
+**not** return a single response then close: the connection stays open and the
+server writes one JSON object per line until the client disconnects.
+
+* **Per-OS design**: implemented over the Unix domain socket only. The Windows
+  named pipe is one-request-per-connection (a second read on a peer-closed pipe
+  aborts the process inside `interprocess`), so `events.subscribe` returns
+  `-32004` there; stream over the Unix socket. The same peer-UID + `0600` trust
+  check as every other connection applies before the stream starts.
+* **Filtering**: `surfaces` limits to those pane ids; `types` limits to those
+  event types. Omit a field to match everything on that axis. A surface-scoped
+  subscriber never receives an unscoped event (e.g. an unresolved-PID `ai.*`
+  frame).
+* **Known event types**: `ai.session_start`, `ai.prompt_submit`, `ai.tool_use`,
+  `ai.notification`, `ai.stop`, `ai.exit`, `ai.session_end`, and `surface_changed`
+  (emitted when a pane's `output_generation` advances - the push replacement for
+  the settling poll).
+
+The stream is line-delimited JSON. The first line is an ack; subsequent lines are
+events or markers:
+
+```jsonc
+{"type":"subscribed","id":7}                                  // ack, once
+{"type":"ai.stop","surface_id":42,"workspace_id":1,"tool":"claude","pid":12345,"state":"finished","message":null,"active_tool_name":null,"ts":1718800000000}
+{"type":"surface_changed","surface_id":42,"output_generation":118,"ts":1718800000050}
+{"type":"heartbeat"}                                          // every 30 s of idle - detects a dead connection
+{"type":"dropped","count":12}                                 // backpressure shed N events (see below)
+```
+
+* **Backpressure**: each subscriber has a bounded queue (1024 events). A client
+  that stops draining sheds events rather than ever blocking the render thread; a
+  `{"type":"dropped","count":N}` marker tells you how many you missed so you can
+  re-sync with `fleet.list`. The broadcast path is a non-blocking `try_send`, so a
+  slow or dead subscriber never affects the others.
+* **Lifecycle**: a clean disconnect (drop the socket, or Ctrl-C on
+  `paneflow watch`) unsubscribes server-side automatically (RAII); there is no
+  explicit unsubscribe call.
 
 ## How does an agent read panes over MCP? [#how-does-an-agent-read-panes-over-mcp]
 
