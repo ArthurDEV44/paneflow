@@ -691,6 +691,21 @@ mod tests {
     }
 
     #[test]
+    fn demo_review_pipeline_flow_is_valid() {
+        // EP-005 US-018 AC1/AC2: the committed demo flow.toml parses + validates,
+        // so `paneflow flow run --dry-run examples/review-pipeline.flow.toml`
+        // accepts it without mutating anything.
+        let src = include_str!("../../../examples/review-pipeline.flow.toml");
+        let plan = load(src).expect("the demo flow.toml must be a valid flow");
+        assert_eq!(plan.name, "review-pipeline");
+        let ids: Vec<&str> = plan.units.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(ids, vec!["impl", "review"]);
+        // AC3: the review step submits the captured summary, so the existing
+        // gate-off refusal (check_scripting_gate) applies to this flow.
+        assert!(plan.requires_submit(), "the demo exercises the submit gate");
+    }
+
+    #[test]
     fn loads_a_minimal_flow() {
         let plan = load(&minimal("")).expect("valid");
         assert_eq!(plan.units.len(), 1);
