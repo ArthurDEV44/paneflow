@@ -246,14 +246,14 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "toggle_search_regex",
         context: Some("Search"),
     },
-    // EP-006 US-018 — fan the open search out to every pane (fleet grep).
+    // EP-006 US-018 - fan the open search out to every pane (fleet grep).
     // Search context only, so no terminal chord is shadowed.
     DefaultBinding {
         key: "alt-f",
         action_name: "toggle_fleet_search",
         context: Some("Search"),
     },
-    // EP-006 US-019 — per-pane font zoom. These DO shadow readline's
+    // EP-006 US-019 - per-pane font zoom. These DO shadow readline's
     // C-- (undo) / C-0 (digit-argument) in the focused terminal: the
     // PRD's documented, remappable exception (Hard Constraint clavier),
     // matching the zoom convention of gnome-terminal/Ghostty on Linux.
@@ -272,7 +272,7 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "font_size_reset",
         context: Some("Terminal"),
     },
-    // US-022 — markdown pane navigation. Same chord vocabulary as the
+    // US-022 - markdown pane navigation. Same chord vocabulary as the
     // terminal pane so muscle memory transfers cleanly between pane types.
     DefaultBinding {
         key: "shift-pageup",
@@ -327,7 +327,7 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
     },
     // US-003 (prd-ai-in-diff-2026-Q3.md): copy the hunk under the cursor as a
     // unified diff, only while the Git Diff view holds focus. Same chord as the
-    // terminal / markdown copies — disambiguated by the `DiffView` context.
+    // terminal / markdown copies - disambiguated by the `DiffView` context.
     DefaultBinding {
         key: "ctrl-shift-c",
         action_name: "copy_diff_hunk",
@@ -336,7 +336,7 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
     // EP-003 US-009 (prd-review-redesign-2026-Q3.md): keyboard-first review loop.
     // Bare keys, scoped to `DiffView && !Terminal && !TextInput` so neither an
     // embedded review/shell terminal NOR the base-branch filter input (both focus
-    // children of the DiffView) loses a keystroke — the `!` clauses are what make
+    // children of the DiffView) loses a keystroke - the `!` clauses are what make
     // bare letters safe here. Chosen scheme: `[`/`]` step hunks (the Open-Question
     // pick over `J`/`K`), `u` unified/split, `s` sync, `Esc` dismiss. All
     // remappable like every entry in this table.
@@ -376,7 +376,7 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
     // EP-001 (prd-cli-cockpit-ergonomics-2026-Q3.md): Composer + broadcast
     // groups. All three are unclaimed `secondary-shift-…` slots (taken set
     // before this block: d/e/w/n/q/j/t/z/=/s/a/g) and none shadows a common
-    // shell/readline/TUI chord (FR-12) — Ctrl+Shift+Space/B/M mean nothing to
+    // shell/readline/TUI chord (FR-12) - Ctrl+Shift+Space/B/M mean nothing to
     // readline, vim or nano. Remappable like every entry in this table.
     DefaultBinding {
         key: "secondary-shift-space",
@@ -396,7 +396,7 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
     // EP-002 (cli-cockpit): Attention Queue + Launch Pad. `secondary-shift-k`
     // and `secondary-shift-l` are unclaimed (taken set before this block:
     // d/e/w/n/q/j/t/z/=/s/a/g/space/b/m) and shadow no shell/readline/TUI
-    // chord (FR-12 — Ctrl+K kill-line is BARE ctrl, not ctrl+shift).
+    // chord (FR-12 - Ctrl+K kill-line is BARE ctrl, not ctrl+shift).
     DefaultBinding {
         key: "secondary-shift-k",
         action_name: "open_attention_queue",
@@ -414,7 +414,7 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
 /// US-010 binds `cmd-c` / `cmd-v` to terminal copy/paste on macOS so muscle
 /// memory from iTerm2 / Terminal.app / WezTerm works. Kept empty on Linux
 /// (AC5) because Linux keyboards don't have a `cmd` key by default. The
-/// existing `ctrl-shift-c/v` Terminal bindings stay intact on both platforms —
+/// existing `ctrl-shift-c/v` Terminal bindings stay intact on both platforms -
 /// these are purely additive.
 #[cfg(target_os = "macos")]
 pub(super) const MACOS_ONLY_DEFAULTS: &[DefaultBinding] = &[
@@ -502,7 +502,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing DEFAULTS entry for {action}"));
             assert!(
                 entry.key.starts_with("secondary-"),
-                "action `{action}` still uses `{}` — US-009 requires `secondary-` prefix",
+                "action `{action}` still uses `{}` - US-009 requires `secondary-` prefix",
                 entry.key,
             );
         }
@@ -546,7 +546,7 @@ mod tests {
         assert_eq!(paste.action_name, "terminal_paste");
         assert_eq!(paste.context, Some("Terminal"));
 
-        // Base DEFAULTS still hold the ctrl-shift-c/v entries — the macOS
+        // Base DEFAULTS still hold the ctrl-shift-c/v entries - the macOS
         // bindings are ADDITIVE, not replacements.
         assert!(
             DEFAULTS
@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn us010_ctrl_c_never_bound_to_terminal_copy() {
         // AC4: plain `ctrl-c` (without shift) must never reach terminal_copy
-        // on any platform — the PTY needs to receive it so running
+        // on any platform - the PTY needs to receive it so running
         // processes still get SIGINT.
         let leaked_actions: Vec<&'static str> = DEFAULTS
             .iter()

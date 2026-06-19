@@ -1,4 +1,4 @@
-//! "MCP Servers" settings page — registers the embedded `paneflow-mcp` bridge
+//! "MCP Servers" settings page - registers the embedded `paneflow-mcp` bridge
 //! with every detected CLI agent (Claude Code, Codex, Gemini, opencode) so they
 //! can read other panes' output.
 //!
@@ -139,7 +139,7 @@ impl PaneFlowApp {
                         InstallKind::AlreadyCurrent => ("already up to date", false),
                         InstallKind::SkippedAbsent => ("not detected", false),
                         InstallKind::Error(e) => {
-                            return (format!("{}: error — {e}", r.label).into(), true);
+                            return (format!("{}: error - {e}", r.label).into(), true);
                         }
                     };
                     (format!("{}: {state}", r.label).into(), err)
@@ -153,10 +153,10 @@ impl PaneFlowApp {
                     let (state, err) = match &r.kind {
                         StatusKind::NotDetected => ("not detected", false),
                         StatusKind::Installed { .. } => ("installed", false),
-                        StatusKind::Stale { .. } => ("stale path — click Repair", false),
+                        StatusKind::Stale { .. } => ("stale path - click Repair", false),
                         StatusKind::NotInstalled => ("not installed", false),
                         StatusKind::Error(e) => {
-                            return (format!("{}: error — {e}", r.label).into(), true);
+                            return (format!("{}: error - {e}", r.label).into(), true);
                         }
                     };
                     (format!("{}: {state}", r.label).into(), err)

@@ -34,7 +34,7 @@ impl Assets {
     /// in one batch. Mirrors Zed's `Assets::load_fonts` pattern at
     /// `zed/crates/assets/src/assets.rs:42-55`: iterating the embed registry
     /// means dropping a new `.ttf` into `assets/fonts/` is enough to ship
-    /// it — no Rust edit, no name list to maintain, no cargo recompile of
+    /// it - no Rust edit, no name list to maintain, no cargo recompile of
     /// a `LazyLock` of hardcoded paths.
     ///
     /// Skips non-`.ttf` files so the `OFL.txt` / `LICENSE` companions sit
@@ -57,7 +57,7 @@ impl Assets {
         }
         if embedded_fonts.is_empty() {
             log::warn!(
-                "Assets::load_fonts: no .ttf/.otf found under fonts/ — \
+                "Assets::load_fonts: no .ttf/.otf found under fonts/ - \
                  the rust-embed include set may have drifted"
             );
             return Ok(());
@@ -69,7 +69,7 @@ impl Assets {
     }
 }
 
-/// US-008 — embedded AI-hook binaries.
+/// US-008 - embedded AI-hook binaries.
 ///
 /// `paneflow-shim` (mapped at extraction time to `claude` + `codex`) and
 /// `paneflow-ai-hook` are staged into `src-app/target/embed/bin/<target>/`
@@ -79,7 +79,7 @@ impl Assets {
 ///
 /// Not cfg-gated on target_os: PaneFlow only builds for Linux, macOS, and
 /// Windows per `CLAUDE.md` mandate. A compile failure on any other OS is
-/// the correct outcome — there is no build path that would populate the
+/// the correct outcome - there is no build path that would populate the
 /// embed folder anyway. Gating here would only move the failure from
 /// rust-embed (empty folder ⇒ panic) to `ai_hooks::extract` (missing
 /// symbol ⇒ compile error), with no benefit.

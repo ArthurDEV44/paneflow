@@ -1,23 +1,23 @@
 //! Git worktree-per-agent management (EP-002, prd-orchestration-v2).
 //!
 //! `paneflow up` panes can declare `worktree = "branch"`: the CLI process
-//! creates (or reuses) a git worktree in a SIBLING directory of the repo —
-//! `<repo>.worktrees/<branch-slug>` — copies the top-level gitignored `.env*`
+//! creates (or reuses) a git worktree in a SIBLING directory of the repo -
+//! `<repo>.worktrees/<branch-slug>` - copies the top-level gitignored `.env*`
 //! files, optionally runs a `setup` command, and the pane spawns with the
 //! worktree as its cwd. The app side records ownership ([`ManagedWorktree`])
-//! so closing the workspace tears the worktree down — IF it is clean.
+//! so closing the workspace tears the worktree down - IF it is clean.
 //!
 //! Invariants (US-006/US-009):
 //! - a branch is NEVER deleted, only the worktree directory;
 //! - a worktree with uncommitted changes is NEVER removed;
 //! - only worktrees Paneflow created (tracked in `managed_worktrees`) are
-//!   ever torn down — a pre-existing worktree pointed at by `cwd` is not ours;
+//!   ever torn down - a pre-existing worktree pointed at by `cwd` is not ours;
 //! - every git invocation is a subprocess with argv (no shell interpolation)
 //!   under [`paneflow_process::run_with_timeout`], and on the app side it runs
 //!   off the render thread (`smol::unblock`).
 //!
-//! Sibling (not in-repo) placement keeps recursive file watchers — including
-//! Paneflow's own diff watcher — from descending into N extra checkouts.
+//! Sibling (not in-repo) placement keeps recursive file watchers - including
+//! Paneflow's own diff watcher - from descending into N extra checkouts.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,7 +25,7 @@ use std::time::Duration;
 
 /// Wall-clock bound for plumbing git calls (list/status/remove/prune).
 const GIT_DEADLINE: Duration = Duration::from_secs(10);
-/// `worktree add` checks out a full tree — give it more room on big repos.
+/// `worktree add` checks out a full tree - give it more room on big repos.
 const ADD_DEADLINE: Duration = Duration::from_secs(120);
 const STDOUT_CAP: u64 = 256 * 1024;
 
@@ -47,7 +47,7 @@ impl TeardownPolicy {
         }
     }
 
-    /// Lenient parse — an unknown value falls back to `Auto` so a hand-edited
+    /// Lenient parse - an unknown value falls back to `Auto` so a hand-edited
     /// session.json can't disable data-loss protection by typo (the protection
     /// is the clean-check, not the policy).
     pub fn parse(s: &str) -> Self {
@@ -67,7 +67,7 @@ pub struct ManagedWorktree {
     pub path: PathBuf,
     /// Main repository root (where `git worktree …` commands run).
     pub repo_root: PathBuf,
-    /// Branch checked out in the worktree. Recorded for diagnostics only —
+    /// Branch checked out in the worktree. Recorded for diagnostics only -
     /// teardown never touches the branch.
     pub branch: String,
     pub teardown: TeardownPolicy,
@@ -86,7 +86,7 @@ pub struct WorktreeEntry {
 /// Leading/trailing `-` AND `.` are trimmed: a dot-only branch (`.`/`..`)
 /// would otherwise survive as a path-traversal component of the (destructive)
 /// worktree path, and a leading dot would hide the directory. May return ""
-/// for degenerate input — spec validation rejects that before any git call,
+/// for degenerate input - spec validation rejects that before any git call,
 /// and [`worktree_dir`] falls back to a safe constant as defense in depth.
 pub fn branch_slug(branch: &str) -> String {
     let slug: String = branch
@@ -104,8 +104,8 @@ pub fn branch_slug(branch: &str) -> String {
 }
 
 /// Sibling worktree directory for a branch: `<repo>.worktrees/<slug>`, next to
-/// the repo (NOT inside it — recursive watchers must not descend into it).
-/// Total function: a branch whose slug is empty (dot-only — rejected upstream
+/// the repo (NOT inside it - recursive watchers must not descend into it).
+/// Total function: a branch whose slug is empty (dot-only - rejected upstream
 /// by spec validation) maps to the constant `branch` so the result can never
 /// resolve outside `<repo>.worktrees/`.
 pub fn worktree_dir(repo_root: &Path, branch: &str) -> PathBuf {
@@ -214,7 +214,7 @@ pub fn add_worktree(
 }
 
 /// True when the worktree has no uncommitted changes (`status --porcelain`
-/// empty). An error (worktree gone, git missing) is NOT "clean" — the caller
+/// empty). An error (worktree gone, git missing) is NOT "clean" - the caller
 /// must keep its hands off when it cannot prove cleanliness.
 pub fn is_clean(worktree_path: &Path) -> Result<bool, String> {
     run_git(worktree_path, &["status", "--porcelain"], GIT_DEADLINE).map(|out| out.is_empty())
@@ -222,13 +222,13 @@ pub fn is_clean(worktree_path: &Path) -> Result<bool, String> {
 
 /// `git worktree remove <path>`. Refuses dirty worktrees by itself too (git
 /// native), but callers must check [`is_clean`] first to control messaging.
-/// The BRANCH IS NEVER DELETED — that is the US-009 invariant, not a TODO.
+/// The BRANCH IS NEVER DELETED - that is the US-009 invariant, not a TODO.
 pub fn remove_worktree(repo_root: &Path, path: &Path) -> Result<(), String> {
     let path_s = path.to_string_lossy();
     run_git(repo_root, &["worktree", "remove", &path_s], GIT_DEADLINE).map(|_| ())
 }
 
-/// `git worktree prune` — drops references whose directory no longer exists.
+/// `git worktree prune` - drops references whose directory no longer exists.
 /// Git-native guarantee: a worktree whose directory still exists is untouched
 /// (US-009 AC5), so this is safe to run blindly at startup.
 pub fn prune(repo_root: &Path) -> Result<(), String> {
@@ -236,7 +236,7 @@ pub fn prune(repo_root: &Path) -> Result<(), String> {
 }
 
 /// Copy top-level `.env*` FILES from `src_root` into `dst_root`, skipping any
-/// that already exist there (a tracked `.env.example` arrives via checkout —
+/// that already exist there (a tracked `.env.example` arrives via checkout -
 /// don't clobber it). Best-effort by design (US-007): a missing source dir or
 /// an unreadable entry yields an empty/partial copy, never an error. Returns
 /// the file names copied.
@@ -266,7 +266,7 @@ pub fn copy_env_files(src_root: &Path, dst_root: &Path) -> Vec<String> {
     copied
 }
 
-/// Tear down a batch of managed worktrees (blocking — run via `smol::unblock`
+/// Tear down a batch of managed worktrees (blocking - run via `smol::unblock`
 /// on the app side). Per entry: `Keep` policy → skip; dirty or unverifiable →
 /// keep + warn (NEVER remove what might hold work); clean → remove. The
 /// branch is never touched.
@@ -290,7 +290,7 @@ pub fn teardown_all(worktrees: Vec<ManagedWorktree>) {
                 wt.path.display()
             ),
             Err(e) => log::warn!(
-                "worktree kept (cannot verify cleanliness): {} — {e}",
+                "worktree kept (cannot verify cleanliness): {} - {e}",
                 wt.path.display()
             ),
         }
@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn branch_slug_neutralizes_dot_only_traversal() {
         // NFR (orchestration-v2): the slug is the one untrusted component of
-        // a destructive path — `.`/`..` must never survive as a path segment.
+        // a destructive path - `.`/`..` must never survive as a path segment.
         assert_eq!(branch_slug(".."), "");
         assert_eq!(branch_slug("."), "");
         assert_eq!(branch_slug("..."), "");

@@ -1,7 +1,7 @@
 // Test-only allow for the CLAUDE.md-mandated clippy restrictions. These
 // lints are also demoted to `allow` at crate level in `src-app/Cargo.toml`
 // for pre-existing GPUI UI-code unwraps (US-007 "or equivalent" escape),
-// so today this belt is effectively redundant — but it stays in place so
+// so today this belt is effectively redundant - but it stays in place so
 // that when the eventual cleanup story re-promotes the Cargo.toml lints
 // to `warn`, tests continue to pass without another edit here.
 #![cfg_attr(
@@ -17,10 +17,10 @@
 // Explorer / a shortcut / the Start Menu does NOT make the OS allocate a
 // stray console window (on Windows 11 that console is hosted by Windows
 // Terminal and pops up next to the app). The scriptable CLI keeps working
-// because `main()` re-attaches to the parent console when there is one —
+// because `main()` re-attaches to the parent console when there is one -
 // see `attach_parent_console`. No-op on Linux/macOS (no subsystem concept).
 #![cfg_attr(windows, windows_subsystem = "windows")]
-//! PaneFlow — native terminal workspace for coding agents.
+//! PaneFlow - native terminal workspace for coding agents.
 //!
 //! App shell with sidebar workspace list, terminal panes, agent surfaces, and
 //! diff/review workflows.
@@ -101,7 +101,7 @@ pub(crate) use app::bootstrap::{install_macos_menu_bar, warn_if_rosetta_translat
 pub(crate) use app::bootstrap::{system_package_update_command, warn_if_legacy_run_install};
 
 // Terminal-routing helpers (`find_first_terminal`, `find_terminal_by_surface_id`,
-// `send_text_to_first_leaf`) live in `app::ipc_handler` — its only consumer.
+// `send_text_to_first_leaf`) live in `app::ipc_handler` - its only consumer.
 
 // ---------------------------------------------------------------------------
 // Root application view
@@ -109,7 +109,7 @@ pub(crate) use app::bootstrap::{system_package_update_command, warn_if_legacy_ru
 
 /// A page in the embedded settings experience (Codex-style: grouped nav on the
 /// left rail, the section body on the right). `General` is the landing page.
-/// One source of truth — replaces the old 2-variant inline enum *and* the
+/// One source of truth - replaces the old 2-variant inline enum *and* the
 /// standalone window's copy, now that settings render inline (`settings::chrome`).
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum SettingsSection {
@@ -122,7 +122,7 @@ pub(crate) enum SettingsSection {
 }
 
 /// Light / dark / system selector shown at the top of the Themes settings page.
-/// UI state for now — the light theme is still being built; selecting a segment
+/// UI state for now - the light theme is still being built; selecting a segment
 /// highlights it and is ready to drive theme resolution once the light theme
 /// lands.
 #[derive(Clone, Copy, PartialEq)]
@@ -194,7 +194,7 @@ struct SelfUpdateState {
     update_status: Option<update::checker::UpdateStatus>,
     /// Live state of the in-app self-update flow (download → install → restart).
     self_update_status: update::SelfUpdateStatus,
-    /// How the running binary was installed. Detected once at startup —
+    /// How the running binary was installed. Detected once at startup -
     /// drives the update pill's label/click behaviour (US-012) and the
     /// in-app updater's branch selection.
     install_method: update::install_method::InstallMethod,
@@ -204,7 +204,7 @@ struct SelfUpdateState {
     /// escape hatch toast.
     ///
     /// Never decremented. The only success path for an update calls
-    /// `cx.restart()`, which replaces this process — the fresh
+    /// `cx.restart()`, which replaces this process - the fresh
     /// `PaneFlowApp::new` initializes the counter back to 0. So "failures
     /// since last success" and "failures since process start" coincide by
     /// construction; the PRD's "three consecutive failures" requirement
@@ -212,7 +212,7 @@ struct SelfUpdateState {
     update_attempt_count: u32,
     /// Monotonic token identifying the current `Downloading` attempt (EP-002,
     /// U-015). Bumped each time the flow enters `Downloading`; the per-attempt
-    /// watchdog captures the value and only fires if it still matches — so a
+    /// watchdog captures the value and only fires if it still matches - so a
     /// stale watchdog from a superseded attempt can't reset a newer one.
     download_generation: u64,
 }
@@ -277,7 +277,7 @@ struct DiffModeState {
     /// CLI↔Diff toggle (or a workspace switch back to a visited repo) reuses
     /// the cached entity instead of cold-rebuilding it, so the diff shows in
     /// one frame with its computed rows instead of flashing "Computing diff…".
-    /// Non-displayed entries are suspended (watchers released — US-016), so at
+    /// Non-displayed entries are suspended (watchers released - US-016), so at
     /// most one diff entity ever holds live watchers. Mirrors the
     /// `agents_terminal_view_cache` pointer/owner split; bounded by
     /// `DIFF_VIEW_CACHE_CAP` and pruned to open repos on workspace close.
@@ -378,7 +378,7 @@ struct AgentsViewState {
     /// button (click-to-confirm) instead of opening the confirmation dialog.
     /// Cleared on confirm, on selecting/clicking a row, or on opening a menu.
     pub(crate) agents_delete_armed: Option<crate::project::AgentsTarget>,
-    /// US-012 (prd-agents-view.md): the Agents sidebar search field — a real
+    /// US-012 (prd-agents-view.md): the Agents sidebar search field - a real
     /// single-line `TextInput` (cursor, arrow keys, Delete, Ctrl+A/C/V/X,
     /// mouse selection, click-to-position). The live needle is its `value()`,
     /// read at render time for the case-insensitive substring filter; the
@@ -394,12 +394,12 @@ struct AgentsViewState {
     pub(crate) agents_skills_tab: crate::agents_view::SkillsTab,
     /// Name of the skill whose Copy button was just clicked. The
     /// card flips its label to "Copied" while this matches; a 2 s
-    /// timer reverts the slot. Single-slot — only one "Copied"
+    /// timer reverts the slot. Single-slot - only one "Copied"
     /// indicator visible at a time, which is fine for a click-driven
     /// affordance.
     pub(crate) agents_skills_copied: Option<String>,
     /// True while the bottom-of-sidebar "Settings" popover is open.
-    /// Shared between CLI and Agents sidebars — only one popover is
+    /// Shared between CLI and Agents sidebars - only one popover is
     /// ever visible because only one sidebar is rendered at a time.
     pub(crate) sidebar_actions_menu_open: bool,
     /// Whether the compact interface picker above the sidebar footer is open.
@@ -503,7 +503,7 @@ struct PaneFlowApp {
     /// US-011: monotonic save-coalescing token. Every `save_session` bumps it
     /// and the off-thread writer skips its disk write when a newer save has
     /// been scheduled meanwhile, collapsing a burst (e.g. closing 20
-    /// workspaces) into a single write — none of it on the render thread.
+    /// workspaces) into a single write - none of it on the render thread.
     save_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// US-014: parsed `paneflow.json` cached on the main thread so render paths
     /// never call the blocking `load_config()` (fs read + JSON parse) per frame.
@@ -576,7 +576,7 @@ struct PaneFlowApp {
     /// Filter text for the font dropdown.
     font_search: String,
     /// Selected segment on the Themes page (Light/Dark/System). UI state for
-    /// now — highlights the active segment, ready to drive theme resolution
+    /// now - highlights the active segment, ready to drive theme resolution
     /// once the light theme lands.
     theme_mode: ThemeMode,
     /// Workflow action menu currently open in the sidebar (`None` = closed).
@@ -584,8 +584,8 @@ struct PaneFlowApp {
     /// "Move to pane…" tab context menu (EP-002 US-006), or `None` when closed.
     tab_menu_open: Option<TabContextMenu>,
     /// Pane to focus on the next render (EP-003 US-009). Set by the
-    /// `DropSplit` handler — which runs in a subscription callback without a
-    /// `Window` — and consumed in `render`, which has one. One-shot.
+    /// `DropSplit` handler - which runs in a subscription callback without a
+    /// `Window` - and consumed in `render`, which has one. One-shot.
     pending_pane_focus: Option<Entity<Pane>>,
     /// Profile menu currently open at the right of the title bar.
     /// Stores the click position so the menu can anchor near the profile
@@ -595,7 +595,7 @@ struct PaneFlowApp {
     agent_sessions: AgentSessionsState,
     /// Whether the docked Files right sidebar is visible (PRD
     /// `prd-files-tree-sidebar-2026-Q3`, EP-001). Mutually exclusive with
-    /// `sessions_sidebar_open`. Never persisted — always `false` on launch.
+    /// `sessions_sidebar_open`. Never persisted - always `false` on launch.
     files_sidebar_open: bool,
     /// In-memory tree state for the open Files sidebar (root + expanded set +
     /// lazily-cached directory listings). Empty when the sidebar is closed.
@@ -605,7 +605,7 @@ struct PaneFlowApp {
     files_tree_scroll: gpui::ScrollHandle,
     /// Recursive `notify` watcher on the Files tree root (EP-002 US-005).
     /// `None` when the sidebar is closed or the watch could not be installed
-    /// (US-006 graceful degradation — the tree then refreshes on expand).
+    /// (US-006 graceful degradation - the tree then refreshes on expand).
     files_watcher: Option<notify::RecommendedWatcher>,
     /// Receiver for raw watch events, drained + debounced by the background
     /// loop in `bootstrap`. `Some` only while a watcher is installed.
@@ -615,7 +615,7 @@ struct PaneFlowApp {
     files_menu_open: Option<FilesContextMenu>,
     /// Ephemeral bottom-right toast.
     toast: Option<Toast>,
-    /// Dismiss timer for the active toast — dropped on new toast to cancel the old timer.
+    /// Dismiss timer for the active toast - dropped on new toast to cancel the old timer.
     _toast_task: Option<gpui::Task<()>>,
     /// Whether the loader animation spawn is currently running.
     loader_anim_running: bool,
@@ -655,7 +655,7 @@ struct PaneFlowApp {
     broadcast_picker_renaming: Option<usize>,
     broadcast_picker_error: Option<String>,
     broadcast_picker_focus: FocusHandle,
-    /// EP-002 US-004 (cli-cockpit): Attention Queue overlay — visibility,
+    /// EP-002 US-004 (cli-cockpit): Attention Queue overlay - visibility,
     /// keyboard cursor, key-routing focus handle. Rows are derived live
     /// from `agent_sessions` on every render, never stored.
     attention_queue_open: bool,
@@ -668,7 +668,7 @@ struct PaneFlowApp {
     fleet_search_generation: u64,
     fleet_search_focus: FocusHandle,
     /// Deferred focus for the fleet overlay (opened from an event handler
-    /// that has no `Window` — consumed in `render`, like
+    /// that has no `Window` - consumed in `render`, like
     /// `pending_pane_focus`).
     fleet_search_pending_focus: bool,
     /// Keyboard focus for the Agents environment branch picker so its Codex-style
@@ -686,12 +686,12 @@ struct PaneFlowApp {
     /// Focus handle routing key events to the custom-buttons modal while open.
     custom_buttons_modal_focus: FocusHandle,
     /// Live telemetry handle (US-012/US-013). `Null` when consent is missing
-    /// or `PANEFLOW_NO_TELEMETRY` is set — every `capture`/`flush` call is a
+    /// or `PANEFLOW_NO_TELEMETRY` is set - every `capture`/`flush` call is a
     /// no-op in that state, so callers never branch on consent.
     telemetry: std::sync::Arc<crate::telemetry::client::TelemetryClient>,
     /// Monotonic clock at process start, used to compute
     /// `session_duration_seconds` for the `app_exited` event. Wall-clock-change
-    /// proof — a system clock jump mid-session never produces a negative value.
+    /// proof - a system clock jump mid-session never produces a negative value.
     launch_instant: std::time::Instant,
     /// Last observed `config.telemetry.enabled` value, cached so the config
     /// watcher's reconcile path can detect a transition (US-014) without
@@ -701,7 +701,7 @@ struct PaneFlowApp {
     /// watcher's debounce thread (event-driven invalidation). The 50 ms
     /// IPC poll loop in `process_config_changes` drains this flag and
     /// calls `cx.notify()` so the next render picks up the new theme.
-    /// `Arc<AtomicBool>` — Send + Sync, lock-free.
+    /// `Arc<AtomicBool>` - Send + Sync, lock-free.
     theme_changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// US-053: Git Diff mode state (see `DiffModeState`).
     diff_mode: DiffModeState,
@@ -716,7 +716,7 @@ struct PaneFlowApp {
     /// projects, persisted to `session.json` via [`save_session`].
     /// Empty until the user creates their first project (US-011).
     pub(crate) projects: Vec<crate::project::Project>,
-    /// US-002 (prd-agents-ui-codex-redesign-2026-Q3.md): free chats —
+    /// US-002 (prd-agents-ui-codex-redesign-2026-Q3.md): free chats -
     /// terminal threads not attached to any project, anchored on the
     /// user's home dir. A separate list from [`Self::projects`] by design
     /// (no implicit "~" project). Persisted to `session.json`. Each chat
@@ -738,7 +738,7 @@ struct PaneFlowApp {
     pub(crate) agents_target: Option<crate::project::AgentsTarget>,
     /// US-005 (prd-agents-ui-codex-redesign-2026-Q3.md): in the picker/home
     /// state (`agents_target == None`), what a launched agent is created
-    /// into — the active project, or a free chat in the home dir (the rail's
+    /// into - the active project, or a free chat in the home dir (the rail's
     /// "New chat" row). Reset to `Project` on every concrete selection.
     pub(crate) agents_picker_context: crate::project::AgentsPickerContext,
     /// US-053: Agents-view sidebar state (rename/menu/skills/filter +
@@ -746,7 +746,7 @@ struct PaneFlowApp {
     pub(crate) agents_view: AgentsViewState,
     /// US-048: memoized sidebar display order (worktree grouping). Recomputed
     /// only when the workspace set / order / repo roots change, keyed by a
-    /// cheap content signature — `render_sidebar` runs on every app `notify()`,
+    /// cheap content signature - `render_sidebar` runs on every app `notify()`,
     /// so the old per-frame `HashMap` + `Vec` rebuild was pure waste. Interior
     /// mutability because the render fn borrows `&self`.
     pub(crate) sidebar_order_cache: std::cell::RefCell<crate::app::sidebar::SidebarOrderCache>,
@@ -765,12 +765,12 @@ impl PaneFlowApp {
         if let Some(ref git_dir) = ws.git_dir {
             let current = self.git_watch_counts.get(git_dir).copied().unwrap_or(0);
             if current == 0 {
-                // First workspace watching this git dir — register with OS.
+                // First workspace watching this git dir - register with OS.
                 // U-018: only commit the refcount when `watch()` succeeds. The
                 // old form incremented to 1 before checking, so a transient
                 // failure pinned the count at 1 and every later workspace
                 // sharing the repo saw count>1 and never retried the
-                // registration — the dir stayed permanently unwatched. On
+                // registration - the dir stayed permanently unwatched. On
                 // failure we return without recording the entry so a later
                 // workspace re-attempts the watch.
                 if let Some(ref mut watcher) = self.git_watcher
@@ -800,7 +800,7 @@ impl PaneFlowApp {
 
     /// Create a new pane wrapping a terminal, and subscribe to its events.
     /// When the pane emits `PaneEvent::Remove` (last tab closed), the pane
-    /// is removed from the split tree — following Zed's EventEmitter pattern.
+    /// is removed from the split tree - following Zed's EventEmitter pattern.
     fn create_pane(
         &mut self,
         terminal: Entity<TerminalView>,
@@ -826,7 +826,7 @@ impl PaneFlowApp {
     ) {
         log::error!("self-update/{context}: {err:#}");
         let tag = update::UpdateError::classify(err);
-        // US-013 AC #4 — single choke-point for the failure telemetry: the
+        // US-013 AC #4 - single choke-point for the failure telemetry: the
         // classified `UpdateError` collapses into a canonical
         // `error_category` label so no message string ever leaves the
         // machine. Called before `show_update_error_toast` so the event is
@@ -843,7 +843,7 @@ impl PaneFlowApp {
 }
 
 // ---------------------------------------------------------------------------
-// CSD window resize helpers — `RESIZE_BORDER` lives in `app::constants`.
+// CSD window resize helpers - `RESIZE_BORDER` lives in `app::constants`.
 // ---------------------------------------------------------------------------
 
 use crate::window_chrome::csd::resize_edge;
@@ -879,7 +879,7 @@ impl Render for PaneFlowApp {
         // Every mode now renders the right area as ONE rounded-clipped panel
         // (`panel_bg` fill + 16px rail-side radius + 5px inset), replacing the
         // old Cli/Diff corner-mask trick. GPUI clips the panel's bg fill to the
-        // radius, so the window backdrop shows in the corner notch — a clean
+        // radius, so the window backdrop shows in the corner notch - a clean
         // radius on every platform (Linux, macOS, Windows Mica), where a solid
         // mask would read as a square patch. The 5px inset keeps opaque content
         // (terminal cells, diff rows, settings cards) off the arc, since GPUI
@@ -909,13 +909,13 @@ impl Render for PaneFlowApp {
         } else if matches!(self.mode, paneflow_config::schema::AppMode::Agents) {
             // US-008 (prd-agents-view.md): mode is the source of truth
             // for which screen renders. The Agents view is terminal-only
-            // — `render_agents_main` shows the selected thread's PTY, the
+            // - `render_agents_main` shows the selected thread's PTY, the
             // agent picker, or an empty state.
             self.render_agents_main(cx)
         } else if matches!(self.mode, paneflow_config::schema::AppMode::Diff) {
             // US-003 (prd-git-diff-mode-2026-Q3.md). NOTE: this site is
             // an `if matches!`, not a `match`, so the compiler does NOT
-            // force a Diff arm — it must be added by hand or the diff
+            // force a Diff arm - it must be added by hand or the diff
             // mode would silently fall through to the terminal view.
             self.render_diff_main(cx)
         } else if let Some(ws) = self.active_workspace() {
@@ -957,7 +957,7 @@ impl Render for PaneFlowApp {
                                 .text_color(ui.muted)
                                 .text_size(px(13.))
                                 .child(
-                                    "The next-generation IDE for the AI era — \
+                                    "The next-generation IDE for the AI era - \
                                      a GPU-native terminal with workspace-aware panes, \
                                      live git status, and first-class support for Claude Code and Codex.",
                                 ),
@@ -995,7 +995,7 @@ impl Render for PaneFlowApp {
             } else {
                 (None, None, false)
             };
-        // Update CTA state — extracted to `update_pill_info()` so the Cli/
+        // Update CTA state - extracted to `update_pill_info()` so the Cli/
         // Agents sidebar banner and the Diff title-bar pill share one source.
         let update_info = self.update_pill_info();
         // Push the matching sidebar width (220 px CLI / 280 px Agents)
@@ -1144,7 +1144,7 @@ impl Render for PaneFlowApp {
             .on_action(cx.listener(Self::handle_open_launch_pad))
             // EP-001 US-003: Escape cancels an in-flight tab drag. Capture
             // phase runs ancestor-before-descendant, so this pre-empts the
-            // focused terminal's own Escape->PTY forwarding — but only while a
+            // focused terminal's own Escape->PTY forwarding - but only while a
             // drag is active; otherwise we leave the key untouched so normal
             // terminal Escape behaviour is unaffected. Drop-outside-target is
             // handled by GPUI itself (it clears the active drag on mouse-up
@@ -1237,7 +1237,7 @@ impl Render for PaneFlowApp {
                             .flex()
                             .flex_col()
                             // Codex cockpit: every mode renders the right area as a
-                            // floating panel — a slightly-lighter bg sitting on the
+                            // floating panel - a slightly-lighter bg sitting on the
                             // chrome-dark body row, with the rail-side corners
                             // rounded. GPUI clips the panel's bg fill to the radius
                             // but NOT its children, so the 5px inset keeps opaque
@@ -1256,7 +1256,7 @@ impl Render for PaneFlowApp {
                                 // ≥ r·(1−1/√2) ≈ 4.7px or the content's
                                 // square corner pokes through the arc
                                 // (GPUI doesn't clip children to the
-                                // radius) — hence 5px, not the old 4px.
+                                // radius) - hence 5px, not the old 4px.
                                 d.bg(panel_bg)
                                     .rounded_tl(px(16.))
                                     .rounded_bl(px(16.))
@@ -1313,7 +1313,7 @@ impl Render for PaneFlowApp {
                             ),
                     )
                     // Docked agent-sessions sidebar (right edge). A layout child
-                    // — not an overlay — so it reflows the content and persists
+                    // - not an overlay - so it reflows the content and persists
                     // while the user works (PRD agent-sessions-sidebar EP-001).
                     .when(self.agent_sessions.sessions_sidebar_open, |row| {
                         row.child(
@@ -1329,7 +1329,7 @@ impl Render for PaneFlowApp {
                                 .into_any_element(),
                         )
                     })
-                    // Docked Files sidebar (right edge) — same layout child as
+                    // Docked Files sidebar (right edge) - same layout child as
                     // the sessions sidebar, mutually exclusive with it (PRD
                     // files-tree EP-001).
                     .when(self.files_sidebar_open, |row| {
@@ -1359,7 +1359,7 @@ impl Render for PaneFlowApp {
                     .left_0()
                     // Linux/macOS cockpit: confine the title bar (drag +
                     // controls) to the rail width so the floating overlay never
-                    // covers the panel — the compositor (Linux) / traffic
+                    // covers the panel - the compositor (Linux) / traffic
                     // lights (macOS) own the window controls, and the terminal
                     // fills the full height with no reserved top strip.
                     //
@@ -1408,7 +1408,7 @@ impl Render for PaneFlowApp {
 
         // EP-002 (cli-cockpit): Attention Queue overlay + Launch Pad modal.
         // Mode-gated (review R3): a mode switch while a launch runs in the
-        // background must not paint cockpit chrome over Agents/Diff — the
+        // background must not paint cockpit chrome over Agents/Diff - the
         // modal reappears (or finishes) back in Cli mode.
         let in_cli_mode = matches!(self.mode, paneflow_config::schema::AppMode::Cli);
         if self.attention_queue_open && in_cli_mode {
@@ -1466,7 +1466,7 @@ impl Render for PaneFlowApp {
                 app_content.child(self.render_agents_confirm_delete_dialog(target, ui, cx));
         }
 
-        // Outer backdrop div — provides the invisible resize border zone for CSD
+        // Outer backdrop div - provides the invisible resize border zone for CSD
         div()
             .id("window-backdrop")
             .bg(transparent_black())
@@ -1542,14 +1542,14 @@ impl Render for PaneFlowApp {
 
 /// Synchronous self-update entry point invoked by the e2e harness
 /// (`scripts/test-update-e2e.sh`). Mirrors the GUI flow's check + per-format
-/// install steps but never initializes GPUI — so it runs cleanly in headless
+/// install steps but never initializes GPUI - so it runs cleanly in headless
 /// CI containers without Xvfb. Honours `PANEFLOW_UPDATE_FEED_URL`
 /// ([`update::checker::update_feed_url`]) so the harness can point the
 /// checker at a localhost fixture.
 ///
 /// Returns the process exit code (see `--update-and-exit` doc-comment in
 /// `main` for the full table). The split between exit-3 (feed unreachable)
-/// and exit-1 (other) satisfies AC6 — the harness asserts a specific code,
+/// and exit-1 (other) satisfies AC6 - the harness asserts a specific code,
 /// not a substring of the generic "update failed" toast.
 fn run_update_and_exit() -> i32 {
     use crate::update::checker::{UpdateStatus, check_github_release};
@@ -1558,7 +1558,7 @@ fn run_update_and_exit() -> i32 {
     let method = install_method::detect();
     log::info!("--update-and-exit: install method = {method:?}");
 
-    // The harness MUST NOT emit telemetry — the test runs are not user
+    // The harness MUST NOT emit telemetry - the test runs are not user
     // sessions and would skew funnels. Use a Null client (no-op
     // capture, no HTTP).
     let null_telemetry = crate::telemetry::client::TelemetryClient::Null;
@@ -1572,7 +1572,7 @@ fn run_update_and_exit() -> i32 {
         UpdateStatus::Available {
             asset_url: None, ..
         } => {
-            eprintln!("paneflow-update: no asset matched the install method — nothing to install");
+            eprintln!("paneflow-update: no asset matched the install method - nothing to install");
             return 5;
         }
         UpdateStatus::UpToDate => {
@@ -1583,16 +1583,16 @@ fn run_update_and_exit() -> i32 {
             // The checker logs whether the failure was DNS/HTTP/parse via
             // `log::warn!`; we can't easily distinguish here without a
             // structured error, so print the explicit feed-unreachable
-            // hint per AC6 — the dominant failure mode the harness
+            // hint per AC6 - the dominant failure mode the harness
             // exercises (kill miniserve before invocation).
             eprintln!(
-                "paneflow-update: feed unreachable at {} — check PANEFLOW_UPDATE_FEED_URL",
+                "paneflow-update: feed unreachable at {} - check PANEFLOW_UPDATE_FEED_URL",
                 crate::update::checker::update_feed_url()
             );
             return 3;
         }
         UpdateStatus::Checking => {
-            eprintln!("paneflow-update: checker returned Checking — should never happen");
+            eprintln!("paneflow-update: checker returned Checking - should never happen");
             return 1;
         }
     };
@@ -1611,10 +1611,10 @@ fn run_update_and_exit() -> i32 {
                     classified,
                     crate::update::error::UpdateError::IntegrityMismatch { .. }
                 ) {
-                    eprintln!("paneflow-update: hash mismatch — {err}");
+                    eprintln!("paneflow-update: hash mismatch - {err}");
                     return 4;
                 }
-                eprintln!("paneflow-update: install failed — {err}");
+                eprintln!("paneflow-update: install failed - {err}");
                 1
             }
         },
@@ -1631,13 +1631,13 @@ fn run_update_and_exit() -> i32 {
                     0
                 }
                 Err(err) => {
-                    eprintln!("paneflow-update: AppImage install failed — {err}");
+                    eprintln!("paneflow-update: AppImage install failed - {err}");
                     1
                 }
             }
         }
         // SystemPackage (.deb/.rpm/dnf/apt) updates need pkexec + a
-        // running polkit agent — neither belongs in `--update-and-exit`,
+        // running polkit agent - neither belongs in `--update-and-exit`,
         // which is designed to be deterministic and non-interactive.
         // AppBundle/WindowsMsi: the e2e harness is Linux-only (US-014
         // covers Windows e2e separately).
@@ -1669,7 +1669,7 @@ fn run_update_and_exit() -> i32 {
 fn attach_parent_console() {
     use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
     // SAFETY: a plain FFI call with no aliasing or memory-safety concerns. A
-    // 0 (FALSE) return means there is no parent console — exactly the GUI
+    // 0 (FALSE) return means there is no parent console - exactly the GUI
     // launch we intentionally leave alone.
     unsafe {
         let _ = AttachConsole(ATTACH_PARENT_PROCESS);
@@ -1678,7 +1678,7 @@ fn attach_parent_console() {
 
 fn main() {
     // Restore CLI stdout/stderr when launched from a terminal (no-op on a GUI
-    // launch). Must run before the first `println!` below — see the fn docs.
+    // launch). Must run before the first `println!` below - see the fn docs.
     #[cfg(windows)]
     attach_parent_console();
 
@@ -1693,12 +1693,12 @@ fn main() {
     let is_mcp_subcommand = args.get(1).map(String::as_str) == Some("mcp");
     // EP-001 (cli-agent-orchestration): same gating rationale as the `mcp`
     // flag. When argv[1] is a known CLI verb (`paneflow ls --help`,
-    // `paneflow read … --json`), the global flag scans below must NOT fire —
+    // `paneflow read … --json`), the global flag scans below must NOT fire -
     // clap owns per-subcommand `--help`/`--version`, and the CLI dispatch runs
     // after the manual intercepts.
     let is_cli_subcommand = cli::is_cli_verb(args.get(1).map(String::as_str));
     // EP-004 (cli-agent-orchestration): `paneflow hooks <cmd>` is intercepted
-    // before clap (like `mcp`) and mutates agent config files offline — so the
+    // before clap (like `mcp`) and mutates agent config files offline - so the
     // global flag scans must not eat its `--help`.
     let is_hooks_subcommand = args.get(1).map(String::as_str) == Some("hooks");
     if !is_mcp_subcommand
@@ -1707,7 +1707,7 @@ fn main() {
         && args.iter().any(|a| a == "--help" || a == "-h")
     {
         println!(
-            "PaneFlow {version} — native terminal workspace for coding agents\n\
+            "PaneFlow {version} - native terminal workspace for coding agents\n\
              \n\
              Usage: paneflow [OPTIONS]\n\
              \x20      paneflow mcp <install|status|uninstall>\n\
@@ -1757,7 +1757,7 @@ fn main() {
     // Quiet by default: a plain `cargo run` (or a shipped binary) shows only
     // warnings + errors. `RUST_LOG=info` restores the startup/runtime
     // diagnostics (GPU selection, IPC, session restore, …) and `RUST_LOG=debug`
-    // adds the per-operation diff/git trace — matching the documented
+    // adds the per-operation diff/git trace - matching the documented
     // "RUST_LOG=info cargo run # with logging" workflow.
     env_logger::Builder::from_env(
         env_logger::Env::default()
@@ -1780,7 +1780,7 @@ fn main() {
     // PATH omits Homebrew, Nix, version managers, and `~/.zprofile` additions.
     // No-op on a terminal launch (stdin is a TTY) and on Windows. Runs FIRST so
     // the static prepend below layers the per-user bin dirs on top of the real
-    // login PATH. Must run before any other thread spawns — it mutates the
+    // login PATH. Must run before any other thread spawns - it mutates the
     // process environment (see the module's safety note).
     login_shell_env::load_login_shell_env();
 
@@ -1789,12 +1789,12 @@ fn main() {
     // when Paneflow is launched from a `.desktop` file / Finder / Start Menu
     // (those inherit a minimal systemd-user / launchd / Explorer PATH that
     // does not source the user's shell rc). Must run before any other
-    // thread spawns — see safety note on `augment_path_for_gui_launch`.
+    // thread spawns - see safety note on `augment_path_for_gui_launch`.
     runtime_paths::augment_path_for_gui_launch();
 
     // US-005: synchronous update flow for the e2e harness. Runs the same
     // checker + per-format installer the GUI calls, but without ever
-    // initializing GPUI — exits with status 0 on a successful swap, 2 on
+    // initializing GPUI - exits with status 0 on a successful swap, 2 on
     // "no update needed", 3 on a feed-unreachable error (AC6's explicit
     // "feed unreachable" requirement vs the generic "update failed"),
     // 4 on integrity / hash mismatch, 5 on unsupported install method,
@@ -1815,12 +1815,12 @@ fn main() {
     }
 
     // EP-002 US-004: `paneflow mcp <subcommand>` runs as a scriptable CLI
-    // and exits — it never initializes GPUI / opens a window. Placed after
+    // and exits - it never initializes GPUI / opens a window. Placed after
     // `augment_path_for_gui_launch` (so agent-CLI detection sees `~/.bun/bin`
     // etc.) and after `--update-and-exit`, before any GUI bootstrap. The
     // install engine lives in the GPU-free `paneflow-mcp-install` crate; we
     // extract the bridge first so the path written into agent configs is
-    // guaranteed to exist (best-effort — the engine refuses cleanly if not).
+    // guaranteed to exist (best-effort - the engine refuses cleanly if not).
     // Diagnostics go to stderr (env_logger), the per-agent report to stdout.
     if args.get(1).map(String::as_str) == Some("mcp") {
         let bridge_path = match ai_hooks::extract::ensure_bridge_extracted() {
@@ -1837,7 +1837,7 @@ fn main() {
     }
 
     // EP-004 (cli-agent-orchestration): `paneflow hooks <cmd>` installs the
-    // persistent agent-notification hooks and exits — like `mcp`, it mutates
+    // persistent agent-notification hooks and exits - like `mcp`, it mutates
     // external config files offline and never initializes GPUI. Extract the
     // ai-hook callback to its stable path first so the path written into agent
     // configs is guaranteed to exist; fall back to the resolved-but-maybe-
@@ -1854,7 +1854,7 @@ fn main() {
     }
 
     // EP-001 (cli-agent-orchestration): the `paneflow <verb>` scriptable CLI
-    // drives a RUNNING instance over the existing IPC socket and exits — it
+    // drives a RUNNING instance over the existing IPC socket and exits - it
     // never initializes GPUI. Gated on a known verb in argv[1] (same pattern as
     // `mcp`) so unknown args still fall through to the GUI below. Placed after
     // the logger + PATH augmentation so the CLI inherits `RUST_LOG` and the
@@ -1870,7 +1870,7 @@ fn main() {
     // EP-001 US-003: materialize the embedded `paneflow-mcp` bridge to its
     // stable, non-versioned path so a registered MCP server keeps resolving
     // across Paneflow updates. SHA-compared + atomic: a no-op when the
-    // on-disk bytes already match the embedded version. Non-fatal — the GUI
+    // on-disk bytes already match the embedded version. Non-fatal - the GUI
     // must still open if data_dir is unwritable; `paneflow mcp install`
     // (EP-002) refuses cleanly later rather than write a dangling path.
     match ai_hooks::extract::ensure_bridge_extracted() {
@@ -1883,11 +1883,11 @@ fn main() {
     application()
         .with_assets(assets::Assets)
         .run(|cx: &mut App| {
-            // Load config early — needed for keybindings and window decorations
+            // Load config early - needed for keybindings and window decorations
             let config = paneflow_config::loader::load_config();
             // `apply_keybindings` clears the whole registry, so it now also
             // (re-)registers the TextInput / TextArea widget bindings itself
-            // (US-016: agents composer textarea included) — no separate startup
+            // (US-016: agents composer textarea included) - no separate startup
             // call is needed, and a later re-apply can no longer strip them.
             keybindings::apply_keybindings(cx, &config.shortcuts);
 
@@ -1895,7 +1895,7 @@ fn main() {
             // any window opens, so GPUI's text system can resolve the
             // `Lilex` family (mono, 4 weights) and `IBM Plex Sans`
             // family (sans, 4 weights) Paneflow ships as the default
-            // primaries — same strategy Zed uses with `.ZedMono` /
+            // primaries - same strategy Zed uses with `.ZedMono` /
             // `.ZedSans` (`zed/assets/settings/default.json:29,57`).
             // Picking embedded families as the **primary** instead of
             // system families (Menlo / Cascadia Mono / DejaVu) sidesteps
@@ -1922,7 +1922,7 @@ fn main() {
             // panel backgrounds, etc.). Without this call, opening a
             // thread panics with `no state of type theme::GlobalTheme
             // exists`. `LoadThemes::JustBase` skips the JSON theme
-            // bundles and `theme_settings` integration — Paneflow's own
+            // bundles and `theme_settings` integration - Paneflow's own
             // `crate::theme` module remains the source of truth for
             // application chrome; this global only feeds the markdown
             // renderer's secondary decorations. The `::theme` (root)
@@ -1944,7 +1944,7 @@ fn main() {
             // implement the trait directly with fixed values that match
             // Paneflow's UI (IBM Plex Sans / Lilex, 13 px). The
             // markdown renderer only reads font_family and font size
-            // for its embedded ui components — anything else flows
+            // for its embedded ui components - anything else flows
             // through the `MarkdownStyle` we pass to `MarkdownElement`.
             struct PaneflowThemeSettingsProvider {
                 ui_font: gpui::Font,
@@ -1993,7 +1993,7 @@ fn main() {
             crate::theme::sync_markdown_global_theme(cx);
 
             // US-012: macOS native menu bar. On Linux/Windows the call is
-            // elided — GPUI's non-macOS platforms don't render a menu bar
+            // elided - GPUI's non-macOS platforms don't render a menu bar
             // and AC5 forbids any Linux UI change.
             #[cfg(target_os = "macos")]
             install_macos_menu_bar(cx);
@@ -2067,7 +2067,7 @@ fn main() {
                         move |_window, cx| {
                             let app = view.read(cx);
                             app.save_session_blocking(cx);
-                            // US-013 AC #2 — final chance to flush
+                            // US-013 AC #2 - final chance to flush
                             // `app_exited` when the OS close button or a
                             // keyboard shortcut closes the last window.
                             app.emit_app_exited_and_flush();

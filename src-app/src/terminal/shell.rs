@@ -18,10 +18,10 @@ use std::collections::HashMap;
 /// undone by user `.zshrc`/`.bashrc` lines like
 /// `export PATH="$HOME/.local/bin:$PATH"`, which demote PaneFlow's bin
 /// dir behind the user's `~/.local/bin/claude` and bypass the shim
-/// entirely. We re-prepend before every prompt — first invocation runs
+/// entirely. We re-prepend before every prompt - first invocation runs
 /// after `.zshrc` finishes, so the first `claude` typed at the prompt
 /// resolves to the shim. Idempotent + O(1) string work, invisible cost.
-const ZSH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
+const ZSH_OSC7: &str = r#"# PaneFlow shell integration - OSC 7 CWD reporting
 if [[ -n "${PANEFLOW_ORIG_ZDOTDIR+x}" ]]; then
     ZDOTDIR="${PANEFLOW_ORIG_ZDOTDIR}"
     unset PANEFLOW_ORIG_ZDOTDIR
@@ -46,9 +46,9 @@ __paneflow_path_prepend
 
 /// bash: `--rcfile` replacement. Sources the real `.bashrc`, then appends
 /// our OSC 7 function to PROMPT_COMMAND (preserving starship/oh-my-bash/etc.).
-/// Same AI-hook PATH-prepend rationale as ZSH_OSC7 — PROMPT_COMMAND fires
+/// Same AI-hook PATH-prepend rationale as ZSH_OSC7 - PROMPT_COMMAND fires
 /// before each prompt, after `.bashrc` has run.
-const BASH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
+const BASH_OSC7: &str = r#"# PaneFlow shell integration - OSC 7 CWD reporting
 [[ -f ~/.bashrc ]] && source ~/.bashrc
 __paneflow_osc7() { printf '\e]7;file://%s%s\a' "${HOSTNAME}" "${PWD}"; }
 __paneflow_path_prepend() {
@@ -66,9 +66,9 @@ __paneflow_path_prepend
 /// fish: `--init-command` sourced script. Uses `--on-variable PWD` so it
 /// fires on every directory change independently of the prompt function.
 /// fish `--init-command` runs AFTER `config.fish`, so a one-shot prepend
-/// is sufficient — but `fish_add_path -gp` is idempotent so a re-source
+/// is sufficient - but `fish_add_path -gp` is idempotent so a re-source
 /// of this file is also safe.
-const FISH_OSC7: &str = r#"# PaneFlow shell integration — OSC 7 CWD reporting
+const FISH_OSC7: &str = r#"# PaneFlow shell integration - OSC 7 CWD reporting
 function __paneflow_osc7 --on-variable PWD
     printf '\e]7;file://%s%s\a' (hostname) "$PWD"
 end
@@ -86,7 +86,7 @@ end
 /// BEL terminator (``a``) matches the zsh/bash/fish emitters so PaneFlow's
 /// shared OSC 7 parser handles Windows and Unix identically.
 ///
-/// US-012 — prd-windows-port.md.
+/// US-012 - prd-windows-port.md.
 const PWSH_OSC7: &str = r#"# PaneFlow shell integration - OSC 7 CWD reporting (US-012)
 # Non-destructive: wraps the existing `prompt` function so the user's
 # prompt still renders. Loaded via `pwsh -NoExit -Command ". <this>"`.
@@ -129,7 +129,7 @@ __paneflow_path_prepend
 "#;
 
 /// Resolve the default shell path following a platform-specific fallback chain
-/// (US-006 — prd-windows-port.md). Returns the path that should be passed to
+/// (US-006 - prd-windows-port.md). Returns the path that should be passed to
 /// `portable-pty`'s `CommandBuilder::new`.
 ///
 /// Unix chain: configured (if executable) → `$SHELL` → `/bin/sh`.
@@ -138,7 +138,7 @@ __paneflow_path_prepend
 /// (`powershell.exe`) → `%ComSpec%` → `C:\Windows\System32\cmd.exe` → bare
 /// `"cmd.exe"` (last-ditch). PowerShell is preferred over `cmd.exe` so a fresh
 /// Windows install lands on a modern shell (rich prompt, ANSI colors, working
-/// `clear`) instead of the legacy console — mirrors Zed's
+/// `clear`) instead of the legacy console - mirrors Zed's
 /// `get_windows_system_shell` (`crates/util/src/shell.rs`).
 pub(super) fn resolve_default_shell(configured: Option<&str>) -> String {
     if let Some(path) = configured {
@@ -155,7 +155,7 @@ pub(super) fn resolve_default_shell(configured: Option<&str>) -> String {
 }
 
 /// Validate that a user-configured shell entry resolves to an executable file.
-/// Bare names (no path separators) are searched on PATH via `which` — this is
+/// Bare names (no path separators) are searched on PATH via `which` - this is
 /// what lets `"default_shell": "pwsh.exe"` work on Windows without the user
 /// having to hard-code `C:\Program Files\PowerShell\7\pwsh.exe`.
 fn configured_shell_if_usable(path: &str) -> Option<String> {
@@ -223,14 +223,14 @@ fn resolve_default_shell_fallback() -> String {
 #[cfg(windows)]
 fn resolve_default_shell_fallback() -> String {
     // Prefer PowerShell over cmd.exe. A bare cmd.exe default gives the legacy
-    // "BIOS console" experience — no `clear` (it's `cls`), a 16-color `C:\>`
-    // prompt, no PSReadLine — which is jarring next to a standalone PowerShell.
+    // "BIOS console" experience - no `clear` (it's `cls`), a 16-color `C:\>`
+    // prompt, no PSReadLine - which is jarring next to a standalone PowerShell.
     // Mirrors Zed's `get_windows_system_shell` (crates/util/src/shell.rs):
     // pwsh 7 → Windows PowerShell 5.1 → cmd.exe only as a last resort.
     if let Some(powershell) = find_windows_powershell() {
         return powershell;
     }
-    // No PowerShell found — fall back to cmd.exe. %ComSpec% is the Windows
+    // No PowerShell found - fall back to cmd.exe. %ComSpec% is the Windows
     // convention for "the command interpreter", respected by every console app.
     if let Ok(com_spec) = std::env::var("ComSpec")
         && std::path::Path::new(&com_spec).is_file()
@@ -238,7 +238,7 @@ fn resolve_default_shell_fallback() -> String {
         return com_spec;
     }
     // Canonical cmd.exe location (works on every supported Windows since
-    // 10 1809; we pin the 64-bit System32 path — WOW64 users still see
+    // 10 1809; we pin the 64-bit System32 path - WOW64 users still see
     // cmd.exe there via redirection).
     const CMD_FALLBACK: &str = r"C:\Windows\System32\cmd.exe";
     if std::path::Path::new(CMD_FALLBACK).is_file() {
@@ -348,7 +348,7 @@ fn clear_then_for_shell(command: &str, shell: &str) -> String {
         "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "ash" | "mksh" => {
             format!("clear && {command}")
         }
-        // US-042: unknown shell (nushell, elvish, xonsh, …) — don't assume
+        // US-042: unknown shell (nushell, elvish, xonsh, …) - don't assume
         // `&&`/`clear` exist. Launch the command bare so an exotic shell
         // doesn't eat a syntax error on the very first line.
         _ => command.to_string(),
@@ -379,10 +379,10 @@ fn to_shell_path(p: &std::path::Path) -> String {
 /// on Windows).
 ///
 /// Supported shells:
-/// - **zsh, bash, fish** — BEL-terminated OSC 7 via per-prompt hooks.
-/// - **PowerShell 5.1 / pwsh 7** (US-012) — `prompt` function wrapper,
+/// - **zsh, bash, fish** - BEL-terminated OSC 7 via per-prompt hooks.
+/// - **PowerShell 5.1 / pwsh 7** (US-012) - `prompt` function wrapper,
 ///   dot-sourced so the user's `$PROFILE`-defined prompt still renders.
-/// - **cmd.exe** — `info!` log only; cmd has no per-prompt scripting hook,
+/// - **cmd.exe** - `info!` log only; cmd has no per-prompt scripting hook,
 ///   so split-pane CWD inheritance from a cmd.exe pane is v1-unsupported
 ///   (documented in `docs/WINDOWS.md` per US-022).
 /// - **Shells without injection** (nushell, elvish, xonsh): rely on
@@ -397,7 +397,7 @@ pub(super) fn setup_shell_integration(
         return vec![];
     };
 
-    // US-006 — `Path::file_name()` is path-separator-agnostic:
+    // US-006 - `Path::file_name()` is path-separator-agnostic:
     //   /bin/zsh  → "zsh"      (Unix)
     //   C:\Windows\System32\cmd.exe → "cmd.exe"  (Windows)
     //   zsh (bare) → "zsh"     (either platform)
@@ -405,7 +405,7 @@ pub(super) fn setup_shell_integration(
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(shell);
-    // US-012 — normalize for case-insensitive match + optional `.exe`
+    // US-012 - normalize for case-insensitive match + optional `.exe`
     // suffix. Windows allows `pwsh` and `pwsh.exe` interchangeably on
     // PATH; Unix shell names (lowercase, no suffix) are unaffected.
     let normalized = basename.to_ascii_lowercase();
@@ -417,7 +417,7 @@ pub(super) fn setup_shell_integration(
                 return vec![];
             }
             // U-022: if the rc write fails, abort activation rather than
-            // hijacking ZDOTDIR to point at a dir with no `.zshenv` — that
+            // hijacking ZDOTDIR to point at a dir with no `.zshenv` - that
             // would suppress the user's real zsh startup AND give no
             // integration. Bail before touching `env`.
             if std::fs::write(dir.join(".zshenv"), ZSH_OSC7).is_err() {
@@ -435,7 +435,7 @@ pub(super) fn setup_shell_integration(
                 return vec![];
             }
             let rcfile = dir.join("bashrc");
-            // U-022: abort if the write fails — handing bash `--rcfile <path>`
+            // U-022: abort if the write fails - handing bash `--rcfile <path>`
             // for a file that doesn't exist breaks startup instead of
             // gracefully falling back to the user's normal `.bashrc`.
             if std::fs::write(&rcfile, BASH_OSC7).is_err() {
@@ -449,7 +449,7 @@ pub(super) fn setup_shell_integration(
                 return vec![];
             }
             let initfile = dir.join("osc7.fish");
-            // U-022: abort if the write fails — sourcing a missing init file
+            // U-022: abort if the write fails - sourcing a missing init file
             // errors fish startup rather than degrading cleanly.
             if std::fs::write(&initfile, FISH_OSC7).is_err() {
                 return vec![];
@@ -459,7 +459,7 @@ pub(super) fn setup_shell_integration(
                 format!("source {}", to_shell_path(&initfile)),
             ]
         }
-        // US-012 — PowerShell 7 (pwsh) and Windows PowerShell 5.1 share
+        // US-012 - PowerShell 7 (pwsh) and Windows PowerShell 5.1 share
         // the same `function prompt { ... }` hook mechanism, so one
         // script serves both. `-NoExit` keeps the shell interactive after
         // the init command; `-Command ". 'path'"` dot-sources our script
@@ -471,7 +471,7 @@ pub(super) fn setup_shell_integration(
                 return vec![];
             }
             let initfile = dir.join("osc7.ps1");
-            // U-022: abort if the write fails — dot-sourcing a missing script
+            // U-022: abort if the write fails - dot-sourcing a missing script
             // breaks the pwsh session rather than degrading cleanly.
             if std::fs::write(&initfile, PWSH_OSC7).is_err() {
                 return vec![];
@@ -487,7 +487,7 @@ pub(super) fn setup_shell_integration(
                 format!(". '{escaped}'"),
             ]
         }
-        // US-012 AC-5 — cmd.exe has no scripting hook for per-prompt
+        // US-012 AC-5 - cmd.exe has no scripting hook for per-prompt
         // actions (its `$PROMPT` env var controls only the displayed
         // text, not arbitrary execution). Split-pane CWD inheritance
         // from cmd.exe panes is v1-unsupported; users can `cd` manually
@@ -513,7 +513,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn well_known_shell_lookup_finds_sh_and_rejects_bogus() {
-        // Resolves to a real `sh` file from some standard dir — the exact dir
+        // Resolves to a real `sh` file from some standard dir - the exact dir
         // varies (`/bin/sh` on macOS, `/usr/bin/sh` on many Linux distros), so
         // assert the basename, not the full path.
         let found = super::well_known_shell_dir_lookup("sh");
@@ -563,7 +563,7 @@ mod tests {
 
     #[test]
     fn clear_then_unknown_shell_launches_bare() {
-        // US-042: an unknown shell gets no clear prefix — we can't assume `&&`
+        // US-042: an unknown shell gets no clear prefix - we can't assume `&&`
         // or `clear` exist (nushell, elvish, xonsh, …).
         assert_eq!(clear_then_for_shell("opencode", "/usr/bin/nu"), "opencode");
         assert_eq!(clear_then_for_shell("claude", "elvish"), "claude");

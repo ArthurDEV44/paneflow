@@ -140,7 +140,7 @@ impl LayoutTree {
 
     /// Swap two pane entities in the tree. Walks recursively, replacing
     /// every `Leaf(a)` with `Leaf(b)` and vice versa. Ratios and tree shape
-    /// are preserved — only the pane references move.
+    /// are preserved - only the pane references move.
     pub fn swap_panes(&mut self, a: &Entity<Pane>, b: &Entity<Pane>) {
         match self {
             LayoutTree::Leaf(pane) => {

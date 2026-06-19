@@ -1,4 +1,4 @@
-//! Background update checker — queries GitHub Releases API at startup,
+//! Background update checker - queries GitHub Releases API at startup,
 //! deposits the result into a shared slot for the main thread to pick up.
 //!
 //! US-009 adds arch-+-format asset matching so users only ever see an asset
@@ -13,7 +13,7 @@ use super::install_method::{self, InstallMethod, PackageManager};
 
 /// Upper bound on any single HTTP call made by the update flow (US-001).
 ///
-/// ureq 3 defaults to no timeout — a half-open TCP connection or a server
+/// ureq 3 defaults to no timeout - a half-open TCP connection or a server
 /// that accepts then never responds would otherwise hang the checker thread
 /// indefinitely, leaving the title bar stuck on "Checking…" until the app
 /// is killed. 30 seconds is generous enough for a cold-start GitHub API
@@ -31,7 +31,7 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Hosts the update flow is allowed to talk to (US-007). GitHub serves the
 /// release JSON from `api.github.com` and the asset bytes from `github.com`
 /// (which 302-redirects to `objects.githubusercontent.com`, followed
-/// transparently by ureq — we only validate the URL we were handed). A feed
+/// transparently by ureq - we only validate the URL we were handed). A feed
 /// override or an asset URL pointing anywhere else is rejected so a tampered
 /// release JSON can't redirect the downloader off-domain.
 const ALLOWED_UPDATE_HOSTS: &[&str] = &[
@@ -46,7 +46,7 @@ const ALLOWED_UPDATE_HOSTS: &[&str] = &[
 /// when it passes [`is_allowed_update_url`]: `https://` to an allow-listed
 /// host (any build), or loopback `http(s)://127.0.0.1` (the e2e fixture).
 /// Plain `http://` to a non-loopback host is accepted only in debug builds
-/// (US-007) — a release binary never trusts a cleartext, off-host feed.
+/// (US-007) - a release binary never trusts a cleartext, off-host feed.
 /// Bad input falls through to the default with a warn so a typo can't
 /// silently break update checks for a user who set the var by accident.
 pub(crate) fn update_feed_url() -> String {
@@ -119,7 +119,7 @@ fn url_host(after_scheme: &str) -> &str {
 
 /// Loopback host check covering `localhost` and any loopback IP literal
 /// (`127.0.0.0/8`, IPv6 `::1`). The host is PARSED as an IP so a deceptive
-/// string like `127.example.com` or `127.0.0.1.evil.com` does NOT match — the
+/// string like `127.example.com` or `127.0.0.1.evil.com` does NOT match - the
 /// old `starts_with("127.")` prefix test let those bypass the https allow-list.
 fn is_loopback_host(host: &str) -> bool {
     if host == "localhost" {
@@ -134,13 +134,13 @@ fn is_loopback_host(host: &str) -> bool {
 /// (Rosetta 2 on Apple Silicon, WOW64 on ARM64 Windows) so an emulated
 /// install can migrate to a native build (US-009). Falls back to the
 /// compile-time `consts::ARCH` when no translation is detected or the probe
-/// is unavailable — which is always the case on Linux (no desktop emulation
+/// is unavailable - which is always the case on Linux (no desktop emulation
 /// layer in this threat model).
 fn host_arch() -> &'static str {
     #[cfg(target_os = "macos")]
     {
         // An x86_64 binary under Rosetta 2 reports `consts::ARCH == "x86_64"`
-        // but the host is Apple Silicon — return the native arch so we offer
+        // but the host is Apple Silicon - return the native arch so we offer
         // the native aarch64 build instead of pinning the user to emulation.
         if macos_is_translated() {
             return "aarch64";
@@ -165,7 +165,7 @@ fn host_arch() -> &'static str {
 fn macos_is_translated() -> bool {
     let mut ret: libc::c_int = 0;
     let mut size = std::mem::size_of::<libc::c_int>();
-    // SAFETY: standard `sysctlbyname` FFI — `name` is a valid NUL-terminated
+    // SAFETY: standard `sysctlbyname` FFI - `name` is a valid NUL-terminated
     // C string, `ret`/`size` are a correctly sized out buffer, and the new
     // value pointer is null (read-only query).
     let rc = unsafe {
@@ -228,7 +228,7 @@ pub enum AssetFormat {
     AppImage,
     TarGz,
     Dmg,
-    /// Windows MSI installer (US-011 — prd-windows-port.md). Produced by
+    /// Windows MSI installer (US-011 - prd-windows-port.md). Produced by
     /// `cargo-wix` (see US-013), signed via Azure Trusted Signing in
     /// `release.yml` (US-016). Paired with [`InstallMethod::WindowsMsi`].
     Msi,
@@ -268,7 +268,7 @@ impl AssetFormat {
     /// preserved for regression safety). macOS `.dmg` files carry the
     /// `-apple-darwin` tail and Windows `.msi` files carry the
     /// `-pc-windows-msvc` tail because GitHub Releases host artifacts for
-    /// all platforms side by side — a bare `-x86_64.msi` would collide
+    /// all platforms side by side - a bare `-x86_64.msi` would collide
     /// visually with `-x86_64.deb` in the releases listing.
     fn target_qualifier(&self) -> &'static str {
         match self {
@@ -281,7 +281,7 @@ impl AssetFormat {
     /// Pick the right asset format for a given install method.
     ///
     /// `Unknown` falls back to `.tar.gz` because that's the only format that
-    /// works without root and without a specific package manager — the safe
+    /// works without root and without a specific package manager - the safe
     /// default for dev builds and legacy `.run` migrations.
     fn from_install_method(method: &InstallMethod) -> Self {
         match method {
@@ -297,7 +297,7 @@ impl AssetFormat {
             // fallback mirroring `InstallMethod::Unknown`.
             //
             // US-004: RpmOstree (Silverblue / Kinoite) is similarly routed
-            // to an informational toast — the updater never downloads an
+            // to an informational toast - the updater never downloads an
             // asset for these users, so the format is never reached.
             InstallMethod::SystemPackage {
                 manager: PackageManager::Other,
@@ -308,13 +308,13 @@ impl AssetFormat {
             InstallMethod::AppImage { .. } => AssetFormat::AppImage,
             InstallMethod::TarGz { .. } => AssetFormat::TarGz,
             InstallMethod::AppBundle { .. } => AssetFormat::Dmg,
-            // US-011 — Windows MSI installs take the signed `.msi` asset
+            // US-011 - Windows MSI installs take the signed `.msi` asset
             // for `x86_64-pc-windows-msvc`. Paired with `InstallMethod::WindowsMsi`
             // detected in US-010; the MSI is produced + signed by the
             // release pipeline in US-013/US-015/US-016.
             InstallMethod::WindowsMsi { .. } => AssetFormat::Msi,
             // ExternallyManaged short-circuits the click handler before
-            // reaching the asset picker — the in-app updater is disabled
+            // reaching the asset picker - the in-app updater is disabled
             // for Flatpak / Snap / packager-baked installs. The neutral
             // TarGz fallback never lands on the wire.
             InstallMethod::ExternallyManaged { .. } => AssetFormat::TarGz,
@@ -328,7 +328,7 @@ pub enum UpdateStatus {
     Checking,
     Available {
         version: String,
-        /// GitHub release HTML page — always populated. The title bar opens
+        /// GitHub release HTML page - always populated. The title bar opens
         /// this in a browser as a fallback when `asset_url` is `None`.
         url: String,
         /// Direct download URL for the arch-+-format-matched asset. `None`
@@ -369,8 +369,8 @@ impl UpdateCheckTrigger {
 /// inside [`check_github_release`] when both the version and asset
 /// match) ride through that handle. A `Null` client produces no
 /// network call (consent-gated by the factory), so callers that
-/// don't want telemetry — the `--update-and-exit` harness in
-/// particular — pass a Null client.
+/// don't want telemetry - the `--update-and-exit` harness in
+/// particular - pass a Null client.
 pub fn spawn_check(
     telemetry: std::sync::Arc<crate::telemetry::client::TelemetryClient>,
     trigger: UpdateCheckTrigger,
@@ -446,13 +446,13 @@ pub fn pick_asset<'a>(
         .iter()
         .find(|a| a.name.to_ascii_lowercase().ends_with(&expected))?;
     // US-007: validate the selected asset's download URL before handing it
-    // to the installer — https to an allow-listed host (or loopback for the
+    // to the installer - https to an allow-listed host (or loopback for the
     // e2e fixture). A release JSON whose asset URL points off-domain is
     // dropped so the title bar falls back to the release page instead of
     // streaming an artifact from an attacker-chosen host.
     if !is_allowed_update_url(&picked.browser_download_url) {
         log::warn!(
-            "update check: asset '{}' has a disallowed download URL ({}) — ignoring",
+            "update check: asset '{}' has a disallowed download URL ({}) - ignoring",
             picked.name,
             picked.browser_download_url
         );
@@ -472,7 +472,7 @@ pub fn pick_asset<'a>(
 /// belong at `debug`, not `warn`. Only a persistent `4xx` (a `404` on
 /// `releases/latest`, a `401/403`) points at broken packaging or config worth
 /// a `warn`. `ureq::Error` is `#[non_exhaustive]`; matching only the stable
-/// `StatusCode` variant keeps this compiling across point releases — every
+/// `StatusCode` variant keeps this compiling across point releases - every
 /// other (transport) error falls through to `true`.
 fn transient_update_error(e: &ureq::Error) -> bool {
     match e {
@@ -484,7 +484,7 @@ fn transient_update_error(e: &ureq::Error) -> bool {
 /// Blocking entry point used by both the background `spawn_check` thread
 /// and the synchronous `--update-and-exit` CLI flag (US-005). The
 /// `telemetry` handle drives the `update_available` event (US-007 AC2)
-/// — pass a `Null` client to opt out.
+/// pass a `Null` client to opt out.
 pub(crate) fn check_github_release(
     telemetry: &crate::telemetry::client::TelemetryClient,
 ) -> UpdateStatus {
@@ -572,12 +572,12 @@ pub(crate) fn check_github_release(
             None => (None, None),
         };
         log::info!(
-            "update available: v{remote} (current: v{local}) — asset_format: {asset_format:?}"
+            "update available: v{remote} (current: v{local}) - asset_format: {asset_format:?}"
         );
         // AC2: only emit when both version-greater AND asset-matched.
         // Releases that ship without the host-specific format already
         // surface as `asset_url: None` so the title bar falls back to
-        // the release-page browser link — counting those as "available"
+        // the release-page browser link - counting those as "available"
         // would inflate the funnel with users who can't actually
         // accept the update in-app.
         if let Some(format) = asset_format.as_ref() {
@@ -644,7 +644,7 @@ mod tests {
         }
     }
     fn windows_msi() -> InstallMethod {
-        // Forward-slash install path intentional — see US-010's test
+        // Forward-slash install path intentional - see US-010's test
         // header for why `Path::starts_with` needs forward slashes in
         // Linux CI. Not consumed by `pick_asset` anyway (only the variant
         // discriminant matters here).
@@ -999,7 +999,7 @@ mod tests {
 
     #[test]
     fn app_bundle_returns_none_when_release_has_no_dmg() {
-        // AC4: Linux-only hotfix release — macOS user gets None, not a .deb.
+        // AC4: Linux-only hotfix release - macOS user gets None, not a .deb.
         let assets = vec![
             make_asset("paneflow-0.2.0-x86_64.deb"),
             make_asset("paneflow-0.2.0-aarch64.tar.gz"),
@@ -1043,7 +1043,7 @@ mod tests {
         assert!(r.is_none());
     }
 
-    // -- US-011 — Windows MSI asset matching. -----------------------------
+    // -- US-011 - Windows MSI asset matching. -----------------------------
 
     #[test]
     fn windows_msi_picks_msi_x86_64() {
@@ -1062,7 +1062,7 @@ mod tests {
 
     #[test]
     fn windows_msi_returns_none_when_release_has_no_msi() {
-        // AC3: Linux-only hotfix — Windows user gets None, update prompt
+        // AC3: Linux-only hotfix - Windows user gets None, update prompt
         // silently defers, no Linux asset is ever handed to the MSI flow.
         let assets = vec![
             make_asset("paneflow-0.2.0-x86_64.deb"),
@@ -1108,7 +1108,7 @@ mod tests {
     // `paneflow-telemetry` crate's private test-only API, but the
     // emit helpers are thin (`client.capture(name, props)`) so a
     // schema check on the props plus a Null-client smoke test
-    // covers the same regression surface as a queue-level mock —
+    // covers the same regression surface as a queue-level mock -
     // the only thing left untested is whether `capture()` itself
     // enqueues correctly, and that's covered by the existing
     // `paneflow_telemetry::client::tests::capture_enqueues_event`.
@@ -1146,7 +1146,7 @@ mod tests {
     }
 
     /// AC3 + AC5: `update_dismissed` payload pins the reason enum
-    /// values verbatim — dashboards key off these strings.
+    /// values verbatim - dashboards key off these strings.
     #[test]
     fn update_dismissed_props_match_ac3_schema() {
         let props = update_dismissed_props("0.2.11", "0.2.12", UpdateDismissReason::UserDismissed);
@@ -1167,12 +1167,12 @@ mod tests {
 
     /// AC2 fires only when an asset matched. The `check_github_release`
     /// branch above explicitly gates the emit on `asset_format.is_some()`
-    /// — verify that with a property-style assertion: pick_asset
+    /// verify that with a property-style assertion: pick_asset
     /// returning None means the funnel correctly drops the user
     /// (they'll see the browser-fallback pill instead).
     #[test]
     fn update_available_skipped_when_no_asset_matches() {
-        // Fedora release with only a .deb asset — wrong format for dnf.
+        // Fedora release with only a .deb asset - wrong format for dnf.
         let assets = vec![make_asset("paneflow-0.2.12-x86_64.deb")];
         let picked = pick_asset(&assets, "x86_64", dnf());
         assert!(

@@ -1,4 +1,4 @@
-//! Claude Code session discovery — reads the on-disk session store at
+//! Claude Code session discovery - reads the on-disk session store at
 //! `~/.claude/projects/<slug>/<uuid>.jsonl` and produces unified
 //! [`SessionMeta`](crate::agent_sessions::SessionMeta) entries for the
 //! sessions popover.
@@ -9,7 +9,7 @@
 //! LLM-generated `type:"ai-title"` record (when present) provides the
 //! human-readable label that the `claude --resume` picker shows.
 //!
-//! All filesystem work happens off the GPUI main thread — call
+//! All filesystem work happens off the GPUI main thread - call
 //! [`read_sessions_for_cwd`] from inside `smol::unblock`.
 
 use std::fs;
@@ -32,7 +32,7 @@ const TITLE_SCAN_LIMIT: usize = 256;
 /// EP-004 US-016: deeper line cap for the attribution scan, which walks PAST
 /// the title break to aggregate `message.usage` across assistant turns. A
 /// session's turns are spread through the file, so this is much larger than
-/// [`TITLE_SCAN_LIMIT`] — but still bounded, and it runs ONLY on the attribution
+/// [`TITLE_SCAN_LIMIT`] - but still bounded, and it runs ONLY on the attribution
 /// path (the diff column load), never on the popover title scan. 20k lines
 /// covers very long sessions while keeping a pathological file bounded.
 const MODEL_USAGE_SCAN_LIMIT: usize = 20_000;
@@ -65,7 +65,7 @@ struct FirstLineEnvelope {
 /// That covers `/`, `\`, the Windows drive `:` (so `C:\dev\paneflow` →
 /// `C--dev-paneflow`, NOT `C:-dev-paneflow`), spaces (`C:\Program Files\..`
 /// → `C--Program-Files-..`), and `.` (so `/home/u/.claude` → `-home-u--claude`,
-/// the dir Claude Code actually writes). Runs of separators are NOT collapsed —
+/// the dir Claude Code actually writes). Runs of separators are NOT collapsed -
 /// `C:\` produces the literal `C--`. No percent-encoding or hashing.
 ///
 /// The previous encoder only replaced `/` and `\`, leaving the drive `:`
@@ -90,11 +90,11 @@ pub fn project_dir_for_cwd(cwd: &str) -> Option<PathBuf> {
 /// Sessions are sorted by timestamp descending (most recent first) and only
 /// those whose first-line `cwd` matches `cwd` (via
 /// [`cwd_matches`](crate::agent_sessions::cwd_matches): exact on Unix,
-/// case/separator-insensitive on Windows) are kept — dedupes the rare slug
+/// case/separator-insensitive on Windows) are kept - dedupes the rare slug
 /// collision where two distinct paths produce the same directory name
 /// (`/a/b-c` and `/a/b/c` both slug to `-a-b-c`).
 ///
-/// **Blocking I/O** — call from inside `smol::unblock` or
+/// **Blocking I/O** - call from inside `smol::unblock` or
 /// `cx.background_executor`. Never invoke on the GPUI main thread.
 pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
     let Some(project_dir) = project_dir_for_cwd(cwd) else {
@@ -132,10 +132,10 @@ pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
 
 /// EP-004 US-014/US-016: like [`read_sessions_for_cwd`] but each session is
 /// scanned deeper to populate `model` + aggregated `usage` (the attribution
-/// path). Deliberately bypasses the title-scan mtime cache — that cache stores
+/// path). Deliberately bypasses the title-scan mtime cache - that cache stores
 /// usage-less rows for the popover, and the attribution result is instead cached
 /// on the diff `Column` keyed to its diff fingerprint (re-fetched only on
-/// re-diff). **Blocking I/O** — call from inside `smol::unblock`.
+/// re-diff). **Blocking I/O** - call from inside `smol::unblock`.
 pub fn read_sessions_with_usage_for_cwd(cwd: &str) -> Vec<SessionMeta> {
     let Some(project_dir) = project_dir_for_cwd(cwd) else {
         return Vec::new();
@@ -170,7 +170,7 @@ fn is_jsonl_file(path: &Path) -> bool {
 /// row in a single pass: the first envelope carrying `cwd`, the
 /// LLM-generated `ai-title` (when present), and the cleaned first
 /// `type:"user"` message (used as a fallback title when `ai-title` is
-/// absent — typical of sessions older than that feature's introduction).
+/// absent - typical of sessions older than that feature's introduction).
 ///
 /// Title priority:
 /// 1. `type:"ai-title"` → `aiTitle` field. Matches what the
@@ -226,7 +226,7 @@ fn read_session_meta_inner(path: &Path, scan_usage: bool) -> Option<SessionMeta>
         }
         if n as u64 == MAX_LINE_BYTES && !buf.ends_with('\n') {
             // U-017: an exactly-MAX_LINE_BYTES line with no trailing newline is
-            // ambiguous — it may be a genuinely TRUNCATED oversized line, or a
+            // ambiguous - it may be a genuinely TRUNCATED oversized line, or a
             // COMPLETE final record written without a final EOL. Peek one byte
             // to disambiguate: empty = EOF = the line is complete, fall through
             // and parse it (don't drop a valid final session). Non-empty = more
@@ -272,7 +272,7 @@ fn read_session_meta_inner(path: &Path, scan_usage: bool) -> Option<SessionMeta>
                 continue;
             }
             // EOF after exactly MAX_LINE_BYTES: `buf` is a complete final
-            // record — fall through to the normal parse below.
+            // record - fall through to the normal parse below.
         }
         let trimmed = buf.trim_end();
         if !trimmed.starts_with('{') {
@@ -333,7 +333,7 @@ fn read_session_meta_inner(path: &Path, scan_usage: bool) -> Option<SessionMeta>
             }
             // US-016: assistant turns carry `message.model` + `message.usage`.
             // Aggregate usage across turns; keep the most recent non-empty model
-            // (overwrite — a session that switched models reports the last one,
+            // (overwrite - a session that switched models reports the last one,
             // which is the most representative for a single-figure estimate).
             Some("assistant") if scan_usage => {
                 if let Some(message) = value.get("message") {
@@ -791,7 +791,7 @@ mod tests {
     fn genuinely_oversized_line_is_skipped() {
         // U-017: a line longer than MAX_LINE_BYTES (the cap truncates it
         // mid-line, more bytes follow) is still classified oversized and
-        // dropped — the peek sees a non-empty buffer, not EOF.
+        // dropped - the peek sees a non-empty buffer, not EOF.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("oversized.jsonl");
         let line = format!(

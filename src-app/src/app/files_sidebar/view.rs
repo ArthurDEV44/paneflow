@@ -29,7 +29,7 @@ impl PaneFlowApp {
             .items_center()
             .justify_between()
             .gap(px(8.))
-            // Quiet header — no divider (Codex: separation by spacing, not
+            // Quiet header - no divider (Codex: separation by spacing, not
             // borders). 36px matches the unified chrome row height.
             .h(px(36.))
             .flex_none()
@@ -103,7 +103,7 @@ impl PaneFlowApp {
             .flex_col()
             .flex_1()
             .py(px(4.))
-            // US-003: vertical scroll only — long names ellipsize, never scroll
+            // US-003: vertical scroll only - long names ellipsize, never scroll
             // horizontally.
             .overflow_x_hidden()
             .overflow_y_scroll()

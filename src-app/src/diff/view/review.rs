@@ -74,7 +74,7 @@ impl DiffView {
         } else {
             format!("{}:{}", line.path, line.lineno)
         };
-        let text = format!("`{tag}` `{}` — ", line.content.trim());
+        let text = format!("`{tag}` `{}` - ", line.content.trim());
         self.send_to_review(col_idx, text, window, cx);
     }
 
@@ -110,7 +110,7 @@ impl DiffView {
     /// EP-005 US-018/019/020: send a hunk to the active review CLI framed for an
     /// "act" intent (direct / fix-and-stage / discard), pre-filled, no
     /// auto-submit. Reuses [`Self::send_to_review`] (launches Claude Code if no
-    /// CLI is open). Paneflow runs no git write itself — the agent performs any
+    /// CLI is open). Paneflow runs no git write itself - the agent performs any
     /// staging/discard in the witnessed terminal.
     pub(super) fn act_on_hunk(
         &mut self,
@@ -173,7 +173,7 @@ impl DiffView {
     /// Launch the selected CLIs to review column `col_idx`'s branch: one real
     /// terminal per CLI, embedded UNDER the column's diff (in the Diff interface,
     /// not the CLI mode), cwd-pinned to the worktree, with a compact review prompt
-    /// pre-filled (the human submits). Human-in-the-loop — no headless session.
+    /// pre-filled (the human submits). Human-in-the-loop - no headless session.
     pub(super) fn launch_review(
         &mut self,
         col_idx: usize,
@@ -220,7 +220,7 @@ impl DiffView {
             let command = cli.launch_command(&config);
             term.read(cx).send_command(&command);
             // Pre-fill the prompt once the CLI has booted (tmux send-keys style):
-            // a delayed write with NO Enter — the human reviews + submits. The
+            // a delayed write with NO Enter - the human reviews + submits. The
             // clipboard fallback (below) covers a missed timing window.
             let prefill = prompt.clone();
             let term_weak = term.downgrade();
@@ -279,7 +279,7 @@ impl DiffView {
     }
 
     /// Terminal button on a column header: open a plain shell terminal in the
-    /// branch's worktree, embedded under the diff. Just a terminal — no CLI
+    /// branch's worktree, embedded under the diff. Just a terminal - no CLI
     /// launch, no prefill (distinct from Review).
     pub(super) fn open_terminal_for_column(
         &mut self,
@@ -318,7 +318,7 @@ impl DiffView {
         // US-049: the review prompt is pre-filled after a fixed delay, but on a
         // slow CLI cold-start (notably Windows ConPTY) the auto-fill can miss
         // its window. The prompt is always copied to the clipboard as a fallback
-        // — surface that explicitly so the user can paste it instead of staring
+        // - surface that explicitly so the user can paste it instead of staring
         // at an empty input. Shown on the first terminal only, since the
         // clipboard holds the first CLI's prompt (2nd-opinion prompts differ).
         let paste_key = if cfg!(target_os = "macos") {

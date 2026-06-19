@@ -1,13 +1,13 @@
 //! Safe-write primitives (EP-002 US-006).
 //!
 //! Every agent-config writer goes through [`write_if_changed`], which is:
-//! - **idempotent** — a write only happens when the bytes actually differ,
+//! - **idempotent** - a write only happens when the bytes actually differ,
 //!   so a re-run of `paneflow mcp install` produces zero disk churn (no
 //!   mtime bump, no backup spam);
-//! - **backed up** — the previous contents are copied to `<file>.bak`
+//! - **backed up** - the previous contents are copied to `<file>.bak`
 //!   *before* the new bytes land, and a backup failure aborts the write
 //!   (we never modify the original if we could not preserve it first);
-//! - **atomic** — bytes are written to a temp file in the same directory
+//! - **atomic** - bytes are written to a temp file in the same directory
 //!   and `rename`d into place, mirroring `session.rs`'s tmp+rename pattern.
 //!   A crash mid-write leaves the temp file, never a half-written config.
 
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 /// Copy `path` to `path` + `.bak` when it exists. Returns the backup path
-/// (or `None` if the original did not exist — nothing to preserve).
+/// (or `None` if the original did not exist - nothing to preserve).
 ///
 /// A copy failure is an error: callers MUST abort the write rather than
 /// risk clobbering a config they could not back up first (US-006 AC).
@@ -59,10 +59,10 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
 /// differ from what is already on disk.
 ///
 /// Returns `true` when a write happened, `false` when the on-disk bytes
-/// already matched (a no-op — no backup, no rename, no mtime change). This
+/// already matched (a no-op - no backup, no rename, no mtime change). This
 /// is the idempotency knob every writer relies on.
 pub fn write_if_changed(path: &Path, contents: &[u8]) -> Result<bool> {
-    // Edition 2021 (workspace default) — no let-chains, so nest the guard.
+    // Edition 2021 (workspace default) - no let-chains, so nest the guard.
     if let Ok(existing) = std::fs::read(path) {
         if existing == contents {
             return Ok(false);

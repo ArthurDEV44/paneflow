@@ -1,5 +1,5 @@
 //! US-011 (prd-git-diff-mode-2026-Q3.md): the three Git Diff view scopes and
-//! the multi-project repo-group type. Pure types — the enumeration helpers that
+//! the multi-project repo-group type. Pure types - the enumeration helpers that
 //! read open workspaces live as `PaneFlowApp` methods (`collect_*`).
 
 use std::path::PathBuf;

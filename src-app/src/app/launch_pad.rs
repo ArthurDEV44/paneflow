@@ -2,20 +2,20 @@
 //!
 //! A modal (custom-buttons modal scaffold) that compresses the
 //! worktree-per-agent ritual into one gesture: pick an agent, name a NEW
-//! branch, optionally write a prompt — confirm runs the existing
+//! branch, optionally write a prompt - confirm runs the existing
 //! orchestration-v2 worktree engine OFF the render thread
 //! (`smol::unblock` + `worktree::add_worktree`, 120 s deadline, sibling
 //! `<repo>.worktrees/<slug>`, then `copy_env_files` no-clobber), and only
 //! on success splits the focused pane at the worktree path, launches the
 //! agent CLI (`TerminalAgent::launch_command`, honors the Claude bypass
-//! setting) and pre-fills the prompt through the existing settle-poll —
+//! setting) and pre-fills the prompt through the existing settle-poll -
 //! never submitted (FR-01).
 //!
 //! Atomicity (US-005 AC4): a worktree failure surfaces git's error verbatim
 //! in the modal and creates NO pane. Branch names are NOT validated locally
-//! — git is the single authority (AC7). The created worktree is registered
+//! git is the single authority (AC7). The created worktree is registered
 //! as a [`ManagedWorktree`] so teardown parity with `paneflow up` holds
-//! (AC5 — no second worktree population).
+//! (AC5 - no second worktree population).
 
 use gpui::{
     AnyElement, ClickEvent, Context, Entity, InteractiveElement, IntoElement, KeyDownEvent,
@@ -35,7 +35,7 @@ use crate::workspace::worktree::{self, ManagedWorktree};
 /// Live Launch Pad modal state, owned by `PaneFlowApp`.
 pub(crate) struct LaunchPadState {
     /// Workspace the launch targets, by stable id (survives reorders and
-    /// closes — re-resolved when the background work returns).
+    /// closes - re-resolved when the background work returns).
     pub(crate) ws_id: u64,
     /// Pane to split next to; weak so a close while the modal is open (or
     /// while git runs) degrades to splitting the first leaf.
@@ -44,7 +44,7 @@ pub(crate) struct LaunchPadState {
     pub(crate) agent_idx: usize,
     pub(crate) branch_input: Entity<TextInput>,
     pub(crate) prompt_input: Entity<TextArea>,
-    /// `true` while the worktree creation runs — disables re-submission
+    /// `true` while the worktree creation runs - disables re-submission
     /// (US-005 AC8: no double worktree) and Escape.
     pub(crate) running: bool,
     /// Last failure, shown verbatim in the modal (git stderr included).
@@ -91,10 +91,10 @@ impl PaneFlowApp {
         let weak_app = cx.entity().downgrade();
         let branch_input = cx.new(|cx| TextInput::new("", "new-branch-name", cx));
         let prompt_input =
-            cx.new(|cx| TextArea::new("Prompt (optional) — pre-filled, never submitted", cx));
+            cx.new(|cx| TextArea::new("Prompt (optional) - pre-filled, never submitted", cx));
         prompt_input.update(cx, |ta, _| {
             // The prompt is OPTIONAL: Enter in the empty field must still
-            // confirm the form (review R2 — TaSubmit would otherwise
+            // confirm the form (review R2 - TaSubmit would otherwise
             // swallow the key without bubbling to the modal handler).
             ta.set_submit_on_empty(true);
             // Same re-entrancy discipline as the Composer: defer + weak.
@@ -135,7 +135,7 @@ impl PaneFlowApp {
         cx.notify();
     }
 
-    /// Escape path — only honored before confirmation (US-005 AC8: the
+    /// Escape path - only honored before confirmation (US-005 AC8: the
     /// in-flight run keeps the modal up with its "Creating…" state).
     pub(crate) fn launch_pad_cancel(&mut self, cx: &mut Context<Self>) {
         if self.launch_pad.as_ref().is_some_and(|lp| lp.running) {
@@ -154,7 +154,7 @@ impl PaneFlowApp {
     }
 
     /// Validate the form and run the worktree engine off-thread. Nothing is
-    /// executed when a guard fails (US-005 AC6) — the error shows in the
+    /// executed when a guard fails (US-005 AC6) - the error shows in the
     /// modal and the form stays editable.
     pub(crate) fn launch_pad_confirm(&mut self, cx: &mut Context<Self>) {
         let Some(lp) = self.launch_pad.as_ref() else {
@@ -216,7 +216,7 @@ impl PaneFlowApp {
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 // The engine is synchronous (git subprocess, 120 s deadline)
-                // — run it on the blocking pool, never the render thread.
+                // - run it on the blocking pool, never the render thread.
                 let result = smol::unblock(move || {
                     worktree::add_worktree(&repo_root, &worktree_path, &branch, true)?;
                     // Best-effort by design (US-007 orchestration-v2): a
@@ -256,14 +256,14 @@ impl PaneFlowApp {
         let Some(ws_idx) = self.workspaces.iter().position(|w| w.id == plan.ws_id) else {
             // Workspace closed during the run: the worktree exists on disk
             // but there is nothing to attach it to. Surface it instead of
-            // silently leaking — `git worktree prune`/manual removal applies.
+            // silently leaking - `git worktree prune`/manual removal applies.
             log::warn!(
                 "launch pad: workspace closed during worktree creation; {} left on disk",
                 plan.worktree_path.display()
             );
             self.show_toast(
                 format!(
-                    "Workspace closed — worktree left at {}",
+                    "Workspace closed - worktree left at {}",
                     plan.worktree_path.display()
                 ),
                 cx,
@@ -274,7 +274,7 @@ impl PaneFlowApp {
         };
 
         // AC5: register ownership FIRST so teardown parity holds even if a
-        // later step fails — the workspace now owns this worktree exactly
+        // later step fails - the workspace now owns this worktree exactly
         // like a `paneflow up` one.
         self.workspaces[ws_idx]
             .managed_worktrees
@@ -285,7 +285,7 @@ impl PaneFlowApp {
                 teardown: Default::default(),
             });
 
-        // Re-check the pane budget — it may have filled during the run.
+        // Re-check the pane budget - it may have filled during the run.
         if self.workspaces[ws_idx]
             .root
             .as_ref()
@@ -293,7 +293,7 @@ impl PaneFlowApp {
         {
             self.launch_pad_set_error(
                 format!(
-                    "Maximum pane count reached ({MAX_PANES}) — worktree created at {}",
+                    "Maximum pane count reached ({MAX_PANES}) - worktree created at {}",
                     plan.worktree_path.display()
                 ),
                 cx,
@@ -343,7 +343,7 @@ impl PaneFlowApp {
             .send_command(&plan.agent.launch_command(&self.cached_config));
         if !plan.prompt.trim().is_empty() {
             // Existing settle-poll: waits for the CLI to go quiet, then
-            // pre-fills WITHOUT a carriage return — human-in-loop (FR-01).
+            // pre-fills WITHOUT a carriage return - human-in-loop (FR-01).
             Self::schedule_prompt_prefill(&new_terminal, plan.prompt, usize::MAX, cx);
         }
 
@@ -416,7 +416,7 @@ impl PaneFlowApp {
                 .when(is_selected, |d| d.bg(ui.subtle))
                 // Multi-color logos render via `img()` (resvg keeps every
                 // native fill); monochrome logos stay a tinted `svg()` mask
-                // — same split as the agents-view launcher.
+                // - same split as the agents-view launcher.
                 .child(if agent.icon_multicolor() {
                     gpui::img(agent.icon_path())
                         .size(px(13.))
@@ -498,7 +498,7 @@ impl PaneFlowApp {
             );
 
         if let Some(err) = &lp.error {
-            // AC4/AC7: git's failure verbatim — inert text, never parsed.
+            // AC4/AC7: git's failure verbatim - inert text, never parsed.
             body = body.child(
                 div()
                     .text_size(px(11.))

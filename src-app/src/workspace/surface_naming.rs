@@ -6,8 +6,8 @@
 //! human-readable name.
 //!
 //! Two pure stages, both unit-tested here:
-//!   1. [`derive_surface_base_name`] — one surface in isolation → un-disambiguated base.
-//!   2. [`resolve_surface_names`] — the full `(custom, base, cwd)` set → globally
+//!   1. [`derive_surface_base_name`] - one surface in isolation → un-disambiguated base.
+//!   2. [`resolve_surface_names`] - the full `(custom, base, cwd)` set → globally
 //!      unique display names, honoring user custom names (US-013).
 //!
 //! The base name comes from the best available signal, in priority order:
@@ -82,7 +82,7 @@ fn name_from_command(cmd: &str) -> Option<String> {
     (!slug.is_empty()).then_some(slug)
 }
 
-/// Build a base name from the OSC title — take its first whitespace token,
+/// Build a base name from the OSC title - take its first whitespace token,
 /// reduce a path to its basename, and slugify (`/home/a/dev/paneflow` →
 /// `paneflow`).
 fn name_from_title(title: &str) -> Option<String> {

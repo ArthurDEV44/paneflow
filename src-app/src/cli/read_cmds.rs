@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use super::selector::resolve_target;
 use super::{CliError, EXIT_OK};
 
-/// `paneflow ls [--human]` — list the active workspace's surfaces.
+/// `paneflow ls [--human]` - list the active workspace's surfaces.
 pub fn ls(client: &impl IpcTransport, human: bool) -> Result<i32, CliError> {
     let result = super::reject_legacy_error(
         client
@@ -120,7 +120,7 @@ fn print_surfaces_table(result: &Value) {
     }
 }
 
-/// `paneflow ps [--json]` — list running agents across the fleet (EP-001
+/// `paneflow ps [--json]` - list running agents across the fleet (EP-001
 /// US-001). Defaults to a human table (like Unix `ps`); `--json` emits the
 /// `{agents:[…]}` envelope for scripts.
 pub fn ps(client: &impl IpcTransport, json_out: bool) -> Result<i32, CliError> {
@@ -137,7 +137,7 @@ pub fn ps(client: &impl IpcTransport, json_out: bool) -> Result<i32, CliError> {
     Ok(EXIT_OK)
 }
 
-/// `paneflow status <target> [--json]` — read one pane's agent state (EP-001
+/// `paneflow status <target> [--json]` - read one pane's agent state (EP-001
 /// US-002). Defaults to a one-line summary; `--json` emits the full envelope.
 pub fn status(client: &impl IpcTransport, target: &str, json_out: bool) -> Result<i32, CliError> {
     let surface_id = resolve_target(client, target)?;

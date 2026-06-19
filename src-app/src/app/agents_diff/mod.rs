@@ -13,7 +13,7 @@
 //! direct-paint [`crate::diff::DiffElement`] hosted in an `overflow_y_scroll`
 //! div. The dock keeps the cheap HEAD-relative semantic (the right "what did the
 //! agent just touch" base, vs the Review view's `merge-base(HEAD, base)`), but
-//! shares everything else — so a visual change to the diff body is made once.
+//! shares everything else - so a visual change to the diff body is made once.
 //!
 //! Split (US-004) into seams: [`git`] (off-thread build), [`model`]
 //! ([`AgentsDiffData`] + layout constants) and [`render`] (chrome render
@@ -120,7 +120,7 @@ impl PaneFlowApp {
     }
 
     /// Re-derive the cached collapse-filtered display rows after a collapse /
-    /// split change (no git work — just re-filters the retained full rows).
+    /// split change (no git work - just re-filters the retained full rows).
     fn recompute_agents_diff_display(&mut self) {
         let collapsed = self.agents_view.agents_diff_collapsed.clone();
         if let Some(data) = self.agents_view.agents_diff.as_mut() {
@@ -463,7 +463,7 @@ impl PaneFlowApp {
                 .map(|(p, _)| p.clone())
         };
         let Some(path) = path else {
-            return; // not a file header — nothing to collapse
+            return; // not a file header - nothing to collapse
         };
         self.toggle_diff_file_collapsed(path, cx);
     }

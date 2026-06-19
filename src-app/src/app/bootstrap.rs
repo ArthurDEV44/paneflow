@@ -1,11 +1,11 @@
-//! `PaneFlowApp::new()` — the application constructor.
+//! `PaneFlowApp::new()` - the application constructor.
 //!
 //! Wires the title bar, IPC server, config watcher, git-dir watcher, update
 //! checker, and all background tickers (50 ms IPC poll, 30 s git fallback,
 //! 30 s stale-PID sweep). Restores a saved session or creates a fresh
 //! single-workspace state.
 //!
-//! Extracted from `main.rs` per US-027 of the src-app refactor PRD — pure
+//! Extracted from `main.rs` per US-027 of the src-app refactor PRD - pure
 //! code-motion, behaviour unchanged.
 
 use gpui::{AppContext, Context};
@@ -26,11 +26,11 @@ impl PaneFlowApp {
             .detach();
         let (ipc_rx, ipc_status, event_bus) = ipc::start_server();
 
-        // US-006 — install the shared cursor-blink phase as a GPUI global
+        // US-006 - install the shared cursor-blink phase as a GPUI global
         // before any `TerminalView` is constructed. Each `TerminalView`
         // reads the global in `with_cwd` and observes the entity, so all
         // visible cursors blink in phase. One bootstrap-spawned loop
-        // toggles `phase.visible` every 530 ms — replaces N per-terminal
+        // toggles `phase.visible` every 530 ms - replaces N per-terminal
         // `smol::Timer` loops with a single ticker for the whole app.
         let blink_phase = cx.new(|_| BlinkPhase::default());
         cx.set_global(BlinkPhaseGlobal(blink_phase.clone()));
@@ -46,7 +46,7 @@ impl PaneFlowApp {
                     // closure rather than capturing it. Capturing the
                     // entity once would also be safe (the App owns the
                     // strong ref via the global; clones at app teardown
-                    // are dropped together) — consistency wins.
+                    // are dropped together) - consistency wins.
                     let result = cx.update(|cx| {
                         this.update(cx, |_app: &mut Self, cx: &mut Context<Self>| {
                             let phase = cx.global::<BlinkPhaseGlobal>().0.clone();
@@ -84,7 +84,7 @@ impl PaneFlowApp {
         }
 
         // US-006: dedicated theme watcher. Mirrors `ConfigWatcher` shape but
-        // signals via an `Arc<AtomicBool>` rather than carrying a payload —
+        // signals via an `Arc<AtomicBool>` rather than carrying a payload -
         // theme invalidation is a tristate "did the file change" question,
         // and the actual `TerminalTheme` is recomputed lazily by
         // `active_theme()` on the next render. The 50 ms poll loop drains
@@ -109,7 +109,7 @@ impl PaneFlowApp {
         }
 
         // Background update check is deferred until after the telemetry
-        // client is constructed below — `spawn_check` now takes the
+        // client is constructed below - `spawn_check` now takes the
         // client by Arc so it can emit `update_check_started` /
         // `update_available` (US-007), and the client doesn't exist
         // this early in bootstrap.
@@ -118,7 +118,7 @@ impl PaneFlowApp {
         // tuple's second component carries forensic context when
         // `session.json` was unparseable (US-006); we hold onto it and
         // emit the `session_corrupted` PostHog event after the
-        // telemetry client is constructed below — load_session itself
+        // telemetry client is constructed below - load_session itself
         // runs too early in bootstrap to call `self.telemetry`.
         let (saved_session, session_corruption) = Self::load_session();
 
@@ -146,7 +146,7 @@ impl PaneFlowApp {
             })
             .unwrap_or_default();
         // US-002 (prd-agents-ui-codex-redesign-2026-Q3.md): rehydrate free
-        // chats. Same `filter_map` shape as project threads — an unknown
+        // chats. Same `filter_map` shape as project threads - an unknown
         // agent tag drops the row rather than crashing. Absent on a
         // pre-refonte session.json (`#[serde(default)]` → empty).
         let restored_chats: Vec<crate::project::Thread> = saved_session
@@ -580,7 +580,7 @@ impl PaneFlowApp {
         // - TerminalEvent::CwdChanged → handle_cwd_change()
         // See handle_terminal_event() for the push-based implementation.
 
-        // US-008 — classify the install source once, then hand off to the
+        // US-008 - classify the install source once, then hand off to the
         // install-method hygiene migrations. Migrations are Linux-only and
         // the module itself is gated behind `#[cfg(target_os = "linux")]`,
         // so the call site needs the matching gate. On macOS / Windows the
@@ -590,7 +590,7 @@ impl PaneFlowApp {
         #[cfg(target_os = "linux")]
         update::migrations::run_startup_migrations(&install_method);
 
-        // US-010/US-012 — resolve the anonymous telemetry_id (creates it
+        // US-010/US-012 - resolve the anonymous telemetry_id (creates it
         // on first launch) and build the consent-gated capture client. The
         // `is_first_run` flag is reused below as a property on the
         // `app_started` event; a second filesystem probe would race with the
@@ -633,8 +633,8 @@ impl PaneFlowApp {
         );
         // Background flusher: every 5 s the client inspects its queue and
         // posts when the size or age threshold is met. Runs off the GPUI
-        // main thread — ureq blocks inside `post_batch` but never on the
-        // renderer — via `cx.background_spawn` + `smol::unblock`.
+        // main thread - ureq blocks inside `post_batch` but never on the
+        // renderer - via `cx.background_spawn` + `smol::unblock`.
         let telemetry_flusher = std::sync::Arc::clone(&telemetry);
         cx.background_spawn(async move {
             loop {
@@ -645,7 +645,7 @@ impl PaneFlowApp {
         })
         .detach();
 
-        // US-009 — coexistence detection + one-time advisory toast. Runs
+        // US-009 - coexistence detection + one-time advisory toast. Runs
         // strictly after the US-008 icon migration so a same-session
         // upgrade→cleanup→toast chain stays in order. Detection is always
         // logged (AC: "helper is still called for logging") so duplicate
@@ -654,7 +654,7 @@ impl PaneFlowApp {
         #[cfg(target_os = "linux")]
         if let Some(report) = update::migrations::detect_coexistent_install(&install_method) {
             log::info!(
-                "paneflow: coexistent install detected — running from {} (this install); other install at {} (installed via {})",
+                "paneflow: coexistent install detected - running from {} (this install); other install at {} (installed via {})",
                 report.running_path.display(),
                 report.other_path.display(),
                 report.other_method_label,
@@ -676,7 +676,7 @@ impl PaneFlowApp {
                     let hold_ms = crate::TOAST_HOLD_MS * 4;
                     // `push_toast` needs `&mut Self` + `&mut Context<Self>`,
                     // but `Self` doesn't exist yet at this point in `new()`.
-                    // Defer via `cx.spawn` — the first `Timer::after` yield
+                    // Defer via `cx.spawn` - the first `Timer::after` yield
                     // lets the ctor finish and hands control back with a
                     // resolvable `WeakEntity<Self>`. Matches the established
                     // spawn pattern in this file (see git-watcher, port-scan,
@@ -692,7 +692,7 @@ impl PaneFlowApp {
                                 })
                                 .is_ok();
                             // Only persist the marker if the toast actually
-                            // went out — a failed update means the app window
+                            // went out - a failed update means the app window
                             // is tearing down, in which case letting the toast
                             // recur next session is the right behaviour.
                             if pushed {
@@ -718,7 +718,7 @@ impl PaneFlowApp {
             cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Search threads", cx));
         cx.observe(&agents_filter_input, |_, _, cx| cx.notify())
             .detach();
-        // Codex settings nav search field — same pattern: a real single-line
+        // Codex settings nav search field - same pattern: a real single-line
         // TextInput, observed so each keystroke re-renders the nav to re-filter.
         let settings_search_input =
             cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Search settings…", cx));
@@ -884,7 +884,7 @@ impl PaneFlowApp {
             // US-002: free chats restored from session (empty pre-refonte).
             chats: restored_chats,
             active_project_idx: restored_active_project,
-            // US-003: start at the picker/home state — no thread/chat
+            // US-003: start at the picker/home state - no thread/chat
             // selected. The unified target replaces the old `active_thread_idx`.
             agents_target: None,
             // US-005: default picker context is the active project.
@@ -964,7 +964,7 @@ impl PaneFlowApp {
             paneflow_config::schema::AppMode::Agents
         ));
 
-        // US-013 AC #1 — fire `app_started` once per launch. `Null` clients
+        // US-013 AC #1 - fire `app_started` once per launch. `Null` clients
         // (opt-out / unanswered consent / env kill-switch) no-op; only a
         // consenting user produces an HTTP call, batched on the flusher
         // above. Must happen after the struct literal so `self.telemetry`
@@ -1005,7 +1005,7 @@ impl PaneFlowApp {
 ///
 /// `version` is safe to interpolate into a shell string without escaping: it
 /// comes from `UpdateStatus::Available { version }`, which is set from a
-/// `semver::Version::to_string()` — the semver parser rejects any input that
+/// `semver::Version::to_string()` - the semver parser rejects any input that
 /// would survive into `;`/`$()`/whitespace/bidi, so malformed GitHub tags
 /// short-circuit to `UpdateStatus::Failed` long before this function runs.
 ///
@@ -1032,7 +1032,7 @@ pub(crate) fn system_package_update_command(
             // version (dnf treats install of a higher version as an upgrade).
             format!("sudo dnf --refresh install paneflow-{version}")
         }
-        // US-004: `rpm-ostree upgrade` takes no package argument — it
+        // US-004: `rpm-ostree upgrade` takes no package argument - it
         // rebases the whole deployment. Version string is intentionally
         // NOT included, unlike the apt/dnf arms.
         Some(update::install_method::PackageManager::RpmOstree) => "rpm-ostree upgrade".to_string(),
@@ -1044,7 +1044,7 @@ pub(crate) fn system_package_update_command(
 
 /// Install the macOS menu bar.
 ///
-/// US-012: three top-level menus — PaneFlow / Edit / Window — populated with
+/// US-012: three top-level menus - PaneFlow / Edit / Window - populated with
 /// the actions listed in the PRD. The `PaneFlow` menu name matches the
 /// `CFBundleName` from the future US-013 Info.plist (AC6). Keyboard shortcuts
 /// are derived from the global keybindings table (e.g. Quit shows `⌘Q`
@@ -1088,13 +1088,13 @@ pub(crate) fn install_macos_menu_bar(cx: &mut gpui::App) {
 
 /// Detect whether the Apple Silicon binary is running under Rosetta 2
 /// translation on an Intel Mac (or, more commonly, an Intel binary on
-/// Apple Silicon — which Apple translates transparently). Either way it
+/// Apple Silicon - which Apple translates transparently). Either way it
 /// warns once at startup so a user who grabbed the wrong `.dmg` knows
 /// why GPU performance is degraded instead of silently eating the hit.
 ///
 /// Edge case 4 of the macOS port PRD. Uses `sysctl.proc_translated`: returns
 /// `1` for a translated process, `0` native, ENOENT → native Intel kernel
-/// (no Rosetta available at all). Failure to read the sysctl is silent —
+/// (no Rosetta available at all). Failure to read the sysctl is silent -
 /// this warning is diagnostic, not load-bearing.
 #[cfg(target_os = "macos")]
 pub(crate) fn warn_if_rosetta_translated() {
@@ -1123,7 +1123,7 @@ pub(crate) fn warn_if_rosetta_translated() {
     };
     if rc == 0 && translated == 1 {
         log::warn!(
-            "running under Rosetta 2 translation — GPU rendering will be \
+            "running under Rosetta 2 translation - GPU rendering will be \
              degraded. For best performance, download the matching \
              architecture from https://github.com/ArthurDEV44/paneflow/releases"
         );
@@ -1149,7 +1149,7 @@ pub(crate) fn warn_if_legacy_run_install() {
 
     if !app_dir.exists() && legacy_bin_is_regular_file {
         log::warn!(
-            "legacy .run install detected at {} — see README for migration \
+            "legacy .run install detected at {} - see README for migration \
              to the .tar.gz / .deb / .AppImage formats",
             legacy_bin.display()
         );

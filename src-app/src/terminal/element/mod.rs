@@ -53,7 +53,7 @@ pub(crate) use color::ensure_minimum_contrast;
 pub(crate) use paint::scrollbar::ScrollbarMetrics;
 
 /// APCA minimum Lc (lightness contrast) threshold.
-/// Lc 45 is "minimum for large fluent text" per ARC Bronze Simple Mode — matches Zed's default.
+/// Lc 45 is "minimum for large fluent text" per ARC Bronze Simple Mode - matches Zed's default.
 /// APCA is more accurate than WCAG 2.0 on dark backgrounds (polarity-aware, perceptually uniform).
 pub(crate) const MIN_APCA_CONTRAST: f32 = 45.0;
 
@@ -77,7 +77,7 @@ fn is_decorative_character(ch: char) -> bool {
 /// US-007: returns `true` if a cell at `point` (viewport coordinates) lies
 /// inside the active `SelectionRange` (whose `start`/`end` are in scrollback
 /// coordinates and require `display_offset` correction). Mirrors the
-/// `selection_rects` generation block below — first/last/middle line ranges
+/// `selection_rects` generation block below - first/last/middle line ranges
 /// for linear selections, axis-aligned rectangle for block selections.
 ///
 /// Used inside the cell loop to override the cell's `fg` with the theme's
@@ -216,7 +216,7 @@ struct BlockQuad {
 /// Returns `None` for characters that should be rendered as normal glyphs.
 ///
 /// Most block-element codepoints are a single rectangle, but the multi-quadrant
-/// chars (`▙ ▚ ▛ ▜ ▞ ▟`) need 2 rects each — that's why this returns a slice.
+/// chars (`▙ ▚ ▛ ▜ ▞ ▟`) need 2 rects each - that's why this returns a slice.
 /// Each emitted rect becomes one [`BlockQuad`] at the call site, all sharing
 /// the same outer cell boundaries through [`paint::background::cell_x_boundaries`].
 ///
@@ -228,7 +228,7 @@ struct BlockQuad {
 /// `debug_block_char_rendering.md` memory.
 fn block_char_coverages(c: char) -> Option<&'static [(f32, f32, f32, f32)]> {
     match c {
-        // U+2580..U+2590 — half / eighth blocks (one rect each)
+        // U+2580..U+2590 - half / eighth blocks (one rect each)
         '▀' => Some(&[(0.0, 0.0, 1.0, 0.5)]), // U+2580 Upper half
         '▁' => Some(&[(0.0, 7.0 / 8.0, 1.0, 1.0 / 8.0)]), // U+2581 Lower 1/8
         '▂' => Some(&[(0.0, 6.0 / 8.0, 1.0, 2.0 / 8.0)]), // U+2582 Lower 1/4
@@ -248,16 +248,16 @@ fn block_char_coverages(c: char) -> Option<&'static [(f32, f32, f32, f32)]> {
         '▐' => Some(&[(0.5, 0.0, 0.5, 1.0)]), // U+2590 Right half
 
         // ─── US-005 fallback extension ────────────────────────────────────
-        // U+2594 — Upper 1/8 (the lone "upper edge" block, complement of ▁)
+        // U+2594 - Upper 1/8 (the lone "upper edge" block, complement of ▁)
         '▔' => Some(&[(0.0, 0.0, 1.0, 1.0 / 8.0)]),
 
-        // U+2596..U+259D — single quadrants
+        // U+2596..U+259D - single quadrants
         '▖' => Some(&[(0.0, 0.5, 0.5, 0.5)]), // U+2596 Quadrant lower left
         '▗' => Some(&[(0.5, 0.5, 0.5, 0.5)]), // U+2597 Quadrant lower right
         '▘' => Some(&[(0.0, 0.0, 0.5, 0.5)]), // U+2598 Quadrant upper left
         '▝' => Some(&[(0.5, 0.0, 0.5, 0.5)]), // U+259D Quadrant upper right
 
-        // U+2599..U+259F — multi-quadrants (2 rects each, each rect already
+        // U+2599..U+259F - multi-quadrants (2 rects each, each rect already
         // shares its outer edges with the surrounding cell's boundary array
         // via `paint_block_quads` → no inter-rect gaps possible).
         '▙' => Some(&[
@@ -312,7 +312,7 @@ pub(crate) struct CursorInfo {
 /// neutral [`Content`] snapshot ([`content_from_term`]) plus the content mask;
 /// the golden-frame net fills it from a fixed fixture so the entire layout is
 /// reproducible with no display. The cells are the backend-neutral
-/// [`crate::terminal::types::Cell`] (EP-003) — no alacritty types reach here.
+/// [`crate::terminal::types::Cell`] (EP-003) - no alacritty types reach here.
 pub(crate) struct LayoutInputs<'a> {
     pub cells: Vec<Cell>,
     /// Cursor as snapshotted from the grid (before the copy-mode / selection
@@ -346,7 +346,7 @@ pub struct LayoutState {
     selection_rects: Vec<LayoutRect>,
     search_rects: Vec<LayoutRect>,
     cursor: Option<CursorInfo>,
-    /// Selection anchor cursor in copy mode — rendered as a distinct amber hollow
+    /// Selection anchor cursor in copy mode - rendered as a distinct amber hollow
     /// block so the user can see where the selection started (tmux-style).
     anchor_cursor: Option<CursorInfo>,
     dimensions: CellDimensions,
@@ -371,7 +371,7 @@ pub struct LayoutState {
 }
 
 // ---------------------------------------------------------------------------
-// Cell style — used for batching comparison
+// Cell style - used for batching comparison
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, PartialEq)]
@@ -397,7 +397,7 @@ pub struct TerminalElement {
     /// US-004: signal name if the child was killed by a signal; the exit
     /// overlay renders this instead of the exit code to flag a crash.
     exit_signal: Option<String>,
-    /// Shared origin — updated in paint() so mouse handlers know the element position.
+    /// Shared origin - updated in paint() so mouse handlers know the element position.
     element_origin: Arc<Mutex<Point<Pixels>>>,
     /// Search match highlights to paint
     search_highlights: Vec<SearchHighlight>,
@@ -515,7 +515,7 @@ impl TerminalElement {
 
         // Snapshot the grid into a neutral `Content` under lock (resize first so
         // the snapshot reflects the resized grid), minimizing FairMutex hold
-        // time. The renderer never touches alacritty types — the lock-and-read
+        // time. The renderer never touches alacritty types - the lock-and-read
         // is confined to the `types` seam (`content_from_term`, EP-003).
         let cursor_color = theme.cursor;
 
@@ -581,7 +581,7 @@ impl TerminalElement {
 
         let cells = content.cells;
 
-        // Viewport culling range from the content mask — the only remaining
+        // Viewport culling range from the content mask - the only remaining
         // Window dependency. Everything downstream is Window-free and lives in
         // `layout_from_snapshot` (US-002). Rows outside `[first, last)` are
         // skipped during cell processing.
@@ -619,7 +619,7 @@ impl TerminalElement {
 /// Window-free rendering layout pass (US-002 golden-frame net).
 ///
 /// Produces the complete [`LayoutState`] from a pure snapshot of the grid,
-/// theme, and cell dimensions — no `Window`/`App` access and no `Term` lock.
+/// theme, and cell dimensions - no `Window`/`App` access and no `Term` lock.
 /// [`TerminalElement::build_layout`] is the thin Window-coupled wrapper that
 /// snapshots the grid under lock, measures the cell, and derives the viewport
 /// cull range from the content mask, then delegates here. Keeping this seam
@@ -658,13 +658,13 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
             s: 0.8,
             l: 0.65,
             a: 0.9,
-        }; // Bright cyan — the moving cursor (current position)
+        }; // Bright cyan - the moving cursor (current position)
         let anchor_color = Hsla {
             h: 0.12,
             s: 0.95,
             l: 0.6,
             a: 0.95,
-        }; // Amber — the anchor (selection start)
+        }; // Amber - the anchor (selection start)
 
         let main = if display_line >= 0 && display_line < desired_rows as i32 {
             Some(CursorInfo {
@@ -709,13 +709,13 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
             s: 0.95,
             l: 0.6,
             a: 0.95,
-        }; // Amber — selection start
+        }; // Amber - selection start
         let end_color = Hsla {
             h: 0.5,
             s: 0.8,
             l: 0.65,
             a: 0.9,
-        }; // Cyan — selection end
+        }; // Cyan - selection end
 
         let start_line = sel.start.line.0 + display_offset as i32;
         let end_line = sel.end.line.0 + display_offset as i32;
@@ -797,7 +797,7 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
             last_line = point.line.0;
         }
 
-        // Compute colors — INVERSE swap on raw ANSI tags, then tag-based
+        // Compute colors - INVERSE swap on raw ANSI tags, then tag-based
         // default-background skip (Zed parity: structural check, not HSLA compare).
         let (raw_fg, raw_bg) = if flags.contains(CellFlags::INVERSE) {
             (*cell_bg, *cell_fg)
@@ -836,7 +836,7 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
         // US-007: cells inside the selection rect get the precomputed
         // contrast-validated `selection_foreground` (computed at theme-
         // load time against `selection`). This replaces the cell-vs-
-        // background contrast we just enforced — selected text needs
+        // background contrast we just enforced - selected text needs
         // contrast against the selection quad painted ON TOP of the
         // cell background, not against the cell background itself.
         // Because `fg` is part of `CellStyle` and `BatchAccumulator::
@@ -857,7 +857,7 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
             fg = theme.selection_foreground;
         }
 
-        // Background rect — paint for ALL cells. Default-bg cells use
+        // Background rect - paint for ALL cells. Default-bg cells use
         // ansi_background (the theme's actual background) to contrast with the
         // slightly darker widget fill, creating visible depth for TUI content.
         let cell_cols = if flags.contains(CellFlags::WIDE_CHAR) {
@@ -910,7 +910,7 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
         // Claude Code's banner robot, neofetch ASCII).
         //
         // Multi-quadrant chars (`▙ ▚ ▛ ▜ ▞ ▟`) emit two BlockQuad records
-        // per cell — both share the cell's outer boundary array so adjacent
+        // per cell - both share the cell's outer boundary array so adjacent
         // cells stay seamless regardless of how many sub-rects they each
         // produce.
         if let Some(coverages) = block_char_coverages(c) {
@@ -931,7 +931,7 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
         // Build cell style for batching comparison
         let mut font = base_font.clone();
         // OSC 8 hyperlinks must render with an underline even when the cell
-        // flags don't carry `UNDERLINE` — alacritty 0.26 does not auto-set
+        // flags don't carry `UNDERLINE` - alacritty 0.26 does not auto-set
         // the flag on OSC 8 cells, so without this we'd lose the visual
         // affordance until Ctrl/Cmd is held. Matches Zed
         // `terminal_element.rs:580`.
@@ -1006,7 +1006,7 @@ pub(crate) fn layout_from_snapshot(inputs: LayoutInputs<'_>) -> LayoutState {
         let num_cols = desired_cols.max(1);
 
         if sel.is_block {
-            // US-007: block (rectangular) selection — emit one rect per
+            // US-007: block (rectangular) selection - emit one rect per
             // visible line covering only the columns inside the block,
             // matching the rectangular semantics of `is_cell_in_selection`
             // so the bg quad and the fg override agree on which cells
@@ -1340,7 +1340,7 @@ impl Element for TerminalElement {
         };
         // US-017: snap the origin to physical-pixel boundaries so the grid
         // doesn't shiver between sub-pixel positions while resizing the window
-        // or a pane divider on a HiDPI display. Snap the ORIGIN ONLY — never
+        // or a pane divider on a HiDPI display. Snap the ORIGIN ONLY - never
         // cell_width / line_height (Zed reverted metric-snapping in #54836; it
         // breaks scroll math when rows × snapped_line_height ≠ viewport height).
         // At scale 1.0 this floors the gutter-adjusted origin to whole pixels,
@@ -1445,7 +1445,7 @@ impl Element for TerminalElement {
             // 5. Scrollbar thumb
             paint::scrollbar::paint_scrollbar(&layout, &geom, bounds, window);
 
-            // 5b. EP-006 US-017: search match rail — decimated ticks on the
+            // 5b. EP-006 US-017: search match rail - decimated ticks on the
             // same strip. Click-to-jump rides the existing proportional
             // track click (US-015 hit-test below); the rail disappears with
             // the search at the same repaint (empty snapshot → no paint).
@@ -1639,7 +1639,7 @@ impl gpui::InputHandler for TerminalInputHandler {
 }
 
 // ---------------------------------------------------------------------------
-// US-005 fallback — block_char_coverages tests
+// US-005 fallback - block_char_coverages tests
 //
 // Discovered via pixel-probe analysis of Claude Code 2.1.119's banner robot:
 // the `▐███▌` core uses U+2580..U+2590 (already covered) but the antennas /
@@ -1655,7 +1655,7 @@ mod block_char_coverage_tests {
     use super::*;
 
     /// Every original-PRD codepoint must still resolve to a single rect with
-    /// the same geometry as before the slice refactor — guards against an
+    /// the same geometry as before the slice refactor - guards against an
     /// accidental table edit during the US-005 extension.
     #[test]
     fn original_block_chars_are_single_rect() {
@@ -1674,7 +1674,7 @@ mod block_char_coverage_tests {
         }
     }
 
-    /// The full block must cover the entire cell — the canonical sanity check
+    /// The full block must cover the entire cell - the canonical sanity check
     /// used by adjacent-block tests in `paint/background.rs`.
     #[test]
     fn full_block_covers_entire_cell() {
@@ -1696,7 +1696,7 @@ mod block_char_coverage_tests {
 
     #[test]
     fn single_quadrants_are_one_rect_each() {
-        // U+2596..U+2598 + U+259D — the four single-quadrant blocks.
+        // U+2596..U+2598 + U+259D - the four single-quadrant blocks.
         // Each occupies exactly one corner of the cell, anchored on the grid
         // halfway point, with a 0.5×0.5 extent.
         let cases = [
@@ -1728,7 +1728,7 @@ mod block_char_coverage_tests {
 
     #[test]
     fn multi_quadrant_diagonals_have_no_overlap_or_gap() {
-        // ▚ (U+259A) and ▞ (U+259E) are the two pure diagonals — opposing
+        // ▚ (U+259A) and ▞ (U+259E) are the two pure diagonals - opposing
         // quadrants only. Their rects must touch at the cell center but not
         // overlap, otherwise we'd double-paint or leave a sub-pixel hole.
         for c in ['▚', '▞'] {
@@ -1762,7 +1762,7 @@ mod block_char_coverage_tests {
     /// The US-005 extension targets exactly the codepoints found in the
     /// `claude` 2.1.119 binary that were *not* in the original table.
     /// If Claude Code (or another TUI) ships a new robot that uses a codepoint
-    /// outside this list, the gap will reappear and this test won't catch it —
+    /// outside this list, the gap will reappear and this test won't catch it -
     /// but the pixel probe will, and the table is one match-arm away from
     /// covering the new char.
     #[test]
@@ -1780,7 +1780,7 @@ mod block_char_coverage_tests {
         }
     }
 
-    /// Codepoints we deliberately *don't* cover — shaded blocks need alpha
+    /// Codepoints we deliberately *don't* cover - shaded blocks need alpha
     /// (out of scope for this fix), geometric shapes are a different path.
     /// Locks the boundary so a future "extend everything" edit can't sneak
     /// half-broken coverage past review.
@@ -1797,7 +1797,7 @@ mod block_char_coverage_tests {
 }
 
 // ---------------------------------------------------------------------------
-// US-002 — Window-free golden-frame net
+// US-002 - Window-free golden-frame net
 // ---------------------------------------------------------------------------
 
 /// Deterministic, platform-stable textual rendering of an [`Hsla`]. Fixed
@@ -1811,7 +1811,7 @@ fn hsla_repr(c: Hsla) -> String {
 impl LayoutState {
     /// Window-free, deterministic textual snapshot of the entire layout state
     /// for the golden-frame net (US-002). Does NOT rely on any GPUI `Debug`
-    /// impl — every field is rendered explicitly at fixed float precision, so
+    /// impl - every field is rendered explicitly at fixed float precision, so
     /// the golden is reproducible across platforms (Rust float formatting is
     /// platform-independent) and human-reviewable on diff. Regenerate goldens
     /// with `PANEFLOW_BLESS_GOLDEN=1 cargo test -p paneflow-app golden_frame`.
@@ -1935,7 +1935,7 @@ mod golden_frame_tests {
     //! US-002 golden-frame net: deterministic `LayoutState` snapshots over a
     //! fixed grid, run with **no `Window`/`App`/GPU/display**. The fact these
     //! tests construct `LayoutInputs` and call `layout_from_snapshot` directly
-    //! — never touching a GPUI context — is the Window-free proof (AC-1). Each
+    //! never touching a GPUI context - is the Window-free proof (AC-1). Each
     //! fixture asserts against a committed golden under `golden/` (AC-2);
     //! regenerate with `PANEFLOW_BLESS_GOLDEN=1` (AC-3).
     use super::*;
@@ -2276,7 +2276,7 @@ mod golden_frame_tests {
     }
 
     /// Structural invariant: a WIDE_CHAR_SPACER cell never contributes its own
-    /// run or rect — it is the trailing half of the preceding wide glyph.
+    /// run or rect - it is the trailing half of the preceding wide glyph.
     #[test]
     fn wide_char_spacer_is_skipped() {
         let cjk = vec![
@@ -2301,7 +2301,7 @@ mod golden_frame_tests {
 
     /// Viewport culling: rows outside `[first_visible_row, last_visible_row)`
     /// are dropped from the layout (mirrors the content-mask cull in
-    /// `build_layout`). Window-free — the cull range is just two integers.
+    /// `build_layout`). Window-free - the cull range is just two integers.
     #[test]
     fn viewport_cull_drops_offscreen_rows() {
         let theme = crate::theme::one_dark();

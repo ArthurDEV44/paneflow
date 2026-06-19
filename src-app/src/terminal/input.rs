@@ -42,7 +42,7 @@ fn open_link_modifier_held(modifiers: &gpui::Modifiers) -> bool {
 /// string for pasting into a PTY (US-021). `None` when every path is filtered
 /// out (newline, carriage-return, or null bytes). Newline and CR are both
 /// rejected because the non-bracketed paste sink rewrites `\n` to `\r` and
-/// passes a bare `\r` verbatim, which the shell treats as Enter — a path like
+/// passes a bare `\r` verbatim, which the shell treats as Enter - a path like
 /// `evil\rrm -rf ~` would otherwise submit a second line.
 ///
 /// Clean paths (no space / `'` / `"` / `\`) pass through verbatim; the rest are
@@ -81,7 +81,7 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Cancel swap mode on Escape — checked before any other mode handling
+        // Cancel swap mode on Escape - checked before any other mode handling
         if crate::SWAP_MODE.load(std::sync::atomic::Ordering::Relaxed)
             && event.keystroke.key == "escape"
         {
@@ -133,7 +133,7 @@ impl TerminalView {
                     {
                         self.exit_copy_mode(false, cx);
                     }
-                    // All other keys consumed — not sent to PTY
+                    // All other keys consumed - not sent to PTY
                 }
             }
             return;
@@ -151,7 +151,7 @@ impl TerminalView {
 
         let keystroke = &event.keystroke;
 
-        // End key (no modifiers) while scrolled back — snap to bottom instead of
+        // End key (no modifiers) while scrolled back - snap to bottom instead of
         // sending "end of line" to the shell.
         if keystroke.key == "end"
             && !keystroke.modifiers.shift
@@ -185,7 +185,7 @@ impl TerminalView {
         if let Some(seq) =
             crate::keys::to_esc_str(keystroke, &Modes::from(mode), self.option_as_meta)
         {
-            // Snap to bottom on input. Matches Zed `terminal.rs:input()` — if
+            // Snap to bottom on input. Matches Zed `terminal.rs:input()` - if
             // the user is scrolled back in the history and types, the shell's
             // echo would otherwise be invisible.
             {
@@ -224,7 +224,7 @@ impl TerminalView {
 
     pub(super) fn pixel_to_grid(&self, pos: gpui::Point<gpui::Pixels>) -> (AlacPoint, Side) {
         // Poison-safe: if a panic happened inside paint() while holding the
-        // lock, the inner Point is still a valid value — recover and continue.
+        // lock, the inner Point is still a valid value - recover and continue.
         let origin = *self
             .element_origin
             .lock()
@@ -339,7 +339,7 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         // US-015: a Left press on the scrollbar strip starts a jump/drag and
-        // consumes the event — no text selection, no mouse report. Checked
+        // consumes the event - no text selection, no mouse report. Checked
         // first so the strip wins over selection on the right edge. Gated on
         // scrollback existing (alt-screen TUIs have none, so this never fires
         // over them).
@@ -349,7 +349,7 @@ impl TerminalView {
             // A press on the bare track first jumps to that proportional
             // position; a press on the thumb grabs it in place (no jump).
             // Either way we anchor the drag at the resulting offset so every
-            // subsequent move is RELATIVE — the thumb never jumps under the
+            // subsequent move is RELATIVE - the thumb never jumps under the
             // cursor regardless of where on it the user grabbed.
             let anchor_offset = if metrics.y_on_thumb(event.position.y) {
                 self.terminal.term.lock().grid().display_offset()
@@ -443,8 +443,8 @@ impl TerminalView {
                     // Drag down (positive dy) scrolls toward the live edge, so
                     // the offset decreases by the same fraction of history. The
                     // denominator is the thumb's USABLE travel (track minus thumb
-                    // height) — the range its top actually sweeps per the paint
-                    // formula in `scrollbar_metrics` — so the thumb tracks the
+                    // height) - the range its top actually sweeps per the paint
+                    // formula in `scrollbar_metrics` - so the thumb tracks the
                     // cursor 1:1 and a full drag reaches offset 0 (the live edge).
                     // The bare `track_height` would make the thumb lag the cursor
                     // and never quite reach the bottom.
@@ -472,7 +472,7 @@ impl TerminalView {
             && (mode.contains(TermMode::MOUSE_MOTION)
                 || (mode.contains(TermMode::MOUSE_DRAG) && event.pressed_button.is_some()))
         {
-            // Skip motion reports for side/Navigate buttons — they have no
+            // Skip motion reports for side/Navigate buttons - they have no
             // terminal mouse-report encoding.
             let button_base = match event.pressed_button {
                 Some(btn) => match mouse::mouse_button_code(btn, event.modifiers) {
@@ -555,7 +555,7 @@ impl TerminalView {
         let osc8_link = {
             let term = self.terminal.term.lock();
             // US-011 hardening: `hover_point` was captured by an earlier mouse-
-            // move and may be stale — a resize, `clear`, or alt-screen swap can
+            // move and may be stale - a resize, `clear`, or alt-screen swap can
             // shrink the grid before the modifier-press path reuses it.
             // alacritty's grid Index bounds-checks only under debug_assert!, so a
             // stale point would index out of bounds and panic the render thread
@@ -578,7 +578,7 @@ impl TerminalView {
                     uri: hl.uri().to_string(),
                     id: hl.id().to_string(),
                     start: hover_point,
-                    end: hover_point, // single cell — hover underline covers it
+                    end: hover_point, // single cell - hover underline covers it
                     is_openable: is_url_scheme_openable(hl.uri()),
                     source: HyperlinkSource::Osc8,
                     line: None,
@@ -616,7 +616,7 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         // US-011: GPUI fires no MouseMove when only a modifier changes, so link
-        // detection would otherwise not run until the mouse jiggles — making
+        // detection would otherwise not run until the mouse jiggles - making
         // the first Ctrl-click miss. Re-run detection on the last hovered cell
         // when the open-modifier becomes held, and clear on release.
         if open_link_modifier_held(&event.modifiers) {
@@ -677,7 +677,7 @@ impl TerminalView {
             // US-012: a Ctrl-press may have stashed a pending link on mouse-down
             // (that path returns before this mouse-mode check). If the modifier
             // is released before this mouse-mode release, the link-open path
-            // below is skipped and the stash would otherwise survive — clear it
+            // below is skipped and the stash would otherwise survive - clear it
             // here so it cannot phantom-open on a later plain click once mouse
             // mode ends.
             self.mouse_down_link = None;
@@ -689,7 +689,7 @@ impl TerminalView {
         }
 
         // Middle-click: paste from primary selection (X11/Wayland only;
-        // `read_from_primary` is gated to linux+freebsd in GPUI — mirror
+        // `read_from_primary` is gated to linux+freebsd in GPUI - mirror
         // the same gate here. On macOS/Windows middle-click has no primary
         // paste convention, so the block is a no-op and we just return.
         if event.button == MouseButton::Middle {
@@ -778,7 +778,7 @@ impl TerminalView {
         // US-021: file(s) copied in the OS file manager (Nautilus/Finder/
         // Explorer/Thunar) arrive as `ExternalPaths`. Insert the shell-quoted
         // path(s). Checked BEFORE `clipboard.text()`, which falls back to
-        // unquoted path display strings — those would break on spaces. Iterate
+        // unquoted path display strings - those would break on spaces. Iterate
         // all entries (some backends emit a String entry alongside the paths)
         // and fall through to text() when no `ExternalPaths` is present (e.g.
         // Wayland compositors that copy a `file://` URI as text instead).
@@ -910,7 +910,7 @@ impl TerminalView {
 
         // US-022: scroll-sensitivity multiplier, cached on the view at
         // construction (no config I/O on this hot per-event path). Applied ONLY
-        // here in the scrollback path — the mouse-mode and alt-scroll branches
+        // here in the scrollback path - the mouse-mode and alt-scroll branches
         // above already returned, so the PTY protocol framing is never scaled
         // (Zed forces 1.0 in mouse mode for the same reason).
         let delta_y = event.delta.pixel_delta(self.line_height).y;
@@ -940,7 +940,7 @@ impl TerminalView {
         // agent UIs) scrollback is empty, so scroll_display is a no-op and the
         // key would be silently swallowed. Forward the PageUp escape instead so
         // the TUI actually pages. `\x1b[5~` matches what `keys::to_esc_str`
-        // emits for a plain PageUp — the single source of truth (asserted by a
+        // emits for a plain PageUp - the single source of truth (asserted by a
         // test in `keys.rs`).
         let alt_screen = self
             .terminal

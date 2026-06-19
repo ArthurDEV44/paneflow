@@ -30,7 +30,7 @@
     },
     "font_fallbacks": {
       "type": ["array", "null"],
-      "description": "Ordered fallback font families consulted (in order) for glyphs the primary font_family does not cover — e.g. a Nerd Font for the Powerline/icon glyphs used by Starship, oh-my-posh or Terminal-Icons, which no system font provides on Windows. Null or an empty list keeps GPUI's built-in fallback stack only.",
+      "description": "Ordered fallback font families consulted (in order) for glyphs the primary font_family does not cover - e.g. a Nerd Font for the Powerline/icon glyphs used by Starship, oh-my-posh or Terminal-Icons, which no system font provides on Windows. Null or an empty list keeps GPUI's built-in fallback stack only.",
       "items": {
         "type": "string"
       }
@@ -152,7 +152,7 @@
     },
     "claude_code_bypass_permissions": {
       "type": ["boolean", "null"],
-      "description": "When true, the built-in 'Claude Code' tab-bar button launches the CLI with --permission-mode bypassPermissions, disabling all permission prompts. Per Anthropic's docs this mode offers no protection against prompt injection — opt in only on machines where that risk is acceptable.",
+      "description": "When true, the built-in 'Claude Code' tab-bar button launches the CLI with --permission-mode bypassPermissions, disabling all permission prompts. Per Anthropic's docs this mode offers no protection against prompt injection - opt in only on machines where that risk is acceptable.",
       "default": false
     },
     "ai_unrestricted": {

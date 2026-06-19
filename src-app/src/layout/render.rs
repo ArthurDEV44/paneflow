@@ -1,4 +1,4 @@
-//! `LayoutTree::render` — recursive GPUI flex rendering with drag-to-resize
+//! `LayoutTree::render` - recursive GPUI flex rendering with drag-to-resize
 //! divider handlers and per-frame container-size capture.
 
 use std::cell::Cell;

@@ -24,7 +24,7 @@ pub(crate) struct Toast {
     /// update-failure toasts (US-013) with Retry / "Open releases" buttons.
     pub(crate) actions: Vec<ToastAction>,
     /// How long the "hold" phase of the toast animation lasts, in ms.
-    /// Must match the auto-dismiss timer in [`PaneFlowApp::push_toast`] —
+    /// Must match the auto-dismiss timer in [`PaneFlowApp::push_toast`] -
     /// otherwise the exit animation plays early and the element persists
     /// as a ghost at opacity 0 until the dismiss task fires.
     pub(crate) hold_ms: u64,
@@ -32,10 +32,10 @@ pub(crate) struct Toast {
 
 #[derive(Clone)]
 pub(crate) enum ToastAction {
-    /// "Retry" — re-dispatches the `StartSelfUpdate` action. The action
+    /// "Retry" - re-dispatches the `StartSelfUpdate` action. The action
     /// handler's existing guards (busy check, attempt counter) apply.
     RetryUpdate,
-    /// "Open releases" — opens the given URL in the user's browser.
+    /// "Open releases" - opens the given URL in the user's browser.
     /// Used for the 4th-attempt fallback (AC: "Download manually from the
     /// releases page").
     OpenReleasesPage(String),

@@ -4,7 +4,7 @@
 //! Mirrors `render_workspace_context_menu` (`deferred().priority(3)`,
 //! `occlude()`, `on_mouse_down_out` dismiss): a small two-item menu offering
 //! "Copy path" (absolute) and "Copy relative path" (relative to the workspace
-//! root) for any row — markdown, greyed file, or directory. Both write to the
+//! root) for any row - markdown, greyed file, or directory. Both write to the
 //! clipboard and surface a confirmation toast.
 
 use gpui::{

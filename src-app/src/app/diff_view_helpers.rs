@@ -6,7 +6,7 @@ use gpui::{AppContext, Context, Window};
 use crate::PaneFlowApp;
 
 impl PaneFlowApp {
-    /// US-003 (prd-multi-worktree-diff) — action handler: open the
+    /// US-003 (prd-multi-worktree-diff) - action handler: open the
     /// multi-worktree diff view for the *active* workspace's repo. A no-op
     /// when the active workspace has no resolved `repo_root` (not a git repo).
     pub(crate) fn handle_open_multi_diff(
@@ -28,14 +28,14 @@ impl PaneFlowApp {
     /// Open a `DiffView` tab seeded with every sibling worktree sharing
     /// `repo_root`. The tab is hosted in the active workspace's focused pane
     /// (falling back to its first leaf); the diff content itself is
-    /// repo-scoped, independent of which pane hosts it. Ephemeral — not
+    /// repo-scoped, independent of which pane hosts it. Ephemeral - not
     /// persisted to the session. EP-002+ fills the seeded worktrees with
     /// real diff columns.
     /// Gather the sibling-worktree seed for a repo: one [`crate::diff::DiffWorktree`]
     /// per open workspace whose `repo_root` matches. US-005 of
     /// prd-git-diff-mode-2026-Q3.md extracted this from `open_multi_diff_for_repo`
     /// so the dedicated Diff mode (`rebuild_diff_view`) and the legacy tab path
-    /// share one source of truth. Pure in-memory read — no git subprocess, safe
+    /// share one source of truth. Pure in-memory read - no git subprocess, safe
     /// to call on the main thread.
     pub(crate) fn collect_diff_worktrees(
         &self,

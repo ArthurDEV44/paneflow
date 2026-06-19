@@ -4,7 +4,7 @@ name: repo_publish
 # GitHub Actions' `workflow_run` trigger rather than `release: types:
 # [published]` because a release created via GITHUB_TOKEN in the same
 # workflow run does NOT fire the release.published event (GitHub
-# anti-loop protection) — v0.2.0 required a manual `gh workflow run`
+# anti-loop protection) - v0.2.0 required a manual `gh workflow run`
 # after every tag push. `workflow_run` bypasses the anti-loop because
 # it keys off the parent workflow's completion, not the release event.
 # Can also be dispatched manually via the UI or
@@ -24,7 +24,7 @@ name: repo_publish
 
 on:
   # US-003 auto-chain. `workflows: ["release"]` MUST match the parent
-  # workflow's `name:` field VERBATIM — not the filename. GitHub pairs
+  # workflow's `name:` field VERBATIM - not the filename. GitHub pairs
   # `workflow_run` events by the declared name, so a typo here produces
   # a silent no-fire (the parent succeeds, this workflow never starts,
   # and there is no error surface). Cross-ref: release.yml line 1.
@@ -43,7 +43,7 @@ permissions:
   contents: read
 
 concurrency:
-  # Serialize repo publishes — two concurrent workflows racing on the
+  # Serialize repo publishes - two concurrent workflows racing on the
   # same R2 prefix would corrupt reprepro's db/ and produce undefined
   # final state. `cancel-in-progress: false` because we want the first
   # one to finish cleanly rather than being interrupted half-way.
@@ -59,7 +59,7 @@ jobs:
   publish:
     runs-on: ubuntu-22.04
     # US-003 chain guard. Three cases:
-    #   (a) workflow_dispatch: operator-driven — always allow. No filter
+    #   (a) workflow_dispatch: operator-driven - always allow. No filter
     #       on prerelease markers, the maintainer chose this tag
     #       intentionally (e.g., staging validation of an -rc.N tag).
     #   (b) workflow_run (chained from release.yml): allow `success` OR
@@ -71,7 +71,7 @@ jobs:
     #       Windows + macOS legs failed (continue-on-error at the
     #       matrix level). The workflow's OVERALL conclusion was
     #       `failure` because best-effort + smoke failures bubble up
-    #       to the run level even when the release WAS published — so
+    #       to the run level even when the release WAS published - so
     #       a strict `conclusion == 'success'` guard would block
     #       repo-publish forever on any release that has a single
     #       flaky best-effort leg, requiring manual `workflow_dispatch`
@@ -82,7 +82,7 @@ jobs:
     #       the real ground-truth gate. If the release was not
     #       actually created (Publish job failed), `gh release view`
     #       returns non-zero and we abort before touching R2. This is
-    #       race-free — the release either exists at chain-fire time
+    #       race-free - the release either exists at chain-fire time
     #       or it does not.
     #
     #       `cancelled` and `skipped` conclusions are still filtered
@@ -101,7 +101,7 @@ jobs:
         && !contains(github.event.workflow_run.head_branch, 'alpha')
         && !contains(github.event.workflow_run.head_branch, 'beta'))
     env:
-      # Release tag we're publishing — sourced from either the parent
+      # Release tag we're publishing - sourced from either the parent
       # workflow_run event (tag-push-triggered release.yml: head_branch
       # holds the tag name for tag-push parents) or the manual dispatch
       # input. Plumbed through `env:` so the expression never reaches
@@ -111,7 +111,7 @@ jobs:
       # not populate as expected on some GitHub Actions edge cases
       # (PRD v0.2.1 US-003 Open Question / Risk #10).
       TAG: ${{ github.event.workflow_run.head_branch || github.event.inputs.tag }}
-      # rclone — env-var-only config. `NO_CHECK_BUCKET=true` is mandatory
+      # rclone - env-var-only config. `NO_CHECK_BUCKET=true` is mandatory
       # for Cloudflare R2 (HEAD bucket returns 403 even with correct
       # credentials, per Cloudflare's rclone guide).
       RCLONE_CONFIG_R2_TYPE: s3
@@ -160,7 +160,7 @@ jobs:
       # If the parent release.yml workflow reached a `failure`
       # conclusion (e.g., best-effort Windows leg or smoke-test-ubuntu
       # failed AFTER the release was already published), the job is
-      # still allowed to proceed — but only if the GitHub Release for
+      # still allowed to proceed - but only if the GitHub Release for
       # this tag actually exists. Missing release = Publish job never
       # succeeded = nothing for repo-publish to index, abort cleanly.
       # `gh` is preinstalled on ubuntu-22.04 runners.
@@ -173,7 +173,7 @@ jobs:
             echo "::error::GitHub Release '$TAG' does not exist. The parent workflow's Publish GitHub Release job must have failed. Fix the upstream failure and re-dispatch repo-publish manually."
             exit 1
           fi
-          echo "→ GitHub Release $TAG confirmed — proceeding with R2 sync."
+          echo "→ GitHub Release $TAG confirmed - proceeding with R2 sync."
 
       - name: Install repo-publishing tools
         run: |
@@ -191,7 +191,7 @@ jobs:
         # is US-015 AC7's "signing failure doesn't silently produce an
         # unsigned release" guarantee, extended one step upstream.
         #
-        # US-003 adds CLOUDFLARE_ZONE + CLOUDFLARE_AUTH_KEY — required by
+        # US-003 adds CLOUDFLARE_ZONE + CLOUDFLARE_AUTH_KEY - required by
         # the post-sync edge cache purge. A missing secret here surfaces
         # as a loud ::error:: instead of silently shipping stale metadata
         # until the edge TTL expires.
@@ -217,12 +217,12 @@ jobs:
             exit 1
           fi
           # GPG_KEY_ID must be the 40-char hex fingerprint. Short 16-char
-          # key IDs are collision-vulnerable (see https://evil32.com/) —
+          # key IDs are collision-vulnerable (see https://evil32.com/) -
           # an attacker who could populate `GPG_KEY_ID` with a short ID
           # pointing at a rogue key would satisfy any later fingerprint
           # match against keys whose full fingerprints end in those 16
           # hex chars. This regex is harmonised with the equivalent
-          # validation in release.yml — both workflows MUST reject short
+          # validation in release.yml - both workflows MUST reject short
           # key IDs identically to eliminate the attack class entirely.
           if ! [[ "$GPG_KEY_ID" =~ ^[0-9A-Fa-f]{40}$ ]]; then
             echo "::error::GPG_KEY_ID must be the 40-char hex fingerprint (got ${#GPG_KEY_ID} chars)." >&2
@@ -232,7 +232,7 @@ jobs:
           # Cloudflare Zone IDs are 32 lowercase hex chars. A malformed
           # zone would otherwise surface as an opaque Cloudflare 400
           # mid-purge, after R2 is already written. Fail early with a
-          # clear message — mirrors the GPG_KEY_ID shape check above.
+          # clear message - mirrors the GPG_KEY_ID shape check above.
           if ! [[ "$CLOUDFLARE_ZONE" =~ ^[0-9a-f]{32}$ ]]; then
             echo "::error::CLOUDFLARE_ZONE must be a 32-char lowercase hex Zone ID (got ${#CLOUDFLARE_ZONE} chars)." >&2
             echo "::error::Copy it from the Cloudflare dashboard → Overview → API → Zone ID." >&2
@@ -248,7 +248,7 @@ jobs:
           chmod 700 ~/.gnupg
           # `allow-loopback-pinentry` lets us pass the passphrase via
           # `--pinentry-mode loopback --passphrase-fd 0` instead of
-          # requiring a TTY — GPG has no interactive pinentry in CI.
+          # requiring a TTY - GPG has no interactive pinentry in CI.
           echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
           gpgconf --kill gpg-agent || true
           # `--batch` silences prompts; `--import` reads the ASCII-armored
@@ -280,16 +280,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ./staging/apt ./staging/rpm/Packages
-          # `--fast-list` batches LIST calls (1000 per API call) — keeps
+          # `--fast-list` batches LIST calls (1000 per API call) - keeps
           # R2 Class A operation costs under control. On an empty remote
           # prefix rclone returns 0 with 0 files transferred (thanks to
           # `NO_CHECK_BUCKET=true`), so no fallback is needed. A network
-          # / auth error MUST surface — a swallowed error here would let
+          # / auth error MUST surface - a swallowed error here would let
           # reprepro rebuild from an empty db/ and clobber a real pool.
           rclone sync "R2:${R2_BUCKET}/apt/" ./staging/apt/ --fast-list
           rclone sync "R2:${R2_BUCKET}/rpm/" ./staging/rpm/ --fast-list
           # Copy `conf/` AFTER the sync. Doing it before (then syncing
-          # against an empty remote) would wipe it back out — `rclone
+          # against an empty remote) would wipe it back out - `rclone
           # sync` is mirror-semantics. Post-sync copy handles both the
           # empty-bucket (first publish) case and the re-publish case
           # uniformly: the checked-in `conf/distributions` + `options`
@@ -303,7 +303,7 @@ jobs:
         run: |
           set -euo pipefail
           # Substitute the GPG fingerprint into conf/distributions. The
-          # checked-in file has `SignWith: REPLACE_WITH_GPG_KEY_ID` — we
+          # checked-in file has `SignWith: REPLACE_WITH_GPG_KEY_ID` - we
           # rewrite it per-run so the fingerprint never hits git history.
           # GPG_KEY_ID is pre-validated to match ^[0-9A-Fa-f]{16,40}$ in
           # the secrets-check step, so it's safe as a sed replacement.
@@ -311,13 +311,13 @@ jobs:
 
           # Prime the gpg-agent passphrase cache by signing a throwaway
           # payload. reprepro invokes gpg through gpgme, which talks to
-          # the agent — we need the passphrase cached there BEFORE
+          # the agent - we need the passphrase cached there BEFORE
           # `includedeb` runs, otherwise the agent prompts for a TTY and
           # the step hangs.
           #
           # An earlier draft of this workflow primed the cache via
           # `gpg --quick-set-expire $KEY 0`, which has the side effect
-          # of setting the key's expiry to "never" on every run — a
+          # of setting the key's expiry to "never" on every run - a
           # silent security regression. Signing a throwaway payload
           # has no key-metadata side effect.
           #
@@ -342,7 +342,7 @@ jobs:
           # Idempotency: reprepro refuses to add a (package, version,
           # arch) that's already in the db. Re-dispatching the same tag
           # without this check would fail at the first duplicate. We
-          # pre-check and skip instead — lets a maintainer safely
+          # pre-check and skip instead - lets a maintainer safely
           # rerun a failed publish.
           for deb in ./assets/paneflow-*.deb; do
             [ -f "$deb" ] || continue
@@ -351,7 +351,7 @@ jobs:
             # `reprepro list` output format is
             #   stable|main|<arch>: paneflow <version>
             # The previous awk check only matched the version on $NF and
-            # ignored $arch entirely — so after the first `.deb` in the
+            # ignored $arch entirely - so after the first `.deb` in the
             # loop was included, every subsequent arch was skipped because
             # reprepro already had paneflow 0.2.0-1 (for some arch) in the
             # db, and the awk predicate `$NF == v` matched regardless of
@@ -361,7 +361,7 @@ jobs:
             existing=$(reprepro -b ./staging/apt list stable paneflow | \
               grep -E "^stable\\|main\\|${arch}: paneflow ${version}$" || true)
             if [ -n "$existing" ]; then
-              echo "→ paneflow $version ($arch) already in stable — skipping"
+              echo "→ paneflow $version ($arch) already in stable - skipping"
               continue
             fi
             echo "→ reprepro includedeb stable $deb"
@@ -388,7 +388,7 @@ jobs:
 
           # Copy the new RPMs into the pool dir. `cp -n` (no-clobber)
           # would let us preserve existing files, but reprepro-style
-          # idempotency for RPM means we just overwrite — the RPM
+          # idempotency for RPM means we just overwrite - the RPM
           # filename includes the version, so old versions keep
           # distinct names and stay in the pool until manual pruning.
           for rpm in ./assets/paneflow-*.rpm; do
@@ -398,11 +398,11 @@ jobs:
 
           # Generate (or incrementally update) the repodata. `--update`
           # reuses existing metadata for RPMs unchanged since the last
-          # run (size + mtime check) — essential for repos with dozens
+          # run (size + mtime check) - essential for repos with dozens
           # of packages.
           createrepo_c --update ./staging/rpm/
 
-          # Sign repomd.xml — createrepo_c itself does not sign.
+          # Sign repomd.xml - createrepo_c itself does not sign.
           # `--detach-sign --armor` → repomd.xml.asc. Clients with
           # `repo_gpgcheck=1` verify this signature before trusting the
           # metadata.
@@ -435,7 +435,7 @@ jobs:
       # Everything above ran locally. The next step is the first (and
       # only) write to R2. If we've gotten here, all signing succeeded,
       # so the sync is safe. If any prior step failed, `set -euo pipefail`
-      # aborted the job before reaching this point — R2 stays untouched.
+      # aborted the job before reaching this point - R2 stays untouched.
       - name: Sync local staging → R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
@@ -443,22 +443,22 @@ jobs:
           set -euo pipefail
           # Push ordering matters for client atomicity:
           #
-          #   1. GPG key — clients refreshing `/gpg` mid-publish must
+          #   1. GPG key - clients refreshing `/gpg` mid-publish must
           #      not see a 404. Idempotent single-object copyto.
-          #   2. APT pool/ (the .deb binaries) — referenced by hash
+          #   2. APT pool/ (the .deb binaries) - referenced by hash
           #      from dists/**/Packages.gz. If a client fetched new
           #      Packages.gz before we've uploaded the new .deb, the
           #      subsequent GET would return 404 until the pool sync
           #      completes. So: pool first, metadata last.
-          #   3. APT full tree — pool is already a no-op (same bytes),
+          #   3. APT full tree - pool is already a no-op (same bytes),
           #      only dists/* changes. Client sees new Release* pointing
           #      at new Packages.gz pointing at a pool that already
           #      exists. Worst case during sync: client sees new
-          #      InRelease with old Packages.gz — hash mismatch, `apt
+          #      InRelease with old Packages.gz - hash mismatch, `apt
           #      update` errors, and a retry succeeds once Packages.gz
           #      lands. Acceptable transient (seconds-long) window.
-          #   4. RPM Packages/ (the .rpm binaries) — same reason as pool.
-          #   5. RPM full tree — only repodata/* changes.
+          #   4. RPM Packages/ (the .rpm binaries) - same reason as pool.
+          #   5. RPM full tree - only repodata/* changes.
           #
           # `--fast-list --transfers 8` are the R2-recommended defaults;
           # `--s3-no-head` is explicitly NOT set (we want rclone to
@@ -481,14 +481,14 @@ jobs:
       # We invoke `nathanvaughn/actions-cloudflare-purge@v4.0.0` as the
       # primary purge (vetted, minimal wrapper around Cloudflare's
       # /purge_cache endpoint). The action itself has NO retry logic and
-      # does not validate HTTP status codes independently — a network-
+      # does not validate HTTP status codes independently - a network-
       # level 5xx or 429 rate-limit can produce a silent failure. The
       # fallback step below catches that case and retries the same purge
       # via direct `curl` to api.cloudflare.com with exponential backoff
-      # (1 s, 2 s, 4 s — AC5). Both steps share the identical URL list.
+      # (1 s, 2 s, 4 s - AC5). Both steps share the identical URL list.
       - name: Purge Cloudflare edge cache
         id: cloudflare-purge
-        # Never abort the publish job on a purge failure here — the retry
+        # Never abort the publish job on a purge failure here - the retry
         # step below takes over. If both steps fail, the final ::error::
         # message is emitted by the retry step and fails the job.
         continue-on-error: true
@@ -505,7 +505,7 @@ jobs:
           cf_auth: ${{ secrets.CLOUDFLARE_AUTH_KEY }}
           # Seven URLs (AC1): APT InRelease + Release + Release.gpg +
           # Packages.gz (per arch), RPM repomd.xml + repomd.xml.asc. Bulk
-          # .deb / .rpm files are NOT purged — they are content-hashed
+          # .deb / .rpm files are NOT purged - they are content-hashed
           # references from Packages.gz / repomd.xml, so they're
           # immutable and Cloudflare's edge cache of them is always
           # correct. Only the metadata files need the cache busted.
@@ -523,7 +523,7 @@ jobs:
         # to the Cloudflare API directly so we can (a) check HTTP status
         # codes the wrapper ignores, (b) retry 5xx / 429 with exponential
         # backoff, and (c) surface a final actionable error that names
-        # the stale-metadata risk. Secrets routed via `env:` — never
+        # the stale-metadata risk. Secrets routed via `env:` - never
         # inlined as `${{ … }}` into the shell body.
         if: steps.cloudflare-purge.outcome == 'failure'
         env:
@@ -532,7 +532,7 @@ jobs:
         run: |
           set -euo pipefail
           # Build the JSON body once. `jq -n` emits a canonical array of
-          # strings with correct JSON escaping — safer than hand-rolling
+          # strings with correct JSON escaping - safer than hand-rolling
           # quoting, which would break if we ever add a URL with
           # awkward characters.
           body="$(
@@ -548,7 +548,7 @@ jobs:
           )"
 
           # This step only runs when the primary action (above) reported
-          # failure, so there's no "initial" attempt here — 3 retries with
+          # failure, so there's no "initial" attempt here - 3 retries with
           # exp-backoff sleeps of 1 s, 2 s, 4 s (2^(n-1)) between retries,
           # matching AC5. Combined with the primary attempt, the publish
           # makes up to 4 purge calls before giving up.
@@ -566,7 +566,7 @@ jobs:
           max_attempts=3
           for attempt in $(seq 1 "$max_attempts"); do
               backoff=$(( 1 << (attempt - 1) ))   # 1, 2, 4
-              echo "→ Cloudflare purge retry $attempt/$max_attempts — sleeping ${backoff}s then retrying…"
+              echo "→ Cloudflare purge retry $attempt/$max_attempts - sleeping ${backoff}s then retrying…"
               sleep "$backoff"
 
               # Truncate BEFORE each curl so a curl that writes 0 bytes
@@ -592,7 +592,7 @@ jobs:
                   exit 0
               fi
 
-              echo "  retry $attempt failed — HTTP $http, response:" >&2
+              echo "  retry $attempt failed - HTTP $http, response:" >&2
               # `jq '.'` pretty-prints if JSON, falls back to raw cat
               # if the body isn't JSON (e.g. Cloudflare 502 HTML page).
               jq '.' "$response_file" 2>/dev/null \
@@ -601,11 +601,11 @@ jobs:
           done
 
           # Error message preserves the exact substring mandated by
-          # AC7 ("Cloudflare API unreachable — metadata may be stale up
+          # AC7 ("Cloudflare API unreachable - metadata may be stale up
           # to the edge TTL") so any log-grep assertion keyed on that
           # phrase still matches; the retry-count suffix is additive
           # context for the maintainer reading the failed job.
-          echo "::error::Cloudflare API unreachable — metadata may be stale up to the edge TTL (failed after ${max_attempts} retries)" >&2
+          echo "::error::Cloudflare API unreachable - metadata may be stale up to the edge TTL (failed after ${max_attempts} retries)" >&2
           exit 1
 
       # ─── US-002 reprepro arch-idempotency regression guard ──────────────
@@ -619,7 +619,7 @@ jobs:
       #
       # Placement rationale: after BOTH rclone-upload and Cloudflare
       # purge. Fetching before purge would hit the edge-cached InRelease
-      # from the previous release (up to 4 h TTL) — defeating the check.
+      # from the previous release (up to 4 h TTL) - defeating the check.
       # Purge is instant in P95 < 60 s; the retry loop below absorbs the
       # propagation window.
       #
@@ -640,7 +640,7 @@ jobs:
 
           # --- Fetch with retry ----------------------------------------
           # max_attempts=4 (1 initial + 3 retries). Sleep BEFORE each
-          # retry with backoff 2^(n-1): 1s, 2s, 4s — matches AC6.
+          # retry with backoff 2^(n-1): 1s, 2s, 4s - matches AC6.
           max_attempts=4
           attempt=1
           while [ "$attempt" -le "$max_attempts" ]; do
@@ -653,7 +653,7 @@ jobs:
               exit 1
             fi
             backoff=$(( 1 << (attempt - 1) ))
-            echo "→ InRelease fetch failed (attempt ${attempt}/${max_attempts}) — sleeping ${backoff}s and retrying…" >&2
+            echo "→ InRelease fetch failed (attempt ${attempt}/${max_attempts}) - sleeping ${backoff}s and retrying…" >&2
             sleep "$backoff"
             attempt=$(( attempt + 1 ))
           done
@@ -690,7 +690,7 @@ jobs:
             md5="${entry%% *}"
             size="${entry##* }"
             if [ "$size" = "0" ] || [ "$md5" = "$EMPTY_MD5" ]; then
-              echo "::error::binary-${arch}/Packages is empty — reprepro arch-idempotency regression (md5=${md5}, size=${size})"
+              echo "::error::binary-${arch}/Packages is empty - reprepro arch-idempotency regression (md5=${md5}, size=${size})"
               fail=1
               continue
             fi
@@ -698,6 +698,6 @@ jobs:
           done
 
           if [ "$fail" -ne 0 ]; then
-            echo "::error::reprepro InRelease arch-idempotency guard failed — see per-arch errors above"
+            echo "::error::reprepro InRelease arch-idempotency guard failed - see per-arch errors above"
             exit 1
           fi

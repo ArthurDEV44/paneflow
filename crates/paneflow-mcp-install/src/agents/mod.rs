@@ -27,7 +27,7 @@ mod support;
 pub(crate) mod testutil;
 
 /// Result of an `install` on one agent. "Skipped because absent" is *not*
-/// here — the orchestrator decides that from [`AgentConfigWriter::presence`]
+/// here - the orchestrator decides that from [`AgentConfigWriter::presence`]
 /// before calling `install`, so writers only model the write itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallOutcome {
@@ -35,7 +35,7 @@ pub enum InstallOutcome {
     Installed,
     /// An existing `paneflow` entry's command path was updated.
     Updated,
-    /// The entry already pointed at the current bridge path — no write.
+    /// The entry already pointed at the current bridge path - no write.
     AlreadyCurrent,
 }
 
@@ -44,7 +44,7 @@ pub enum InstallOutcome {
 pub enum UninstallOutcome {
     /// The `paneflow` entry was removed.
     Removed,
-    /// No `paneflow` entry was present — nothing to do.
+    /// No `paneflow` entry was present - nothing to do.
     NothingToRemove,
 }
 
@@ -54,7 +54,7 @@ pub enum StatusOutcome {
     /// A `paneflow` entry exists and points at the current bridge path.
     Installed { path: String },
     /// A `paneflow` entry exists but points at a different path than the
-    /// current `bridge_binary_path()` — typically a stale path left by an
+    /// current `bridge_binary_path()` - typically a stale path left by an
     /// older Paneflow install that moved data dirs.
     StalePath { found: String, expected: String },
     /// The agent is present but carries no `paneflow` entry.
@@ -65,7 +65,7 @@ pub enum StatusOutcome {
 /// uninstall / inspect the `paneflow` MCP entry.
 ///
 /// Implementations live in `agents/<name>.rs` (EP-003). They must be
-/// idempotent and no-clobber — see [`crate::merge`] and [`crate::io`] for
+/// idempotent and no-clobber - see [`crate::merge`] and [`crate::io`] for
 /// the shared safe-write primitives every writer is expected to use.
 pub trait AgentConfigWriter {
     /// Stable machine id, e.g. `"claude-code"`. Used in scriptable output.
@@ -94,7 +94,7 @@ pub trait AgentConfigWriter {
 ///
 /// EP-003 wires all four supported agents. The orchestrator skips any that
 /// are not present on the machine, so listing them here unconditionally is
-/// safe — detection happens per-agent at run time.
+/// safe - detection happens per-agent at run time.
 #[must_use]
 pub fn default_writers() -> Vec<Box<dyn AgentConfigWriter>> {
     vec![

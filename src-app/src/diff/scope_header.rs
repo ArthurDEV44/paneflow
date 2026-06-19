@@ -113,7 +113,7 @@ impl PaneFlowApp {
                 );
             }
             // Paint in the top layer: as a plain `.absolute()` child the popover
-            // is painted before — and thus UNDER — the diff body (the later
+            // is painted before - and thus UNDER - the diff body (the later
             // sibling in `render_diff_main`), so it was invisible. `deferred`
             // hoists it above everything (the pattern every other Paneflow menu
             // uses); `.occlude()` stops clicks falling through to the body.
@@ -122,7 +122,7 @@ impl PaneFlowApp {
             None
         };
 
-        // Project selector — only for the single-repo scopes (Project /
+        // Project selector - only for the single-repo scopes (Project /
         // Worktree). Multi-project has its own repo tab bar, so it owns repo
         // switching there. This lets the user pick *which* open workspace's repo
         // the diff follows from inside Diff mode (it routes through
@@ -151,7 +151,7 @@ impl PaneFlowApp {
             .when(project_open, |d| d.bg(ui.subtle))
             .cursor_pointer()
             .text_size(crate::ui_primitives::BODY)
-            // EP-003 US-012: secondary context label — muted, demoted under the
+            // EP-003 US-012: secondary context label - muted, demoted under the
             // primary scope chip in the `scope › project › branches` hierarchy.
             .text_color(ui.muted)
             .hover(|s| {
@@ -267,7 +267,7 @@ impl PaneFlowApp {
             None
         };
 
-        // Branches multi-select — Worktree scope only. Lets the user CHOOSE which
+        // Branches multi-select - Worktree scope only. Lets the user CHOOSE which
         // of the repo's worktrees show as columns (default: all). Unchosen
         // branches are never diffed (the chosen set filters `rebuild_diff_view`).
         let repo_root = self
@@ -308,7 +308,7 @@ impl PaneFlowApp {
                         .when(branches_open, |d| d.bg(ui.subtle))
                         .cursor_pointer()
                         .text_size(crate::ui_primitives::BODY)
-                        // EP-003 US-012: secondary context label — muted, demoted.
+                        // EP-003 US-012: secondary context label - muted, demoted.
                         .text_color(ui.muted)
                         .hover(|s| {
                             let ui = crate::theme::ui_colors();
@@ -427,7 +427,7 @@ impl PaneFlowApp {
                 None => (None, None),
             };
 
-        // Breadcrumb FRAGMENT — scope › project › branches. No bar of its own
+        // Breadcrumb FRAGMENT - scope › project › branches. No bar of its own
         // (no height / bg / padding): it is INJECTED into the single unified
         // toolbar (DiffView toolbar in single-repo scopes, the repo-tab strip
         // in Multi-project) via the `scope_slot` push, so the whole Diff mode

@@ -1,6 +1,6 @@
 //! AI tool type definitions shared across the app.
 //!
-//! The tool identity is [`crate::agent_launcher::TerminalAgent`] — the same
+//! The tool identity is [`crate::agent_launcher::TerminalAgent`] - the same
 //! 16-agent taxonomy as the terminal launchers (single source of truth:
 //! binaries are the wire ids, `display_name`/`accent`/`display_rank` come
 //! for free). The historical 2-variant `AiTool` enum was folded into it
@@ -12,13 +12,13 @@
 //! `AgentState` tracks the lifecycle state of a single agent session.
 //! `AgentSession` bundles tool + state + the currently-active sub-tool name
 //! (`Edit`, `Bash`, …) for one PID. A workspace can hold many sessions
-//! concurrently — keyed by PID in `Workspace::agent_sessions`.
+//! concurrently - keyed by PID in `Workspace::agent_sessions`.
 //!
 //! State transitions are driven by IPC hooks from the `paneflow-ai-hook`
 //! binary. Each lifecycle frame carries the emitting process's PID so the
 //! server can route updates to the exact session rather than collapsing
 //! everything per tool name (which broke when two Claude Codes ran in the
-//! same workspace — the second `ai.session_start` used to overwrite the
+//! same workspace - the second `ai.session_start` used to overwrite the
 //! first PID in a `HashMap<String, u32>`).
 
 use crate::agent_launcher::TerminalAgent;
@@ -36,7 +36,7 @@ pub enum AgentState {
     /// Agent finished its response. Auto-cleared after 5 s by the IPC
     /// `ai.stop` handler unless overridden by a new state transition.
     Finished,
-    /// EP-004 US-010 (cli-cockpit): the agent BINARY exited non-zero —
+    /// EP-004 US-010 (cli-cockpit): the agent BINARY exited non-zero -
     /// reported by the shim's `ai.exit` frame (the shell's `ChildExit`
     /// only carries the shell's exit, never the agent's). Sticky until a
     /// new lifecycle event replaces it or its pane closes; never produced
@@ -52,7 +52,7 @@ pub enum AgentState {
 impl AgentState {
     /// Stable wire string for IPC (`fleet.list` / `surface.status`,
     /// prd-agent-control-plane EP-001). These are machine ids a conductor
-    /// matches on, distinct from `display_name` — never shown to a human, never
+    /// matches on, distinct from `display_name` - never shown to a human, never
     /// localised.
     pub fn wire_str(&self) -> &'static str {
         match self {
@@ -84,18 +84,18 @@ impl AgentState {
 ///
 /// A termination *initiated from outside the agent* is not an agent
 /// failure (FR-06: "une interruption humaine n'est PAS une erreur"):
-/// - 130 (`128+SIGINT`) — Ctrl+C, the PRD-mandated case.
-/// - 129 (`128+SIGHUP`) — pane/PTY closed under a running agent. Without
+/// - 130 (`128+SIGINT`) - Ctrl+C, the PRD-mandated case.
+/// - 129 (`128+SIGHUP`) - pane/PTY closed under a running agent. Without
 ///   this exclusion every pane close with a live agent would flash a
 ///   false `Errored`.
-/// - 143 (`128+SIGTERM`) / 137 (`128+SIGKILL`) — external kill.
-/// - `STATUS_CONTROL_C_EXIT` (0xC000013A) — the Windows Ctrl+C exit code
+/// - 143 (`128+SIGTERM`) / 137 (`128+SIGKILL`) - external kill.
+/// - `STATUS_CONTROL_C_EXIT` (0xC000013A) - the Windows Ctrl+C exit code
 ///   (`code()` is always `Some` on Windows; there are no signals).
 ///
 /// Genuine crash signals (SIGSEGV → 139, SIGABRT → 134, …) and every
 /// other non-zero code classify as `Errored`.
 pub fn state_for_exit(exit_code: i32) -> AgentState {
-    /// `{Application Exit by CTRL+C}` — 0xC000013A as i32.
+    /// `{Application Exit by CTRL+C}` - 0xC000013A as i32.
     const STATUS_CONTROL_C_EXIT: i32 = 0xC000_013Au32 as i32;
     match exit_code {
         0 => AgentState::Finished,
@@ -114,17 +114,17 @@ pub struct AgentSession {
     /// `ai.tool_use` hooks. Cleared on every non-Thinking transition.
     pub active_tool_name: Option<String>,
     /// The agent's question, from the `ai.notification` hook payload (≤512
-    /// chars, UNTRUSTED terminal-adjacent text — display only, never
+    /// chars, UNTRUSTED terminal-adjacent text - display only, never
     /// interpreted). Set on `WaitingForInput`, cleared on `prompt_submit` /
     /// `stop` so a stale question never haunts the next turn (US-016).
     pub message: Option<String>,
     /// The surface (terminal entity id) this session runs in, resolved from
     /// the hook PID by walking the process ancestor chain to a known pane
-    /// `child_pid` (US-017). `None` when unresolved — the session then only
+    /// `child_pid` (US-017). `None` when unresolved - the session then only
     /// exists at workspace level (no per-pane glow), never a wrong pane.
     pub surface_id: Option<u64>,
     /// EP-002 US-004 (cli-cockpit): when this session ENTERED
-    /// `WaitingForInput` — drives the Attention Queue's wait column and its
+    /// `WaitingForInput` - drives the Attention Queue's wait column and its
     /// longest-waiting-first order. Stamped by `upsert_session_state` via
     /// [`next_waiting_since`]; cleared on any non-waiting transition.
     /// `Instant` (monotonic) so a wall-clock jump never shows a negative or
@@ -139,7 +139,7 @@ pub struct AgentSession {
     pub last_activity: std::time::Instant,
     /// OS start time of the session's process, pinned at session creation
     /// (Linux `/proc/{pid}/stat` field 22, macOS `pbi_start_tvsec`, Windows
-    /// `GetProcessTimes` creation FILETIME — opaque, only compared for
+    /// `GetProcessTimes` creation FILETIME - opaque, only compared for
     /// equality). Guards the sweep's `pid_is_alive` probe against PID reuse:
     /// a live PID whose start time changed belongs to a DIFFERENT process,
     /// so the session is dead. `None` (synthetic PID, probe failure) keeps
@@ -173,7 +173,7 @@ impl AgentSession {
 /// EP-002 US-004: next value of `waiting_since` for a state transition.
 /// Stamped on ENTERING `WaitingForInput`; a re-notification while already
 /// waiting keeps the original stamp so the queue shows the true wait;
-/// any other state clears it. Pure — unit-tested.
+/// any other state clears it. Pure - unit-tested.
 pub fn next_waiting_since(
     prev: Option<(&AgentState, Option<std::time::Instant>)>,
     new_state: &AgentState,
@@ -189,7 +189,7 @@ pub fn next_waiting_since(
 }
 
 /// Aggregate of a workspace's sessions for a single tool, used by the
-/// sidebar render. Computed on-the-fly from `agent_sessions` — never
+/// sidebar render. Computed on-the-fly from `agent_sessions` - never
 /// stored. The "dominant" state is the most user-salient one across all
 /// sessions of the same tool: `WaitingForInput > Thinking > Finished`.
 /// `count` is the total number of sessions for this tool in any visible
@@ -282,7 +282,7 @@ mod tests {
         // AC2: fresh hook activity (idle below threshold) does not stall.
         assert!(!AgentState::Thinking.stalls_after(Duration::from_secs(59), threshold));
         // AC4 + structural dedup: a non-Thinking session never stalls, however
-        // idle — so an already-Stalled row cannot re-trigger, and a waiting or
+        // idle - so an already-Stalled row cannot re-trigger, and a waiting or
         // finished agent is never mislabelled.
         assert!(!AgentState::Stalled.stalls_after(Duration::from_secs(600), threshold));
         assert!(!AgentState::WaitingForInput.stalls_after(Duration::from_secs(600), threshold));
@@ -318,7 +318,7 @@ mod tests {
         let first = std::time::Instant::now();
         let later = first + std::time::Duration::from_secs(90);
         // A second ai.notification while already waiting keeps the ORIGINAL
-        // stamp — the queue must show the true wait, not reset on every
+        // stamp - the queue must show the true wait, not reset on every
         // notification frame.
         assert_eq!(
             next_waiting_since(

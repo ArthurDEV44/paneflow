@@ -108,7 +108,7 @@ impl AgentConfigWriter for Codex {
         // US-021: a present-but-unparseable `~/.codex/config.toml` must
         // surface a loud error, not be silently mistaken for "nothing to
         // remove". The tolerant `current_toml_command` below swallows parse
-        // failures (`.ok()?` → None), so probe parseability first —
+        // failures (`.ok()?` → None), so probe parseability first -
         // `read_toml_or_default` is `Err` on a present malformed file and
         // `Ok` (empty doc) when absent.
         if path.exists() {
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn uninstall_malformed_config_is_error() {
-        // US-021: symmetric with the Claude Code writer — a present-but-
+        // US-021: symmetric with the Claude Code writer - a present-but-
         // unparseable config is corruption, surfaced loudly, not swallowed
         // as NothingToRemove.
         let dir = tempfile::TempDir::new().unwrap();

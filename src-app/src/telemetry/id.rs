@@ -14,7 +14,7 @@ use crate::runtime_paths;
 /// writes it to `data_dir()/telemetry_id`. On subsequent calls, reads and
 /// returns the persisted value. If anything goes wrong (no data dir, file
 /// unwritable, file contents invalid), returns an ephemeral UUID for this
-/// session and logs at DEBUG — the caller treats the subsystem as "running
+/// session and logs at DEBUG - the caller treats the subsystem as "running
 /// in session-scoped mode" and carries on.
 pub fn telemetry_id() -> String {
     telemetry_id_with_first_run().0
@@ -26,7 +26,7 @@ pub fn telemetry_id() -> String {
 /// `app_started` event without probing the filesystem a second time.
 ///
 /// Ephemeral fallbacks (no `data_local_dir`, unwritable dir, corrupt
-/// file) report `is_first_run = false` — we only claim first-run when
+/// file) report `is_first_run = false` - we only claim first-run when
 /// we actually persisted a new UUID, matching the PRD wording
 /// "telemetry_id file was just created this launch".
 pub fn telemetry_id_with_first_run() -> (String, bool) {

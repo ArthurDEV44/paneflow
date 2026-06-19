@@ -1,4 +1,4 @@
-//! Custom GPUI `Element` for the diff body — virtualized, direct-paint.
+//! Custom GPUI `Element` for the diff body - virtualized, direct-paint.
 //!
 //! Replaces the per-row `div`+`StyledText` `uniform_list`, which re-ran Taffy
 //! flex layout AND line shaping for every visible row on every frame (~300
@@ -9,7 +9,7 @@
 //! window from `window.content_mask()` (pixel math, no flex), shapes ONLY the
 //! visible lines via the frame-cached `text_system().shape_line`, and paints
 //! background quads + glyphs directly. Row data (`DisplayRow`/`SplitRow`) is
-//! built off-thread and consumed unchanged — zero changes to `rows.rs`.
+//! built off-thread and consumed unchanged - zero changes to `rows.rs`.
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -42,12 +42,12 @@ const STICKY_HEADER_HEIGHT: f32 = 24.0;
 const BAR_W: f32 = 4.0; // colored hunk-indicator bar
 const PAD2: f32 = 6.0; // gap between the hunk bar and the line-number gutter
 
-/// The row source for one column — either unified or side-by-side.
+/// The row source for one column - either unified or side-by-side.
 ///
 /// Each variant carries its precomputed cumulative row offsets (`offsets[i]` =
 /// top of row `i`, `offsets[len]` = total content height) and widest line
-/// number. Both are derived ONCE off the per-frame path — in
-/// [`super::view::Column::recompute_display`] — and shared as an `Rc`, so
+/// number. Both are derived ONCE off the per-frame path - in
+/// [`super::view::Column::recompute_display`] - and shared as an `Rc`, so
 /// `request_layout` / `prepaint` never re-walk every row (previously two O(N)
 /// `Vec<f32>` allocations per column per frame).
 pub enum DiffBody {
@@ -145,7 +145,7 @@ pub struct DiffPrepaint {
     sticky_glyphs: Vec<Glyphs>,
     /// Hitboxes over the visible file-header rows so the cursor becomes a
     /// pointing hand there (the headers are click-to-collapse). `Normal`
-    /// behavior — does not consume the click, which still bubbles to the
+    /// behavior - does not consume the click, which still bubbles to the
     /// hosting div's `on_click`.
     header_hitboxes: Vec<Hitbox>,
 }
@@ -281,9 +281,9 @@ impl DiffElement {
             .shape_line(text, self.font_size, &runs, None)
     }
 
-    /// EP-002 US-006: paint a structured file-header row — colored status
+    /// EP-002 US-006: paint a structured file-header row - colored status
     /// sigil, muted directory prefix, emphasized (semibold) basename, and a
-    /// right-aligned green/red diffstat — replacing the old single fused
+    /// right-aligned green/red diffstat - replacing the old single fused
     /// monospace string. Drives BOTH the inline file card (`sticky = false`:
     /// taller, top separator, `header_bg`) and the pinned sticky bar
     /// (`sticky = true`: slim, bottom hairline, elevated `sticky_header_bg`),
@@ -364,7 +364,7 @@ impl DiffElement {
         });
 
         // Path region [path_x, region_right). The basename is emphasized and
-        // NEVER truncated; the directory prefix is muted and gives way first —
+        // NEVER truncated; the directory prefix is muted and gives way first -
         // trailing-aligned into its shrunken slot so the immediate parent dir
         // survives the clip.
         let region_right = (stat_x - px(STAT_GAP)).max(path_x);
@@ -468,7 +468,7 @@ impl DiffElement {
             RowKind::Fold => {
                 // Collapsed unchanged region: a faint separator band with a
                 // quiet count, aligned under the code column. The label is
-                // dimmed below `muted` (Codex redesign): it is pure metadata —
+                // dimmed below `muted` (Codex redesign): it is pure metadata -
                 // it must never compete with the code lines around it.
                 quads.push(Quad {
                     bounds: row_bounds,
@@ -496,7 +496,7 @@ impl DiffElement {
                         color: bg,
                     });
                 }
-                // EP-002 US-007: gutter rail — a slightly stronger tint over the
+                // EP-002 US-007: gutter rail - a slightly stronger tint over the
                 // line-number column (incl. the hunk-bar lane) so the gutter
                 // reads as a structural rail on every content row.
                 quads.push(Quad {
@@ -806,7 +806,7 @@ impl Element for DiffElement {
     ) -> (LayoutId, ()) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        // Full content height (sum of variable row heights) — the hosting
+        // Full content height (sum of variable row heights) - the hosting
         // `overflow_y_scroll` div clips/scrolls. Reads the precomputed offsets
         // (no per-frame walk).
         let h = px(self.body.offsets_rc().last().copied().unwrap_or(0.0));
@@ -843,7 +843,7 @@ impl Element for DiffElement {
         // window (i.e. content_mask == full content height) → culling broken.
         if last.saturating_sub(first) > 200 {
             log::warn!(
-                "diff element: visible {first}..{last} = {} of {row_count} rows — culling off?",
+                "diff element: visible {first}..{last} = {} of {row_count} rows - culling off?",
                 last - first
             );
         }
@@ -852,7 +852,7 @@ impl Element for DiffElement {
         // line numbers in large files never clip past the gutter's left edge.
         // One shaped digit gives the exact monospace advance.
         let digits = {
-            // Count decimal digits by integer division — robust across libm
+            // Count decimal digits by integer division - robust across libm
             // implementations, unlike `log10().floor()` whose rounding can be
             // off-by-one at exact powers of ten (log10(1000) may be 2.9999998).
             let mut n = self.body.max_line_no().max(1);
@@ -889,7 +889,7 @@ impl Element for DiffElement {
                     let origin = point(bounds.origin.x, bounds.origin.y + px(offsets[i]));
                     let row_h = px(offsets[i + 1] - offsets[i]);
                     // A file is folded when the row after its header is another
-                    // header (or EOF) — collapsed files emit a header-only row.
+                    // header (or EOF) - collapsed files emit a header-only row.
                     let collapsed = rows
                         .get(i + 1)
                         .is_none_or(|r| r.kind == RowKind::FileHeader);

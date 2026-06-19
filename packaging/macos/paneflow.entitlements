@@ -13,12 +13,12 @@
         point of a terminal). The sandbox would either block these execs or
         confine them to a private container, breaking parity with every other
         terminal emulator. Distribution-signed (Developer ID) apps run
-        unsandboxed by default, so this key is technically a no-op — kept
+        unsandboxed by default, so this key is technically a no-op - kept
         explicit per US-023 AC1 so reviewers can see the decision was deliberate.
 
     com.apple.security.automation.apple-events = true
         Lets the terminal (and shells started inside it) drive other apps via
-        osascript / NSAppleEventDescriptor — common in dev workflows
+        osascript / NSAppleEventDescriptor - common in dev workflows
         (`osascript -e 'tell app "Finder" to ...'`, `open -a`, etc.).
 
     com.apple.security.cs.allow-jit = true
@@ -40,7 +40,7 @@
         user-installed transport plugins from third-party Team IDs at
         PaneFlow's own process level. EP-004 has not shipped and the
         entitlement was suspected of contributing to the v0.2.12
-        macOS "boxes drawn, no glyphs" bug — under hardened runtime,
+        macOS "boxes drawn, no glyphs" bug - under hardened runtime,
         disable-library-validation changes the trust chain for dylibs
         loaded out of /System/Library/PrivateFrameworks/, which is
         where libFontParser and libCoreText live. Re-add this key
@@ -52,7 +52,7 @@
         disable-library-validation note above). Hardened runtime
         strips DYLD_* by default; enabling this entitlement is the
         canonical way to opt back in. Like disable-library-validation,
-        this affects only the PaneFlow process — child shells set
+        this affects only the PaneFlow process - child shells set
         DYLD_* on their own subprocess environments independently.
 
     NOTE: com.apple.security.get-task-allow is INTENTIONALLY ABSENT here.

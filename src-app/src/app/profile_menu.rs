@@ -1,4 +1,4 @@
-//! Profile menu — opened by clicking the user avatar on the right of the
+//! Profile menu - opened by clicking the user avatar on the right of the
 //! title bar. Mirrors Zed's user menu shape: a user-info header and an app
 //! action list (Settings, Themes…, About). Sign Out will be added once auth
 //! is wired.
@@ -11,7 +11,7 @@ use gpui::{
 use crate::PaneFlowApp;
 use crate::settings::components::{menu_divider_color, select_item, select_menu};
 
-/// Approximate width of the profile menu — used to shift the menu left so
+/// Approximate width of the profile menu - used to shift the menu left so
 /// its right edge sits under the profile button (click anchor is inside the
 /// button on the far right of the title bar).
 const PROFILE_MENU_WIDTH: Pixels = px(220.);
@@ -218,7 +218,7 @@ impl PaneFlowApp {
         // Anchor the menu's top-right corner just below-left of the cursor so
         // the menu opens toward the free area (down-and-left of the profile
         // button). Then clamp both axes so the menu never spills past the
-        // window edges — same flip-if-overflow pattern as the workspace
+        // window edges - same flip-if-overflow pattern as the workspace
         // context menu in `main.rs`.
         let desired_left = anchor.x - PROFILE_MENU_WIDTH;
         let max_left = (win_size.width - PROFILE_MENU_WIDTH - px(4.)).max(px(4.));

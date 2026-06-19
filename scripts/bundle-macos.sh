@@ -20,7 +20,7 @@
 #                            <triple> is aarch64-apple-darwin or
 #                            x86_64-apple-darwin depending on --arch.
 #
-# Signing, notarization, and .dmg creation are intentionally out of scope —
+# Signing, notarization, and .dmg creation are intentionally out of scope -
 # see US-015 (codesign + notarytool) and US-016 (hdiutil .dmg).
 #
 # Portable enough to run on Linux for structural verification (the shell
@@ -92,7 +92,7 @@ BIN="$TARGET_DIR/paneflow"
 INFO_PLIST_SRC="$REPO_ROOT/assets/Info.plist"
 ICNS_SRC="$REPO_ROOT/assets/PaneFlow.icns"
 
-# Fail fast and loud (AC6) — every missing input names the path that wasn't
+# Fail fast and loud (AC6) - every missing input names the path that wasn't
 # found, so a failing CI log tells you exactly what to check.
 [ -f "$BIN" ]              || die "release binary not found at $BIN (did you run 'cargo build --release --target $TRIPLE -p paneflow-app'?)"
 [ -f "$INFO_PLIST_SRC" ]   || die "Info.plist template not found at $INFO_PLIST_SRC"

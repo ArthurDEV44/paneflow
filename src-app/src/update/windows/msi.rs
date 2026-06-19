@@ -5,10 +5,10 @@
 //!      ureq with the 30-second per-call timeout (US-001).
 //!   2. Verify the asset's detached **minisign** signature (`.minisig`
 //!      sibling) against a key baked into this binary (US-001), then
-//!      `WinVerifyTrust` on the Authenticode chain (US-005) — both
+//!      `WinVerifyTrust` on the Authenticode chain (US-005) - both
 //!      **before** msiexec runs. A missing/invalid signature deletes the
 //!      partial and bails; replaces the old same-host `.sha256`.
-//!   3. Resolve `msiexec.exe` via PATH (PATHEXT-aware — the `which`
+//!   3. Resolve `msiexec.exe` via PATH (PATHEXT-aware - the `which`
 //!      crate already handles this). If absent, bail with
 //!      [`EnvironmentBroken`] naming the tool.
 //!   4. Spawn `msiexec.exe /i <msi> /qb /norestart /l*v <log>` where
@@ -18,10 +18,10 @@
 //!      in `InstallFailed { log_path }`.
 //!   5. Map msiexec exit codes:
 //!      - `0` → success, return the canonical installed binary path.
-//!      - `1602` → `InstallDeclined` ("Update cancelled — administrator
-//!        permission required") — the well-known "user declined UAC"
+//!      - `1602` → `InstallDeclined` ("Update cancelled - administrator
+//!        permission required") - the well-known "user declined UAC"
 //!        code.
-//!      - `1603` → `InstallFailed { log_path }` — fatal Windows Installer
+//!      - `1603` → `InstallFailed { log_path }` - fatal Windows Installer
 //!        error; log captures the cause.
 //!      - other → `Other` with exit code + log-path hint for triage.
 //!   6. Delete the MSI scratch file; keep the log on failure so bug
@@ -38,7 +38,7 @@
 //! running `paneflow.exe`. The MSI package author has to handle this
 //! (MoveFileEx with MOVEFILE_DELAY_UNTIL_REBOOT, or a side-by-side
 //! install path). This module's job stops at invoking msiexec and
-//! classifying its exit code — the Windows-side "install landed on a
+//! classifying its exit code - the Windows-side "install landed on a
 //! running binary" case surfaces as `1603` → `InstallFailed` with the
 //! verbose log the user can hand to a maintainer.
 
@@ -61,9 +61,9 @@ const MAX_MSI_BYTES: u64 = 500 * 1024 * 1024;
 
 // Well-known msiexec exit codes (see
 // https://learn.microsoft.com/en-us/windows/win32/msi/error-codes).
-/// ERROR_INSTALL_USEREXIT — user declined UAC or cancelled the dialog.
+/// ERROR_INSTALL_USEREXIT - user declined UAC or cancelled the dialog.
 const MSIEXEC_EXIT_USER_CANCEL: i32 = 1602;
-/// ERROR_INSTALL_FAILURE — a fatal error occurred during installation.
+/// ERROR_INSTALL_FAILURE - a fatal error occurred during installation.
 const MSIEXEC_EXIT_FATAL: i32 = 1603;
 
 /// Run the MSI self-update end-to-end. Returns the canonical installed
@@ -74,7 +74,7 @@ pub fn install(asset_url: &str) -> Result<PathBuf> {
     let msi_path = temp.join(format!("paneflow-update-{pid}.msi"));
     let log_path = temp.join(format!("paneflow-msi-{pid}.log"));
     install_with(asset_url, &msi_path, &log_path, &MsiexecProcessRunner)?;
-    // Success — tidy up the scratch MSI. Keep the log until the next
+    // Success - tidy up the scratch MSI. Keep the log until the next
     // run so a crash-later recovery can still examine it (msiexec
     // already appends to `/l*v` on subsequent invocations).
     let _ = std::fs::remove_file(&msi_path);
@@ -96,14 +96,14 @@ fn install_with(
     if let Err(e) = download_result {
         // AC4: the partial never survives a verification failure. The
         // verifier already tried to clean up its `.partial`, but the
-        // main MSI path may also exist from a prior run — drop it too
+        // main MSI path may also exist from a prior run - drop it too
         // so the next attempt starts clean.
         let _ = std::fs::remove_file(msi_path);
         return Err(e);
     }
 
     // US-005: OS-native Authenticode check as a second, independent layer on
-    // top of the minisign verification above. Fail-closed — an unsigned or
+    // top of the minisign verification above. Fail-closed - an unsigned or
     // untrusted MSI is deleted and aborted before msiexec ever sees it. No
     // publisher-name string compare (forgeable); we trust the result of
     // `WinVerifyTrust` chaining to a trusted root. Compiled out on non-Windows
@@ -118,7 +118,7 @@ fn install_with(
         Ok(()) => Ok(()),
         Err(MsiexecError::NotFound) => Err(anyhow::Error::new(UpdateError::EnvironmentBroken {
             message:
-                "msiexec.exe not found on PATH — Windows system install appears broken. Reinstall PaneFlow manually from the releases page."
+                "msiexec.exe not found on PATH - Windows system install appears broken. Reinstall PaneFlow manually from the releases page."
                     .to_string(),
         })),
         Err(MsiexecError::SpawnFailed(e)) => {
@@ -132,7 +132,7 @@ fn install_with(
 /// (US-005). Fail-closed: any result other than "trusted" returns a tagged
 /// `IntegrityMismatch` so the toast reads "corrupt or tampered".
 ///
-/// This is defense-in-depth on top of US-001's minisign check — it validates
+/// This is defense-in-depth on top of US-001's minisign check - it validates
 /// the Microsoft Authenticode chain (our signing certificate → a trusted
 /// root), which minisign does not cover. We trust `WinVerifyTrust`'s chain
 /// result, never a forgeable publisher-name string compare.
@@ -159,7 +159,7 @@ fn windows_verify_trust(msi: &Path) -> Result<()> {
         .chain(std::iter::once(0))
         .collect();
 
-    // No parent window — WTD_UI_NONE means WinVerifyTrust never shows UI.
+    // No parent window - WTD_UI_NONE means WinVerifyTrust never shows UI.
     let hwnd: windows_sys::Win32::Foundation::HWND = std::ptr::null_mut();
 
     // SAFETY: zero-init is a valid bit pattern for these `repr(C)` structs
@@ -205,18 +205,18 @@ fn windows_verify_trust(msi: &Path) -> Result<()> {
     if status == 0 {
         // ERROR_SUCCESS / S_OK → the signature chains to a trusted root.
         //
-        // US-018 (DEFERRED — blocked on Azure provisioning): a *publisher
+        // US-018 (DEFERRED - blocked on Azure provisioning): a *publisher
         // pin* would slot in HERE, after chain validation succeeds and
         // before returning Ok. With the chain already proven by
         // WinVerifyTrust, comparing the leaf cert's subject is NOT a
         // forgeable name compare (an attacker cannot get a trusted CA to
-        // issue a cert with our validated org subject) — the right pin for
+        // issue a cert with our validated org subject) - the right pin for
         // Azure Trusted Signing, whose certs auto-rotate (so a thumbprint
         // pin is wrong; the stable identity is the subject CN/Organization).
         //
         // It is deferred, NOT skipped, because the pin value is not yet
         // knowable: Azure Trusted Signing is not provisioned (signing is
-        // disabled across the CI matrix — see `.github/workflows/release.yml`
+        // disabled across the CI matrix - see `.github/workflows/release.yml`
         // and `run_tests.yml`; the 6 `AZURE_TRUSTED_SIGNING_*` secrets are
         // empty and no signed MSI exists to pin against). Pinning an
         // unconfirmed subject on a platform that cannot be compiled/tested on
@@ -249,7 +249,7 @@ fn windows_verify_trust(msi: &Path) -> Result<()> {
 
 /// Download the MSI, verify its detached **minisign** signature (US-001),
 /// and persist at `dest` on success. Mirrors the shared pattern in
-/// `targz.rs` / `macos/dmg.rs` — see them for rationale on each guard
+/// `targz.rs` / `macos/dmg.rs` - see them for rationale on each guard
 /// (partial→rename, size cap, RO body stream). The signature, not a
 /// same-host `.sha256`, is the trust anchor and is checked **before**
 /// msiexec is ever invoked.
@@ -258,7 +258,7 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
 
     // 1. Stream the MSI to `.partial` so a crashed download doesn't
     // poison the cache. The `file` handle is scoped so its Drop runs
-    // before `remove_file` — Windows `DeleteFile` fails while a handle
+    // before `remove_file` - Windows `DeleteFile` fails while a handle
     // is open (ERROR_SHARING_VIOLATION).
     let partial = append_suffix(dest, ".partial")?;
     let mut response = ureq::get(asset_url)
@@ -302,7 +302,7 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
     if written > MAX_MSI_BYTES {
         let _ = std::fs::remove_file(&partial);
         bail!(
-            "Update download exceeded {} MiB — aborting.",
+            "Update download exceeded {} MiB - aborting.",
             MAX_MSI_BYTES / 1024 / 1024
         );
     }
@@ -324,11 +324,11 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
 }
 
 /// Map a non-zero msiexec exit code onto the right `UpdateError` variant.
-/// Pure — unit-tested without spawning.
+/// Pure - unit-tested without spawning.
 fn map_exit_code(code: i32, log_path: &Path) -> anyhow::Error {
     match code {
         MSIEXEC_EXIT_USER_CANCEL => anyhow::Error::new(UpdateError::InstallDeclined {
-            message: "Update cancelled — administrator permission required.".to_string(),
+            message: "Update cancelled - administrator permission required.".to_string(),
         }),
         MSIEXEC_EXIT_FATAL => anyhow::Error::new(UpdateError::InstallFailed {
             log_path: log_path.to_path_buf(),
@@ -364,7 +364,7 @@ enum MsiexecError {
 /// codes without spawning the real tool (it doesn't exist on Linux CI).
 trait Msiexec {
     /// Run `msiexec /i <msi> /qb /norestart /l*v <log>` and block until
-    /// it exits. Returns `Ok(())` on exit code 0 — every other outcome
+    /// it exits. Returns `Ok(())` on exit code 0 - every other outcome
     /// is an error the caller classifies.
     fn run_installer(&self, msi: &Path, log: &Path) -> std::result::Result<(), MsiexecError>;
 }
@@ -374,7 +374,7 @@ struct MsiexecProcessRunner;
 impl Msiexec for MsiexecProcessRunner {
     fn run_installer(&self, msi: &Path, log: &Path) -> std::result::Result<(), MsiexecError> {
         // Resolve msiexec via PATH (PATHEXT-aware on Windows). If the
-        // binary is missing, we surface EnvironmentBroken — a broken
+        // binary is missing, we surface EnvironmentBroken - a broken
         // Windows install is distinct from a normal update failure.
         let msiexec = match which::which("msiexec") {
             Ok(p) => p,
@@ -383,7 +383,7 @@ impl Msiexec for MsiexecProcessRunner {
 
         // US-005: stdout/stderr go to `Stdio::null()`, NOT `piped()`. With
         // `.status()` (which never reads the pipes) a `piped()` child that
-        // writes enough to fill the OS pipe buffer would block forever —
+        // writes enough to fill the OS pipe buffer would block forever -
         // a latent deadlock. msiexec under `/qb` shows its own progress UI
         // and writes everything we need to the `/l*v` verbose log file, so
         // its console streams carry no information we consume. Discarding
@@ -405,7 +405,7 @@ impl Msiexec for MsiexecProcessRunner {
             return Ok(());
         }
         // `code()` is `None` only when the process was terminated by a
-        // signal — on Windows that essentially can't happen for a
+        // signal - on Windows that essentially can't happen for a
         // subprocess we started synchronously, but fall back to -1 so
         // the classifier doesn't drop the error on the floor.
         Err(MsiexecError::NonZeroExit {
@@ -500,7 +500,7 @@ mod tests {
     /// AC9: msiexec missing maps to EnvironmentBroken with a specific
     /// message (not a generic "update failed"). This is distinct from
     /// InstallDeclined and InstallFailed because the user hasn't even
-    /// been asked to install — the environment itself is broken.
+    /// been asked to install - the environment itself is broken.
     ///
     /// Uses the direct MsiexecError → install_with error-path logic
     /// (not a full download leg, which needs a live HTTP server). We
@@ -510,7 +510,7 @@ mod tests {
         // Construct the same error install_with would produce on the
         // NotFound branch and verify classification.
         let err = anyhow::Error::new(UpdateError::EnvironmentBroken {
-            message: "msiexec.exe not found on PATH — Windows system install appears broken. Reinstall PaneFlow manually from the releases page.".to_string(),
+            message: "msiexec.exe not found on PATH - Windows system install appears broken. Reinstall PaneFlow manually from the releases page.".to_string(),
         });
         match UpdateError::classify(&err) {
             UpdateError::EnvironmentBroken { message } => {
@@ -521,7 +521,7 @@ mod tests {
         }
     }
 
-    /// StubMsiexec plumbing sanity — confirms the trait object is
+    /// StubMsiexec plumbing sanity - confirms the trait object is
     /// actually invoked when present and the outcome surfaces cleanly.
     #[test]
     fn stub_msiexec_records_invocations() {
@@ -536,7 +536,7 @@ mod tests {
     }
 
     /// StubMsiexec returning 1602 round-trips through install_with's
-    /// error mapping into InstallDeclined — the full AC6 chain.
+    /// error mapping into InstallDeclined - the full AC6 chain.
     /// Exercises install_with by short-circuiting the download via an
     /// HTTP URL that ureq will fail fast on (no actual network).
     /// Since we can't stub ureq without a framework, test the

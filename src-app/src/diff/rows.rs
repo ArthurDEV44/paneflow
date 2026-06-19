@@ -33,7 +33,7 @@ fn build_word_maps(file: &FileDiff, base_lines: &[&str], new_lines: &[&str]) -> 
         let bcount = h.base_row_range.end - h.base_row_range.start;
         let ncount = h.new_row_range.end - h.new_row_range.start;
         // Word diff only for in-place modifications of bounded size (Zed's
-        // MAX_WORD_DIFF_LINE_COUNT) — never on large or pure add/del hunks.
+        // MAX_WORD_DIFF_LINE_COUNT) - never on large or pure add/del hunks.
         if h.status != DiffHunkStatus::Modified
             || bcount != ncount
             || bcount > MAX_WORD_DIFF_LINE_COUNT
@@ -58,7 +58,7 @@ fn build_word_maps(file: &FileDiff, base_lines: &[&str], new_lines: &[&str]) -> 
     WordMaps { old, new }
 }
 
-/// Content row height (CSS px) — compact, one diff line.
+/// Content row height (CSS px) - compact, one diff line.
 pub const ROW_HEIGHT: f32 = 18.0;
 
 /// File-header row height. Taller than a content line so each file reads as a
@@ -274,8 +274,8 @@ pub struct DisplayRow {
 
 /// EP-002 US-006: the file-header row, split into typed segments at build time
 /// (off the render path) so [`super::element::DiffElement`] paints a structured
-/// header — colored status sigil, muted directory prefix, emphasized basename,
-/// right-aligned green/red diffstat — instead of one undifferentiated mono
+/// header - colored status sigil, muted directory prefix, emphasized basename,
+/// right-aligned green/red diffstat - instead of one undifferentiated mono
 /// string. Shared by the Review view and the Agents diff dock.
 #[derive(Clone)]
 pub struct HeaderParts {
@@ -293,7 +293,7 @@ pub struct HeaderParts {
 /// Split a display path into `(dir_prefix_with_trailing_slash, basename)`.
 /// For a rename (`"old → new"`) the last `/` lands inside the new path, so the
 /// new file's basename is emphasized and the `old → newdir/` lead falls into the
-/// muted directory prefix — readable, allocation-cheap, never panics.
+/// muted directory prefix - readable, allocation-cheap, never panics.
 fn split_header_path(shown_path: &str) -> (String, String) {
     match shown_path.rfind('/') {
         Some(i) => (
@@ -321,7 +321,7 @@ pub struct RowPalette {
     pub del_bg: Hsla,
     pub add_fg: Hsla,
     pub del_fg: Hsla,
-    /// Gutter line-number tint for changed lines — added/removed numbers read in
+    /// Gutter line-number tint for changed lines - added/removed numbers read in
     /// a status hue instead of flat `muted`, so the eye finds the changed lines
     /// from the gutter alone (GitHub / Zed behaviour). Context numbers stay
     /// `muted`.
@@ -441,7 +441,7 @@ pub fn palette(ui: crate::theme::UiColors) -> RowPalette {
         // theme instead of a hardcoded slate hex.
         phantom_bg: ui.muted.opacity(0.12),
         // EP-002 US-007: intra-line word emphasis. Light keeps the theme's 0.40
-        // `vc_word_*` alpha; dark drops to 0.28 — 0.40 read too hot over the
+        // `vc_word_*` alpha; dark drops to 0.28 - 0.40 read too hot over the
         // Codex-sampled dark line wash.
         add_word_bg: diff.added.opacity(if is_light { 0.40 } else { 0.28 }),
         del_word_bg: diff.deleted.opacity(if is_light { 0.40 } else { 0.28 }),
@@ -621,7 +621,7 @@ pub fn build_display_rows(
     if dropped > 0 {
         rows.push(DisplayRow {
             kind: RowKind::Truncated,
-            text: format!("diff truncated — {dropped} more lines not shown").into(),
+            text: format!("diff truncated - {dropped} more lines not shown").into(),
             old_no: None,
             new_no: None,
             word_ranges: Vec::new(),
@@ -647,7 +647,7 @@ pub struct HalfCell {
 }
 
 /// A row of the side-by-side view. `Pair` holds both halves so the two sides
-/// share one row (and therefore one scroll offset — US-011 sync scroll is free).
+/// share one row (and therefore one scroll offset - US-011 sync scroll is free).
 #[derive(Clone)]
 pub enum SplitRow {
     /// File-section header. EP-002 US-006: carries the same typed
@@ -816,7 +816,7 @@ pub fn build_split_rows(files: &[FileDiff], syntax: Option<&DiffSyntax>) -> (Vec
 
     if dropped > 0 {
         rows.push(SplitRow::Note(
-            format!("diff truncated — {dropped} more lines not shown").into(),
+            format!("diff truncated - {dropped} more lines not shown").into(),
         ));
     }
     (rows, dropped)
@@ -890,7 +890,7 @@ mod tests {
     #[test]
     fn split_header_path_separates_dir_from_basename() {
         // EP-002 US-006: the directory prefix keeps its trailing slash and the
-        // basename is the last segment — root files have an empty prefix.
+        // basename is the last segment - root files have an empty prefix.
         assert_eq!(
             split_header_path("src/app/view.rs"),
             ("src/app/".to_string(), "view.rs".to_string())

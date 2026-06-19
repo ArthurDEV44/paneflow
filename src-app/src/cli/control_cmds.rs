@@ -144,7 +144,7 @@ mod tests {
     fn focus_ambiguous_prefix_is_target_error_without_ipc_mutation() {
         // "f" prefixes nothing; "backend"/"frontend" share no prefix, so use a
         // selector matching both via cmdline-style name prefix is impossible
-        // here — exercise the no-match arm instead (exit 3, no focus call).
+        // here - exercise the no-match arm instead (exit 3, no focus call).
         let fake = RoutedTransport::new(json!({ "focused": true }));
         let err = focus(&fake, "zzz").expect_err("no match");
         assert_eq!(err.code, crate::cli::EXIT_TARGET);

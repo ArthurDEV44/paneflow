@@ -28,7 +28,7 @@ use gpui::{
 use crate::PaneFlowApp;
 use crate::app::files_tree::{self, FilesTreeState};
 
-/// Fixed sidebar width — matches the sessions sidebar (a resizable width is
+/// Fixed sidebar width - matches the sessions sidebar (a resizable width is
 /// deferred per the PRD non-goals).
 pub(super) const SIDEBAR_WIDTH: Pixels = px(300.);
 pub(super) const ROW_HEIGHT: Pixels = px(28.);
@@ -65,7 +65,7 @@ impl PaneFlowApp {
         self.files_sidebar_open = true;
         self.files_tree_scroll = gpui::ScrollHandle::new();
         // US-018: hydrate the tree + install the recursive watcher OFF the
-        // render thread — a recursive `notify` walk over a repo carrying a
+        // render thread - a recursive `notify` walk over a repo carrying a
         // `target/` (~23k dirs) otherwise froze Wayland. A root shell paints
         // this frame; `sync_files_expansion` runs (and reconciles stale
         // persisted paths back into `session.json`) once hydration lands.
@@ -75,7 +75,7 @@ impl PaneFlowApp {
 
     /// Close the sidebar and release the per-open tree cache + watcher. The
     /// per-workspace expansion lives on the `Workspace`, so it is NOT reset
-    /// here (US-007) — reopening restores it.
+    /// here (US-007) - reopening restores it.
     pub(crate) fn close_files_sidebar(&mut self, cx: &mut Context<Self>) {
         self.files_sidebar_open = false;
         self.files_tree = FilesTreeState::default();
@@ -130,7 +130,7 @@ impl PaneFlowApp {
         cx.notify();
     }
 
-    /// Open a markdown file in the active pane — the focused pane of the active
+    /// Open a markdown file in the active pane - the focused pane of the active
     /// workspace, falling back to its first leaf. Reuses `MarkdownView::open` +
     /// `Pane::add_markdown_tab` unchanged; the sidebar stays open.
     fn open_markdown_in_active_pane(

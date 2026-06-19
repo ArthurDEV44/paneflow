@@ -9,7 +9,7 @@
     (subscription suspended, regional outage > 1 day, onboarding
     stalled > 6 weeks), this script lets a developer sign an MSI
     locally with a Sectigo or DigiCert OV cert held in a `.p12` file.
-    The script intentionally does NOT run in CI — a `.p12` private key
+    The script intentionally does NOT run in CI - a `.p12` private key
     in GitHub Actions Secrets is a higher-risk pattern than the Azure
     service-principal flow (the `.p12` is a long-lived secret; the
     Azure path leaf-certs are 3-day-rotated via ACME).
@@ -87,7 +87,7 @@ if ([System.IO.Path]::GetExtension($resolvedInput).ToLowerInvariant() -ne '.msi'
 
 # --- Validate cert + password --------------------------------------------
 # `Set-StrictMode -Version Latest` does NOT flag an unset env-var-backed
-# default parameter as undefined — the assignment `[string]$CertPath =
+# default parameter as undefined - the assignment `[string]$CertPath =
 # $env:OV_CERT_PATH` succeeds with a null/empty string when the env var
 # is unset. The explicit IsNullOrEmpty check below is therefore the real
 # guard; do not remove it on the assumption that strict mode covers it.
@@ -107,7 +107,7 @@ if ([string]::IsNullOrEmpty($CertPassword)) {
 $resolvedCert = (Resolve-Path -LiteralPath $CertPath).Path
 
 # --- Locate signtool.exe -------------------------------------------------
-# Identical resolution logic to sign-windows.ps1 — keep the two paths
+# Identical resolution logic to sign-windows.ps1 - keep the two paths
 # behaviourally aligned so an SDK upgrade affects them in lockstep.
 
 $sdkRoot = 'C:\Program Files (x86)\Windows Kits\10\bin'
@@ -181,7 +181,7 @@ if ($sig.Status -ne 'Valid') {
     throw "Get-AuthenticodeSignature status is '$($sig.Status)' (expected 'Valid'). StatusMessage: $($sig.StatusMessage)"
 }
 
-# Anchor the publisher check to O= rather than a bare substring — same
+# Anchor the publisher check to O= rather than a bare substring - same
 # rationale as sign-windows.ps1 line ~300.
 $subject = $sig.SignerCertificate.Subject
 if ($subject -notmatch '(?i)(^|,\s*)O\s*=\s*Strivex\b') {

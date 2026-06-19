@@ -82,7 +82,7 @@ paneflow (0.2.1-1) stable; urgency=medium
 
 paneflow (0.2.0-1) stable; urgency=medium
 
-  * feat(packaging): multi-format Linux distribution —
+  * feat(packaging): multi-format Linux distribution -
     .tar.gz + .deb + .rpm + AppImage, built for x86_64 and aarch64.
   * feat(repo): hosted APT + RPM repositories at pkg.paneflow.dev,
     GPG-signed with key fingerprint 9809948F4433CF93DD1329449A252F0C183F2711.
@@ -96,7 +96,7 @@ paneflow (0.2.0-1) stable; urgency=medium
   * feat(update): appimageupdatetool now pinned to dated tag
     2.0.0-alpha-1-20251018 with per-arch SHA256 verification (US-005).
   * feat(platform): foundation work for upcoming macOS / Windows
-    releases — per-OS dispatch for reveal-in-file-manager, Core Text
+    releases - per-OS dispatch for reveal-in-file-manager, Core Text
     font fallback on macOS, DMG/MSI install flows wired (US-009..012).
 
  -- Arthur Jean <arthur.jean@strivex.fr>  Tue, 21 Apr 2026 00:32:00 +0200

@@ -10,7 +10,7 @@ use super::*;
 use crate::pricing;
 use gpui::Hsla;
 
-/// Brand accent for a session agent's glyph — mirrors the sessions sidebar /
+/// Brand accent for a session agent's glyph - mirrors the sessions sidebar /
 /// launcher buttons (Claude orange, Codex blue; OpenCode rides the theme text
 /// color since its mark is monochrome).
 fn agent_brand_color(
@@ -43,7 +43,7 @@ fn short_model(model: &str) -> String {
     }
 }
 
-/// Per-session estimated cost — `Some` only when the session carries both a
+/// Per-session estimated cost - `Some` only when the session carries both a
 /// model and usage AND the model is in the pricing table.
 fn session_cost(s: &SessionMeta) -> Option<f64> {
     let usage = s.usage.as_ref()?;
@@ -99,7 +99,7 @@ impl DiffView {
         any.then_some(total)
     }
 
-    /// EP-004 US-017: "Total ~$X.XX across N worktrees" for the toolbar — summed
+    /// EP-004 US-017: "Total ~$X.XX across N worktrees" for the toolbar - summed
     /// over visible columns that carry a cost. `None` when nothing is priced.
     pub(super) fn attribution_total(&self) -> Option<(f64, usize)> {
         let mut total = 0.0;
@@ -116,7 +116,7 @@ impl DiffView {
         (n > 0).then_some((total, n))
     }
 
-    /// EP-004 US-015/US-017: the attribution badge for a column header — agent
+    /// EP-004 US-015/US-017: the attribution badge for a column header - agent
     /// glyph + model + "~$X.XX (est.)" as a border-only pill, with a hover
     /// breakdown. `None` (zero-width slot, pixel-identical to no-attribution)
     /// when the column has no matched session.

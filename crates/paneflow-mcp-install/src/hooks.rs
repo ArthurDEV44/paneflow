@@ -8,7 +8,7 @@
 //! writes `~/.claude/settings.json` once and references the binary at its
 //! stable, update-surviving path (`runtime_paths::ai_hook_binary_path`).
 //!
-//! Scope: Claude Code only for now — the only agent with a verified, file-based
+//! Scope: Claude Code only for now - the only agent with a verified, file-based
 //! notification-hook mechanism the callback plugs into (the shim injects hooks
 //! for Claude + Codex; Gemini/opencode have no equivalent today). `setup`
 //! reports other agents as unsupported rather than inventing a shape.
@@ -33,7 +33,7 @@ use crate::{io, merge};
 
 /// Claude Code 2.x hook events Paneflow registers. Mirror of
 /// `paneflow-shim::hooks::CLAUDE_HOOK_EVENTS` (kept in sync deliberately).
-/// `SubagentStop` is omitted — the server maps it to `ai.stop` like `Stop`, so
+/// `SubagentStop` is omitted - the server maps it to `ai.stop` like `Stop`, so
 /// registering both would double-fire.
 const CLAUDE_HOOK_EVENTS: &[&str] = &[
     "UserPromptSubmit",
@@ -47,7 +47,7 @@ const CLAUDE_HOOK_EVENTS: &[&str] = &[
 /// hook. Mirror of the shim's marker so both writers recognize each other.
 const MANAGED_MARKER: &str = "_paneflow_managed";
 
-/// `~/.claude/settings.json` — where Claude Code reads user-scope hooks. NOT
+/// `~/.claude/settings.json` - where Claude Code reads user-scope hooks. NOT
 /// `~/.claude.json` (that is the MCP-server file `mcp install` targets).
 fn claude_settings_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude").join("settings.json"))
@@ -61,7 +61,7 @@ fn claude_detected() -> bool {
             .unwrap_or(false)
 }
 
-/// The managed matcher-group for one event — byte-identical to the shim's
+/// The managed matcher-group for one event - byte-identical to the shim's
 /// shape so detection interoperates.
 fn managed_group(hook_path: &Path, event: &str) -> Value {
     json!({
@@ -242,13 +242,13 @@ fn status(expected_hook_path: &Path) -> Result<StatusOutcome> {
     let Some(first) = commands.first() else {
         return Ok(StatusOutcome::NotInstalled);
     };
-    // The stored command is "<path> <event>" — compare the path token.
+    // The stored command is "<path> <event>" - compare the path token.
     let found_path = first.split_whitespace().next().unwrap_or("");
     Ok(classify(found_path, expected_hook_path))
 }
 
 const HOOKS_USAGE: &str = "\
-paneflow hooks — register the Paneflow agent-notification hooks with your agents
+paneflow hooks - register the Paneflow agent-notification hooks with your agents
 
 Usage:
   paneflow hooks setup       Install persistent hooks for every supported agent

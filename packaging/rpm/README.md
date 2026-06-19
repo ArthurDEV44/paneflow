@@ -1,7 +1,7 @@
 # RPM repository layout (US-015)
 
 This directory is the source-of-truth for the `pkg.paneflow.dev/rpm/`
-repository. It is not populated in git — the release workflow copies
+repository. It is not populated in git - the release workflow copies
 built `.rpm` artifacts into `Packages/` and runs `createrepo_c` against
 this directory tree.
 
@@ -34,9 +34,9 @@ repo_gpgcheck=1
 gpgkey=https://pkg.paneflow.dev/gpg
 ```
 
-- `gpgcheck=1` — verifies each RPM's embedded signature (US-017 adds
+- `gpgcheck=1` - verifies each RPM's embedded signature (US-017 adds
   the signature via `rpmsign --addsign` in `release.yml`).
-- `repo_gpgcheck=1` — verifies the `repomd.xml.asc` signature on the
+- `repo_gpgcheck=1` - verifies the `repomd.xml.asc` signature on the
   repository metadata before trusting any listed package (US-015).
 
 ## Pruning

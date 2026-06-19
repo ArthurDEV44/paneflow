@@ -9,7 +9,7 @@
 //! Extracted into its own module to keep `pane.rs` near the 250-line budget.
 //!
 //! Mirrors the in-repo `WorkspaceDrag` / `WorkspaceDragPreview` precedent
-//! (`app/drag.rs`, `sidebar/mod.rs`) — same GPUI commit, identical API shape.
+//! (`app/drag.rs`, `sidebar/mod.rs`) - same GPUI commit, identical API shape.
 
 use gpui::{
     Context, Entity, FontWeight, IntoElement, ParentElement, Render, SharedString, Styled, Window,
@@ -33,8 +33,8 @@ pub struct TabDrag {
     pub source_idx: usize,
     /// The dragged tab itself, mandated by US-001's payload shape. Reorder
     /// (EP-001) and cross-pane move (EP-002) both address the tab by
-    /// `source_pane` + `source_idx` — taking it from the source `Vec` so the
-    /// removal and insertion stay atomic — so this handle is currently carried
+    /// `source_pane` + `source_idx` - taking it from the source `Vec` so the
+    /// removal and insertion stay atomic - so this handle is currently carried
     /// for API completeness (and future direct-handle consumers like
     /// drop-to-split/duplicate) rather than read on the move path.
     #[expect(
@@ -63,8 +63,8 @@ pub struct SessionDrag {
 
 /// Drag payload for a markdown file dragged out of the docked Files sidebar
 /// (PRD `prd-files-tree-sidebar-2026-Q3`, EP-003). Dropping it on a pane opens
-/// the file via `MarkdownView::open` — into a new split (edge) or appended as a
-/// tab (center) — without a process. Only markdown rows are draggable; every
+/// the file via `MarkdownView::open` - into a new split (edge) or appended as a
+/// tab (center) - without a process. Only markdown rows are draggable; every
 /// other file is inert. Cloned cheaply (an owned `PathBuf` + snapshotted
 /// `title`/`icon`) so the shared [`TabDragPreview`] ghost renders without the
 /// sidebar.
@@ -75,7 +75,7 @@ pub struct MarkdownFileDrag {
     pub icon: SharedString,
 }
 
-/// Floating ghost rendered under the cursor during a tab drag — a compact
+/// Floating ghost rendered under the cursor during a tab drag - a compact
 /// version of the tab chip (leading icon + label).
 pub struct TabDragPreview {
     pub title: SharedString,
@@ -112,7 +112,7 @@ impl Render for TabDragPreview {
 }
 
 /// True when the per-OS duplicate-on-drop modifier is held (EP-003 US-010):
-/// Alt on macOS, Ctrl on Linux/Windows. Shift is deliberately never used — it
+/// Alt on macOS, Ctrl on Linux/Windows. Shift is deliberately never used - it
 /// collides with terminal text selection (FR-10). Single home for the `#[cfg]`
 /// so every drop site (strip, trailing, content edge, content center) reads the
 /// modifier identically.
@@ -245,7 +245,7 @@ pub fn reordered_index(from: usize, to: usize, len: usize) -> Option<usize> {
 }
 
 /// Move a tab from `source` into `dest` at `dest_idx` (EP-002 US-004/US-006),
-/// preserving the running PTY — the entity *handle* migrates, the entity is
+/// preserving the running PTY - the entity *handle* migrates, the entity is
 /// untouched. Shared by the drag-drop path (`dest` = the pane whose `on_drop`
 /// fired) and the context-menu path (`dest` chosen from the menu). The moved
 /// tab becomes selected + focused in `dest`; terminal tabs are re-subscribed
@@ -254,7 +254,7 @@ pub fn reordered_index(from: usize, to: usize, len: usize) -> Option<usize> {
 ///
 /// `dest_cx` is the destination pane's context (the live `&mut Context<Pane>`
 /// in the drop listener, or the one handed in by `dest.update(...)` for the
-/// menu path). **The caller MUST guarantee `source != dest`** — `source.update`
+/// menu path). **The caller MUST guarantee `source != dest`** - `source.update`
 /// runs while `dest` is mutably borrowed, so a same-entity call would be GPUI
 /// re-entrancy. Same-pane moves are routed to `Pane::reorder_tab` upstream, so
 /// this precondition always holds.

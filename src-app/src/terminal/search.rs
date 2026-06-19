@@ -1,7 +1,7 @@
 //! Search, copy-mode navigation, and terminal reset actions on `TerminalView`.
 //!
 //! Text matching, scroll-to-match, and the `SearchMatch` type live in the
-//! crate-level `crate::search` module — this file only owns the `TerminalView`
+//! crate-level `crate::search` module - this file only owns the `TerminalView`
 //! plumbing that wires those utilities to keyboard actions and updates copy
 //! mode state.
 //!
@@ -25,7 +25,7 @@ impl TerminalView {
     }
 
     pub(super) fn reset_terminal(&mut self, cx: &mut Context<Self>) {
-        // Automated RIS reset, NOT user input — go through the notifier
+        // Automated RIS reset, NOT user input - go through the notifier
         // directly so US-002's keyboard_input_sent flag is not tripped.
         // Explicit `&[u8]` cast: pulling `markdown` adds `palette` to the
         // dep graph, whose blanket `AsRef` impls on byte arrays make a bare
@@ -37,10 +37,10 @@ impl TerminalView {
     // --- Per-pane font zoom (EP-006 US-019) ---
 
     /// ±1 px per-pane font zoom, clamped to [8.0, 32.0]; at a bound the
-    /// step is a silent no-op (PRD AC — no toast). Writing the override is
+    /// step is a silent no-op (PRD AC - no toast). Writing the override is
     /// the whole job: the next frame re-measures the cell with it,
     /// recomputes cols/rows from the pane bounds, and `resize_if_needed`
-    /// notifies the PTY — the exact window-resize path, so fullscreen TUIs
+    /// notifies the PTY - the exact window-resize path, so fullscreen TUIs
     /// reflow. Strictly per-view: sibling panes never change.
     pub(super) fn font_zoom_step(&mut self, delta: f32, cx: &mut Context<Self>) {
         let current = self
@@ -55,7 +55,7 @@ impl TerminalView {
             return;
         }
         if next == current && self.terminal.font_size_override.is_none() {
-            // Global default already at the bound — don't pin a no-op
+            // Global default already at the bound - don't pin a no-op
             // override that would stop tracking future global changes.
             return;
         }
@@ -64,7 +64,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// Reset to the global font size (`override = None` — the pane follows
+    /// Reset to the global font size (`override = None` - the pane follows
     /// live global changes again).
     pub(super) fn font_zoom_reset(&mut self, cx: &mut Context<Self>) {
         if self.terminal.font_size_override.take().is_some() {
@@ -90,7 +90,7 @@ impl TerminalView {
 
     /// EP-006 US-018: arm THIS view's local search with a fleet query (the
     /// Enter-on-result teleport). Same effect as typing it in the find bar:
-    /// overlay open, matches computed, viewport on the first hit — and the
+    /// overlay open, matches computed, viewport on the first hit - and the
     /// US-017 match rail renders from the same state.
     pub fn arm_search(&mut self, query: &str, regex: bool, cx: &mut Context<Self>) {
         self.search_active = true;
@@ -115,7 +115,7 @@ impl TerminalView {
 
         if self.search_active {
             // Move keyboard focus to the real input so keystrokes land in the
-            // find bar, not the terminal/PTY — this is the whole point of using
+            // find bar, not the terminal/PTY - this is the whole point of using
             // a `TextInput` entity instead of capturing keys by hand.
             let handle = self.search_input.read(cx).focus_handle(cx);
             handle.focus(window, cx);
@@ -131,8 +131,8 @@ impl TerminalView {
     }
 
     /// Re-run the search whenever the bound [`TextInput`] entity changes (wired
-    /// via `cx.observe` in the view constructor). Keeps `search_query` — the
-    /// source of truth for match scanning and the result counter — in sync with
+    /// via `cx.observe` in the view constructor). Keeps `search_query` - the
+    /// source of truth for match scanning and the result counter - in sync with
     /// the field content, clamped to `MAX_QUERY_LEN` on a char boundary.
     pub(super) fn on_search_input_changed(&mut self, cx: &mut Context<Self>) {
         if !self.search_active {
@@ -245,7 +245,7 @@ impl TerminalView {
                 cursor_point.column,
             )
         } else {
-            // Cursor off-screen — place at center of viewport
+            // Cursor off-screen - place at center of viewport
             let center_display = screen_lines as i32 / 2;
             AlacPoint::new(GridLine(center_display - display_offset as i32), GridCol(0))
         };
@@ -313,7 +313,7 @@ impl TerminalView {
             term.selection = Some(sel);
         }
 
-        // Move cursor and update selection endpoint — all under the same lock
+        // Move cursor and update selection endpoint - all under the same lock
         let new_col = (self.copy_cursor.column.0 as i32 + dx)
             .max(0)
             .min(cols as i32 - 1) as usize;
@@ -338,10 +338,10 @@ impl TerminalView {
         let screen_lines = term.screen_lines() as i32;
 
         let new_offset = if cursor_display_line < 0 {
-            // Cursor is above visible area — scroll up
+            // Cursor is above visible area - scroll up
             Some((offset - cursor_display_line) as usize)
         } else if cursor_display_line >= screen_lines {
-            // Cursor is below visible area — scroll down
+            // Cursor is below visible area - scroll down
             let excess = cursor_display_line - screen_lines + 1;
             Some((offset - excess).max(0) as usize)
         } else {

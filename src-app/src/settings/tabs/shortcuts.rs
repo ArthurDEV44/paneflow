@@ -1,4 +1,4 @@
-//! "Shortcuts" settings tab — agents-styled list of every rebindable
+//! "Shortcuts" settings tab - agents-styled list of every rebindable
 //! action with click-to-record key capture.
 //!
 //! Layout: a "Bindings" eyebrow with an inline "Reset to defaults" button on

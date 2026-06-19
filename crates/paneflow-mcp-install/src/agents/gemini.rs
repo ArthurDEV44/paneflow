@@ -2,7 +2,7 @@
 //!
 //! Direct merge into `~/.gemini/settings.json` under `mcpServers.paneflow`
 //! = `{command, args: [], trust: true}`. `trust: true` skips the per-call
-//! confirmation prompt — safe because the bridge is a local binary we
+//! confirmation prompt - safe because the bridge is a local binary we
 //! control and ship.
 //!
 //! A `gemini mcp add --trust` CLI does exist (verified 2026), but the

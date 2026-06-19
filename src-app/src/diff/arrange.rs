@@ -1,14 +1,14 @@
-//! Splittable arrangement tree over diff column indices (inc 5 — drag-and-drop
+//! Splittable arrangement tree over diff column indices (inc 5 - drag-and-drop
 //! diff panes).
 //!
-//! The diff view keeps its `Vec<Column>` (branch diffs) unchanged — all the
+//! The diff view keeps its `Vec<Column>` (branch diffs) unchanged - all the
 //! index-based logic (selected column, scroll sync, sidebar file lists,
 //! jump-to-file) stays intact. This tree only describes how those columns are
 //! *arranged* on screen: instead of a fixed side-by-side flex row, columns can
 //! be split beside (`Row`) or under (`Col`) one another and freely rearranged
 //! by drag-and-drop, mirroring the CLI pane layout.
 //!
-//! Structural only — equal splits, no ratios (interactive divider resize is a
+//! Structural only - equal splits, no ratios (interactive divider resize is a
 //! follow-up). Leaves reference `columns` by index; indices are stable (columns
 //! are never reordered, only appended/hidden), so the tree survives reloads.
 //! [`Arrange::reconcile`] reconciles the stored arrangement with the currently
@@ -117,7 +117,7 @@ impl Arrange {
     }
 
     /// Remove leaf `id`, collapsing empties. Returns true if found. A bare
-    /// `Leaf(id)` returns false (a root leaf can't remove itself — the diff view
+    /// `Leaf(id)` returns false (a root leaf can't remove itself - the diff view
     /// guards against closing the last pane).
     pub fn remove(&mut self, id: usize) -> bool {
         let found = self.remove_inner(id);

@@ -5,9 +5,9 @@
 # `prd-agents-hardening-2026-Q3`); together they form the two-layer
 # defense the precedent PRD designed:
 #
-#   * `run_tests.yml::security_audit` — PR gate. Catches NEW
+#   * `run_tests.yml::security_audit` - PR gate. Catches NEW
 #     advisories introduced by a Cargo.lock change.
-#   * `audit.yml` (this file) — daily cron. Catches NEW advisories
+#   * `audit.yml` (this file) - daily cron. Catches NEW advisories
 #     against the SAME Cargo.lock when the RustSec database itself
 #     grows (a previously-clean dep is later flagged).
 #

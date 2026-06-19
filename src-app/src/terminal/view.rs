@@ -27,7 +27,7 @@ use super::{PtyNotifier, TerminalState};
 use crate::limits::MAX_OSC52_BYTES;
 
 // ---------------------------------------------------------------------------
-// Debug latency probes — zero overhead in release builds
+// Debug latency probes - zero overhead in release builds
 // ---------------------------------------------------------------------------
 
 /// Check once whether PANEFLOW_LATENCY_PROBE=1 is set.
@@ -38,7 +38,7 @@ pub(crate) fn probe_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("PANEFLOW_LATENCY_PROBE").as_deref() == Ok("1"))
 }
 
-/// Human-readable in-pane message for a failed PTY spawn — written into the
+/// Human-readable in-pane message for a failed PTY spawn - written into the
 /// display-only placeholder kept by the US-012 background-spawn path (and the
 /// old synchronous fallback). ANSI-formatted; `\r\n` because there is no PTY to
 /// translate bare `\n`.
@@ -59,8 +59,8 @@ fn spawn_error_message(e: &anyhow::Error) -> String {
 /// program can't plant a paste-injection (U-023). Keeps TAB and LF (legitimate
 /// in clipboard text); drops CR (the byte that commits a line on paste into a
 /// non-bracketed context), ESC (the ANSI intro), every other C0 control, DEL,
-/// and the C1 range (U+0080–U+009F). Applied symmetrically to the Store (write)
-/// and Load (read) paths so they can't drift apart again — `char::is_control()`
+/// and the C1 range (U+0080-U+009F). Applied symmetrically to the Store (write)
+/// and Load (read) paths so they can't drift apart again - `char::is_control()`
 /// already covers C0 + DEL + C1.
 pub(super) fn sanitize_osc52(text: &str) -> String {
     text.chars()
@@ -69,7 +69,7 @@ pub(super) fn sanitize_osc52(text: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Terminal View — GPUI Render impl
+// Terminal View - GPUI Render impl
 // ---------------------------------------------------------------------------
 
 // US-006: cursor blink interval moved to `terminal::blink::CURSOR_BLINK_INTERVAL`.
@@ -96,10 +96,10 @@ pub struct TerminalView {
     /// Last known cell dimensions (from TerminalElement::measure_cell)
     pub(super) cell_width: gpui::Pixels,
     pub(super) line_height: gpui::Pixels,
-    /// Element origin in window coordinates — set by TerminalElement::paint(),
+    /// Element origin in window coordinates - set by TerminalElement::paint(),
     /// read by mouse handlers for pixel→grid conversion.
     pub(super) element_origin: Arc<Mutex<gpui::Point<gpui::Pixels>>>,
-    /// US-015: painted scrollbar geometry — set by TerminalElement::paint(),
+    /// US-015: painted scrollbar geometry - set by TerminalElement::paint(),
     /// read by the mouse handlers to hit-test click-to-jump / drag.
     pub(super) scrollbar_metrics: Arc<Mutex<Option<super::element::ScrollbarMetrics>>>,
     /// US-015: active scrollbar drag, or `None`. Holds the cursor Y and the
@@ -111,7 +111,7 @@ pub struct TerminalView {
     pub(super) scroll_remainder: f32,
     /// Whether the search overlay is visible
     pub(super) search_active: bool,
-    /// Real single-line input backing the find bar — the same `TextInput`
+    /// Real single-line input backing the find bar - the same `TextInput`
     /// widget the Agents sidebar uses. Focused on open so keystrokes land in
     /// the field (cursor, selection, IME, clipboard) instead of the PTY.
     pub(super) search_input: gpui::Entity<crate::widgets::text_input::TextInput>,
@@ -135,7 +135,7 @@ pub struct TerminalView {
     /// from config at construction.
     pub(super) cursor_blink_mode: paneflow_config::schema::CursorBlinkConfig,
     /// US-022: resolved scroll-wheel multiplier for scrollback (1.0 = default).
-    /// Read from config at construction (like the cursor/bell settings) — NOT
+    /// Read from config at construction (like the cursor/bell settings) - NOT
     /// per scroll event, so the hot scroll path does no config I/O. Takes
     /// effect on the next new terminal, consistent with the other terminal
     /// settings here.
@@ -148,7 +148,7 @@ pub struct TerminalView {
     pub(super) copy_mode_frozen_offset: usize,
     /// Previous focus state, used to detect focus transitions for DEC 1004 events.
     was_focused: bool,
-    /// Bell flash deadline — background pulse visible until this instant.
+    /// Bell flash deadline - background pulse visible until this instant.
     bell_flash_until: Option<std::time::Instant>,
     /// US-005: set when an audible bell is pending; rung in `render` (the only
     /// place with a `&mut Window`) then cleared. The event poll loop runs on an
@@ -156,7 +156,7 @@ pub struct TerminalView {
     pending_system_bell: bool,
     /// Last hovered cell position for URL regex detection (US-015).
     pub(super) hovered_cell: Option<AlacPoint>,
-    /// Active hyperlink under Ctrl+hover — drives underline rendering and Ctrl+click.
+    /// Active hyperlink under Ctrl+hover - drives underline rendering and Ctrl+click.
     pub(super) ctrl_hovered_link: Option<HyperlinkZone>,
     /// US-012: the link under the cursor at modifier+mouse-down. The open is
     /// deferred to mouse-up and fires only if no drag occurred (empty
@@ -206,8 +206,8 @@ impl TerminalView {
     ) -> Self {
         let surface_id = cx.entity_id().as_u64();
 
-        // US-012: paint immediately. Phase 1 — resolve the (cheap) spawn params
-        // and build a display-only placeholder on the render thread. Phase 2 —
+        // US-012: paint immediately. Phase 1 - resolve the (cheap) spawn params
+        // and build a display-only placeholder on the render thread. Phase 2 -
         // open the PTY on the background executor and `promote()` the
         // placeholder in place when it resolves, so an N-pane restore never
         // serializes N blocking spawns on the main thread.
@@ -225,7 +225,7 @@ impl TerminalView {
         terminal.set_background_executor(cx.background_executor().clone());
         // The background `EventLoop` attaches to this same shared `term` + event
         // channel, so the placeholder's event loop keeps working after promotion
-        // — no view-side rewiring needed.
+        // - no view-side rewiring needed.
         let term = terminal.term.clone();
         // Capture the foreground signal mask on the MAIN thread so the
         // background-spawned child still gets correct Ctrl-C / Ctrl-Z (US-012).
@@ -263,7 +263,7 @@ impl TerminalView {
                         }
                         Err(e) => {
                             // Spawn failed: keep the display-only placeholder and
-                            // surface the error in-pane (no orphan, no panic — same
+                            // surface the error in-pane (no orphan, no panic - same
                             // outcome as the old synchronous fallback).
                             log::error!("PTY creation failed: {e:#}");
                             view.terminal
@@ -286,7 +286,7 @@ impl TerminalView {
     ) -> Self {
         let focus_handle = cx.focus_handle();
 
-        // Find bar input — same widget as the Agents sidebar filter. Observe it
+        // Find bar input - same widget as the Agents sidebar filter. Observe it
         // so every keystroke re-runs the in-buffer search (no submit needed).
         let search_input =
             cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Search", cx));
@@ -354,7 +354,7 @@ impl TerminalView {
                                 match op {
                                     ClipboardOp::Store(text) => {
                                         // U-023: sanitize untrusted PTY output before it
-                                        // reaches the system clipboard — symmetric with the
+                                        // reaches the system clipboard - symmetric with the
                                         // Load path below, so an embedded CR/ESC can't commit
                                         // a hidden command when the user later pastes it.
                                         cx.write_to_clipboard(ClipboardItem::new_string(
@@ -363,7 +363,7 @@ impl TerminalView {
                                     }
                                     ClipboardOp::Load(format_fn) => {
                                         // Match the OSC 52 Store cap (100 KiB) on
-                                        // Load responses too — without this, a
+                                        // Load responses too - without this, a
                                         // very large clipboard (multi-MB) would
                                         // be base64-encoded and streamed into
                                         // the PTY in one shot. Cap centralized
@@ -400,7 +400,7 @@ impl TerminalView {
 
                             // Cap pending TextAreaSize replies to keep a runaway TUI
                             // from accumulating thousands of pending responders.
-                            // Keep the most recent entries — older replies would
+                            // Keep the most recent entries - older replies would
                             // race the writer that requested them and are
                             // effectively stale by the time we'd answer.
                             if view.terminal.pending_size_ops.len() > 8 {
@@ -423,7 +423,7 @@ impl TerminalView {
                             }
 
                             // Bell (US-005): surface a BEL per the configured
-                            // mode — visual flash, audible system bell, both, or
+                            // mode - visual flash, audible system bell, both, or
                             // off. The system bell is deferred to `render`, the
                             // only place with a `&mut Window`.
                             if view.terminal.bell_active {
@@ -466,7 +466,7 @@ impl TerminalView {
                             // US-002: close only on a user-initiated or clean
                             // exit. A non-zero exit with no prior user input is
                             // a spawn/launch failure (bad shell, missing agent
-                            // binary) — keep the pane open so the exit overlay
+                            // binary) - keep the pane open so the exit overlay
                             // renders the code instead of vanishing silently.
                             if view.terminal.exited.is_some()
                                 && view.terminal.should_close_on_exit()
@@ -487,9 +487,9 @@ impl TerminalView {
                                 // Leading edge + throttle (replaces the old
                                 // every-10th-tick modulo): the FIRST dirty
                                 // batch after a quiet spell fires immediately
-                                // — a dev server printing its banner in fewer
+                                // - a dev server printing its banner in fewer
                                 // than 10 batches then going silent used to
-                                // be missed entirely — and sustained output
+                                // be missed entirely - and sustained output
                                 // re-fires at most every 300ms.
                                 const BURST_THROTTLE: std::time::Duration =
                                     std::time::Duration::from_millis(300);
@@ -566,7 +566,7 @@ impl TerminalView {
             .detach();
         } else {
             log::warn!(
-                "BlinkPhaseGlobal not installed — cursor will not blink for this TerminalView"
+                "BlinkPhaseGlobal not installed - cursor will not blink for this TerminalView"
             );
         }
 
@@ -652,7 +652,7 @@ impl TerminalView {
     /// when the application enabled bracketed paste, the payload is wrapped
     /// in `ESC[200~ … ESC[201~` so embedded newlines stay literal inside a
     /// TUI's input editor instead of acting as Enter. No CR is ever appended
-    /// here — submission stays a separate, explicit `send_text("\r")` write.
+    /// here - submission stays a separate, explicit `send_text("\r")` write.
     pub fn paste_text(&self, text: &str) {
         let mode = *self.terminal.term.lock().mode();
         self.write_paste_text(text, mode);
@@ -674,7 +674,7 @@ impl TerminalView {
     /// sequence carries CR/LF (`enter`, `ctrl-m`, `ctrl-j`, …). The IPC-level
     /// CR/LF check only sees the keystroke *name*, so without this guard
     /// `paneflow key <t> enter` would submit a pre-filled prompt and bypass the
-    /// human-in-loop invariant — submission must stay exclusive to
+    /// human-in-loop invariant - submission must stay exclusive to
     /// `surface.send_text` with `submit=true`.
     pub fn send_keystroke(&self, keystroke_str: &str) -> Result<(), String> {
         let keystroke = gpui::Keystroke::parse(keystroke_str).map_err(|e| format!("{e}"))?;
@@ -714,7 +714,7 @@ impl TerminalView {
 
 /// True when an escape sequence (or raw key char) would submit a line at the
 /// PTY. Single choke point for the `send_keystroke` refusal above (US-005,
-/// orchestration-v2) — pure so the rule is unit-testable.
+/// orchestration-v2) - pure so the rule is unit-testable.
 fn sequence_would_submit(seq: &str) -> bool {
     seq.contains('\r') || seq.contains('\n')
 }
@@ -887,21 +887,21 @@ pub enum TerminalEvent {
     TitleChanged,
     /// The shell's working directory changed (detected via OSC 7 escape sequence).
     CwdChanged(String),
-    /// Terminal output activity detected — triggers an OS port scan
+    /// Terminal output activity detected - triggers an OS port scan
     /// (`workspace::ports`; Linux `/proc/net/tcp`, macOS libproc, Windows stub).
     /// Emitted alongside `ServiceDetected` during output scan ticks.
     ActivityBurst,
     /// A server/service was detected in PTY output (e.g. "Listening on :3000").
     /// Enriches the bare port from the OS port scan with label and URL.
     ServiceDetected(ServiceInfo),
-    /// Terminal bell (\a) was triggered — visual flash notification.
+    /// Terminal bell (\a) was triggered - visual flash notification.
     Bell,
-    /// Escape pressed while swap mode is active — requests cancellation.
+    /// Escape pressed while swap mode is active - requests cancellation.
     CancelSwapMode,
     /// A mouse selection was auto-copied to the clipboard on mouse release.
     /// Consumed by `PaneFlowApp` to surface a "Copied" toast.
     SelectionCopied,
-    /// US-020 — Cmd/Ctrl-click on a `.md`/`.markdown` path detected by the
+    /// US-020 - Cmd/Ctrl-click on a `.md`/`.markdown` path detected by the
     /// US-019 file-path scanner. The receiver (PaneFlowApp) splits the
     /// containing pane vertically and inserts a markdown viewer in the
     /// new half. The path is the canonical absolute path produced by
@@ -918,11 +918,11 @@ pub enum TerminalEvent {
         line: Option<u32>,
         col: Option<u32>,
     },
-    /// EP-006 US-019 — the per-pane font override changed. The receiver
+    /// EP-006 US-019 - the per-pane font override changed. The receiver
     /// (PaneFlowApp) persists the session so the zoom survives a crash,
     /// not just a clean quit (same rationale as `SurfaceRenamed`).
     FontZoomChanged,
-    /// EP-006 US-018 — the user toggled the fleet scope from this view's
+    /// EP-006 US-018 - the user toggled the fleet scope from this view's
     /// find bar. The receiver (PaneFlowApp) fans the query out to every
     /// pane of every workspace off the render thread and opens the fleet
     /// results overlay.
@@ -1000,7 +1000,7 @@ impl TerminalView {
     fn render_search_overlay(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         use gpui::{FontWeight, Hsla, MouseButton, hsla, px, svg};
 
-        // Themed chrome (One Dark / PaneFlow Light), not hardcoded Catppuccin —
+        // Themed chrome (One Dark / PaneFlow Light), not hardcoded Catppuccin -
         // keeps the find bar consistent with the fleet-search card and sidebar.
         let ui = crate::theme::ui_colors();
 
@@ -1024,7 +1024,7 @@ impl TerminalView {
             (format!("{current_match}/{match_count}"), ui.muted)
         };
 
-        // Real input entity (cursor, selection, IME, clipboard) — the same
+        // Real input entity (cursor, selection, IME, clipboard) - the same
         // widget the Agents sidebar uses, focused on open. The caret and
         // "Search" placeholder are painted by the widget itself; we only own
         // the wrapper box (width + inherited text size/colour).
@@ -1039,7 +1039,7 @@ impl TerminalView {
             .child(self.search_input.clone());
 
         // Regex toggle (.*): active state reads as a pressed pill with an accent
-        // hairline — a full accent fill would drop below 4.5:1 on the light theme.
+        // hairline - a full accent fill would drop below 4.5:1 on the light theme.
         let regex_toggle = div()
             .id("search-regex-toggle")
             .flex()
@@ -1191,7 +1191,7 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // US-005: ring the OS system bell here — the only context with a
+        // US-005: ring the OS system bell here - the only context with a
         // `&mut Window`. The event poll loop runs on an `AsyncApp` and merely
         // sets `pending_system_bell`.
         if self.pending_system_bell {
@@ -1204,7 +1204,7 @@ impl Render for TerminalView {
         if focused != self.was_focused {
             let mode = { *self.terminal.term.lock_unfair().mode() };
             if mode.contains(TermMode::FOCUS_IN_OUT) {
-                // Automated protocol write, NOT user input — go through the
+                // Automated protocol write, NOT user input - go through the
                 // notifier directly so US-002's keyboard_input_sent flag is not
                 // tripped by a mere focus change (a failed-spawn pane that gets
                 // focused must still count as "no input" and stay open).
@@ -1320,7 +1320,7 @@ impl Render for TerminalView {
             .id("terminal-view")
             .key_context(self.dispatch_context())
             .track_focus(&self.focus_handle)
-            // US-010: hand cursor over a hovered link, text IBeam otherwise —
+            // US-010: hand cursor over a hovered link, text IBeam otherwise -
             // the universal "this is clickable" affordance (mirrors Zed
             // terminal_element.rs:1364-1371).
             .cursor(if self.ctrl_hovered_link.is_some() {
@@ -1491,9 +1491,9 @@ mod tests {
     fn sanitize_osc52_strips_injection_controls_keeps_tab_and_newline() {
         // U-023: CR / ESC / other C0 / DEL / C1 are dropped; TAB and LF survive
         // (legitimate clipboard text), and printable multibyte is untouched.
-        let dirty = "echo hi\r\x1b[31mX\x1b[0m\u{7f}\u{0085}\tcol\nnext — café 🦀";
+        let dirty = "echo hi\r\x1b[31mX\x1b[0m\u{7f}\u{0085}\tcol\nnext - café 🦀";
         let clean = sanitize_osc52(dirty);
-        assert_eq!(clean, "echo hi[31mX[0m\tcol\nnext — café 🦀");
+        assert_eq!(clean, "echo hi[31mX[0m\tcol\nnext - café 🦀");
         assert!(
             !clean.contains('\r'),
             "CR (commits a line on paste) removed"
@@ -1572,7 +1572,7 @@ mod tests {
     fn extract_scrollback_empty_terminal_returns_none() {
         let state = TerminalState::new_display_only(24, 80);
         // Fresh terminal with no content beyond the initial blank grid
-        // May return None or Some with only whitespace — both are acceptable
+        // May return None or Some with only whitespace - both are acceptable
         let scrollback = state.extract_scrollback();
         if let Some(ref text) = scrollback {
             assert!(

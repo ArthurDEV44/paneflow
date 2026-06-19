@@ -7,14 +7,14 @@
 
 use gpui::{Hsla, Pixels, WindowBackgroundAppearance, px};
 
-/// Sidebar width in pixels — shared between sidebar and title bar for alignment.
+/// Sidebar width in pixels - shared between sidebar and title bar for alignment.
 pub(crate) const SIDEBAR_WIDTH: f32 = 240.;
 
 /// Dark cockpit tint used while the window is inactive.
 const DARK_CHROME_TINT: u32 = 0x141414;
 /// Linux-only: opacity of the neutral `#141414` veil applied over native blur
 /// while the window is active (see `cockpit_chrome_background`). Only referenced
-/// from the `#[cfg(target_os = "linux")]` branch, so gate the declaration too —
+/// from the `#[cfg(target_os = "linux")]` branch, so gate the declaration too -
 /// otherwise it reads as dead code on the Windows/macOS builds.
 #[cfg(target_os = "linux")]
 const LINUX_CHROME_ACTIVE_OPACITY: f32 = 0.72;
@@ -154,7 +154,7 @@ pub(crate) fn cockpit_chrome_background(background: Hsla, is_window_active: bool
 /// Window-level backdrop behind the translucent chrome.
 ///
 /// This is what the rounded panel corners reveal in their clip notch, so it MUST
-/// match the rail ([`cockpit_chrome_background`]) — otherwise the corner exposes
+/// match the rail ([`cockpit_chrome_background`]) - otherwise the corner exposes
 /// a different surface than the rail and the radius reads as a square patch.
 /// Native semantic materials remain raw; Linux uses the same theme tint here as
 /// the rail because its blur protocols do not expose light/dark appearances.
@@ -204,13 +204,13 @@ fn sidebar_tab_background(light_opacity: f32, dark_opacity: f32) -> Hsla {
     Hsla::from(gpui::rgb(tint)).opacity(opacity)
 }
 
-/// Claude Code spinner glyphs — same characters Claude renders in the terminal.
+/// Claude Code spinner glyphs - same characters Claude renders in the terminal.
 /// Claude Code keeps this unique glyph spinner; every other agent uses the
 /// rotating `loader-circle.svg` arc (shared with the Agents sidebar).
 pub(crate) const CLAUDE_SPINNER_FRAMES: [char; 6] = ['·', '✻', '✽', '✶', '✳', '✢'];
 
 /// Toast animation durations (ms). The `hold_ms` carried on each `Toast`
-/// must match the dismiss timer in `push_toast` — otherwise the exit
+/// must match the dismiss timer in `push_toast` - otherwise the exit
 /// animation plays early and the element persists as a ghost.
 pub(crate) const TOAST_ENTER_MS: u64 = 180;
 pub(crate) const TOAST_HOLD_MS: u64 = 1440;

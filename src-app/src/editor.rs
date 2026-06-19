@@ -1,4 +1,4 @@
-//! Cross-platform "open this source file at line:col" — invoked when the
+//! Cross-platform "open this source file at line:col" - invoked when the
 //! user Cmd/Ctrl-clicks a `path:42:7` style reference in a terminal pane.
 //!
 //! Strategy (in order):
@@ -7,7 +7,7 @@
 //!    pre-set flags carried over. If the binary is one of the well-known
 //!    editors with a documented line:col syntax (code/zed/subl/cursor/
 //!    nvim/vim/helix/emacs), the right argv is appended.
-//! 2. Probed fallback chain — `code`, `cursor`, `zed`, `subl`, `nvim`,
+//! 2. Probed fallback chain - `code`, `cursor`, `zed`, `subl`, `nvim`,
 //!    `vim`, `hx`, `emacs` (in that order). First binary found on `PATH`
 //!    wins.
 //! 3. Last-resort: `open::that(path)` so the OS launcher (`xdg-open` /
@@ -27,30 +27,30 @@ use std::process::Command;
 /// for "open at line and column".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EditorKind {
-    /// VS Code / Cursor / Codium clones — `code -g path:line:col`
+    /// VS Code / Cursor / Codium clones - `code -g path:line:col`
     VsCodeLike,
-    /// Zed — `zed path:line:col` (no flag needed; the colon syntax is
+    /// Zed - `zed path:line:col` (no flag needed; the colon syntax is
     /// recognised since 0.130).
     Zed,
-    /// Sublime Text — `subl path:line:col`
+    /// Sublime Text - `subl path:line:col`
     Sublime,
-    /// Neovim / Vim — `nvim +line path` (col not natively supported as
+    /// Neovim / Vim - `nvim +line path` (col not natively supported as
     /// argv; we drop it). Could be extended with `+call cursor(L, C)`
     /// but that gets messy across remote/server modes.
     VimFamily,
-    /// Helix — `hx path:line:col`
+    /// Helix - `hx path:line:col`
     Helix,
-    /// Emacs — `emacs +line:col path` (line and optional col separated
+    /// Emacs - `emacs +line:col path` (line and optional col separated
     /// by `:`)
     Emacs,
-    /// Unknown binary — invoke with bare `path` only (no location).
+    /// Unknown binary - invoke with bare `path` only (no location).
     Unknown,
 }
 
 impl EditorKind {
     fn from_binary_name(name: &str) -> Self {
         // Strip the directory portion and any `.exe` / `.cmd` suffix so the
-        // matcher is OS-agnostic — `which code.cmd` on Windows still maps
+        // matcher is OS-agnostic - `which code.cmd` on Windows still maps
         // to `VsCodeLike`.
         let base = Path::new(name)
             .file_stem()
@@ -130,10 +130,10 @@ fn parse_env_editor(value: &str) -> Option<(String, Vec<String>)> {
 
 /// Resolve `name` to an executable on `PATH`.
 ///
-/// US-042: delegates to the `which` crate — the same resolver
-/// `workspace_ops::resolve_editor_binary_in` uses — so editor probing behaves
+/// US-042: delegates to the `which` crate - the same resolver
+/// `workspace_ops::resolve_editor_binary_in` uses - so editor probing behaves
 /// identically across the codebase. On Windows this honors the full `PATHEXT`
-/// (`.com`, `.ps1`, … — not just a hardcoded `.exe`/`.cmd`/`.bat` list, which
+/// (`.com`, `.ps1`, … - not just a hardcoded `.exe`/`.cmd`/`.bat` list, which
 /// let a `$VISUAL`/`$EDITOR` in an uncommon extension escape the probe); on
 /// Unix it checks the executable bit (a plain `is_file()` did not).
 fn find_on_path(name: &str) -> Option<PathBuf> {
@@ -157,7 +157,7 @@ const FALLBACK_PROBES: &[&str] = &[
 ];
 
 /// Open `path` in the user's preferred editor at the given location.
-/// Spawns the editor process detached — does not wait for it to exit.
+/// Spawns the editor process detached - does not wait for it to exit.
 ///
 /// Errors are logged at `warn` level and swallowed so a misconfigured
 /// editor never panics the renderer. The boolean return signals only
@@ -174,7 +174,7 @@ pub fn open_at_location(path: &Path, line: Option<u32>, col: Option<u32>) -> boo
             if try_spawn(&bin, &args) {
                 return true;
             }
-            log::warn!("editor: ${var}={value:?} failed to spawn — falling through");
+            log::warn!("editor: ${var}={value:?} failed to spawn - falling through");
         }
     }
 
@@ -191,7 +191,7 @@ pub fn open_at_location(path: &Path, line: Option<u32>, col: Option<u32>) -> boo
 
     // 3. Last-resort: OS handler (loses line/col).
     log::warn!(
-        "editor: no $VISUAL/$EDITOR and none of {:?} on PATH — falling back to OS handler",
+        "editor: no $VISUAL/$EDITOR and none of {:?} on PATH - falling back to OS handler",
         FALLBACK_PROBES
     );
     open::that(path).is_ok()

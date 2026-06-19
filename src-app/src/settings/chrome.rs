@@ -1,10 +1,10 @@
 //! Codex-style embedded settings chrome for `PaneFlowApp`.
 //!
 //! Two entry points, wired into the main window's `Render` impl (`main.rs`):
-//! - [`PaneFlowApp::render_settings_nav`] — the grouped left-rail navigation
+//! - [`PaneFlowApp::render_settings_nav`] - the grouped left-rail navigation
 //!   (back-to-app button + search box + iconed sections), rendered in the
 //!   sidebar slot in place of the mode rail while settings are open.
-//! - [`PaneFlowApp::render_settings_content_panel`] — the right panel: a big
+//! - [`PaneFlowApp::render_settings_content_panel`] - the right panel: a big
 //!   page title plus the scrollable section body.
 //!
 //! Section bodies live in `settings::tabs::*`; this file owns the nav, the
@@ -30,10 +30,10 @@ use crate::{PaneFlowApp, SettingsSection};
 /// feed `sidebar_px` for title-bar brand-slot alignment.
 pub(crate) const SETTINGS_NAV_WIDTH: f32 = 260.;
 
-/// Content-panel background — `ui.base` (`#181818`), the same opaque surface the
+/// Content-panel background - `ui.base` (`#181818`), the same opaque surface the
 /// Review / Agents content panels use. Deliberately *lighter* than the `#141414`
 /// rail/chrome so the rail-side corner masks (which paint the `#141414` chrome
-/// tint over the panel's square corner) actually read as rounded — a content
+/// tint over the panel's square corner) actually read as rounded - a content
 /// fill equal to the mask color would show no rounding at all. The nav RAIL
 /// instead uses `cockpit_chrome_background()` (the platform-aware transparent /
 /// blur-veil treatment shared with the CLI / Review / Agents rails).
@@ -47,7 +47,7 @@ struct NavItem {
     label: &'static str,
     icon: &'static str,
     /// Extra lowercase search terms (the controls living on the page) so the
-    /// nav search box finds a section by its *content*, not just its label —
+    /// nav search box finds a section by its *content*, not just its label -
     /// e.g. typing "theme", "cursor", or "shell" surfaces the right page.
     keywords: &'static [&'static str],
 }
@@ -231,7 +231,7 @@ impl PaneFlowApp {
                 let section = it.section;
                 let is_active = section == active;
                 // Every section row renders in full-strength text (white),
-                // active or not — Codex keeps all labels at one legible color
+                // active or not - Codex keeps all labels at one legible color
                 // and signals the active row through the pill fill + the medium
                 // font weight alone, not a muted/bright color split.
                 let fg = ui.text;
@@ -304,7 +304,7 @@ impl PaneFlowApp {
             .child(list)
     }
 
-    /// The nav search field — a real single-line `TextInput` (cursor, arrow
+    /// The nav search field - a real single-line `TextInput` (cursor, arrow
     /// keys, clipboard, mouse selection), read from `value()` at render to
     /// filter the section list. Mirrors the agents-sidebar filter recipe.
     fn render_settings_search(
@@ -313,11 +313,11 @@ impl PaneFlowApp {
         _window: &Window,
         cx: &mut Context<Self>,
         // Returns a concrete `AnyElement` (not `impl IntoElement`) so the
-        // value does not capture `cx`'s borrow under edition-2024 RPIT — the
+        // value does not capture `cx`'s borrow under edition-2024 RPIT - the
         // nav loop reborrows `cx` for its per-row `on_click` listeners.
     ) -> AnyElement {
         // Codex-style search pill: a filled `ui.subtle` gray, borderless, and
-        // fully inert — nothing changes on focus or hover. Matches the select
+        // fully inert - nothing changes on focus or hover. Matches the select
         // triggers so the settings chrome reads as one system; the blinking
         // caret is the only focus cue.
         div()
@@ -332,7 +332,7 @@ impl PaneFlowApp {
             .gap(px(6.))
             .cursor_text()
             // Two-stage Escape (keyboard parity with the Back button): clear the
-            // query if any, otherwise — already empty — close settings outright.
+            // query if any, otherwise - already empty - close settings outright.
             // Cursor movement / Delete / Ctrl+A,C,V,X / mouse selection are
             // handled inside the focused TextInput.
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {

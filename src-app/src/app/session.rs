@@ -1,4 +1,4 @@
-//! Session persistence for `PaneFlowApp` — save/restore workspace layouts
+//! Session persistence for `PaneFlowApp` - save/restore workspace layouts
 //! and their per-pane CWD + scrollback so relaunching rebuilds exactly
 //! what the user had open.
 //!
@@ -35,7 +35,7 @@ const SAVE_DEBOUNCE_MS: u64 = 150;
 /// event (US-006). Gathered by [`PaneFlowApp::load_session_at`] inside
 /// the parse-failure branch *before* the empty fallback session is
 /// returned, so the values reflect the file the user actually had on
-/// disk — not the one we're about to overwrite. Stays a plain data
+/// disk - not the one we're about to overwrite. Stays a plain data
 /// struct (no telemetry client coupling) because `load_session` runs
 /// in bootstrap before the `TelemetryClient` is constructed; the
 /// caller in `bootstrap.rs` defers the emit until after telemetry is
@@ -47,14 +47,14 @@ pub(crate) struct SessionCorruptionInfo {
     /// schema fixed even if serde widens its `Category` enum.
     pub(crate) error_category: &'static str,
     /// Size in bytes of the corrupted file, or `0` if the metadata
-    /// call itself failed (rare — file just got read successfully).
+    /// call itself failed (rare - file just got read successfully).
     pub(crate) file_size: u64,
     /// Wall-clock age in seconds (mtime → now). `None` when the
     /// platform's modification-time call returns a value newer than
     /// `now` (clock drift) or the metadata call fails.
     pub(crate) file_age_seconds: Option<u64>,
     /// Resolved path of the freshly-written backup, or `None` if the
-    /// backup write itself failed (AC6 — never block startup on
+    /// backup write itself failed (AC6 - never block startup on
     /// backup-side errors).
     pub(crate) backup_path: Option<PathBuf>,
 }
@@ -64,7 +64,7 @@ impl PaneFlowApp {
     ///
     /// `terms` selects the scrollback strategy: `Some(vec)` defers the drain
     /// (terminal handles are collected into `vec` in surface-emission order for
-    /// an off-thread drain — see [`save_session`]); `None` drains inline on the
+    /// an off-thread drain - see [`save_session`]); `None` drains inline on the
     /// calling thread (see [`save_session_blocking`]).
     fn build_session_state(
         &self,
@@ -140,14 +140,14 @@ impl PaneFlowApp {
     /// US-011: persist the session WITHOUT blocking the GPUI main thread.
     ///
     /// The lightweight metadata snapshot is built here (render thread, cheap),
-    /// terminal handles collected, then the heavy work — per-pane scrollback
-    /// drain, JSON serialize, atomic write — runs on a background task. A burst
+    /// terminal handles collected, then the heavy work - per-pane scrollback
+    /// drain, JSON serialize, atomic write - runs on a background task. A burst
     /// of saves (e.g. closing 20 workspaces) is coalesced into a single write
     /// via a monotonic token + short debounce, so the most-recent snapshot
     /// wins and the render thread never drains scrollback.
     ///
     /// The quit / pre-update-install paths must use [`save_session_blocking`]
-    /// instead — there the write has to land before the process exits or is
+    /// instead - there the write has to land before the process exits or is
     /// replaced, so a deferred task would be lost.
     pub(crate) fn save_session(&self, cx: &App) {
         let mut terms = Some(Vec::new());
@@ -166,7 +166,7 @@ impl PaneFlowApp {
         cx.background_spawn(async move {
             smol::Timer::after(std::time::Duration::from_millis(SAVE_DEBOUNCE_MS)).await;
             if save_seq.load(std::sync::atomic::Ordering::SeqCst) != seq {
-                // A newer save was scheduled meanwhile — let it carry the
+                // A newer save was scheduled meanwhile - let it carry the
                 // latest state; skip this redundant write.
                 return;
             }
@@ -185,7 +185,7 @@ impl PaneFlowApp {
                 // sleep window; the drain itself takes real time, during which a
                 // quit-path `save_session_blocking` (or a newer deferred save)
                 // can bump `save_seq`. Without this second check the older
-                // snapshot would `rename` over the final write — the exact
+                // snapshot would `rename` over the final write - the exact
                 // resurrection bug US-011 (c80eba5) set out to close, left open
                 // for the drain sub-window. Both writers also share the
                 // `session.json.tmp` path, so skipping here avoids a concurrent
@@ -202,7 +202,7 @@ impl PaneFlowApp {
 
     /// US-011: synchronous session save for the quit / pre-update-install
     /// paths, where a deferred background write would be lost when the process
-    /// exits or is replaced. Drains scrollback inline on the calling thread —
+    /// exits or is replaced. Drains scrollback inline on the calling thread -
     /// acceptable because these paths are terminal and rare (one final save).
     pub(crate) fn save_session_blocking(&self, cx: &App) {
         // Cancel any in-flight deferred save: bump the coalescing token so a
@@ -241,7 +241,7 @@ impl PaneFlowApp {
     /// Telemetry: callers receive a `SessionCorruptionInfo` they can
     /// pass to `PaneFlowApp::emit_session_corrupted` once the
     /// telemetry client is up. The emit is consent-gated by the
-    /// existing `TelemetryClient::Null` factory branch — opted-out
+    /// existing `TelemetryClient::Null` factory branch - opted-out
     /// users never produce a network call.
     pub(crate) fn load_session() -> (
         Option<paneflow_config::schema::SessionState>,
@@ -253,7 +253,7 @@ impl PaneFlowApp {
         Self::load_session_at(&path)
     }
 
-    /// Path-parametrised core of [`load_session`]. Direct test surface —
+    /// Path-parametrised core of [`load_session`]. Direct test surface -
     /// the wrapper above resolves `paneflow_config::loader::session_path()`
     /// against the user's XDG cache dir, which is unsuitable for unit
     /// tests because every run would race against a live install.
@@ -266,7 +266,7 @@ impl PaneFlowApp {
         // U-008/U-016: bound the read so a multi-hundred-MB hand-edited /
         // agent-written session.json (or a non-regular file swapped in) can't
         // OOM/stall the load before parse. On any guard hit we start from an
-        // empty session — identical fallback to a missing file.
+        // empty session - identical fallback to a missing file.
         let data = match read_session_capped(path) {
             Ok(Some(d)) => d,
             Ok(None) => return (None, None),
@@ -297,7 +297,7 @@ impl PaneFlowApp {
 
                 let backup_path = write_corruption_backup(path, &data).unwrap_or_else(|e| {
                     // AC6: backup write failure must not block startup.
-                    // Log and proceed — telemetry still fires with a
+                    // Log and proceed - telemetry still fires with a
                     // `backup_path: None`, so the operator can still see
                     // the corruption rate even if forensics are missing.
                     log::warn!(
@@ -333,7 +333,7 @@ impl PaneFlowApp {
 
         // U-016: cap restored workspaces. Each layout's pane count is bounded by
         // `validate_layout` (US-011) below, so this is the only remaining
-        // unbounded restore axis — a session.json with thousands of workspace
+        // unbounded restore axis - a session.json with thousands of workspace
         // entries would otherwise each spawn ≥1 real PTY.
         if session.workspaces.len() > MAX_WORKSPACES {
             log::warn!(
@@ -348,7 +348,7 @@ impl PaneFlowApp {
             // US-009 AC2 / US-011: `validate_layout` best-effort-caps the leaf
             // budget, but its ">= 2 children" padding re-introduces a bounded
             // O(depth) overshoot of app-synthesized pad panes once that budget
-            // is spent (a crafted deeply-nested session.json — local-only, but
+            // is spent (a crafted deeply-nested session.json - local-only, but
             // still a self-DoS). Enforce the hard MAX_PANES ceiling HERE, the
             // location US-009 AC2 names, so no workspace can ever restore more
             // than MAX_PANES real PTYs: over the cap we drop the layout and fall
@@ -408,7 +408,7 @@ impl PaneFlowApp {
         }
 
         // US-009 (orchestration-v2): `git worktree prune` on every repo whose
-        // restored workspaces own worktrees — drops references whose directory
+        // restored workspaces own worktrees - drops references whose directory
         // vanished (manual rm -rf, crashed teardown). Git-native guarantee: a
         // worktree whose directory still exists is untouched (AC5). Best-effort,
         // off the render thread, deduplicated per repo.
@@ -495,7 +495,7 @@ impl PaneFlowApp {
                     // exact match against the known agent tags, so an
                     // unknown, oversized, or control-char value from a
                     // hand-edited session.json maps to `None` and no pill is
-                    // rendered (parity with the US-057/EP-010 invariant —
+                    // rendered (parity with the US-057/EP-010 invariant -
                     // session.json is local-only but validated anyway). The
                     // first scan (0/2 s burst on restore activity) then
                     // confirms or clears it.
@@ -510,7 +510,7 @@ impl PaneFlowApp {
                         });
                     }
                     // EP-006 US-019: restore the per-pane font zoom through
-                    // the ingress sanitizer — NaN/inf dropped, finite values
+                    // the ingress sanitizer - NaN/inf dropped, finite values
                     // clamped to [8.0, 32.0]; never fed raw to the cell
                     // geometry (US-057/EP-010 invariant).
                     if let Some(size) = surface
@@ -563,7 +563,7 @@ impl PaneFlowApp {
 
 /// Read `path` into a `String`, bounded at [`MAX_SESSION_SIZE_BYTES`] and
 /// rejecting non-regular files (U-008/U-016). Returns `Ok(None)` when the file
-/// should be treated as "start empty" (non-regular, or over the cap) — distinct
+/// should be treated as "start empty" (non-regular, or over the cap) - distinct
 /// from an IO error (`Err`). Stats the OPEN fd, not the path, and caps the read
 /// with `take`, so a swap/grow between stat and read cannot defeat the bound
 /// (the FIFO/device + TOCTOU class, mirroring `read_config_string`).
@@ -604,8 +604,8 @@ fn read_session_capped(path: &Path) -> std::io::Result<Option<String>> {
 /// (US-009 AC2 / US-011). `validate_layout` best-effort-caps the leaf budget,
 /// but its ">= 2 children" padding re-introduces a bounded `O(depth)` overshoot
 /// of app-synthesized pad panes once that budget is spent (a crafted
-/// deeply-nested session.json). Returns `None` — restore a single default
-/// terminal — when the post-validation leaf count still exceeds `MAX_PANES`, so
+/// deeply-nested session.json). Returns `None` - restore a single default
+/// terminal - when the post-validation leaf count still exceeds `MAX_PANES`, so
 /// no workspace can ever restore more than `MAX_PANES` real PTYs. The location
 /// US-009 AC2 names; defence-in-depth on top of `validate_layout`'s budget.
 fn validated_layout_within_cap(mut layout: LayoutNode) -> Option<LayoutNode> {
@@ -734,7 +734,7 @@ fn write_corruption_backup(
 }
 
 /// Cap the count of `<stem>.corrupted-*` files in `dir` to
-/// [`MAX_CORRUPTION_BACKUPS`], deleting the oldest first. Best-effort —
+/// [`MAX_CORRUPTION_BACKUPS`], deleting the oldest first. Best-effort -
 /// any filesystem error during rotation is logged and swallowed because
 /// failing rotation must never abort startup (R8 mitigation, AC6
 /// spirit).
@@ -890,7 +890,7 @@ mod tests {
         assert_eq!(backup_contents, "{", "backup preserves original bytes");
     }
 
-    /// AC1: missing file is *not* corruption — both halves of the
+    /// AC1: missing file is *not* corruption - both halves of the
     /// return tuple must be `None` so `bootstrap.rs` doesn't emit a
     /// noisy `session_corrupted` event for every fresh install.
     #[test]
@@ -904,7 +904,7 @@ mod tests {
     }
 
     /// R8: backup directory must not grow unbounded. After 7 induced
-    /// corruptions only the 5 newest survive — verifies the
+    /// corruptions only the 5 newest survive - verifies the
     /// timestamp-sort + drop-oldest path in `rotate_corruption_backups`.
     #[test]
     fn corruption_backup_rotation_caps_at_five() {
@@ -945,7 +945,7 @@ mod tests {
     }
 
     /// US-011 AC: a burst of `save_session` calls (e.g. closing 20 workspaces)
-    /// must coalesce to a single disk write — only the most-recent snapshot
+    /// must coalesce to a single disk write - only the most-recent snapshot
     /// wins. This guards the `save_seq` monotonic-token predicate that the
     /// deferred path uses (`save_session` checks `load() == seq` after its
     /// debounce). A full `save_session` needs a live GPUI `App`, so this tests
@@ -993,7 +993,7 @@ mod tests {
         save_seq.fetch_add(1, SeqCst);
 
         // The pre-write re-check inside `smol::unblock` must now observe the
-        // mismatch and skip — so the older deferred snapshot never renames over
+        // mismatch and skip - so the older deferred snapshot never renames over
         // the final quit write.
         assert_ne!(
             save_seq.load(SeqCst),

@@ -22,7 +22,7 @@ pub const MAX_INPUT_BYTES: usize = 10 * 1024 * 1024;
 /// inputs. A 9.99 MB file consisting entirely of `- ` bullet markers parses
 /// inside `MAX_INPUT_BYTES` but would otherwise produce ~5M `MdNode`
 /// entries (~250 MB heap). 100 K nodes covers any realistic markdown
-/// document — the `cmark` test suite's longest spec example produces ~1500.
+/// document - the `cmark` test suite's longest spec example produces ~1500.
 pub const MAX_AST_NODES: usize = 100_000;
 
 /// Errors returned by `parse_with_limit`.
@@ -40,7 +40,7 @@ pub struct SpanStyle {
     pub emphasis: bool,
     pub strikethrough: bool,
     /// Inline `code` span. Mutually exclusive with the surrounding paragraph
-    /// styling — code spans render as monospace on a code-cell background.
+    /// styling - code spans render as monospace on a code-cell background.
     pub code: bool,
 }
 
@@ -61,7 +61,7 @@ pub struct Span {
 /// event pair (`Start` … `End`) plus the inline spans that arrived between.
 ///
 /// Inline-only structures (Strong, Emphasis, Strikethrough, Link) are folded
-/// into `Span` rather than appearing as separate nodes — they only affect
+/// into `Span` rather than appearing as separate nodes - they only affect
 /// styling, not block layout.
 ///
 /// `Eq` is not derived because `pulldown_cmark::Alignment` only implements
@@ -97,7 +97,7 @@ pub enum MdNode {
         header: Vec<Vec<Span>>,
         rows: Vec<Vec<Vec<Span>>>,
     },
-    /// `<hr/>` — horizontal rule.
+    /// `<hr/>` - horizontal rule.
     Rule,
     /// Footnote definition body. `label` is the user-supplied identifier,
     /// `children` is the rendered contents.
@@ -110,7 +110,7 @@ pub enum MdNode {
 /// Parse `input` into an owned AST.
 ///
 /// Returns `Err(ParseError::TooLarge)` when the input exceeds
-/// `MAX_INPUT_BYTES`. Smaller inputs always succeed — pulldown-cmark itself
+/// `MAX_INPUT_BYTES`. Smaller inputs always succeed - pulldown-cmark itself
 /// is total: any byte sequence parses (mis-formed markdown turns into a
 /// stream of plain paragraphs/text rather than an error).
 pub fn parse_with_limit(input: &str) -> Result<Vec<MdNode>, ParseError> {
@@ -134,7 +134,7 @@ fn parse_inner(input: &str) -> Vec<MdNode> {
 }
 
 // ---------------------------------------------------------------------------
-// Walker — converts the event stream to nested `MdNode` values.
+// Walker - converts the event stream to nested `MdNode` values.
 // ---------------------------------------------------------------------------
 
 /// One frame on the block-context stack. The walker pushes a frame on
@@ -183,7 +183,7 @@ struct Walker {
     /// Running tally of `MdNode` instances installed (in `output` or in any
     /// child `Vec<MdNode>`). When this exceeds `MAX_AST_NODES`, the walker
     /// stops accepting further block-installs and lets the remaining events
-    /// drain into the abyss — the partial AST we already built is what the
+    /// drain into the abyss - the partial AST we already built is what the
     /// viewer will render.
     node_count: usize,
     /// Set once `node_count` has crossed `MAX_AST_NODES`. Used to append a
@@ -220,7 +220,7 @@ impl Walker {
                 let mut style = self.style;
                 style.code = true;
                 // U-019: inline code reaches the renderer via `push_span`, NOT
-                // `push_text`, so it must be bidi/zero-width-stripped here too —
+                // `push_text`, so it must be bidi/zero-width-stripped here too -
                 // otherwise `` `\u{202E}txet.exe` `` renders reversed and the AC's
                 // "every rendered span" guarantee leaks through code spans.
                 self.push_span(Span {
@@ -265,7 +265,7 @@ impl Walker {
             Tag::HtmlBlock => self.stack.push(Frame::Code {
                 // Render HTML blocks as opaque code blocks tagged "html". The
                 // view layer will style them as monospace on the code-cell
-                // background — no execution, no interpretation.
+                // background - no execution, no interpretation.
                 lang: Some("html".to_string()),
                 text: String::new(),
             }),
@@ -291,7 +291,7 @@ impl Walker {
                 }
             }
             Tag::TableRow | Tag::TableCell => {
-                // No frame — TableRow/Cell content accumulates into the
+                // No frame - TableRow/Cell content accumulates into the
                 // current_row / current_cell fields of the open Table frame.
             }
             Tag::Emphasis => self.style.emphasis = true,
@@ -303,7 +303,7 @@ impl Walker {
             Tag::Image {
                 dest_url, title, ..
             } => {
-                // We don't render images inline — show "[image: <title or url>]"
+                // We don't render images inline - show "[image: <title or url>]"
                 // as a placeholder span so the user knows something was elided.
                 // `title`/`dest_url` are attacker-controlled `.md` content, so
                 // sanitise before embedding: strip bidi/zero-width code points
@@ -321,7 +321,7 @@ impl Walker {
                 children: Vec::new(),
             }),
             Tag::MetadataBlock(_) => {
-                // YAML / TOML frontmatter — push a Paragraph frame so contents
+                // YAML / TOML frontmatter - push a Paragraph frame so contents
                 // accumulate as plain text rather than panic.
                 self.stack.push(Frame::Paragraph(Vec::new()));
             }
@@ -334,7 +334,7 @@ impl Walker {
             TagEnd::Strong => self.style.strong = false,
             TagEnd::Strikethrough => self.style.strikethrough = false,
             TagEnd::Link => self.link_url = None,
-            TagEnd::Image => { /* nothing to pop — image is a placeholder text */ }
+            TagEnd::Image => { /* nothing to pop - image is a placeholder text */ }
             TagEnd::TableHead => {
                 if let Some(Frame::Table {
                     in_head,
@@ -372,7 +372,7 @@ impl Walker {
                 }
             }
             TagEnd::MetadataBlock(_) => {
-                // Discard frontmatter — pop without installing.
+                // Discard frontmatter - pop without installing.
                 self.stack.pop();
             }
             // Closing block tags: install into parent.
@@ -386,7 +386,7 @@ impl Walker {
             | TagEnd::Table
             | TagEnd::FootnoteDefinition => {
                 // Stack underflow on a malformed event stream is not a panic
-                // condition — the workspace lints `panic = "deny"` and the
+                // condition - the workspace lints `panic = "deny"` and the
                 // input is untrusted (any 10 MB of bytes parses). Tolerate by
                 // dropping the stray end event silently, matching the rest of
                 // the walker's malformed-input behavior.
@@ -417,7 +417,7 @@ impl Walker {
                 inline,
             } => {
                 // The synthesised Paragraph for inline-only items is a node
-                // that bypasses `install()` — count it here so adversarial
+                // that bypasses `install()` - count it here so adversarial
                 // bullet-only inputs respect `MAX_AST_NODES`.
                 if !inline.is_empty() {
                     if self.node_count >= MAX_AST_NODES {
@@ -452,7 +452,7 @@ impl Walker {
     fn push_text(&mut self, text: String) {
         // U-019: strip bidi-control / zero-width code points from ALL ingress
         // text (paragraphs, headings, list items, table cells, code) so a
-        // hostile .md can't visually reorder or hide any rendered span — not
+        // hostile .md can't visually reorder or hide any rendered span - not
         // just the `[image:]` placeholder.
         let text = strip_bidi_zero_width(text);
         if text.is_empty() {
@@ -485,7 +485,7 @@ impl Walker {
 
     fn push_span(&mut self, span: Span) {
         let Some(frame) = self.stack.last_mut() else {
-            // Stray inline content at root — wrap in a one-off paragraph.
+            // Stray inline content at root - wrap in a one-off paragraph.
             self.output.push(MdNode::Paragraph { spans: vec![span] });
             return;
         };
@@ -501,7 +501,7 @@ impl Walker {
             }
             // CodeBlock takes plain text via `push_text`; spans don't apply.
             Frame::Code { .. } => {}
-            // Lists and BlockQuotes don't carry inline content directly —
+            // Lists and BlockQuotes don't carry inline content directly -
             // their text arrives wrapped in a child Paragraph/Item frame.
             Frame::List { .. } | Frame::Quote(_) | Frame::Footnote { .. } => {}
         }
@@ -546,8 +546,8 @@ impl Walker {
 const MAX_PLACEHOLDER_CHARS: usize = 256;
 
 /// Remove bidi-control / zero-width code points from `text` (U-019). Shared by
-/// `push_text` and the inline-`Event::Code` arm so EVERY rendered span — body,
-/// heading, list item, table cell, image placeholder, AND inline code — is
+/// `push_text` and the inline-`Event::Code` arm so EVERY rendered span - body,
+/// heading, list item, table cell, image placeholder, AND inline code - is
 /// sanitized, not just the `[image:]` placeholder. No length cap (unlike
 /// `sanitize_placeholder`); only re-allocates when such a char is actually
 /// present, so the common (clean) path is allocation-free.
@@ -579,7 +579,7 @@ fn is_bidi_or_zero_width(c: char) -> bool {
         // engines): inhibit/activate symmetric swapping + Arabic form shaping,
         // national/nominal digit shapes.
         | '\u{206A}'..='\u{206F}'
-        // Interlinear annotation anchor/separator/terminator — can hide/shift
+        // Interlinear annotation anchor/separator/terminator - can hide/shift
         // text in renderers that honour them.
         | '\u{FFF9}'..='\u{FFFB}'
     )
@@ -596,7 +596,7 @@ fn sanitize_placeholder(raw: &str) -> String {
 }
 
 /// Append `span` to `spans`, merging into the previous span when both styles
-/// (and link state) match — keeps the AST compact for downstream rendering.
+/// (and link state) match - keeps the AST compact for downstream rendering.
 fn merge_or_push(spans: &mut Vec<Span>, span: Span) {
     if let Some(last) = spans.last_mut()
         && last.style == span.style
@@ -624,7 +624,7 @@ fn push_or_extend(spans: &mut Vec<Span>, text: String, style: SpanStyle, link: O
 }
 
 // ---------------------------------------------------------------------------
-// Tests — pure-Rust, GPUI-free.
+// Tests - pure-Rust, GPUI-free.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -665,7 +665,7 @@ mod tests {
     #[test]
     fn body_text_strips_bidi_and_zero_width() {
         // U-019: a U+202E (RLO) override or zero-width char embedded directly in
-        // BODY text — not just the [image:] placeholder — must be stripped
+        // BODY text - not just the [image:] placeholder - must be stripped
         // before it reaches the renderer, so it can't visually reorder or hide
         // the paragraph the user is reading.
         let nodes = parse_with_limit("safe \u{202E}txet.exe\u{200B} end").expect("parse");
@@ -687,7 +687,7 @@ mod tests {
     #[test]
     fn inline_code_strips_bidi_and_zero_width() {
         // U-019: inline code reaches the renderer via push_span (not push_text),
-        // so it must be stripped too — otherwise `` `\u{202E}txet.exe` `` renders
+        // so it must be stripped too - otherwise `` `\u{202E}txet.exe` `` renders
         // visually reversed and the "every rendered span" guarantee leaks.
         let nodes = parse_with_limit("run `\u{202E}txet.exe\u{200B}` now").expect("parse");
         let MdNode::Paragraph { spans } = first(&nodes) else {
@@ -922,7 +922,7 @@ mod tests {
     fn parses_100kb_under_budget() {
         // AC: 100 KB rendered (parse + emit) < 200 ms. We measure parse
         // alone; render-tree emission is negligible relative to parse
-        // walking. Debug-build budget is 60 ms, release 10 ms — both are
+        // walking. Debug-build budget is 60 ms, release 10 ms - both are
         // generous vs the AC's 200 ms total budget.
         let mut src = String::new();
         while src.len() < 100 * 1024 {
@@ -954,7 +954,7 @@ mod tests {
         // Build a markdown source that, naively parsed, would produce more
         // than `MAX_AST_NODES` nodes. A 200 K-line bullet list weighs ~600 KB
         // (well under the 10 MB byte cap) but would produce one MdNode per
-        // bullet plus a paragraph child each — well over 100 K nodes.
+        // bullet plus a paragraph child each - well over 100 K nodes.
         let mut src = String::with_capacity(200_000 * 4);
         for _ in 0..200_000 {
             src.push_str("- x\n");

@@ -1,12 +1,12 @@
 //! Cross-thread channel pumps and JSON-RPC dispatcher for `PaneFlowApp`.
 //!
 //! Runs on the GPUI main thread and owns three pull-based intakes:
-//! - `process_ipc_requests` — drains the Unix-socket IPC receiver and routes
+//! - `process_ipc_requests` - drains the Unix-socket IPC receiver and routes
 //!   each request through `handle_ipc` (dispatches over the `workspace.*`,
 //!   `surface.*`, and `ai.*` namespaces).
-//! - `process_config_changes` — picks up a hot-reloaded config deposited by
+//! - `process_config_changes` - picks up a hot-reloaded config deposited by
 //!   the `ConfigWatcher` background thread and reapplies keybindings + theme.
-//! - `process_update_check` — picks up the background update-check result
+//! - `process_update_check` - picks up the background update-check result
 //!   once (no-op once resolved).
 //!
 //! Extracted from `main.rs` per US-024 of the src-app refactor PRD. `handle_ipc`
@@ -35,11 +35,11 @@ use crate::{PaneFlowApp, ai_types, keybindings, update};
 /// The agent CLI's input box is not ready the instant its launch command is
 /// written, so a too-early `send_text` is lost into a not-ready buffer. A
 /// single fixed delay (the prior approach) silently lost prompts whenever an
-/// agent started slower than the timer — the dominant failure at N-pane scale
+/// agent started slower than the timer - the dominant failure at N-pane scale
 /// (PRD Risk #2). Instead the prefill waits a `FLOOR` (preserving the prior
 /// fast-path behaviour, by which the launch-command echo has settled), then
 /// EXTENDS while the pane is still actively producing output (its
-/// `output_generation` keeps advancing — the agent is still painting), firing
+/// `output_generation` keeps advancing - the agent is still painting), firing
 /// once that output goes idle ("settled") or `MAX` is hit. On `MAX` without a
 /// settle the prompt is injected best-effort with a warning (AC4). The wait is
 /// bounded and runs concurrently per pane (one detached task each), so an
@@ -95,7 +95,7 @@ fn build_up_layout(preset: &str, panes: Vec<Entity<Pane>>, focus_idx: usize) -> 
     }
 }
 
-/// EP-004 US-020 — fire a best-effort OS desktop notification on agent turn-end,
+/// EP-004 US-020 - fire a best-effort OS desktop notification on agent turn-end,
 /// but only when Paneflow is NOT the focused window (the repositioning intent is
 /// "notify on turn-end, not while you're watching"). Runs the platform notifier
 /// as a bounded subprocess on the background executor: no new crate dependency,
@@ -105,7 +105,7 @@ fn fire_turn_end_notification(workspace_title: &str, executor: gpui::BackgroundE
 }
 
 /// US-016 (orchestration-v2): the WaitingForInput desktop notification
-/// carries the agent's actual question, not a generic "needs input" — the
+/// carries the agent's actual question, not a generic "needs input" - the
 /// user decides from the notification whether it's worth coming back.
 fn fire_attention_notification(
     workspace_title: &str,
@@ -117,11 +117,11 @@ fn fire_attention_notification(
 }
 
 /// US-016/US-020: bound + sanitize an agent question before it is stored on
-/// the session (single choke point — peek badge, expanded panel and desktop
+/// the session (single choke point - peek badge, expanded panel and desktop
 /// notification all read the stored value). 512-char truncation, then the
 /// shared markdown bidi/zero-width strip: an RLO in untrusted hook text could
 /// otherwise visually reverse the displayed question ("texte brut sanitizé",
-/// US-020 AC5 — same precedent as the markdown viewer). Pure → unit-tested.
+/// US-020 AC5 - same precedent as the markdown viewer). Pure → unit-tested.
 fn sanitize_notification_message(raw: &str) -> String {
     crate::markdown::strip_bidi_zero_width(raw.chars().take(512).collect())
 }
@@ -130,7 +130,7 @@ fn sanitize_notification_message(raw: &str) -> String {
 /// summary from an `ai.stop` frame, for the session's `last_result`. Checks the
 /// top-level params then the hook payload for a `last_result` / `summary` /
 /// `result` string; returns `None` when none is present (the common case today
-/// — Claude Code's Stop hook carries only a transcript path, not the turn
+/// Claude Code's Stop hook carries only a transcript path, not the turn
 /// text). Sanitized (bidi-strip + a 2 KiB cap) like the question, since it is
 /// untrusted, display-only text a conductor may surface.
 fn read_last_result(params: &serde_json::Value) -> Option<String> {
@@ -297,7 +297,7 @@ fn stage_context_file(
 }
 
 /// Pure body composition (unit-tested): "title: question", falling back to
-/// the legacy generic body when the hook carried no message — never an
+/// the legacy generic body when the hook carried no message - never an
 /// empty body (US-016 AC3).
 fn attention_notification_body(workspace_title: &str, message: Option<&str>) -> String {
     match message.filter(|m| !m.trim().is_empty()) {
@@ -306,7 +306,7 @@ fn attention_notification_body(workspace_title: &str, message: Option<&str>) -> 
     }
 }
 
-/// EP-004 US-010: the `Errored` desktop notification — distinct body so a
+/// EP-004 US-010: the `Errored` desktop notification - distinct body so a
 /// crash never reads as "agent finished". Same choke point + window-focus
 /// gate as the other two notification kinds.
 fn fire_agent_exit_notification(
@@ -320,14 +320,14 @@ fn fire_agent_exit_notification(
     );
 }
 
-/// Pure body composition (unit-tested) — PRD US-010 AC #6.
+/// Pure body composition (unit-tested) - PRD US-010 AC #6.
 fn agent_exit_notification_body(workspace_title: &str, exit_code: i32) -> String {
     format!("{workspace_title}: agent exited (exit {exit_code})")
 }
 
 /// EP-004 US-011: the `Stalled` desktop notification. Called by the
 /// periodic sweep (`event_handlers.rs::sweep_stale_pids`) on the ONE
-/// `Thinking → Stalled` transition of a stall episode — the dedup is
+/// `Thinking → Stalled` transition of a stall episode - the dedup is
 /// structural (the sweep only flips `Thinking`, so a stalled session can't
 /// re-trigger until a hook event revives it first).
 pub(crate) fn fire_stalled_notification(
@@ -341,7 +341,7 @@ pub(crate) fn fire_stalled_notification(
     );
 }
 
-/// Pure body composition (unit-tested) — PRD US-011 AC #4.
+/// Pure body composition (unit-tested) - PRD US-011 AC #4.
 fn stalled_notification_body(workspace_title: &str, silent_secs: u64) -> String {
     format!("{workspace_title}: agent silent for {silent_secs} s")
 }
@@ -367,7 +367,7 @@ fn fire_desktop_notification(body: String, executor: gpui::BackgroundExecutor) {
 /// Strip control characters from an untrusted notification body before it is
 /// embedded in an AppleScript string literal. AppleScript literals have no
 /// `\n`/`\r` escape and cannot span a raw newline, so an un-stripped control
-/// char in a crafted workspace title would break the literal (CWE-78 — a parse
+/// char in a crafted workspace title would break the literal (CWE-78 - a parse
 /// error, not RCE, but the brittleness is removed at the source). Pure and not
 /// `cfg`-gated so it is unit-testable on every host; only the macOS notifier
 /// consumes it, hence the off-macOS dead-code allow.
@@ -395,7 +395,7 @@ fn turn_end_notify_command(body: &str) -> Option<std::process::Command> {
 #[cfg(target_os = "macos")]
 fn turn_end_notify_command(body: &str) -> Option<std::process::Command> {
     // `body` is embedded in an AppleScript string literal. Strip control chars
-    // FIRST (a raw newline cannot live in the literal — no `\n` escape — so a
+    // FIRST (a raw newline cannot live in the literal - no `\n` escape - so a
     // crafted title would break it, CWE-78), then escape backslash and
     // double-quote. Args are passed directly (no shell), so this is sufficient.
     let escaped = sanitize_applescript_body(body)
@@ -410,7 +410,7 @@ fn turn_end_notify_command(body: &str) -> Option<std::process::Command> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn turn_end_notify_command(_body: &str) -> Option<std::process::Command> {
     // Windows: no dependency-free toast path yet (BurntToast / WinRT both add
-    // weight). Documented stub — no notification fired (US-020 AC allows this).
+    // weight). Documented stub - no notification fired (US-020 AC allows this).
     None
 }
 
@@ -472,7 +472,7 @@ pub(crate) fn send_text_to_first_leaf(node: &LayoutTree, text: &str, cx: &App) {
 }
 
 /// Find the first terminal in a layout tree (for default routing).
-/// US-020: skips markdown leaves — recurses past them when searching containers.
+/// US-020: skips markdown leaves - recurses past them when searching containers.
 pub(crate) fn find_first_terminal(
     node: &LayoutTree,
     cx: &App,
@@ -531,7 +531,7 @@ fn find_terminal_in_tree(
 /// a spawn-capable `surface.split` carries (EP-002/EP-003, orchestration-v2):
 /// the CLI created a git worktree for this pane and hands the ownership
 /// record over so the workspace tears it down at close (US-009). `path` and
-/// `repo_root` are both required — anything else is ignored (no record, no
+/// `repo_root` are both required - anything else is ignored (no record, no
 /// teardown: fail toward "never touch what we can't prove we own").
 fn parse_managed_worktree(
     value: Option<&serde_json::Value>,
@@ -647,7 +647,7 @@ pub(crate) fn paginate_scrollback(
     let total = all.len();
     let end = total.saturating_sub(offset);
     if end == 0 {
-        // Offset is past the oldest line — nothing to return, at the top.
+        // Offset is past the oldest line - nothing to return, at the top.
         return (String::new(), 0, total, true);
     }
     let start = end.saturating_sub(lines);
@@ -688,7 +688,7 @@ fn surface_read_value(
 
 /// Per-call unguessable fence id (16-char hex `u64` from the OS-seeded
 /// `RandomState`). It differs every call so untrusted pane content cannot
-/// predict the closing sentinel and break out. Not a cryptographic secret —
+/// predict the closing sentinel and break out. Not a cryptographic secret -
 /// just enough entropy to defeat delimiter injection.
 fn fence_id() -> String {
     use std::hash::{BuildHasher, Hasher};
@@ -894,7 +894,7 @@ impl PaneFlowApp {
             // already timed out it set `cancelled` and returned an error to
             // the client; skip the request entirely so a slow non-idempotent
             // mutation (workspace.create, surface.split) doesn't run after the
-            // client gave up — a retry would otherwise create duplicate
+            // client gave up - a retry would otherwise create duplicate
             // workspaces/panes. The dropped response channel makes a late
             // result a no-op regardless, so skipping only avoids wasted work
             // and the duplicate side effect.
@@ -1017,7 +1017,7 @@ impl PaneFlowApp {
             self.reconcile_telemetry_consent(&config, cx);
             // US-014 (render cache): refresh the cached config so render paths
             // pick up the reload without a per-frame `load_config()`. Last use
-            // of `config` — move it in.
+            // of `config` - move it in.
             self.cached_config = config;
             // US-015: push the refreshed config to every pane's tab-bar cache.
             for ws in &self.workspaces {
@@ -1033,7 +1033,7 @@ impl PaneFlowApp {
         // watcher invalidates the cache directly on its background thread;
         // this only schedules the GPUI repaint so the next render picks up
         // the freshly-resolved theme. `swap` is the cheapest way to read +
-        // reset atomically — we don't care about preserving other writers.
+        // reset atomically - we don't care about preserving other writers.
         if self
             .theme_changed
             .swap(false, std::sync::atomic::Ordering::AcqRel)
@@ -1064,7 +1064,7 @@ impl PaneFlowApp {
             return;
         }
 
-        // Swap the client handle. Distinct_id is re-read from disk — if
+        // Swap the client handle. Distinct_id is re-read from disk - if
         // the telemetry_id file is gone since last launch, we get a
         // fresh ephemeral; otherwise the stable UUID persists.
         let distinct_id = crate::telemetry::id::telemetry_id();
@@ -1080,7 +1080,7 @@ impl PaneFlowApp {
 
         if decision.reenabled {
             // Explicit false → true transition. `telemetry_reenabled`
-            // carries no properties — its presence alone documents that
+            // carries no properties - its presence alone documents that
             // consent was re-granted from an opted-out state.
             self.telemetry
                 .capture("telemetry_reenabled", serde_json::json!({}));
@@ -1227,7 +1227,7 @@ impl PaneFlowApp {
         Err(JsonRpcError::invalid_params("no surface available"))
     }
 
-    /// `workspace.up` — materialize a declarative multi-pane agent workspace in
+    /// `workspace.up` - materialize a declarative multi-pane agent workspace in
     /// one call (US-008/US-009/US-010, prd-cli-agent-orchestration). Unlike
     /// `workspace.create` + `layout`, this honors a per-pane cwd / launch
     /// command / prompt: each pane spawns in its own directory, optionally runs
@@ -1237,7 +1237,7 @@ impl PaneFlowApp {
     /// Launching a CLI here is no more privileged than the user's own shell, and
     /// every pane is freshly created by this call (no injection into a
     /// pre-existing foreign agent), so it does NOT require the
-    /// `PANEFLOW_IPC_SCRIPTING` gate `surface.send_text` carries — that gate
+    /// `PANEFLOW_IPC_SCRIPTING` gate `surface.send_text` carries - that gate
     /// guards lateral injection into another agent's live session.
     ///
     /// Atomic: every pane's cwd is canonicalized BEFORE anything spawns, so a
@@ -1276,7 +1276,7 @@ impl PaneFlowApp {
         // Phase 1 (no mutation): validate + canonicalize every cwd up-front so a
         // bad path fails atomically with -32602 before any pane spawns (US-012).
         // EP-002 (orchestration-v2): collect the worktrees the CLI created for
-        // these panes — the workspace records ownership so close tears them
+        // these panes - the workspace records ownership so close tears them
         // down (US-009) and session restore keeps the record across a crash.
         let mut managed_worktrees: Vec<crate::workspace::worktree::ManagedWorktree> = Vec::new();
         let mut planned: Vec<PlannedPane> = Vec::with_capacity(pane_specs.len());
@@ -1367,7 +1367,7 @@ impl PaneFlowApp {
             let terminal =
                 cx.new(|cx| TerminalView::with_cwd_and_env(ws_id, pp.cwd.clone(), None, env, cx));
             // EP-004 US-012: pose the label as `custom_name` on the same GPUI
-            // tick, before the PTY (spawned off-thread) can emit an OSC title —
+            // tick, before the PTY (spawned off-thread) can emit an OSC title -
             // no race with the auto-name. Mirrors `surface.split`.
             if let Some(label) = pp.label.clone() {
                 terminal.update(cx, |view, _cx| {
@@ -1399,10 +1399,10 @@ impl PaneFlowApp {
 
         // Phase 3: launch each agent (typed-ahead into the shell is fine) and
         // schedule the prompt prefill after a bounded readiness wait. The
-        // prompt is written WITHOUT a carriage return — human-in-loop: the user
+        // prompt is written WITHOUT a carriage return - human-in-loop: the user
         // reviews and submits it themselves (US-010).
         // EP-003 (orchestration-v2): collect the spawned terminals' surface ids
-        // in pane order — `paneflow flow` maps them back to its DAG steps.
+        // in pane order - `paneflow flow` maps them back to its DAG steps.
         let mut surface_ids: Vec<u64> = Vec::with_capacity(launches.len());
         for (i, (terminal, command, prompt)) in launches.into_iter().enumerate() {
             surface_ids.push(terminal.entity_id().as_u64());
@@ -1426,7 +1426,7 @@ impl PaneFlowApp {
     /// Prefill a prompt into a pane once its output settles (US-010,
     /// cli-agent-orchestration): FLOOR delay, then poll `output_generation`
     /// until idle (two equal reads) or MAX elapses; then write the prompt
-    /// WITHOUT a carriage return — human-in-loop, the user submits. Shared by
+    /// WITHOUT a carriage return - human-in-loop, the user submits. Shared by
     /// `workspace.up` and the spawn-capable `surface.split` (EP-003).
     pub(crate) fn schedule_prompt_prefill(
         terminal: &Entity<TerminalView>,
@@ -1485,7 +1485,7 @@ impl PaneFlowApp {
     /// `paneflow up`) hit the fast path synchronously; deeper chains walk
     /// `/proc`/libproc OFF the render thread and deposit the result back.
     /// A synthetic session key (legacy no-pid frames) or an unresolvable
-    /// chain leaves `surface_id = None` — workspace-level badge only, never
+    /// chain leaves `surface_id = None` - workspace-level badge only, never
     /// a wrong pane.
     pub(crate) fn schedule_surface_resolution(
         &mut self,
@@ -1551,17 +1551,17 @@ impl PaneFlowApp {
             session.surface_id = Some(sid);
             // EP-004 US-010: a NEW session resolving this pane evicts a stale
             // `Errored` row left by the previous (dead) agent on the same
-            // surface — "pas d'erreur collante": relaunching the agent in the
+            // surface - "pas d'erreur collante": relaunching the agent in the
             // pane replaces the crash signal with the live state. Deliberately
             // NOT tool-scoped: launching codex where claude crashed also
-            // clears the dot — the surface is visibly back in use, whatever
+            // clears the dot - the surface is visibly back in use, whatever
             // the tool, and the dead row has no further eviction path.
             ws.agent_sessions.retain(|k, s| {
                 *k == key || s.surface_id != Some(sid) || s.state != ai_types::AgentState::Errored
             });
             self.sync_attention(cx);
             // EP-001 US-003 (cli-cockpit): a late surface resolution can flip
-            // a pane's busy verdict — refresh the Composer chip.
+            // a pane's busy verdict - refresh the Composer chip.
             self.agent_sessions_changed(cx);
             cx.notify();
         }
@@ -1569,13 +1569,13 @@ impl PaneFlowApp {
 
     /// US-018/US-020 (orchestration-v2): push the WaitingForInput state down
     /// into the panes. Recomputed idempotently from `agent_sessions` after
-    /// every transition (hooks, sweep, auto-clear, resolution) — the panes'
+    /// every transition (hooks, sweep, auto-clear, resolution) - the panes'
     /// `attention` maps can never drift from the session truth. Amplifies
     /// the waiting pane; inactive panes are never degraded.
     pub(crate) fn sync_attention(&self, cx: &mut Context<Self>) {
         let mut waiting: HashMap<u64, Option<String>> = HashMap::new();
         // EP-004 US-010: Errored surfaces ride the same idempotent push, in a
-        // PARALLEL set (never overloading the waiting map — a tab is either
+        // PARALLEL set (never overloading the waiting map - a tab is either
         // asking for input or crashed, and the dot colors must not mix).
         let mut errored: std::collections::HashSet<u64> = std::collections::HashSet::new();
         for ws in &self.workspaces {
@@ -1768,7 +1768,7 @@ impl PaneFlowApp {
                             self.unwatch_git_dir(&dir);
                         }
                         // US-009 (orchestration-v2): same teardown as the UI
-                        // close path — clean managed worktrees removed in the
+                        // close path - clean managed worktrees removed in the
                         // background, dirty ones kept, branch never deleted.
                         let worktrees = std::mem::take(&mut self.workspaces[idx].managed_worktrees);
                         Self::spawn_worktree_teardown(worktrees, cx);
@@ -1785,7 +1785,7 @@ impl PaneFlowApp {
                 }
             }
             "surface.list" => {
-                // US-002: additive enrichment — keep the legacy root fields
+                // US-002: additive enrichment - keep the legacy root fields
                 // (`pane_count`, `workspace`) for back-compat and add a
                 // per-surface `surfaces` array with disambiguated names.
                 let surfaces: Vec<_> = self
@@ -1964,8 +1964,8 @@ impl PaneFlowApp {
             }
             "surface.focus" => {
                 // US-001 (orchestration-v2): give a targeted pane the focus.
-                // Navigation only (no PTY write), so — like `workspace.select`
-                // and unlike `surface.send_*` — it does NOT require the
+                // Navigation only (no PTY write), so - like `workspace.select`
+                // and unlike `surface.send_*` - it does NOT require the
                 // `PANEFLOW_IPC_SCRIPTING` gate.
                 let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64()) else {
                     return serde_json::json!({"error": "Missing 'surface_id' parameter"});
@@ -2008,7 +2008,7 @@ impl PaneFlowApp {
                 // adds a SECOND way through: AI free-access mode
                 // (`ai_unrestricted`, Settings -> AI Agent). When BOTH the env
                 // gate and free-access are off the behavior is strictly
-                // unchanged — the same -32601 refusal, verbatim, as before.
+                // unchanged - the same -32601 refusal, verbatim, as before.
                 let unrestricted = self.cached_config.ai_unrestricted_enabled();
                 if !send_text_gate_open(ipc_scripting_enabled(), unrestricted) {
                     return JsonRpcError {
@@ -2028,7 +2028,7 @@ impl PaneFlowApp {
                     return serde_json::json!({"error": "Text exceeds 64 KiB limit"});
                 }
                 // US-005 (orchestration-v2): `submit: true` appends a CR after
-                // the text — the ONLY sanctioned submission path. It is
+                // the text - the ONLY sanctioned submission path. It is
                 // unreachable unless the gate above passes (env OR free-access),
                 // so a submission can never happen silently; the default stays
                 // strict inject-without-CR.
@@ -2051,7 +2051,7 @@ impl PaneFlowApp {
                                 Some(sid)
                             }
                             // US-010 AC5: targeting a vanished pane is an error, not
-                            // a partial send — nothing was written above.
+                            // a partial send - nothing was written above.
                             None => return serde_json::json!({"error": "Surface not found"}),
                         }
                     } else if let Some(ws) = self.active_workspace()
@@ -2142,7 +2142,7 @@ impl PaneFlowApp {
                     }
                 };
                 // EP-003 (orchestration-v2): `surface.split` can spawn a fully
-                // configured pane — optional `cwd` (canonicalized, -32602 when
+                // configured pane - optional `cwd` (canonicalized, -32602 when
                 // bad), `command` (launched like workspace.up panes), `env`,
                 // `name`, `prompt` (server-side prefill, never submitted) and
                 // `managed_worktree` (ownership registration, US-009). Same
@@ -2183,8 +2183,8 @@ impl PaneFlowApp {
                     .map(str::to_string);
 
                 // US-002 (orchestration-v2): an optional `surface_id` targets
-                // the leaf hosting that surface — in whatever workspace it
-                // lives — instead of the active workspace's first leaf. Absent
+                // the leaf hosting that surface - in whatever workspace it
+                // lives - instead of the active workspace's first leaf. Absent
                 // = the legacy first-leaf behavior, so existing clients are
                 // untouched.
                 let (ws_idx, target_pane) =
@@ -2325,7 +2325,7 @@ impl PaneFlowApp {
                 };
                 let pid = read_session_pid(params);
                 let Some(tool) = read_tool(params) else {
-                    // An unknown binary name can't map to a TerminalAgent —
+                    // An unknown binary name can't map to a TerminalAgent -
                     // reject instead of mislabeling the session as Claude
                     // (the pre-fusion `from_name` fallback did exactly that).
                     return serde_json::json!({"error": "Unknown tool"});
@@ -2350,12 +2350,12 @@ impl PaneFlowApp {
                     self.schedule_surface_resolution(workspace_id, key, cx);
                     self.sync_attention(cx);
                     // EP-001 US-003 (cli-cockpit): the target just turned
-                    // busy — refresh the Composer chip (no flush can apply).
+                    // busy - refresh the Composer chip (no flush can apply).
                     self.agent_sessions_changed(cx);
                     serde_json::json!({"status": "running"})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     // The row spinner self-animates (declarative GPUI
-                    // Animation in `thread_row`) — no loader-loop start here.
+                    // Animation in `thread_row`) - no loader-loop start here.
                     t.status = crate::project::ThreadStatus::Thinking;
                     if pid.is_some() {
                         t.agent_pid = pid;
@@ -2378,14 +2378,14 @@ impl PaneFlowApp {
                     .map(|s| s.chars().take(128).collect::<String>());
                 let pid = read_session_pid(params);
                 let Some(tool) = read_tool(params) else {
-                    // An unknown binary name can't map to a TerminalAgent —
+                    // An unknown binary name can't map to a TerminalAgent -
                     // reject instead of mislabeling the session as Claude
                     // (the pre-fusion `from_name` fallback did exactly that).
                     return serde_json::json!({"error": "Unknown tool"});
                 };
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
-                    // tool_use implies the session is actively thinking —
+                    // tool_use implies the session is actively thinking -
                     // promote it (or keep it) even if the prior state was
                     // Finished from a stale prompt-end.
                     let key = upsert_session_state(
@@ -2405,7 +2405,7 @@ impl PaneFlowApp {
                     self.agent_sessions_changed(cx);
                     serde_json::json!({"status": "running"})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
-                    // tool_use keeps (or promotes) the thread spinner —
+                    // tool_use keeps (or promotes) the thread spinner -
                     // same Finished-revival rationale as the workspace arm.
                     t.status = crate::project::ThreadStatus::Thinking;
                     if pid.is_some() {
@@ -2424,7 +2424,7 @@ impl PaneFlowApp {
                 let hook = params.get("hook_payload");
                 let pid = read_session_pid(params);
                 let Some(tool) = read_tool(params) else {
-                    // An unknown binary name can't map to a TerminalAgent —
+                    // An unknown binary name can't map to a TerminalAgent -
                     // reject instead of mislabeling the session as Claude
                     // (the pre-fusion `from_name` fallback did exactly that).
                     return serde_json::json!({"error": "Unknown tool"});
@@ -2444,7 +2444,7 @@ impl PaneFlowApp {
                         ai_types::AgentState::WaitingForInput,
                         None,
                     );
-                    // US-016: keep the agent's question — the peek overlay
+                    // US-016: keep the agent's question - the peek overlay
                     // and the desktop notification surface it. Untrusted
                     // text: stored and displayed verbatim, never interpreted.
                     if let Some(s) = ws.agent_sessions.get_mut(&key) {
@@ -2460,7 +2460,7 @@ impl PaneFlowApp {
                     self.schedule_surface_resolution(workspace_id, key, cx);
                     self.sync_attention(cx);
                     // EP-001 US-003 (cli-cockpit): WaitingForInput is a safe
-                    // prefill target — flush this pane's queued prompt now
+                    // prefill target - flush this pane's queued prompt now
                     // (main thread: transition and flush are serialized).
                     self.agent_sessions_changed(cx);
                     serde_json::json!({"status": "waiting"})
@@ -2491,7 +2491,7 @@ impl PaneFlowApp {
                 };
                 let pid = read_session_pid(params);
                 let Some(tool) = read_tool(params) else {
-                    // An unknown binary name can't map to a TerminalAgent —
+                    // An unknown binary name can't map to a TerminalAgent -
                     // reject instead of mislabeling the session as Claude
                     // (the pre-fusion `from_name` fallback did exactly that).
                     return serde_json::json!({"error": "Unknown tool"});
@@ -2511,7 +2511,7 @@ impl PaneFlowApp {
                         ai_types::AgentState::Finished,
                         None,
                     );
-                    // US-016: the turn ended — the question is answered, no
+                    // US-016: the turn ended - the question is answered, no
                     // ghost message may survive into the next state.
                     if let Some(s) = ws.agent_sessions.get_mut(&session_key) {
                         s.message = None;
@@ -2527,7 +2527,7 @@ impl PaneFlowApp {
                     cx.notify();
                     fire_turn_end_notification(&ws_title, cx.background_executor().clone());
                     self.sync_attention(cx);
-                    // EP-001 US-003 (cli-cockpit): the turn ended — flush any
+                    // EP-001 US-003 (cli-cockpit): the turn ended - flush any
                     // queued prompt for this pane (prefill only).
                     self.agent_sessions_changed(cx);
 
@@ -2563,7 +2563,7 @@ impl PaneFlowApp {
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     // Codex-style: the spinner drops the moment the turn
                     // ends and the relative timestamp returns. No Finished
-                    // hold state — `ThreadStatus` has no such variant and
+                    // hold state - `ThreadStatus` has no such variant and
                     // the row's timestamp is the natural rest indicator.
                     t.status = crate::project::ThreadStatus::Idle;
                     t.agent_pid = None;
@@ -2579,7 +2579,7 @@ impl PaneFlowApp {
                     cx.notify();
                     fire_turn_end_notification(&title, cx.background_executor().clone());
                     // Parity with `/resume`: at turn end the session's LLM
-                    // `ai-title` exists on disk — adopt it as the sidebar
+                    // `ai-title` exists on disk - adopt it as the sidebar
                     // label, unless the user pinned the name via a rename.
                     if !title_locked && let Some(agent) = session_agent {
                         self.spawn_thread_title_backfill(thread_id, cwd, agent, bound_session, cx);
@@ -2591,7 +2591,7 @@ impl PaneFlowApp {
             }
             // EP-004 US-010: the shim reports the wrapped agent binary's REAL
             // exit status (`ChildExit` only ever carries the shell's). Always
-            // emitted BEFORE the shim's `ai.session_end`, both blocking — see
+            // emitted BEFORE the shim's `ai.session_end`, both blocking - see
             // `paneflow-shim::main` for the ordering contract.
             "ai.exit" => {
                 let Some(workspace_id) = params.get("workspace_id").and_then(|v| v.as_u64()) else {
@@ -2606,7 +2606,7 @@ impl PaneFlowApp {
                 };
                 let pid = read_session_pid(params);
                 let Some(tool) = read_tool(params) else {
-                    // An unknown binary name can't map to a TerminalAgent —
+                    // An unknown binary name can't map to a TerminalAgent -
                     // reject instead of mislabeling the session as Claude
                     // (the pre-fusion `from_name` fallback did exactly that).
                     return serde_json::json!({"error": "Unknown tool"});
@@ -2619,7 +2619,7 @@ impl PaneFlowApp {
                     let state = ai_types::state_for_exit(exit_code);
                     let errored = state == ai_types::AgentState::Errored;
                     let key = upsert_session_state(&mut ws.agent_sessions, pid, tool, state, None);
-                    // The binary is gone — whatever question it was asking is
+                    // The binary is gone - whatever question it was asking is
                     // moot (same ghost-message rationale as `ai.stop`).
                     if let Some(s) = ws.agent_sessions.get_mut(&key) {
                         s.message = None;
@@ -2639,7 +2639,7 @@ impl PaneFlowApp {
                         self.schedule_surface_resolution(workspace_id, key, cx);
                     }
                     // Finished (exit 0 / interrupt) intentionally fires no
-                    // notification — `ai.stop` already announced the turn
+                    // notification - `ai.stop` already announced the turn
                     // end, and the shim's `ai.session_end` lands right after
                     // this frame to clear the row.
                     self.sync_attention(cx);
@@ -2647,7 +2647,7 @@ impl PaneFlowApp {
                     serde_json::json!({"status": if errored { "errored" } else { "finished" }})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     // Agents view (out of this PRD's cockpit scope): the
-                    // thread model has no Errored status — treat like
+                    // thread model has no Errored status - treat like
                     // `ai.session_end` so the spinner never sticks.
                     t.status = crate::project::ThreadStatus::Idle;
                     t.agent_pid = None;
@@ -2686,7 +2686,7 @@ impl PaneFlowApp {
                     // resort keeps `agent_sessions` consistent with the
                     // pre-refactor "one session per tool" assumption.
                     //
-                    // EP-004 US-010: an `Errored` session is SPARED — the
+                    // EP-004 US-010: an `Errored` session is SPARED - the
                     // shim's `ai.exit` lands just before this frame, and
                     // removing the row here would wipe the crash signal the
                     // instant it appeared. The Errored row is evicted later
@@ -2721,7 +2721,7 @@ impl PaneFlowApp {
                     if removed {
                         self.sync_attention(cx);
                         // EP-001 US-003 (cli-cockpit): a removed session
-                        // leaves a bare shell — always a safe prefill target.
+                        // leaves a bare shell - always a safe prefill target.
                         self.agent_sessions_changed(cx);
                         cx.notify();
                     }
@@ -2749,7 +2749,7 @@ impl PaneFlowApp {
     /// ([`crate::project::AGENTS_THREAD_ENV_ID_BASE`]). CLI-mode workspace
     /// ids live below the base and return `None` here, so the workspace arm
     /// and this fallback can never both match one frame. Searches project
-    /// threads and free chats — both spawn through the same mount path.
+    /// threads and free chats - both spawn through the same mount path.
     fn agents_thread_mut_by_env_id(&mut self, env_id: u64) -> Option<&mut crate::project::Thread> {
         let thread_id = crate::project::thread_id_from_env_id(env_id)?;
         self.agents_thread_mut_by_id(thread_id)
@@ -2761,13 +2761,13 @@ impl PaneFlowApp {
 // ---------------------------------------------------------------------------
 
 /// Read the session PID from an `ai.*` IPC param object. Returns `None`
-/// when the field is missing or zero — older shims (pre multi-session
+/// when the field is missing or zero - older shims (pre multi-session
 /// refactor) don't include `pid` on every lifecycle frame, so the
 /// caller must tolerate `None` and degrade to tool-name-based matching.
 ///
 /// EP-004 security hardening: the upper half of u32 (`> i32::MAX`) is
 /// REJECTED from clients. That band is reserved for server-allocated
-/// synthetic keys and — critically — `sweep_stale_pids` keeps every key in
+/// synthetic keys and - critically - `sweep_stale_pids` keeps every key in
 /// it forever (it can't be probed with `kill(pid, 0)`). Accepting it from
 /// the (same-UID, untrusted) socket would let a forger accumulate
 /// unbounded permanent sessions. Real OS PIDs sit far below this bound on
@@ -2785,8 +2785,8 @@ fn read_session_pid(params: &serde_json::Value) -> Option<u32> {
 /// Read the `tool` field from an `ai.*` IPC param object, falling back
 /// to `hook_payload.tool`, defaulting to `"claude"` when absent (matches
 /// the server's historical behavior for legacy shims that don't stamp the
-/// field). The string is the agent's BINARY name — the wire id shared with
-/// the shim's `detect_tool_from_stem` — resolved via
+/// field). The string is the agent's BINARY name - the wire id shared with
+/// the shim's `detect_tool_from_stem` - resolved via
 /// [`TerminalAgent::from_binary`]. `None` for an unknown string: the frame
 /// is then ignored by the caller instead of silently retyped as Claude
 /// (the historical `from_name` fallback mislabeled every future agent).
@@ -2807,14 +2807,14 @@ fn read_tool(params: &serde_json::Value) -> Option<crate::agent_launcher::Termin
 const SYNTHETIC_SESSION_PID_BASE: u32 = 0xFFFF_0000;
 
 /// Insert or update a session in `ws.agent_sessions`. When `pid` is
-/// known, the session is keyed by PID (the desired path — supports
+/// known, the session is keyed by PID (the desired path - supports
 /// many concurrent sessions of the same tool). When `pid` is `None`
 /// (older shim), falls back to matching any existing session of the
 /// same tool and updating it in place; if none exists, a synthetic
 /// PID slot is allocated from the negative u32 space so the row is
 /// still tracked. This keeps the UI consistent during a rolling shim
 /// upgrade where some frames carry `pid` and others don't.
-/// Returns the resolved session key the entry was stored under — the real
+/// Returns the resolved session key the entry was stored under - the real
 /// `pid` when known, or the fallback/synthetic key chosen for a legacy
 /// no-pid frame. Callers that need to act on the same row later (e.g. the
 /// `ai.stop` auto-clear, U-014) must use THIS key, not the raw `pid`, or a
@@ -2841,7 +2841,7 @@ fn upsert_session_state(
                 // 4 194 304; macOS 99 999; Windows DWORDs are multiples of 4 and
                 // never approach this in practice). Treating this band as a
                 // separate synthetic namespace keeps a legacy placeholder from
-                // being confused with — or clobbered by — a real OS PID. The
+                // being confused with - or clobbered by - a real OS PID. The
                 // walk stops at the band floor instead of descending into the
                 // real-PID range.
                 let mut k: u32 = u32::MAX;
@@ -2854,18 +2854,18 @@ fn upsert_session_state(
     };
 
     // EP-002 US-004 (cli-cockpit): this is the single choke point for every
-    // state write, so the Attention Queue's wait stamp lives here — stamped
+    // state write, so the Attention Queue's wait stamp lives here - stamped
     // on entering WaitingForInput, preserved across re-notifications,
     // cleared on any other transition.
     //
-    // EP-004 US-011: `last_activity` is refreshed here too — every `ai.*`
+    // EP-004 US-011: `last_activity` is refreshed here too - every `ai.*`
     // lifecycle frame routes through this function, so the Stalled sweep's
     // silence clock resets on any hook activity. This also makes Stalled
     // non-sticky for free: the next frame overwrites `state` AND the clock.
     let now = std::time::Instant::now();
     // Pin the process start time for real-PID sessions so the sweep can
     // tell a recycled PID from the original agent (an opaque value, only
-    // compared for equality). Probed once — a `Some` is immutable for the
+    // compared for equality). Probed once - a `Some` is immutable for the
     // process's lifetime; a `None` (transient EPERM) retries on the next
     // frame.
     let probe_start = |k: u32| {
@@ -2892,7 +2892,7 @@ fn upsert_session_state(
             let mut session = ai_types::AgentSession::new(tool, state);
             session.waiting_since = ai_types::next_waiting_since(None, &session.state, now);
             session.active_tool_name = active_tool_name;
-            // Same `now` as the and_modify arm — `AgentSession::new` stamps
+            // Same `now` as the and_modify arm - `AgentSession::new` stamps
             // its own Instant, which would skew (sub-µs) from the wait stamp.
             session.last_activity = now;
             session.proc_start = probe_start(key);
@@ -2976,13 +2976,13 @@ pub(crate) fn promote_response(
 /// US-026: this is **not** a confinement jail. A same-UID client may
 /// legitimately open a workspace at any directory it can already reach, and
 /// `canonicalize` resolves `../` and symlinks to wherever they actually point
-/// (`"../../etc"` → `/etc`) without restricting the result to any root — so it
+/// (`"../../etc"` → `/etc`) without restricting the result to any root - so it
 /// does not, and cannot, prevent "walking outside the workspace". Its job is
 /// narrower: turn a relative or symlinked path into a concrete absolute one and
 /// reject upfront the inputs that would otherwise fail confusingly at PTY
-/// spawn — a path that does not exist or is unreadable, a path containing NUL
+/// spawn - a path that does not exist or is unreadable, a path containing NUL
 /// bytes (rejected by `canonicalize` itself; most OSes would silently truncate
-/// it), or a path to a regular file (the first chdir would fail) — each with a
+/// it), or a path to a regular file (the first chdir would fail) - each with a
 /// structured `-32602` so the client knows the request was refused.
 ///
 /// Successful canonicalization is logged at `info!` for audit trail
@@ -3037,7 +3037,7 @@ pub(crate) struct TelemetryReconciliation {
     pub rebuild: bool,
     /// Whether to emit the one-time `telemetry_reenabled` breadcrumb.
     /// Fires exclusively on the `Some(false) → Some(true)` transition
-    /// — a user explicitly re-granting consent after having declined.
+    /// a user explicitly re-granting consent after having declined.
     /// None → Some(true) (first answer) does NOT count as a re-enable.
     pub reenabled: bool,
     /// Toast copy reflecting the resolved state. `None` if no toast is
@@ -3073,7 +3073,7 @@ mod tests {
     use super::*;
 
     // US-020 / CWE-78: a control char (newline) cannot survive into the macOS
-    // AppleScript literal — it is stripped at the source — while quotes are
+    // AppleScript literal - it is stripped at the source - while quotes are
     // preserved for the downstream backslash/quote escape.
     #[test]
     fn sanitize_applescript_body_strips_control_chars_keeps_quotes() {
@@ -3085,7 +3085,7 @@ mod tests {
     }
 
     // EP-004 security hardening: client-supplied PIDs above i32::MAX are
-    // rejected — that band is server-reserved (synthetic keys) AND immune to
+    // rejected - that band is server-reserved (synthetic keys) AND immune to
     // the stale-PID sweep, so accepting it would allow unbounded permanent
     // session accumulation from forged frames on the same-UID socket.
     #[test]
@@ -3106,7 +3106,7 @@ mod tests {
 
     // EP-004 US-010/US-011: the two new notification bodies are distinct
     // from each other and from the legacy "agent finished" / "needs input"
-    // shapes — the whole point of the epic is that the four causes read
+    // shapes - the whole point of the epic is that the four causes read
     // differently in a desktop toast.
     #[test]
     fn agent_exit_body_carries_workspace_and_code() {
@@ -3231,7 +3231,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // US-001 — workspace.create `layout` param parsing + JSON-RPC error
+    // US-001 - workspace.create `layout` param parsing + JSON-RPC error
     // envelope promotion
     // -----------------------------------------------------------------
 
@@ -3243,7 +3243,7 @@ mod tests {
 
     #[test]
     fn parse_layout_param_null_returns_none() {
-        // null is treated like absent — caller still gets the
+        // null is treated like absent - caller still gets the
         // single-pane default behavior.
         let params = serde_json::json!({"layout": null});
         assert!(parse_layout_param(&params).expect("ok").is_none());
@@ -3316,11 +3316,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // US-016 (orchestration-v2) — contextual attention notification
+    // US-016 (orchestration-v2) - contextual attention notification
     // -----------------------------------------------------------------
 
     /// US-020 AC5: the stored question is bounded (512 chars) and stripped
-    /// of bidi/zero-width controls at the storage choke point — an RLO in
+    /// of bidi/zero-width controls at the storage choke point - an RLO in
     /// hook text must not visually reverse the peek badge or the desktop
     /// notification (same sanitizer as the markdown viewer).
     #[test]
@@ -3341,7 +3341,7 @@ mod tests {
 
     /// AC2/AC3: the WaitingForInput desktop notification carries the
     /// agent's question; an empty/absent message falls back to the generic
-    /// body — never an empty notification.
+    /// body - never an empty notification.
     #[test]
     fn attention_body_carries_the_question_with_fallback() {
         assert_eq!(
@@ -3360,7 +3360,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // US-012 (cli-hardening-followup-2026-Q3) — surface.send_text gate
+    // US-012 (cli-hardening-followup-2026-Q3) - surface.send_text gate
     // -----------------------------------------------------------------
 
     /// AC #6: `surface.send_text` MUST be gated behind
@@ -3410,7 +3410,7 @@ mod tests {
     #[test]
     fn send_text_gate_opens_for_env_or_free_access() {
         // EP-003 US-010 AC #1: with free-access OFF the gate matches the legacy
-        // env-only rule exactly — closed unless PANEFLOW_IPC_SCRIPTING=1.
+        // env-only rule exactly - closed unless PANEFLOW_IPC_SCRIPTING=1.
         assert!(
             !super::send_text_gate_open(false, false),
             "both off must stay closed (unchanged legacy behavior)"
@@ -3445,7 +3445,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // US-014 (cli-hardening-followup-2026-Q3) — workspace.create cwd
+    // US-014 (cli-hardening-followup-2026-Q3) - workspace.create cwd
     // canonicalization
     // -----------------------------------------------------------------
 
@@ -3498,7 +3498,7 @@ mod tests {
 
     #[test]
     fn promote_response_preserves_legacy_application_error_strings() {
-        // Existing handlers return `{"error": "string"}` — those must keep
+        // Existing handlers return `{"error": "string"}` - those must keep
         // flowing through the `result` field, not be promoted.
         let id = serde_json::json!(null);
         let legacy = serde_json::json!({"error": "Workspace limit reached"});
@@ -3508,7 +3508,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // US-003 (prd-pane-context-bridge) — surface.read pagination
+    // US-003 (prd-pane-context-bridge) - surface.read pagination
     // -----------------------------------------------------------------
 
     #[test]
@@ -3577,7 +3577,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // EP-003 US-011 (agent-control-plane) — surface.read injection fence
+    // EP-003 US-011 (agent-control-plane) - surface.read injection fence
     // -----------------------------------------------------------------
 
     #[test]
@@ -3624,7 +3624,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // EP-004 US-014 (agent-control-plane) — surface.read shape + the
+    // EP-004 US-014 (agent-control-plane) - surface.read shape + the
     // ai.* state-machine choke point (upsert_session_state)
     // -----------------------------------------------------------------
 
@@ -3714,7 +3714,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // EP-004 US-015 (agent-control-plane) — last_result + context channel
+    // EP-004 US-015 (agent-control-plane) - last_result + context channel
     // -----------------------------------------------------------------
 
     #[test]
@@ -3851,7 +3851,7 @@ mod tests {
         assert_eq!(super::sanitize_pane_name("   "), None);
     }
 
-    // EP-001 US-001: fleet rows are pure — a conductor's snapshot.
+    // EP-001 US-001: fleet rows are pure - a conductor's snapshot.
     #[test]
     fn build_fleet_rows_empty_is_empty() {
         let sessions = HashMap::new();
@@ -3910,7 +3910,7 @@ mod tests {
             detected: &detected,
         }];
         let rows = build_fleet_rows(&fleets, &HashMap::new(), std::time::Instant::now());
-        // Claude once (hooked), Copilot once (unhooked) — Claude NOT doubled.
+        // Claude once (hooked), Copilot once (unhooked) - Claude NOT doubled.
         assert_eq!(rows.len(), 2);
         let hooked: Vec<_> = rows.iter().filter(|r| r["hooked"] == true).collect();
         assert_eq!(hooked.len(), 1);
@@ -3922,7 +3922,7 @@ mod tests {
         assert_eq!(unhooked[0]["pid"], serde_json::Value::Null);
     }
 
-    // EP-001 US-002: surface.status is pure — idle vs live session.
+    // EP-001 US-002: surface.status is pure - idle vs live session.
     #[test]
     fn surface_status_value_idle_when_no_session() {
         let v = surface_status_value(7, None, 99, std::time::Instant::now());

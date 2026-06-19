@@ -19,7 +19,7 @@ on someone with a Windows box.
 
 For context on known v1 limitations + upstream risks we already
 track (IME panic, ConPTY Ctrl+C, RDP init, devcontainer freeze, GPU
-driver floor), skim `docs/WINDOWS.md` first — your report may be a
+driver floor), skim `docs/WINDOWS.md` first - your report may be a
 duplicate of a risk we already document.
 -->
 
@@ -28,19 +28,19 @@ duplicate of a risk we already document.
 <!--
 Privacy note: `systeminfo` includes your machine hostname and domain.
 Before pasting output below, scrub anything you'd rather not publish
-— a hostname redaction is usually enough.
+ -  a hostname redaction is usually enough.
 -->
 
-- **Windows version + build** (required — run `winver` or
+- **Windows version + build** (required - run `winver` or
   `systeminfo | Select-String "OS Version"` in PowerShell; expected
   shape `Windows 11 Pro 23H2 (build 22631.xxxx)` or
   `Windows 10 Enterprise 1809 (build 17763.xxxx)`):
 - **Architecture** (pick one):
-  - [ ] x86_64 (Intel / AMD 64-bit — supported)
-  - [ ] ARM64 (Snapdragon X, Surface Pro X — **not in v1**, file
+  - [ ] x86_64 (Intel / AMD 64-bit - supported)
+  - [ ] ARM64 (Snapdragon X, Surface Pro X - **not in v1**, file
     anyway, we may still accept the report for future reference)
 - **CPU** (e.g. `Intel Core i7-13700H`, `AMD Ryzen 7 7840U`):
-- **GPU + driver** — run in PowerShell:
+- **GPU + driver** - run in PowerShell:
   ```powershell
   Get-CimInstance Win32_VideoController |
     Select-Object Name, DriverVersion, DriverDate
@@ -54,9 +54,9 @@ Before pasting output below, scrub anything you'd rather not publish
   - [ ] Built from source (`cargo build --release --target x86_64-pc-windows-msvc`)
 - **Display environment** (pick one):
   - [ ] Local desktop session
-  - [ ] Remote Desktop (RDP) — known-upstream risk, see
+  - [ ] Remote Desktop (RDP) - known-upstream risk, see
     `docs/WINDOWS.md` §4 "RDP initialization broken"
-  - [ ] Nested via WSL2 / devcontainer — known-upstream risk
+  - [ ] Nested via WSL2 / devcontainer - known-upstream risk
   - [ ] HiDPI or multi-monitor setup (specify scaling % and monitor count)
 
 ## Reproduction
@@ -103,11 +103,11 @@ paste log / backtrace here
 <!--
 Anything else that might help. Examples:
   - Does the bug reproduce on Linux or macOS with the same config?
-    (If yes, please use the generic bug template instead — this
+    (If yes, please use the generic bug template instead - this
     Windows-specific template is reserved for Windows-only bugs.)
-  - Shell in use (pwsh 7 / Windows PowerShell 5.1 / cmd.exe / WSL) —
+  - Shell in use (pwsh 7 / Windows PowerShell 5.1 / cmd.exe / WSL) -
     Ctrl+C and OSC 7 behaviour varies per shell.
-  - Antivirus in use (Microsoft Defender / third-party) — some AVs
+  - Antivirus in use (Microsoft Defender / third-party) - some AVs
     false-positive on recently-signed binaries during reputation build.
   - If the bug is install-time, the output of `msiexec /i <path> /l*v install.log`
     and attach `install.log`.

@@ -206,7 +206,7 @@ impl Render for DiffView {
         let mode = self.effective_mode(window);
         // Consume the host-pushed scope breadcrumb (push-only contract: the
         // host re-pushes it every frame before this render runs). Rendered
-        // even on the empty state — it carries the scope/project/branches
+        // even on the empty state - it carries the scope/project/branches
         // pickers, the only way OUT of an empty scope.
         let scope_slot = self.scope_slot.take();
 
@@ -256,7 +256,7 @@ impl DiffView {
         cx.notify();
     }
 
-    /// EP-003 US-009: `Esc` — close any open popover/menu and refocus the body so
+    /// EP-003 US-009: `Esc` - close any open popover/menu and refocus the body so
     /// the keyboard loop continues. Order-independent.
     fn dismiss_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.base_picker_open = false;
@@ -267,7 +267,7 @@ impl DiffView {
     }
 
     /// EP-003 US-010: a one-line onboarding bar naming the click-to-ask
-    /// capability. Shown on first entry — while at least one column has changes
+    /// capability. Shown on first entry - while at least one column has changes
     /// to ask about, no review CLI is running yet (the capability is otherwise
     /// self-evident), in Unified mode (where click-to-ask works), and not
     /// dismissed. `None` otherwise.
@@ -360,7 +360,7 @@ impl DiffView {
         let selected = self.selected_column == idx && self.visible_count() > 1;
         // Per-column base toggle chip: shows what this column diffs against (the
         // shared base, or `HEAD~1` when overridden) and flips between the two on
-        // click — one branch can show just its latest-commit delta while siblings
+        // click - one branch can show just its latest-commit delta while siblings
         // keep the whole-branch-vs-base view.
         let overridden = col.base_override.is_some();
         let eff_base = col
@@ -409,7 +409,7 @@ impl DiffView {
             );
         // EP-002 US-005: three-tier surface scale. The column header sits at a
         // distinct chrome tier from the body (`ui.base`) and the file cards
-        // (`ui.surface`) on BOTH themes — `overlay` is darker than the body on
+        // (`ui.surface`) on BOTH themes - `overlay` is darker than the body on
         // dark, but equal to it on light, so light falls back to `subtle`.
         let chrome_tier = if ui.base.l > 0.5 {
             ui.subtle
@@ -490,7 +490,7 @@ impl DiffView {
             // beside the terminal button (prd-ai-in-diff-2026-Q3.md); live only
             // when the column has changes.
             // EP-003 US-010: the signature "Review this branch" action is a
-            // labeled pill (sparkles + text), not a bare eye icon — it reads as
+            // labeled pill (sparkles + text), not a bare eye icon - it reads as
             // the primary AI affordance instead of a mystery glyph.
             .when(col_has_changes, |d| {
                 d.child(
@@ -707,7 +707,7 @@ impl DiffView {
             // horizontally-scrolling columns row. Without a definite height the
             // `overflow_y_scroll` host can't clip, so `DiffElement` (which reports
             // full content height) would paint every row instead of culling to the
-            // viewport — the scroll lag. With it, only the ~viewport rows paint.
+            // viewport - the scroll lag. With it, only the ~viewport rows paint.
             .h_full()
             .min_h_0()
             // Panes shrink to share the split evenly (inc 5); the DiffElement
@@ -731,7 +731,7 @@ impl DiffView {
     /// The single Diff-mode chrome row (Codex redesign): scope breadcrumb
     /// (host-pushed `scope_slot`) › base selector on the left; hunk nav +
     /// list actions + view-mode on the right. No own background and no
-    /// border — it sits directly on the panel (`ui.base`), separation by
+    /// border - it sits directly on the panel (`ui.base`), separation by
     /// spacing. The diffstat is gone from here: it lives ONCE, in the
     /// sidebar "Changes" header. In single-column scopes the per-column
     /// Review/Terminal buttons migrate here (the column header is hidden).
@@ -754,7 +754,7 @@ impl DiffView {
             .flatten();
 
         // Hunk-nav state for the selected column: (total hunks, current index by
-        // scroll position). `None` / total 0 hides the control. Stateless — read
+        // scroll position). `None` / total 0 hides the control. Stateless - read
         // from the live scroll offset so it tracks manual scrolling.
         let hunk_nav = self
             .selected_or_first_visible()
@@ -788,7 +788,7 @@ impl DiffView {
         // One segment of the Unified|Split control. Monochrome translucent
         // language (matches the CLI/Diff/Agents toggle) so it adapts to any
         // theme; the active segment is filled. Captures only `ui` (not `cx`) so
-        // it can't tangle with the `cx` borrows elsewhere in the chain — the
+        // it can't tangle with the `cx` borrows elsewhere in the chain - the
         // click is attached by the caller for the inactive segment only.
         let seg =
             |id: &'static str, label: &'static str, icon_path: &'static str, is_active: bool| {
@@ -873,7 +873,7 @@ impl DiffView {
             .when(self.base_picker_open, |d| {
                 d.child(deferred(self.render_base_popover(cx)).with_priority(10))
             })
-            // (No diffstat / proportion bar here — purely informational; it
+            // (No diffstat / proportion bar here - purely informational; it
             // lives once, in the sidebar "Changes" header.)
             // --- hunk navigation: prev / counter / next ---
             .when_some(hunk_nav, |d, (total, current)| {

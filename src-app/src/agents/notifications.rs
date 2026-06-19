@@ -4,7 +4,7 @@
 //! user-focused surface so the in-app ACP chat could fire an OS toast
 //! on turn-end while the user was looking elsewhere. The chat (and its
 //! `RuntimeEvent::TurnEnded` signal source) was removed, so the
-//! firing path no longer exists — but the cheap visibility setters are
+//! firing path no longer exists - but the cheap visibility setters are
 //! kept (and still called from the window-activation observer and the
 //! mode switcher) so a future terminal-driven notification can re-read
 //! them without re-threading the call sites.

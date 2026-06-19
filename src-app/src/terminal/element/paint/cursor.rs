@@ -1,4 +1,4 @@
-//! Cursor paint pass — primary text cursor (Block/Beam/Underline/HollowBlock)
+//! Cursor paint pass - primary text cursor (Block/Beam/Underline/HollowBlock)
 //! plus the copy-mode selection anchor cursor.
 
 use gpui::{

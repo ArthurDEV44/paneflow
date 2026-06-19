@@ -4,10 +4,10 @@
 //! `clear_key_bindings()` + `bind_keys()`.
 //!
 //! Module layout (US-022):
-//! - [`registry`] — `ActionMeta` + `ACTIONS` table (one source of truth)
-//! - [`defaults`] — `DEFAULTS` and `MACOS_ONLY_DEFAULTS` binding tables
-//! - [`apply`] — registers bindings on the GPUI `App`
-//! - [`display`] — formats keystrokes and builds the settings shortcut list
+//! - [`registry`] - `ActionMeta` + `ACTIONS` table (one source of truth)
+//! - [`defaults`] - `DEFAULTS` and `MACOS_ONLY_DEFAULTS` binding tables
+//! - [`apply`] - registers bindings on the GPUI `App`
+//! - [`display`] - formats keystrokes and builds the settings shortcut list
 
 mod apply;
 mod defaults;

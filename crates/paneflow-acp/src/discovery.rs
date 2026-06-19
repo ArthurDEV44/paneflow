@@ -1,7 +1,7 @@
 //! Agent identity enum.
 //!
 //! The PATH-based ACP agent discovery (scanner, `which` probing, focus
-//! refresh) was removed along with the "Connect" discovery shell — the
+//! refresh) was removed along with the "Connect" discovery shell - the
 //! Agents view is terminal-only and each agent self-authenticates in its
 //! own launched terminal. Only the [`AgentKind`] identity enum remains,
 //! kept here so existing `paneflow_acp::AgentKind` references (legacy

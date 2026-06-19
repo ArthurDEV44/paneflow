@@ -1,4 +1,4 @@
-//! `paneflow-mcp-install` — the GPU-free engine behind
+//! `paneflow-mcp-install` - the GPU-free engine behind
 //! `paneflow mcp install | uninstall | status`.
 //!
 //! Why a separate crate (PRD EP-002, decision D3):
@@ -9,17 +9,17 @@
 //! - **Keeps `toml_edit` out of the embedded bridge.** The size-budgeted
 //!   `paneflow-mcp` binary (EP-001 US-002) depends only on
 //!   `serde`/`serde_json`/`interprocess`. This crate links *only* into
-//!   `paneflow-app`, never into `paneflow-mcp` — verifiable with
+//!   `paneflow-app`, never into `paneflow-mcp` - verifiable with
 //!   `cargo tree -p paneflow-mcp` (it must list neither `toml_edit` nor
 //!   `paneflow-mcp-install`).
 //!
 //! Layering:
-//! - [`io`] — backup + atomic write + write-if-changed (idempotency).
-//! - [`merge`] — no-clobber JSON / TOML upsert + removal + safe parse.
-//! - [`detect`] — agent presence (CLI on PATH OR config file/dir exists).
-//! - [`agents`] — the [`agents::AgentConfigWriter`] trait + the registry of
+//! - [`io`] - backup + atomic write + write-if-changed (idempotency).
+//! - [`merge`] - no-clobber JSON / TOML upsert + removal + safe parse.
+//! - [`detect`] - agent presence (CLI on PATH OR config file/dir exists).
+//! - [`agents`] - the [`agents::AgentConfigWriter`] trait + the registry of
 //!   concrete per-agent writers (EP-003 fills `default_writers`).
-//! - [`cli`] — [`run_cli`]: parse the subcommand, drive every writer,
+//! - [`cli`] - [`run_cli`]: parse the subcommand, drive every writer,
 //!   format a per-agent report, return a process exit code.
 //!
 //! The whole crate is panic-free in non-test paths (workspace lints:

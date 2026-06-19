@@ -66,7 +66,7 @@ impl Render for PaneflowTooltip {
     }
 }
 
-/// Convenience builder for `.tooltip(text_tooltip("…"))` — a plain text tooltip
+/// Convenience builder for `.tooltip(text_tooltip("…"))` - a plain text tooltip
 /// using [`PaneflowTooltip`].
 pub(crate) fn text_tooltip(
     label: impl Into<SharedString>,
@@ -157,8 +157,8 @@ pub(crate) fn toolbar_pill(id: impl Into<ElementId>, ui: UiColors, active: bool)
 // ── Filter pill ──────────────────────────────────────────────────────────────
 
 /// A search/filter field as a filled `ui.subtle` pill (the canonical Agents
-/// look). Builds the shared anatomy — leading magnifier, the caller's
-/// `TextInput` child, and an optional trailing clear (×) — and returns the
+/// look). Builds the shared anatomy - leading magnifier, the caller's
+/// `TextInput` child, and an optional trailing clear (×) - and returns the
 /// stateful container so the caller can layer its own `.on_key_down`
 /// (Escape/Enter) and `.on_mouse_down_out` (blur) handlers.
 pub(crate) fn filter_pill(

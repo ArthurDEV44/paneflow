@@ -4,7 +4,7 @@
 //! `handle_pane_event`, `handle_terminal_event`) plus the port-scan /
 //! loader-animation / stale-PID-sweep workers and the CWD change handler.
 //!
-//! Extracted from `main.rs` per US-026 of the src-app refactor PRD — pure
+//! Extracted from `main.rs` per US-026 of the src-app refactor PRD - pure
 //! code-motion, behaviour unchanged.
 
 use gpui::{App, AppContext, Context, Entity};
@@ -20,7 +20,7 @@ use crate::{PaneFlowApp, ai_types};
 /// stale-PID sweep. Unix path preserves the pre-US-034 `kill(pid, 0)` +
 /// `ESRCH` semantics (EPERM ⇒ alive). Windows path mirrors the pattern in
 /// `terminal::pty_session::Drop`: `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`
-/// returns NULL for a dead/inaccessible PID. US-034 — keeps `libc::` calls
+/// returns NULL for a dead/inaccessible PID. US-034 - keeps `libc::` calls
 /// off the Windows compile path.
 fn pid_is_alive(pid: u32) -> bool {
     #[cfg(unix)]
@@ -35,7 +35,7 @@ fn pid_is_alive(pid: u32) -> bool {
         if ret == -1 {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
             // ESRCH = no such process; EPERM/etc. ⇒ process exists but we
-            // can't signal it — keep the entry.
+            // can't signal it - keep the entry.
             return errno != libc::ESRCH;
         }
         true
@@ -45,7 +45,7 @@ fn pid_is_alive(pid: u32) -> bool {
     {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Threading::OpenProcess;
-        // PROCESS_QUERY_LIMITED_INFORMATION (winnt.h: 0x1000) — minimum
+        // PROCESS_QUERY_LIMITED_INFORMATION (winnt.h: 0x1000) - minimum
         // access right that lets OpenProcess succeed for any visible PID.
         // Declared locally so we don't require an extra windows-sys feature.
         const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
@@ -77,7 +77,7 @@ fn pid_is_alive(pid: u32) -> bool {
 
 /// Parse the `starttime` field (22) from `/proc/{pid}/stat` content. The
 /// comm field (2) is parenthesized and may contain spaces and parens
-/// (`(tmux: server)`, `(next-server (v15))`) — split after the LAST `)`
+/// (`(tmux: server)`, `(next-server (v15))`) - split after the LAST `)`
 /// (kernel-guaranteed unambiguous), then take the 20th whitespace field of
 /// the remainder (state is field 3 → index 0, so starttime is index 19).
 /// Platform-neutral pure parsing so the fixture test runs on every host.
@@ -91,7 +91,7 @@ fn parse_proc_stat_starttime(stat: &str) -> Option<u64> {
 /// equality. Pinned on `AgentSession` at creation and re-probed by the
 /// sweep to detect PID reuse (a recycled PID passes `pid_is_alive` but
 /// carries a different start time). `None` on probe failure (EPERM, dead
-/// process, exotic target) — callers fall back to liveness-only.
+/// process, exotic target) - callers fall back to liveness-only.
 #[cfg(target_os = "linux")]
 pub(crate) fn pid_start_time(pid: u32) -> Option<u64> {
     let content = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -102,7 +102,7 @@ pub(crate) fn pid_start_time(pid: u32) -> Option<u64> {
 pub(crate) fn pid_start_time(pid: u32) -> Option<u64> {
     use libproc::libproc::bsd_info::BSDInfo;
     use libproc::libproc::proc_pid::pidinfo;
-    // EPERM (SIP-protected targets) and dead-pid races degrade to None —
+    // EPERM (SIP-protected targets) and dead-pid races degrade to None -
     // the caller keeps the conservative liveness-only check.
     let info = pidinfo::<BSDInfo>(pid as i32, 0).ok()?;
     Some(
@@ -149,7 +149,7 @@ pub(crate) fn pid_start_time(_pid: u32) -> Option<u64> {
 
 /// [`pid_is_alive`] hardened against PID reuse: when the session pinned a
 /// start time at creation, a live PID with a DIFFERENT current start time
-/// is a recycled PID — the original agent is gone. An unknown start time on
+/// is a recycled PID - the original agent is gone. An unknown start time on
 /// either side keeps the conservative "alive" answer.
 fn pid_matches(pid: u32, pinned_start: Option<u64>) -> bool {
     if !pid_is_alive(pid) {
@@ -171,7 +171,7 @@ impl PaneFlowApp {
         match event {
             title_bar::TitleBarEvent::CloseRequested => {
                 self.save_session(cx);
-                // US-013 AC #2 — flush `app_exited` before the process is
+                // US-013 AC #2 - flush `app_exited` before the process is
                 // torn down. Bounded to 2 s by the client; if PostHog is
                 // unreachable the worker detaches and quit still proceeds.
                 self.emit_app_exited_and_flush();
@@ -226,7 +226,7 @@ impl PaneFlowApp {
         match event {
             pane::PaneEvent::Remove => {
                 // Find the workspace that owns this pane (not necessarily the
-                // active one — shells can exit in background workspaces).
+                // active one - shells can exit in background workspaces).
                 let ws_idx = self
                     .workspaces
                     .iter()
@@ -240,7 +240,7 @@ impl PaneFlowApp {
                     self.workspaces[ws_idx].root = root.remove_pane(&pane);
                 }
 
-                // Never leave a workspace without a pane — respawn at the
+                // Never leave a workspace without a pane - respawn at the
                 // workspace's root cwd so the user returns to the right folder.
                 if self.workspaces[ws_idx].root.is_none() {
                     let ws_id = self.workspaces[ws_idx].id;
@@ -251,7 +251,7 @@ impl PaneFlowApp {
                     let new_pane = self.create_pane(terminal, ws_id, cx);
                     self.workspaces[ws_idx].root = Some(LayoutTree::Leaf(new_pane));
                     // The freshly-spawned replacement pane starts with an
-                    // empty `custom_buttons` list — push the workspace's
+                    // empty `custom_buttons` list - push the workspace's
                     // persisted set so the tab bar renders them again.
                     self.workspaces[ws_idx].propagate_custom_buttons(cx);
                 }
@@ -290,7 +290,7 @@ impl PaneFlowApp {
                 self.show_toast(format!("Copied surface ref: {reference}"), cx);
             }
             pane::PaneEvent::SurfaceRenamed => {
-                // US-013: a tab's custom name changed — persist so it survives
+                // US-013: a tab's custom name changed - persist so it survives
                 // restart (the name rides in the layout's SurfaceDefinition).
                 self.save_session(cx);
                 cx.notify();
@@ -329,7 +329,7 @@ impl PaneFlowApp {
                     return;
                 };
 
-                // A split adds one pane — refuse at the cap (edge case #5).
+                // A split adds one pane - refuse at the cap (edge case #5).
                 if self.workspaces[ws_idx]
                     .root
                     .as_ref()
@@ -504,7 +504,7 @@ impl PaneFlowApp {
                     return;
                 };
 
-                // A split adds one pane — refuse at the cap (edge case #5). A
+                // A split adds one pane - refuse at the cap (edge case #5). A
                 // center drop appends a tab to an existing pane, so it doesn't
                 // grow the count and isn't capped.
                 if edge.is_some()
@@ -582,7 +582,7 @@ impl PaneFlowApp {
                     return;
                 };
 
-                // A split adds one pane — refuse at the cap (edge case #9). A
+                // A split adds one pane - refuse at the cap (edge case #9). A
                 // center drop appends a tab, so it isn't capped.
                 if edge.is_some()
                     && self.workspaces[ws_idx]
@@ -640,7 +640,7 @@ impl PaneFlowApp {
                 }
                 // Inherit CWD and estimate initial grid size from the source terminal.
                 // Grid is halved in the split direction; refined to exact size on first prepaint.
-                // US-020: markdown panes have no terminal — fall back to the
+                // US-020: markdown panes have no terminal - fall back to the
                 // workspace's root cwd and a default 80×24 grid so a split
                 // request from a markdown pane still yields a usable terminal.
                 let (source_cwd, initial_size) = match pane.read(cx).active_terminal_opt() {
@@ -675,7 +675,7 @@ impl PaneFlowApp {
                     root.split_at_pane(&pane, direction, new_pane);
                 }
                 // The freshly-spawned pane starts with an empty
-                // `custom_buttons` list — push the workspace's current set
+                // `custom_buttons` list - push the workspace's current set
                 // so the new pane's tab bar matches its siblings.
                 if let Some(ws) = self.workspaces.get(self.active_idx) {
                     ws.propagate_custom_buttons(cx);
@@ -687,7 +687,7 @@ impl PaneFlowApp {
     }
 
     // -----------------------------------------------------------------------
-    // Terminal event handling — push-based port detection and CWD tracking
+    // Terminal event handling - push-based port detection and CWD tracking
     // -----------------------------------------------------------------------
 
     pub(crate) fn handle_terminal_event(
@@ -773,12 +773,12 @@ impl PaneFlowApp {
         }
     }
 
-    /// US-020 — append a markdown tab to the pane that owns `source_terminal`.
+    /// US-020 - append a markdown tab to the pane that owns `source_terminal`.
     ///
     /// The historical implementation split the layout vertically and created
     /// a dedicated markdown pane; the user feedback was that opening a doc
     /// shouldn't shrink the terminal real-estate. The current behaviour is to
-    /// make markdown a peer tab inside the same pane — the user keeps the
+    /// make markdown a peer tab inside the same pane - the user keeps the
     /// terminal+markdown pair via Ctrl+Tab / mouse-click, and the layout tree
     /// is untouched.
     fn open_markdown_in_pane(
@@ -820,7 +820,7 @@ impl PaneFlowApp {
     ) -> Option<usize> {
         self.workspaces.iter().position(|ws| {
             ws.root.as_ref().is_some_and(|root| {
-                // U-013: zero-alloc — `any_leaf` short-circuits without the
+                // U-013: zero-alloc - `any_leaf` short-circuits without the
                 // `collect_leaves()` Vec<Entity<Pane>> clone the old form built.
                 root.any_leaf(&mut |pane| pane.read(cx).contains_terminal(terminal))
             })
@@ -828,11 +828,11 @@ impl PaneFlowApp {
     }
 
     /// Immediately drop agent sessions anchored to a dying surface (the
-    /// shell behind it exited — its tab is closing), plus any real-PID
+    /// shell behind it exited - its tab is closing), plus any real-PID
     /// session of the same pass whose process is already gone. Surgical
     /// complement to [`Self::sweep_stale_pids`]: same retention semantics,
     /// zero latency instead of ≤30s, no Stalled logic. An `Errored` session
-    /// on the dying surface is dropped too — that matches the sweep's
+    /// on the dying surface is dropped too - that matches the sweep's
     /// "sticky until its pane closes" contract, just without the wait.
     pub(crate) fn purge_sessions_for_surface(&mut self, surface_id: u64, cx: &mut Context<Self>) {
         let mut changed = false;
@@ -846,7 +846,7 @@ impl PaneFlowApp {
                     return false;
                 }
                 // Opportunistic: a session never resolved to a surface can
-                // only be reaped through its PID — probe it now (the dying
+                // only be reaped through its PID - probe it now (the dying
                 // shell may have taken the agent with it via SIGHUP).
                 session.surface_id.is_some()
                     || pid > i32::MAX as u32
@@ -873,7 +873,7 @@ impl PaneFlowApp {
         let mut changed = false;
         // EP-004 US-010: surfaces that still resolve to a live terminal tab.
         // An `Errored` session's PID is dead by definition (the binary
-        // exited) — it is spared from the PID reap WHILE its pane lives so
+        // exited) - it is spared from the PID reap WHILE its pane lives so
         // the crash signal stays visible, and reaped here once the pane
         // closes. An Errored session that never resolved a surface has no
         // visible anchor beyond the sidebar; it follows the plain PID reap
@@ -907,8 +907,8 @@ impl PaneFlowApp {
             let before = ws.agent_sessions.len();
             // Synthetic PIDs (from the upsert fallback for legacy shims
             // without `pid` on every frame) are stored in the high half
-            // of u32 — outside the OS-assignable range on all supported
-            // platforms — so probing them with `kill(pid, 0)` would
+            // of u32 - outside the OS-assignable range on all supported
+            // platforms - so probing them with `kill(pid, 0)` would
             // always say "dead" and immediately drop a live legacy
             // session. Keep them around: they'll be cleared by
             // `ai.session_end` or by the next state transition.
@@ -949,7 +949,7 @@ impl PaneFlowApp {
         }
         // Agents-view threads: a CLI killed mid-turn never sends `ai.stop`,
         // which would leave the row spinner running forever. Same
-        // conservative policy as above — a thread whose hook frames carried
+        // conservative policy as above - a thread whose hook frames carried
         // no PID is kept as-is (cleared by `ai.stop` / `ai.session_end`).
         for t in self
             .projects
@@ -968,10 +968,10 @@ impl PaneFlowApp {
         }
         if changed {
             // US-018 (orchestration-v2): a swept session may have been
-            // driving a pane glow — resync so no orphan attention survives.
+            // driving a pane glow - resync so no orphan attention survives.
             self.sync_attention(cx);
             // EP-001 US-003 (cli-cockpit): a swept `Thinking` session leaves
-            // a bare shell — flush (or drop) its queued prompt now, else the
+            // a bare shell - flush (or drop) its queued prompt now, else the
             // buffer and the "1 queued" chip strand forever (no further
             // `ai.*` frame will ever arrive for the dead session).
             self.agent_sessions_changed(cx);
@@ -1021,7 +1021,7 @@ impl PaneFlowApp {
                                     ws.loader_angle.set(angle % std::f32::consts::TAU);
                                 }
                             }
-                            // US-010 — notify unconditionally. The prior
+                            // US-010 - notify unconditionally. The prior
                             // `settings_section.is_none()` guard was a
                             // premature optimization introduced alongside
                             // the AI-detection plumbing (commit b99d58b,
@@ -1032,7 +1032,7 @@ impl PaneFlowApp {
                             // open; closing Settings would redraw the
                             // spinner at a stale position until the next
                             // real event. `cx.notify()` only sets a
-                            // dirty flag (no re-entrancy — the render
+                            // dirty flag (no re-entrancy - the render
                             // pass is deferred past this closure's
                             // update scope); GPUI's diffing then skips
                             // GPU work when no tracked reads changed,
@@ -1092,7 +1092,7 @@ impl PaneFlowApp {
                     }
                 }
 
-                // Re-arm regardless of how the ladder ended — the next
+                // Re-arm regardless of how the ladder ended - the next
                 // ActivityBurst starts a fresh one.
                 let _ = cx.update(|cx| {
                     this.update(cx, |app: &mut Self, _cx| {
@@ -1115,7 +1115,7 @@ impl PaneFlowApp {
             _ => return false,
         };
 
-        // (terminal entity id, PTY child pid) pairs — the scan partitions
+        // (terminal entity id, PTY child pid) pairs - the scan partitions
         // the process walk per terminal subtree instead of flattening the
         // workspace into one pid pool.
         let roots: Vec<(u64, u32)> = ws
@@ -1142,7 +1142,7 @@ impl PaneFlowApp {
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 // One unified subtree walk per tick feeds ports AND agent
                 // identity (the pre-refactor code walked the descendants
-                // once for each — this is the strictly-cheaper single pass,
+                // once for each - this is the strictly-cheaper single pass,
                 // US-012 cost contract).
                 let scan = smol::unblock(move || {
                     let agent_binaries: Vec<&'static str> =
@@ -1168,7 +1168,7 @@ impl PaneFlowApp {
     ///
     /// Writes the per-terminal truth (identity-pill agent US-013, port
     /// badges + collision flags US-014) onto each LIVE terminal, then
-    /// refreshes the workspace aggregates the sidebar reads — fed with the
+    /// refreshes the workspace aggregates the sidebar reads - fed with the
     /// union of the per-pane results, identically to the pre-refactor flat
     /// scan (zero sidebar regression, US-012 AC). A pane closed between
     /// scan and deposit is naturally dropped: the deposit iterates the
@@ -1218,7 +1218,7 @@ impl PaneFlowApp {
         // the AUTHORITATIVE clickability signal (it sees the actual socket
         // owner); the PTY-text path stays as enrichment (exact URL with
         // path, backend labels). Without this merge, clickability required
-        // the text scrape to have caught the announcement line — a
+        // the text scrape to have caught the announcement line - a
         // timing-dependent AND of two detectors that made chips appear
         // "sometimes".
         for entry in scan.values().flat_map(|s| s.ports.iter()) {
@@ -1269,11 +1269,11 @@ impl PaneFlowApp {
             .unwrap_or_default();
 
         // US-014 collision pre-pass: port → owning terminal. A port
-        // LISTENed by ≥ 2 subtrees is excluded — that is SO_REUSEPORT-style
+        // LISTENed by ≥ 2 subtrees is excluded - that is SO_REUSEPORT-style
         // sharding (nginx workers, `reusePort` servers), intentional load
         // balancing, not a collision. Other known false positives (proxies,
         // port-forwards, re-announcements after a restart) are tolerated in
-        // v1 — the badge is an info-level heuristic, never blocking.
+        // v1 - the badge is an info-level heuristic, never blocking.
         let mut owner: std::collections::HashMap<u16, u64> = std::collections::HashMap::new();
         let mut shared: std::collections::HashSet<u16> = std::collections::HashSet::new();
         for (tid, s) in &scan {
@@ -1298,7 +1298,7 @@ impl PaneFlowApp {
         // reverse the surrounding `port N is owned by "…"` and spoof the
         // owner) and clamp the length (an unbounded title would otherwise
         // inflate the tooltip and this per-tick map). The custom name is
-        // user-typed and already bounded, but it rides the same scrub —
+        // user-typed and already bounded, but it rides the same scrub -
         // one path, no exceptions.
         let mut display_names: std::collections::HashMap<u64, String> =
             std::collections::HashMap::new();
@@ -1330,7 +1330,7 @@ impl PaneFlowApp {
             for tv in terminals {
                 let tid = tv.entity_id().as_u64();
                 // A terminal spawned after the scan's root collection has no
-                // entry — leave it untouched (the burst's next tick or the
+                // entry - leave it untouched (the burst's next tick or the
                 // next activity scan covers it).
                 let Some(s) = scan.get(&tid) else {
                     continue;
@@ -1341,14 +1341,14 @@ impl PaneFlowApp {
                     .and_then(|b| crate::agent_launcher::TerminalAgent::from_binary(b));
                 tv.update(cx, |view, _cx| {
                     let t = &mut view.terminal;
-                    // A port that left LISTEN must become re-announceable —
+                    // A port that left LISTEN must become re-announceable -
                     // a dev server restarted inside a live shell (nodemon,
                     // plain re-run) re-prints its banner, and that line must
                     // re-fire ServiceDetected (the dedup was previously
                     // cleared only on ChildExit).
                     t.retain_reported_ports(&live_ports);
                     if t.detected_agent != agent || !t.agent_confirmed {
-                        // The live scan owns the value from here on — this
+                        // The live scan owns the value from here on - this
                         // both confirms a restored "last known" pill and
                         // clears a stale one (US-013).
                         t.detected_agent = agent;
@@ -1381,7 +1381,7 @@ impl PaneFlowApp {
                 });
             }
             if pane_changed {
-                // The tab strip renders from the terminals' state — nudge
+                // The tab strip renders from the terminals' state - nudge
                 // the pane so the pill/badges repaint on this frame.
                 pane.update(cx, |_, cx| cx.notify());
                 changed = true;
@@ -1402,7 +1402,7 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) {
         // Find workspace where this terminal is the active tab in any pane.
-        // US-020: skip markdown panes — they have no active terminal, so the
+        // US-020: skip markdown panes - they have no active terminal, so the
         // identity check via `active_terminal_opt` returns None for them.
         let ws_idx = self.workspaces.iter().position(|ws| {
             ws.root.as_ref().is_some_and(|root| {
@@ -1424,7 +1424,7 @@ impl PaneFlowApp {
         // that await the main loop can run close/reorder/IPC-close and compact
         // the `Vec`, so a reused `ws_idx` would point at a *different*
         // workspace (silent git-state corruption + watch refcount desync).
-        // Re-resolve the index by identity after the await — model:
+        // Re-resolve the index by identity after the await - model:
         // `run_port_scan` / `spawn_initial_git_stats`.
         let ws_id = self.workspaces[ws_idx].id;
 
@@ -1458,7 +1458,7 @@ impl PaneFlowApp {
                         if let Some(ref dir) = old_git_dir {
                             app.unwatch_git_dir(dir);
                         }
-                        // Update workspace git tracking (cwd stays fixed at creation —
+                        // Update workspace git tracking (cwd stays fixed at creation -
                         // it represents the workspace's root folder and must not drift
                         // when the user `cd`s inside the shell).
                         let ws = &mut app.workspaces[ws_idx];
@@ -1492,7 +1492,7 @@ impl PaneFlowApp {
     /// `git_stats: default()` (0/0) so the blocking `git` subprocess never runs
     /// on the render thread; this spawns it via `smol::unblock` and re-injects
     /// the result, keyed by the stable `ws_id` (another workspace may be
-    /// created/closed during the await — EP-003 identity model). Mirrors
+    /// created/closed during the await - EP-003 identity model). Mirrors
     /// [`handle_cwd_change`].
     pub(crate) fn spawn_initial_git_stats(ws_id: u64, cwd: String, cx: &mut Context<Self>) {
         cx.spawn(
@@ -1524,7 +1524,7 @@ mod tests {
         // Plain comm: starttime is the 22nd field (9876543 here).
         let plain = "1234 (zsh) S 1 1234 1234 0 -1 4194304 0 0 0 0 5 3 0 0 20 0 11 0 9876543 123 456 18446744073709551615";
         assert_eq!(parse_proc_stat_starttime(plain), Some(9876543));
-        // Comm with spaces AND parens — split must anchor on the LAST ')'.
+        // Comm with spaces AND parens - split must anchor on the LAST ')'.
         let hostile = "1234 (next-server (v15)) S 1 1234 1234 0 -1 4194304 0 0 0 0 5 3 0 0 20 0 11 0 424242 123 456";
         assert_eq!(parse_proc_stat_starttime(hostile), Some(424242));
         // Truncated content (fewer than 22 fields) yields None, not a panic.

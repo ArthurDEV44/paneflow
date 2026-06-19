@@ -1,12 +1,12 @@
 //! Startup migrations for users crossing install-method boundaries.
 //!
-//! US-008 (EP-002 — Install Method Hygiene): when a user upgrades from the
+//! US-008 (EP-002 - Install Method Hygiene): when a user upgrades from the
 //! tar.gz flavor (installed under `$HOME/.local/paneflow.app/`) to the signed
 //! rpm/deb flavor (installed under `/usr/bin/paneflow`), the tar.gz
 //! post-install script leaves stale icon files under
 //! `~/.local/share/icons/hicolor/*/apps/paneflow.png`. Those user-local files
 //! shadow the rpm/deb-installed icons at `/usr/share/icons/hicolor/...` and
-//! keep the desktop shell displaying the previous app icon indefinitely —
+//! keep the desktop shell displaying the previous app icon indefinitely -
 //! the exact bug debugged on the v0.2.2 upgrade pass.
 //!
 //! This module runs once at startup for rpm/deb users only, compares each
@@ -17,10 +17,10 @@
 //!
 //! Design choices that the acceptance criteria nail down:
 //!
-//! - `#[cfg(target_os = "linux")]` — the tar.gz → rpm/deb crossover is
+//! - `#[cfg(target_os = "linux")]` - the tar.gz → rpm/deb crossover is
 //!   Linux-only by construction (no equivalent hicolor layout on macOS /
 //!   Windows).
-//! - No `unwrap()` / `expect()` in any production path — the workspace-level
+//! - No `unwrap()` / `expect()` in any production path - the workspace-level
 //!   clippy lints warn on both; a failed migration logs and returns instead
 //!   of crashing startup.
 //! - Argv-free: pure filesystem work, no subprocess, no shell.
@@ -68,7 +68,7 @@ pub fn run_startup_migrations(method: &InstallMethod) {
 
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         // Sandboxed / container runtimes may not expose $HOME. Nothing to
-        // migrate — stay silent rather than warn on every restart.
+        // migrate - stay silent rather than warn on every restart.
         return;
     };
 
@@ -95,22 +95,22 @@ pub fn run_startup_migrations(method: &InstallMethod) {
 /// Semantics:
 ///
 /// - If the marker file exists under `cache_dir`, return `Ok(())` after
-///   performing zero additional I/O — proving idempotency.
+///   performing zero additional I/O - proving idempotency.
 /// - Otherwise, for each size in `sizes`, compare
 ///   `user_icon_dir/{N}x{N}/apps/paneflow.png` against
 ///   `system_icon_dir/{N}x{N}/apps/paneflow.png` by SHA-256. If they differ,
 ///   remove the user-local file. Identical copies are preserved
-///   (user-authored override — `rm` would be user-surprising).
+///   (user-authored override - `rm` would be user-surprising).
 /// - If the system file is missing OR unreadable at any size, skip that
 ///   size with a `log::warn!` and leave the user-local copy alone (defensive
-///   — do not nuke state we cannot prove is stale).
+///   do not nuke state we cannot prove is stale).
 /// - If at least one file was deleted, attempt to remove the orphaned
 ///   `user_icon_dir/icon-theme.cache` but only when
 ///   `user_icon_dir/index.theme` does NOT exist (presence of `index.theme`
 ///   marks a legitimate user-owned icon theme, whose `icon-theme.cache`
-///   must survive — see US-008 AC).
+///   must survive - see US-008 AC).
 /// - On any successful run (with or without deletions), write the marker
-///   file. A failed marker write logs at `warn!` and returns `Ok(())` —
+///   file. A failed marker write logs at `warn!` and returns `Ok(())` -
 ///   re-running the migration next boot is acceptable; returning `Err`
 ///   here would make the outer guard log a spurious failure.
 fn migrate_user_hicolor_icons(
@@ -129,7 +129,7 @@ fn migrate_user_hicolor_icons(
     // US-030: distinguish "missing" (Ok(false) → nothing to migrate, mark
     // done) from "cannot determine" (Err, e.g. permission denied on an
     // ancestor). The old `unwrap_or(false)` collapsed Err into "absent" and
-    // wrote the marker — marking the migration done even though it never ran.
+    // wrote the marker - marking the migration done even though it never ran.
     // On Err we return without writing the marker so it retries next boot.
     match user_icon_dir.try_exists() {
         Ok(false) => {
@@ -143,7 +143,7 @@ fn migrate_user_hicolor_icons(
     let mut deleted_any = false;
     // US-030: remember the first deletion failure. A stale icon we couldn't
     // remove means the migration did NOT reach its goal (MigrationOutcome
-    // `Failed`), so the marker is left unwritten and we retry next boot —
+    // `Failed`), so the marker is left unwritten and we retry next boot -
     // rather than the old code that wrote the marker unconditionally even
     // after a failed `remove_file`.
     let mut remove_failed: Option<io::Error> = None;
@@ -157,7 +157,7 @@ fn migrate_user_hicolor_icons(
         // `File::open`). Reject symlinks outright: hashing via `File::open`
         // would resolve to whatever the symlink targets (potentially a file
         // outside `~/.local/share/icons/hicolor/`), and subsequently
-        // `remove_file` would remove the symlink itself (not the target) —
+        // `remove_file` would remove the symlink itself (not the target) -
         // surprising in both directions. A legitimate hicolor layout never
         // uses symlinks for per-size PNGs, so skipping them is safe.
         let user_meta = match std::fs::symlink_metadata(&user_file) {
@@ -179,7 +179,7 @@ fn migrate_user_hicolor_icons(
             continue;
         }
         if !user_meta.is_file() {
-            // Regular files only — dirs, sockets, fifos should never appear
+            // Regular files only - dirs, sockets, fifos should never appear
             // here but if they do, stay out of the way.
             continue;
         }
@@ -282,7 +282,7 @@ fn maybe_remove_orphaned_cache(user_icon_dir: &Path) {
 }
 
 /// Write the migration marker file under `cache_dir`, creating the directory
-/// if missing. A failure here is non-fatal by design — see module doc.
+/// if missing. A failure here is non-fatal by design - see module doc.
 fn write_marker(cache_dir: &Path, marker_path: &Path) {
     if let Err(err) = std::fs::create_dir_all(cache_dir) {
         log::warn!(
@@ -316,7 +316,7 @@ fn sha256_of(path: &Path) -> io::Result<[u8; 32]> {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// US-009 — Coexistence detection + one-time advisory toast.
+// US-009 - Coexistence detection + one-time advisory toast.
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Marker filename written once the coexistence-advisory toast has been
@@ -338,7 +338,7 @@ pub struct CoexistenceReport {
     /// For SystemPackage this is `/usr/bin/paneflow`; for TarGz it's the
     /// binary under `$HOME/.local/paneflow.app/bin/paneflow`.
     pub running_path: PathBuf,
-    /// Absolute path to the *other* install's binary — the one the user
+    /// Absolute path to the *other* install's binary - the one the user
     /// should consider removing to avoid version drift.
     pub other_path: PathBuf,
     /// Short human label for `other_path`'s install flavour. Static so
@@ -354,8 +354,8 @@ pub struct CoexistenceReport {
 /// - `SystemPackage { Dnf | Apt }` running + `$HOME/.local/paneflow.app/bin/paneflow` present
 /// - `TarGz` running + `/usr/bin/paneflow` present
 ///
-/// All other variants — AppImage, AppBundle, WindowsMsi, Unknown, and the
-/// non-apt/dnf system-package managers (RpmOstree, Other) — return `None`,
+/// All other variants - AppImage, AppBundle, WindowsMsi, Unknown, and the
+/// non-apt/dnf system-package managers (RpmOstree, Other) - return `None`,
 /// because those install layouts never coexist with the tar.gz flavor.
 /// Missing `$HOME` also returns `None` (conservative: sandboxed / container
 /// runtimes shouldn't produce false positives).
@@ -420,7 +420,7 @@ pub fn coexistence_marker_path(home: &Path) -> PathBuf {
 }
 
 /// Write the coexistence marker, creating the parent dir first. On any I/O
-/// failure the helper logs at `warn!` and returns — the toast may then
+/// failure the helper logs at `warn!` and returns - the toast may then
 /// recur next session, which US-009 AC accepts explicitly ("low annoyance").
 pub fn write_coexistence_marker(marker_path: &Path) {
     if let Some(parent) = marker_path.parent()
@@ -447,7 +447,7 @@ pub fn write_coexistence_marker(marker_path: &Path) {
 /// 1. Coexistence is detected (via `detect_coexistent_install_with_probes`), and
 /// 2. The marker file at `marker_path` does NOT exist.
 ///
-/// Returns `None` when either condition fails — including the "already
+/// Returns `None` when either condition fails - including the "already
 /// warned" case, which US-009 AC requires be a silent no-op on the toast
 /// (the caller may still log the detection separately).
 ///
@@ -592,7 +592,7 @@ mod tests {
 
         // User owns a legitimate partial theme: both index.theme AND
         // icon-theme.cache are present. Even though the PNG is about to be
-        // removed, the cache file must stay — it belongs to the theme, not
+        // removed, the cache file must stay - it belongs to the theme, not
         // to our stale install.
         fs::write(layout.user_icon_dir.join("index.theme"), b"[Icon Theme]\n")
             .expect("write index.theme");
@@ -660,7 +660,7 @@ mod tests {
             "user-local file must be preserved when system file is missing"
         );
         // Marker still gets written on an overall-successful run (no
-        // deletions is still a valid terminal state — we don't want to
+        // deletions is still a valid terminal state - we don't want to
         // re-run forever against unrecoverably-missing system icons).
         assert!(layout.cache_dir.join(MARKER_FILENAME).exists());
     }
@@ -675,7 +675,7 @@ mod tests {
         let layout = Layout::new();
         layout.write_png(&layout.system_icon_dir, 48, b"canonical");
 
-        // Target lives outside the hicolor tree on purpose — if the
+        // Target lives outside the hicolor tree on purpose - if the
         // migration followed the link we'd hash arbitrary user state.
         let target = layout._tmp.path().join("elsewhere.txt");
         fs::write(&target, b"definitely not an icon").expect("write target");
@@ -694,7 +694,7 @@ mod tests {
 
         assert!(
             link_path.symlink_metadata().is_ok(),
-            "symlink entry must survive — migration refuses to remove it"
+            "symlink entry must survive - migration refuses to remove it"
         );
         assert!(
             target.exists(),
@@ -707,7 +707,7 @@ mod tests {
         // Fresh rpm install, no prior tar.gz flavor: user never had
         // ~/.local/share/icons/hicolor at all.
         let layout = Layout::new();
-        // system/ intentionally populated — helper should not even look at
+        // system/ intentionally populated - helper should not even look at
         // it because the user tree is absent.
         layout.write_png(&layout.system_icon_dir, 48, b"canonical");
 
@@ -721,7 +721,7 @@ mod tests {
 
         assert!(
             layout.cache_dir.join(MARKER_FILENAME).exists(),
-            "marker still written — a fresh install doesn't need the migration to run ever again"
+            "marker still written - a fresh install doesn't need the migration to run ever again"
         );
     }
 
@@ -792,7 +792,7 @@ mod tests {
 
     #[test]
     fn detect_coexistence_returns_none_for_appimage_and_other_methods() {
-        // Every non-target InstallMethod variant must return None — the
+        // Every non-target InstallMethod variant must return None - the
         // coexistence failure mode is Dnf/Apt ↔ TarGz, nothing else.
         let cases = [
             InstallMethod::Unknown,
@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn detect_coexistence_returns_none_when_home_missing() {
-        // Sandboxed / container runtime with $HOME unset — be conservative,
+        // Sandboxed / container runtime with $HOME unset - be conservative,
         // never report coexistence without a resolvable home dir.
         let report = detect_coexistent_install_with_probes(
             &InstallMethod::SystemPackage {
@@ -891,7 +891,7 @@ mod tests {
 
     #[test]
     fn write_coexistence_marker_creates_parent_directory() {
-        // `~/.cache/paneflow/` may not exist on a very fresh install — the
+        // `~/.cache/paneflow/` may not exist on a very fresh install - the
         // helper must create it rather than silently fail.
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let marker = tmp

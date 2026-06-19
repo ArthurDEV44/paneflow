@@ -86,7 +86,7 @@ impl PaneFlowApp {
         }
 
         // Rebuild tree and focus first pane
-        // (root is consumed by collect_leaves moving entities out — but collect_leaves
+        // (root is consumed by collect_leaves moving entities out - but collect_leaves
         //  clones Entity refs, so root is still valid. We drop it explicitly.)
         drop(root);
         ws.root = build(panes);

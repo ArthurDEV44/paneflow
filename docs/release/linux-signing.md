@@ -15,16 +15,16 @@ rotating, and storing the signing key lives at `docs/release-signing.md`.
 The Paneflow release key (`paneflow-release@paneflow.dev`) is published
 in **two places**, by design:
 
-1. **Repo-committed copy** — [`keys/paneflow-release.asc`](../../keys/paneflow-release.asc)
+1. **Repo-committed copy** - [`keys/paneflow-release.asc`](../../keys/paneflow-release.asc)
    inside this repository. Because it is part of the git history, it is
    covered by the maintainer's signed commit chain and cannot be
    silently swapped without a force-push to `main`.
-2. **Server-served copy** — `https://pkg.paneflow.dev/gpg`, served from
+2. **Server-served copy** - `https://pkg.paneflow.dev/gpg`, served from
    the Cloudflare R2 bucket alongside the apt and dnf repositories.
 
 > **The repo-committed copy is the authoritative source.** Prefer it
 > for first import. Then cross-check the fingerprint against the
-> server-served copy — if they differ, **stop**: the package repository
+> server-served copy - if they differ, **stop**: the package repository
 > is compromised and any artifact downloaded from `pkg.paneflow.dev` is
 > suspect until the discrepancy is resolved.
 
@@ -36,8 +36,8 @@ The Paneflow release key fingerprint is:
 9809 948F 4433 CF93 DD13  2944 9A25 2F0C 183F 2711
 ```
 
-`pub rsa4096/9A252F0C183F2711` — `PaneFlow Release
-<paneflow-release@paneflow.dev>` — expires `2028-04-19`.
+`pub rsa4096/9A252F0C183F2711` - `PaneFlow Release
+<paneflow-release@paneflow.dev>` - expires `2028-04-19`.
 
 This 40-char hex value MUST match the fingerprint printed by both
 `curl … | gpg --with-fingerprint` invocations below. If you only
@@ -45,9 +45,9 @@ trust a single source for the fingerprint check (just the README, just
 the runbook), a coordinated MITM that controls every URL in the chain
 could feed you a wrong-but-consistent fingerprint and you would pass
 the cross-check. Resist that scenario by also reading the same hex
-value off a third independent surface — the GitHub web UI commit
+value off a third independent surface - the GitHub web UI commit
 history of `keys/paneflow-release.asc`, the maintainer's social-media
-profile, or the upcoming `paneflow.dev` security page — before pasting
+profile, or the upcoming `paneflow.dev` security page - before pasting
 any import command from §2.
 
 ```bash
@@ -65,12 +65,12 @@ curl -fsSL https://pkg.paneflow.dev/gpg \
 
 # Both lines MUST print the same 40-char hex fingerprint AND that value
 # MUST match the literal value above. If any of the three diverge,
-# STOP — do not run any §2 import command until the discrepancy is
+# STOP - do not run any §2 import command until the discrepancy is
 # explained.
 ```
 
 > **Note on key locations.** A second copy of the public key lives at
-> `packaging/paneflow-release.asc` for historical reasons — it is the
+> `packaging/paneflow-release.asc` for historical reasons - it is the
 > path the maintainer runbook (`docs/release-signing.md`) and the
 > `pkg.paneflow.dev` repo-publish workflow operate against. Both files
 > are byte-identical and must stay in sync; users should prefer
@@ -82,7 +82,7 @@ curl -fsSL https://pkg.paneflow.dev/gpg \
 > completed §1 and verified the fingerprint
 > `9809948F4433CF93DD1329449A252F0C183F2711` matches what each `curl
 > … | gpg --with-fingerprint` invocation prints. Importing first and
-> verifying second is too late — once the key is in your trust store,
+> verifying second is too late - once the key is in your trust store,
 > later artifact verifications will report `Good signature` against
 > the malicious key.
 
@@ -133,7 +133,7 @@ dpkg-sig --verify paneflow-vX.Y.Z-x86_64.deb
 
 > **Ubuntu 24.04 (Noble) and later.** `dpkg-sig` is unmaintained
 > upstream (last upstream release 2014) and was dropped from the
-> Ubuntu archive entirely — `apt-cache policy dpkg-sig` resolves to
+> Ubuntu archive entirely - `apt-cache policy dpkg-sig` resolves to
 > nothing on 24.04 even with universe enabled (verified on a fresh
 > noble container, 2026-06). Use the bare-GPG fallback: extract the
 > `_gpgbuilder` member with `ar x` and verify it directly:
@@ -154,7 +154,7 @@ GOODSIG _gpgbuilder <40-char-fingerprint> <UNIX-timestamp>
 ```
 
 Any other status (`BADSIG`, `NOSIG`, missing fingerprint) means the
-file was tampered with or is unsigned. Do **not** install it — discard
+file was tampered with or is unsigned. Do **not** install it - discard
 and re-download.
 
 `apt install ./paneflow-*.deb` will additionally check the signature
@@ -180,7 +180,7 @@ V4 RSA/SHA256 Signature, key ID <8-char-shortid>: OK
 ```
 
 Older RPM 4.13 and earlier emits a `pgp md5 OK` line and a `MD5
-digest: OK` line in addition to the above — both also valid. Modern
+digest: OK` line in addition to the above - both also valid. Modern
 `rpmbuild` defaults omit MD5, so its absence on packages built
 post-2024 is expected, not a failure.
 
@@ -207,7 +207,7 @@ gpg --verify paneflow-vX.Y.Z-x86_64.tar.gz.sig \
 is the trust gate. Any other status (`BAD signature`, `gpg: WARNING:
 This key is not certified with a trusted signature!` without a
 preceding good signature line) means the artifact was tampered with or
-the key was never imported correctly — discard and re-download.
+the key was never imported correctly - discard and re-download.
 
 > **Current state (US-025).** The release workflow ships `.tar.gz`
 > artifacts with a SHA-256 sidecar (`paneflow-*.tar.gz.sha256`) but
@@ -225,7 +225,7 @@ the key was never imported correctly — discard and re-download.
 > before swapping `~/.local/paneflow.app/`. Producing the detached
 > `.tar.gz.sig` closes the residual gap (an attacker with R2-bucket
 > write access can regenerate the SHA-256 sidecar to match a
-> tampered `.tar.gz` — the GPG signature is what defeats that
+> tampered `.tar.gz` - the GPG signature is what defeats that
 > scenario) and is tracked as the next hardening story after US-025.
 
 ## 6. AppImage signatures
@@ -254,7 +254,7 @@ sha256sum --check paneflow-vX.Y.Z-x86_64.AppImage.sha256
 ```
 
 The `.zsync` sidecar (`paneflow-*.AppImage.zsync`) provides delta-
-update integrity for `appimageupdatetool` but is **not** a signature —
+update integrity for `appimageupdatetool` but is **not** a signature -
 it only catches transport corruption between an old and new AppImage,
 not malicious tampering.
 
@@ -267,7 +267,7 @@ not malicious tampering.
 > ```
 > Tracked outside this PRD.
 
-## 7. Verifying the verification — end-to-end smoke test
+## 7. Verifying the verification - end-to-end smoke test
 
 A clean-room smoke test that exercises §2 + §3 on Ubuntu 22.04:
 
@@ -285,7 +285,7 @@ curl -fsSL https://raw.githubusercontent.com/ArthurDEV44/paneflow/main/keys/pane
 gpg --with-fingerprint --with-colons /tmp/paneflow-release.asc \
   | awk -F: '/^fpr:/ {print $10; exit}'
 # Expected output: 9809948F4433CF93DD1329449A252F0C183F2711
-# If it does not match, STOP — do NOT run gpg --import below.
+# If it does not match, STOP - do NOT run gpg --import below.
 gpg --import /tmp/paneflow-release.asc
 
 # 3. Download a release artifact
@@ -298,7 +298,7 @@ dpkg-sig --verify paneflow-vX.Y.Z-x86_64.deb
 
 If the GOODSIG line appears, the artifact is genuine and unmodified.
 If it does not, file an issue at
-<https://github.com/ArthurDEV44/paneflow/issues> with the full output —
+<https://github.com/ArthurDEV44/paneflow/issues> with the full output -
 do not install the package.
 
 ## 8. Failure modes
@@ -313,14 +313,14 @@ do not install the package.
 
 ## 9. References
 
-- [`docs/release-signing.md`](../release-signing.md) — maintainer-side
+- [`docs/release-signing.md`](../release-signing.md) - maintainer-side
   key generation, secret rotation, R2 publishing.
-- [`docs/release/macos-signing.md`](macos-signing.md) — equivalent
+- [`docs/release/macos-signing.md`](macos-signing.md) - equivalent
   runbook for macOS signing & notarization.
-- [`docs/release/windows-signing.md`](windows-signing.md) — equivalent
+- [`docs/release/windows-signing.md`](windows-signing.md) - equivalent
   runbook for Windows Azure Trusted Signing.
 - [`tasks/prd-cmux-port-2026-q2.md`](../../tasks/prd-cmux-port-2026-q2.md)
-  US-025 — acceptance criteria for this document.
-- `dpkg-sig(1)` — `man dpkg-sig` for the underlying signing tool.
-- `rpm(8)` `--checksig` — `man rpm` and Fedora docs at
+  US-025 - acceptance criteria for this document.
+- `dpkg-sig(1)` - `man dpkg-sig` for the underlying signing tool.
+- `rpm(8)` `--checksig` - `man rpm` and Fedora docs at
   <https://docs.fedoraproject.org/en-US/quick-docs/installing-plugins-for-playing-movies-and-music/#proc_signing>.

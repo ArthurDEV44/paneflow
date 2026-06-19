@@ -4,7 +4,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
-// Tool detection — from `current_exe()` filename stem
+// Tool detection - from `current_exe()` filename stem
 // ---------------------------------------------------------------------------
 
 /// Read `std::env::current_exe()` and return the tool identity, or `None`
@@ -16,7 +16,7 @@ pub(crate) fn detect_tool() -> Option<&'static str> {
     detect_tool_from_stem(stem)
 }
 
-/// Every binary name the US-008 extractor may materialize this shim under —
+/// Every binary name the US-008 extractor may materialize this shim under -
 /// the wire-format tool identity IS the binary name. MUST stay in sync with
 /// `TerminalAgent::binary()` in `src-app/src/agent_launcher.rs` (the shim
 /// stays dependency-free of the app crate, so the list is mirrored here;
@@ -42,7 +42,7 @@ pub(crate) const WRAPPED_TOOLS: &[&str] = &[
 ];
 
 /// Testable inner: map a filename stem to the tool identity. Only exact
-/// lowercase matches against [`WRAPPED_TOOLS`] are accepted — US-008
+/// lowercase matches against [`WRAPPED_TOOLS`] are accepted - US-008
 /// controls the extracted filenames, so anything else here means the
 /// binary has been renamed or invoked directly.
 pub(crate) fn detect_tool_from_stem(stem: &str) -> Option<&'static str> {
@@ -50,7 +50,7 @@ pub(crate) fn detect_tool_from_stem(stem: &str) -> Option<&'static str> {
 }
 
 // ---------------------------------------------------------------------------
-// PATH walk — find the real AI binary, excluding the shim's own directory
+// PATH walk - find the real AI binary, excluding the shim's own directory
 // ---------------------------------------------------------------------------
 
 /// Candidate executable names to probe in each `$PATH` entry. Unix looks for
@@ -71,7 +71,7 @@ pub(crate) fn candidate_names(tool: &str) -> Vec<String> {
 /// that is the shim binary itself by inode (US-017 hardlink defense).
 pub(crate) fn find_real_binary(tool: &str) -> Option<PathBuf> {
     let path_var = env::var_os("PATH")?;
-    // Per `install_method.rs:92-98`, always canonicalize `current_exe()` —
+    // Per `install_method.rs:92-98`, always canonicalize `current_exe()` -
     // on Linux it may point at `/proc/self/exe` or follow through a symlink.
     let self_exe = env::current_exe().ok();
     let self_dir = self_exe
@@ -86,7 +86,7 @@ pub(crate) fn find_real_binary(tool: &str) -> Option<PathBuf> {
     )
 }
 
-/// Pure inner — takes PATH entries as an iterator and optional
+/// Pure inner - takes PATH entries as an iterator and optional
 /// self-dir / self-exe paths, so tests can pass a controlled set
 /// without mutating `$PATH` or relying on `current_exe()`.
 pub(crate) fn find_real_binary_in<I>(
@@ -100,7 +100,7 @@ where
 {
     // Canonicalize once; `None` if the dir doesn't exist (in which case we
     // can't match anything against it, so the self-exclusion is a no-op and
-    // PATH is walked in full — safer than silently skipping nothing).
+    // PATH is walked in full - safer than silently skipping nothing).
     let self_canon = self_dir.and_then(|d| std::fs::canonicalize(d).ok());
     // US-017 (cli-hardening-followup-2026-Q3): capture the shim's
     // own file identity. A candidate matching

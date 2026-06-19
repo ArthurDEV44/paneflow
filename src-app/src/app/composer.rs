@@ -2,18 +2,18 @@
 //!
 //! US-001: a multi-line prompt bar anchored to the bottom edge of the
 //! focused pane. Delivery goes through the bracketed-paste path
-//! (`TerminalView::paste_text`) so embedded newlines stay literal — the
+//! (`TerminalView::paste_text`) so embedded newlines stay literal - the
 //! prompt lands PRE-FILLED in the agent's input box and is NEVER submitted
 //! by default (FR-01). `secondary-enter` is the explicit, documented
 //! deliver-then-submit gesture (a separate `\r` write), unavailable in
 //! broadcast mode (US-003 AC7).
 //!
-//! US-003: targeting a generating (`Thinking`) session — single-pane or any
-//! broadcast member — queues the prompt in a per-pane latest-wins buffer
+//! US-003: targeting a generating (`Thinking`) session - single-pane or any
+//! broadcast member - queues the prompt in a per-pane latest-wins buffer
 //! (`BroadcastState::pending`) flushed on the session's next transition out
 //! of `Thinking`. The flush runs in [`PaneFlowApp::agent_sessions_changed`],
 //! called from the `ai.*` hook handlers on the GPUI main thread (serialized
-//! — no race between transition and flush), and only ever pre-fills.
+//! no race between transition and flush), and only ever pre-fills.
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -27,17 +27,17 @@ use crate::pane::Pane;
 use crate::widgets::text_area::TextArea;
 
 /// US-003 AC6: the broadcast recap (and the queued confirmation) hold for
-/// 4 s before auto-dismiss — longer than the default `TOAST_HOLD_MS`
+/// 4 s before auto-dismiss - longer than the default `TOAST_HOLD_MS`
 /// confirmations so the delivered/queued split is actually readable.
 const COMPOSER_RECAP_HOLD_MS: u64 = 4000;
 
-/// Maximum delivered/queued prompt size — parity with the IPC
+/// Maximum delivered/queued prompt size - parity with the IPC
 /// `surface.send_text` 64 KiB cap (`MAX_TEXT_LEN`, ipc_handler.rs).
 const MAX_COMPOSER_TEXT: usize = 64 * 1024;
 
 /// FR-01 hardening (security review): the delivery profile is LF-only.
 /// A CR/CRLF smuggled into the TextArea through a clipboard paste is
-/// normalized to LF and trailing newlines are trimmed — a compliant TUI
+/// normalized to LF and trailing newlines are trimmed - a compliant TUI
 /// treats in-envelope newlines as literal input, and a target without
 /// bracketed-paste awareness never sees a trailing CR it could read as a
 /// submit. Oversized drafts are truncated at a char boundary (64 KiB,
@@ -59,11 +59,11 @@ pub(crate) fn normalize_composer_text(text: &str) -> (String, bool) {
     (t, truncated)
 }
 
-/// Live Composer session owned by `PaneFlowApp` — the source of truth. The
+/// Live Composer session owned by `PaneFlowApp` - the source of truth. The
 /// target pane renders the pushed [`ComposerSlot`] snapshot.
 pub(crate) struct ComposerState {
     pub(crate) input: Entity<TextArea>,
-    /// Weak: the pane can close while the user is typing — validation then
+    /// Weak: the pane can close while the user is typing - validation then
     /// degrades to a clean no-op and the overlay closes (US-001 AC7).
     pub(crate) target: WeakEntity<Pane>,
     /// Broadcast mode toggle (US-003): deliver to every ready member of the
@@ -82,7 +82,7 @@ pub(crate) struct ComposerSlot {
     pub(crate) broadcast: bool,
     /// The target pane's mapped session is `Thinking`: the state chip warns
     /// that validation will queue instead of delivering (US-001 AC5 chip,
-    /// carrying the US-003 unified buffering semantics — both stories ship
+    /// carrying the US-003 unified buffering semantics - both stories ship
     /// in this epic).
     pub(crate) busy: bool,
     /// "name · N members" for the active group, `None` when no group is
@@ -96,7 +96,7 @@ pub(crate) struct ComposerSlot {
 }
 
 impl PaneFlowApp {
-    /// `true` when a session mapped to `surface_id` is generating — the only
+    /// `true` when a session mapped to `surface_id` is generating - the only
     /// state in which delivery must be withheld (FR-02). Sessions without a
     /// resolved surface never block anything (they cannot be attributed to a
     /// pane).
@@ -127,7 +127,7 @@ impl PaneFlowApp {
 
         let weak_app = cx.entity().downgrade();
         let input =
-            cx.new(|cx| TextArea::new("Write a prompt — Enter pre-fills, never submits", cx));
+            cx.new(|cx| TextArea::new("Write a prompt - Enter pre-fills, never submits", cx));
         input.update(cx, |ta, _| {
             // Re-entrancy: TextArea callbacks fire synchronously inside the
             // TextArea's own update, so every mutation of app state is
@@ -189,7 +189,7 @@ impl PaneFlowApp {
         };
         let broadcast = state.broadcast;
         let Some(pane) = state.target.upgrade() else {
-            // US-001 AC7: target pane closed while typing — clean no-op,
+            // US-001 AC7: target pane closed while typing - clean no-op,
             // overlay already gone with the pane.
             cx.notify();
             return;
@@ -228,7 +228,7 @@ impl PaneFlowApp {
                 }
             }
             self.sync_pending_chips(cx);
-            // US-003 AC6: never a silent fan-out — transient recap with the
+            // US-003 AC6: never a silent fan-out - transient recap with the
             // PRD-specified 4 s hold (longer than the default confirmations).
             self.push_toast(
                 format!("Broadcast: {delivered} delivered · {queued} queued"),
@@ -244,13 +244,13 @@ impl PaneFlowApp {
             let sid = term.entity_id().as_u64();
             if self.surface_busy(sid) {
                 // US-003 AC3: the single-pane Composer buffers instead of
-                // blocking — same mechanics, same tab indicator as the
+                // blocking - same mechanics, same tab indicator as the
                 // broadcast buffer. The explicit submit gesture is dropped
                 // with the queue (a flush only ever pre-fills, FR-02).
                 self.broadcast.pending.insert(sid, text);
                 self.sync_pending_chips(cx);
                 self.push_toast(
-                    "Agent is generating — prompt queued, will pre-fill when it settles".into(),
+                    "Agent is generating - prompt queued, will pre-fill when it settles".into(),
                     Vec::new(),
                     COMPOSER_RECAP_HOLD_MS,
                     cx,
@@ -258,7 +258,7 @@ impl PaneFlowApp {
             } else {
                 term.read(cx).paste_text(&text);
                 if submit {
-                    // US-001 AC4: deliver THEN submit — the CR is a separate
+                    // US-001 AC4: deliver THEN submit - the CR is a separate
                     // PTY write, mirroring the IPC `submit: true` convention.
                     term.read(cx).send_text("\r");
                 }
@@ -268,7 +268,7 @@ impl PaneFlowApp {
     }
 
     /// Toggle the Composer's broadcast mode (US-003). Requires an active
-    /// group — otherwise points the user at the picker instead of silently
+    /// group - otherwise points the user at the picker instead of silently
     /// doing nothing.
     pub(crate) fn toggle_composer_broadcast(&mut self, cx: &mut Context<Self>) {
         if self.composer.is_none() {
@@ -279,7 +279,7 @@ impl PaneFlowApp {
             .active
             .is_some_and(|i| i < self.broadcast.groups.len());
         if !has_group {
-            self.show_toast("No broadcast group — open the group picker first", cx);
+            self.show_toast("No broadcast group - open the group picker first", cx);
             return;
         }
         if let Some(state) = &mut self.composer {
@@ -369,7 +369,7 @@ impl PaneFlowApp {
         pane.update(cx, |p, cx| p.set_composer_slot(Some(slot), cx));
     }
 
-    /// Flush every queued prompt whose target is no longer generating —
+    /// Flush every queued prompt whose target is no longer generating -
     /// PREFILL ONLY, never a CR (FR-02). Buffers whose terminal disappeared
     /// are dropped silently (US-003 AC5). Idempotent and cheap when nothing
     /// is queued; called on every agent-session transition (main thread, so

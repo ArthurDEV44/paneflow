@@ -4,7 +4,7 @@
 //! `engine.rs`) back into a byte-correct unified diff string, with no GPUI, no
 //! I/O, no `self`. This is the load-bearing primitive under every "copy hunk",
 //! "send to agent", and "review" gesture (EP-001..003): by generating the diff
-//! deterministically here, the agent never sees a hallucinated `@@` header —
+//! deterministically here, the agent never sees a hallucinated `@@` header -
 //! the #1 failure mode of LLM-*generated* patches is designed out because the
 //! model only ever *consumes* a diff we produced.
 //!

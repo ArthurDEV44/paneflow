@@ -1,4 +1,4 @@
-//! Batched-text paint pass — one `shape_line` per `BatchedTextRun`.
+//! Batched-text paint pass - one `shape_line` per `BatchedTextRun`.
 
 use gpui::{App, Pixels, Point, TextAlign, TextRun, Window};
 
@@ -12,7 +12,7 @@ use super::super::geometry::CellGeometry;
 /// the caller must hand it a `Point<Pixels>` that is already on a pixel
 /// boundary if pixel-perfect rendering is desired. After US-002 made
 /// `cell_width` and `line_height` integer at measure time, `.round()`
-/// here is normally a no-op — but it is a deliberate guardrail. If a
+/// here is normally a no-op - but it is a deliberate guardrail. If a
 /// future change re-introduces a fractional residual (origin drift,
 /// non-integer cell stride from a refactor, etc.), this snap keeps
 /// glyphs aligned with their cell backgrounds without further fix.
@@ -77,8 +77,8 @@ pub fn paint_text_runs(
     }
 }
 
-// Gated on `debug_assertions` because the `pixel_probe` module — and its
-// `assert_pixel_aligned` helper — are themselves debug-only. Without the
+// Gated on `debug_assertions` because the `pixel_probe` module - and its
+// `assert_pixel_aligned` helper - are themselves debug-only. Without the
 // extra cfg, `cargo test --release` (which turns `debug_assertions` off)
 // would fail to resolve the import.
 #[cfg(all(test, debug_assertions))]
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn glyph_origin_snaps_fractional_cell_width() {
-        // 8.4 px is the canonical fractional cell_width from the PRD —
+        // 8.4 px is the canonical fractional cell_width from the PRD -
         // (DejaVu Sans Mono at 14 pt @ 1.0 DPI on Linux).
         let origin = Point {
             x: px(0.0),
@@ -112,7 +112,7 @@ mod tests {
     fn glyph_origin_no_op_for_integer_cell_width() {
         // Post-US-002 the typical case: cell_width and line_height are
         // already integer. The snap must produce exact arithmetic equality
-        // — verifies `.round()` did not introduce drift.
+        // - verifies `.round()` did not introduce drift.
         let origin = Point {
             x: px(0.0),
             y: px(0.0),

@@ -10,7 +10,7 @@ prove a download came from us before it extracts, mounts, or executes it.
 How it fits together:
 
 - The **public** key(s) are baked into every release binary at build time
-  (`option_env!` in `src-app/src/update/signature.rs`). They are public —
+  (`option_env!` in `src-app/src/update/signature.rs`). They are public -
   stored as GitHub **repository variables**, never secrets.
 - The **private** key signs each artifact in CI, producing a detached
   `<artifact>.minisig` uploaded alongside it. It lives only in a GitHub
@@ -21,7 +21,7 @@ How it fits together:
   Windows a second OS-native layer runs on top (`codesign`/`spctl`,
   `WinVerifyTrust`).
 
-Two public-key **slots** are embedded — current + next — so the key can be
+Two public-key **slots** are embedded - current + next - so the key can be
 rotated with zero downtime (see §5).
 
 > ⚠️ Introducing this root of trust is a one-way step. The first signed
@@ -34,20 +34,20 @@ rotated with zero downtime (see §5).
 
 ## 1. Generating the key (one time)
 
-Do this on a **trusted workstation** — never on a shared machine, never on a
+Do this on a **trusted workstation** - never on a shared machine, never on a
 CI runner, never over SSH to a multi-user box.
 
 `minisign` and `rsign2` produce wire-compatible keys; either works. Use an
-**unencrypted** secret key (`-W`) so CI can sign non-interactively — the
+**unencrypted** secret key (`-W`) so CI can sign non-interactively - the
 GitHub secret is the protection. Keep an *encrypted* backup in your password
 manager.
 
 ```bash
-# Option A — minisign (C tool; `apt install minisign` / `brew install minisign`)
+# Option A - minisign (C tool; `apt install minisign` / `brew install minisign`)
 minisign -G -W -p paneflow-minisign.pub -s paneflow-minisign.key
 #   -W : no passphrase on the secret key (required for unattended CI signing)
 
-# Option B — rsign2 (pure Rust: `cargo install rsign2`)
+# Option B - rsign2 (pure Rust: `cargo install rsign2`)
 rsign generate -W -p paneflow-minisign.pub -s paneflow-minisign.key
 ```
 
@@ -85,7 +85,7 @@ Wiring already in `release.yml`:
   `files: release-assets/*` then uploads.
 
 If `MINISIGN_SECRET_KEY` is unset the signing step emits a CI **warning** and
-ships **unsigned** — clients with an embedded key will refuse those updates.
+ships **unsigned** - clients with an embedded key will refuse those updates.
 Provision the key before the first release that is meant to be self-updatable.
 
 ---
@@ -107,7 +107,7 @@ key (accept if either matches), fail closed otherwise.
 ## 4. Threat model (what this does and does not cover)
 
 Covers: a compromised mirror / CDN / MITM swapping the artifact (and its
-`.sha256`) on the download channel — the forged bytes fail signature
+`.sha256`) on the download channel - the forged bytes fail signature
 verification and are never run. This is the RCE-class hole the old same-host
 `.sha256` left open.
 
@@ -134,7 +134,7 @@ rotate without an online revocation step:
 3. **Switch signing** to `next`: replace the `MINISIGN_SECRET_KEY` environment
    secret with the new `.key`. Cut a release. Artifacts are now signed by
    `next`; clients from step 2 onward accept them via the `_NEXT` slot.
-4. **Promote**: after 2–3 releases (enough time for users to update through a
+4. **Promote**: after 2-3 releases (enough time for users to update through a
    build that carries both keys), move `next`'s public base64 into
    `PANEFLOW_MINISIGN_PUBKEY` and clear `PANEFLOW_MINISIGN_PUBKEY_NEXT`. Cut a
    release. The old key is now fully retired.
@@ -150,7 +150,7 @@ key, or it would fail closed.
 If the **private key** leaks:
 
 1. Immediately rotate `MINISIGN_SECRET_KEY` to a freshly generated key and run
-   the §5 rotation, but compress the timeline — ship the dual-key build and
+   the §5 rotation, but compress the timeline - ship the dual-key build and
    the re-signed build back to back.
 2. Treat any release the leaked key could have signed as suspect. The OS code
    signatures (Apple notarization, Authenticode) are an independent second
@@ -162,7 +162,7 @@ If the **private key** leaks:
    longer verifies anywhere.
 
 If a **build host** is compromised, minisign cannot help (it would sign
-whatever the host produces) — rebuild from a clean host, rotate the key, and
+whatever the host produces) - rebuild from a clean host, rotate the key, and
 audit the release artifacts against the source tree.
 
 ---

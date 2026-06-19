@@ -1,4 +1,4 @@
-//! `paneflow wait` — block until a regex appears in a pane (US-013/US-014/US-015).
+//! `paneflow wait` - block until a regex appears in a pane (US-013/US-014/US-015).
 //!
 //! The orchestration primitive ("Playwright-for-terminals"): poll a target
 //! pane's recent scrollback until a regex matches, with a bounded timeout and
@@ -95,7 +95,7 @@ pub fn wait(
         }
 
         // Every watched pane closed: no outcome is reachable (US-014 defined
-        // behavior — fail rather than spin to the deadline).
+        // behavior - fail rather than spin to the deadline).
         if alive == 0 {
             return Err(CliError::runtime(
                 "all target panes closed before the pattern appeared",
@@ -145,7 +145,7 @@ fn read_matches(client: &impl IpcTransport, id: u64, re: &Regex) -> Result<PaneS
                 PaneState::NoMatch
             })
         }
-        // A down instance is fatal — propagate the "is Paneflow running?" error.
+        // A down instance is fatal - propagate the "is Paneflow running?" error.
         Err(e) if e.contains("unreachable") => Err(CliError::runtime(e)),
         // Anything else (e.g. -32602 surface not found) means the pane closed.
         Err(_) => Ok(PaneState::Gone),

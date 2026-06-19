@@ -3,7 +3,7 @@
 //! Resolves a `<target>` argument to a concrete `surface_id` by querying
 //! `surface.list` once and filtering client-side, so `read`/`search`/`send`
 //! address a pane uniformly by its id, its name, the process running in it
-//! (`cmdline:<substr>`), or its working directory (`cwd:<path>`) — with one
+//! (`cmdline:<substr>`), or its working directory (`cwd:<path>`) - with one
 //! place that produces the ambiguity / no-match errors.
 //!
 //! Cross-platform note: `cmdline:` matches the `cmd` field of `surface.list`,

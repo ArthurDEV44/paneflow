@@ -7,8 +7,8 @@ mid-release (the failure mode that broke CI on v0.2.11).
 
 ## Where the pin lives
 
-- `rust-toolchain.toml` (repo root) — `channel`, `components`, `profile`
-- `.github/workflows/release.yml` — every `dtolnay/rust-toolchain@master` step
+- `rust-toolchain.toml` (repo root) - `channel`, `components`, `profile`
+- `.github/workflows/release.yml` - every `dtolnay/rust-toolchain@master` step
   passes the same `toolchain: "1.95"` input. Both must move together.
 
 ## Quarterly bump procedure

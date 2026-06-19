@@ -5,7 +5,7 @@ use super::*;
 
 impl DiffView {
     /// (Re)load every visible column's diff off the main thread. One background
-    /// task per column — a slow worktree never blocks the others; the
+    /// task per column - a slow worktree never blocks the others; the
     /// `generation` guard discards results superseded by a newer load (US-016
     /// keeps the task count bounded to the visible columns).
     pub(super) fn start_loading(&mut self, cx: &mut Context<Self>) {
@@ -22,7 +22,7 @@ impl DiffView {
     /// (Re)load a specific set of columns' diffs off the main thread. The full
     /// [`Self::start_loading`] passes every visible column; US-016
     /// [`Self::revalidate`] passes only the columns whose git fingerprint moved
-    /// while the surface was hidden. One background task per column — a slow
+    /// while the surface was hidden. One background task per column - a slow
     /// worktree never blocks the others; the `generation` guard discards results
     /// superseded by a newer load (US-007 last-write-wins).
     pub(super) fn start_loading_columns(&mut self, indices: &[usize], cx: &mut Context<Self>) {
@@ -41,7 +41,7 @@ impl DiffView {
             // override, else the shared base) under one `get_mut`. Per-column gen so
             // a subset reload (e.g. `revalidate`) never discards an in-flight load of
             // the OTHER columns. Do NOT blank an already-loaded column to `Loading`
-            // on a refresh — keep its content until the new diff swaps in (no flash).
+            // on a refresh - keep its content until the new diff swaps in (no flash).
             let (generation, base, path, branch) = match self.columns.get_mut(i) {
                 Some(col) if col.visible => {
                     col.generation = col.generation.wrapping_add(1);
@@ -63,15 +63,15 @@ impl DiffView {
             }
             log::debug!("diff: col {i} ({branch}) task SPAWNED (gen={generation})");
             cx.spawn(async move |this, cx| {
-                // The whole pipeline — git diff, row building, AND the syntect
-                // pass — runs off the GPUI main thread; only the `Rc` wrap +
+                // The whole pipeline - git diff, row building, AND the syntect
+                // pass - runs off the GPUI main thread; only the `Rc` wrap +
                 // assignment happen back on it (NFR: 0 ms main-thread git/diff).
                 log::debug!("diff: col {i} ({branch}) task STARTED (polled)");
                 let bc = branch.clone();
                 let built = smol::unblock(move || {
                     // US-016: snapshot the fingerprint BEFORE reading the tree, so a
                     // commit landing mid-build makes the stored fingerprint LAG the
-                    // rows — `revalidate` then sees HEAD moved and reloads (a harmless
+                    // rows - `revalidate` then sees HEAD moved and reloads (a harmless
                     // extra reload) rather than matching a stale fingerprint and
                     // showing pre-commit rows as current (the unsafe direction).
                     let fingerprint = super::super::git::column_fingerprint(&path, &base);
@@ -145,7 +145,7 @@ impl DiffView {
                     );
                     // EP-004 US-014: match local agent sessions to this worktree
                     // in the SAME off-thread pass (no second async round-trip).
-                    // Enrichment only — a parse miss yields an empty Vec and the
+                    // Enrichment only - a parse miss yields an empty Vec and the
                     // diff is unaffected.
                     let cwd = path.to_string_lossy();
                     let attribution =
@@ -176,10 +176,10 @@ impl DiffView {
                             // overlap, base-branch switch, resize) bumped this
                             // column's generation while we were off-thread, so
                             // last-write-wins drops the stale result. Trace it
-                            // at debug — a WARN here just cried wolf on the
+                            // at debug - a WARN here just cried wolf on the
                             // race guard doing its job.
                             log::debug!(
-                                "diff: col {i} ({branch}) superseded — task gen={generation} != col gen={}",
+                                "diff: col {i} ({branch}) superseded - task gen={generation} != col gen={}",
                                 col.generation
                             );
                             return; // superseded by a newer load of this column
@@ -244,7 +244,7 @@ impl DiffView {
     /// Per-branch changed-file lists for the multi-branch diff sidebar: one entry
     /// per visible column as `(branch, column index, worktree path, file-list
     /// state)`. The worktree path is the stable, globally-unique key the sidebar
-    /// uses for per-section collapse state — branch NAMES collide across repos in
+    /// uses for per-section collapse state - branch NAMES collide across repos in
     /// Multi-project scope (every repo has a `main`). Reads the same `Rc`-shared
     /// file vecs, so it is allocation-cheap per frame.
     pub fn column_file_lists(&self) -> Vec<(String, usize, PathBuf, FileListState)> {
@@ -271,7 +271,7 @@ impl DiffView {
 
     /// Select `col_idx` (focus its file list) AND scroll its body to `path`.
     /// Used by the multi-branch sidebar so clicking a file in ANY branch section
-    /// focuses that branch and lands on the file — `jump_to_file` keys off the
+    /// focuses that branch and lands on the file - `jump_to_file` keys off the
     /// just-set `selected_column`.
     pub fn select_and_jump(
         &mut self,

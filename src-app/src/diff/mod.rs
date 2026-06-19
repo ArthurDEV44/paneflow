@@ -1,14 +1,14 @@
 //! Multi-worktree diff viewer (prd-multi-worktree-diff-2026-Q3.md).
 //!
 //! EP-001 scaffold (US-003): stands up the `DiffView` GPUI entity and its tab
-//! plumbing only — it renders an empty/placeholder state seeded with the
+//! plumbing only - it renders an empty/placeholder state seeded with the
 //! sibling worktrees of one repo. The diff engine (EP-002), side-by-side
 //! render (EP-003), and N-column live view + base selector (EP-004) fill in
 //! `DiffView` with real hunk data on top of this host.
 //!
 //! `DiffView` is the exact structural analog of `markdown::MarkdownView`: an
 //! `Entity` implementing `Render + Focusable`, hosted in a pane via the new
-//! `TabContent::Diff` variant. It is ephemeral — never persisted to
+//! `TabContent::Diff` variant. It is ephemeral - never persisted to
 //! `session.json` (like markdown tabs, dropped by `layout/serde.rs`).
 
 mod align;

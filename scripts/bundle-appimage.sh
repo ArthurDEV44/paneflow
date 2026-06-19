@@ -88,14 +88,14 @@ export UPDATE_INFORMATION="gh-releases-zsync|ArthurDEV44|paneflow|latest|paneflo
 # build hosts that don't have libfuse2 (Fedora 43, Ubuntu 24.04, etc.).
 export APPIMAGE_EXTRACT_AND_RUN=1
 
-# Disable linuxdeploy's bundled `strip` — it's too old to recognise modern
+# Disable linuxdeploy's bundled `strip` - it's too old to recognise modern
 # SHT_RELR (.relr.dyn) sections emitted by newer toolchains (binutils 2.38+,
 # glibc 2.36+). The release binary is already stripped by `strip = true` in
 # [profile.release], so there's nothing to gain by stripping again.
 export NO_STRIP=1
 
 # linuxdeploy bundles a patchelf that can mis-write RUNPATH on very-modern
-# PIE binaries carrying SHT_RELR (.relr.dyn) sections — emitted by binutils
+# PIE binaries carrying SHT_RELR (.relr.dyn) sections - emitted by binutils
 # 2.38+ / glibc 2.36+. The result: binary segfaults pre-main. We detect a
 # host patchelf >=0.18 and post-patch the binary after linuxdeploy runs.
 HOST_PATCHELF="$(command -v patchelf || true)"
@@ -120,7 +120,7 @@ cd "$OUT_DIR"
 #   1. For each .so in usr/lib/ (not a symlink), look up a pristine copy in
 #      the system's dynamic linker cache and overwrite the (corrupted) one.
 #   2. Run host patchelf (>=0.18) to re-apply the $ORIGIN RPATH linuxdeploy
-#      used — cleanly this time.
+#      used - cleanly this time.
 #   3. Re-apply $ORIGIN/../lib RPATH to the main binary.
 if [ -n "$HOST_PATCHELF" ]; then
     PATCHELF_VER="$("$HOST_PATCHELF" --version 2>/dev/null | awk '{print $2}')"
@@ -132,14 +132,14 @@ if [ -n "$HOST_PATCHELF" ]; then
         echo "info: healing AppDir with patchelf $PATCHELF_VER" >&2
 
         # Replace bundled libs with pristine system copies. We intentionally
-        # do NOT run patchelf on them — modern patchelf (even 0.18) can
+        # do NOT run patchelf on them - modern patchelf (even 0.18) can
         # corrupt Fedora 43 libs on modern toolchains. Our AppRun sets
         # LD_LIBRARY_PATH=$HERE/usr/lib so the libs don't need an $ORIGIN
         # RPATH to find each other.
         #
         # `ldconfig -p` tags entries by ABI: `(libc6,x86-64)` on x86_64
         # hosts and `(libc6,AArch64)` on aarch64 hosts. Matching on the
-        # wrong tag leaves every bundled lib un-healed — on an ARM
+        # wrong tag leaves every bundled lib un-healed - on an ARM
         # runner the old x86-64 filter silently picked zero libs and
         # any linuxdeploy-corrupted .so shipped broken. Filter by the
         # tag that matches our current $ARCH.
@@ -171,7 +171,7 @@ fi
 # Pass 2: pack the AppDir into an AppImage. We call appimagetool directly
 # instead of `linuxdeploy --output appimage` because the linuxdeploy output
 # step re-walks the AppDir and re-invokes its (old, broken) bundled patchelf
-# on every ELF — undoing the healing above. appimagetool just mksquashfs's
+# on every ELF - undoing the healing above. appimagetool just mksquashfs's
 # the AppDir and prepends the AppImage runtime, leaving contents untouched.
 AT_BIN="${APPIMAGETOOL:-}"
 if [ -z "$AT_BIN" ]; then

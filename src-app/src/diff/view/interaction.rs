@@ -32,7 +32,7 @@ impl DiffView {
         }
         // A jumped-to hunk is parked HUNK_JUMP_MARGIN px below the viewport top,
         // so the hunk "at" the current position is the one near
-        // `cur_y + HUNK_JUMP_MARGIN` — not `cur_y`. Pivot on that: otherwise
+        // `cur_y + HUNK_JUMP_MARGIN` - not `cur_y`. Pivot on that: otherwise
         // `forward` keeps matching the already-parked hunk (its top is still
         // > cur_y), and the down arrow looks dead while up works.
         let pivot = cur_y + HUNK_JUMP_MARGIN;
@@ -68,7 +68,7 @@ impl DiffView {
         self.select_column(col_idx, cx);
         let mode = self.effective_mode(window);
         // prd-ai-in-diff-2026-Q3.md: left-click a changed line sends it to the
-        // review CLI to ask about it — launching Claude Code first if no session
+        // review CLI to ask about it - launching Claude Code first if no session
         // is open. Context/header rows fall through to header-collapse.
         if let Some(line) = self.resolve_clicked_line(col_idx, ev.position(), mode) {
             self.ask_review_about_line(col_idx, line, window, cx);
@@ -89,7 +89,7 @@ impl DiffView {
             }
             let target = f32::from(y - bounds.top() - col.el_scroll.offset().y).max(0.0);
             // US-050: variable row heights (taller file-header cards) make this a
-            // band lookup — shared with `row_at_point` / `jump_to_file`.
+            // band lookup - shared with `row_at_point` / `jump_to_file`.
             let offsets = match mode {
                 ViewMode::Unified => &col.disp_unified_offsets,
                 ViewMode::Split => &col.disp_split_offsets,
@@ -113,7 +113,7 @@ impl DiffView {
                 .map(|(p, _)| p.clone())
         };
         let Some(path) = path else {
-            return; // not a file header — nothing to collapse
+            return; // not a file header - nothing to collapse
         };
         if let Some(col) = self.columns.get_mut(col_idx) {
             if !col.collapsed.remove(&path) {
@@ -309,7 +309,7 @@ impl DiffView {
         })
     }
 
-    /// The row under `point` IF it is a changed line — the hover-to-ask
+    /// The row under `point` IF it is a changed line - the hover-to-ask
     /// affordance. In Unified a left-click sends the line to the review CLI
     /// (launching Claude Code first if no session is open), so changed lines are
     /// always clickable. In Split the row is NOT clickable (resolve is
@@ -504,7 +504,7 @@ impl DiffView {
 
     /// EP-005 US-018/019/020: the floating per-hunk action cluster, revealed
     /// while the cursor hovers a changed line over a resolvable hunk (unified
-    /// only). A deferred overlay anchored just above the cursor — the act layer
+    /// only). A deferred overlay anchored just above the cursor - the act layer
     /// made first-class, NOT buried in the right-click menu. Buttons: Direct
     /// agent (US-018), Fix & stage (US-019), and a two-step armed Discard
     /// (US-020). `None` when not over a hunk.
@@ -631,7 +631,7 @@ impl DiffView {
     }
 
     /// EP-005 US-018: keyboard entry to the act layer (`a`). Directs the agent at
-    /// the hunk under the mouse, or — for a keyboard-only loop — the hunk parked
+    /// the hunk under the mouse, or - for a keyboard-only loop - the hunk parked
     /// at the viewport top by `goto_hunk`. Flashes when no hunk resolves.
     pub(super) fn act_on_hunk_under_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use super::super::review_terminal::HunkAction;

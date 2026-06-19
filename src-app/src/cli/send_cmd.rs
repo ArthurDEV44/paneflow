@@ -1,10 +1,10 @@
-//! `send` / `key` — write-side CLI verbs (US-006; orchestration-v2
+//! `send` / `key` - write-side CLI verbs (US-006; orchestration-v2
 //! US-003/US-004/US-005).
 //!
 //! Wraps `surface.send_text` / `surface.send_keystroke`. The human-in-loop
 //! invariant is enforced server side: `send_text` writes the bytes verbatim
 //! with no trailing carriage return, so the text lands in the agent's input
-//! box and the user/agent presses Enter themselves — UNLESS `--submit` is
+//! box and the user/agent presses Enter themselves - UNLESS `--submit` is
 //! passed explicitly (US-005), the only sanctioned submission path.
 //! `key` refuses submitting keystrokes (`enter`, `ctrl-m`, …) server-side.
 //!
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn submit_forwards_a_full_64_kib_payload_intact() {
-        // US-005 AC6: the one explicitly-mandated stress case — a 64 KiB text
+        // US-005 AC6: the one explicitly-mandated stress case - a 64 KiB text
         // submitted in a single round. The server enforces the 64 KiB ceiling
         // and appends the `\r` after the last byte (ipc_handler.rs:1344-1363);
         // the CLI's job, pinned here, is to forward the max-size payload WHOLE

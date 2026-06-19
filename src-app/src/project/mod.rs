@@ -210,7 +210,7 @@ pub struct Thread {
     /// `false`.
     pub pinned: bool,
     /// PID of the CLI agent currently driving [`Self::status`], reported
-    /// by the `ai.*` hook frames. Transient (never persisted — a restored
+    /// by the `ai.*` hook frames. Transient (never persisted - a restored
     /// thread is always `Idle`): only consumed by the stale-PID sweep so a
     /// killed agent can't leave the sidebar spinner running forever.
     /// `None` for legacy hook shims that omit `pid`; the sweep then keeps
@@ -258,7 +258,7 @@ impl Thread {
     /// Create a fresh Terminal Thread bound to `terminal_agent` (the CLI
     /// auto-launched on first PTY mount, or `None` for a bare shell).
     /// The `agent` slot is filled with a placeholder (`ClaudeCode`) that
-    /// the Terminal dispatch never consults — see [`ThreadKind`] for the
+    /// the Terminal dispatch never consults - see [`ThreadKind`] for the
     /// rationale.
     pub fn new_terminal(
         title: impl Into<String>,
@@ -428,7 +428,7 @@ pub fn thread_from_session(s: &ThreadSession) -> Option<Thread> {
         // Re-gate the restored session id through the same allow-list the
         // PTY-injection path uses: a tampered session.json must never
         // smuggle a flag-shaped value into `claude --session-id`. An
-        // invalid id collapses to `None` — the thread relaunches as a fresh
+        // invalid id collapses to `None` - the thread relaunches as a fresh
         // session rather than refusing to open.
         session_id: s
             .session_id
@@ -496,7 +496,7 @@ fn is_title_meaningful_lead(c: char) -> bool {
             | '/' | '\\' | '~' | '.'
             // Math / numeric leads
             | '-' | '+' | '=' | '$'
-            | '\u{2013}' | '\u{2014}'  // – —
+            | '\u{2013}' | '\u{2014}'  // - -
             | '\u{2212}'               // − minus sign
             // Currency
             | '\u{00A3}' | '\u{00A5}' | '\u{20AC}' // £ ¥ €
@@ -555,7 +555,7 @@ mod tests {
         assert_eq!(thread_id_from_env_id(thread_env_id(1)), Some(1));
         let big = u32::MAX as u64;
         assert_eq!(thread_id_from_env_id(thread_env_id(big)), Some(big));
-        // CLI-mode workspace ids live below the namespace base — they must
+        // CLI-mode workspace ids live below the namespace base - they must
         // never decode as a thread, or an ai.* frame from a CLI pane would
         // drive an Agents row's spinner.
         assert_eq!(thread_id_from_env_id(0), None);

@@ -1,7 +1,7 @@
 //! Shared plumbing for the per-agent writers (EP-003).
 //!
 //! - Config-path resolution (cross-platform, `dirs`-based).
-//! - `shell_out` — run an agent's own CLI and surface a clean error on
+//! - `shell_out` - run an agent's own CLI and surface a clean error on
 //!   non-zero exit (preferred path for Claude Code / Codex per PRD D4).
 //! - Format-generic install / uninstall / status built on the tested
 //!   [`crate::merge`] + [`crate::io`] primitives, so every writer is
@@ -22,7 +22,7 @@ pub(crate) const ENTRY: &str = "paneflow";
 // Config paths (resolved against the real home / XDG dirs)
 // ---------------------------------------------------------------------------
 
-/// `~/.claude.json` — where `claude mcp add -s user` stores user-scope MCP
+/// `~/.claude.json` - where `claude mcp add -s user` stores user-scope MCP
 /// servers (verified 2026: NOT `~/.claude/settings.json`).
 pub(crate) fn claude_config() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude.json"))
@@ -64,7 +64,7 @@ pub(crate) fn opencode_config() -> Option<PathBuf> {
 /// invocation (network stall, auth prompt) so install can't block.
 const CLI_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// stdout cap for an agent CLI shell-out — `mcp add` prints a short
+/// stdout cap for an agent CLI shell-out - `mcp add` prints a short
 /// confirmation, so 1 MiB is plenty while bounding a runaway CLI.
 const CLI_STDOUT_CAP: u64 = 1024 * 1024;
 
@@ -78,7 +78,7 @@ pub(crate) fn cli_on_path(cli: &str) -> bool {
 pub(crate) fn shell_out(program: &str, args: &[&str]) -> Result<()> {
     // US-042 (Windows): a bare `Command::new("claude")` goes through
     // `CreateProcessW`, which ignores `PATHEXT` and so cannot launch the
-    // `claude.cmd` shim that npm/bun install — even though `cli_on_path`
+    // `claude.cmd` shim that npm/bun install - even though `cli_on_path`
     // (via `which::which`) resolved it, so the "preferred CLI path" was
     // entered and then died with `NotFound`. Resolve the full `.cmd`/`.exe`
     // path first; Rust std ≥1.77 wraps `.cmd`/`.bat` through `cmd.exe`
@@ -225,7 +225,7 @@ pub(crate) fn toml_status(path: &Path, expected: &Path) -> Result<StatusOutcome>
 
 // ---------------------------------------------------------------------------
 // Tolerant current-path readers (for idempotency / update detection before
-// a shell-out; never error — a bad read just means "unknown")
+// a shell-out; never error - a bad read just means "unknown")
 // ---------------------------------------------------------------------------
 
 pub(crate) fn current_json_command(

@@ -137,7 +137,7 @@ impl PaneFlowApp {
             let mut ta = TextArea::new("New name", cx);
             ta.set_value(current, cx);
             // Pre-select the whole text so the user can just start typing
-            // to replace the existing name — saves a manual Ctrl+A and
+            // to replace the existing name - saves a manual Ctrl+A and
             // matches the inline-rename UX in mainstream editors.
             ta.select_all_text(cx);
             // on_submit fires from INSIDE the TextArea's update, so
@@ -539,7 +539,7 @@ impl PaneFlowApp {
     }
 
     /// Arm the inline delete-confirm for `target`'s row (ergonomics): clicking
-    /// the trash icon does NOT open a dialog — it flips the row's action
+    /// the trash icon does NOT open a dialog - it flips the row's action
     /// cluster to a red "Delete" button. A second click on that button runs
     /// the delete; selecting a row / opening a menu / arming another cancels it.
     pub(crate) fn arm_delete_for_target(
@@ -553,7 +553,7 @@ impl PaneFlowApp {
 
     /// Run the armed inline delete. Funnels the armed target through
     /// `agents_confirm_delete` so it reuses the exact confirmed-delete path
-    /// (toast + cache cleanup + session save) — no dialog is ever shown.
+    /// (toast + cache cleanup + session save) - no dialog is ever shown.
     pub(crate) fn execute_armed_delete(&mut self, cx: &mut Context<Self>) {
         use crate::project::AgentsTarget;
         let Some(target) = self.agents_view.agents_delete_armed.take() else {
@@ -630,7 +630,7 @@ impl PaneFlowApp {
     /// new-chat context so the center shows the chat agent picker (cwd =
     /// home). Picking an agent there creates a free chat (see
     /// [`Self::create_agent_chat`]). No chat is created until an agent is
-    /// picked — mirrors the project "New thread" flow.
+    /// picked - mirrors the project "New thread" flow.
     pub(crate) fn start_new_chat(&mut self, cx: &mut Context<Self>) {
         self.agents_view.agents_skills_visible = false;
         self.agents_target = None;

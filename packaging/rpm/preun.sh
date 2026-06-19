@@ -1,5 +1,5 @@
 #!/bin/sh
-# RPM `%preun` scriptlet — runs before a package is removed.
+# RPM `%preun` scriptlet - runs before a package is removed.
 # Cleans up /etc/yum.repos.d/paneflow.repo on FULL uninstall only
 # (US-016 hygiene follow-up).
 #
@@ -10,7 +10,7 @@
 #   $1 >= 2 → extremely rare parallel-install scenarios; treat like upgrade
 #
 # Running `rm -f` on upgrade would leave the user without a repo source
-# mid-transaction — `dnf upgrade paneflow` would complete, then the very
+# mid-transaction - `dnf upgrade paneflow` would complete, then the very
 # next `dnf check-update` would silently drop our source. So the $1 = 0
 # guard is load-bearing, not ceremonial.
 

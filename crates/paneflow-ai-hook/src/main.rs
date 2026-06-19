@@ -59,7 +59,7 @@ const METHOD_EXIT: &str = "ai.exit";
 // forwarded verbatim in the `tool` field of every IPC frame. The server
 // resolves it via `TerminalAgent::from_binary` and REJECTS unknown strings
 // (the historical 2-variant enum silently retyped everything as Claude).
-// `ipc.rs` validates the field as alphanumeric + hyphens ≤ 64 chars —
+// `ipc.rs` validates the field as alphanumeric + hyphens ≤ 64 chars -
 // [`detect_tool_from`] enforces the same shape on this side so a hostile
 // env value degrades to the legacy default instead of a rejected frame.
 const TOOL_DEFAULT: &str = "claude";
@@ -71,7 +71,7 @@ const TOOL_DEFAULT: &str = "claude";
 /// Backoffs between delivery attempts (total attempts = 1 + len). A single
 /// attempt was enough to drop a lifecycle frame whenever the PaneFlow main
 /// thread was busy past the 500 ms timeout at the exact moment the frame
-/// arrived (large render, config reload) — and a dropped `ai.stop` left the
+/// arrived (large render, config reload) - and a dropped `ai.stop` left the
 /// sidebar spinner on "thinking…" until the 300 s Stalled sweep. Three
 /// bounded attempts make that loss practically impossible while keeping the
 /// worst case under ~2 s, well inside what Claude Code / Codex tolerate for
@@ -79,7 +79,7 @@ const TOOL_DEFAULT: &str = "claude";
 const SEND_BACKOFF: [Duration; 2] = [Duration::from_millis(100), Duration::from_millis(300)];
 
 /// [`send_frame`] with retry: re-attempts on ANY send error (connect refused
-/// from a full backlog, write timeout from a busy main thread, …) — the
+/// from a full backlog, write timeout from a busy main thread, …) - the
 /// distinction isn't observable from this side of the socket, and the budget
 /// is bounded either way. Returns the LAST error when every attempt fails.
 fn send_frame_with_retry(socket_path: &Path, frame: &serde_json::Value) -> std::io::Result<()> {
@@ -115,7 +115,7 @@ pub fn send_frame(socket_path: &Path, frame: &serde_json::Value) -> std::io::Res
     // post-exit cleanup and the SIGINT path, blocking on its exit; a same-UID
     // squatter that accepts the connection but never drains would otherwise
     // wedge `write_all`/`flush` forever. 500 ms is ample for a local socket
-    // write — beyond it `dispatch` turns the error into a silent exit 0, which
+    // write - beyond it `dispatch` turns the error into a silent exit 0, which
     // is the PRD's "fail silent, never break the session" contract (a bounded
     // failure is strictly better than an unbounded hang).
     //
@@ -124,7 +124,7 @@ pub fn send_frame(socket_path: &Path, frame: &serde_json::Value) -> std::io::Res
     // bail BEFORE the write on every Windows hook invocation, so NO `ai.*`
     // frame was ever delivered and the sidebar agent status silently never
     // updated on Windows (it worked on Unix domain sockets, which accept the
-    // timeout). Tolerate the Unsupported case and proceed unbounded — the peer
+    // timeout). Tolerate the Unsupported case and proceed unbounded - the peer
     // is the same-UID local PaneFlow and the payload is a sub-kilobyte frame,
     // so an unbounded write is an acceptable trade vs. dropping the frame. Any
     // other error (a genuinely broken stream) still propagates.
@@ -239,7 +239,7 @@ fn build_frame(
                 // Surface unknown types to `$PANEFLOW_HOOK_LOG` so the whitelist
                 // can be widened from real telemetry when Anthropic ships a new
                 // permission-style type. Stays out of stderr per the hook
-                // contract — only the opt-in log path receives it.
+                // contract - only the opt-in log path receives it.
                 other => {
                     diagnose(&format!(
                         "Notification: dropping notification_type={other:?}"
@@ -252,7 +252,7 @@ fn build_frame(
         // Exit is shim-synthesized like SessionEnd: `paneflow-shim` fires it
         // after the wrapped agent binary terminates, with the agent's raw
         // exit code (shell `128+signum` convention for signal deaths) in
-        // `hook_payload.exit_code` — synthesized by `dispatch` from
+        // `hook_payload.exit_code` - synthesized by `dispatch` from
         // `$PANEFLOW_AI_EXIT_CODE`. Hard-require the code: a frame without
         // it is useless to the server's `Errored` classifier
         // (`ipc_handler.rs` `ai.exit` arm), so bail instead of degrading.
@@ -264,13 +264,13 @@ fn build_frame(
             METHOD_EXIT
         }
         // SessionEnd is invoked by `paneflow-shim` after the real AI binary
-        // exits, NOT by claude/codex themselves — neither tool fires a
+        // exits, NOT by claude/codex themselves - neither tool fires a
         // session-end hook event. The shim runs `paneflow-ai-hook SessionEnd`
         // with empty stdin (no `hook_payload.*` fields are required by the
         // server at `ipc_handler.rs:530-559` beyond `workspace_id` + `tool`,
         // both already in `params`). Without this signal the sidebar loader
         // sticks indefinitely whenever the user quits during a `Thinking`
-        // turn (Ctrl+C, /exit mid-stream) — `ai.stop` never fires in that
+        // turn (Ctrl+C, /exit mid-stream) - `ai.stop` never fires in that
         // case so the 5s auto-reset never arms.
         "SessionEnd" => METHOD_SESSION_END,
         "PreToolUse" | "PostToolUse" => {
@@ -316,7 +316,7 @@ fn next_id() -> u64 {
 
 /// Resolve the AI tool identity from `$PANEFLOW_AI_TOOL`, which the shim
 /// sets to one of the 16 `TerminalAgent` binary names based on its own
-/// argv[0] stem. Forwarded verbatim — the server is the single authority
+/// argv[0] stem. Forwarded verbatim - the server is the single authority
 /// on the name→agent mapping. Missing or malformed values fall back to
 /// `"claude"` (preserves US-002 behavior when the shim is not deployed).
 fn detect_tool() -> String {
@@ -342,7 +342,7 @@ fn detect_tool_from(raw: Option<&str>) -> String {
 
 /// Read the AI binary PID from `$PANEFLOW_AI_PID` (set by the US-004 shim
 /// after spawning the real Claude/Codex process). Returns `None` if unset,
-/// non-numeric, out of `u32` range, or zero — the server rejects `pid == 0`
+/// non-numeric, out of `u32` range, or zero - the server rejects `pid == 0`
 /// at `ipc_handler.rs:353`.
 fn read_ai_pid() -> Option<u32> {
     read_ai_pid_from(env::var("PANEFLOW_AI_PID").ok().as_deref())
@@ -354,14 +354,14 @@ fn read_ai_pid_from(raw: Option<&str>) -> Option<u32> {
 
 /// EP-004 US-010: read the wrapped agent binary's raw exit code from
 /// `$PANEFLOW_AI_EXIT_CODE` (set by the shim's `notify_exit`). `None` if
-/// unset or non-numeric — the caller bails rather than send a degraded
+/// unset or non-numeric - the caller bails rather than send a degraded
 /// frame. Negative values are legitimate (Windows NTSTATUS codes, e.g.
 /// `STATUS_CONTROL_C_EXIT` = -1073741510).
 fn read_exit_code() -> Option<i32> {
     read_exit_code_from(env::var("PANEFLOW_AI_EXIT_CODE").ok().as_deref())
 }
 
-/// Testable inner — same `env::set_var`-avoidance rationale as
+/// Testable inner - same `env::set_var`-avoidance rationale as
 /// [`read_ai_pid_from`].
 fn read_exit_code_from(raw: Option<&str>) -> Option<i32> {
     raw?.parse::<i32>().ok()
@@ -372,7 +372,7 @@ fn read_exit_code_from(raw: Option<&str>) -> Option<i32> {
 // ---------------------------------------------------------------------------
 
 /// Append a single diagnostic line to `$PANEFLOW_HOOK_LOG` if set. Silent
-/// no-op otherwise — we must never write to stderr in the hook hot path
+/// no-op otherwise - we must never write to stderr in the hook hot path
 /// because Claude Code surfaces stderr in its UI.
 ///
 /// Note on symlink follow: `OpenOptions::append(true).create(true)` follows
@@ -414,7 +414,7 @@ fn main() -> ExitCode {
 }
 
 /// Read env + argv + stdin, build the frame, and send it. Every failure path
-/// returns early with an opt-in diagnostic and never propagates an error —
+/// returns early with an opt-in diagnostic and never propagates an error -
 /// PRD constraint C4 mandates that the user's Claude Code session never
 /// breaks because of a PaneFlow outage.
 fn dispatch() {
@@ -433,7 +433,7 @@ fn dispatch() {
 
     // SessionEnd and Exit are the events the shim invokes itself
     // (post-`run_real`) with `Stdio::null()`, so empty stdin is the EXPECTED
-    // case — not an error. Skip the stdin read entirely: SessionEnd uses an
+    // case - not an error. Skip the stdin read entirely: SessionEnd uses an
     // empty payload `{}`; Exit synthesizes its payload from
     // `$PANEFLOW_AI_EXIT_CODE` (EP-004 US-010). Every other event requires
     // real stdin (the AI tool feeds JSON via the hook contract);
@@ -456,7 +456,7 @@ fn dispatch() {
     let tool = detect_tool();
     let tool = tool.as_str();
     let pid = read_ai_pid();
-    // US-016 — best-effort: a missing or malformed surface_id leaves the
+    // US-016 - best-effort: a missing or malformed surface_id leaves the
     // server falling back to workspace-only routing.
     let surface_id = read_surface_id();
 
@@ -484,7 +484,7 @@ fn dispatch() {
 /// Read `PANEFLOW_SOCKET_PATH` and verify it's an absolute path. The PTY
 /// injects an absolute path (`runtime_paths.rs:75-83`), so a non-absolute
 /// value means either the env was overwritten or the binary is being
-/// invoked outside a PaneFlow PTY — either way, do nothing.
+/// invoked outside a PaneFlow PTY - either way, do nothing.
 fn read_socket_path() -> Option<PathBuf> {
     let raw = env::var_os("PANEFLOW_SOCKET_PATH")?;
     let path = PathBuf::from(raw);
@@ -522,7 +522,7 @@ const MAX_STDIN_BYTES: u64 = 16 * 1024 * 1024;
 /// Read stdin to EOF (or `MAX_STDIN_BYTES`, whichever comes first) and parse
 /// as JSON. Returns `None` on empty, oversized, or invalid input (with a
 /// diagnostic); never sends a degraded frame. Reads raw bytes (not a
-/// `String`) so we skip the stdlib's UTF-8 validation machinery —
+/// `String`) so we skip the stdlib's UTF-8 validation machinery -
 /// `serde_json::from_slice` does its own validation.
 fn read_stdin_json(event: &str) -> Option<serde_json::Value> {
     let mut buf = Vec::new();
@@ -592,8 +592,8 @@ mod unix_tests {
 
         let server = std::thread::spawn(move || {
             // `accept` blocks until the kernel delivers a queued connection.
-            // `Stream::connect` can land before `accept` is entered — the OS
-            // queues pending connections up to the listen backlog — so no
+            // `Stream::connect` can land before `accept` is entered - the OS
+            // queues pending connections up to the listen backlog - so no
             // settle sleep is needed.
             let stream = listener.accept().expect("listener accept");
             let mut reader = BufReader::new(stream);
@@ -705,7 +705,7 @@ mod tests {
         assert!(
             params.get("notification_type").is_none(),
             "Claude's Notification event must not inject top-level \
-             notification_type — that is only for Codex's PermissionRequest"
+             notification_type - that is only for Codex's PermissionRequest"
         );
     }
 
@@ -880,7 +880,7 @@ mod tests {
 
     #[test]
     fn codex_session_start_without_any_pid_returns_none() {
-        // Neither env-PID nor hook_payload.pid — skip the frame (server
+        // Neither env-PID nor hook_payload.pid - skip the frame (server
         // rejects pid == 0 / missing with `ipc_handler.rs:353`).
         let payload = json!({ "session_id": "codex-3" });
         assert!(
@@ -916,7 +916,7 @@ mod tests {
         // Claude Code fires `Notification` for many informational events
         // (auth_success, idle_prompt, "skills not included" banner, etc.)
         // without a `notification_type` we recognize. These must NOT
-        // produce an `ai.notification` frame — otherwise the sidebar
+        // produce an `ai.notification` frame - otherwise the sidebar
         // shows "needs input" after a clean turn ends, since
         // `WaitingForInput` overwrites the preceding `Stop → Finished`.
         let payload = json!({ "message": "Indexing workspace…" });
@@ -997,7 +997,7 @@ mod tests {
 
     #[test]
     fn detect_tool_from_forwards_wellformed_names_verbatim() {
-        // Any wire-shaped binary name passes through — the SERVER owns the
+        // Any wire-shaped binary name passes through - the SERVER owns the
         // name→agent mapping (TerminalAgent::from_binary) and rejects
         // unknowns; this side must not collapse future agents to claude.
         assert_eq!(detect_tool_from(Some("codex")), "codex");
@@ -1050,7 +1050,7 @@ mod tests {
     }
 
     // `diagnose` tests call the testable inner `diagnose_to` directly with an
-    // explicit `Option<&Path>` — this avoids `env::set_var`/`remove_var`,
+    // explicit `Option<&Path>` - this avoids `env::set_var`/`remove_var`,
     // which is Send-unsafe on Linux/glibc and would race under Cargo's
     // default parallel test runner.
 
@@ -1080,7 +1080,7 @@ mod tests {
     /// `src-app/src/runtime_paths.rs:82` (`\\.\pipe\paneflow`) is recognised
     /// as absolute by `Path::is_absolute`. If this ever regresses, the hook
     /// binary's `read_socket_path` guard would silently reject every frame
-    /// on Windows — a HIGH-severity regression the Phase 7 audit flagged.
+    /// on Windows - a HIGH-severity regression the Phase 7 audit flagged.
     #[test]
     #[cfg(windows)]
     fn windows_named_pipe_path_is_absolute() {

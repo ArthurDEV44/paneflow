@@ -1,12 +1,12 @@
 # Paneflow MCP bridge (`paneflow-mcp`)
 
 Let an MCP-capable CLI agent running **inside a Paneflow pane** read the
-terminal output of **any other surface** — so you can say *"check the logs in
+terminal output of **any other surface** - so you can say *"check the logs in
 the cargo-run pane"* instead of selecting, copying, and pasting by hand.
 
 `paneflow-mcp` is a small stdio [MCP](https://modelcontextprotocol.io) server.
 The agent spawns it as a subprocess; it proxies each call to Paneflow's local
-JSON-RPC socket (the same one the AI-hook uses). It is **read-only** — it can
+JSON-RPC socket (the same one the AI-hook uses). It is **read-only** - it can
 list, read, and search surfaces, but cannot type into or control them.
 
 > Source: `crates/paneflow-mcp/`. The protocol is implemented by hand (not via
@@ -16,7 +16,7 @@ list, read, and search surfaces, but cannot type into or control them.
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|
-| `list_panes` | — | Every surface: `surface_id`, `name`, `title`, `cwd`, `cmd`, `workspace`. Call this first to discover what to read. |
+| `list_panes` | - | Every surface: `surface_id`, `name`, `title`, `cwd`, `cmd`, `workspace`. Call this first to discover what to read. |
 | `read_pane` | `target` (name or `surface_id`), `lines?` (default 200, max 4000), `offset?` | The surface's scrollback as text, paginated. |
 | `search_pane` | `target`, `pattern`, `max_matches?` (default 50, max 1000) | Matching lines with their line numbers. |
 
@@ -30,7 +30,7 @@ list, read, and search surfaces, but cannot type into or control them.
 
 ## Install (one command)
 
-The bridge binary **ships inside Paneflow** — no build step. On every launch,
+The bridge binary **ships inside Paneflow** - no build step. On every launch,
 Paneflow extracts it to a stable, non-versioned path
 (`~/.local/share/paneflow/bin/paneflow-mcp` on Linux,
 `~/Library/Application Support/paneflow/bin/paneflow-mcp` on macOS,
@@ -65,7 +65,7 @@ paneflow mcp uninstall   # remove only the `paneflow` entry, everywhere
 
 `status` distinguishes four states per agent: *not detected*, *installed*,
 *detected but not installed*, and *stale path* (the config points at an old
-location — re-run `install` to fix).
+location - re-run `install` to fix).
 
 > Where each agent's entry lands: Claude Code → `~/.claude.json`
 > (`mcpServers.paneflow`, prefers `claude mcp add -s user`); Codex →
@@ -82,17 +82,17 @@ manually (e.g. `--read <file>`).
 ## Manual configuration (if you prefer)
 
 `paneflow mcp install` is the recommended path. If you'd rather wire it by hand
-— or you're working in this repo, where `.mcp.json` already registers the
-server for Claude Code — use the snippets below. Build the binary first with
+ -  or you're working in this repo, where `.mcp.json` already registers the
+server for Claude Code - use the snippets below. Build the binary first with
 `cargo build -p paneflow-mcp --release` (→ `target/release/paneflow-mcp`), and
 point `command` at that absolute path.
 
-> These config shapes are **version-volatile** for Codex, Gemini, and opencode —
+> These config shapes are **version-volatile** for Codex, Gemini, and opencode -
 > their CLIs move fast. `paneflow mcp install` tracks the current format; verify
 > manual snippets against each agent's current docs.
 
 The bridge finds the running Paneflow instance via `$PANEFLOW_SOCKET_PATH`,
-injected into every pane's environment — so it must be launched from inside a
+injected into every pane's environment - so it must be launched from inside a
 Paneflow pane (which is exactly where your agent runs).
 
 ### Claude Code
@@ -115,7 +115,7 @@ command = "/absolute/path/to/paneflow-mcp"
 args = []
 ```
 
-Codex consumes **tools only** — which is why the bridge exposes everything as
+Codex consumes **tools only** - which is why the bridge exposes everything as
 tools, not MCP resources.
 
 ### Gemini CLI
@@ -140,7 +140,7 @@ prefer Gemini's confirmation prompt given the untrusted-output surface.
 
 ### opencode
 
-`~/.config/opencode/opencode.json` — note the distinct schema (key `mcp`, not
+`~/.config/opencode/opencode.json` - note the distinct schema (key `mcp`, not
 `mcpServers`; `command` is an array; `type: "local"`):
 
 ```json
@@ -163,4 +163,4 @@ In an agent running inside Paneflow:
 > me why the build failed."*
 
 The agent calls `list_panes`, sees a surface named `cargo-run`, then
-`read_pane(target="cargo-run", lines=100)` — no manual copy-paste.
+`read_pane(target="cargo-run", lines=100)` - no manual copy-paste.

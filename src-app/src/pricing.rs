@@ -1,11 +1,11 @@
 //! EP-004 US-017 (`prd-review-redesign-2026-Q3.md`): a build-time-embedded,
 //! versioned model pricing table for the Review attribution badge's estimated
-//! cost. 100% local — no network lookup (a hard Paneflow constraint); a signed
+//! cost. 100% local - no network lookup (a hard Paneflow constraint); a signed
 //! remote manifest is out of scope unless model churn proves painful.
 //!
 //! Every figure here is an ESTIMATE. The badge always labels cost "~$X.XX
 //! (est.)" and carries [`PRICING_TABLE_VERSION`]; an unknown model shows tokens
-//! with NO cost (never a fabricated number — [`estimate_cost`] returns `None`).
+//! with NO cost (never a fabricated number - [`estimate_cost`] returns `None`).
 //!
 //! ## Updating the table
 //!
@@ -34,7 +34,7 @@ pub struct ModelPricing {
     pub cache_write: f64,
 }
 
-/// `(match_substr, pricing)` — ORDER MATTERS (specific → general). Public
+/// `(match_substr, pricing)` - ORDER MATTERS (specific → general). Public
 /// figures as of [`PRICING_TABLE_VERSION`]; all estimates.
 pub const PRICING_TABLE: &[(&str, ModelPricing)] = &[
     // ── Anthropic (Claude Code) ──────────────────────────────────────────
@@ -88,7 +88,7 @@ pub const PRICING_TABLE: &[(&str, ModelPricing)] = &[
 ];
 
 /// Look up pricing for a model id by case-insensitive substring against
-/// [`PRICING_TABLE`] (first match wins — rows are ordered specific → general).
+/// [`PRICING_TABLE`] (first match wins - rows are ordered specific → general).
 /// `None` for an unrecognized model.
 pub fn lookup(model: &str) -> Option<ModelPricing> {
     let lc = model.to_ascii_lowercase();

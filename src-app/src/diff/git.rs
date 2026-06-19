@@ -4,12 +4,12 @@
 //! All heavy git operations run via `std::process::Command` subprocesses
 //! (matching Zed's actual diff/worktree path and Paneflow's existing
 //! `GitDiffStats::from_cwd`), never a library. Every command sets
-//! `.current_dir()` to the worktree root — never the live shell cwd — and
+//! `.current_dir()` to the worktree root - never the live shell cwd - and
 //! returns a structured error instead of panicking on a non-zero exit or a
 //! missing ref. Callers run these off the GPUI main thread (US-007).
 //!
 //! Diff semantic: `merge-base(HEAD, <base>)..working-tree`, including
-//! uncommitted (tracked) changes — "what this branch adds since it diverged
+//! uncommitted (tracked) changes - "what this branch adds since it diverged
 //! from base". Base text comes from `git show <merge-base>:<path>`, new text
 //! from the working-tree file on disk.
 
@@ -242,9 +242,9 @@ pub fn default_base_ref(worktree_dir: &Path) -> Option<String> {
 /// must be re-diffed (US-016 warm-resume). It captures the three things a
 /// `merge-base..working-tree` diff depends on: the worktree `HEAD`, the resolved
 /// `base_ref` commit, and a hash of `git status` (staged + unstaged + untracked)
-/// — so a commit, a `git add`, a working-tree edit, an untracked file, or a
+/// so a commit, a `git add`, a working-tree edit, an untracked file, or a
 /// base-ref advance an AI agent made from a CLI pane while the diff was hidden is
-/// all detected. One subprocess set, no per-file blob reads — orders of magnitude
+/// all detected. One subprocess set, no per-file blob reads - orders of magnitude
 /// cheaper than the full pipeline it gates.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ColumnFingerprint {
@@ -257,7 +257,7 @@ pub struct ColumnFingerprint {
 /// git subprocesses, so callers invoke it off the GPUI main thread (inside the
 /// column build closure / a `smol::unblock`). A failed `rev-parse` yields an
 /// empty component and a failed `status` yields `0`, so an unborn/detached HEAD
-/// or a mid-rebase tree simply never matches a prior fingerprint — forcing a
+/// or a mid-rebase tree simply never matches a prior fingerprint - forcing a
 /// (correct) reload rather than showing stale rows.
 pub fn column_fingerprint(worktree_dir: &Path, base_ref: &str) -> ColumnFingerprint {
     use std::hash::Hasher as _;
@@ -332,7 +332,7 @@ pub fn list_base_ref_candidates(worktree_dir: &Path) -> Vec<String> {
 /// `dir` is the column's seed path, which may be a *subdirectory* of the
 /// worktree (the workspace was opened after a shell `cd`, or seeded from the
 /// shell cwd). git resolves the toplevel from any subdir, so this returns the
-/// worktree's own root — never the shared repo root (that would diff the main
+/// worktree's own root - never the shared repo root (that would diff the main
 /// checkout for every column). All file reads + git calls then key off this so
 /// `worktree_dir.join(repo_root_relative_path)` lands on the right file.
 /// Falls back to `dir` when git can't resolve (non-repo, error).
@@ -353,7 +353,7 @@ fn worktree_toplevel(dir: &Path) -> PathBuf {
 /// Untracked, non-ignored files in `dir` (`git ls-files --others
 /// --exclude-standard`). `git diff <merge_base>` only reports tracked changes,
 /// so brand-new files on a worktree branch (a new module, a new PRD) would be
-/// invisible without this — a correctness hole in the core "what this branch
+/// invisible without this - a correctness hole in the core "what this branch
 /// adds" semantic. NUL-delimited so paths with spaces/newlines are safe.
 fn list_untracked(dir: &Path) -> Vec<String> {
     match run_git(dir, &["ls-files", "--others", "--exclude-standard", "-z"]) {
@@ -407,7 +407,7 @@ fn load_working_text(worktree_dir: &Path, rel_path: &str) -> (String, bool) {
     // U-041: lstat first. A tracked/untracked symlink in a crafted repo could
     // point outside the worktree; `fs::read` would dereference it and pull an
     // out-of-tree file into `new_text`. Render the LINK TARGET instead of
-    // following it — this also matches git's own symlink-blob semantics (the
+    // following it - this also matches git's own symlink-blob semantics (the
     // base side via `git show` returns the target path, not the pointee's
     // content), so an unchanged symlink produces no spurious diff.
     match std::fs::symlink_metadata(&path) {
@@ -435,7 +435,7 @@ fn load_working_text(worktree_dir: &Path, rel_path: &str) -> (String, bool) {
 
 /// Parse `git diff --name-status -z <merge_base>` (NUL-delimited records).
 /// Each record is a status field followed by its path(s); renames/copies carry
-/// a source and a destination path — we key on the destination.
+/// a source and a destination path - we key on the destination.
 fn parse_name_status_z(stdout: &[u8]) -> Vec<(FileChange, String, Option<String>)> {
     let text = String::from_utf8_lossy(stdout);
     let mut fields = text.split('\u{0}').filter(|f| !f.is_empty());
@@ -469,7 +469,7 @@ fn parse_name_status_z(stdout: &[u8]) -> Vec<(FileChange, String, Option<String>
 /// Files above this size (either side, bytes) are shown as a stub instead of
 /// being loaded + diffed + highlighted. Without this a single huge generated
 /// file (minified bundle, vendored blob) loads megabytes into RAM, runs
-/// `imara-diff` + a full syntect pass over it, and — across N columns — OOMs the
+/// `imara-diff` + a full syntect pass over it, and - across N columns - OOMs the
 /// process. 512 KiB comfortably covers hand-written source.
 const MAX_FILE_BYTES: u64 = 512 * 1024;
 
@@ -478,7 +478,7 @@ const MAX_FILE_BYTES: u64 = 512 * 1024;
 /// stops and shows a truncation row.
 const MAX_FILE_COUNT: usize = 200;
 
-/// Lockfiles and other large, low-signal generated files — never worth a
+/// Lockfiles and other large, low-signal generated files - never worth a
 /// line-by-line diff and a prime OOM trigger (`Cargo.lock` alone is ~12k lines).
 const SKIP_FILENAMES: &[&str] = &[
     "Cargo.lock",
@@ -503,7 +503,7 @@ pub fn is_skipped_name(path: &str) -> bool {
 
 /// Working-tree size of `rel_path` exceeds [`MAX_FILE_BYTES`]. Fast pre-load
 /// guard for the common added/modified case; a metadata miss (deleted file)
-/// reads as not-too-large. The base side — and the metadata-miss case — is
+/// reads as not-too-large. The base side - and the metadata-miss case - is
 /// caught by the post-load length check in [`compute_worktree_diff`].
 fn is_too_large(worktree_dir: &Path, rel_path: &str) -> bool {
     std::fs::metadata(worktree_dir.join(rel_path))
@@ -534,7 +534,7 @@ fn stub_file(path: String, change: FileChange) -> FileDiff {
 pub fn compute_worktree_diff(worktree_dir: &Path, base_ref: &str) -> WorktreeDiff {
     // Resolve the worktree's own root once: the seed path may be a subdirectory
     // (shell `cd`), which would make `worktree_dir.join(rel_path)` miss every
-    // file. Everything below — merge-base, name-status, file reads — keys off
+    // file. Everything below - merge-base, name-status, file reads - keys off
     // this so the diff is correct regardless of the seed path's depth.
     let toplevel = worktree_toplevel(worktree_dir);
     let worktree_dir = toplevel.as_path();
@@ -558,12 +558,12 @@ pub fn compute_worktree_diff(worktree_dir: &Path, base_ref: &str) -> WorktreeDif
 }
 
 /// Git's well-known empty-tree object hash. Diffing against it (used when `HEAD`
-/// is unborn — a repo with no commits yet) shows every tracked file as a pure
+/// is unborn - a repo with no commits yet) shows every tracked file as a pure
 /// addition, so a first changeset still renders in the Agents dock.
 const EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /// Compute the diff of `worktree_dir` against `HEAD`: the working tree vs the
-/// last commit (staged + unstaged tracked changes) plus untracked files — the
+/// last commit (staged + unstaged tracked changes) plus untracked files - the
 /// "what did the agent just touch" semantic used by the Agents diff dock
 /// ([`crate::app::agents_diff`]). When `HEAD` is unborn, everything is diffed
 /// against the empty tree. Reuses [`compute_diff_against`], so the lockfile /
@@ -591,7 +591,7 @@ fn compute_diff_against(worktree_dir: &Path, base: &str) -> WorktreeDiff {
     let name_status = match run_git(
         worktree_dir,
         // `-M` enables rename detection so a moved file reads as one `R` record
-        // (old → new) instead of a delete + add pair — de-noises task-branch diffs.
+        // (old → new) instead of a delete + add pair - de-noises task-branch diffs.
         &["diff", "--name-status", "-M", "-z", "--no-color", base],
     ) {
         Ok(out) => out,
@@ -643,7 +643,7 @@ fn compute_diff_against(worktree_dir: &Path, base: &str) -> WorktreeDiff {
         // Post-load size guard. `is_too_large` only sees the working-tree side
         // via metadata, so a file that is huge at the merge-base but small or
         // deleted now (a bulk rewrite / deletion commit) would otherwise load
-        // its full base blob into a retained `FileDiff` — unbounded across the N
+        // its full base blob into a retained `FileDiff` - unbounded across the N
         // columns. Stub it instead, bounding retained RAM symmetrically.
         if base_text.len() as u64 > MAX_FILE_BYTES || new_text.len() as u64 > MAX_FILE_BYTES {
             log::debug!("git: skip (oversized post-load) {path}");

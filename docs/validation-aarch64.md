@@ -7,7 +7,7 @@ Referenced by US-020. Prerequisite context in
 go-decision) and the US-019 matrix in
 [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
-CI cannot exercise this path — GitHub's `ubuntu-22.04-arm` runner has no
+CI cannot exercise this path - GitHub's `ubuntu-22.04-arm` runner has no
 GPU, so `paneflow` (which initializes Vulkan at startup) crashes pre-main
 on a headless runner. The only way to confirm the aarch64 build actually
 renders is to run it on a real aarch64 machine with a display.
@@ -19,15 +19,15 @@ renders is to run it on a real aarch64 machine with a display.
 Run this runbook against every release candidate **before** the aarch64
 assets are attached to the public GitHub Release. The expected cadence is:
 
-1. Maintainer pushes `vX.Y.Z-rc.1` — the release workflow cuts a
+1. Maintainer pushes `vX.Y.Z-rc.1` - the release workflow cuts a
    **pre-release** (tag-name match `rc` sets `prerelease: true` in
    `release.yml`). Both arch artifact sets land on the pre-release page.
 2. Maintainer executes this runbook on at least one aarch64 machine.
-3. If every check in §4 passes, maintainer retags as `vX.Y.Z` — the
+3. If every check in §4 passes, maintainer retags as `vX.Y.Z` - the
    workflow cuts the final release. If any check fails, see §6.
 
 Do NOT skip steps because "nothing changed on aarch64 since last
-release" — GPUI commits bump frequently and silently shift Vulkan
+release" - GPUI commits bump frequently and silently shift Vulkan
 behaviour; every release is a fresh validation.
 
 ---
@@ -38,11 +38,11 @@ behaviour; every release is a fresh validation.
 |------|--------|--------|-----------|
 | **Primary** | Raspberry Pi 5 (8 GB) | Ubuntu 24.04 Desktop (arm64) | Real GPU (VideoCore VII), mainline Mesa, Wayland + X11 both supported, glibc 2.39. Highest-fidelity signal for "mainstream aarch64 user". |
 | Secondary | Apple Silicon laptop | Asahi Linux (Fedora 40 remix) | Catches Asahi-Mesa-specific bugs that a stock Mesa user never sees. Use when the primary device is unavailable or when the release notes will mention Asahi support. |
-| Tertiary | AWS Graviton EC2 (c7g.xlarge or larger) | Ubuntu 22.04 with a virtual framebuffer (Xvfb) | Last-resort, low-fidelity — no real GPU, so GPUI falls back to Vulkan's software renderer (`lavapipe`). Only use to prove the **binary loads** when no hardware is available. Not a substitute for primary/secondary. |
+| Tertiary | AWS Graviton EC2 (c7g.xlarge or larger) | Ubuntu 22.04 with a virtual framebuffer (Xvfb) | Last-resort, low-fidelity - no real GPU, so GPUI falls back to Vulkan's software renderer (`lavapipe`). Only use to prove the **binary loads** when no hardware is available. Not a substitute for primary/secondary. |
 
 **glibc floor:** 2.35. Release notes should flag the floor so users on
 older ARM distros (Ubuntu 20.04 aarch64, Debian 11 aarch64) aren't
-surprised. This matches the glibc floor on x86_64 — same GPUI pinned
+surprised. This matches the glibc floor on x86_64 - same GPUI pinned
 commit, same standard library surface.
 
 ---
@@ -57,7 +57,7 @@ mkdir -p ~/paneflow-validation && cd ~/paneflow-validation
 
 # Record the environment context for the release-notes artifact.
 # `uname -srvmpio` drops the hostname that plain `uname -a` would
-# include — `env.txt` is uploaded to the public release page, so
+# include - `env.txt` is uploaded to the public release page, so
 # we don't want a maintainer's `mylaptop.home.arpa` showing up in
 # there. Same idea for `glxinfo`: `-B` is the brief form that
 # avoids the `Device UUID` line some Mesa drivers emit (a stable
@@ -91,7 +91,7 @@ sha256sum --check "paneflow-${TAG}-aarch64.tar.gz.sha256"
 ```
 
 The `sha256sum --check` line must exit `0`. This verifies only the
-tar.gz — the release workflow does not emit a `.sha256` sidecar for
+tar.gz - the release workflow does not emit a `.sha256` sidecar for
 `.deb`, `.rpm`, or the AppImage. Per-format authenticity lives
 elsewhere: `.deb` and `.rpm` carry embedded GPG signatures (verify
 with `dpkg-sig --verify` and `rpm --checksig`, following the
@@ -102,18 +102,18 @@ and the AppImage's zsync metadata is validated by
 **Authenticity caveat** (US-020 H1): `sha256sum --check` above
 detects *integrity* failures (transit corruption, partial downloads)
 but NOT *authenticity* failures. The `.sha256` file is fetched from
-the same GitHub release page as the artifact — an attacker who
+the same GitHub release page as the artifact - an attacker who
 replaces the `.tar.gz` can trivially replace the `.sha256` to match.
 For a motivated-attacker threat model, cross-check the artifact
 hashes against the GitHub Actions workflow run log for the release
 tag (`gh run view <run-id> --log | grep -A2 'paneflow-.*aarch64.*sha256'`)
-— the log is a separate channel from the release page and a
+ -  the log is a separate channel from the release page and a
 compromise of one does not automatically compromise the other.
 
 If the mismatch persists after a re-download from the workflow log's
 cross-checked hashes, re-cut the release workflow.
 
-Install `asciinema` if you don't already have it — it's the recording
+Install `asciinema` if you don't already have it - it's the recording
 tool §5 uses for the evidence artifact.
 
 ```bash
@@ -181,7 +181,7 @@ chmod +x paneflow-${TAG}-aarch64.AppImage
 ./paneflow-${TAG}-aarch64.AppImage --version
 ```
 
-If FUSE 2 is missing (Ubuntu 24.04 default — `libfuse2` is NOT
+If FUSE 2 is missing (Ubuntu 24.04 default - `libfuse2` is NOT
 pre-installed on arm64 either), the runner exits with "dlopen():
 error loading libfuse.so.2". Verify the fallback path works:
 
@@ -189,7 +189,7 @@ error loading libfuse.so.2". Verify the fallback path works:
 ./paneflow-${TAG}-aarch64.AppImage --appimage-extract-and-run --version
 ```
 
-`paneflow` does NOT write to `/usr`, `/opt`, or `/etc` — the AppImage
+`paneflow` does NOT write to `/usr`, `/opt`, or `/etc` - the AppImage
 self-mounts under `/tmp/.mount_*` and is untraced on disk after exit.
 No uninstall step required.
 
@@ -198,7 +198,7 @@ No uninstall step required.
 ## 4. Graphical smoke actions
 
 After each of the four installs above, launch `paneflow` in a
-**graphical session** (NOT an SSH session — GPUI requires a real
+**graphical session** (NOT an SSH session - GPUI requires a real
 Wayland or X11 display). On the RPi 5 that's the Ubuntu desktop
 (Wayland by default on 24.04). On Asahi it's the KDE Plasma session.
 
@@ -206,7 +206,7 @@ Run every step in the checklist below while recording with `asciinema`.
 
 > **Heads-up:** `asciinema` records the **terminal** that launched
 > `paneflow`, not the GPUI window. The `.cast` is therefore only
-> useful as a stdout/stderr timeline — it proves `paneflow` started
+> useful as a stdout/stderr timeline - it proves `paneflow` started
 > cleanly but does NOT show the pane you're actually smoke-testing.
 > You also need a phone photo or a dedicated screen-capture tool
 > (OBS, `wf-recorder` on Wayland, `ffmpeg -f x11grab` on X11)
@@ -216,7 +216,7 @@ Run every step in the checklist below while recording with `asciinema`.
 asciinema rec aarch64-${TAG}-${format}-smoke.cast
 ```
 
-Smoke checklist — every item is a hard pass/fail:
+Smoke checklist - every item is a hard pass/fail:
 
 - [ ] **Launch:** `paneflow` opens a window within 2 s. No Vulkan
   validation errors in stderr. No immediate crash.
@@ -234,13 +234,13 @@ Smoke checklist — every item is a hard pass/fail:
   `Alt+Arrow`, type a distinct shell command (`date`, `ls`, `uname`).
   Each pane must receive keystrokes independently.
 - [ ] **Drag-to-resize:** grab the horizontal divider with the mouse,
-  drag it up and down. Panes resize smoothly. Release — layout
+  drag it up and down. Panes resize smoothly. Release - layout
   persists.
 - [ ] **Close pane:** `Ctrl+Shift+W` twice → back to a single pane.
   Layout collapses cleanly, no orphaned borders.
 - [ ] **Exit:** click the close button in the title bar. Window
   destroys. `paneflow` process terminates cleanly (check with
-  `pgrep paneflow` — should return nothing).
+  `pgrep paneflow` - should return nothing).
 
 Stop `asciinema` with `Ctrl+D`. The `.cast` file plus a screenshot
 (phone photo is fine) are the evidence artifacts for AC2.
@@ -255,7 +255,7 @@ Once all four formats pass §4 on the primary device, assemble the
 evidence bundle:
 
 1. One `asciinema` `.cast` per format (or a combined cast covering all
-   four — maintainer's call).
+   four - maintainer's call).
 2. Two to four screenshots of the window showing different smoke
    states (initial pane, 2-way split, 3-way split, resize in
    progress).
@@ -268,8 +268,8 @@ GitHub Release body to add a section:
 ### aarch64 validation (US-020)
 
 Validated on:
-- Raspberry Pi 5 (8 GB) — Ubuntu 24.04 Desktop, kernel 6.8, Mesa 24.2,
-  Wayland — 2026-MM-DD.
+- Raspberry Pi 5 (8 GB) - Ubuntu 24.04 Desktop, kernel 6.8, Mesa 24.2,
+  Wayland - 2026-MM-DD.
 
 Evidence attached: `aarch64-<tag>-*.cast`, `aarch64-screenshot-*.png`,
 `aarch64-env.txt`.
@@ -278,21 +278,21 @@ Formats passed: tar.gz, .deb, .rpm, AppImage.
 ```
 
 If Asahi Linux was also tested, add a second validation line. Clearly
-list ANY format that was NOT tested on a given device — users reading
+list ANY format that was NOT tested on a given device - users reading
 the release notes need to know whether, say, `.rpm` was exercised on
 Asahi or only Fedora.
 
 ---
 
-## 6. Unhappy path — validation failure (AC4)
+## 6. Unhappy path - validation failure (AC4)
 
-If **any** smoke check fails at runtime — even if `paneflow --version`
-succeeds — the aarch64 assets for that release are considered
+If **any** smoke check fails at runtime - even if `paneflow --version`
+succeeds - the aarch64 assets for that release are considered
 **unvalidated** and MUST NOT be attached to the public release.
 
 The release workflow already keeps an `-rc.N` or `-alpha.N` tag as a
 `prerelease: true` GitHub Release (see
-[`release.yml`](../.github/workflows/release.yml) — `prerelease: ${{
+[`release.yml`](../.github/workflows/release.yml) - `prerelease: ${{
 contains(github.ref_name, 'alpha') || contains(github.ref_name,
 'beta') || contains(github.ref_name, 'rc') }}`). The validation
 procedure in this runbook is designed to run against a pre-release
@@ -309,7 +309,7 @@ The x86_64 assets can ship as planned; the aarch64 set is withheld.
 TAG=v0.2.0-rc.1
 # `gh release delete-asset --yes` is irreversible. Print the asset
 # list for the resolved tag FIRST so you can visually confirm you
-# are pointed at the right release — a `TAG` typo here permanently
+# are pointed at the right release - a `TAG` typo here permanently
 # removes assets from a different release.
 gh release view "${TAG}" --json assets --jq '.assets[].name'
 for suffix in tar.gz tar.gz.sha256 deb rpm AppImage AppImage.zsync ; do
@@ -319,7 +319,7 @@ done
 gh release view "${TAG}" --json assets --jq '.assets[].name'
 ```
 
-Then proceed to cut the final `vX.Y.Z` tag with **x86_64 only** — the
+Then proceed to cut the final `vX.Y.Z` tag with **x86_64 only** - the
 maintainer must manually remove the aarch64 assets from that release
 as well (or re-run the workflow with a patched matrix that skips the
 aarch64 leg).
@@ -328,7 +328,7 @@ aarch64 leg).
 
 Use this when you want aarch64 users to still get the pre-release bits
 with a clear "this is under test" label but don't want to promote it
-to `latest`. Just don't retag — the pre-release stays as-is. Users who
+to `latest`. Just don't retag - the pre-release stays as-is. Users who
 click "latest" see the previous stable `vX.Y.Z`; users who navigate to
 the specific `-rc.N` page see the new artifacts with GitHub's
 "Pre-release" banner.
@@ -352,7 +352,7 @@ only, and hold until the bug is fixed and a new candidate tag is cut.
 If a smoke check fails, open a GitHub issue using the
 [`aarch64-bug-report.md`](../.github/ISSUE_TEMPLATE/aarch64-bug-report.md)
 template. The template prompts for distro, kernel, GPU, install
-format, and reproduction steps — everything needed to triage from a
+format, and reproduction steps - everything needed to triage from a
 different machine.
 
 Label the issue `aarch64` and (if it blocks the release) `release-blocker`.
@@ -380,5 +380,5 @@ release instead of a pre-release.
 One final check after publish: `gh release view vX.Y.Z --json assets
 --jq '.assets[].name'` must list both `aarch64` and `x86_64` asset
 sets. If either is missing, the release is incomplete and the
-post-merge assertion fails — investigate the workflow run before
+post-merge assertion fails - investigate the workflow run before
 announcing the release.

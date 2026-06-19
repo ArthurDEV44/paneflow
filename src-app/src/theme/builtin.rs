@@ -17,7 +17,7 @@ pub fn paneflow_light() -> TerminalTheme {
         ansi_background: h(0xffffff),
         cursor: h(0x4c6fff),
         selection: ha(0x4c6fff, 0.20),
-        // Placeholder — replaced with the APCA-validated value by
+        // Placeholder - replaced with the APCA-validated value by
         // `apply_surface_overrides()` / `recompute_selection_foreground()`.
         selection_foreground: gpui::Hsla::default(),
         scrollbar_thumb: ha(0x25262b, 0.28),
@@ -62,7 +62,7 @@ pub fn one_dark() -> TerminalTheme {
         ansi_background: h(0x282c34),
         cursor: h(0x528bff),
         selection: ha(0x528bff, 0.3),
-        // Placeholder — replaced with the APCA-validated value by
+        // Placeholder - replaced with the APCA-validated value by
         // `apply_surface_overrides()` / `recompute_selection_foreground()`.
         selection_foreground: gpui::Hsla::default(),
         scrollbar_thumb: ha(0xabb2bf, 0.4),
@@ -101,7 +101,7 @@ pub fn one_dark() -> TerminalTheme {
 ///
 /// Returns a finalized theme: `selection_foreground` is computed via APCA
 /// before return. Callers may further modify the theme (e.g. via
-/// `apply_surface_overrides`) — that path also re-runs the recomputation,
+/// `apply_surface_overrides`) - that path also re-runs the recomputation,
 /// so the invariant `apca_contrast(selection_foreground, selection) ≥ 45.0`
 /// holds at every observation point.
 pub fn theme_by_name(name: &str) -> Option<TerminalTheme> {

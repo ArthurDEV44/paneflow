@@ -46,7 +46,7 @@ impl DiffView {
     }
     /// Cross-column scroll sync, FILE-ANCHORED. Always sources from the explicit
     /// `scroll_driver` (the last column the pointer scrolled), never from a
-    /// follower — a short column whose offset got clamped to its own end never
+    /// follower - a short column whose offset got clamped to its own end never
     /// drags the others back, so the sync is drift-free across columns of
     /// differing height. Rather than copy the raw pixel offset (which drifts
     /// mid-file when the same file has different line counts across branches),
@@ -115,7 +115,7 @@ impl DiffView {
             ViewMode::Unified => (&col.disp_unified_offsets, &col.disp_anchors_unified),
             ViewMode::Split => (&col.disp_split_offsets, &col.disp_anchors_split),
         };
-        // Row whose vertical band [offsets[r], offsets[r+1]) contains `y` — the
+        // Row whose vertical band [offsets[r], offsets[r+1]) contains `y` - the
         // last offset that is still ≤ y (offsets is a len+1 prefix sum).
         let row = offsets.partition_point(|&o| o <= y).saturating_sub(1);
         // Most recent file header at or above that row (anchors sorted by row).

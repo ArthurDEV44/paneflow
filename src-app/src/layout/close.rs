@@ -57,7 +57,7 @@ impl LayoutTree {
                                 ratio: child.ratio,
                             });
                         } else {
-                            // Direct child leaf was removed — record its ratio
+                            // Direct child leaf was removed - record its ratio
                             removed_ratio = child.ratio.get();
                         }
                     } else {

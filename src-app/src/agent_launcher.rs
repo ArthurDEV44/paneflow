@@ -65,7 +65,7 @@ impl TerminalAgent {
         TerminalAgent::Openclaw,
     ];
 
-    /// Stable display rank — index in [`Self::ALL`]. Used by the sidebar to
+    /// Stable display rank - index in [`Self::ALL`]. Used by the sidebar to
     /// order multi-tool status rows deterministically instead of letting
     /// `HashMap` iteration order leak into the UI.
     pub fn display_rank(self) -> usize {
@@ -200,7 +200,7 @@ impl TerminalAgent {
     }
 
     /// EP-005 US-013: map a detected process basename back to its agent
-    /// (reverse of [`Self::binary`]). Exact match only — the per-pane scan
+    /// (reverse of [`Self::binary`]). Exact match only - the per-pane scan
     /// matches `/proc/<pid>/comm` verbatim, so a wrapper script or a
     /// suffixed binary never produces a pill.
     pub fn from_binary(name: &str) -> Option<TerminalAgent> {
@@ -235,9 +235,9 @@ impl TerminalAgent {
     /// Whether this launcher is shown in the tab bar / Agents-view picker.
     ///
     /// Tri-state on the `*_button_visible` config key:
-    /// - `Some(true)`  — user explicitly enabled it: always shown.
-    /// - `Some(false)` — user explicitly disabled it: always hidden.
-    /// - `None` (key absent, the default) — shown only if the agent's CLI
+    /// - `Some(true)`  - user explicitly enabled it: always shown.
+    /// - `Some(false)` - user explicitly disabled it: always hidden.
+    /// - `None` (key absent, the default) - shown only if the agent's CLI
     ///   binary is installed ([`Self::is_installed`]), so a fresh config
     ///   surfaces exactly the agents present on the machine. The user can
     ///   still force-show an uninstalled agent by toggling it on.
@@ -294,7 +294,7 @@ impl TerminalAgent {
     /// agent, too costly to repeat on the render thread each frame. The
     /// cache is filled lazily on first call (after `main.rs` patches `PATH`
     /// for GUI launches), so installing an agent while Paneflow runs needs a
-    /// restart to flip the default — the user can toggle it on immediately
+    /// restart to flip the default - the user can toggle it on immediately
     /// in Settings meanwhile.
     pub fn is_installed(self) -> bool {
         installed_binaries().contains(self.binary())
@@ -391,7 +391,7 @@ impl TerminalAgent {
     }
 
     /// [`Self::launch_command`] with a forced agent session id (Claude
-    /// only — see [`Self::command_with_session`]). The Agents-view PTY
+    /// only - see [`Self::command_with_session`]). The Agents-view PTY
     /// mount passes the thread's bound `session_id` here so the live thread
     /// maps 1:1 to its on-disk session file.
     pub fn launch_command_with_session(
@@ -448,7 +448,7 @@ mod tests {
     }
 
     // EP-005 US-013: `from_tag` is the session.json ingress whitelist for
-    // the persisted `agent` field — hostile or malformed values (oversized,
+    // the persisted `agent` field - hostile or malformed values (oversized,
     // control chars, near-misses) must all map to None so no pill renders.
     #[test]
     fn from_tag_rejects_hostile_session_values() {
@@ -498,7 +498,7 @@ mod tests {
     fn explicit_visibility_overrides_install_detection() {
         // `Some(true)`/`Some(false)` win over PATH detection, so the result
         // is deterministic on any machine (and never touches the filesystem
-        // here — the `unwrap_or_else` install probe is short-circuited).
+        // here - the `unwrap_or_else` install probe is short-circuited).
         let shown = PaneFlowConfig {
             gemini_button_visible: Some(true),
             ..Default::default()

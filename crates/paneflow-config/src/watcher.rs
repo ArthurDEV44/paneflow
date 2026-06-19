@@ -44,7 +44,7 @@ impl ConfigWatcher {
     // (Linux/macOS: `dirs::config_dir()`; Windows: `%APPDATA%`). A `None`
     // here means the user's environment is so broken (e.g., unset `HOME`
     // AND `USERPROFILE`) that starting the app is meaningless. `expect` is
-    // the right behavior — documented invariant per CLAUDE.md.
+    // the right behavior - documented invariant per CLAUDE.md.
     #[allow(clippy::expect_used)]
     pub fn new(callback: Arc<dyn Fn(PaneFlowConfig) + Send + Sync>) -> Self {
         let config_path =
@@ -55,7 +55,7 @@ impl ConfigWatcher {
         }
     }
 
-    /// Creates a `ConfigWatcher` targeting a specific path — useful for testing.
+    /// Creates a `ConfigWatcher` targeting a specific path - useful for testing.
     #[cfg(test)]
     fn new_with_path(path: PathBuf, callback: Arc<dyn Fn(PaneFlowConfig) + Send + Sync>) -> Self {
         Self {
@@ -78,7 +78,7 @@ impl ConfigWatcher {
         // Invariant: `self.config_path` is always a file path built from
         // `config_path()` (e.g., `/home/u/.config/paneflow/paneflow.json`),
         // so `.parent()` is guaranteed to be `Some`. `expect` is correct
-        // here — documented invariant per CLAUDE.md.
+        // here - documented invariant per CLAUDE.md.
         #[allow(clippy::expect_used)]
         let watch_dir = self
             .config_path
@@ -86,7 +86,7 @@ impl ConfigWatcher {
             .expect("config path has no parent directory")
             .to_path_buf();
 
-        // notify can't watch a directory that doesn't exist yet — create it
+        // notify can't watch a directory that doesn't exist yet - create it
         // on first run so hot-reload works even before the user writes a config.
         if !watch_dir.exists() {
             std::fs::create_dir_all(&watch_dir).map_err(notify::Error::io)?;
@@ -140,7 +140,7 @@ fn is_relevant_event(kind: &EventKind) -> bool {
 /// `/var/folders/...` to `/private/var/folders/...`, Windows sometimes uses
 /// UNC `\\?\C:\...` prefixes) so a full-path comparison is inherently
 /// fragile. Because the watcher is installed `NonRecursive` on the parent
-/// directory, every event we receive already belongs to that directory —
+/// directory, every event we receive already belongs to that directory -
 /// basename equality is sufficient and portable.
 fn event_targets_config(event: &Event, config_path: &Path) -> bool {
     let target_name = config_path.file_name();
@@ -149,7 +149,7 @@ fn event_targets_config(event: &Event, config_path: &Path) -> bool {
 
 /// The main event-processing loop running on the background thread.
 ///
-/// `_watcher` is kept alive by moving it into this scope — dropping it would
+/// `_watcher` is kept alive by moving it into this scope - dropping it would
 /// stop the OS-level file watch.
 fn event_loop(
     rx: mpsc::Receiver<notify::Result<Event>>,
@@ -171,7 +171,7 @@ fn event_loop(
         let event_result = if let Some(deadline) = pending_reload {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                // Debounce window expired — do the reload.
+                // Debounce window expired - do the reload.
                 pending_reload = None;
                 first_event_at = None;
                 attempt_reload(config_path, &mut current_config, callback);
@@ -179,10 +179,10 @@ fn event_loop(
             }
             rx.recv_timeout(remaining)
         } else {
-            // No pending reload — block for the next event.
+            // No pending reload - block for the next event.
             match rx.recv() {
                 Ok(ev) => Ok(ev),
-                Err(_) => break, // Channel closed — watcher was dropped.
+                Err(_) => break, // Channel closed - watcher was dropped.
             }
         };
 
@@ -222,7 +222,7 @@ fn attempt_reload(
     callback: &Arc<dyn Fn(PaneFlowConfig) + Send + Sync>,
 ) {
     // US-029: read through the shared helper so the oversize guard (cheap stat
-    // before allocating) applies on this hot path too — it previously read
+    // before allocating) applies on this hot path too - it previously read
     // with no cap, the only path a hostile/runaway file could freeze.
     let contents = match read_config_string(config_path) {
         ConfigRead::Contents(c) => c,
@@ -239,7 +239,7 @@ fn attempt_reload(
 
     // US-029: parse exactly once. A syntax error keeps the previous config
     // (never broadcast defaults on a malformed save); the old code parsed the
-    // JSON twice — a syntax-guard `from_str` plus a second parse inside
+    // JSON twice - a syntax-guard `from_str` plus a second parse inside
     // `parse_and_validate_with_path`.
     let new_config = match try_parse_and_validate(&contents) {
         Ok(c) => c,

@@ -1,6 +1,6 @@
 //! Resolve the PaneFlow runtime directory with a macOS-aware fallback chain,
 //! and enforce the `sockaddr_un.sun_path` length limit (macOS: 104 bytes,
-//! Linux: 108 — we use the smaller ceiling so a path built here works on both
+//! Linux: 108 - we use the smaller ceiling so a path built here works on both
 //! platforms without a second guard at bind time).
 //!
 //! Public helpers:
@@ -8,16 +8,16 @@
 //! - `terminal::paneflow_socket_path` propagates the same path as the
 //!   `PANEFLOW_SOCKET_PATH` env var passed into each PTY child shell.
 //!
-//! Keeping the chain in one place prevents the two sites from drifting —
+//! Keeping the chain in one place prevents the two sites from drifting -
 //! a difference in one branch would silently break IPC on macOS
 //! without any visible error.
 //!
 //! US-013 removed the former third consumer (the AI-hook wrapper-scripts
-//! bin-dir helper) along with its call sites — the extraction targets
+//! bin-dir helper) along with its call sites - the extraction targets
 //! never existed in the embed set, so the helper and its PATH-injection
 //! caller were dead code.
 //!
-//! US-009 (prd-windows-port.md) — on Windows, `socket_path` returns the named
+//! US-009 (prd-windows-port.md) - on Windows, `socket_path` returns the named
 //! pipe path `\\.\pipe\paneflow` instead. The XDG/TMPDIR chain and sun_path
 //! guard remain Unix-only.
 
@@ -61,10 +61,10 @@ const SOCKET_FILE: &str = if cfg!(debug_assertions) {
 };
 
 /// Resolve the PaneFlow runtime directory. Fallback chain:
-/// 1. `$XDG_RUNTIME_DIR` — explicit Linux XDG (usually `/run/user/<uid>`).
-/// 2. `dirs::runtime_dir()` — same on Linux, `None` on macOS.
-/// 3. `$TMPDIR` — populated on macOS (usually `/var/folders/xx/.../T/`).
-/// 4. `dirs::cache_dir().join("run")` — last-resort cross-platform fallback.
+/// 1. `$XDG_RUNTIME_DIR` - explicit Linux XDG (usually `/run/user/<uid>`).
+/// 2. `dirs::runtime_dir()` - same on Linux, `None` on macOS.
+/// 3. `$TMPDIR` - populated on macOS (usually `/var/folders/xx/.../T/`).
+/// 4. `dirs::cache_dir().join("run")` - last-resort cross-platform fallback.
 ///
 /// Returns `None` only if every layer fails, which in practice means the
 /// caller runs on an environment with neither XDG nor TMPDIR nor a cache
@@ -94,7 +94,7 @@ fn runtime_dir() -> Option<PathBuf> {
 /// can see why IPC is disabled.
 ///
 /// Windows (US-009): the named-pipe path `\\.\pipe\paneflow`, unconditionally.
-/// Named pipes live in a global kernel namespace — there is no runtime dir
+/// Named pipes live in a global kernel namespace - there is no runtime dir
 /// to resolve, no sun_path limit to enforce, and no XDG fallback chain.
 #[cfg(unix)]
 pub(crate) fn socket_path() -> Option<PathBuf> {
@@ -113,7 +113,7 @@ pub(crate) fn socket_path() -> Option<PathBuf> {
 
 /// Prepend the common per-user `bin/` directories to the process `PATH`
 /// so PATH-based lookups (notably `which::which` in `paneflow_acp::discovery`)
-/// see binaries installed under the user's home — `~/.bun/bin`,
+/// see binaries installed under the user's home - `~/.bun/bin`,
 /// `~/.cargo/bin`, `~/.local/bin`, plus `/opt/homebrew/bin` on macOS.
 ///
 /// Why: when Paneflow is launched from a `.desktop` file, Finder, or the
@@ -125,7 +125,7 @@ pub(crate) fn socket_path() -> Option<PathBuf> {
 /// patch their own PATH at startup for the same reason.
 ///
 /// Dirs are prepended (not appended), so user installs always win over any
-/// system-shadowed name. Existing entries in PATH are skipped — no
+/// system-shadowed name. Existing entries in PATH are skipped - no
 /// duplicates. Idempotent: safe to call multiple times.
 ///
 /// Safety: mutates a process-global env var. Must be called from `main`
@@ -218,7 +218,7 @@ pub fn augment_path_for_gui_launch() {
 ///
 /// - Linux: `$XDG_DATA_HOME/paneflow` (typically `~/.local/share/paneflow`)
 /// - macOS: `~/Library/Application Support/paneflow`
-/// - Windows: `%LOCALAPPDATA%\paneflow` — **non-roaming** on purpose, so a
+/// - Windows: `%LOCALAPPDATA%\paneflow` - **non-roaming** on purpose, so a
 ///   roamed profile does not carry the per-install telemetry_id to another
 ///   machine.
 ///
@@ -242,9 +242,9 @@ pub fn data_dir() -> Option<PathBuf> {
 /// Stable, **non-versioned** absolute path of the embedded `paneflow-mcp`
 /// bridge binary (EP-001 US-003).
 ///
-/// Unlike the shim / ai-hook helpers — which live under
+/// Unlike the shim / ai-hook helpers - which live under
 /// `cache_dir()/paneflow/bin/<VERSION>/` and are re-resolved by Paneflow on
-/// every launch — the bridge path is written into **external, persistent
+/// every launch - the bridge path is written into **external, persistent
 /// agent configs** (`~/.claude/settings.json`, `~/.codex/config.toml`, …) by
 /// `paneflow mcp install`. A version-pinned path would go stale on the next
 /// Paneflow update, and `cache_dir()` can be purged by the OS. So the bridge
@@ -275,7 +275,7 @@ pub fn bridge_binary_path() -> Option<PathBuf> {
 /// (EP-004 US-016, prd-cli-agent-orchestration). Same rationale as
 /// [`bridge_binary_path`]: `paneflow hooks setup` writes this path into
 /// **external, persistent agent configs** (`~/.claude/settings.json`, …), so it
-/// must survive Paneflow updates — unlike the version-pinned shim/ai-hook copy
+/// must survive Paneflow updates - unlike the version-pinned shim/ai-hook copy
 /// under `cache_dir()/paneflow/bin/<VERSION>/` that the shim itself resolves at
 /// launch. Lives alongside the bridge under `data_dir()/paneflow/bin/`:
 ///
@@ -298,12 +298,12 @@ pub fn ai_hook_binary_path() -> Option<PathBuf> {
 fn check_sun_path_fits(path: &std::path::Path) -> bool {
     let bytes = path.as_os_str().len();
     // `MAX_SOCKET_PATH_BYTES` is `sizeof(sun_path)`, and `bind()` needs room for
-    // the trailing NUL inside that array — so a path of *exactly* the array size
+    // the trailing NUL inside that array - so a path of *exactly* the array size
     // does not fit. Reject `>=`, not `>` (the usable maximum is the array size
     // minus one).
     if bytes >= MAX_SOCKET_PATH_BYTES {
         log::warn!(
-            "paneflow: computed IPC socket path does not fit sun_path ({} >= {} bytes, no room for the NUL terminator): {} — IPC will be disabled. Set $XDG_RUNTIME_DIR (Linux) or shorten $TMPDIR (macOS) to enable it.",
+            "paneflow: computed IPC socket path does not fit sun_path ({} >= {} bytes, no room for the NUL terminator): {} - IPC will be disabled. Set $XDG_RUNTIME_DIR (Linux) or shorten $TMPDIR (macOS) to enable it.",
             bytes,
             MAX_SOCKET_PATH_BYTES,
             path.display()
@@ -314,7 +314,7 @@ fn check_sun_path_fits(path: &std::path::Path) -> bool {
     }
 }
 
-// US-009 — these tests assert Unix socket path composition and sun_path
+// US-009 - these tests assert Unix socket path composition and sun_path
 // length limits; Windows `socket_path()` always returns `\\.\pipe\paneflow`
 // regardless of env vars, so the assertions here are structurally Unix-only.
 #[cfg(all(test, unix))]
@@ -391,7 +391,7 @@ mod tests {
         let p = socket_path();
         if let Some(p) = p {
             // On Linux, dirs::runtime_dir() may still return Some before we
-            // reach the TMPDIR branch — accept either but prove the path is
+            // reach the TMPDIR branch - accept either but prove the path is
             // well-formed.
             assert!(p.ends_with(format!("{APP_SUBDIR}/{SOCKET_FILE}")));
         }

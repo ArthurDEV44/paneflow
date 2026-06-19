@@ -26,7 +26,7 @@ impl PaneFlowApp {
     /// room for pills. Same states, labels, icons, and dismiss rules as the
     /// title-bar pill (`title_bar.rs`); same mouse-DOWN dispatch (Wayland
     /// focus-stealing prevention silently drops the first on_click after a
-    /// cold start — see the title-bar pill comment for the full story).
+    /// cold start - see the title-bar pill comment for the full story).
     /// `None` when no update is available.
     pub(crate) fn render_sidebar_update_banner(
         &self,
@@ -128,7 +128,7 @@ impl PaneFlowApp {
                     .hover(move |s| s.text_color(text))
                     // stop_propagation on BOTH mouse-down and click so the
                     // press never reaches the banner's StartSelfUpdate
-                    // dispatch — hitting × must not start the update it
+                    // dispatch - hitting × must not start the update it
                     // just dismissed.
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(|_, window, cx| {
@@ -159,7 +159,7 @@ impl PaneFlowApp {
         Some(banner.into_any_element())
     }
 
-    /// "IPC offline" notice at the bottom of the sidebar — the cockpit home
+    /// "IPC offline" notice at the bottom of the sidebar - the cockpit home
     /// of the title-bar IPC pill (same rail-confinement story as the update
     /// banner). Purely informational, like the original pill: no click
     /// handler. `None` while the IPC server is up.
@@ -383,7 +383,7 @@ impl PaneFlowApp {
         // Interface picker, two states sharing the footer row.
         //   Closed: the Settings trigger (flex_1) sits left of the mode trigger.
         //   Open:   the three labeled mode buttons tile the WHOLE row as a
-        //           segmented control on the sidebar's solid background — the
+        //           segmented control on the sidebar's solid background - the
         //           mode trigger hides so "Review" / "Agents" never clip, and
         //           every segment stays legible (the old upward popover floated
         //           them over the translucent Diff content, where idle segments

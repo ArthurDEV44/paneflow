@@ -2,7 +2,7 @@
 //!
 //! Replaces N independent `smol::Timer::after(530ms)` loops (one per
 //! `TerminalView`) with a single app-scoped tick that every visible pane
-//! observes. All cursors blink in phase as a result — the polish goal of
+//! observes. All cursors blink in phase as a result - the polish goal of
 //! the story.
 //!
 //! ## Architecture
@@ -17,7 +17,7 @@
 //!   `cursor_blinking` / `exited` short-circuits).
 //!
 //! Using a GPUI global keeps the constructor signatures of `TerminalView`
-//! unchanged across all 18 call sites — adding a parameter would have
+//! unchanged across all 18 call sites - adding a parameter would have
 //! cascaded into `Pane::new`, `restore_workspaces`, every `workspace_ops`
 //! method, etc., for a feature that is conceptually a single app-wide
 //! singleton.
@@ -56,7 +56,7 @@ impl Global for BlinkPhaseGlobal {}
 // `CURSOR_BLINK_INTERVAL = 530 ms` is a deliberate UX value matching the
 // pre-US-006 per-terminal `CURSOR_BLINK_INTERVAL_MS`. Any change should be
 // reviewed as a UX decision, not an accidental refactor. (No unit test
-// here — asserting `CONST == literal` against the same module's literal
+// here - asserting `CONST == literal` against the same module's literal
 // would be a tautology.)
 
 #[cfg(test)]

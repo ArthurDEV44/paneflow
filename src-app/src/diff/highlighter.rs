@@ -4,18 +4,18 @@
 //! coverage + the Markdown inline pass added by
 //! `prd-diff-syntax-palette-2026-Q3.md` (EP-002).
 //!
-//! The same engine Zed uses. Unlike the old syntect pass (0.3–2.8 s/file → the
+//! The same engine Zed uses. Unlike the old syntect pass (0.3-2.8 s/file → the
 //! reason highlighting shipped gated), a tree-sitter parse is ms-scale, so we
 //! highlight the whole side once at build time (off the GPUI thread, inside
-//! `view.rs`'s `smol::unblock`) and bucket the captures into per-line runs —
+//! `view.rs`'s `smol::unblock`) and bucket the captures into per-line runs -
 //! no lazy-viewport machinery needed. Unknown extensions / parse failures
 //! return empty runs (→ monochrome, graceful).
 //!
 //! Grammars bridge through `tree-sitter-language` 0.1 (`LANGUAGE: LanguageFn`);
 //! core `tree-sitter` 0.26 is already a transitive workspace dep via the Zed
-//! fork. Markdown runs TWO passes over the same text — the block grammar
+//! fork. Markdown runs TWO passes over the same text - the block grammar
 //! (`HIGHLIGHT_QUERY_BLOCK`: headings / fences / list markers) and the inline
-//! grammar (`HIGHLIGHT_QUERY_INLINE`: emphasis / links / inline code) — merged
+//! grammar (`HIGHLIGHT_QUERY_INLINE`: emphasis / links / inline code) - merged
 //! by `resolve_runs` first-wins dedup so emphasis no longer renders grey.
 
 use std::ops::Range;
@@ -142,7 +142,7 @@ fn grammar_for_ext(ext: &str) -> Option<&'static Grammar> {
     }
 }
 
-/// The Markdown *inline* grammar (US-004) — a second pass over the same text
+/// The Markdown *inline* grammar (US-004) - a second pass over the same text
 /// that colors emphasis / links / inline code the block grammar leaves grey.
 /// Interned once; `None` if its query fails to compile (→ block-only fallback,
 /// still graceful).

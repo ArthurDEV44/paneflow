@@ -2,7 +2,7 @@
 //!
 //! Every bound that protects an allocation, a parse, or a spawn from untrusted
 //! or hand-edited input is gathered here so a read cap and its matching write
-//! cap stay in sync — the "validate on both directions" invariant can't
+//! cap stay in sync - the "validate on both directions" invariant can't
 //! silently rot when the two numbers live a screen apart in different files.
 //!
 //! Three caps are owned by the module/crate that defines their domain and are
@@ -10,13 +10,13 @@
 //! boundary and moving a `pub(crate)` const would only churn its many import
 //! sites for no behavioral gain:
 //!
-//! - **`MAX_PANES`** (32) — [`crate::layout::MAX_PANES`]. Live UI create cap
+//! - **`MAX_PANES`** (32) - [`crate::layout::MAX_PANES`]. Live UI create cap
 //!   (split / drop-to-split / IPC `surface.split` / `workspace.create`) ↔ read
 //!   cap in [`paneflow_config::loader::validate_layout`] (US-011) and at session
 //!   restore (US-009).
-//! - **`MAX_WORKSPACES`** (20) — [`crate::workspace::MAX_WORKSPACES`]. Live
+//! - **`MAX_WORKSPACES`** (20) - [`crate::workspace::MAX_WORKSPACES`]. Live
 //!   `workspace.create` cap ↔ `restore_workspaces` cap (US-009).
-//! - **`MAX_CONFIG_SIZE_BYTES`** (1 MiB) — `paneflow_config::loader`. Read cap
+//! - **`MAX_CONFIG_SIZE_BYTES`** (1 MiB) - `paneflow_config::loader`. Read cap
 //!   on `paneflow.json`; the app's own config writer never approaches it.
 
 /// Per-line read cap on untrusted agent-written session JSONL
@@ -45,7 +45,7 @@ pub(crate) const MAX_REQUEST_LEN: u64 = 256 * 1024;
 
 /// Read cap on `session.json` (U-008/U-016). Sized from the write side:
 /// [`MAX_CHARS`] per pane × `MAX_PANES` × `MAX_WORKSPACES` is a few hundred MB
-/// worst-case, but a realistic maxed session is a few MB — 64 MiB sits far
+/// worst-case, but a realistic maxed session is a few MB - 64 MiB sits far
 /// above any legitimate session while bounding a multi-hundred-MB tampered file
 /// before it is read whole into RAM. Mirrors `MAX_CONFIG_SIZE_BYTES` for
 /// `paneflow.json`, which previously had no session-side counterpart.

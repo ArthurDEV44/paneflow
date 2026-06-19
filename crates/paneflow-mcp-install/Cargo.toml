@@ -9,7 +9,7 @@ description = "GPU-free install engine for the Paneflow MCP bridge: per-agent de
 # `preserve_order` keeps an agent config's existing key order on merge
 # (IndexMap, not the default sorted BTreeMap), so `paneflow mcp install`
 # appends the `paneflow` entry without rewriting the user's whole file
-# alphabetically — minimal-diff writes into ~/.claude.json etc. Cargo
+# alphabetically - minimal-diff writes into ~/.claude.json etc. Cargo
 # feature unification propagates this to paneflow-app's serde_json too
 # (harmless: JSON object key order is not semantically meaningful).
 serde_json = { workspace = true, features = ["preserve_order"] }

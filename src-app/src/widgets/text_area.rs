@@ -133,7 +133,7 @@ pub fn register_keybindings(cx: &mut App) {
         // EP-001 (cli-cockpit US-001): the Composer's explicit
         // deliver-then-submit gesture. `secondary` resolves to Cmd on macOS
         // and Ctrl elsewhere. Consumers that install no
-        // `on_submit_immediate` callback (inline renames) are unaffected —
+        // `on_submit_immediate` callback (inline renames) are unaffected -
         // the action no-ops for them.
         KeyBinding::new(
             "secondary-enter",
@@ -190,7 +190,7 @@ type ChangeFn = Rc<RefCell<dyn FnMut(&str, usize, &mut Context<TextArea>)>>;
 type EscapeFn = Rc<RefCell<dyn FnMut(&mut Window, &mut App)>>;
 
 /// US-106: callback fired on Ctrl+Shift+Enter (Cmd+Shift+Enter on
-/// macOS). Same shape as [`SubmitFn`] — the Composer routes this to
+/// macOS). Same shape as [`SubmitFn`] - the Composer routes this to
 /// `send_prompt_immediate`, which interrupts the current turn before
 /// dispatching the new prompt.
 type SubmitImmediateFn = Rc<RefCell<dyn FnMut(String, &mut Window, &mut App)>>;
@@ -241,7 +241,7 @@ pub struct TextArea {
     on_submit_immediate: Option<SubmitImmediateFn>,
     /// EP-002 (Launch Pad): when `true`, Enter fires `on_submit` even on an
     /// empty buffer (optional field in a form whose Enter confirms the whole
-    /// form). Default `false` — every other consumer keeps the empty no-op.
+    /// form). Default `false` - every other consumer keeps the empty no-op.
     submit_on_empty: bool,
     /// Inline chip decorations (US-108a). Rendered as paint-pass
     /// overlays in the `TextAreaContent` element; the underlying
@@ -326,7 +326,7 @@ impl TextArea {
     }
 
     /// Extend selection from the current `drag_anchor` (or, if no
-    /// anchor is set, the active cursor end — which is then promoted
+    /// anchor is set, the active cursor end - which is then promoted
     /// to the persistent anchor for any subsequent drag) to `offset`.
     /// Used by both shift+click and drag.
     pub(crate) fn extend_selection_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -382,7 +382,7 @@ impl TextArea {
     /// Returns the click count for `offset`: 1 for a fresh click,
     /// 2 if it lands close enough in time + position to the last
     /// click, 3 if there was already a recent double-click. Caps at
-    /// 3 — further clicks roll back to single.
+    /// 3 - further clicks roll back to single.
     pub(crate) fn register_click(&mut self, offset: usize) -> u8 {
         let now = Instant::now();
         let count = match self.last_click {
@@ -498,7 +498,7 @@ impl TextArea {
 
     /// Select the full content. Used by callers (inline-rename flows) that
     /// open a TextArea pre-populated with a value the user is expected to
-    /// replace — selecting it up front avoids a Ctrl+A round-trip.
+    /// replace - selecting it up front avoids a Ctrl+A round-trip.
     pub fn select_all_text(&mut self, cx: &mut Context<Self>) {
         self.selected_range = 0..self.content.len();
         self.selection_reversed = false;
@@ -782,7 +782,7 @@ impl TextArea {
 
     fn submit(&mut self, _: &TaSubmit, w: &mut Window, cx: &mut Context<Self>) {
         // PRD AC #2: Enter sends. AC #9 (unhappy path): empty submit is a
-        // no-op — unless the consumer opted into empty submits (EP-002
+        // no-op - unless the consumer opted into empty submits (EP-002
         // Launch Pad: the prompt is OPTIONAL, so Enter in the empty field
         // must still confirm the form instead of being swallowed here).
         if !self.submit_on_empty && self.content.trim().is_empty() {
@@ -860,7 +860,7 @@ impl Render for TextArea {
             text_color: ui.text,
             muted_color: ui.muted,
             // Match the markdown selection background (markdown_style.rs:70)
-            // — accent at 30% alpha keeps the glyphs readable beneath
+            // - accent at 30% alpha keeps the glyphs readable beneath
             // the selection rect.
             selection_color: ui.accent.alpha(0.3),
             cursor_color: ui.accent,
@@ -990,7 +990,7 @@ struct ShapedLineInfo {
     /// to find which logical line a click landed on when content
     /// soft-wraps across multiple visual rows.
     visual_height: Pixels,
-    /// The wrapped, shaped line — owns the glyph layout + wrap
+    /// The wrapped, shaped line - owns the glyph layout + wrap
     /// boundaries and exposes `position_for_index` /
     /// `closest_index_for_position` for cursor placement and
     /// hit-testing across wrap boundaries.
@@ -1119,7 +1119,7 @@ impl Element for TextAreaContent {
                 .shape_text(text, self.font_size, &runs, wrap_width, None)
                 .unwrap_or_default();
             // `shape_text` may return multiple `WrappedLine`s when the
-            // input contains newlines — we already split on `\n`, so
+            // input contains newlines - we already split on `\n`, so
             // each segment shapes into exactly one `WrappedLine`. Take
             // it; skip empty / failed segments silently.
             if let Some(wrapped) = wrapped_lines.drain(..).next() {
@@ -1166,7 +1166,7 @@ impl Element for TextAreaContent {
     ) {
         let content_empty = self.content.is_empty();
 
-        // 1. Selection highlight — paint first so the glyphs draw on
+        // 1. Selection highlight - paint first so the glyphs draw on
         // top. Each logical line may span multiple visual rows after
         // wrapping; `paint_wrapped_selection` handles single-row and
         // multi-row cases.
@@ -1190,7 +1190,7 @@ impl Element for TextAreaContent {
             }
         }
 
-        // 2. Glyphs — placeholder for the empty state, otherwise the
+        // 2. Glyphs - placeholder for the empty state, otherwise the
         // wrapped lines we built in `prepaint`.
         if content_empty {
             let run = TextRun {
@@ -1289,7 +1289,7 @@ impl Element for TextAreaContent {
                 let chip_bounds = Bounds::new(point(chip_x, chip_y), size(chip_w, chip_h));
                 // US-004 (visual-parity): "selected" state when the
                 // cursor sits immediately after the chip's last byte
-                // — mirrors Zed's `selected_style(ButtonStyle::Tinted
+                // - mirrors Zed's `selected_style(ButtonStyle::Tinted
                 // (TintColor::Accent))` after a fresh mention insert.
                 // Moving the cursor away returns the chip to the
                 // Outlined default styling.
@@ -1415,7 +1415,7 @@ impl Element for TextAreaContent {
 
         // Mouse move while dragging: extend selection. No hitbox
         // check so drags past the textarea bounds still grow the
-        // selection — `hit_test` clamps to the nearest line / edge.
+        // selection - `hit_test` clamps to the nearest line / edge.
         window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _w, cx| {
             if phase != DispatchPhase::Bubble {
                 return;

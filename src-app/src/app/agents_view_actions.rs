@@ -74,7 +74,7 @@ impl PaneFlowApp {
     ///
     /// US-004 (prd-agents-ui-codex-redesign-2026-Q3.md): the rail's "Skills"
     /// entry point was removed (Codex has no such rail item). The skills
-    /// page renderer and state stay intact — this entry point is kept as
+    /// page renderer and state stay intact - this entry point is kept as
     /// managed dead code so re-surfacing Skills (e.g. from the bottom
     /// Settings popover) is a one-line rewire, not a rebuild.
     #[allow(dead_code)]
@@ -88,7 +88,7 @@ impl PaneFlowApp {
 
     /// Mark a skill name as "just copied" so its card label flips to
     /// "Copied" for 2 s. A scheduled task clears the slot iff it
-    /// still holds the same name — back-to-back copies of different
+    /// still holds the same name - back-to-back copies of different
     /// skills don't cancel each other's feedback.
     pub(crate) fn mark_skill_copied(&mut self, name: String, cx: &mut Context<Self>) {
         self.agents_view.agents_skills_copied = Some(name.clone());
@@ -149,7 +149,7 @@ impl PaneFlowApp {
     pub(crate) fn render_agents_main(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let body: gpui::AnyElement = self.render_agents_main_body(cx);
         // The main area stacks vertically: the agent surface (terminal/picker)
-        // fills the space, and the Codex-style bottom dock — when open — takes a
+        // fills the space, and the Codex-style bottom dock - when open - takes a
         // resizable, full-width slice below it.
         let mut root = div()
             .size_full()
@@ -291,7 +291,7 @@ impl PaneFlowApp {
         let agents = TerminalAgent::visible(&config);
 
         // Codex-style hover: a whisper darken of the filled `ui.subtle` tile,
-        // mirroring the settings `select_trigger` — no border, no accent ring.
+        // mirroring the settings `select_trigger` - no border, no accent ring.
         let hover_bg = gpui::Hsla {
             l: (ui.subtle.l - 0.04).max(0.0),
             ..ui.subtle
@@ -454,7 +454,7 @@ impl PaneFlowApp {
     /// The currently selected center target, validated against the live
     /// `projects` / `chats` vectors (US-003). Returns `None` when nothing is
     /// selected (picker/home) OR the stored target points past the end of
-    /// its source (e.g. its row was just removed) — both collapse to the
+    /// its source (e.g. its row was just removed) - both collapse to the
     /// picker rather than rendering a stale row.
     pub(crate) fn current_thread_view_target(&self) -> Option<crate::project::AgentsTarget> {
         use crate::project::AgentsTarget;
@@ -972,7 +972,7 @@ impl PaneFlowApp {
                 (Some("Agents".to_string()), None, false)
             }
             None => {
-                // Picker/home state — neutral label (AC4): the new-chat intent,
+                // Picker/home state - neutral label (AC4): the new-chat intent,
                 // else the active project name, else a plain "Agents".
                 let neutral =
                     if self.agents_picker_context == crate::project::AgentsPickerContext::NewChat {
@@ -1071,7 +1071,7 @@ impl PaneFlowApp {
                 return;
             }
         }
-        // US-003: a chat is a Thread too — its PTY emits OSC titles just
+        // US-003: a chat is a Thread too - its PTY emits OSC titles just
         // like a project thread, so the same label-sync applies to the
         // free `chats` list.
         if let Some(thread) = self.chats.iter_mut().find(|t| t.id == thread_id) {
@@ -1085,7 +1085,7 @@ impl PaneFlowApp {
     }
 
     /// Adopt the live agent session's LLM `ai-title` as the thread's sidebar
-    /// label at turn end — the same summary `/resume` surfaces. Reads the
+    /// label at turn end - the same summary `/resume` surfaces. Reads the
     /// on-disk session store off the main thread, picks the bound session
     /// when the thread forced a `--session-id` (Claude, exact) or the newest
     /// session for the cwd otherwise (Codex/OpenCode heuristic), then routes
@@ -1105,7 +1105,7 @@ impl PaneFlowApp {
         cx.spawn(async move |this, cx| {
             let sessions = smol::unblock(move || read_sessions_for(agent, &cwd)).await;
             let summary = match bound_session {
-                // Claude: exact match on the forced id — correct even when
+                // Claude: exact match on the forced id - correct even when
                 // several threads share a cwd.
                 Some(id) => sessions
                     .into_iter()
@@ -1130,7 +1130,7 @@ impl PaneFlowApp {
 }
 
 /// Dispatch a cwd-scoped session scan to the matching on-disk reader.
-/// **Blocking I/O** — call from inside `smol::unblock`.
+/// **Blocking I/O** - call from inside `smol::unblock`.
 fn read_sessions_for(
     agent: crate::agent_sessions::SessionAgent,
     cwd: &str,
@@ -1317,7 +1317,7 @@ fn render_agents_editor_split_button(
 ) -> gpui::AnyElement {
     // No resting fill: the control reads as two bare sub-buttons sharing one
     // shell. Each half owns a rounded hover background that lights independently
-    // — hovering the logo never tints the chevron, and vice-versa.
+    // - hovering the logo never tints the chevron, and vice-versa.
     let hover_bg = crate::settings::components::with_alpha(ui.text, 0.10);
     let open_cwd = cwd.clone();
     let open_editor = editor_value.clone();
@@ -1337,7 +1337,7 @@ fn render_agents_editor_split_button(
         .border_color(crate::settings::components::with_alpha(ui.text, 0.14))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
-            // Logo half — opens the folder in the selected editor. Shows that
+            // Logo half - opens the folder in the selected editor. Shows that
             // editor's own (colored) logo so the button surfaces which editor
             // will launch.
             div()
@@ -1363,7 +1363,7 @@ fn render_agents_editor_split_button(
                 .child(render_agents_editor_toolbar_icon(&editor_value, ui)),
         )
         .child(
-            // Chevron half — opens the editor picker menu.
+            // Chevron half - opens the editor picker menu.
             div()
                 .id("agents-env-toolbar-editor-chevron")
                 .h_full()

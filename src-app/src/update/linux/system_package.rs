@@ -16,20 +16,20 @@
 //!   regex-validated before any subprocess is spawned so a compromised
 //!   GitHub tag cannot inject extra argv tokens.
 //! - **pkexec exit-code contract** (see openSUSE `pkexec(1)` manpage):
-//!   - `0` — wrapped command exited 0.
-//!   - `126` — user dismissed the polkit auth dialog.
-//!   - `127` — no polkit agent available, or pkexec / target binary
+//!   - `0` - wrapped command exited 0.
+//!   - `126` - user dismissed the polkit auth dialog.
+//!   - `127` - no polkit agent available, or pkexec / target binary
 //!     not found on PATH.
-//!   - other — the wrapped command's own exit code.
+//!   - other - the wrapped command's own exit code.
 //! - **Two-thread pipe drain.** A single `BufReader` draining stdout
-//!   first deadlocks when stderr fills its ~64 KiB pipe — `dnf`/`apt`
+//!   first deadlocks when stderr fills its ~64 KiB pipe - `dnf`/`apt`
 //!   routinely produce more than that during a transaction. Each pipe
 //!   gets its own drain thread; the parent joins both drains before
 //!   calling `child.wait()`.
 //! - **Log hygiene.** Stdout lines go to `log::info!` so an admin
 //!   tailing the PaneFlow log can see transaction progress live. The
 //!   stderr buffer is only emitted at `log::debug!` on a non-zero exit
-//!   that is *not* user-cancel (126) — routine cancels never leak
+//!   that is *not* user-cancel (126) - routine cancels never leak
 //!   stderr.
 //! - **No new dependency.** Uses only `std`, `anyhow`, `log`, and the
 //!   already-present `which` crate.
@@ -53,7 +53,7 @@ use super::super::install_method::PackageManager;
 
 /// Hard cap on the stderr buffer retained for `log::debug!` on a failed
 /// transaction. Matches the 1 MiB ceiling in the PRD's Non-Functional
-/// Requirements table — dnf can be chatty when a mirror is broken, but
+/// Requirements table - dnf can be chatty when a mirror is broken, but
 /// multi-megabyte buffers are never useful in a user-visible log.
 const STDERR_BUFFER_CAP_BYTES: usize = 1024 * 1024;
 
@@ -71,7 +71,7 @@ const PKEXEC_ABSOLUTE_PATH: &str = "/usr/bin/pkexec";
 
 /// Upper bound on `mpsc` messages the drain threads can enqueue without
 /// the main thread dequeuing. Prevents a pathological pkg-mgr producing
-/// multi-GB stderr from blowing up the channel buffer — the producer
+/// multi-GB stderr from blowing up the channel buffer - the producer
 /// blocks on `send` once the queue is full, which throttles it to the
 /// main thread's drain rate. 1024 lines × a few hundred bytes each is
 /// ample for a normal transaction.
@@ -88,13 +88,13 @@ enum DrainedLine {
 /// A constant (rather than a string literal in two places) so the
 /// dispatcher in `app/self_update_flow.rs` can match against exactly
 /// the same sentinel the runner emits, without risking a typo.
-pub(crate) const BUSY_MESSAGE: &str = "Package manager is busy — try again in a moment.";
+pub(crate) const BUSY_MESSAGE: &str = "Package manager is busy - try again in a moment.";
 
 /// Authoritative dnf5 transaction lock on Fedora 41+. Lives on tmpfs
 /// (`/run/…`) so the file is always cleaned on reboot, which keeps
 /// stale-file false-positives bounded. Shared by CLI `dnf5`,
 /// `dnf-automatic`, and PackageKit (GNOME Software / Plasma Discover)
-/// since F41 — probing it alone catches every "system is doing
+/// since F41 - probing it alone catches every "system is doing
 /// package management right now" scenario we care about.
 const DNF_LOCK_PATH: &str = "/run/dnf/rpmtransaction.lock";
 
@@ -114,7 +114,7 @@ const DNF_LOCK_PATH: &str = "/run/dnf/rpmtransaction.lock";
 /// | any other non-zero | `InstallFailed { log_path: "" }` |
 /// | signal-killed | `Other("killed by signal N")` |
 ///
-/// `PackageManager::Other` is treated as a programmer error — the
+/// `PackageManager::Other` is treated as a programmer error - the
 /// dispatcher is required to route it to the clipboard fallback. We
 /// still return a structured error rather than panicking, to honour
 /// the workspace "no `unwrap`/`expect` in production" rule.
@@ -133,9 +133,9 @@ pub fn run_update(manager: &PackageManager, version: &str) -> Result<()> {
 /// `$PATH` (racy across parallel tests) and without undoing US-001's
 /// hardcoded-`/usr/bin/pkexec` security hardening.
 ///
-/// - `pkexec_installed` — result of the "is pkexec on PATH?" probe
+/// - `pkexec_installed` - result of the "is pkexec on PATH?" probe
 ///   (`which::which("pkexec").is_ok()` in production; forced in tests).
-/// - `pkexec_spawn_path` — absolute path to the binary we actually
+/// - `pkexec_spawn_path` - absolute path to the binary we actually
 ///   exec (`/usr/bin/pkexec` in production; a temp-dir stub script in
 ///   tests).
 fn run_update_impl(
@@ -167,7 +167,7 @@ fn run_update_impl(
     // For apt the probe surfaces the lock-owner PID; for dnf the
     // tmpfs lock file carries no PID so only the fact-of-lock is
     // attached. The PID (when available) goes into the anyhow
-    // context chain — useful for bug reports via `{err:#}` — and is
+    // context chain - useful for bug reports via `{err:#}` - and is
     // NEVER included in the user-visible `BUSY_MESSAGE` (PRD AC).
     let busy_context: Option<String> = match manager {
         PackageManager::Dnf => dnf_lock_held()
@@ -213,7 +213,7 @@ fn run_update_impl(
         .context("pkexec child did not expose stderr")?;
 
     // Two-thread + mpsc drain, per the PRD research section. A single
-    // BufReader would deadlock when the unread pipe fills (~64 KiB) —
+    // BufReader would deadlock when the unread pipe fills (~64 KiB) -
     // `dnf` and `apt` routinely produce more than that during a
     // transaction. Each pipe gets a dedicated producer thread; the
     // main thread drains the receiver and dispatches per-stream. The
@@ -222,7 +222,7 @@ fn run_update_impl(
     //
     // `sync_channel(N)` is used instead of the unbounded `channel()`
     // so a pathological pkg-mgr that emits multi-GB stderr cannot
-    // exhaust heap before the main thread throttles it — once the
+    // exhaust heap before the main thread throttles it - once the
     // bounded queue fills, producer `send` blocks, which back-pressures
     // the `BufReader::lines` iterator, which back-pressures the pipe.
     let (tx, rx) = mpsc::sync_channel::<DrainedLine>(DRAIN_CHANNEL_CAPACITY);
@@ -268,7 +268,7 @@ fn run_update_impl(
     }
 
     // The drain loop above already ran to completion (both Senders
-    // dropped), so these joins are cleanup — but calling them makes
+    // dropped), so these joins are cleanup - but calling them makes
     // thread-panic propagation explicit rather than relying on an
     // abandoned handle.
     let _ = stdout_handle.join();
@@ -315,7 +315,7 @@ fn manager_label(manager: &PackageManager) -> &'static str {
 /// Rejects pre-release suffixes (`-rc1`, `-beta`), whitespace, shell
 /// metacharacters, and the empty string. Implemented by hand rather
 /// than via the `regex` crate to avoid a new runtime dependency on the
-/// hot path — the grammar is trivially small.
+/// hot path - the grammar is trivially small.
 fn validate_version(raw: &str) -> Result<&str> {
     let rest = raw.strip_prefix('v').unwrap_or(raw);
 
@@ -355,7 +355,7 @@ fn invalid_version(raw: &str) -> anyhow::Error {
 
 /// Assemble the static argv for the given package manager.
 ///
-/// Pure function — the US-006 test suite drives it without a
+/// Pure function - the US-006 test suite drives it without a
 /// subprocess. Returning an empty `Vec` for `PackageManager::Other` is
 /// a defensive sentinel: `run_update` already rejects `Other` up-front,
 /// but if a future caller ever skips that guard, `split_first()` on the
@@ -363,7 +363,7 @@ fn invalid_version(raw: &str) -> anyhow::Error {
 /// `pkexec` call.
 fn build_argv(manager: &PackageManager, version_stripped: &str) -> Vec<String> {
     match manager {
-        // `--refresh` is a global flag — it MUST prefix the `install`
+        // `--refresh` is a global flag - it MUST prefix the `install`
         // subcommand (dnf's global args are positional). Without it,
         // dnf loads its local metadata cache (default TTL 48h) and
         // fails with "No match for argument: paneflow-<ver>" when the
@@ -380,7 +380,7 @@ fn build_argv(manager: &PackageManager, version_stripped: &str) -> Vec<String> {
             format!("paneflow-{version_stripped}"),
         ],
         // apt has no single-command equivalent of `dnf --refresh
-        // install` — `apt-get update` is a mandatory separate step
+        // install` - `apt-get update` is a mandatory separate step
         // to refresh the package lists before `install pkg=version`
         // can resolve a freshly-published version. We wrap both
         // commands inside ONE `pkexec sh -c` so the user sees a
@@ -389,7 +389,7 @@ fn build_argv(manager: &PackageManager, version_stripped: &str) -> Vec<String> {
         // The shell body is a STATIC constant string: the version
         // flows in as the POSITIONAL parameter `$1`, double-quoted.
         // bash / dash POSIX shells do NOT re-interpret metacharacters
-        // inside a double-quoted positional expansion — so even a
+        // inside a double-quoted positional expansion - so even a
         // regex-bypassing version string would be treated as literal
         // data in the `paneflow=$1` arg to apt-get. Defense-in-depth
         // on top of `validate_version`'s allow-list regex.
@@ -411,7 +411,7 @@ fn build_argv(manager: &PackageManager, version_stripped: &str) -> Vec<String> {
             "_".into(),
             version_stripped.to_string(),
         ],
-        // Defensive sentinels — `run_update` guards Other / RpmOstree
+        // Defensive sentinels - `run_update` guards Other / RpmOstree
         // up-front, so an empty argv is never actually spawned; if a
         // future caller skips that guard, `split_first()` on the empty
         // vec surfaces a loud error instead of spawning a bare `pkexec`.
@@ -422,7 +422,7 @@ fn build_argv(manager: &PackageManager, version_stripped: &str) -> Vec<String> {
 /// Map a finished child's exit info into an [`UpdateError`] variant.
 ///
 /// Emits the buffered stderr at `log::debug!` only for the generic
-/// non-zero-exit branch — the 126 (polkit cancel) branch is *not* a
+/// non-zero-exit branch - the 126 (polkit cancel) branch is *not* a
 /// failure and must not leak stderr.
 fn classify_exit(
     code: Option<i32>,
@@ -436,7 +436,7 @@ fn classify_exit(
 
     match code {
         Some(0) => {
-            UpdateError::Other("classify_exit called on a successful status — caller bug".into())
+            UpdateError::Other("classify_exit called on a successful status - caller bug".into())
         }
         Some(126) => UpdateError::InstallDeclined {
             message: "Authentication cancelled".into(),
@@ -484,8 +484,8 @@ fn classify_exit(
 //
 // - **dnf5**: `/run/dnf/rpmtransaction.lock` existence check. The file
 //   lives on tmpfs (cleared on reboot) and is created by libdnf5 at
-//   transaction start. Existence is a heuristic — a crashed dnf5 could
-//   leave the file on disk — but it fails safe (user sees "try again",
+//   transaction start. Existence is a heuristic - a crashed dnf5 could
+//   leave the file on disk - but it fails safe (user sees "try again",
 //   no actual harm; tmpfs reset clears false positives).
 //
 // - **apt**: scan `/proc/*/comm` (world-readable) for processes named
@@ -494,7 +494,7 @@ fn classify_exit(
 //   so process inspection is the only reliable pre-flight signal.
 //
 // Both checks err on the side of false-positives (treat "unsure" as
-// "busy") — a retry toast is a trivial UX friction whereas a minutes-
+// "busy") - a retry toast is a trivial UX friction whereas a minutes-
 // long freeze behind an in-flight transaction is not.
 
 /// Public wrapper for the dnf5 lock probe. Checks the canonical
@@ -532,7 +532,7 @@ fn dnf_lock_held_at(path: &Path) -> bool {
 
 /// Names we consider "an apt/dpkg transaction is in flight". Derived
 /// by reading `/proc/{pid}/comm`, which on Linux is capped at 15
-/// characters + newline — `unattended-upgrade` shows as
+/// characters + newline - `unattended-upgrade` shows as
 /// `unattended-upgr`. All entries must be ≤15 chars.
 const APT_PROCESS_COMMS: &[&str] = &[
     "apt",
@@ -548,7 +548,7 @@ const APT_PROCESS_COMMS: &[&str] = &[
 /// (PRD US-005 AC: "raw lock-owner PID is included in the anyhow
 /// context for diagnostics but not surfaced to the user").
 ///
-/// Uses only world-readable filesystem primitives — no elevation
+/// Uses only world-readable filesystem primitives - no elevation
 /// required. `/proc` unreadable at probe time is treated as "unknown,
 /// proceed" (PRD Unhappy paths) rather than "busy, block", so hardened
 /// sandboxes don't permanently strand the updater.
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn apt_lock_held_detects_running_dpkg_in_proc_scan() {
         let dir = tempdir().unwrap();
-        // A few non-apt processes — these must not false-positive.
+        // A few non-apt processes - these must not false-positive.
         fake_proc_entry(dir.path(), "1", "systemd");
         fake_proc_entry(dir.path(), "123", "bash");
         // The real signal.
@@ -678,12 +678,12 @@ mod tests {
         // PRD Unhappy paths: "treat as 'unknown', proceed". If we
         // cannot read /proc at all (hardened sandbox, filtered mount,
         // catastrophic FS error), we must NOT block the update
-        // permanently — `apt_lock_owner_from_proc` returns `None` so
+        // permanently - `apt_lock_owner_from_proc` returns `None` so
         // the gate falls through and dnf/apt's own `flock(2)` serves
         // as the authoritative lock.
         let dir = tempdir().unwrap();
         let missing = dir.path().join("not-a-proc");
-        // Do not create `missing` — `read_dir` will fail.
+        // Do not create `missing` - `read_dir` will fail.
         assert_eq!(apt_lock_owner_from_proc(&missing), None);
     }
 
@@ -729,7 +729,7 @@ mod tests {
 
     #[test]
     fn validate_version_accepts_semver() {
-        // PRD AC: "validate_version_accepts_semver" — both the
+        // PRD AC: "validate_version_accepts_semver" - both the
         // leading-`v` form (rpm NEVRA convention) and the raw
         // form must pass and return the v-stripped slice.
         assert_eq!(validate_version("v0.2.3").unwrap(), "0.2.3");
@@ -820,7 +820,7 @@ mod tests {
         // PRD R1 mitigation: a compromised GitHub tag like
         // "v0.2.3; rm -rf /" must FAIL validation before
         // build_argv is ever reached. The test confirms the
-        // regex-style validator catches it — so there is no path
+        // regex-style validator catches it - so there is no path
         // for shell metacharacters to end up in argv.
         assert!(validate_version("v0.2.3; rm -rf /").is_err());
         assert!(validate_version("0.2.3|cat /etc/shadow").is_err());
@@ -844,7 +844,7 @@ mod tests {
     fn build_dnf_argv_puts_refresh_before_install_subcommand() {
         // PRD v1.2: the `--refresh` global flag MUST appear before
         // the `install` subcommand (dnf's global args are positional
-        // — a trailing `--refresh` after `install` is rejected as an
+        // - a trailing `--refresh` after `install` is rejected as an
         // unknown install-subcommand flag). This test locks the
         // order in so a reformat or autofix never transposes them.
         let argv = build_argv(&PackageManager::Dnf, "0.2.3");
@@ -860,7 +860,7 @@ mod tests {
             refresh_idx < install_idx,
             "--refresh ({refresh_idx}) must come before install ({install_idx}): {argv:?}"
         );
-        // Also pin the exact positions we expect — any drift means
+        // Also pin the exact positions we expect - any drift means
         // the canonical argv layout changed and callers of the
         // classifier need re-verification.
         assert_eq!(argv[0], "pkexec");
@@ -877,7 +877,7 @@ mod tests {
         // `name-version` form. Easy regression to introduce by
         // copy-paste from the Dnf arm. Since PRD v1.2 the apt path
         // is wrapped in `sh -c`, so the pin string lives INSIDE the
-        // script body (arg 3) as the literal `"paneflow=$1"` — the
+        // script body (arg 3) as the literal `"paneflow=$1"` - the
         // version itself is the positional argv[5].
         let argv = build_argv(&PackageManager::Apt, "0.2.3");
         let script_body = argv
@@ -918,9 +918,9 @@ mod tests {
         // - argv[0] = "pkexec"          (elevation wrapper)
         // - argv[1] = "sh"               (POSIX shell for && chaining)
         // - argv[2] = "-c"               (read script from next arg)
-        // - argv[3] = script body        (constant — NO interpolation)
+        // - argv[3] = script body        (constant - NO interpolation)
         // - argv[4] = "_"                (conventional $0 placeholder)
-        // - argv[5] = version            (the variable — positional $1)
+        // - argv[5] = version            (the variable - positional $1)
         //
         // If a refactor moves the version into the script body (via
         // `format!`) or reorders any of these, this test fails.
@@ -949,12 +949,12 @@ mod tests {
         // with a string that would never clear the regex. The sh -c
         // execution path with `"$1"` double-quoted expansion means
         // the shell treats the value as literal data, not as a
-        // command stream — this test pins that invariant at the
+        // command stream - this test pins that invariant at the
         // unit-test level, independent of the regex validator.
         let malicious = "0.2.3\"; echo pwned; #";
         let argv = build_argv(&PackageManager::Apt, malicious);
 
-        // 1. Version lands AT argv[5] as a whole element — never
+        // 1. Version lands AT argv[5] as a whole element - never
         //    split, never merged into another argv slot.
         assert_eq!(
             argv.get(5).map(String::as_str),
@@ -965,7 +965,7 @@ mod tests {
         // 2. The script body (argv[3]) MUST NOT contain any part of
         //    the malicious version string. If it did, it would mean
         //    the builder is interpolating the version into the shell
-        //    body — which defeats the `"$1"` positional safety.
+        //    body - which defeats the `"$1"` positional safety.
         let script_body = argv
             .get(3)
             .cloned()
@@ -1067,7 +1067,7 @@ mod tests {
     // ─── stub pkexec integration ─────────────────────────────
 
     /// Create a minimal bash script that exits with `exit_code` and
-    /// ignores all argv. Returns `(tempdir, script_path)` — the
+    /// ignores all argv. Returns `(tempdir, script_path)` - the
     /// tempdir must stay alive for the duration of the test so
     /// the script file is not deleted out from under `Command`.
     ///
@@ -1075,7 +1075,7 @@ mod tests {
     /// + drop` rather than the terser `fs::write`, and permissions
     /// are set AFTER the handle is fully closed. On Linux, `exec(2)`
     /// returns `ETXTBSY` ("Text file busy", OS error 26) if any
-    /// process has a write handle open to the target file — with
+    /// process has a write handle open to the target file - with
     /// cargo's parallel test harness, two stub-pkexec tests racing
     /// their write+exec windows can trip this intermittently. An
     /// explicit sync + drop sequence closes the handle
@@ -1146,7 +1146,7 @@ mod tests {
         // spawning anything." We exercise this directly via
         // `run_update_impl` rather than mutating $PATH (racy under
         // `cargo test`'s parallel harness; `std::env::set_var` is
-        // `unsafe` in the 2024 edition) — the path is set to a
+        // `unsafe` in the 2024 edition) - the path is set to a
         // non-existent binary that would panic if anything tried
         // to exec it.
         let result = run_update_impl(

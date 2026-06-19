@@ -2,7 +2,7 @@
 //!
 //! Two formats, two rules:
 //! - **JSON** (Claude Code, Gemini, opencode) is merged via
-//!   `serde_json::Value` — never a typed-struct round-trip — so unknown
+//!   `serde_json::Value` - never a typed-struct round-trip - so unknown
 //!   keys and sibling MCP servers are preserved byte-for-meaning. Only the
 //!   `paneflow` entry under the agent's container key is inserted/updated.
 //! - **TOML** (Codex) is edited via `toml_edit::DocumentMut`, which
@@ -11,7 +11,7 @@
 //!
 //! Both `read_*_or_default` helpers treat a **missing** file as an empty
 //! skeleton (so a fresh install creates it) but a **present-but-invalid**
-//! file as an error (so we never overwrite a config we could not parse —
+//! file as an error (so we never overwrite a config we could not parse -
 //! the user repairs it by hand). This is the no-clobber guarantee.
 
 use std::path::Path;
@@ -28,7 +28,7 @@ pub fn read_json_or_default(path: &Path) -> Result<serde_json::Value> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| {
             format!(
-                "{} is not valid JSON — refusing to overwrite it; \
+                "{} is not valid JSON - refusing to overwrite it; \
                  fix or remove it, then re-run",
                 path.display()
             )
@@ -46,7 +46,7 @@ pub fn read_json_or_default(path: &Path) -> Result<serde_json::Value> {
 ///
 /// Sibling entries under `container_key`, and every other top-level key,
 /// are left untouched. Errors only if `root` (or an existing
-/// `container_key`) is present but not a JSON object — overwriting a
+/// `container_key`) is present but not a JSON object - overwriting a
 /// non-object there would be a clobber.
 pub fn merge_json_entry(
     root: &mut serde_json::Value,
@@ -56,13 +56,13 @@ pub fn merge_json_entry(
 ) -> Result<bool> {
     let obj = root
         .as_object_mut()
-        .context("config root is not a JSON object — refusing to overwrite")?;
+        .context("config root is not a JSON object - refusing to overwrite")?;
 
     let container = obj
         .entry(container_key)
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
     let container = container.as_object_mut().with_context(|| {
-        format!("config key `{container_key}` is not an object — refusing to overwrite")
+        format!("config key `{container_key}` is not an object - refusing to overwrite")
     })?;
 
     if container.get(entry_name) == Some(&entry_value) {
@@ -108,7 +108,7 @@ pub fn read_toml_or_default(path: &Path) -> Result<toml_edit::DocumentMut> {
     match std::fs::read_to_string(path) {
         Ok(text) => text.parse::<toml_edit::DocumentMut>().with_context(|| {
             format!(
-                "{} is not valid TOML — refusing to overwrite it; \
+                "{} is not valid TOML - refusing to overwrite it; \
                  fix or remove it, then re-run",
                 path.display()
             )
@@ -148,7 +148,7 @@ pub fn upsert_toml_entry(
     };
     let parent = parent
         .as_table_mut()
-        .with_context(|| format!("`{table_path}` is not a TOML table — refusing to overwrite"))?;
+        .with_context(|| format!("`{table_path}` is not a TOML table - refusing to overwrite"))?;
 
     let mut entry = Table::new();
     entry["command"] = value(command);

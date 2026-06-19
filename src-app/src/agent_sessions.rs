@@ -1,6 +1,6 @@
 //! Shared types and helpers for the AI-agent session readers
 //! (`claude_sessions`, `codex_sessions`, `opencode_sessions`). Each reader
-//! sources sessions from its agent's native store — JSONL transcripts on
+//! sources sessions from its agent's native store - JSONL transcripts on
 //! disk for Claude / Codex, `opencode session list --format json` shell-out
 //! for OpenCode (whose backing SQLite schema is intentionally not exposed
 //! as a stable contract; see US-001 spike notes in
@@ -18,7 +18,7 @@ pub enum SessionAgent {
 }
 
 impl SessionAgent {
-    /// Brand glyph path (multicolor SVG — render via `img()`, not a tinted
+    /// Brand glyph path (multicolor SVG - render via `img()`, not a tinted
     /// `svg()`). Shared by the sessions popover and the Review attribution badge
     /// (EP-004 US-015).
     pub(crate) fn icon_path(self) -> &'static str {
@@ -51,7 +51,7 @@ pub struct AssistantUsage {
 }
 
 impl AssistantUsage {
-    /// Sum across all tiers — the headline token count for a tooltip.
+    /// Sum across all tiers - the headline token count for a tooltip.
     pub fn total(&self) -> u64 {
         self.input
             .saturating_add(self.output)
@@ -68,7 +68,7 @@ impl AssistantUsage {
         self.cache_creation = self.cache_creation.saturating_add(other.cache_creation);
     }
 
-    /// True when no tier carries a count — a parsed-but-empty usage block,
+    /// True when no tier carries a count - a parsed-but-empty usage block,
     /// treated as "no usage data" by the attribution UI.
     pub fn is_empty(&self) -> bool {
         self.total() == 0
@@ -468,7 +468,7 @@ pub fn enabled_session_agents() -> Vec<SessionAgent> {
 /// Every supported agent's id format fits `^[A-Za-z0-9_-]+$`: Claude/Codex use
 /// UUIDs (`550e8400-e29b-41d4-a716-446655440000`), OpenCode uses
 /// `ses_<base62>` (`ses_1f80d49aeffeaKV4Lq4mc0c3cu`). Anything outside that set
-/// — a space, `;`, `$(…)`, a path separator, a control char — means the source
+/// a space, `;`, `$(…)`, a path separator, a control char - means the source
 /// record is malformed or the agent binary was tampered with. Rejecting here
 /// (and dropping the record at scan time) is defence-in-depth: a crafted
 /// `ses_x; rm -rf ~` would pass a control-char-only check but never the
@@ -521,7 +521,7 @@ pub(crate) fn cwd_matches(recorded: &str, scanned: &str) -> bool {
 /// resume the session is here; the heavier message payload stays on disk.
 #[derive(Debug, Clone)]
 pub struct SessionMeta {
-    /// Which CLI created the session — drives row routing and the resume
+    /// Which CLI created the session - drives row routing and the resume
     /// command (`claude --resume <id>` vs `codex resume <id>`).
     pub agent: SessionAgent,
     pub session_id: String,
@@ -531,7 +531,7 @@ pub struct SessionMeta {
     /// `cwd` recorded on the first line. Files where the first line lacks
     /// `cwd` are skipped, so this is always populated.
     pub cwd: String,
-    /// Git branch — empty string when the session was outside a git repo
+    /// Git branch - empty string when the session was outside a git repo
     /// (Claude Code) or when the agent doesn't record one (Codex CLI).
     /// EP-004 US-014 consumes this in [`match_sessions_to_column`] (branch is
     /// the 2nd-tier ranking key after exact cwd), so the `#[allow(dead_code)]`
@@ -569,7 +569,7 @@ pub fn match_sessions_to_column(
         .collect();
     // Branch match is a bonus tier: a session whose recorded branch equals the
     // column's branch outranks one that doesn't (Codex records no branch, so it
-    // never wins this tier — cwd-only by design). Within a tier, most recent
+    // never wins this tier - cwd-only by design). Within a tier, most recent
     // first. `sort_by` is stable, so equal keys keep reader order.
     matched.sort_by(|a, b| {
         let branch_rank = |s: &SessionMeta| -> u8 {
@@ -583,8 +583,8 @@ pub fn match_sessions_to_column(
 }
 
 /// EP-004 US-014: gather every enabled agent's sessions for a worktree `cwd`
-/// (usage-enriched where the agent supports it — US-016) and rank them against
-/// the column's `(cwd, branch)`. **Blocking I/O** — call from inside
+/// (usage-enriched where the agent supports it - US-016) and rank them against
+/// the column's `(cwd, branch)`. **Blocking I/O** - call from inside
 /// `smol::unblock` (it is folded into the off-thread diff-load task so
 /// attribution never blocks first paint and is re-fetched only on re-diff).
 pub fn attribution_for_column(cwd: &str, branch: &str) -> Vec<SessionMeta> {
@@ -608,7 +608,7 @@ pub fn attribution_for_column(cwd: &str, branch: &str) -> Vec<SessionMeta> {
 }
 
 /// Format an ISO 8601 timestamp into a short relative label. Pure string
-/// math (no `chrono` dep) — parses `YYYY-MM-DDTHH:MM:SS` and computes the
+/// math (no `chrono` dep) - parses `YYYY-MM-DDTHH:MM:SS` and computes the
 /// delta against `std::time::SystemTime::now()` via a calendar-free
 /// approximation good enough for "Xm ago" / "Xh ago" / "Xd ago" labels.
 ///
@@ -775,7 +775,7 @@ mod tests {
     fn iso8601_absurd_year_returns_none_not_panic() {
         // U-011: a parseable-but-absurd year (well within i64's digit budget)
         // overflows the day/second multiplies. Checked arithmetic must yield
-        // None so the caller falls back to the date-prefix render — in debug
+        // None so the caller falls back to the date-prefix render - in debug
         // builds this would otherwise panic, in release it would silently wrap.
         assert_eq!(
             parse_iso8601_to_unix_secs("999999999999-01-01T00:00:00Z"),
@@ -786,7 +786,7 @@ mod tests {
     #[test]
     fn iso8601_absurd_time_field_returns_none_not_panic() {
         // U-011: hour/minute/second are equally unbounded in the source JSONL,
-        // so the `hour * 3_600` multiply must be checked too — a valid date
+        // so the `hour * 3_600` multiply must be checked too - a valid date
         // with an absurd hour would otherwise overflow before the day math.
         assert_eq!(
             parse_iso8601_to_unix_secs("2025-01-15T9999999999999999:00:00Z"),
@@ -798,7 +798,7 @@ mod tests {
     fn iso8601_absurd_month_or_day_returns_none_not_panic() {
         // U-011: `month` and `day` are equally unbounded in the source JSONL.
         // An absurd month overflows the `153 * month_adj` multiply, and an
-        // absurd day overflows the `+ day` step — both BEFORE the trailing
+        // absurd day overflows the `+ day` step - both BEFORE the trailing
         // checked path, so they must be checked too. In debug these would
         // otherwise panic; in release they would wrap and return Some(garbage).
         assert_eq!(

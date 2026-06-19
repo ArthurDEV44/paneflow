@@ -1,4 +1,4 @@
-//! Window chrome — title bar and CSD (client-side decoration) helpers.
+//! Window chrome - title bar and CSD (client-side decoration) helpers.
 //!
 //! Groups the window-controls-and-resize-edge code that used to live as
 //! sibling files at the crate root. Callers reach into the submodules

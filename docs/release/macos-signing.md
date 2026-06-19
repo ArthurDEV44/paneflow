@@ -5,7 +5,7 @@ macOS release pipeline. The `release.yml` workflow signs and notarizes
 every `aarch64-apple-darwin` `.app` produced by `scripts/bundle-macos.sh`
 when the five `APPLE_*` GitHub Secrets are populated. If any secret is
 missing the leg degrades to an **unsigned** build with a banner in the
-job summary — by design (US-023 AC7).
+job summary - by design (US-023 AC7).
 
 This document is operator-only. Application code never reads from any of
 the files described here.
@@ -25,12 +25,12 @@ dist/PaneFlow.app/Contents/
 
 `scripts/sign-macos.sh` runs in two passes:
 
-1. **Inside-out walk** — every Mach-O / `.dylib` / `.framework` / `.xpc`
+1. **Inside-out walk** - every Mach-O / `.dylib` / `.framework` / `.xpc`
    under `Contents/Frameworks`, `Contents/Helpers`, `Contents/PlugIns`,
    `Contents/XPCServices`. Today the bundle has none of those, so this
    pass is a no-op; it stays in place so adding a helper bundle later
    needs zero signing-script changes.
-2. **Top-level sign** — `Contents/MacOS/paneflow` and the parent `.app`
+2. **Top-level sign** - `Contents/MacOS/paneflow` and the parent `.app`
    wrapper, with `--entitlements` bound and the hardened runtime enabled.
 
 `scripts/notarize-macos.sh` then submits the bundle to `notarytool`,
@@ -48,7 +48,7 @@ local-only and must never be sent to notarytool.**
 |---|---|---|
 | `paneflow.entitlements` | Tagged `v*` releases (default for `sign-macos.sh`). | `app-sandbox=false`, `automation.apple-events`, `cs.allow-jit`, `cs.allow-unsigned-executable-memory`, `cs.disable-library-validation`, `cs.allow-dyld-environment-variables`. |
 | `paneflow.nightly.entitlements` | Nightly builds shipped under `io.github.arthurdev44.paneflow.nightly`. | Same key set as release; forked file so nightly-only entitlements can be added without touching the production file. |
-| `paneflow.dev.entitlements` | **Local only.** Use when you need to attach `lldb` to a signed build on your own machine. | Adds `com.apple.security.get-task-allow=true`. **Notarization rejects any bundle carrying this entitlement** — never use for distribution. |
+| `paneflow.dev.entitlements` | **Local only.** Use when you need to attach `lldb` to a signed build on your own machine. | Adds `com.apple.security.get-task-allow=true`. **Notarization rejects any bundle carrying this entitlement** - never use for distribution. |
 
 The `cs.*` block is required for any GPUI / wgpu app under the hardened
 runtime: GPUI compiles `MTLComputePipelineState` objects at first use,
@@ -64,7 +64,7 @@ which Apple classifies as JIT.
      ID Application".
    - Common name will be `Developer ID Application: <your name> (TEAMID)`.
    - Note the **Created** and **Expires** dates. Set a calendar reminder
-     for 60 days before expiry — Gatekeeper rejects releases signed with
+     for 60 days before expiry - Gatekeeper rejects releases signed with
      an expired certificate.
 3. **Export to `.p12`.** Keychain Access → Login → expand the cert → right-
    click the private key (the disclosure-triangle child) → Export. Choose
@@ -107,13 +107,13 @@ which Apple classifies as JIT.
 9. **First-time verification.** Download the published `.dmg` on a clean
    macOS machine, open it, drag to `/Applications`, double-click. Expected:
    no Gatekeeper prompt, app launches. If you see a prompt, the
-   notarization ticket is missing — look at the `Notarize + staple macOS
+   notarization ticket is missing - look at the `Notarize + staple macOS
    .app bundle` step's `notarytool log` output for the cause.
 
 ## 4. Local dev signing (no CI)
 
-If you need to sign a build on your own machine — typically when
-attaching `lldb` to a hardened-runtime binary — use the `.dev`
+If you need to sign a build on your own machine - typically when
+attaching `lldb` to a hardened-runtime binary - use the `.dev`
 entitlements:
 
 ```bash
@@ -129,7 +129,7 @@ bash scripts/sign-macos.sh \
     --entitlements packaging/macos/paneflow.dev.entitlements \
     dist/PaneFlow.app
 
-# DO NOT notarize a dev build — get-task-allow guarantees rejection.
+# DO NOT notarize a dev build - get-task-allow guarantees rejection.
 ```
 
 Once signed with the dev entitlements you can `lldb -- dist/PaneFlow.app/Contents/MacOS/paneflow`.
@@ -139,7 +139,7 @@ Once signed with the dev entitlements you can `lldb -- dist/PaneFlow.app/Content
 | Cadence | Task |
 |---|---|
 | **Every 12 months** | Rotate `APPLE_APP_SPECIFIC_PASSWORD`. App-specific passwords have no hard expiry but a yearly rotation matches the cert renewal cycle and limits credential blast radius. |
-| **Per cert expiry (typically 1–3 years)** | Re-run §3 steps 2–4 to mint a new `.p12`, then update `APPLE_DEVELOPER_CERT_P12` and `APPLE_DEVELOPER_CERT_PASSWORD`. **Releases already in the wild keep working** — notarization tickets are timestamped and remain valid past cert expiry. |
+| **Per cert expiry (typically 1-3 years)** | Re-run §3 steps 2-4 to mint a new `.p12`, then update `APPLE_DEVELOPER_CERT_P12` and `APPLE_DEVELOPER_CERT_PASSWORD`. **Releases already in the wild keep working** - notarization tickets are timestamped and remain valid past cert expiry. |
 | **On Apple ID password change** | Old app-specific passwords are NOT auto-revoked by an Apple ID password change (Apple's design), but rotate to be safe: revoke at appleid.apple.com → App-Specific Passwords → trash icon, generate a new one, update `APPLE_APP_SPECIFIC_PASSWORD`. |
 | **On Team ID change** | Should never happen for an individual account, but if you migrate to a Company account later, regenerate the cert under the new team and update both `APPLE_TEAM_ID` and `APPLE_DEVELOPER_CERT_P12`. |
 
@@ -156,7 +156,7 @@ Once signed with the dev entitlements you can `lldb -- dist/PaneFlow.app/Content
   step ran but `--timestamp` was missing or Apple's TSA was unreachable.
   Re-run the leg; transient TSA failures usually clear within minutes.
 - **`The executable requests the com.apple.security.get-task-allow
-  entitlement`.** A dev build was sent to notarytool by accident — the
+  entitlement`.** A dev build was sent to notarytool by accident - the
   `.dev` entitlements made it into CI. Verify
   `release.yml` passes `paneflow.entitlements` (release), not
   `paneflow.dev.entitlements`.
@@ -172,12 +172,12 @@ Once signed with the dev entitlements you can `lldb -- dist/PaneFlow.app/Content
 
 ## 7. Related files
 
-- `scripts/sign-macos.sh` — codesign driver (inside-out walk + parent sign).
-- `scripts/notarize-macos.sh` — notarytool + staple + `spctl --assess`.
-- `scripts/bundle-macos.sh` — produces the `.app` consumed by the two scripts above.
-- `.github/workflows/release.yml` — `Detect macOS signing secrets` /
+- `scripts/sign-macos.sh` - codesign driver (inside-out walk + parent sign).
+- `scripts/notarize-macos.sh` - notarytool + staple + `spctl --assess`.
+- `scripts/bundle-macos.sh` - produces the `.app` consumed by the two scripts above.
+- `.github/workflows/release.yml` - `Detect macOS signing secrets` /
   `Sign macOS .app bundle` / `Notarize + staple macOS .app bundle` /
   `Record unsigned macOS build in job summary` steps.
 - `packaging/macos/paneflow.entitlements`, `paneflow.dev.entitlements`,
-  `paneflow.nightly.entitlements` — the three entitlements variants.
-- `assets/Info.plist` — release bundle ID `io.github.arthurdev44.paneflow`.
+  `paneflow.nightly.entitlements` - the three entitlements variants.
+- `assets/Info.plist` - release bundle ID `io.github.arthurdev44.paneflow`.

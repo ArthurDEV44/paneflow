@@ -4,14 +4,14 @@
     PaneFlow nightly entitlements (US-023).
 
     Used for nightly builds that ship under a separate bundle identifier
-    (`io.github.arthurdev44.paneflow.nightly` — set in the nightly
+    (`io.github.arthurdev44.paneflow.nightly` - set in the nightly
     Info.plist, not here). The entitlements themselves match the release
     file 1:1 today; the file is split so future nightly-only tweaks
     (extra debug-channel entitlements, broader IPC scope, etc.) can land
     without touching the production entitlements that get notarized for
     end users.
 
-    Do NOT add get-task-allow here — nightlies are still distribution
+    Do NOT add get-task-allow here - nightlies are still distribution
     builds and must pass notarization.
 -->
 <plist version="1.0">
