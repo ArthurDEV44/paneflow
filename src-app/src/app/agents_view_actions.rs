@@ -32,6 +32,13 @@ use serde_json::Value;
 pub(crate) const AGENTS_SIDEBAR_WIDTH: f32 = 280.0;
 
 const AGENTS_ENVIRONMENT_PANEL_WIDTH: f32 = 300.0;
+/// Empty band reserved at the top of the agents terminal surface so the
+/// floating environment toolbar (model selector + layout toggles) lives in its
+/// own strip and never paints over the CLI when the window or right diff panel
+/// is resized narrow. Sized to clear the overlay: top inset (20) + button
+/// height (28) + breathing room (8). Keep in sync with the toolbar `top` and
+/// button heights below.
+const AGENTS_TOOLBAR_BAND_HEIGHT: f32 = 56.0;
 const AGENTS_BRANCH_GIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 const AGENTS_BRANCH_GIT_OUTPUT_CAP: u64 = 512 * 1024;
 
@@ -1163,14 +1170,19 @@ pub(crate) fn render_terminal_thread_surface(
         .size_full()
         .relative()
         .flex()
-        .justify_center()
+        .flex_col()
         .bg(ui.base)
+        // Reserved top band: pushes the terminal down so the absolutely-anchored
+        // toolbar overlay below sits above the CLI, never over it, at any width.
+        .child(div().h(px(AGENTS_TOOLBAR_BAND_HEIGHT)).flex_none())
         .child(
-            div()
-                .h_full()
-                .w_full()
-                .max_w(px(max_content_width as f32))
-                .child(view.into_any_element()),
+            div().flex_1().min_h_0().flex().justify_center().child(
+                div()
+                    .h_full()
+                    .w_full()
+                    .max_w(px(max_content_width as f32))
+                    .child(view.into_any_element()),
+            ),
         )
         .child(render_agents_environment_overlay(
             environment,
@@ -1225,7 +1237,7 @@ fn render_agents_environment_overlay(
 ) -> gpui::AnyElement {
     div()
         .absolute()
-        .top(px(10.))
+        .top(px(20.))
         .right(px(12.))
         .w(px(AGENTS_ENVIRONMENT_PANEL_WIDTH))
         .flex()
