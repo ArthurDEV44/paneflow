@@ -22,5 +22,13 @@ same-file = "1"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Windows: a console-control handler emits `ai.stop` when the user Ctrl+C's an
+# agent that interrupts its turn WITHOUT exiting (claude/codex fire no Stop hook
+# then), mirroring the Unix `sigwait` watcher so the sidebar loader never sticks
+# (EP-005 US-017). `ctrlc` is already this workspace's cross-platform Ctrl+C
+# crate (used by paneflow-app), wrapping `SetConsoleCtrlHandler` safely.
+[target.'cfg(windows)'.dependencies]
+ctrlc = "3.4"
+
 [lints]
 workspace = true

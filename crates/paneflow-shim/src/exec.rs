@@ -4,13 +4,13 @@ use std::env;
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::ExitCode;
-// The SIGINT watcher (`install_sigint_watcher` / `send_interrupt_stop`) is the
-// only consumer of these and is `#[cfg(unix)]`; gate the imports so the Windows
-// build (which compiles only `run_real` + `exit_code_from_status`) doesn't flag
-// them unused.
-#[cfg(unix)]
+// The interrupt path (`install_sigint_watcher` on Unix, `install_ctrl_c_handler`
+// on Windows, and the shared `send_interrupt_stop`) consumes these. Gate them to
+// unix+windows so a hypothetical bare target without either doesn't flag them
+// unused; the shim only ships on unix + windows.
+#[cfg(any(unix, windows))]
 use crate::locate_sibling_hook_binary;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::io::Write;
 
 // ---------------------------------------------------------------------------
@@ -161,6 +161,16 @@ pub(crate) fn run_real(tool: &str, path: &Path, args: &[OsString]) -> (ExitCode,
     ignore_terminal_signals();
     #[cfg(unix)]
     install_sigint_watcher(tool);
+    // EP-005 US-017: Windows Ctrl+C -> `ai.stop` (claude/codex interrupt their
+    // turn without exiting or firing a Stop hook). Installed before spawn so an
+    // immediate Ctrl+C is already covered.
+    #[cfg(windows)]
+    install_ctrl_c_handler(tool);
+
+    // EP-005 US-017: capture Paneflow's PID before spawn for the macOS orphan
+    // guard's reparent detection. SAFETY: `getppid` is a trivial syscall.
+    #[cfg(target_os = "macos")]
+    let parent_pid = unsafe { libc::getppid() } as u32;
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -169,6 +179,12 @@ pub(crate) fn run_real(tool: &str, path: &Path, args: &[OsString]) -> (ExitCode,
             return (ExitCode::from(127), None);
         }
     };
+
+    // EP-005 US-017: macOS parity for the Linux `PR_SET_PDEATHSIG` guard — kill
+    // the agent if Paneflow dies, so a `kill -9` of Paneflow leaves no orphan.
+    // Spawned after we hold the child PID.
+    #[cfg(target_os = "macos")]
+    spawn_parent_death_guard(child.id(), parent_pid);
 
     match child.wait() {
         Ok(status) => (
@@ -303,11 +319,11 @@ pub(crate) fn install_sigint_watcher(tool: &str) {
 /// child per keypress with no bound. Past this many in-flight reapers we drop
 /// the stop (this one Ctrl+C just doesn't clear the loader) rather than grow
 /// threads unboundedly. 8 covers any realistic burst of legitimate, fast hooks.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const MAX_INFLIGHT_REAPERS: usize = 8;
 
 /// Live count of detached reaper threads spawned by [`send_interrupt_stop`].
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 static INFLIGHT_REAPERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Spawn `paneflow-ai-hook Stop` with `{}` piped to stdin. Best-effort;
@@ -327,7 +343,7 @@ static INFLIGHT_REAPERS: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 /// the `{}`-on-stdin contract (so the hook reads a valid empty payload) and do
 /// NOT kill the hook on a deadline: a slow-but-progressing socket write is a
 /// legitimate stop we don't want to interrupt.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn send_interrupt_stop(hook_path: &Path, tool: &str) {
     use std::sync::atomic::Ordering;
 
@@ -357,5 +373,77 @@ pub(crate) fn send_interrupt_stop(hook_path: &Path, tool: &str) {
     std::thread::spawn(move || {
         let _ = child.wait();
         INFLIGHT_REAPERS.fetch_sub(1, Ordering::AcqRel);
+    });
+}
+
+/// EP-005 US-017 (agent-control-plane): Windows parity for the Unix `sigwait`
+/// watcher. claude/codex interrupt their current TURN on Ctrl+C without exiting
+/// and without firing a Stop hook, so the sidebar loader would stick forever. A
+/// console-control handler emits one `ai.stop` per Ctrl+C; the agent still
+/// receives `CTRL_C_EVENT` directly from the OS (every process in the console
+/// group does), so its turn is interrupted as usual and the shim survives to
+/// keep waiting on it. `ctrlc` wraps `SetConsoleCtrlHandler` and runs the
+/// closure on a dedicated thread, so the same bounded-reaper `send_interrupt_stop`
+/// the Unix path uses is reused verbatim.
+///
+/// Not built into the host (Linux) binary; Linux and macOS take the `sigwait` /
+/// parent-death paths. Compile-verified by `cargo check --target
+/// x86_64-pc-windows-msvc`, but a Windows RUNTIME smoke test (Ctrl+C an agent
+/// mid-turn, confirm the loader clears) is still required before it is trusted.
+#[cfg(windows)]
+pub(crate) fn install_ctrl_c_handler(tool: &str) {
+    let tool = tool.to_owned();
+    let Some(hook_path) = locate_sibling_hook_binary() else {
+        return;
+    };
+    // `set_handler` installs once per process; the shim calls this once per run
+    // before the agent spawns. The closure runs on every subsequent Ctrl+C.
+    let _ = ctrlc::set_handler(move || {
+        send_interrupt_stop(&hook_path, &tool);
+    });
+}
+
+/// EP-005 US-017 (agent-control-plane): macOS parity for the Linux
+/// `PR_SET_PDEATHSIG` guard (the `exec.rs` stub). When Paneflow is hard-killed
+/// (`kill -9`, bypassing every graceful Drop), the shim is reparented to
+/// `launchd` and the agent it spawned would otherwise keep streaming and burn
+/// the user's API tokens. kqueue `NOTE_EXIT` is the textbook idiom, but the AC
+/// allows "ou équivalent": a tiny thread that polls `getppid()` is the same
+/// reparent-detection the Linux US-037 race-close already uses (`getppid() !=
+/// captured parent`), with no fragile `kevent` struct FFI. `parent_pid` is
+/// captured BEFORE the spawn. On a detected reparent the agent is `SIGKILL`ed;
+/// the loop also exits once the agent is already gone, so the thread never
+/// outlives the work.
+///
+/// Not built into the host (Linux) binary. Compile-verified by `cargo check
+/// --target x86_64-apple-darwin`, but a macOS RUNTIME smoke test (`kill -9`
+/// Paneflow, confirm no orphaned agent survives) is still required before it is
+/// trusted.
+#[cfg(target_os = "macos")]
+pub(crate) fn spawn_parent_death_guard(child_pid: u32, parent_pid: u32) {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // SAFETY: `getppid`/`kill` are async-signal-safe, argument-free or
+            // scalar-argument syscalls with no pointer aliasing.
+            //
+            // A changed parent means Paneflow exited and the kernel reparented
+            // us to launchd (PID 1) — never a recycled PID, since reparenting
+            // always targets the subreaper — so the agent is now an orphan:
+            // SIGKILL it and stop.
+            let reparented = unsafe { libc::getppid() } as u32 != parent_pid;
+            if reparented {
+                unsafe {
+                    libc::kill(child_pid as libc::pid_t, libc::SIGKILL);
+                }
+                return;
+            }
+            // `kill(pid, 0)` probes liveness without signalling; a non-zero
+            // return (ESRCH) means the agent already exited, so stop polling.
+            let agent_gone = unsafe { libc::kill(child_pid as libc::pid_t, 0) } != 0;
+            if agent_gone {
+                return;
+            }
+        }
     });
 }

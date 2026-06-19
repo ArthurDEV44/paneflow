@@ -101,3 +101,38 @@ the "running" row.
 
 On Windows, Codex uses a JSONL tee rather than file hooks; the shim handles that
 path at launch.
+
+## Parent-death and interrupt guards (cross-platform)
+
+The shim (`paneflow-shim`) wraps each agent so two reliability gaps are closed on
+every OS (EP-005 US-017):
+
+- **Orphan guard** (Paneflow is hard-killed, e.g. `kill -9`): the agent must not
+  survive and keep burning API tokens.
+  - **Linux**: the agent is spawned with `PR_SET_PDEATHSIG = SIGKILL` plus a
+    `getppid()` race-close, so the kernel kills it the moment the shim's parent
+    dies.
+  - **macOS**: kqueue `NOTE_EXIT` is not arm-able from the post-`execve` child,
+    so the shim runs a tiny thread that polls `getppid()`; a reparent to
+    `launchd` means Paneflow exited and the agent is `SIGKILL`ed (the AC's
+    "ou équivalent").
+- **Interrupt guard** (the user Ctrl+C's an agent mid-turn, which interrupts the
+  turn WITHOUT the agent exiting or firing a Stop hook): the sidebar loader must
+  not stick.
+  - **Unix**: a blocked-`SIGINT` + `sigwait` thread emits one `ai.stop` per
+    Ctrl+C.
+  - **Windows**: a `ctrlc` / `SetConsoleCtrlHandler` callback emits the same
+    `ai.stop`; the agent still receives `CTRL_C_EVENT` directly from the OS, so
+    its turn is interrupted as usual and the shim survives to keep waiting.
+
+The macOS and Windows branches are compile-verified from the Linux host via
+`cargo check --target {x86_64-apple-darwin,x86_64-pc-windows-msvc}` (the build
+gate runs all three). They still need a one-time RUNTIME smoke on real hardware:
+
+- **macOS orphan smoke**: launch an agent in a pane, note its PID
+  (`paneflow ps`), `kill -9` the Paneflow process, then confirm the agent PID is
+  gone within ~1 s (`ps -p <pid>` returns nothing). PASS = no orphan.
+- **Windows interrupt smoke**: launch an agent, start a turn so the sidebar shows
+  the "thinking" loader, press `Ctrl+C` to interrupt mid-turn (the agent stays
+  alive at its prompt), then confirm the loader clears within ~5 s. PASS = no
+  stuck spinner.

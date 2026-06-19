@@ -6135,6 +6135,7 @@ version = "0.5.9"
 name = "paneflow-shim"
 version = "0.5.9"
 dependencies = [
+ "ctrlc",
  "libc",
  "same-file",
  "serde_json",
