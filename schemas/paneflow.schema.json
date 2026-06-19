@@ -71,10 +71,10 @@
     },
     "agent_stall_threshold_secs": {
       "type": ["integer", "null"],
-      "description": "Silence threshold in seconds before a Thinking agent session is flagged Stalled. Checked by a 30 s sweep, so the effective granularity is threshold +/- 30 s. Out-of-range values are clamped.",
+      "description": "Silence threshold in seconds before a Thinking agent session is flagged Stalled (a likely-lost ai.stop). Checked by a 30 s sweep, so the effective detection latency is threshold + up to 30 s. Out-of-range values are clamped.",
       "minimum": 30,
       "maximum": 86400,
-      "default": 300
+      "default": 60
     },
     "review_prefill_delay_ms": {
       "type": ["integer", "null"],

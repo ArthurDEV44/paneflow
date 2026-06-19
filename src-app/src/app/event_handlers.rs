@@ -890,10 +890,11 @@ impl PaneFlowApp {
                     .collect::<Vec<_>>()
             })
             .collect();
-        // EP-004 US-011: Stalled detection (default ON, threshold default
-        // 300 s — both hot-reload aware via `cached_config`). The sweep runs
-        // every 30 s, so the effective granularity is threshold ± 30 s
-        // (documented in the PRD AC and the JSON-schema description).
+        // EP-004 US-011 (cli-cockpit) + US-013 (agent-control-plane): Stalled
+        // detection (default ON, threshold default 60 s, both hot-reload aware
+        // via `cached_config`). The sweep runs every 30 s, so the effective
+        // detection latency is threshold + up to 30 s granularity (documented
+        // in the PRD AC and the JSON-schema description).
         let stall_enabled = self.cached_config.agent_stall_detection_enabled();
         let stall_threshold = std::time::Duration::from_secs(
             self.cached_config.resolved_agent_stall_threshold_secs(),
@@ -929,8 +930,9 @@ impl PaneFlowApp {
             // and a NEW episode requires a fresh Thinking phase first.
             if stall_enabled {
                 for session in ws.agent_sessions.values_mut() {
-                    if session.state == ai_types::AgentState::Thinking
-                        && session.last_activity.elapsed() >= stall_threshold
+                    if session
+                        .state
+                        .stalls_after(session.last_activity.elapsed(), stall_threshold)
                     {
                         session.state = ai_types::AgentState::Stalled;
                         // This write bypasses `upsert_session_state`, so hold

@@ -63,6 +63,18 @@ impl AgentState {
             AgentState::Stalled => "stalled",
         }
     }
+
+    /// EP-004 US-013 (agent-control-plane): the watchdog rule. A session is
+    /// considered stalled (a likely-lost `ai.stop`, shim killed while the shell
+    /// lives) when it is still `Thinking` and its last hook activity is older
+    /// than `threshold`. Only `Thinking` qualifies, so the flip is once-per-
+    /// episode and non-sticky: any later hook routes through
+    /// `upsert_session_state`, which overwrites the state AND resets the idle
+    /// clock, so a `Stalled` (or `WaitingForInput`/`Finished`) session never
+    /// re-flips here. Pure, so the rule is unit-tested without the GPUI sweep.
+    pub fn stalls_after(&self, idle: std::time::Duration, threshold: std::time::Duration) -> bool {
+        matches!(self, AgentState::Thinking) && idle >= threshold
+    }
 }
 
 /// EP-004 US-010: classify the agent binary's raw exit code into the
@@ -248,6 +260,26 @@ mod tests {
 
     fn s(tool: TerminalAgent, state: AgentState) -> AgentSession {
         AgentSession::new(tool, state)
+    }
+
+    #[test]
+    fn stalls_after_only_thinking_past_threshold() {
+        // EP-004 US-013 / US-014: the watchdog rule.
+        use std::time::Duration;
+        let threshold = Duration::from_secs(60);
+        // AC1: a Thinking session idle past the threshold stalls (boundary is
+        // inclusive: elapsed >= threshold).
+        assert!(AgentState::Thinking.stalls_after(Duration::from_secs(61), threshold));
+        assert!(AgentState::Thinking.stalls_after(Duration::from_secs(60), threshold));
+        // AC2: fresh hook activity (idle below threshold) does not stall.
+        assert!(!AgentState::Thinking.stalls_after(Duration::from_secs(59), threshold));
+        // AC4 + structural dedup: a non-Thinking session never stalls, however
+        // idle — so an already-Stalled row cannot re-trigger, and a waiting or
+        // finished agent is never mislabelled.
+        assert!(!AgentState::Stalled.stalls_after(Duration::from_secs(600), threshold));
+        assert!(!AgentState::WaitingForInput.stalls_after(Duration::from_secs(600), threshold));
+        assert!(!AgentState::Finished.stalls_after(Duration::from_secs(600), threshold));
+        assert!(!AgentState::Errored.stalls_after(Duration::from_secs(600), threshold));
     }
 
     #[test]
