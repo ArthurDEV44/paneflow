@@ -111,6 +111,15 @@ Two more guardrails hold even with the gate on:
 
 A single `send` payload is capped at 64 KiB.
 
+Alternatively, enable **AI free access** (`ai_unrestricted`, Settings ->
+AI Agent) to open the write gate without the env var, so a conductor can
+`send --submit` to its peers directly. It is off by default, re-checked
+on every call (toggling it off revokes the capability with no residual
+access), and every write it authorizes is traced with the target pane
+and the caller PID. Best used on isolated worktrees or throwaway
+branches: an agent driving its peers has a wide blast radius. The
+injection fence below is independent and stays on.
+
 ## What is the injection fence? [#what-is-the-injection-fence]
 
 When one agent (a "conductor") reads another pane to decide what to do
