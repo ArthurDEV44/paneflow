@@ -1,0 +1,63 @@
+# review-pipeline.flow.toml
+#
+# EP-005 US-018 demo: a two-agent review loop driven entirely over Paneflow's
+# public CLI, no shell glue.
+#
+#   impl   - an implementer agent works the task, then prints a `DONE:` summary.
+#   review - once `impl` is done, a second-vendor agent reviews it, seeded with
+#            the captured summary.
+#
+# Validate it without touching any pane (parity dry-run):
+#
+#   paneflow flow run --dry-run examples/review-pipeline.flow.toml
+#
+# The `review` step auto-submits its prompt, so running it for real requires the
+# instance to be launched with PANEFLOW_IPC_SCRIPTING=1 (or AI free access on);
+# otherwise the flow is refused up-front with a clear message - it never silently
+# downgrades to a non-submitted send.
+#
+#   PANEFLOW_IPC_SCRIPTING=1 paneflow flow run examples/review-pipeline.flow.toml
+
+name = "review-pipeline"
+
+[defaults]
+timeout_secs = 600
+on_failure = "fail_fast"
+
+# 1. Implementer: do the work, then announce completion on a line we can match.
+[[step]]
+id = "impl"
+
+[step.pane]
+cwd = "."
+agent = "claude"
+prompt = """
+Implement the task described in TASK.md. When you are finished, print a single \
+line that starts with DONE: followed by a one-sentence summary of what changed.\
+"""
+
+[step.ready]
+pattern = "^DONE:"
+timeout_secs = 540
+
+[step.capture]
+var = "summary"
+lines = 40
+
+# 2. Reviewer: a different vendor reviews the implementer's work, seeded with the
+#    captured summary. Auto-submitted, so it exercises the scripting gate.
+[[step]]
+id = "review"
+needs = ["impl"]
+# `submit` is a top-level step field on a spawn step (it is `[step.send].submit`
+# for send steps). It auto-submits the prompt, so it needs the scripting gate.
+submit = true
+
+[step.pane]
+cwd = "."
+agent = "codex"
+prompt = """
+Review the implementation just completed in this repository. The implementer \
+reported: ${summary}. Call out correctness bugs, missing edge cases, and any \
+tests that should be added.\
+"""
