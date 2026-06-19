@@ -303,6 +303,12 @@ missing bootstrap root. A flow that submits anywhere checks the
 scripting gate via `system.capabilities` **before** any mutation —
 including under `--dry-run`.
 
+A ready-to-run copy of this flow is committed at
+`examples/review-pipeline.flow.toml`. For a manual that teaches an agent to
+*conduct* the fleet over this CLI (discover, read state, dispatch, wait on
+events, and when to hand back to a human), see
+`skills/paneflow-conductor/SKILL.md`.
+
 At runtime the engine ticks every 500 ms, polls barriers over the
 last 500 lines of scrollback, and lets prompts settle before feeding
 (two identical consecutive reads, floor 1.8 s, cap 8 s). `Ctrl-C`
