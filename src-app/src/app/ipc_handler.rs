@@ -482,6 +482,25 @@ pub(crate) fn paginate_scrollback(
     (window.join("\n"), window.len(), total, start == 0)
 }
 
+/// EP-004 US-014 (agent-control-plane): assemble the `surface.read` response.
+/// `output_generation` (EP-001 US-003) is purely additive, so legacy clients
+/// that ignore it keep working. Pure, so the wire contract is unit-tested.
+fn surface_read_value(
+    text: String,
+    returned: usize,
+    total: usize,
+    eof: bool,
+    output_generation: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "text": text,
+        "lines": returned,
+        "total_lines": total,
+        "eof": eof,
+        "output_generation": output_generation,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // EP-003 US-011 (agent-control-plane): anti-injection fence for `surface.read`.
 //
@@ -1668,13 +1687,7 @@ impl PaneFlowApp {
                 } else {
                     text
                 };
-                serde_json::json!({
-                    "text": text,
-                    "lines": returned,
-                    "total_lines": total,
-                    "eof": eof,
-                    "output_generation": output_generation,
-                })
+                surface_read_value(text, returned, total, eof, output_generation)
             }
             "fleet.list" => {
                 // EP-001 US-001 (agent-control-plane): snapshot every running
@@ -2129,8 +2142,13 @@ impl PaneFlowApp {
                 };
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
-                    let key =
-                        upsert_session_state(ws, pid, tool, ai_types::AgentState::Thinking, None);
+                    let key = upsert_session_state(
+                        &mut ws.agent_sessions,
+                        pid,
+                        tool,
+                        ai_types::AgentState::Thinking,
+                        None,
+                    );
                     // US-016: a new prompt invalidates the previous question.
                     if let Some(s) = ws.agent_sessions.get_mut(&key) {
                         s.message = None;
@@ -2181,7 +2199,7 @@ impl PaneFlowApp {
                     // promote it (or keep it) even if the prior state was
                     // Finished from a stale prompt-end.
                     let key = upsert_session_state(
-                        ws,
+                        &mut ws.agent_sessions,
                         pid,
                         tool,
                         ai_types::AgentState::Thinking,
@@ -2230,7 +2248,7 @@ impl PaneFlowApp {
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     let key = upsert_session_state(
-                        ws,
+                        &mut ws.agent_sessions,
                         pid,
                         tool,
                         ai_types::AgentState::WaitingForInput,
@@ -2296,8 +2314,13 @@ impl PaneFlowApp {
                     // code captured `pid` (None) and the `let Some(pid_key)`
                     // guard short-circuited, so that session's Finished state
                     // never auto-cleared and leaked into the sidebar forever.
-                    let session_key =
-                        upsert_session_state(ws, pid, tool, ai_types::AgentState::Finished, None);
+                    let session_key = upsert_session_state(
+                        &mut ws.agent_sessions,
+                        pid,
+                        tool,
+                        ai_types::AgentState::Finished,
+                        None,
+                    );
                     // US-016: the turn ended — the question is answered, no
                     // ghost message may survive into the next state.
                     if let Some(s) = ws.agent_sessions.get_mut(&session_key) {
@@ -2400,7 +2423,7 @@ impl PaneFlowApp {
                     // classifier is pure and unit-tested in `ai_types`.
                     let state = ai_types::state_for_exit(exit_code);
                     let errored = state == ai_types::AgentState::Errored;
-                    let key = upsert_session_state(ws, pid, tool, state, None);
+                    let key = upsert_session_state(&mut ws.agent_sessions, pid, tool, state, None);
                     // The binary is gone — whatever question it was asking is
                     // moot (same ghost-message rationale as `ai.stop`).
                     if let Some(s) = ws.agent_sessions.get_mut(&key) {
@@ -2601,8 +2624,12 @@ const SYNTHETIC_SESSION_PID_BASE: u32 = 0xFFFF_0000;
 /// no-pid frame. Callers that need to act on the same row later (e.g. the
 /// `ai.stop` auto-clear, U-014) must use THIS key, not the raw `pid`, or a
 /// no-pid session is stored under a synthetic key yet never cleared.
+// EP-004 US-014 (agent-control-plane): takes `&mut agent_sessions` rather than
+// `&mut Workspace` so the single state-write choke point is unit-testable
+// without a GPUI Workspace (which needs a live layout tree). Every `ai.*`
+// handler passes `&mut ws.agent_sessions`.
 fn upsert_session_state(
-    ws: &mut crate::workspace::Workspace,
+    sessions: &mut std::collections::HashMap<u32, AgentSession>,
     pid: Option<u32>,
     tool: crate::agent_launcher::TerminalAgent,
     state: ai_types::AgentState,
@@ -2611,8 +2638,7 @@ fn upsert_session_state(
     let key = match pid {
         Some(p) => p,
         None => {
-            if let Some((existing_pid, _)) = ws.agent_sessions.iter().find(|(_, s)| s.tool == tool)
-            {
+            if let Some((existing_pid, _)) = sessions.iter().find(|(_, s)| s.tool == tool) {
                 *existing_pid
             } else {
                 // US-026: allocate from a reserved high band that is disjoint
@@ -2624,7 +2650,7 @@ fn upsert_session_state(
                 // walk stops at the band floor instead of descending into the
                 // real-PID range.
                 let mut k: u32 = u32::MAX;
-                while k > SYNTHETIC_SESSION_PID_BASE && ws.agent_sessions.contains_key(&k) {
+                while k > SYNTHETIC_SESSION_PID_BASE && sessions.contains_key(&k) {
                     k -= 1;
                 }
                 k
@@ -2654,7 +2680,7 @@ fn upsert_session_state(
             None
         }
     };
-    ws.agent_sessions
+    sessions
         .entry(key)
         .and_modify(|s| {
             s.waiting_since =
@@ -3400,6 +3426,96 @@ mod tests {
         // No false positives: ordinary output is returned byte-for-byte.
         let clean = "build finished in 1.2s\nrunning 3 tests";
         assert_eq!(super::neutralize_sentinel(clean), clean);
+    }
+
+    // -----------------------------------------------------------------
+    // EP-004 US-014 (agent-control-plane) — surface.read shape + the
+    // ai.* state-machine choke point (upsert_session_state)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn surface_read_value_carries_output_generation() {
+        // AC1: the response includes text/lines/total_lines/eof AND the
+        // additive output_generation (EP-001 US-003), so a stability poll can
+        // read it and legacy clients ignoring it still parse the rest.
+        let v = super::surface_read_value("hello\nworld".to_string(), 2, 10, false, 42);
+        assert_eq!(v["text"], "hello\nworld");
+        assert_eq!(v["lines"], 2);
+        assert_eq!(v["total_lines"], 10);
+        assert_eq!(v["eof"], false);
+        assert_eq!(v["output_generation"], 42);
+    }
+
+    #[test]
+    fn upsert_session_state_transitions_keys_and_stamps() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::ai_types::{AgentSession, AgentState};
+        let mut sessions: std::collections::HashMap<u32, AgentSession> =
+            std::collections::HashMap::new();
+
+        // A real-PID frame creates the session in the requested state.
+        let key = super::upsert_session_state(
+            &mut sessions,
+            Some(4242),
+            TerminalAgent::ClaudeCode,
+            AgentState::Thinking,
+            Some("Edit".into()),
+        );
+        assert_eq!(key, 4242);
+        assert_eq!(sessions[&4242].state, AgentState::Thinking);
+        assert_eq!(sessions[&4242].active_tool_name.as_deref(), Some("Edit"));
+
+        // AC3: an ai.notification-style transition flips Thinking ->
+        // WaitingForInput in place, clears the active tool, and stamps the wait
+        // clock; the handler then stores the question on the same entry.
+        let key = super::upsert_session_state(
+            &mut sessions,
+            Some(4242),
+            TerminalAgent::ClaudeCode,
+            AgentState::WaitingForInput,
+            None,
+        );
+        assert_eq!(key, 4242, "same PID updates in place");
+        assert_eq!(sessions.len(), 1, "no duplicate session for the same PID");
+        assert_eq!(sessions[&4242].state, AgentState::WaitingForInput);
+        assert!(sessions[&4242].active_tool_name.is_none());
+        assert!(
+            sessions[&4242].waiting_since.is_some(),
+            "wait stamp set on entering WaitingForInput"
+        );
+        sessions.get_mut(&4242).unwrap().message = Some("Approve edit?".into());
+        assert_eq!(sessions[&4242].message.as_deref(), Some("Approve edit?"));
+
+        // A no-PID frame for the SAME tool updates the existing session.
+        let key = super::upsert_session_state(
+            &mut sessions,
+            None,
+            TerminalAgent::ClaudeCode,
+            AgentState::Finished,
+            None,
+        );
+        assert_eq!(
+            key, 4242,
+            "a no-pid frame matches the existing tool session"
+        );
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[&4242].state, AgentState::Finished);
+
+        // A no-PID frame for a NEW tool with no match allocates a synthetic key
+        // in the reserved high band, disjoint from real OS PIDs.
+        let mut fresh: std::collections::HashMap<u32, AgentSession> =
+            std::collections::HashMap::new();
+        let key = super::upsert_session_state(
+            &mut fresh,
+            None,
+            TerminalAgent::Codex,
+            AgentState::Thinking,
+            None,
+        );
+        assert!(
+            key >= super::SYNTHETIC_SESSION_PID_BASE,
+            "synthetic key lands in the reserved band"
+        );
     }
 
     // -----------------------------------------------------------------
