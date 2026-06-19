@@ -5,6 +5,21 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.5.10] - 2026-06-19
+
+A small polish release for the diff and agents views.
+
+### Fixed
+
+- Per-file horizontal scroll is back in the diff body. Each file in the Agents
+  diff dock and the Review column owns its own horizontal offset again (it was
+  lost when both views moved to the shared direct-paint pipeline), so long lines
+  scroll into view per file via Shift+wheel or a trackpad swipe while native
+  vertical scrolling stays untouched.
+- The Agents environment toolbar (model selector and layout toggles) no longer
+  paints over the first lines of the CLI at narrow window or panel widths. A
+  reserved top band keeps it in its own strip.
+
 ## [0.5.9] - 2026-06-18
 
 A review-workflow release. The Agents diff dock and the Review view now render
