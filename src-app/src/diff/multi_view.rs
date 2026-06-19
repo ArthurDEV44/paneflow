@@ -1,10 +1,10 @@
-//! US-014 (prd-git-diff-mode-2026-Q3.md): Multi-project scope — a **repo tab
+//! US-014 (prd-git-diff-mode-2026-Q3.md): Multi-project scope - a **repo tab
 //! bar** above a single, full-height [`DiffView`] for the selected repo.
 //!
 //! Each open repo is a tab; the selected repo's `DiffView` fills the whole area
 //! (its own worktree columns side by side, its own internal scroll), so two
 //! repos never compete for vertical space and there is no inner/outer scroll
-//! fight. Only the selected repo's `DiffView` is mounted (lazy) — switching
+//! fight. Only the selected repo's `DiffView` is mounted (lazy) - switching
 //! tabs drops the previous entity, releasing its filesystem watchers + git
 //! subprocesses, and bounds the watcher count to one repo regardless of how
 //! many are open. The base ref chosen in one repo is carried to the next tab
@@ -189,7 +189,7 @@ impl Render for MultiRepoDiffView {
         let ui = crate::theme::ui_colors();
 
         // Single chrome row (Codex redesign): scope breadcrumb (host slot) at
-        // the left, then the repo tabs. No own background and no border — the
+        // the left, then the repo tabs. No own background and no border - the
         // strip sits directly on the panel (`ui.base`).
         let scope_slot = self.scope_slot.take();
         let mut tabs = div()
@@ -218,7 +218,7 @@ impl Render for MultiRepoDiffView {
                 // Flat browser-style tab: accent underline + content-bg + bold
                 // when active; muted + transparent (border blends into the bar)
                 // otherwise. The 2px bottom border is always present so the row
-                // height does not jump between states. Repo name only — no git
+                // height does not jump between states. Repo name only - no git
                 // icon, no worktree-count badge (kept deliberately minimal).
                 div()
                     .id(SharedString::from(format!("multi-diff-tab-{i}")))

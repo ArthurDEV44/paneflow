@@ -3,7 +3,7 @@
 //! [`crate::cli`] formats human output for `paneflow mcp …`; this module
 //! returns the same orchestration as plain data so a GUI (the Settings
 //! button) can render a per-agent recap and derive a single
-//! [`OverallState`] for its button label — without parsing stdout.
+//! [`OverallState`] for its button label - without parsing stdout.
 //!
 //! These functions perform blocking filesystem / process I/O; callers on a
 //! UI thread MUST run them on a background executor (the Settings button
@@ -86,19 +86,19 @@ pub(crate) fn install_with(
 ) -> Result<Vec<AgentResult<InstallKind>>, String> {
     // US-038: resolve each writer's presence EXACTLY ONCE. `presence()` does a
     // PATH scan (via `which::which`, heavier on Windows `PATH × PATHEXT`); the
-    // old code called it twice per writer — both wasteful and a benign TOCTOU
+    // old code called it twice per writer - both wasteful and a benign TOCTOU
     // (the two non-atomic reads could disagree within one pass). Compute up
     // front, derive `any_present`, and iterate the cached booleans.
     let presences: Vec<bool> = writers.iter().map(|w| w.presence().is_present()).collect();
     let any_present = presences.iter().any(|&p| p);
     // Only require the bridge binary when there is at least one agent to
-    // write to — a machine with no agents is "nothing to do", not an error.
+    // write to - a machine with no agents is "nothing to do", not an error.
     let bridge = if any_present {
         match bridge {
             Some(p) if p.exists() => Some(p),
             Some(p) => {
                 return Err(format!(
-                    "MCP bridge binary is missing at {} — launch Paneflow once to extract it, then retry. Nothing was written.",
+                    "MCP bridge binary is missing at {} - launch Paneflow once to extract it, then retry. Nothing was written.",
                     p.display()
                 ));
             }

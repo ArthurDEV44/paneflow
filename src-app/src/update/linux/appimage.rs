@@ -1,16 +1,16 @@
 //! AppImage self-update via `appimageupdatetool` (US-010).
 //!
 //! Flow:
-//!   1. Resolve `appimageupdatetool` — always the pinned-tag, SHA-256-pinned
+//!   1. Resolve `appimageupdatetool` - always the pinned-tag, SHA-256-pinned
 //!      community release cached under our data dir (US-006: never a `$PATH`
 //!      lookup, which a hijacked PATH could subvert).
 //!   2. Invoke it with `-O` (overwrite in place) against the running
 //!      AppImage's source `.AppImage` file. zsync streams only the changed
-//!      blocks, typically 10–30 % of file size.
+//!      blocks, typically 10-30 % of file size.
 //!   3. Re-verify the rewritten AppImage against the new release's detached
 //!      minisign signature (US-006 / US-001). On failure we return an error
 //!      and never restart into it.
-//!   4. Return the unchanged source path — the file is updated in place.
+//!   4. Return the unchanged source path - the file is updated in place.
 //!      Caller passes it to `cx.set_restart_path()` for the GPUI launcher
 //!      to exec the new version.
 //!
@@ -22,7 +22,7 @@
 //! `appimageupdatetool` is itself a Type-2 AppImage and normally needs
 //! FUSE 2 at runtime. Ubuntu 24.04+ ships without `libfuse2`, and the
 //! forced-install breaks `ubuntu-session`. We set `APPIMAGE_EXTRACT_AND_RUN=1`
-//! on the child unconditionally — it works with OR without FUSE and side-
+//! on the child unconditionally - it works with OR without FUSE and side-
 //! steps the whole detection problem.
 
 use std::io::Read;
@@ -48,7 +48,7 @@ const UPDATE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// (`self_update_flow::DOWNLOAD_WATCHDOG`) is the second, longer backstop.
 const APPIMAGE_TOOL_DEADLINE: Duration = Duration::from_secs(10 * 60);
 
-/// stdout cap for `appimageupdatetool` — it only emits progress/status lines,
+/// stdout cap for `appimageupdatetool` - it only emits progress/status lines,
 /// so 1 MiB is far more than any honest run produces while bounding a runaway
 /// or hijacked tool.
 const APPIMAGE_TOOL_STDOUT_CAP: u64 = 1024 * 1024;
@@ -87,7 +87,7 @@ const APPIMAGEUPDATETOOL_SHA256_AARCH64: [u8; 32] = [
 ];
 
 /// Resolve `(url, expected_digest)` for the running arch. Returns an error
-/// for unsupported architectures — the caller surfaces it as a toast.
+/// for unsupported architectures - the caller surfaces it as a toast.
 fn tool_asset_for(arch: &str) -> Result<(&'static str, &'static [u8; 32])> {
     match arch {
         "x86_64" => Ok((TOOL_URL_X86_64, &APPIMAGEUPDATETOOL_SHA256_X86_64)),
@@ -106,11 +106,11 @@ fn tool_asset_for(arch: &str) -> Result<(&'static str, &'static [u8; 32])> {
 /// signature-failing bytes on disk (the targz/dmg/msi verify-then-rename model).
 ///
 /// `asset_url` is the `browser_download_url` of the new `.AppImage` release
-/// asset — its `.minisig` sibling is the US-001 trust anchor.
+/// asset - its `.minisig` sibling is the US-001 trust anchor.
 ///
-/// On any failure — missing tool, download error, network outage, missing
+/// On any failure - missing tool, download error, network outage, missing
 /// embedded update-information, zsync integrity mismatch, or a failed
-/// signature re-check — returns a human-readable error suitable for a toast.
+/// signature re-check - returns a human-readable error suitable for a toast.
 pub fn run_update(source_path: &Path, asset_url: &str) -> Result<PathBuf> {
     if source_path.as_os_str().is_empty() {
         bail!(
@@ -164,7 +164,7 @@ pub fn run_update(source_path: &Path, asset_url: &str) -> Result<PathBuf> {
     // US-006: re-verify the rewritten CANDIDATE against the new release's
     // detached minisign signature (the US-001 root of trust). zsync's own
     // rolling checksum only proves the delta reconstructed the file the
-    // `.zsync` control file described — it is NOT a signature, so a tampered
+    // `.zsync` control file described - it is NOT a signature, so a tampered
     // `gh-releases-zsync` channel could still deliver bad bytes. On failure we
     // delete the candidate and leave the live binary untouched: the caller
     // surfaces the "corrupt or tampered" toast and the user re-downloads.
@@ -172,13 +172,13 @@ pub fn run_update(source_path: &Path, asset_url: &str) -> Result<PathBuf> {
     // baked-in UPDATE_INFORMATION, which may briefly differ from the exact
     // version the checker resolved (a publish race: the new release exists but
     // is not yet promoted to `latest`). That divergence surfaces HERE as a
-    // signature mismatch — the bytes are a different (still-signed) release, so
+    // signature mismatch - the bytes are a different (still-signed) release, so
     // verification against THIS version's `asset_url` signature fails. The
     // context turns the otherwise-confusing dead-end into an actionable hint.
     // (We can't compare versions earlier without executing the unverified
     // candidate, which would defeat the point of this gate.)
     if let Err(e) = super::super::signature::fetch_and_verify(&candidate, asset_url).context(
-        "verify updated AppImage signature — if this recurs right after a release, the \
+        "verify updated AppImage signature - if this recurs right after a release, the \
          `latest` zsync channel may not yet point at the version the updater resolved; \
          retry in a few minutes",
     ) {
@@ -190,7 +190,7 @@ pub fn run_update(source_path: &Path, asset_url: &str) -> Result<PathBuf> {
     // same-filesystem rename. On Linux this replaces the inode while the
     // running process keeps its mapped pages, so the live image is only ever
     // a fully-verified release. (AppImage never runs on Windows, where rename
-    // over a running .exe would fail — same constraint the rest of this module
+    // over a running .exe would fail - same constraint the rest of this module
     // already relies on.) On a rename failure, drop the candidate rather than
     // leave an unverified-promotion half-state.
     if let Err(e) = std::fs::rename(&candidate, source_path).with_context(|| {
@@ -230,8 +230,8 @@ fn candidate_path_for(source_path: &Path) -> Result<PathBuf> {
 /// `which::which("appimageupdatetool")` lookup means a hijacked `$PATH`
 /// (a writable dir prepended ahead of `/usr/bin`) could substitute an
 /// attacker binary that we'd then exec with the user's privileges. Pinning
-/// to our own hash-verified, fixed-location tool — the `pkexec` model of a
-/// fixed trusted binary, never a PATH search — removes that vector. A
+/// to our own hash-verified, fixed-location tool - the `pkexec` model of a
+/// fixed trusted binary, never a PATH search - removes that vector. A
 /// distro-installed copy is ignored; the marginal re-download is a cheap
 /// price for a deterministic trust anchor.
 ///
@@ -239,7 +239,7 @@ fn candidate_path_for(source_path: &Path) -> Result<PathBuf> {
 /// against `APPIMAGEUPDATETOOL_SHA256_<ARCH>` before the file is renamed
 /// into the cache. A cached binary is re-verified on each resolve so that
 /// (a) tampering between runs fails closed, and (b) a constants bump
-/// invalidates stale caches from the previous pinned tag — no manual
+/// invalidates stale caches from the previous pinned tag - no manual
 /// `rm ~/.cache/paneflow/appimageupdatetool-*` step needed.
 ///
 /// Concurrent startup: two PaneFlow instances racing on the first update
@@ -261,7 +261,7 @@ fn resolve_tool() -> Result<PathBuf> {
             }
             Err(e) => {
                 // Stale cache from a prior pinned tag OR on-disk tampering.
-                // Either way, discard and re-download — the constants in
+                // Either way, discard and re-download - the constants in
                 // source are the trust root. Don't surface the mismatch as
                 // an error yet; the fresh download will either succeed
                 // (constants match the upstream binary) or fail with a
@@ -318,7 +318,7 @@ fn download_tool(url: &str, expected: &[u8; 32], dest: &Path) -> Result<()> {
         );
     }
 
-    // Stream to a `.partial` sibling, then rename — leaves no half-written
+    // Stream to a `.partial` sibling, then rename - leaves no half-written
     // tool around if we crash mid-download. `with_file_name` so the full
     // `.AppImage.partial` suffix is preserved (`with_extension` would drop
     // `.AppImage`).
@@ -332,13 +332,13 @@ fn download_tool(url: &str, expected: &[u8; 32], dest: &Path) -> Result<()> {
         .context("derive partial filename")?;
     let tmp = dest.with_file_name(partial_name);
 
-    // 100 MB cap on the tool download — the real binary is ~10 MB. A
+    // 100 MB cap on the tool download - the real binary is ~10 MB. A
     // malicious mirror returning an unbounded stream would otherwise fill
     // the cache filesystem before we notice.
     const MAX_TOOL_BYTES: u64 = 100 * 1024 * 1024;
     // Stream the body in an inner block so `file` drops before any
     // `remove_file` runs. On Windows, `DeleteFile` fails while a handle is
-    // open (ERROR_SHARING_VIOLATION) — keeping this scope tight is a
+    // open (ERROR_SHARING_VIOLATION) - keeping this scope tight is a
     // cross-platform requirement. US-001 AC7.
     let stream_result = {
         let reader = response.body_mut().as_reader();
@@ -357,7 +357,7 @@ fn download_tool(url: &str, expected: &[u8; 32], dest: &Path) -> Result<()> {
     let written = match stream_result {
         Ok(n) => n,
         Err(e) => {
-            // AC6: partial file never survives an I/O failure — the next
+            // AC6: partial file never survives an I/O failure - the next
             // run must re-download from scratch rather than trust a
             // truncated binary.
             let _ = std::fs::remove_file(&tmp);
@@ -367,7 +367,7 @@ fn download_tool(url: &str, expected: &[u8; 32], dest: &Path) -> Result<()> {
     if written > MAX_TOOL_BYTES {
         let _ = std::fs::remove_file(&tmp);
         bail!(
-            "Update tool download exceeded {} MiB — aborting. Try again later.",
+            "Update tool download exceeded {} MiB - aborting. Try again later.",
             MAX_TOOL_BYTES / 1024 / 1024
         );
     }
@@ -384,7 +384,7 @@ fn download_tool(url: &str, expected: &[u8; 32], dest: &Path) -> Result<()> {
 
     // `0o700`: cached binary is a user-private cache, no need to expose it
     // to other users on shared hosts. Also satisfies the "chmod +x" leg of
-    // US-005 AC4 — 0o700 includes the owner execute bit.
+    // US-005 AC4 - 0o700 includes the owner execute bit.
     //
     // AppImage is a Linux-only format, so this function never executes on
     // Windows; the cfg guard exists purely so the module still compiles on
@@ -406,7 +406,7 @@ fn download_tool(url: &str, expected: &[u8; 32], dest: &Path) -> Result<()> {
 /// Compute the SHA-256 of `file` and compare against `expected` byte-for-byte.
 /// Mismatch returns a typed [`IntegrityMismatch`] (anyhow-wrapped) so the
 /// top-level classifier routes to the "corrupt or tampered" toast and
-/// preserves both digests for logs — per US-005 AC2/AC3.
+/// preserves both digests for logs - per US-005 AC2/AC3.
 fn verify_sha256_of_file(file: &Path, expected: &[u8; 32]) -> Result<()> {
     let mut f = std::fs::File::open(file)
         .with_context(|| format!("open {} for hashing", file.display()))?;
@@ -445,7 +445,7 @@ fn invoke_tool(tool: &Path, target: &Path) -> Result<()> {
     // Ubuntu 24.04+ where `libfuse2` is no longer shipped by default.
     cmd.env("APPIMAGE_EXTRACT_AND_RUN", "1")
         // `-O` rewrites `target` in place. `target` is a sibling CANDIDATE
-        // copy of the live AppImage (run_update), never `$APPIMAGE` itself —
+        // copy of the live AppImage (run_update), never `$APPIMAGE` itself -
         // so the live binary is only ever replaced after signature
         // verification passes, via the atomic rename in run_update.
         .arg("-O")
@@ -463,7 +463,7 @@ fn invoke_tool(tool: &Path, target: &Path) -> Result<()> {
         Ok(output) => output,
         Err(paneflow_process::ProcError::Timeout) => {
             log::warn!(
-                "self-update/appimage: {} exceeded {APPIMAGE_TOOL_DEADLINE:?} — killed",
+                "self-update/appimage: {} exceeded {APPIMAGE_TOOL_DEADLINE:?} - killed",
                 tool.display(),
             );
             bail!(UpdateError::Timeout);
@@ -492,21 +492,21 @@ fn invoke_tool(tool: &Path, target: &Path) -> Result<()> {
         output.status
     );
     // Bail with a structured tag; the main-thread boundary downcasts to
-    // pick the correct toast copy (US-013). No info is lost — the raw
+    // pick the correct toast copy (US-013). No info is lost - the raw
     // stderr was just logged above.
     bail!(tag);
 }
 
 /// Map the free-form stderr/stdout of `appimageupdatetool` to an
 /// [`UpdateError`] variant. The tool is noisy and its messages aren't
-/// formally documented — we anchor on substrings observed in practice and
+/// formally documented - we anchor on substrings observed in practice and
 /// fall back to [`UpdateError::Other`] with a user-actionable sentence.
 ///
 /// Kept as a pure function so it can be unit-tested without spawning.
 fn classify_error(output: &str) -> UpdateError {
     let lower = output.to_ascii_lowercase();
     // FUSE 2 missing is the single most common "tool won't even start"
-    // failure on modern Ubuntu — check it before generic network/exit codes
+    // failure on modern Ubuntu - check it before generic network/exit codes
     // since it often surfaces as a shared-library load error rather than a
     // readable message.
     if lower.contains("libfuse.so.2")
@@ -516,7 +516,7 @@ fn classify_error(output: &str) -> UpdateError {
         return UpdateError::Fuse2Missing;
     }
     // "No update information" means this AppImage was built without the
-    // `UPDATE_INFORMATION` key — a permanent condition for that binary, so
+    // `UPDATE_INFORMATION` key - a permanent condition for that binary, so
     // treat it as a generic `Other` with an actionable hint.
     if lower.contains("no update information")
         || lower.contains("update information not found")
@@ -553,12 +553,12 @@ fn classify_error(output: &str) -> UpdateError {
     )
 }
 
-// US-005 — tests module gated to Linux because the fixtures use
+// US-005 - tests module gated to Linux because the fixtures use
 // `std::os::unix::fs::PermissionsExt` AND invoke real binaries like
 // `/bin/true` / `/bin/sh` with AppImage-specific semantics. macOS is
 // `cfg(unix)` but: (1) `/bin/true` spawn fails under the sandboxed
 // macOS Actions runner, and (2) AppImage is a Linux-only runtime
-// concept — exercising the tool-invoker on macOS has no value.
+// concept - exercising the tool-invoker on macOS has no value.
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
@@ -690,7 +690,7 @@ mod tests {
     /// failed verify. Here `/bin/true` stands in for the tool (it leaves the
     /// candidate unchanged), and the unsigned `cargo test` build makes
     /// `fetch_and_verify` fail closed (no embedded key) WITHOUT a network
-    /// call — so the rename is never reached and the live bytes must persist.
+    /// call - so the rename is never reached and the live bytes must persist.
     #[test]
     fn failed_verify_leaves_live_binary_untouched_and_no_candidate() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -766,7 +766,7 @@ mod tests {
         assert!(err.contains("cannot self-update"), "got: {err}");
     }
 
-    // Note: no dedicated test for `cache_path_for` — mutating process env
+    // Note: no dedicated test for `cache_path_for` - mutating process env
     // in a parallel test runner is a flake waiting to happen, and the fn
     // is trivially correct (just a `PathBuf::join`). The real-world
     // behavior is exercised transitively by `resolve_tool` when the user
@@ -774,7 +774,7 @@ mod tests {
 
     // ─── US-005: pinned-tag + digest verification ────────────────────────
 
-    /// The dated release tag is the trust anchor — kept as a single source
+    /// The dated release tag is the trust anchor - kept as a single source
     /// of truth here so a bump procedure updates one const and the two URL
     /// assertions pick it up automatically.
     const PINNED_TAG: &str = "2.0.0-alpha-1-20251018";
@@ -842,7 +842,7 @@ mod tests {
     }
 
     /// AC7 (continued): the mismatch error classifies as `IntegrityMismatch`
-    /// at the main-thread boundary — this is what drives the "corrupt or
+    /// at the main-thread boundary - this is what drives the "corrupt or
     /// tampered" toast.
     #[test]
     fn verify_sha256_mismatch_classifies_as_integrity() {
@@ -856,7 +856,7 @@ mod tests {
         ));
     }
 
-    /// AC7 (continued): simulate the download-time flow — file is created,
+    /// AC7 (continued): simulate the download-time flow - file is created,
     /// digest fails, the caller (download_tool) deletes the file. After the
     /// `remove_file` step the tampered file must NOT be present on disk.
     #[test]

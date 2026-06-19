@@ -1,10 +1,10 @@
-# pkg.paneflow.dev — APT + RPM repository runbook
+# pkg.paneflow.dev - APT + RPM repository runbook
 
 One-time setup and operator procedures for the hosted package repository.
 Referenced by US-015 (hosting) and US-017 (GPG signing).
 
 The CI workflow `.github/workflows/repo-publish.yml` automates every
-publish after a GitHub release is cut — this document covers only the
+publish after a GitHub release is cut - this document covers only the
 steps that cannot be automated (cloud console + secret provisioning) and
 the troubleshooting hooks for when things go wrong.
 
@@ -17,7 +17,7 @@ the troubleshooting hooks for when things go wrong.
    bucket-level region is ignored by rclone but affects replication).
 2. **Public read access:** under the bucket's *Settings* → *Public
    Access*, enable "Allow public access via custom domain". Do NOT
-   enable the `r2.dev` subdomain — that route doesn't support caching
+   enable the `r2.dev` subdomain - that route doesn't support caching
    rules and would let anyone scrape egress.
 3. **Custom domain:** bind **`pkg.paneflow.dev`** to the bucket. This
    requires the domain to be in the same Cloudflare account; if the
@@ -29,11 +29,11 @@ the troubleshooting hooks for when things go wrong.
 ## 2. R2 API credentials
 
 Cloudflare uses an S3-compatible API for R2. Create a dedicated token
-— do NOT reuse the account-wide token.
+ -  do NOT reuse the account-wide token.
 
 1. R2 → *Manage API tokens* → *Create API token*.
 2. Scope: **Object Read & Write**, bucket filter: **`paneflow-pkg`**.
-   (Not admin; not account-wide — scope to the single bucket.)
+   (Not admin; not account-wide - scope to the single bucket.)
 3. TTL: **no expiration** (rotate annually via calendar reminder).
 4. Copy the Access Key ID, Secret Access Key, and endpoint URL.
 
@@ -57,14 +57,14 @@ EOF
 # Grab the fingerprint for reprepro's SignWith config
 gpg --list-secret-keys --keyid-format=long paneflow-release@paneflow.dev
 
-# Export the private key (ASCII-armored — what the CI secret expects).
-# IMPORTANT: write to /tmp (ephemeral) — NEVER to the repo tree. An
+# Export the private key (ASCII-armored - what the CI secret expects).
+# IMPORTANT: write to /tmp (ephemeral) - NEVER to the repo tree. An
 # accidental `git add .` with the private key at the repo root would
 # leak the signing material permanently. `docs/release-signing.md:68`
 # uses the same convention; keep them aligned.
 gpg --armor --export-secret-keys paneflow-release@paneflow.dev > /tmp/paneflow-release-private.asc
 
-# Export the public key (ASCII-armored — committed to repo for audit).
+# Export the public key (ASCII-armored - committed to repo for audit).
 # This one is safe to write inside the tree.
 gpg --armor --export paneflow-release@paneflow.dev > packaging/paneflow-release.asc
 ```
@@ -86,14 +86,14 @@ human-readable list if any are missing.
 | Secret | Value | Notes |
 |---|---|---|
 | `GPG_PRIVATE_KEY` | Full content of `paneflow-release.asc` (private) | Starts with `-----BEGIN PGP PRIVATE KEY BLOCK-----` |
-| `GPG_PASSPHRASE` | Passphrase for the private key | Only used if you set one (our `%no-protection` default above leaves it empty — then use a single space) |
-| `GPG_KEY_ID` | 40-character fingerprint | e.g. `ABCD1234EF56...` — no spaces |
+| `GPG_PASSPHRASE` | Passphrase for the private key | Only used if you set one (our `%no-protection` default above leaves it empty - then use a single space) |
+| `GPG_KEY_ID` | 40-character fingerprint | e.g. `ABCD1234EF56...` - no spaces |
 | `R2_ACCESS_KEY_ID` | From step 2 | S3-compatible access key |
 | `R2_SECRET_ACCESS_KEY` | From step 2 | S3-compatible secret |
 | `R2_ENDPOINT` | `https://<account-id>.r2.cloudflarestorage.com` | From R2 dashboard |
 | `R2_BUCKET` | `paneflow-pkg` | Bucket name only (no `r2://` prefix) |
 
-## 5. First publish — bootstrap
+## 5. First publish - bootstrap
 
 The workflow assumes an empty bucket is a valid state. The first tag
 push after secrets are populated will:
@@ -120,7 +120,7 @@ sudo apt-cache policy paneflow   # should show pkg.paneflow.dev as a source
 sudo apt install paneflow
 
 # RPM
-# Bootstrap: download any released .rpm once, install it locally — its
+# Bootstrap: download any released .rpm once, install it locally - its
 # %post scriptlet drops /etc/yum.repos.d/paneflow.repo pointing at
 # pkg.paneflow.dev (US-016). Subsequent upgrades are automatic.
 curl -fsSLO https://github.com/ArthurDEV44/paneflow/releases/latest/download/paneflow-vX.Y.Z-x86_64.rpm
@@ -141,21 +141,21 @@ remove the old one.
 ### `rclone sync` fails with "403 Forbidden" on HEAD
 
 The workflow sets `RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true` precisely to
-avoid this — R2 returns 403 on the bucket-level HEAD even with correct
+avoid this - R2 returns 403 on the bucket-level HEAD even with correct
 credentials. If you see it anyway, verify the env var was set.
 
 ### `reprepro` hangs on key signing
 
 GPG is prompting for passphrase. The workflow pre-caches the passphrase
 via `gpg --quick-set-expire` as a side-effect, which won't help if the
-key has no passphrase (`%no-protection`) — in that case just remove the
+key has no passphrase (`%no-protection`) - in that case just remove the
 `GPG_PASSPHRASE` wiring. If the key is passphrase-protected, make sure
 `allow-loopback-pinentry` is in `~/.gnupg/gpg-agent.conf` and agent was
 killed with `gpgconf --kill gpg-agent`.
 
 ### A release was corrupted on R2
 
-The workflow is idempotent — re-running `workflow_dispatch` with the
+The workflow is idempotent - re-running `workflow_dispatch` with the
 same tag rebuilds metadata from the existing pool files and re-signs.
 If the pool itself is corrupted, delete the affected `*.deb`/`*.rpm`
 from R2 via the Cloudflare UI (or `rclone deletefile R2:paneflow-pkg/...`)
@@ -169,7 +169,7 @@ key. The user-facing fix is to:
 1. Generate a new key (step 3 above).
 2. Publish both the old public key and the new one at `/gpg` (concatenate
    the armored exports).
-3. Push a tag — the next publish re-signs everything with the new key.
+3. Push a tag - the next publish re-signs everything with the new key.
 4. After one release cycle, drop the old public key from `/gpg`.
 
 Clients who imported the old key will need to re-import from `/gpg`.

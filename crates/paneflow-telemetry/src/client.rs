@@ -1,11 +1,11 @@
 //! Minimal PostHog capture client (US-012).
 //!
-//! Design goals — in order of priority:
+//! Design goals - in order of priority:
 //! 1. **Never block the main thread.** Network I/O goes through an
 //!    `ActiveClient::post_batch` call that the caller schedules on a
 //!    background thread (`cx.background_spawn` in US-013, or a plain
 //!    `std::thread::spawn` at shutdown).
-//! 2. **Runtime-neutral.** We use blocking `ureq`, not `reqwest`/tokio —
+//! 2. **Runtime-neutral.** We use blocking `ureq`, not `reqwest`/tokio -
 //!    the PaneFlow desktop already ships `ureq` (self-update) and runs on
 //!    GPUI's `smol` executor. Adding tokio would fragment the async
 //!    surface and bloat the binary by several MB (see PRD Research
@@ -43,7 +43,7 @@ pub(crate) const BATCH_MAX_AGE: Duration = Duration::from_secs(30);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A single queued capture. We intentionally omit a client-side
-/// `timestamp` — PostHog server-stamps on receipt, which is accurate
+/// `timestamp` - PostHog server-stamps on receipt, which is accurate
 /// enough for a 30-second flush window and saves us a date-formatting
 /// crate.
 struct Event {
@@ -51,13 +51,13 @@ struct Event {
     properties: Value,
 }
 
-/// In-memory queue state. Guarded by a plain `Mutex` — contention is
+/// In-memory queue state. Guarded by a plain `Mutex` - contention is
 /// negligible (tens of events per session at most) and the critical
 /// sections are `Vec::push` / `mem::take`.
 struct Queue {
     events: Vec<Event>,
     /// Wall-clock timestamp of the moment the currently-buffered batch
-    /// started — reset to `None` every time the queue drains. Used to
+    /// started - reset to `None` every time the queue drains. Used to
     /// trigger the age-based flush in `should_flush`.
     first_queued_at: Option<Instant>,
 }
@@ -80,7 +80,7 @@ pub enum TelemetryClient {
 
 impl TelemetryClient {
     /// Unconditional Active constructor. The caller has already decided
-    /// telemetry is on — no consent checks happen here. Use
+    /// telemetry is on - no consent checks happen here. Use
     /// [`TelemetryClient::from_config`] for the gated factory.
     pub fn new(api_key: &str, host: &str, distinct_id: &str) -> Self {
         Self::Active(ActiveClient {
@@ -95,10 +95,10 @@ impl TelemetryClient {
     }
 
     /// Consent-aware factory. Returns `Null` if any of the gates fail:
-    /// - A kill-switch env var is set — any of `PANEFLOW_NO_TELEMETRY`,
+    /// - A kill-switch env var is set - any of `PANEFLOW_NO_TELEMETRY`,
     ///   `DO_NOT_TRACK`, or `NO_TELEMETRY`. Project-specific plus the two
-    ///   de-facto community standards (`DO_NOT_TRACK` — .NET SDK / GitHub
-    ///   CLI / Homebrew precedent; `NO_TELEMETRY` — the `no-telemetry`
+    ///   de-facto community standards (`DO_NOT_TRACK` - .NET SDK / GitHub
+    ///   CLI / Homebrew precedent; `NO_TELEMETRY` - the `no-telemetry`
     ///   universal opt-out). Unconditional; checked before consent state.
     /// - `config.telemetry` is `None` (user never prompted).
     /// - `config.telemetry.enabled` is `None` (block present but not answered).
@@ -107,7 +107,7 @@ impl TelemetryClient {
     /// Only `Some(true)` with no env kill-switch returns Active.
     ///
     /// A WARN log is emitted once when the caller builds an Active client
-    /// with an empty `api_key` — PostHog would otherwise 401 every batch
+    /// with an empty `api_key` - PostHog would otherwise 401 every batch
     /// silently, which only surfaces in the server dashboard.
     pub fn from_config(
         config: &PaneFlowConfig,
@@ -124,7 +124,7 @@ impl TelemetryClient {
         }
         if api_key.is_empty() {
             log::warn!(
-                "paneflow: telemetry is opted-in but POSTHOG_API_KEY was empty at build time — \
+                "paneflow: telemetry is opted-in but POSTHOG_API_KEY was empty at build time - \
                  PostHog will reject every batch with HTTP 401 and events will be silently \
                  dropped. Provide POSTHOG_API_KEY at build time or set PANEFLOW_NO_TELEMETRY=1 \
                  to suppress this warning."
@@ -151,7 +151,7 @@ impl TelemetryClient {
 
     /// Shutdown hook. Drains any pending events and waits up to
     /// `timeout` for the HTTP POST to complete. On timeout the batch is
-    /// dropped (its worker thread is detached) and shutdown continues —
+    /// dropped (its worker thread is detached) and shutdown continues -
     /// never block process exit on telemetry.
     pub fn flush_blocking(&self, timeout: Duration) {
         if let Self::Active(c) = self {
@@ -159,7 +159,7 @@ impl TelemetryClient {
         }
     }
 
-    /// Lightweight introspection for US-014 (settings toggle) — callers
+    /// Lightweight introspection for US-014 (settings toggle) - callers
     /// need to know whether to swap the client handle when consent changes.
     ///
     /// Currently only exercised by the unit-test suite; the reconcile path
@@ -176,7 +176,7 @@ impl ActiveClient {
     fn capture(&self, event: &str, properties: Value) {
         let Ok(mut q) = self.queue.lock() else {
             // Lock poisoning means a previous holder panicked. Silently
-            // drop the event — telemetry must never surface errors.
+            // drop the event - telemetry must never surface errors.
             return;
         };
         if q.events.is_empty() {
@@ -238,7 +238,7 @@ impl ActiveClient {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        // Timed out — detach. The thread may still be in flight; it's
+        // Timed out - detach. The thread may still be in flight; it's
         // bounded by `HTTP_TIMEOUT` and will terminate without external
         // intervention. No value in `join`-ing here since the caller
         // asked us to honor the deadline.
@@ -294,7 +294,7 @@ fn build_batch_body(api_key: &str, distinct_id: &str, batch: &[Event]) -> Value 
     })
 }
 
-/// POST the batch. Swallows every failure — transport errors and
+/// POST the batch. Swallows every failure - transport errors and
 /// non-2xx statuses both log at DEBUG and drop the batch silently. The
 /// client must never surface errors to users or to the caller.
 fn post_batch(api_key: &str, host: &str, distinct_id: &str, batch: &[Event]) {
@@ -338,7 +338,7 @@ mod tests {
     use std::sync::Mutex as StdMutex;
 
     // Env vars are process-global. Any test that mutates the kill-switch
-    // vars must serialize on this lock — otherwise a parallel `Null`-factory
+    // vars must serialize on this lock - otherwise a parallel `Null`-factory
     // test bleeds into the `Active`-factory test and the latter sees the
     // kill switch. The guard snapshots all three kill-switch vars so any
     // test that leaks one leaves no cross-test residue.
@@ -364,7 +364,7 @@ mod tests {
             Self { prior, _lock: lock }
         }
 
-        /// Sets `PANEFLOW_NO_TELEMETRY` specifically — preserved for the
+        /// Sets `PANEFLOW_NO_TELEMETRY` specifically - preserved for the
         /// pre-existing test that only exercises that variable.
         fn set(&self, value: Option<&str>) {
             self.set_var("PANEFLOW_NO_TELEMETRY", value);
@@ -372,7 +372,7 @@ mod tests {
 
         fn set_var(&self, key: &str, value: Option<&str>) {
             // SAFETY: serialized via ENV_LOCK held in `_lock` for the
-            // lifetime of the guard — no other test or production thread
+            // lifetime of the guard - no other test or production thread
             // mutates this variable during the critical section.
             unsafe {
                 match value {
@@ -589,7 +589,7 @@ mod tests {
         assert_eq!(batch[0]["event"], "app_started");
         assert_eq!(batch[0]["distinct_id"], "dist-123");
         assert_eq!(batch[0]["properties"]["os"], "linux");
-        // No client-side timestamp — server stamps on receipt.
+        // No client-side timestamp - server stamps on receipt.
         assert!(batch[0].get("timestamp").is_none());
     }
 
@@ -597,7 +597,7 @@ mod tests {
     // connection-refused / timeout path without relying on external
     // network state. The test proves two contracts simultaneously:
     // 1. `poll_flush` returns without panicking on transport failure.
-    // 2. The queue is drained regardless — v1 drops, does not retry.
+    // 2. The queue is drained regardless - v1 drops, does not retry.
     #[test]
     fn poll_flush_drops_batch_on_unroutable_host() {
         let c = TelemetryClient::new("phc", "http://127.0.0.1:1", "id");
@@ -620,7 +620,7 @@ mod tests {
         let c = TelemetryClient::new("phc", "http://127.0.0.1:1", "id");
         c.capture("e", json!({}));
         let start = Instant::now();
-        // Very short timeout — ensures we're testing the deadline path,
+        // Very short timeout - ensures we're testing the deadline path,
         // not waiting for ureq's HTTP_TIMEOUT (5s).
         c.flush_blocking(Duration::from_millis(100));
         let elapsed = start.elapsed();

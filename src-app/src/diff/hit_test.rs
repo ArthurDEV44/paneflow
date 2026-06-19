@@ -18,7 +18,7 @@ pub(crate) fn row_at_offset(offsets: &[f32], y: f32) -> Option<usize> {
     (1..offsets.len()).contains(&pp).then(|| pp - 1)
 }
 
-/// Cumulative top offset (px) of displayed row `idx` — an O(1) lookup into the
+/// Cumulative top offset (px) of displayed row `idx` - an O(1) lookup into the
 /// same prefix sum, replacing `rows[..idx].iter().map(height).sum()`. Returns
 /// `0.0` when `idx` is out of range.
 pub(super) fn row_top(offsets: &[f32], idx: usize) -> f32 {

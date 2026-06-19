@@ -7,7 +7,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// US-016: serialize every read-modify-write of `paneflow.json`.
 ///
-/// Settings-tab control handlers persist off the GPUI main thread — each
+/// Settings-tab control handlers persist off the GPUI main thread - each
 /// `persist_setting` spawns its own `cx.background_spawn → smol::unblock` task
 /// (`settings/window.rs`). Without this lock two rapid toggles run two
 /// independent `load_raw_config → mutate → write_config_checked` cycles on the
@@ -17,8 +17,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 /// Holding this guard across the whole load→write of each writer makes the RMW
 /// atomic w.r.t. other writers, so each one observes the previous one's result.
 ///
-/// (It does NOT order two writes of the *same* key — the last task to acquire
-/// wins regardless of spawn order — but `cached_config` in memory stays the
+/// (It does NOT order two writes of the *same* key - the last task to acquire
+/// wins regardless of spawn order - but `cached_config` in memory stays the
 /// source of truth for the live session, so a same-key reorder only matters
 /// across a restart, and is self-healed by the next write or external reload.)
 static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -52,7 +52,7 @@ fn write_config(path: &PathBuf, value: &serde_json::Value) {
 }
 
 /// Result-returning variant of [`write_config`]. Returns `true` on
-/// successful write, `false` otherwise (serialization or I/O error —
+/// successful write, `false` otherwise (serialization or I/O error -
 /// logged at WARN in both cases).
 fn write_config_checked(path: &PathBuf, value: &serde_json::Value) -> bool {
     if let Some(parent) = path.parent() {
@@ -68,7 +68,7 @@ fn write_config_checked(path: &PathBuf, value: &serde_json::Value) -> bool {
 
     // US-031: write atomically (tmp + rename) so a crash mid-write can't
     // truncate `paneflow.json`. A truncated file parses as invalid JSON, which
-    // `load_raw_config` silently swallows as an empty object — discarding the
+    // `load_raw_config` silently swallows as an empty object - discarding the
     // user's entire config. The temp file is PID-suffixed and lives in the
     // target's own directory so the rename stays on one filesystem (a
     // cross-FS rename is neither atomic nor, on some platforms, permitted).
@@ -137,7 +137,7 @@ pub fn save_config_value_checked(key: &str, value: serde_json::Value) -> bool {
 /// Removes (a) any prior binding for `action_name` (so a remap doesn't leave
 /// the old key live) and (b) any binding whose key collides with `new_key`
 /// (US-021: `new_key` now belongs to `action_name`, so its previous owner
-/// loses it — otherwise two user entries on the same physical chord would
+/// loses it - otherwise two user entries on the same physical chord would
 /// produce a GPUI-ambiguous double binding). The collision test is
 /// normalization-aware (`ctrl+shift+f` stored vs `ctrl-shift-f` recorded).
 fn merge_shortcut(
@@ -262,7 +262,7 @@ pub fn with_field(
 /// Save a single field inside the `"terminal": { ... }` block in `paneflow.json`
 /// (US-016 Terminal settings tab). A `Null` value removes the key (restoring
 /// the schema default on next load); the `"terminal"` object itself is left in
-/// place (an empty block is harmless — `#[serde(default)]` handles it).
+/// place (an empty block is harmless - `#[serde(default)]` handles it).
 pub fn save_terminal_field(key: &str, value: serde_json::Value) {
     let Some(path) = paneflow_config::loader::config_path() else {
         log::warn!("config: cannot determine config path, not saving");

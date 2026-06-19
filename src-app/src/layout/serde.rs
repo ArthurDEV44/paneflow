@@ -17,15 +17,15 @@ use super::tree::{LayoutChild, LayoutTree, SplitDirection};
 
 /// US-011: scrollback-capture strategy threaded through
 /// [`LayoutTree::serialize_with`]. The drain of a terminal's scrollback holds
-/// the term mutex and walks up to `MAX_LINES` grid rows — too heavy for the
+/// the term mutex and walks up to `MAX_LINES` grid rows - too heavy for the
 /// GPUI render thread, which is where every `save_session` call originates.
 pub(crate) enum ScrollbackCapture<'a> {
     /// Drain scrollback synchronously on the calling thread. Used by the IPC
     /// `workspace.current` reply, which already runs off a hot render path.
     Inline,
     /// Defer the drain: every terminal surface emits `scrollback: None` and
-    /// pushes its [`SharedTerm`] handle into the out vec — in the exact
-    /// surface-emission order — so `save_session` can drain them off-thread and
+    /// pushes its [`SharedTerm`] handle into the out vec - in the exact
+    /// surface-emission order - so `save_session` can drain them off-thread and
     /// splice them back with [`fill_scrollback`].
     Deferred(&'a mut Vec<SharedTerm>),
 }
@@ -55,7 +55,7 @@ impl LayoutTree {
         match self {
             LayoutTree::Leaf(pane) => {
                 let pane_ref = pane.read(cx);
-                // Markdown tabs are ephemeral — they hold no shell state and
+                // Markdown tabs are ephemeral - they hold no shell state and
                 // their file path can be reopened on demand. We persist only
                 // terminal tabs and let the user re-open markdown viewers
                 // after restart via the doc button. The active-tab marker
@@ -205,7 +205,7 @@ impl LayoutTree {
 /// [`LayoutTree::serialize_with`] under [`ScrollbackCapture::Deferred`], so the
 /// Nth handle drained corresponds to the Nth surface emitted. Consumes one
 /// handle per surface from `terms`; surfaces past the end of the iterator keep
-/// their `None` scrollback (defensive — counts always match in practice). The
+/// their `None` scrollback (defensive - counts always match in practice). The
 /// drain runs on the caller's thread, so callers must invoke this off the GPUI
 /// main thread (see `save_session`).
 pub(crate) fn fill_scrollback(node: &mut LayoutNode, terms: &mut impl Iterator<Item = SharedTerm>) {

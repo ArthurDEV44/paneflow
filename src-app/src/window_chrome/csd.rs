@@ -165,12 +165,12 @@ pub(crate) fn render_window_button(
     let hover_group = SharedString::from(format!("{id}-{side}-hover"));
     let is_left = side == "l";
 
-    // Windows: native Win11 caption buttons — 46px wide, full title-bar
+    // Windows: native Win11 caption buttons - 46px wide, full title-bar
     // height, square + flush, with the system hover palette (subtle white
     // overlay for min/max, #c42b1c red on close, #c84c3f when pressed). The
     // OS already hit-tests these regions as HT{MIN,MAX,CLOSE}, so snap
     // layouts and the actual minimize/maximize/close are system-handled
-    // (gpui_windows events.rs) — only the pixels are ours, making them
+    // (gpui_windows events.rs) - only the pixels are ours, making them
     // indistinguishable from the OS-drawn ones. Linux/macOS keep the compact
     // chrome-themed pills.
     let is_windows = cfg!(target_os = "windows");

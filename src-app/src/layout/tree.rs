@@ -17,14 +17,14 @@ use crate::pane::Pane;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum SplitDirection {
-    /// Horizontal divider — panes stacked top/bottom (flex_col)
+    /// Horizontal divider - panes stacked top/bottom (flex_col)
     Horizontal,
-    /// Vertical divider — panes side by side (flex_row)
+    /// Vertical divider - panes side by side (flex_row)
     Vertical,
 }
 
 // ---------------------------------------------------------------------------
-// Drag state — tracks an in-progress divider drag
+// Drag state - tracks an in-progress divider drag
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
@@ -36,7 +36,7 @@ pub(crate) struct DragState {
 }
 
 // ---------------------------------------------------------------------------
-// Layout tree — N-ary tree
+// Layout tree - N-ary tree
 // ---------------------------------------------------------------------------
 
 pub struct LayoutChild {
@@ -89,7 +89,7 @@ pub(super) fn redistribute_equal(children: &[LayoutChild], removed_ratio: f32) {
 /// Panics in debug builds if `idx >= children.len()`.
 pub(super) fn insert_sibling(children: &mut Vec<LayoutChild>, idx: usize, new_pane: Entity<Pane>) {
     debug_assert!(idx < children.len(), "insert_sibling: idx out of bounds");
-    // US-058: fail-safe on a stale index — `.get()` instead of `children[idx]`,
+    // US-058: fail-safe on a stale index - `.get()` instead of `children[idx]`,
     // which would panic in release. Halve the target's ratio inside a scoped
     // borrow so the borrow drops before the `children.insert` below.
     let half = {

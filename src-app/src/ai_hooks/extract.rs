@@ -1,4 +1,4 @@
-//! US-008 — atomic, idempotent extraction of the embedded AI-hook
+//! US-008 - atomic, idempotent extraction of the embedded AI-hook
 //! binaries into the user's per-OS cache directory.
 //!
 //! Layout produced by `ensure_binaries_extracted`:
@@ -19,10 +19,10 @@
 //!
 //! Idempotency: every target path's contents are SHA256-matched against
 //! the embedded bytes before rewriting. Re-extraction is a no-op when the
-//! cache is already up to date — verified by the `re_extraction_is_noop`
+//! cache is already up to date - verified by the `re_extraction_is_noop`
 //! unit test below.
 //!
-//! EP-001 US-003 — the `paneflow-mcp` bridge takes a **different** path.
+//! EP-001 US-003 - the `paneflow-mcp` bridge takes a **different** path.
 //! The shim/ai-hook helpers live in the version-pinned cache above because
 //! Paneflow re-resolves them on every launch. The bridge path, by contrast,
 //! is written into external, persistent agent configs by `paneflow mcp
@@ -35,7 +35,7 @@
 //! Unhappy path: every IO error surfaces as `anyhow::Err` so the caller
 //! (PTY spawn, US-009) can log-and-continue without the PATH-prepend
 //! instead of aborting the user's terminal session. Constraint C4 of the
-//! PRD mandates silent fail outside the PTY — the caller, not this
+//! PRD mandates silent fail outside the PTY - the caller, not this
 //! module, owns the log-and-skip policy.
 
 use std::io::Write;
@@ -52,7 +52,7 @@ use crate::assets::Bins;
 /// `Bins` `RustEmbed` archive.
 const TARGET_TRIPLE: &str = env!("PANEFLOW_TARGET_TRIPLE");
 
-/// Crate version — pins the cache-dir sub-folder so a `0.2.6 → 0.2.7`
+/// Crate version - pins the cache-dir sub-folder so a `0.2.6 → 0.2.7`
 /// upgrade re-extracts rather than reusing stale bytes. Matches
 /// `CARGO_PKG_VERSION` from the outer build.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -66,7 +66,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// being installed): probing Paneflow's own `$PATH` would silently disable
 /// hooks whenever the app is launched from a desktop entry with a minimal
 /// PATH while the PTY's login shell resolves the agent fine. The cost is
-/// bounded and visible — running a wrapped-but-uninstalled tool prints the
+/// bounded and visible - running a wrapped-but-uninstalled tool prints the
 /// shim's "could not find real …" message with exit 127, the same shape as
 /// command-not-found.
 fn extract_plan() -> Vec<(&'static str, &'static str)> {
@@ -93,7 +93,7 @@ fn embedded_bytes(name: &str) -> Result<std::borrow::Cow<'static, [u8]>> {
     let key = format!("bin/{TARGET_TRIPLE}/{name}");
     Bins::get(&key)
         .map(|f| f.data)
-        .ok_or_else(|| anyhow!("US-008: embed entry {key} missing — did build.rs stage it?"))
+        .ok_or_else(|| anyhow!("US-008: embed entry {key} missing - did build.rs stage it?"))
 }
 
 /// Internal layout-free pair used by `extract_into`. Decouples the
@@ -147,7 +147,7 @@ pub fn ensure_binaries_extracted() -> Result<PathBuf> {
     Ok(target_dir)
 }
 
-/// EP-001 US-003 — materialize the embedded `paneflow-mcp` bridge at the
+/// EP-001 US-003 - materialize the embedded `paneflow-mcp` bridge at the
 /// stable, non-versioned path returned by
 /// `runtime_paths::bridge_binary_path()` and return that absolute path.
 ///
@@ -159,7 +159,7 @@ pub fn ensure_binaries_extracted() -> Result<PathBuf> {
 /// file is rewritten atomically; when they match, this is a no-op (no churn).
 ///
 /// Unhappy path: if `data_dir()` is unresolvable / unwritable,
-/// `bridge_binary_path()` returns `None` and this returns `Err` — the caller
+/// `bridge_binary_path()` returns `None` and this returns `Err` - the caller
 /// at launch logs a warn and continues (the GUI still opens; `paneflow mcp
 /// install` will later refuse cleanly rather than write a config pointing at
 /// a non-existent path).
@@ -198,14 +198,14 @@ pub fn ensure_bridge_extracted() -> Result<PathBuf> {
     Ok(bridge_path)
 }
 
-/// EP-004 US-016 — materialize the embedded `paneflow-ai-hook` callback at the
+/// EP-004 US-016 - materialize the embedded `paneflow-ai-hook` callback at the
 /// stable, non-versioned path returned by
 /// `runtime_paths::ai_hook_binary_path()` and return that absolute path.
 ///
 /// Exactly mirrors [`ensure_bridge_extracted`] (same atomic-write +
 /// SHA256-compared idempotency), but targets the ai-hook binary so
 /// `paneflow hooks setup` can write a durable path into external agent configs
-/// that survives Paneflow updates — unlike the version-pinned cache copy the
+/// that survives Paneflow updates - unlike the version-pinned cache copy the
 /// shim resolves at launch.
 ///
 /// Unhappy path: `data_dir()` unresolvable -> `ai_hook_binary_path()` is `None`
@@ -260,7 +260,7 @@ pub(crate) fn extract_into(entries: &[Entry<'_>], target_dir: &Path) -> Result<(
         // Defense in depth: `EXTRACT_PLAN` contains only constant ASCII
         // basenames, but the crate-private `Entry` constructor is
         // reachable from anywhere in the crate. Reject any non-basename
-        // filename — both `/` and `\` regardless of host — so a future
+        // filename - both `/` and `\` regardless of host - so a future
         // caller cannot produce a write outside `target_dir`, and a
         // `..\\` injected on a Linux build-host still fires on a
         // Windows target.
@@ -278,7 +278,7 @@ pub(crate) fn extract_into(entries: &[Entry<'_>], target_dir: &Path) -> Result<(
         let final_path = target_dir.join(&entry.filename);
 
         // Idempotency fast-path: existing file with matching digest is
-        // kept as-is — avoids rewriting the file on every launch and
+        // kept as-is - avoids rewriting the file on every launch and
         // therefore avoids bumping its mtime, which some extraction-path
         // auditors (AV / code-signing verifiers on Windows) flag.
         if file_matches_digest(&final_path, entry.bytes)? {
@@ -291,14 +291,14 @@ pub(crate) fn extract_into(entries: &[Entry<'_>], target_dir: &Path) -> Result<(
         // Re-verify the just-written file. Catches the narrow race window
         // where an AV scanner (Windows Defender real-time protection) or a
         // FUSE filesystem rewrites the file between persist() and the
-        // shim's next exec — without this check, the corrupted bytes would
+        // shim's next exec - without this check, the corrupted bytes would
         // sit on disk forever because the idempotency fast-path above
         // would re-detect them as "matching whatever's on disk now".
         // Cost: one re-read + sha256 per *new* extraction (~600 KB), zero
         // on the fast-path.
         if !file_matches_digest(&final_path, entry.bytes)? {
             return Err(anyhow!(
-                "US-008: post-write digest mismatch for {} — \
+                "US-008: post-write digest mismatch for {} - \
                  filesystem or AV interference suspected",
                 final_path.display()
             ));
@@ -330,7 +330,7 @@ fn file_matches_digest(path: &Path, expected: &[u8]) -> Result<bool> {
     };
 
     let mut hasher = Sha256::new();
-    // 8 KiB buffer — the hook binaries are small (~200-600 KB), so
+    // 8 KiB buffer - the hook binaries are small (~200-600 KB), so
     // streaming makes no measurable difference, but it keeps the
     // comparator working even if a future binary ever grows past the
     // 1 MB cap.
@@ -396,7 +396,7 @@ fn write_atomic(final_path: &Path, bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
 
-    // Deterministic synthetic bytes — not real executables. The extraction
+    // Deterministic synthetic bytes - not real executables. The extraction
     // algorithm is content-agnostic, so non-executable payloads exercise
     // every code path (atomic write, chmod, SHA256 match) without
     // invoking a nested cargo build to produce the real binaries.
@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn re_extraction_is_noop() {
-        // First extraction — record each file's mtime. Second extraction
+        // First extraction - record each file's mtime. Second extraction
         // must leave mtimes untouched (idempotency via SHA256 fast-path).
         let dir = tempfile::TempDir::new().unwrap();
         let entries = synthetic_entries();
@@ -575,7 +575,7 @@ mod tests {
         // End-to-end smoke: calls the public entry point against the
         // real cache dir and asserts every TerminalAgent wrapper plus the
         // ai-hook callback lands. The cache dir is per-user and
-        // persistent, so this test is deliberately idempotent — safe to
+        // persistent, so this test is deliberately idempotent - safe to
         // run repeatedly. Skip when `dirs::cache_dir()` is unresolvable
         // (ephemeral CI containers with no `$HOME` set) so the test
         // becomes a no-op rather than a false failure in those
@@ -716,7 +716,7 @@ mod tests {
         std::fs::create_dir(&ro_parent).unwrap();
         std::fs::set_permissions(&ro_parent, std::fs::Permissions::from_mode(0o555)).unwrap();
 
-        // Target sub-dir inside the read-only parent — create_dir_all
+        // Target sub-dir inside the read-only parent - create_dir_all
         // should fail.
         let target = ro_parent.join("bin");
         let entries = synthetic_entries();

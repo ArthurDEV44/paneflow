@@ -46,7 +46,7 @@ pub fn to_esc_str(
     // with `option_as_meta: false` would otherwise lose Alt+Arrow entirely.
     let alt_phys = keystroke.modifiers.alt;
 
-    // Modifier+cursor/function combos (CSI 1;N) — resolved first so a modified
+    // Modifier+cursor/function combos (CSI 1;N) - resolved first so a modified
     // nav/fn key is never swallowed by the unmodified-key fast path below. Only
     // nav/fn keys match here; letters, enter, tab, escape, backspace fall
     // through to the modifier-gated logic unchanged.
@@ -130,7 +130,7 @@ pub fn to_esc_str(
             "x" => Some("\x18"),
             "y" => Some("\x19"),
             "z" => Some("\x1a"),
-            "[" => Some("\x1b"), // Same as Escape — standard ANSI behavior
+            "[" => Some("\x1b"), // Same as Escape - standard ANSI behavior
             "\\" => Some("\x1c"),
             "]" => Some("\x1d"),
             "^" => Some("\x1e"),
@@ -146,7 +146,7 @@ pub fn to_esc_str(
         }
     }
 
-    // Special keys — no modifiers
+    // Special keys - no modifiers
     if !ctrl && !shift && !alt {
         let app_cursor = mode.contains(Modes::APP_CURSOR);
         let seq: Option<&'static str> = match key {
@@ -184,7 +184,7 @@ pub fn to_esc_str(
             "f10" => Some("\x1b[21~"),
             "f11" => Some("\x1b[23~"),
             "f12" => Some("\x1b[24~"),
-            // F13–F20 (xterm numbering: 27 and 30 skipped)
+            // F13-F20 (xterm numbering: 27 and 30 skipped)
             "f13" => Some("\x1b[25~"),
             "f14" => Some("\x1b[26~"),
             "f15" => Some("\x1b[28~"),
@@ -243,7 +243,7 @@ pub fn to_esc_str(
         return Some(Cow::Owned(format!("\x1b{key}")));
     }
 
-    // Not a special key — caller should handle as printable character input
+    // Not a special key - caller should handle as printable character input
     None
 }
 

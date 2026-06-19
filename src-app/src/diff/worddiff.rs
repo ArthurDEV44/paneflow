@@ -18,7 +18,7 @@ use imara_diff::{Algorithm, Sink, diff};
 /// renames, parameter changes spanning 10-20 lines) are exactly the hunks worth
 /// diffing precisely, and the `imara-diff` Histogram pass is microseconds/line
 /// off-thread, so there is no perceptible cost. Larger hunks fall back to
-/// line-level highlighting only — no per-line word-diff cliff.
+/// line-level highlighting only - no per-line word-diff cliff.
 pub const MAX_WORD_DIFF_LINE_COUNT: u32 = 20;
 
 /// Split `text` into maximal runs of word chars (`alphanumeric` / `_`) vs

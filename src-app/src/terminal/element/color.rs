@@ -5,7 +5,7 @@
 //!
 //! 1. **APCA contrast** (`ensure_minimum_contrast`): fixes foreground/background
 //!    pairs that fail the APCA (Accessible Perceptual Contrast Algorithm) Lc
-//!    threshold. Polarity-aware and perceptually uniform — more accurate than
+//!    threshold. Polarity-aware and perceptually uniform - more accurate than
 //!    WCAG 2.0 on dark backgrounds. Matches Zed's algorithm.
 //! 2. **Color resolution** (`convert_color`, `named_color`, `indexed_color`):
 //!    translates alacritty `AnsiColor` (Named/Spec/Indexed) into themed `Hsla`,
@@ -19,7 +19,7 @@ use crate::terminal::types::{Color, NamedColor};
 use crate::theme::TerminalTheme;
 
 // ---------------------------------------------------------------------------
-// Minimum contrast (APCA — Accessible Perceptual Contrast Algorithm)
+// Minimum contrast (APCA - Accessible Perceptual Contrast Algorithm)
 // ---------------------------------------------------------------------------
 
 /// APCA constants (0.0.98G-4g W3 compatible).
@@ -263,7 +263,7 @@ fn named_color(name: NamedColor, theme: &TerminalTheme) -> Hsla {
 /// Convert the xterm-256color indexed palette to HSLA.
 fn indexed_color(i: u8, theme: &TerminalTheme) -> Hsla {
     if i < 16 {
-        // Standard 16 colors — map to named
+        // Standard 16 colors - map to named
         return named_color(
             match i {
                 0 => NamedColor::Black,

@@ -12,7 +12,7 @@
 //! Reuses the session data layer verbatim (`SessionMeta`,
 //! `read_sessions_for_cwd`, `enabled_session_agents`). Per-group cap-5 /
 //! "Show more" / collapse caret and the per-group "new session" affordance land
-//! in EP-002 — this slice swaps the surface and renders flat groups.
+//! in EP-002 - this slice swaps the surface and renders flat groups.
 
 use gpui::{
     AnyElement, ClickEvent, Context, FontWeight, Hsla, InteractiveElement, IntoElement,
@@ -23,7 +23,7 @@ use crate::PaneFlowApp;
 use crate::agent_sessions::{SessionAgent, SessionMeta, format_relative_time};
 use crate::pane_drag::{SessionDrag, TabDragPreview};
 
-/// Fixed sidebar width — between the CLI (220) and Agents (280) left sidebars,
+/// Fixed sidebar width - between the CLI (220) and Agents (280) left sidebars,
 /// matching VS Code's secondary-bar default. Resizable width is deferred.
 const SIDEBAR_WIDTH: Pixels = px(300.);
 const ROW_HEIGHT: Pixels = px(30.);
@@ -81,10 +81,10 @@ impl PaneFlowApp {
         self.agent_sessions.claude_sessions_scroll = gpui::ScrollHandle::new();
 
         if let Some(cwd) = cwd_str {
-            // Parallel scans — Claude Code under `~/.claude/projects/<slug>/`,
+            // Parallel scans - Claude Code under `~/.claude/projects/<slug>/`,
             // Codex CLI under `~/.codex/sessions/YYYY/MM/DD/`, and OpenCode
             // via a `opencode session list --format json` shell-out (the
-            // SQLite schema is unstable; the CLI is the published contract —
+            // SQLite schema is unstable; the CLI is the published contract -
             // see US-001 spike notes). Each task writes to its own Vec on the
             // main thread. The sidebar may be closed or re-targeted against a
             // different cwd before any scan finishes, so stale results are
@@ -211,7 +211,7 @@ impl PaneFlowApp {
             .items_center()
             .justify_between()
             .gap(px(8.))
-            // Quiet header — no divider (Codex: separation by spacing, not
+            // Quiet header - no divider (Codex: separation by spacing, not
             // borders). 36px matches the unified chrome row height.
             .h(px(36.))
             .flex_none()
@@ -299,7 +299,7 @@ impl PaneFlowApp {
             .flex_col()
             .flex_1()
             .py(px(6.))
-            // US-009: vertical scroll only — never let a long row title push the
+            // US-009: vertical scroll only - never let a long row title push the
             // panel into horizontal scrolling.
             .overflow_x_hidden()
             .overflow_y_scroll()
@@ -323,7 +323,7 @@ impl PaneFlowApp {
         let scanning = self.agent_sessions.sessions_scanning[idx];
         let sessions = self.sessions_for(agent);
         // Distinct chevron per state (US-006): right = collapsed, down =
-        // expanded — a static swap, not a tween, so it reads under reduced
+        // expanded - a static swap, not a tween, so it reads under reduced
         // motion.
         let chevron = if collapsed {
             "icons/chevron-right.svg"
@@ -333,7 +333,7 @@ impl PaneFlowApp {
 
         // US-006: the whole header toggles the group's collapse. Styled as a
         // section eyebrow (the Agents-sidebar language): small semibold muted
-        // label, brand glyph kept in its native accent — the only color in
+        // label, brand glyph kept in its native accent - the only color in
         // the rail, carrying real signal (which tool).
         let header = div()
             .id(SharedString::from(format!(
@@ -505,7 +505,7 @@ impl PaneFlowApp {
                 }
                 cx.stop_propagation();
             }))
-            // Per-session agent glyph in its brand accent — a touch smaller
+            // Per-session agent glyph in its brand accent - a touch smaller
             // than the group-header mark so the header still reads as the
             // section anchor.
             .child(
@@ -554,7 +554,7 @@ impl PaneFlowApp {
         }
     }
 
-    /// Tear down all sidebar state in one place — used by the header close
+    /// Tear down all sidebar state in one place - used by the header close
     /// button and the tab-bar toggle (in `event_handlers`).
     pub(crate) fn close_sessions_sidebar(&mut self, cx: &mut Context<Self>) {
         self.agent_sessions.sessions_sidebar_open = false;
@@ -563,7 +563,7 @@ impl PaneFlowApp {
         self.agent_sessions.opencode_sessions.clear();
         self.agent_sessions.claude_sessions_cwd = None;
         self.agent_sessions.claude_sessions_pane = None;
-        // US-006: per-group state is in-memory only — reset so a reopen starts
+        // US-006: per-group state is in-memory only - reset so a reopen starts
         // expanded and capped, never stale.
         self.agent_sessions.sessions_group_collapsed = [false; 3];
         self.agent_sessions.sessions_group_show_all = [false; 3];
@@ -588,7 +588,7 @@ pub(crate) fn agent_index(agent: SessionAgent) -> usize {
 
 /// Given a group of `len` rows, the cap, and whether the group is expanded,
 /// return `(visible, remaining)`: how many rows to render and how many are
-/// hidden behind "Show more". Pure — unit-tested (US-005).
+/// hidden behind "Show more". Pure - unit-tested (US-005).
 fn visible_window(len: usize, show_all: bool, cap: usize) -> (usize, usize) {
     if show_all || len <= cap {
         (len, 0)
@@ -630,7 +630,7 @@ fn agent_label(agent: SessionAgent) -> &'static str {
     }
 }
 
-/// Brand glyph for a group/session — the same monochrome (`currentColor`) SVGs
+/// Brand glyph for a group/session - the same monochrome (`currentColor`) SVGs
 /// the tab-bar launcher buttons use, tinted at the call site.
 fn agent_icon_path(agent: SessionAgent) -> &'static str {
     match agent {
@@ -640,7 +640,7 @@ fn agent_icon_path(agent: SessionAgent) -> &'static str {
     }
 }
 
-/// Accent for a group's brand glyph — matches the launcher buttons in
+/// Accent for a group's brand glyph - matches the launcher buttons in
 /// `pane.rs` (Claude orange, Codex blue). OpenCode's mark is monochrome, so it
 /// rides the theme text color to stay legible on dark and light surfaces.
 fn agent_brand_color(agent: SessionAgent, ui: crate::theme::UiColors) -> Hsla {
@@ -663,7 +663,7 @@ fn claude_bypass_enabled() -> bool {
 /// For Claude, honor `claude_code_bypass_permissions` so resumed sessions match
 /// a fresh launch from the tab-bar button.
 ///
-/// Returns `None` when `session_id` fails the strict allow-list — a last gate
+/// Returns `None` when `session_id` fails the strict allow-list - a last gate
 /// before interpolation so a tampered record that somehow bypassed the scanner
 /// filter (`*_sessions.rs`) can never inject a second shell command. Callers
 /// skip the send on `None`.
@@ -702,7 +702,7 @@ mod tests {
         // persisted/restored `session_id` into a PTY command line. It must
         // re-gate via `is_valid_session_id` so a flag-shaped value (one that
         // could inject e.g. `--dangerously-skip-permissions`) is refused at
-        // the builder boundary — the call sites skip the send on `None`.
+        // the builder boundary - the call sites skip the send on `None`.
         // This proves the integration, not just the predicate
         // (`agent_sessions::valid_session_id_rejects_leading_dash_*`).
         for agent in [

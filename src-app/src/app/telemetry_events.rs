@@ -1,10 +1,10 @@
-//! v1 desktop telemetry events — `app_started`, `app_exited`,
+//! v1 desktop telemetry events - `app_started`, `app_exited`,
 //! `update_installed` (US-013). Thin wrappers over the client in
 //! `telemetry::client`; all property construction lives here so the
 //! event schema is auditable in one place (cross-referenced with the
 //! compliance record at `tasks/compliance-analytics.md §5`).
 //!
-//! None of these helpers check consent — that's already the
+//! None of these helpers check consent - that's already the
 //! `TelemetryClient::from_config` factory's job in bootstrap. If the
 //! client is `Null`, every `capture` call is a no-op and no HTTP
 //! request is made, satisfying PRD AC #6.
@@ -27,7 +27,7 @@ impl PaneFlowApp {
     /// Emit a `session_corrupted` event with the forensic context
     /// `app::session::load_session_at` gathered before falling back to
     /// an empty session (US-006). Consent gating is inherited from the
-    /// `TelemetryClient` constructed in bootstrap — when the user has
+    /// `TelemetryClient` constructed in bootstrap - when the user has
     /// telemetry off the client is `Null` and the call is a no-op, so
     /// no network request fires.
     ///
@@ -69,12 +69,12 @@ impl PaneFlowApp {
 
     /// Fire `app_exited` and block up to [`SHUTDOWN_FLUSH_TIMEOUT`] for
     /// the batch to reach PostHog. Called from `on_window_should_close`
-    /// before `cx.quit()` — we accept a ≤2 s shutdown delay so the last
+    /// before `cx.quit()` - we accept a ≤2 s shutdown delay so the last
     /// session's data lands; the client itself detaches its worker on
     /// timeout, so process exit never waits longer than that.
     ///
     /// `session_duration_seconds` is computed from `self.launch_instant`
-    /// captured in bootstrap — monotonic, wall-clock-change-proof.
+    /// captured in bootstrap - monotonic, wall-clock-change-proof.
     pub(crate) fn emit_app_exited_and_flush(&self) {
         let duration_seconds = self.launch_instant.elapsed().as_secs();
         self.telemetry.capture(
@@ -89,7 +89,7 @@ impl PaneFlowApp {
     /// Fire `update_installed { success: true, ... }` WITHOUT blocking.
     ///
     /// US-017: this is emitted at *pre-install success* (the update is staged
-    /// and we flip to `ReadyToRestart`), where the process is **not** exiting —
+    /// and we flip to `ReadyToRestart`), where the process is **not** exiting -
     /// the user restarts later via a separate, deliberately zero-I/O click that
     /// calls `cx.restart()`. Blocking the render thread on a network flush here
     /// is wrong: just `capture()` and let the 5 s background `poll_flush` loop
@@ -117,13 +117,13 @@ impl PaneFlowApp {
     }
 
     /// Fire `update_installed { success: false, error_category: ... }`
-    /// without blocking — the process is NOT about to die, so we let
+    /// without blocking - the process is NOT about to die, so we let
     /// the background flush loop pick this up on its next tick.
     ///
     /// Called from the single choke-point `PaneFlowApp::record_update_failure`
     /// after the error has been classified. Only a canonical
-    /// `error_category` label is sent — never the error message
-    /// (PRD AC #4: "no error message details — just category").
+    /// `error_category` label is sent - never the error message
+    /// (PRD AC #4: "no error message details - just category").
     pub(crate) fn emit_update_failure(&self, err: &UpdateError) {
         let to_version = match self.self_update.update_status.as_ref() {
             Some(update::checker::UpdateStatus::Available { version, .. }) => version.clone(),
@@ -178,7 +178,7 @@ impl PaneFlowApp {
 /// "×" click on the title-bar pill fires
 /// [`UpdateDismissReason::UserDismissed`]; [`UpdateDismissReason::DialogClosed`]
 /// is reserved for the (not-yet-implemented) modal-dialog dismiss path
-/// from the PRD's AC3 "ferme le dialog d'update" branch — kept in the
+/// from the PRD's AC3 "ferme le dialog d'update" branch - kept in the
 /// v1 schema so dashboards don't need a back-fill migration once that
 /// path lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,7 +223,7 @@ pub(crate) fn emit_update_check_started(
 
 /// Build the `update_available` property bag (US-007 AC2). The caller
 /// must have already verified that an asset matched the host install
-/// method — this helper does no filtering of its own.
+/// method - this helper does no filtering of its own.
 pub(crate) fn update_available_props(
     from_version: &str,
     to_version: &str,
@@ -275,7 +275,7 @@ pub(crate) fn emit_update_dismissed_via(
 #[cfg(test)]
 mod tests {
     //! US-022 (verify-not-fix): PII-absence guard for the v1 telemetry
-    //! event-property surface. PII is excluded *by construction* — every
+    //! event-property surface. PII is excluded *by construction* - every
     //! string-valued property is a platform const (`std::env::consts`), a
     //! compile-time version (`CARGO_PKG_VERSION`) or release-feed semver, a
     //! canonical `&'static str` tag (`install_method_tag`/`error_category_tag`,
@@ -373,7 +373,7 @@ mod tests {
         }));
 
         // session_corrupted: a typed error bucket + numeric size/age + a BOOL
-        // `backup_written` — deliberately NOT the backup PATH (which carries
+        // `backup_written` - deliberately NOT the backup PATH (which carries
         // $HOME / the username). Rebuilt with the same value expressions
         // `emit_session_corrupted` uses, so the guard pins THIS shape: a future
         // edit that swaps the bool for `backup_path.to_string_lossy()` trips the
@@ -384,7 +384,7 @@ mod tests {
             "file_age_seconds": 12u64,
             "backup_written": true,
         }));
-        // app_exited: a single numeric duration — no string surface at all.
+        // app_exited: a single numeric duration - no string surface at all.
         assert_pii_safe(&json!({
             "session_duration_seconds": 42u64,
         }));
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn distinct_id_is_a_uuid_v4_unrelated_to_identity() {
-        // The distinct_id is an anonymous per-install UUID v4 — never a
+        // The distinct_id is an anonymous per-install UUID v4 - never a
         // username/hostname/email. Persistence + degraded modes are covered
         // by `paneflow_telemetry::id::tests`; here we pin the v4 shape and
         // that the value itself is PII-safe. Manual nibble check avoids a

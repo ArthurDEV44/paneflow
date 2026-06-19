@@ -5,8 +5,8 @@ agents in parallel. One Rust binary, no web runtime: the UI is built on
 [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui)
 framework, terminal emulation is upstream
 [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal), and
-everything else — PTY management, agent lifecycle tracking, IPC, the MCP
-bridge, self-update — is purpose-built in this repository.
+everything else - PTY management, agent lifecycle tracking, IPC, the MCP
+bridge, self-update - is purpose-built in this repository.
 
 This document describes how the pieces fit together. It is aimed at
 contributors and at anyone curious how you build a multiplexing terminal app
@@ -38,7 +38,7 @@ and never links GPUI.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Main thread — GPUI event loop                           │
+│ Main thread - GPUI event loop                           │
 │   owns all Entity state, rendering, input dispatch      │
 └─────────────────────────────────────────────────────────┘
         ▲                    ▲                    ▲
@@ -62,7 +62,7 @@ and never links GPUI.
   pipe (Windows). Stateless methods reply in place; stateful methods are
   dispatched to the main thread over a channel.
 - Blocking work (git subprocesses, filesystem walks, fleet-wide search) is
-  pushed to background executors — registering a recursive file watcher or
+  pushed to background executors - registering a recursive file watcher or
   scanning a monorepo on the render thread is how you get a
   "not responding" window, so the codebase treats the main thread as
   render-only.
@@ -77,8 +77,8 @@ KeyDownEvent
   → write_to_pty() → PTY EventLoop thread → shell / agent CLI
   → output bytes → VTE parser → Term grid mutations
   → Wakeup event → channel → 4ms timer poll → sync() → cx.notify()
-  → TerminalElement::prepaint()  — lock grid, snapshot renderable content
-  → TerminalElement::paint()     — quads + shaped glyph runs
+  → TerminalElement::prepaint()  - lock grid, snapshot renderable content
+  → TerminalElement::paint()     - quads + shaped glyph runs
   → GPU (Vulkan on Linux, Metal on macOS, DirectX on Windows)
 ```
 
@@ -93,7 +93,7 @@ keystroke at ingress and reports time-to-pixel.
 
 ## Terminal emulation behind a boundary
 
-Paneflow uses **upstream** `alacritty_terminal` from crates.io — not a fork.
+Paneflow uses **upstream** `alacritty_terminal` from crates.io - not a fork.
 All alacritty types are confined behind neutral wrapper types in
 `src-app/src/terminal/types.rs`, and a guard test enforces that only an
 explicit allowlist of files may import `alacritty_terminal` directly. The rest
@@ -127,7 +127,7 @@ agent CLI (claude, codex, opencode, …)
   terminal-activity detection.
 - **States**: thinking, waiting for input (with the actual prompt text),
   finished, errored (non-zero exit), stalled (no hook activity past a
-  threshold). Each state routes to the UI — and to your own tooling, since
+  threshold). Each state routes to the UI - and to your own tooling, since
   the same events are observable over IPC.
 
 Everything is human-in-the-loop by design: Paneflow pre-fills prompts into
@@ -137,7 +137,7 @@ real PTY sessions, it never drives an agent headlessly.
 
 A JSON-RPC 2.0 endpoint (Unix socket at `$XDG_RUNTIME_DIR/paneflow/`, named
 pipe on Windows) exposes `system.*`, `workspace.*`, `surface.*` and `ai.*`
-namespaces — enough to script workspace creation, send text to panes, and
+namespaces - enough to script workspace creation, send text to panes, and
 subscribe to agent events. The `paneflow` CLI (`paneflow up`, `paneflow flow`)
 is built on the same socket.
 
@@ -167,7 +167,7 @@ signed + notarized, with the Team ID pinned at verification time.
 Telemetry is **disabled by default**. A first-run modal asks for consent; no
 event is sent unless the answer is an explicit yes, and
 `PANEFLOW_NO_TELEMETRY=1` overrides everything unconditionally. The full
-client lives in `crates/paneflow-telemetry/` — the event set is five
+client lives in `crates/paneflow-telemetry/` - the event set is five
 app-lifecycle events (`app_started`, `app_exited`, `update_check_started`,
 `update_installed`, `session_corrupted`) with no terminal content, no paths,
 no prompts, ever.

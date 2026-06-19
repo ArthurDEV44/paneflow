@@ -27,10 +27,10 @@ Add unit tests alongside the module when logic is self-contained, as in `src-app
 
 **Before EVERY `git commit` and EVERY `git push` that touches Rust code, run `cargo fmt --check`.** If it reports a diff, run `cargo fmt`, re-stage, then commit.
 
-This is the cheapest guard against the most expensive CI failure on this repo: the release pipeline runs `cargo fmt --check` on all four Build jobs (Linux x86_64, Linux aarch64, macOS aarch64, Windows x86_64) — a single mis-formatted line fails all four legs, skips "Publish GitHub Release", and burns a ~25 min run for nothing. Tag-push releases are extra-painful: a dirty tag commit forces a tag delete + re-create at the fix commit because the original tagged build can't be salvaged. Run `cargo fmt --check` one last time on the exact commit you're about to tag, before `git tag` and `git push origin <tag>`.
+This is the cheapest guard against the most expensive CI failure on this repo: the release pipeline runs `cargo fmt --check` on all four Build jobs (Linux x86_64, Linux aarch64, macOS aarch64, Windows x86_64) - a single mis-formatted line fails all four legs, skips "Publish GitHub Release", and burns a ~25 min run for nothing. Tag-push releases are extra-painful: a dirty tag commit forces a tag delete + re-create at the fix commit because the original tagged build can't be salvaged. Run `cargo fmt --check` one last time on the exact commit you're about to tag, before `git tag` and `git push origin <tag>`.
 
 ## Commit & Pull Request Guidelines
-Recent history uses Conventional Commit-style prefixes plus scope, for example `feat(app): US-004 — adapt paneflow-hook for Codex PID env var` and `chore(tasks): ...`. Follow `type(scope): description`; include the story ID when work maps to a tracked task. PRs should explain user-visible behavior, list validation steps, link the relevant issue or PRD entry, and include screenshots or short recordings for UI changes.
+Recent history uses Conventional Commit-style prefixes plus scope, for example `feat(app): US-004 - adapt paneflow-hook for Codex PID env var` and `chore(tasks): ...`. Follow `type(scope): description`; include the story ID when work maps to a tracked task. PRs should explain user-visible behavior, list validation steps, link the relevant issue or PRD entry, and include screenshots or short recordings for UI changes.
 
 ## Configuration Notes
 Do not replace the local-path GPUI dependencies with crates.io versions. Linux is the active target; config files live under `~/.config/paneflow/paneflow.json`.
@@ -39,16 +39,16 @@ Do not replace the local-path GPUI dependencies with crates.io versions. Linux i
 
 Any new code, refactor, or change that touches the codebase in any way **must** be fully compatible with all three target platforms:
 
-- **Linux** — every major distribution (Fedora, Ubuntu/Debian, Arch, openSUSE, etc.), both Wayland and X11.
-- **macOS (Apple)** — Intel and Apple Silicon.
-- **Windows** — Windows 10 and 11 (x64, and ARM64 where applicable).
+- **Linux** - every major distribution (Fedora, Ubuntu/Debian, Arch, openSUSE, etc.), both Wayland and X11.
+- **macOS (Apple)** - Intel and Apple Silicon.
+- **Windows** - Windows 10 and 11 (x64, and ARM64 where applicable).
 
 Concretely this means:
 
 - Never hardcode POSIX-only paths, shell commands, env vars, or separators. Use `std::path::PathBuf`, `std::env`, and the `dirs` crate (or equivalent) for all filesystem and environment access.
 - Guard platform-specific code with `#[cfg(target_os = "…")]` and always provide a working path for the other two platforms (at minimum a graceful fallback or documented stub).
 - Prefer cross-platform crates (`portable-pty`, `notify`, `dirs`, `which`, etc.) over POSIX-only APIs. If a POSIX-only crate is unavoidable, isolate it behind a trait with per-OS implementations.
-- PTY, IPC, packaging, auto-update, keybindings, fonts, and file watching must each have Linux + macOS + Windows paths — never Linux-only.
+- PTY, IPC, packaging, auto-update, keybindings, fonts, and file watching must each have Linux + macOS + Windows paths - never Linux-only.
 - Before shipping a change, mentally (or actually) verify it compiles and behaves correctly on all three platforms. If you cannot verify, say so explicitly rather than assume.
 
 The project is actively porting to macOS and Windows, so all new work must land cross-platform by default.
@@ -65,7 +65,7 @@ Règles pour éviter les patterns de friction détectés par `claude-doctor` sur
 
 ### Stay aligned with the user (anti repeated-instructions, rapid-corrections)
 
-- Re-read the user's last message before responding. Follow through on every instruction completely — don't partially address requests.
+- Re-read the user's last message before responding. Follow through on every instruction completely - don't partially address requests.
 - Every few turns on a long task, re-read the original request to verify you haven't drifted from the goal.
 - When the user corrects you: stop, re-read their message, quote back what they actually asked for, and confirm understanding before proceeding.
 
@@ -76,10 +76,10 @@ Règles pour éviter les patterns de friction détectés par `claude-doctor` sur
 
 ### Break loops (anti error-loop, restart-cluster)
 
-- After 2 consecutive tool failures or the same error twice, STOP. Change your approach entirely — don't retry the same strategy. Explain what failed and try something genuinely different.
+- After 2 consecutive tool failures or the same error twice, STOP. Change your approach entirely - don't retry the same strategy. Explain what failed and try something genuinely different.
 - When truly stuck, summarize what you've tried and ask the user for guidance rather than retrying.
 
 ### Verify output (anti negative-drift)
 
 - Before presenting your result, double-check it actually addresses what the user asked for.
-- If the diff doesn't map cleanly to the user's request, don't ship it — re-plan.
+- If the diff doesn't map cleanly to the user's request, don't ship it - re-plan.

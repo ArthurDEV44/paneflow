@@ -20,11 +20,11 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 // ---------------------------------------------------------------------------
-// Hook config injection (US-005) — idempotent `.claude/settings.local.json`
+// Hook config injection (US-005) - idempotent `.claude/settings.local.json`
 // ---------------------------------------------------------------------------
 
 /// Claude Code 2.x hook events the shim registers handlers for. `SubagentStop`
-/// is intentionally omitted — the server maps it to `ai.stop` identically to
+/// is intentionally omitted - the server maps it to `ai.stop` identically to
 /// `Stop` (US-002), and registering both would produce duplicate IPC frames.
 pub(crate) const CLAUDE_HOOK_EVENTS: &[&str] = &[
     "UserPromptSubmit",
@@ -55,8 +55,8 @@ pub(crate) const HOOK_COMMAND_PREFIX: &str = "paneflow-ai-hook ";
 /// Render `path` for inclusion in an `eprintln!` going to the user's
 /// terminal. Replaces bytes outside the printable ASCII range (`0x20..=0x7E`)
 /// with `?` to defuse ANSI-escape-sequence injection via a maliciously
-/// named CWD or `.claude/` directory. Path content is never a secret — it
-/// was always going to be visible on stderr — but without this scrub, a
+/// named CWD or `.claude/` directory. Path content is never a secret - it
+/// was always going to be visible on stderr - but without this scrub, a
 /// crafted directory could clear the screen, set the terminal title, or
 /// inject false log lines (Phase 7 security audit, MEDIUM finding).
 pub(crate) fn safe_path_display(path: &Path) -> String {
@@ -73,21 +73,21 @@ pub(crate) fn safe_path_display(path: &Path) -> String {
 /// `paneflow-ai-hook`, which fails silently per PRD constraint C4) and we
 /// instead sweep any orphan entries left by a previous SIGKILL'd session.
 ///
-/// The probe is deliberately NOT a uniform `Path::exists()` — that is correct
+/// The probe is deliberately NOT a uniform `Path::exists()` - that is correct
 /// on Unix but actively wrong on Windows:
 ///
 /// - **Unix**: `$PANEFLOW_SOCKET_PATH` is a domain-socket *filesystem node*,
-///   so `Path::exists()` is a passive, side-effect-free `stat(2)` — a correct
+///   so `Path::exists()` is a passive, side-effect-free `stat(2)` - a correct
 ///   liveness probe that is `true` exactly while the listener is bound.
 /// - **Windows**: the path is a named pipe (`\\.\pipe\paneflow`). There,
-///   `Path::exists()` is NOT passive — Rust's `fs::metadata` calls
+///   `Path::exists()` is NOT passive - Rust's `fs::metadata` calls
 ///   `CreateFileW`, which on a pipe path *opens a client connection*. That
 ///   consumes the server's single pending pipe instance and returns
 ///   `ERROR_PIPE_BUSY` (so `exists() == false`) whenever the next instance
 ///   has not been re-created yet. Against the app's non-blocking accept loop
 ///   (`src-app/src/ipc.rs`, which sleeps 10 ms between `accept()`s) that race
 ///   is lost ~87% of the time, so the probe spuriously reported the *live*
-///   server as unreachable and the shim skipped hook install — leaving the
+///   server as unreachable and the shim skipped hook install - leaving the
 ///   sidebar agent status permanently dead on Windows while it worked on
 ///   Unix. Every connect also polluted the server with a phantom connection.
 ///   `$PANEFLOW_SOCKET_PATH` is only ever set by PaneFlow's own PTY
@@ -99,7 +99,7 @@ pub(crate) fn paneflow_ipc_reachable() -> bool {
     reachable_from_socket_env(env::var_os("PANEFLOW_SOCKET_PATH").as_deref())
 }
 
-/// Testable inner for [`paneflow_ipc_reachable`] — takes the raw env value so
+/// Testable inner for [`paneflow_ipc_reachable`] - takes the raw env value so
 /// the policy is unit-testable without mutating the process-global env (the
 /// `detect_tool_from` / `read_ai_pid_from` convention). See the caller's doc
 /// for why the Windows branch skips the destructive `Path::exists()` probe.
@@ -112,7 +112,7 @@ fn reachable_from_socket_env(raw: Option<&OsStr>) -> bool {
     }
     // Unix: passive `stat(2)`. Windows: presence of the PaneFlow-set env var
     // is authoritative (a `Path::exists()` probe would connect-as-client and
-    // race the accept loop — see the caller's doc comment).
+    // race the accept loop - see the caller's doc comment).
     #[cfg(not(windows))]
     {
         Path::new(raw).exists()
@@ -125,14 +125,14 @@ fn reachable_from_socket_env(raw: Option<&OsStr>) -> bool {
 
 /// Returns `true` iff `dir` exists and is a symlink (i.e. `dir` itself is a
 /// symbolic link, not the entry it points at). Uses `fs::symlink_metadata`
-/// which — unlike `is_dir()` / `metadata()` — does NOT follow the final
+/// which - unlike `is_dir()` / `metadata()` - does NOT follow the final
 /// component, so a repo-committed `.claude`/`.codex` directory symlink
 /// (git mode 120000, materialized on checkout) is detected before we treat
 /// it as a usable config dir. A symlinked intermediate dir would let
 /// `write_atomic`'s `NamedTempFile::new_in(parent).persist(...)` create and
 /// rename a file through the link, planting Paneflow-owned JSON outside the
 /// project boundary (CWE-59 TOCTOU file-plant). A `NotFound`/IO error means
-/// "not a symlink we need to refuse" — the caller then creates the dir
+/// "not a symlink we need to refuse" - the caller then creates the dir
 /// itself. Cross-platform: `FileType::is_symlink()` is correct on Unix,
 /// macOS, and Windows (where it reports directory/file symlinks and
 /// mount-point reparse points).
@@ -146,7 +146,7 @@ pub(crate) fn config_dir_is_symlink(dir: &Path) -> bool {
 /// Best-effort removal of PaneFlow-managed entries from an existing hook
 /// config file when no active IPC channel is reachable. Reads, runs
 /// `remove_fn`, writes back (or deletes if the file is now empty). All
-/// failures swallow silently — a sweep that fails just retries on the
+/// failures swallow silently - a sweep that fails just retries on the
 /// next shim invocation. Used by `install()` to clean up after a previous
 /// SIGKILL'd session that never got to fire its `Drop` impl.
 pub(crate) fn sweep_orphan_hook_config(
@@ -170,7 +170,7 @@ pub(crate) fn sweep_orphan_hook_config(
     let before = root.clone();
     remove_fn(&mut root);
     if root == before {
-        // Nothing to sweep — file has no PaneFlow entries.
+        // Nothing to sweep - file has no PaneFlow entries.
         return;
     }
     let is_empty = root
@@ -193,7 +193,7 @@ pub(crate) fn sweep_orphan_hook_config(
 ///
 /// Both `HookConfigGuard::install_at` (Claude) and
 /// `CodexHookConfigGuard::install_at` (Codex) layer their type-construction
-/// on top of this — the heavy filesystem + JSON work was previously
+/// on top of this - the heavy filesystem + JSON work was previously
 /// duplicated across ~80 lines apart.
 pub(crate) fn install_hook_config_file(
     config_dir: &Path,
@@ -287,7 +287,7 @@ pub(crate) fn install_hook_config_file(
 /// file, run `remove_fn` to strip PaneFlow's entries, then either delete
 /// the file (if now empty) and rmdir the config dir (if we created it),
 /// or write the cleaned tree back atomically. All failures swallow
-/// silently — Drop must never panic, and any error here means the next
+/// silently - Drop must never panic, and any error here means the next
 /// shim invocation's merge-idempotency will converge the state.
 pub(crate) fn cleanup_hook_config_file(
     settings_path: &Path,
@@ -312,7 +312,7 @@ pub(crate) fn cleanup_hook_config_file(
     if is_empty {
         let _ = std::fs::remove_file(settings_path);
         if created_dir {
-            // `remove_dir` only succeeds if the directory is empty — safe
+            // `remove_dir` only succeeds if the directory is empty - safe
             // even if the user dropped other files into the config dir.
             let _ = std::fs::remove_dir(config_dir);
         }
@@ -323,7 +323,7 @@ pub(crate) fn cleanup_hook_config_file(
 
 /// RAII guard: writes PaneFlow's hook config on construction, removes it on
 /// drop. The guard must live for the duration of the child Claude Code
-/// process, then drop normally when `main()` returns — this is why US-005
+/// process, then drop normally when `main()` returns - this is why US-005
 /// forces `run_real()` (vs `exec()`) so destructors actually fire.
 /// Cross-platform home directory via std env only (the shim has no `dirs`
 /// dep): `HOME` (Unix / most shells) then `USERPROFILE` (Windows).
@@ -337,7 +337,7 @@ fn home_dir_env() -> Option<PathBuf> {
 /// EP-004 US-018: true iff `~/.claude/settings.json` already carries a
 /// Paneflow-managed hook (installed by `paneflow hooks setup`). When present,
 /// the persistent user-scope hooks cover this agent, so the shim skips its
-/// ephemeral project-local injection — avoiding double-fired IPC frames AND
+/// ephemeral project-local injection - avoiding double-fired IPC frames AND
 /// keeping `.claude/settings.local.json` out of the user's project tree
 /// (persistent wins). Detection reuses [`is_paneflow_matcher_group`], so it
 /// recognizes the byte-identical shape `paneflow-mcp-install::hooks` writes.
@@ -380,7 +380,7 @@ pub(crate) struct HookConfigGuard {
 
 impl HookConfigGuard {
     /// Install in the project CWD. Returns `None` if the filesystem refuses
-    /// our writes (read-only, permission denied, etc.) — the shim proceeds
+    /// our writes (read-only, permission denied, etc.) - the shim proceeds
     /// without hooks in that case, per PRD constraint C4. Also returns
     /// `None` (after sweeping any orphan entries left by a previous
     /// SIGKILL'd session) when no PaneFlow IPC socket is reachable: writing
@@ -412,7 +412,7 @@ impl HookConfigGuard {
     }
 
     /// Testable inner. Takes the absolute path to the `.claude/` directory.
-    /// Does NOT check `PANEFLOW_SOCKET_PATH` — the orphan-sweep gate lives
+    /// Does NOT check `PANEFLOW_SOCKET_PATH` - the orphan-sweep gate lives
     /// in `install()` so unit tests can drive `install_at` without
     /// fabricating a live IPC socket.
     pub(crate) fn install_at(claude_dir: &Path) -> Option<Self> {
@@ -445,7 +445,7 @@ impl Drop for HookConfigGuard {
 /// `hooks.json` for the given hook `event`. Prefers the absolute path to the
 /// sibling `paneflow-ai-hook` binary (resolved via `current_exe().parent()`)
 /// so hooks resolve even when Claude Code or Codex is launched outside the
-/// PATH-injected shell paneflow normally provides — e.g., when a user runs
+/// PATH-injected shell paneflow normally provides - e.g., when a user runs
 /// `claude` directly in a project where a previous shim invocation left a
 /// managed `settings.local.json` in place. Falls back to the bare binary name
 /// when `current_exe()` fails or the sibling isn't present (test harnesses
@@ -470,7 +470,7 @@ pub(crate) fn resolve_hook_command(event: &str) -> String {
 /// field). `C:/Users/…/paneflow-ai-hook.exe` is accepted verbatim by bash,
 /// cmd.exe, and PowerShell, and `Path::file_name` still extracts the basename
 /// (Windows `Path` treats `/` as a separator), so [`is_paneflow_hook_command`]
-/// keeps recognizing it for idempotent merge + cleanup — no detection change
+/// keeps recognizing it for idempotent merge + cleanup - no detection change
 /// needed, and the legacy backslash form is still matched for cleanup.
 ///
 /// Spaces in the path are not escaped here: the binary lives under
@@ -518,7 +518,7 @@ pub(crate) fn merge_paneflow_hooks(root: &mut serde_json::Value) {
 
 /// Claude-Code-FORMAT merge parameterized by event list, shared by Claude
 /// Code itself and its config-compatible clones (CodeBuddy: same five
-/// events; Qoder: four — no `Notification`). The format is the matcher-group
+/// events; Qoder: four - no `Notification`). The format is the matcher-group
 /// shape: `hooks.<Event>: [{_paneflow_managed, hooks: [{type, command,
 /// timeout}]}]`.
 fn merge_matcher_hooks_for_events(root: &mut serde_json::Value, events: &[&str]) {
@@ -526,7 +526,7 @@ fn merge_matcher_hooks_for_events(root: &mut serde_json::Value, events: &[&str])
         Some(o) => o,
         None => {
             *root = serde_json::json!({});
-            // re-borrow after replacement — `if let Some(...)` because we
+            // re-borrow after replacement - `if let Some(...)` because we
             // just assigned an object, so this unwrap is infallible.
             let Some(o) = root.as_object_mut() else {
                 return;
@@ -540,7 +540,7 @@ fn merge_matcher_hooks_for_events(root: &mut serde_json::Value, events: &[&str])
         .or_insert_with(|| serde_json::json!({}));
     let Some(hooks_obj) = hooks_entry.as_object_mut() else {
         // User's `hooks` key is not an object (e.g., user set it to a
-        // string by mistake). Overwrite it — we own the managed entries.
+        // string by mistake). Overwrite it - we own the managed entries.
         *hooks_entry = serde_json::json!({});
         return;
     };
@@ -556,7 +556,7 @@ fn merge_matcher_hooks_for_events(root: &mut serde_json::Value, events: &[&str])
         };
 
         // Self-healing instead of skip-if-present: drop any prior paneflow
-        // entry (possibly STALE — an older shim version, or the pre-fix
+        // entry (possibly STALE - an older shim version, or the pre-fix
         // Windows backslash command that bash de-escaped to "command not
         // found") before adding the freshly-resolved one. A plain skip would
         // otherwise pin a broken command across an upgrade until the next
@@ -565,7 +565,7 @@ fn merge_matcher_hooks_for_events(root: &mut serde_json::Value, events: &[&str])
         array.retain(|g| !is_paneflow_matcher_group(g));
 
         // The `_paneflow_managed` marker sits on the OUTER matcher-group
-        // wrapper — that's where `is_paneflow_matcher_group` checks it.
+        // wrapper - that's where `is_paneflow_matcher_group` checks it.
         // The inner handler object carries only the Claude-Code-native
         // fields so we don't send unexpected custom fields to Claude Code's
         // command runner. Identification falls back to the `command`
@@ -621,13 +621,13 @@ fn remove_matcher_hooks_for_events(root: &mut serde_json::Value, events: &[&str]
 // Claude-Code-compatible clones + flat-format CLIs (multi-agent hooks)
 // ---------------------------------------------------------------------------
 
-/// Qoder CLI hook events — the Claude Code set minus `Notification`
+/// Qoder CLI hook events - the Claude Code set minus `Notification`
 /// (unsupported there; `PostToolUseFailure` exists but has no `ai.*`
 /// mapping, so it is deliberately not registered).
 pub(crate) const QODER_HOOK_EVENTS: &[&str] =
     &["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"];
 
-/// Qoder merge/remove — Claude Code format, reduced event list.
+/// Qoder merge/remove - Claude Code format, reduced event list.
 pub(crate) fn merge_qoder_hooks(root: &mut serde_json::Value) {
     merge_matcher_hooks_for_events(root, QODER_HOOK_EVENTS);
 }
@@ -649,7 +649,7 @@ pub(crate) const GEMINI_HOOK_EVENTS: &[(&str, &str)] = &[
     ("AfterTool", "PostToolUse"),
 ];
 
-/// Cursor CLI (`cursor-agent`) hook registrations — camelCase vocabulary,
+/// Cursor CLI (`cursor-agent`) hook registrations - camelCase vocabulary,
 /// same `(foreign, canonical)` translation as Gemini.
 pub(crate) const CURSOR_HOOK_EVENTS: &[(&str, &str)] = &[
     ("beforeSubmitPrompt", "UserPromptSubmit"),
@@ -659,7 +659,7 @@ pub(crate) const CURSOR_HOOK_EVENTS: &[(&str, &str)] = &[
 ];
 
 /// Merge hook entries in the FLAT format shared by Gemini CLI and Cursor:
-/// `hooks.<event>: [{command, timeout}]` — no matcher-group wrapper. No
+/// `hooks.<event>: [{command, timeout}]` - no matcher-group wrapper. No
 /// `_paneflow_managed` marker either: both parsers are stricter than Claude
 /// Code's about unknown fields, so ownership detection rides exclusively on
 /// the command basename ([`is_paneflow_hook_command`]). `version_field`
@@ -703,7 +703,7 @@ fn merge_flat_hooks_for_events(
         // Self-healing (see merge_matcher_hooks_for_events): replace any prior
         // paneflow entry rather than skip it, so a stale command (old format /
         // pre-fix Windows backslashes) is corrected on the next launch. Stays
-        // idempotent — exactly one paneflow entry per event.
+        // idempotent - exactly one paneflow entry per event.
         array.retain(|e| !is_paneflow_flat_entry(e));
         array.push(serde_json::json!({
             "command": resolve_hook_command(canonical),
@@ -734,7 +734,7 @@ fn remove_flat_hooks_for_events(root: &mut serde_json::Value, events: &[(&str, &
     if hooks_empty {
         root_obj.remove("hooks");
         // A bare `{"version": 1}` left behind would block file deletion in
-        // `cleanup_hook_config_file` — drop it iff nothing else remains.
+        // `cleanup_hook_config_file` - drop it iff nothing else remains.
         if root_obj.len() == 1 && root_obj.contains_key("version") {
             root_obj.remove("version");
         }
@@ -749,7 +749,7 @@ fn is_paneflow_flat_entry(value: &serde_json::Value) -> bool {
         .is_some_and(is_paneflow_hook_command)
 }
 
-/// Per-tool wrapper fns — `install_hook_config_file` takes plain `fn`
+/// Per-tool wrapper fns - `install_hook_config_file` takes plain `fn`
 /// pointers, so the event tables are baked in here.
 pub(crate) fn merge_gemini_hooks(root: &mut serde_json::Value) {
     merge_flat_hooks_for_events(root, GEMINI_HOOK_EVENTS, false);
@@ -768,9 +768,9 @@ pub(crate) fn remove_cursor_hooks(root: &mut serde_json::Value) {
 /// Qoder, Gemini, Cursor): same install/sweep/cleanup lifecycle as
 /// [`HookConfigGuard`], parameterized by config location and merge/remove
 /// pair. Two anchor modes:
-/// - **cwd**: project-local config dir (`.codebuddy/`, `.qoder/`) — the
+/// - **cwd**: project-local config dir (`.codebuddy/`, `.qoder/`) - the
 ///   Claude `settings.local.json` precedent, ephemeral by design.
-/// - **home**: user-scope config dir (`~/.gemini/`, `~/.cursor/`) — used
+/// - **home**: user-scope config dir (`~/.gemini/`, `~/.cursor/`) - used
 ///   where the project file is the tool's PRIMARY config (often
 ///   git-tracked; mutating it would churn the user's diff all session).
 ///   Outside a Paneflow PTY the installed hooks are inert: the hook binary
@@ -833,7 +833,7 @@ impl ManagedHookConfigGuard {
         Self::install_at(config_dir, config_filename, tool_label, merge_fn, remove_fn)
     }
 
-    /// Testable inner — no IPC gate, mirrors [`HookConfigGuard::install_at`].
+    /// Testable inner - no IPC gate, mirrors [`HookConfigGuard::install_at`].
     pub(crate) fn install_at(
         config_dir: &Path,
         config_filename: &str,
@@ -879,7 +879,7 @@ const OPENCODE_PLUGIN_SOURCE: &str = include_str!("../assets/opencode-paneflow-s
 
 /// RAII guard for Pi: drops `paneflow-status.ts` into the AUTO-LOADED
 /// global extension dir `~/.pi/agent/extensions/` on install, deletes it on
-/// drop. No config file to edit — Pi discovers `*.ts` there by itself. The
+/// drop. No config file to edit - Pi discovers `*.ts` there by itself. The
 /// extension is inert outside Paneflow PTYs (it early-returns without
 /// `PANEFLOW_SOCKET_PATH`), so the install/remove window racing a non-
 /// Paneflow `pi` session is harmless.
@@ -899,7 +899,7 @@ impl PiExtensionGuard {
         Self::install_at(&ext_dir)
     }
 
-    /// Testable inner — no IPC gate.
+    /// Testable inner - no IPC gate.
     pub(crate) fn install_at(ext_dir: &Path) -> Option<Self> {
         if config_dir_is_symlink(ext_dir) {
             return None;
@@ -928,13 +928,13 @@ fn opencode_config_dir() -> Option<PathBuf> {
 
 /// RAII guard for OpenCode: materializes the bridge plugin at
 /// `<config>/plugins/paneflow-status.ts` AND declares it in the global
-/// `opencode.json` `plugin` array (OpenCode has no auto-discovery dir — an
+/// `opencode.json` `plugin` array (OpenCode has no auto-discovery dir - an
 /// undeclared file is dead weight). Drop removes both.
 ///
 /// The config file is OpenCode's PRIMARY user config, so unlike the
 /// settings.local.json scaffold this guard never clobbers on parse failure:
 /// unreadable JSON (or a `.jsonc`-only setup, which serde_json cannot
-/// round-trip without destroying comments) skips the install — the user
+/// round-trip without destroying comments) skips the install - the user
 /// keeps a working OpenCode, just without sidebar status (C4).
 pub(crate) struct OpenCodePluginGuard {
     plugin_path: PathBuf,
@@ -952,7 +952,7 @@ impl OpenCodePluginGuard {
         Self::install_at(&dir)
     }
 
-    /// Testable inner — no IPC gate. `dir` is the opencode config dir.
+    /// Testable inner - no IPC gate. `dir` is the opencode config dir.
     pub(crate) fn install_at(dir: &Path) -> Option<Self> {
         let config_path = dir.join("opencode.json");
         // A `.jsonc`-only setup wins: opencode prefers it, and editing it
@@ -968,7 +968,7 @@ impl OpenCodePluginGuard {
             Some(content) => match serde_json::from_str(&content) {
                 Ok(v) => v,
                 Err(_) => {
-                    // PRIMARY config — never overwrite what we can't parse.
+                    // PRIMARY config - never overwrite what we can't parse.
                     eprintln!(
                         "paneflow-shim: {} is not parseable JSON; skipping \
                          OpenCode status plugin this session",
@@ -1073,7 +1073,7 @@ pub(crate) fn merge_opencode_plugin_entry(root: &mut serde_json::Value, plugin_p
     array.push(serde_json::Value::String(plugin_path.to_owned()));
 }
 
-/// Removal counterpart — drops our entries, collapses an empty `plugin`
+/// Removal counterpart - drops our entries, collapses an empty `plugin`
 /// array so a fully-managed file can become empty and be deleted.
 pub(crate) fn remove_opencode_plugin_entry(root: &mut serde_json::Value) {
     let Some(root_obj) = root.as_object_mut() else {
@@ -1104,10 +1104,10 @@ fn is_paneflow_plugin_entry(value: &serde_json::Value) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Grok (`~/.grok/hooks/paneflow.json` — dedicated merged hook file)
+// Grok (`~/.grok/hooks/paneflow.json` - dedicated merged hook file)
 // ---------------------------------------------------------------------------
 
-/// Grok Build hook events — PascalCase, Claude-compatible names. Same
+/// Grok Build hook events - PascalCase, Claude-compatible names. Same
 /// reduced set as Qoder: `Notification` is skipped (Grok's stdin payload
 /// has no `notification_type`, so the hook's whitelist would drop every
 /// frame) and `SessionStart`/`SessionEnd` are covered by the shim's
@@ -1116,7 +1116,7 @@ pub(crate) const GROK_HOOK_EVENTS: &[&str] =
     &["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"];
 
 /// RAII guard for Grok: writes a DEDICATED `~/.grok/hooks/paneflow.json`
-/// (Grok merges every `*.json` in that dir at discovery — global hooks are
+/// (Grok merges every `*.json` in that dir at discovery - global hooks are
 /// always trusted) and deletes it on drop. The file is wholly ours, so
 /// there is no read-modify-write of any user config at all; Grok's
 /// documented behavior on a malformed hook file is skip-with-warning
@@ -1136,7 +1136,7 @@ impl GrokHookFileGuard {
         Self::install_at(&hooks_dir)
     }
 
-    /// Testable inner — no IPC gate.
+    /// Testable inner - no IPC gate.
     pub(crate) fn install_at(hooks_dir: &Path) -> Option<Self> {
         if config_dir_is_symlink(hooks_dir) {
             return None;
@@ -1144,7 +1144,7 @@ impl GrokHookFileGuard {
         std::fs::create_dir_all(hooks_dir).ok()?;
         let hook_path = hooks_dir.join("paneflow.json");
         // Grok's hook schema is the Claude matcher-group shape verbatim
-        // (timeout in seconds, `type: command`) — reuse the shared merge on
+        // (timeout in seconds, `type: command`) - reuse the shared merge on
         // an empty root.
         let mut root = serde_json::json!({});
         merge_matcher_hooks_for_events(&mut root, GROK_HOOK_EVENTS);
@@ -1160,7 +1160,7 @@ impl Drop for GrokHookFileGuard {
 }
 
 // ---------------------------------------------------------------------------
-// Hermes (`~/.hermes/config.yaml`, YAML — string-level marked block)
+// Hermes (`~/.hermes/config.yaml`, YAML - string-level marked block)
 // ---------------------------------------------------------------------------
 
 /// Markers bounding Paneflow's managed block in `~/.hermes/config.yaml`.
@@ -1171,7 +1171,7 @@ pub(crate) const HERMES_BLOCK_BEGIN: &str =
     "# >>> paneflow managed hooks (auto-installed; removed on session end) >>>";
 pub(crate) const HERMES_BLOCK_END: &str = "# <<< paneflow managed hooks <<<";
 
-/// Quote a string for a YAML double-quoted scalar (backslashes + quotes —
+/// Quote a string for a YAML double-quoted scalar (backslashes + quotes -
 /// enough for command paths; the rest of the command is our own ASCII).
 fn yaml_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
@@ -1183,10 +1183,10 @@ fn yaml_quote(s: &str) -> String {
 ///   mid-turn `Stop` is immediately re-promoted to `Thinking` by the next
 ///   `pre_tool_call`/`pre_llm_call` (the server's tool_use arm revives
 ///   Finished sessions by design). Worst case is a brief "done" flicker
-///   between tool calls — self-healing, never stuck.
+///   between tool calls - self-healing, never stuck.
 /// - `pre_approval_request` maps to the `PermissionRequest` argv, which the
 ///   hook translates to `ai.notification` with `notification_type:
-///   permission_prompt` itself — Hermes' stdin payload doesn't carry the
+///   permission_prompt` itself - Hermes' stdin payload doesn't carry the
 ///   field the plain `Notification` whitelist gates on.
 /// - `on_session_start`/`on_session_end` are NOT registered: the shim's
 ///   universal `ai.exit`/`ai.session_end` already covers the lifecycle and
@@ -1237,7 +1237,7 @@ pub(crate) fn strip_hermes_managed_block(content: &str) -> Option<String> {
 
 /// True iff the (block-stripped) YAML content already has a top-level
 /// `hooks:` key. Appending a second `hooks:` mapping would be a duplicate
-/// key — PyYAML-family loaders silently keep the LAST one, which would
+/// key - PyYAML-family loaders silently keep the LAST one, which would
 /// CLOBBER the user's own hooks for the session. Refusing is the only safe
 /// answer without a comment-preserving YAML rewriter.
 fn yaml_has_top_level_hooks_key(content: &str) -> bool {
@@ -1250,7 +1250,7 @@ fn yaml_has_top_level_hooks_key(content: &str) -> bool {
 /// `~/.hermes/config.yaml` on install, strips it on drop. Also sets
 /// `HERMES_ACCEPT_HOOKS=1` in the shim's own env (inherited by the child)
 /// so Hermes' first-use consent prompt doesn't block a fresh session
-/// mid-turn — scoped to sessions where Paneflow actually manages the
+/// mid-turn - scoped to sessions where Paneflow actually manages the
 /// hooks, and `~/.hermes` is user-owned (same-UID writers could edit the
 /// consent allowlist directly anyway).
 pub(crate) struct HermesHookConfigGuard {
@@ -1274,7 +1274,7 @@ impl HermesHookConfigGuard {
         Some(guard)
     }
 
-    /// Testable inner — no IPC gate, no env mutation.
+    /// Testable inner - no IPC gate, no env mutation.
     pub(crate) fn install_at(hermes_dir: &Path) -> Option<Self> {
         if config_dir_is_symlink(hermes_dir) {
             return None;
@@ -1392,19 +1392,19 @@ pub(crate) fn write_atomic(path: &Path, value: &serde_json::Value) -> std::io::R
 }
 
 // ---------------------------------------------------------------------------
-// Codex hook config injection (US-006, Unix) —
+// Codex hook config injection (US-006, Unix) -
 //   `.codex/hooks.json` + `~/.codex/config.toml`
 // ---------------------------------------------------------------------------
 
 /// Codex hook events (per Codex docs as of April 2026). Notably `Notification`
-/// is NOT a Codex hook event — Claude Code has one but Codex does not. The
+/// is NOT a Codex hook event - Claude Code has one but Codex does not. The
 /// `paneflow-ai-hook` binary (US-003) accepts `Notification` as a valid event
 /// name, but it's only fired from Windows JSONL `error` events (see
 /// `parse_codex_event`), never from this hooks.json registration.
 ///
 /// Cross-platform as of June 2026: Codex now supports hooks on **Windows**
 /// too (a `commandWindows` override field, and no `[features] hooks = true`
-/// flag is required — hooks are on by default). Codex's `hooks.json` uses the
+/// flag is required - hooks are on by default). Codex's `hooks.json` uses the
 /// SAME matcher-group shape and the SAME event names as Claude Code, so the
 /// Windows build registers these via [`merge_codex_hooks_win`] (a plain
 /// `ManagedHookConfigGuard` over `.codex/hooks.json`), while Unix keeps
@@ -1422,7 +1422,7 @@ pub(crate) const CODEX_HOOK_EVENTS: &[&str] = &[
 /// Windows Codex hook merge/remove. Reuses the shared Claude-format
 /// matcher-group helpers (Codex's `hooks.json` is byte-compatible) with the
 /// Codex event set. Unlike `CodexHookConfigGuard`, no `config.toml` feature
-/// flag is toggled — Codex enables hooks by default on Windows.
+/// flag is toggled - Codex enables hooks by default on Windows.
 #[cfg(not(unix))]
 pub(crate) fn merge_codex_hooks_win(root: &mut serde_json::Value) {
     merge_matcher_hooks_for_events(root, CODEX_HOOK_EVENTS);
@@ -1439,7 +1439,7 @@ pub(crate) const CODEX_TOML_MARKER: &str = "# _paneflow_managed: true";
 
 /// Resolve `~/.codex/config.toml` using only std. The shim has no `dirs` dep
 /// and `HOME` is universally set on Unix. Returns `None` on Windows builds
-/// (unreachable at runtime — this function is `#[cfg(unix)]` — but kept for
+/// (unreachable at runtime - this function is `#[cfg(unix)]` - but kept for
 /// documentation).
 #[cfg(unix)]
 pub(crate) fn codex_global_config_toml() -> Option<PathBuf> {
@@ -1459,7 +1459,7 @@ pub(crate) struct CodexHookConfigGuard {
     /// Whether the shim created `./.codex/`. Only rmdir on drop if we did.
     created_dir: bool,
     /// Absolute path to `~/.codex/config.toml` (if resolvable); `None` means
-    /// no `HOME` — skip global-config work entirely.
+    /// no `HOME` - skip global-config work entirely.
     config_toml_path: Option<PathBuf>,
     /// Whether we appended the feature-flag block on install. Drop undoes it
     /// only if we did; never touches a pre-existing user-authored flag.
@@ -1490,7 +1490,7 @@ impl CodexHookConfigGuard {
             install_hook_config_file(codex_dir, "hooks.json", "Codex", merge_codex_hooks)?;
 
         // Codex-specific extra: enable the `hooks = true` feature flag
-        // in `~/.codex/config.toml`. Failure here is non-fatal — the user
+        // in `~/.codex/config.toml`. Failure here is non-fatal - the user
         // can enable it manually and the rest of the hook config is in
         // place. Runs AFTER the shared install so the per-project hooks.json
         // is on disk before we touch the global config.
@@ -1589,7 +1589,7 @@ pub(crate) fn remove_codex_hooks(root: &mut serde_json::Value) {
 /// Append `[features]\nhooks = true` (with a marker comment) to the
 /// file at `path` iff: (a) the file doesn't already have `hooks = true` (or
 /// the pre-Codex-0.130 alias `codex_hooks = true`) anywhere, AND (b) there's
-/// no existing `[features]` section — appending would create a duplicate-
+/// no existing `[features]` section - appending would create a duplicate-
 /// section TOML error, so we abstain in that case and warn.
 ///
 /// Returns `Some(true)` if we modified the file, `Some(false)` if the flag
@@ -1607,7 +1607,7 @@ pub(crate) struct FlockGuard {
 impl FlockGuard {
     /// Acquire an exclusive advisory lock on `lock_path` (creating it),
     /// blocking until granted. Returns `None` if the lock file can't be opened
-    /// or locked — callers then proceed best-effort (no worse than no lock).
+    /// or locked - callers then proceed best-effort (no worse than no lock).
     fn acquire(lock_path: &Path) -> Option<Self> {
         use std::os::unix::io::AsRawFd;
         let file = std::fs::OpenOptions::new()
@@ -1682,7 +1682,7 @@ pub(crate) fn enable_codex_feature_flag(path: &Path) -> Option<bool> {
     next.push('\n');
     next.push_str("[features]\nhooks = true\n");
 
-    // Ensure the parent dir exists — the Codex config dir may be absent
+    // Ensure the parent dir exists - the Codex config dir may be absent
     // if the user has never run Codex before, but the shim's own invocation
     // implies the binary is installed somewhere.
     if let Some(parent) = path.parent() {
@@ -1706,11 +1706,11 @@ pub(crate) fn disable_codex_feature_flag(path: &Path) {
     };
     let Some(cleaned) = strip_codex_feature_block(&existing) else {
         // Marker not found, or the managed block was edited by the user.
-        // Both cases: don't touch the file. No stderr noise — next shim
+        // Both cases: don't touch the file. No stderr noise - next shim
         // invocation's idempotent install will converge state eventually.
         return;
     };
-    // If the file is now empty or only whitespace, delete it — we either
+    // If the file is now empty or only whitespace, delete it - we either
     // created it from nothing or the flag was the only content.
     let result = if cleaned.trim().is_empty() {
         std::fs::remove_file(path)
@@ -1738,7 +1738,7 @@ pub(crate) fn disable_codex_feature_flag(path: &Path) {
 /// swap is the fix.
 ///
 /// Cross-platform: also called by the Pi / OpenCode / Hermes guards above,
-/// which compile on Windows too — keep this ungated (`tempfile` +
+/// which compile on Windows too - keep this ungated (`tempfile` +
 /// `std::io::Write` are cross-platform).
 pub(crate) fn write_text_atomic(path: &Path, content: &str) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
@@ -1796,7 +1796,7 @@ pub(crate) fn strip_codex_feature_block(content: &str) -> Option<String> {
     let tail = lines.get(marker_idx + 1..marker_idx + 3)?;
     // Exact-match both lines: `starts_with("hooks")` would also strip a
     // hypothetical future `hooks_experimental = ...` line that happened
-    // to sit in the managed block. Exact match fails closed — safer to
+    // to sit in the managed block. Exact match fails closed - safer to
     // leave the block untouched than over-delete. Accept either key name
     // because installs predating the Codex 0.130 rename wrote `codex_hooks`.
     let second = tail[1].trim();
@@ -1840,7 +1840,7 @@ pub(crate) fn strip_codex_feature_block(content: &str) -> Option<String> {
 // shim spawns `codex exec --json`, tees the child's stdout (so the user sees
 // every byte unchanged), and dispatches `paneflow-ai-hook <Event>` subprocesses
 // on recognized NDJSON events. Only the `exec` subcommand supports `--json`;
-// interactive `codex` invocations on Windows pass through without tee — they
+// interactive `codex` invocations on Windows pass through without tee - they
 // simply won't produce sidebar state updates (documented regression).
 
 #[cfg(not(unix))]
@@ -1917,7 +1917,7 @@ pub(crate) fn parse_codex_event(line: &str) -> Option<&'static str> {
 }
 
 // EP-004 US-010: returns the raw agent exit code alongside, mirroring
-// `run_real` — `main` emits `ai.exit` from it. `None` on spawn/wait failure.
+// `run_real` - `main` emits `ai.exit` from it. `None` on spawn/wait failure.
 #[cfg(not(unix))]
 pub(crate) fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> (ExitCode, Option<i32>) {
     use std::io::{BufRead, BufReader};
@@ -1970,7 +1970,7 @@ pub(crate) fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> (ExitC
                     // Fire-and-forget: we don't wait on the hook binary so
                     // the tee loop keeps pace with Codex's output. This
                     // function is compiled only on non-Unix (`#[cfg(not
-                    // (unix))]`) — on Windows, dropping the `Child` handle
+                    // (unix))]`) - on Windows, dropping the `Child` handle
                     // releases the OS handle and the subprocess runs to
                     // completion independently, with the OS reaping it
                     // when it exits. No zombies, no cleanup required.
@@ -2083,7 +2083,7 @@ mod hooks_tests {
 
     /// Windows Codex hooks (June 2026): `.codex/hooks.json` must carry one
     /// paneflow matcher-group per Codex event, recognizable for cleanup, with
-    /// the command ending in the event name — and must NOT register
+    /// the command ending in the event name - and must NOT register
     /// `Notification` (not a Codex event). Round-trips to empty on removal.
     #[cfg(not(unix))]
     #[test]
@@ -2130,7 +2130,7 @@ mod hooks_tests {
     /// the `ERROR_PIPE_BUSY` race ~87% of the time against the live accept
     /// loop, so the shim skipped hook-config install and the sidebar agent
     /// status never updated. Presence of the PaneFlow-set env var is now
-    /// authoritative on Windows — no destructive probe.
+    /// authoritative on Windows - no destructive probe.
     #[cfg(windows)]
     #[test]
     fn windows_named_pipe_env_is_reachable_without_probing() {
@@ -2159,7 +2159,7 @@ mod hooks_tests {
     // US-018: the shim defers to a persistent hook installed by
     // `paneflow hooks setup`. Detection must recognize the byte-identical
     // managed shape (marker or ai-hook command) and must NOT trip on a foreign
-    // user hook — otherwise the shim would wrongly skip its ephemeral injection
+    // user hook - otherwise the shim would wrongly skip its ephemeral injection
     // (false positive) or double-fire (false negative).
     #[test]
     fn settings_has_managed_hook_detects_managed_and_ignores_foreign() {

@@ -1,4 +1,4 @@
-//! Overlay paint passes — search highlights, hyperlink underline + tooltip,
+//! Overlay paint passes - search highlights, hyperlink underline + tooltip,
 //! IME preedit, process-exit banner, and the debug latency probe bookends.
 //!
 //! These layers draw on top of text and cursor; they're grouped here because
@@ -150,7 +150,7 @@ pub fn paint_hyperlink_tooltip(
 /// Register the IME `InputHandler` for this element and paint the preedit
 /// composition overlay (when focused and a composition is in progress).
 ///
-/// `make_handler` is a closure that constructs the concrete input handler —
+/// `make_handler` is a closure that constructs the concrete input handler -
 /// keeping the `TerminalInputHandler` type private to `mod.rs`.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_ime_preedit<H, F>(
@@ -250,7 +250,7 @@ pub fn paint_exit_overlay(
     } = *geom;
 
     // US-004: distinguish a signal kill (crash) from a clean non-zero exit.
-    // `exit_signal` carries "N (Name)" (e.g. "11 (Segmentation fault)") — the
+    // `exit_signal` carries "N (Name)" (e.g. "11 (Segmentation fault)") - the
     // numeric signal recovered in `pty_loops` plus portable-pty's readable name.
     let msg = match &layout.exit_signal {
         Some(sig) => format!("[Process terminated by signal: {sig}]"),
@@ -286,10 +286,10 @@ pub fn paint_exit_overlay(
 /// `PANEFLOW_PIXEL_PROBE_OVERLAY=1` (independent of the log-only probe).
 ///
 /// Uses the same `floor(x)`-shared-boundary math (US-004) so the borders
-/// align with the underlying rects — any visible misalignment is a real
+/// align with the underlying rects - any visible misalignment is a real
 /// rendering signal, not an overlay artifact.
 ///
-/// Iterates the entire visible grid (`rows × cols`) unconditionally — the
+/// Iterates the entire visible grid (`rows × cols`) unconditionally - the
 /// log probe samples the first 16 columns of each row to bound stdout, but
 /// the visual overlay needs full coverage to expose alignment artifacts at
 /// any location. On a 220×60 terminal this issues ~13 200 `paint_quad`
@@ -297,7 +297,7 @@ pub fn paint_exit_overlay(
 /// and only present in debug builds.
 ///
 /// `border_widths` is divided by `scale_factor` so the rendered border is
-/// exactly one *physical* pixel — at 2× HiDPI a 1.0 logical width would
+/// exactly one *physical* pixel - at 2× HiDPI a 1.0 logical width would
 /// produce a 2-physical-px border that visually obscures the very 1-px
 /// gaps the probe is meant to expose.
 #[cfg(debug_assertions)]

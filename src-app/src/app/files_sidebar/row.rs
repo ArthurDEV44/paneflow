@@ -33,7 +33,7 @@ impl PaneFlowApp {
         let is_dir = node.is_dir;
 
         // Leading 14px slot: a chevron for directories (right = collapsed,
-        // down = expanded — a static swap, legible under reduced motion), an
+        // down = expanded - a static swap, legible under reduced motion), an
         // invisible spacer for files so names align.
         let chevron = if is_dir {
             svg()

@@ -4,15 +4,15 @@
 //! with a direction (horizontal/vertical) and per-child flex ratios.
 //!
 //! Module layout (US-029 of the src-app refactor PRD):
-//! - [`tree`] — core types, constants, ratio helpers, `new_split`
-//! - [`mutations`] — `split_at_*` and `swap_panes`
-//! - [`close`] — `close_focused` and `remove_pane` (kept separate from
+//! - [`tree`] - core types, constants, ratio helpers, `new_split`
+//! - [`mutations`] - `split_at_*` and `swap_panes`
+//! - [`close`] - `close_focused` and `remove_pane` (kept separate from
 //!   `mutations` for the 280 LOC cap)
-//! - [`queries`] — read-only traversal + `equalize_ratios`
-//! - [`render`] — GPUI flex rendering with drag-to-resize
-//! - [`presets`] — `from_panes_equal`, `main_vertical`, `tiled`
-//! - [`navigation`] — `FocusDirection`, `FocusNav`, focus movement
-//! - [`serde`] — `serialize` / `from_layout_node`
+//! - [`queries`] - read-only traversal + `equalize_ratios`
+//! - [`render`] - GPUI flex rendering with drag-to-resize
+//! - [`presets`] - `from_panes_equal`, `main_vertical`, `tiled`
+//! - [`navigation`] - `FocusDirection`, `FocusNav`, focus movement
+//! - [`serde`] - `serialize` / `from_layout_node`
 
 mod close;
 mod mutations;
@@ -30,5 +30,5 @@ pub(crate) use serde::fill_scrollback;
 
 /// Hard cap on leaf panes in a single workspace's layout tree (US-054: single
 /// source for the bound previously re-declared as a local `const` at every
-/// split/insert site — split handlers, IPC `surface.split`, layout presets).
+/// split/insert site - split handlers, IPC `surface.split`, layout presets).
 pub(crate) const MAX_PANES: usize = 32;

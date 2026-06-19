@@ -1,18 +1,18 @@
-//! EP-006 US-018 — fleet grep: one query across every pane of every
+//! EP-006 US-018 - fleet grep: one query across every pane of every
 //! workspace.
 //!
 //! Triggered from a terminal's find bar (`ToggleFleetSearch`, alt-f, or the
 //! "Fleet" toggle button). The fan-out runs SEQUENTIALLY on the background
-//! executor — per-pane `FairMutex` locks are disjoint, `search_term` holds
+//! executor - per-pane `FairMutex` locks are disjoint, `search_term` holds
 //! each one only for the scan, and at MAX_PANES = 32 a sequential pass
 //! stays far under the 500 ms budget without contending 32 locks against
 //! the render thread at once (PRD "stratégie de lock").
 //!
 //! Memory contract (US-018 AC): the overlay keeps counts + display names
-//! only — never the per-pane `Vec<SearchMatch>` (the cap is 10 000 per
+//! only - never the per-pane `Vec<SearchMatch>` (the cap is 10 000 per
 //! pane; 32 panes of full vectors would be unbounded-ish). Activating a
 //! row re-runs the LOCAL search on the target view (`arm_search`), which
-//! recomputes matches fresh — also how the US-017 rail lights up.
+//! recomputes matches fresh - also how the US-017 rail lights up.
 
 use gpui::{
     AnyElement, ClickEvent, Context, Focusable as _, InteractiveElement, IntoElement, KeyDownEvent,
@@ -33,7 +33,7 @@ type FleetScanOutcome = (Vec<(u64, String, String, usize)>, usize, Option<String
 /// One matching pane (bounded: count + names, no match vectors).
 pub(crate) struct FleetHit {
     pub(crate) surface_id: u64,
-    /// Display name — custom name or OSC title, bidi-stripped + clamped at
+    /// Display name - custom name or OSC title, bidi-stripped + clamped at
     /// collection time (terminal titles are UNTRUSTED).
     pub(crate) surface_name: String,
     pub(crate) ws_title: String,
@@ -47,14 +47,14 @@ pub(crate) struct FleetSearchState {
     pub(crate) results: Vec<FleetHit>,
     pub(crate) total: usize,
     /// The single regex error (US-018 AC: the engine's one error, never N
-    /// duplicated copies — the fan-out stops at the first).
+    /// duplicated copies - the fan-out stops at the first).
     pub(crate) error: Option<String>,
     pub(crate) running: bool,
     pub(crate) selected: usize,
 }
 
 impl PaneFlowApp {
-    /// Entry point — `TerminalEvent::FleetSearchRequested` lands here (no
+    /// Entry point - `TerminalEvent::FleetSearchRequested` lands here (no
     /// `Window` in scope: overlay focus is deferred to the next render via
     /// `fleet_search_pending_focus`).
     pub(crate) fn start_fleet_search(
@@ -79,7 +79,7 @@ impl PaneFlowApp {
                             .clone()
                             .filter(|s| !s.is_empty())
                             .unwrap_or_else(|| r.terminal.title.clone());
-                        // OSC titles are untrusted — same scrub as the
+                        // OSC titles are untrusted - same scrub as the
                         // EP-005 conflict tooltip (bidi strip + clamp).
                         let name = crate::markdown::strip_bidi_zero_width(
                             raw_name.chars().take(64).collect(),
@@ -145,7 +145,7 @@ impl PaneFlowApp {
     }
 
     /// Deposit the fan-out result (main thread). A pane closed during the
-    /// scan simply no longer resolves at badge-push/activation time — its
+    /// scan simply no longer resolves at badge-push/activation time - its
     /// row is dropped on activation (US-018 AC: jeté silencieusement).
     fn apply_fleet_search(
         &mut self,
@@ -173,7 +173,7 @@ impl PaneFlowApp {
             .collect();
 
         // Transient per-tab badges (FR-11 lowest-priority slot). Pushed to
-        // the LIVE tree — a pane closed mid-scan never receives one.
+        // the LIVE tree - a pane closed mid-scan never receives one.
         let counts: std::collections::HashMap<u64, usize> = self
             .fleet_search
             .as_ref()
@@ -226,7 +226,7 @@ impl PaneFlowApp {
 
     pub(crate) fn close_fleet_search(&mut self, cx: &mut Context<Self>) {
         self.fleet_search = None;
-        // Closing the search dismisses the badges (US-018 AC) — and bumping
+        // Closing the search dismisses the badges (US-018 AC) - and bumping
         // the generation cancels any in-flight deposit/timer.
         self.fleet_search_generation += 1;
         self.push_fleet_badges(&std::collections::HashMap::new(), cx);
@@ -234,7 +234,7 @@ impl PaneFlowApp {
     }
 
     /// Enter / click on a row: teleport to the pane (Attention Queue
-    /// mechanics) and arm its LOCAL search with the fleet query — matches
+    /// mechanics) and arm its LOCAL search with the fleet query - matches
     /// recompute fresh, the viewport lands on the first hit, and the
     /// US-017 rail renders from the same state.
     pub(crate) fn fleet_search_activate(
@@ -363,7 +363,7 @@ impl PaneFlowApp {
                             .child("Fleet search"),
                     )
                     .child(
-                        // The query is user input — inert text, ellipsized.
+                        // The query is user input - inert text, ellipsized.
                         div()
                             .flex_1()
                             .min_w_0()
@@ -398,7 +398,7 @@ impl PaneFlowApp {
                     .child("Searching the fleet…"),
             );
         } else if let Some(err) = &state.error {
-            // US-018 AC: the engine's single error — one surface, verbatim.
+            // US-018 AC: the engine's single error - one surface, verbatim.
             card = card.child(
                 div()
                     .px(px(14.))

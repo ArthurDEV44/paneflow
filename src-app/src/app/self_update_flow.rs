@@ -1,4 +1,4 @@
-//! In-app self-update dispatcher — routes clicks on the update pill to the
+//! In-app self-update dispatcher - routes clicks on the update pill to the
 //! right installer branch (SystemPackage / AppImage / TarGz+Unknown / legacy
 //! `.run`) based on the detected [`crate::update::install_method::InstallMethod`].
 //!
@@ -22,7 +22,7 @@ use crate::{
 /// the user is still answering.
 const DOWNLOAD_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
-/// One-line summary of the install method for log messages — used by the
+/// One-line summary of the install method for log messages - used by the
 /// auto-kickoff gate to keep diagnostic noise low when the running binary
 /// is not auto-updatable.
 fn install_method_label(method: &update::install_method::InstallMethod) -> &'static str {
@@ -39,7 +39,7 @@ fn install_method_label(method: &update::install_method::InstallMethod) -> &'sta
 
 /// Strict-semver guard for the release tag before it reaches any
 /// user-facing surface (clipboard, toast, argv). Matches the regex
-/// `^v?\d+\.\d+\.\d+$` — identical to the validator inside
+/// `^v?\d+\.\d+\.\d+$` - identical to the validator inside
 /// `update::linux::system_package::validate_version`, inlined here so
 /// the check runs even on code paths that bypass `run_update`
 /// (`PackageManager::Other` clipboard fallback, non-Linux targets,
@@ -120,7 +120,7 @@ impl PaneFlowApp {
                             }
                         }
                     }
-                    // Flatpak / Snap / `PANEFLOW_UPDATE_EXPLANATION` —
+                    // Flatpak / Snap / `PANEFLOW_UPDATE_EXPLANATION` -
                     // packager owns updates, render the same generic
                     // SystemHint pill. The explanation copy is surfaced
                     // by the click handler below.
@@ -156,7 +156,7 @@ impl PaneFlowApp {
     /// US-007 AC3: dismiss the update pill for the current launch.
     /// Clears `update_status` so the title-bar pill disappears, fires
     /// a `update_dismissed` PostHog event, and forces a re-render.
-    /// Intentionally NOT persisted — the next paneflow launch will
+    /// Intentionally NOT persisted - the next paneflow launch will
     /// re-detect the update and re-show the pill (we don't want a
     /// user accidentally sticking on an old version because the
     /// preference outlived their interest).
@@ -174,11 +174,11 @@ impl PaneFlowApp {
     }
 
     /// US-017: shared completion for every pre-installed update path. Flips to
-    /// `ReadyToRestart`, persists the session (blocking — the next event is a
+    /// `ReadyToRestart`, persists the session (blocking - the next event is a
     /// process-replacing restart), and queues the `update_installed` analytics
     /// event WITHOUT a blocking flush (the background `poll_flush` loop drains
     /// it; the restart click stays zero-I/O). Dedups the six identical blocks
-    /// that previously inlined this — and that previously called
+    /// that previously inlined this - and that previously called
     /// `flush_blocking` on the render thread, the `[HIGH]` finding.
     fn on_preinstall_success(&mut self, cx: &mut Context<Self>) {
         self.self_update.self_update_status = update::SelfUpdateStatus::ReadyToRestart;
@@ -212,7 +212,7 @@ impl PaneFlowApp {
                     && app.self_update.self_update_status.is_busy()
                 {
                     log::warn!(
-                        "self-update/{label}: watchdog fired after {DOWNLOAD_WATCHDOG:?} — \
+                        "self-update/{label}: watchdog fired after {DOWNLOAD_WATCHDOG:?} - \
                          worker wedged in {:?}; resetting via record_update_failure",
                         app.self_update.self_update_status,
                     );
@@ -234,7 +234,7 @@ impl PaneFlowApp {
         // Fast path: the new binary is already on disk and
         // `set_restart_path` has been wired ahead of time by the
         // background pre-installer (see `try_auto_kickoff_install`
-        // below). The click handler does ZERO I/O — just hand control
+        // below). The click handler does ZERO I/O - just hand control
         // to GPUI's relauncher script. This is what makes the
         // user-perceived restart latency drop from "vachement long"
         // (download + install + analytics flush) to GPUI's
@@ -243,14 +243,14 @@ impl PaneFlowApp {
             self.self_update.self_update_status,
             update::SelfUpdateStatus::ReadyToRestart
         ) {
-            log::info!("self-update: ReadyToRestart click — invoking cx.restart()");
+            log::info!("self-update: ReadyToRestart click - invoking cx.restart()");
             cx.restart();
             return;
         }
 
         // Externally managed runtime (Flatpak / Snap / packager-baked
         // `PANEFLOW_UPDATE_EXPLANATION`). The in-app updater is disabled
-        // by design — surface the packager's explanation copy and copy
+        // by design - surface the packager's explanation copy and copy
         // the upgrade command to the clipboard so the user has a one-click
         // path forward. Mirrors how Zed handles `ZED_UPDATE_EXPLANATION`.
         if let update::install_method::InstallMethod::ExternallyManaged { explanation } =
@@ -270,7 +270,7 @@ impl PaneFlowApp {
         // in-app pkexec-elevated `dnf|apt-get install` (US-002). Solus /
         // Void / NixOS et al. fall back to the clipboard-copy flow so
         // they at least see a runnable upgrade command. `return`s
-        // BEFORE reading `asset_url` below — the pkexec flow pulls its
+        // BEFORE reading `asset_url` below - the pkexec flow pulls its
         // payload from the system repo; no direct GitHub download.
         //
         // Note: `InstallMethod::SystemPackage` is declared unconditionally
@@ -302,16 +302,16 @@ impl PaneFlowApp {
                 log::warn!(
                     "self-update/system-package: refusing malformed version string: {version:?}"
                 );
-                self.show_toast("Update unavailable — invalid release tag".to_string(), cx);
+                self.show_toast("Update unavailable - invalid release tag".to_string(), cx);
                 return;
             }
 
             // US-004: rpm-ostree (Silverblue / Kinoite / Bazzite).
             // Immutable distros stage updates offline for the next
-            // reboot — pkexec+dnf would fail against the read-only
+            // reboot - pkexec+dnf would fail against the read-only
             // `/usr`. Surface a dedicated informational toast and
             // copy `rpm-ostree upgrade` to the clipboard. No
-            // subprocess spawn, no `cx.restart()` — the update does
+            // subprocess spawn, no `cx.restart()` - the update does
             // not take effect until the user reboots.
             if matches!(manager, update::install_method::PackageManager::RpmOstree) {
                 cx.write_to_clipboard(ClipboardItem::new_string("rpm-ostree upgrade".to_string()));
@@ -320,7 +320,7 @@ impl PaneFlowApp {
                 // (default TOAST_HOLD_MS is tuned for short
                 // "Copied: …" confirmations).
                 self.push_toast(
-                    "PaneFlow detects an immutable distribution. Update must be run via `rpm-ostree upgrade` at the system level — the update has been copied to your clipboard.".to_string(),
+                    "PaneFlow detects an immutable distribution. Update must be run via `rpm-ostree upgrade` at the system level - the update has been copied to your clipboard.".to_string(),
                     Vec::new(),
                     TOAST_HOLD_MS * 4,
                     cx,
@@ -335,11 +335,11 @@ impl PaneFlowApp {
             // (unreachable-at-runtime) Dnf / Apt variants.
             //
             // `RpmOstree` is intentionally absent from the whitelist
-            // below — Silverblue / Kinoite users are already served
+            // below - Silverblue / Kinoite users are already served
             // by the dedicated informational arm above, which always
             // `return`s. If a future refactor removes that early
             // return, `RpmOstree` would fall through to the generic
-            // clipboard-copy path (safe but wrong copy — never to
+            // clipboard-copy path (safe but wrong copy - never to
             // pkexec, because the whitelist excludes it).
             #[cfg(not(target_os = "linux"))]
             let run_pkexec = false;
@@ -405,7 +405,7 @@ impl PaneFlowApp {
                             });
                             cx.update(|cx| {
                                 log::info!(
-                                    "self-update/{manager_label}: pre-installed — restart pending at /usr/bin/paneflow"
+                                    "self-update/{manager_label}: pre-installed - restart pending at /usr/bin/paneflow"
                                 );
                                 cx.set_restart_path(restart_path);
                             });
@@ -417,7 +417,7 @@ impl PaneFlowApp {
                             // main thread.
                             let classified = update::UpdateError::classify(&err);
                             let _ = this.update(cx, |app, cx| match classified {
-                                // Polkit "Cancel" — benign. Revert to
+                                // Polkit "Cancel" - benign. Revert to
                                 // Idle, neutral toast, DO NOT bump the
                                 // retry counter (user intent, not a
                                 // failure).
@@ -427,7 +427,7 @@ impl PaneFlowApp {
                                     cx.notify();
                                 }
                                 // pkexec missing / no polkit agent /
-                                // exit 127 — fall back to the
+                                // exit 127 - fall back to the
                                 // clipboard-copy behaviour so the user
                                 // has a runnable command. No retry
                                 // bump (transient env issue, not a
@@ -444,7 +444,7 @@ impl PaneFlowApp {
                                     app.show_toast(format!("Copied: {command}"), cx);
                                     cx.notify();
                                 }
-                                // US-005: backpressure — `dnf-automatic`
+                                // US-005: backpressure - `dnf-automatic`
                                 // or an interactive `sudo apt install`
                                 // held the package-manager lock at
                                 // pre-flight time. Transient condition
@@ -467,7 +467,7 @@ impl PaneFlowApp {
                                     cx.notify();
                                 }
                                 // Anything else (mirror 5xx, disk full,
-                                // signal, transaction conflict) — real
+                                // signal, transaction conflict) - real
                                 // failure; feed the 3-strikes counter
                                 // via record_update_failure.
                                 _ => {
@@ -484,7 +484,7 @@ impl PaneFlowApp {
 
         // After 3 consecutive failures, the 4th click stops re-trying and
         // points the user at the releases page (US-013). Skipping the
-        // network here is important — repeated fast retries against a
+        // network here is important - repeated fast retries against a
         // flaky mirror are never the right answer.
         if self.self_update.update_attempt_count >= 3 {
             let releases_url = match &self.self_update.update_status {
@@ -519,7 +519,7 @@ impl PaneFlowApp {
         // installer before touching disk. `fetch_and_verify` already fails
         // closed on a keyless build (signature.rs), but for AppImage that
         // rejection only fires *after* `appimageupdatetool -O` has rewritten the
-        // live binary in place — mutating a binary we can never verify. Bailing
+        // live binary in place - mutating a binary we can never verify. Bailing
         // here keeps every install path verify-before-side-effect and shows a
         // clear message instead of a silently corrupted AppImage.
         if !update::signature::has_embedded_key() {
@@ -563,7 +563,7 @@ impl PaneFlowApp {
                         });
                         cx.update(|cx| {
                             log::info!(
-                                "self-update/appimage: pre-installed — restart pending at {}",
+                                "self-update/appimage: pre-installed - restart pending at {}",
                                 updated_path.display()
                             );
                             cx.set_restart_path(updated_path);
@@ -584,7 +584,7 @@ impl PaneFlowApp {
         // tar.gz updater only on Unix, where `$HOME` exists and
         // `~/.local/paneflow.app/` is a real install target. On Windows
         // `targz::run_update` reads an unset `$HOME` and fails with a cryptic
-        // "HOME environment variable is not set" — so an `Unknown` Windows
+        // "HOME environment variable is not set" - so an `Unknown` Windows
         // install must fall through to the manual-download path below instead.
         // `TarGz` itself is only ever produced on Linux by `detect()`.
         #[cfg(unix)]
@@ -607,12 +607,12 @@ impl PaneFlowApp {
             //
             // Log the migration path so dev-build users (who hit the Unknown
             // branch after `cargo run`) see what's happening. The updater
-            // still proceeds — the install lands at `$HOME/.local/paneflow.app/`
-            // regardless of where `current_exe()` was — but the log makes the
+            // still proceeds - the install lands at `$HOME/.local/paneflow.app/`
+            // regardless of where `current_exe()` was - but the log makes the
             // directory change visible instead of silent.
             if matches!(&method, update::install_method::InstallMethod::Unknown) {
                 log::warn!(
-                    "self-update: install method Unknown — downloading tar.gz release \
+                    "self-update: install method Unknown - downloading tar.gz release \
                      into $HOME/.local/paneflow.app/; the updated binary will be at a \
                      different path than the currently-running one."
                 );
@@ -630,7 +630,7 @@ impl PaneFlowApp {
                         });
                         cx.update(|cx| {
                             log::info!(
-                                "self-update/targz: pre-installed — restart pending at {}",
+                                "self-update/targz: pre-installed - restart pending at {}",
                                 restart_path.display()
                             );
                             cx.set_restart_path(restart_path);
@@ -647,10 +647,10 @@ impl PaneFlowApp {
             return;
         }
 
-        // US-010: Windows MSI install — download, SHA-verify, invoke
+        // US-010: Windows MSI install - download, SHA-verify, invoke
         // msiexec, map exit codes. `InstallMethod::WindowsMsi` is only
         // produced on Windows by install_method::detect(), so on
-        // Linux/macOS this branch is a runtime-dead `if let` — the
+        // Linux/macOS this branch is a runtime-dead `if let` - the
         // `msiexec.exe` lookup inside `msi::install` would otherwise
         // fail there, but the branch guard prevents ever reaching it.
         if let update::install_method::InstallMethod::WindowsMsi { .. } = &method {
@@ -672,7 +672,7 @@ impl PaneFlowApp {
                         });
                         cx.update(|cx| {
                             log::info!(
-                                "self-update/msi: pre-installed — restart pending at {}",
+                                "self-update/msi: pre-installed - restart pending at {}",
                                 restart_path.display()
                             );
                             cx.set_restart_path(restart_path);
@@ -689,7 +689,7 @@ impl PaneFlowApp {
             return;
         }
 
-        // US-009: macOS `.app` bundle — mount the DMG, swap bundle
+        // US-009: macOS `.app` bundle - mount the DMG, swap bundle
         // atomically, restart into the new `Contents/MacOS/paneflow`.
         // Dispatch is an `if let` (not a cfg guard) so the code remains
         // a single compile-closure across all targets; the
@@ -719,7 +719,7 @@ impl PaneFlowApp {
                         });
                         cx.update(|cx| {
                             log::info!(
-                                "self-update/dmg: pre-installed — restart pending at {}",
+                                "self-update/dmg: pre-installed - restart pending at {}",
                                 restart_path.display()
                             );
                             cx.set_restart_path(restart_path);
@@ -741,7 +741,7 @@ impl PaneFlowApp {
         // methods above (AppImage / TarGz / SystemPackage) plus Unknown,
         // and reachable only for older dev builds that slipped past the
         // `TarGz | Unknown` match. On Windows/macOS the branch is
-        // cfg-eliminated at compile time — those platforms route via
+        // cfg-eliminated at compile time - those platforms route via
         // `InstallMethod::WindowsMsi` (US-010) and `AppBundle` (US-009)
         // respectively, and the fall-through below must never be reached.
         //
@@ -792,7 +792,7 @@ impl PaneFlowApp {
                 // Persist session and pre-wire the relauncher with the new
                 // binary path. The actual `cx.restart()` happens on the
                 // user's next click (now reduced to a one-call no-I/O
-                // operation) — see the ReadyToRestart short-circuit at
+                // operation) - see the ReadyToRestart short-circuit at
                 // the top of `handle_start_self_update`.
                 match update::installed_binary_path() {
                     Ok(path) => {
@@ -801,7 +801,7 @@ impl PaneFlowApp {
                         });
                         cx.update(|cx| {
                             log::info!(
-                                "self-update/legacy: pre-installed — restart pending at {}",
+                                "self-update/legacy: pre-installed - restart pending at {}",
                                 path.display()
                             );
                             cx.set_restart_path(path);
@@ -839,7 +839,7 @@ impl PaneFlowApp {
     /// Best-effort background pre-install. Called once per polling cycle
     /// after `update_status` transitions to `Available`. By the time
     /// the user actually clicks the pill, the new binary is already on
-    /// disk and `set_restart_path` is wired — `cx.restart()` is the
+    /// disk and `set_restart_path` is wired - `cx.restart()` is the
     /// only thing left to do, dropping click→restart latency from
     /// download-time + 2 s analytics flush to GPUI's `kill -0` watcher
     /// interval (~100 ms). Mirrors Zed's silent auto-update worker
@@ -847,14 +847,14 @@ impl PaneFlowApp {
     ///
     /// Gating, in order:
     /// - `update_status` is `Available`.
-    /// - `self_update_status` is `Idle` — never re-kick a flow that's
+    /// - `self_update_status` is `Idle` - never re-kick a flow that's
     ///   already downloading, installed, or errored.
-    /// - `update_attempt_count < 3` — reuse the 3-strikes circuit
+    /// - `update_attempt_count < 3` - reuse the 3-strikes circuit
     ///   breaker so a flaky mirror doesn't burn user bandwidth every
     ///   poll cycle.
     /// - `install_method` is auto-installable (AppImage / TarGz /
     ///   AppBundle / WindowsMsi / Unknown). SystemPackage needs
-    ///   pkexec (interactive auth — never auto), ExternallyManaged
+    ///   pkexec (interactive auth - never auto), ExternallyManaged
     ///   defers to the host package manager.
     pub(crate) fn try_auto_kickoff_install(&mut self, cx: &mut Context<Self>) {
         if !matches!(

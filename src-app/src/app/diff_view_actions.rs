@@ -4,7 +4,7 @@
 //! This mirrors `agents_view_actions.rs`: the mode owns the full main
 //! area plus its own left sidebar, entered via the CLI / Diff / Agents
 //! segmented toggle (`render_mode_toggle`). EP-001 stands up the shell
-//! only — `enter_diff_mode` just flips the mode and `render_diff_main`
+//! only - `enter_diff_mode` just flips the mode and `render_diff_main`
 //! renders a placeholder. EP-002 (US-004/US-005) mounts the reused
 //! `diff::DiffView` engine here; EP-005 adds the scope selector.
 
@@ -27,7 +27,7 @@ const DIFF_VIEW_CACHE_CAP: usize = 6;
 /// (or a workspace switch back to a visited repo) only when all three match: the
 /// repo root, the scope, and the exact worktree set (column layout). A scope
 /// toggle or a changed worktree set therefore correctly misses the cache and
-/// mounts a structurally-correct entity — a stale layout can never render.
+/// mounts a structurally-correct entity - a stale layout can never render.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct DiffViewKey {
     repo_root: PathBuf,
@@ -38,7 +38,7 @@ pub struct DiffViewKey {
 impl DiffViewKey {
     fn new(repo_root: &Path, scope: DiffScope, worktrees: &[DiffWorktree]) -> Self {
         use std::hash::{Hash as _, Hasher as _};
-        // Hash the RAW path strings — NOT `norm_path` (which `fs::canonicalize`s,
+        // Hash the RAW path strings - NOT `norm_path` (which `fs::canonicalize`s,
         // a blocking syscall that would stall the GPUI thread on a slow/NFS mount
         // for every worktree on each rebuild). The key only needs to be stable per
         // (repo, scope, worktree set), and the seed paths already are; symlink
@@ -88,7 +88,7 @@ fn multiproject_signature(groups: &[RepoGroup]) -> u64 {
 }
 
 /// Sidebar width when in [`AppMode::Diff`]. 360 px matches Zed's git
-/// panel default — the dedicated diff surface deliberately diverges
+/// panel default - the dedicated diff surface deliberately diverges
 /// from the 220/280 px CLI/Agents family for Zed visual parity
 /// (decision: literal Zed; see the PRD §4).
 pub(crate) const DIFF_SIDEBAR_WIDTH: f32 = 360.0;
@@ -125,7 +125,7 @@ impl PaneFlowApp {
     /// every time, this parks the currently-displayed host (suspending its
     /// watchers while the cache retains its computed rows), prunes hosts of
     /// closed repos, then either RESUMES a cached entity whose key matches (the
-    /// instant warm path — a CLI↔Diff toggle or a workspace switch back to a
+    /// instant warm path - a CLI↔Diff toggle or a workspace switch back to a
     /// visited repo) or builds a fresh one on a cache miss. Clears to the
     /// empty-state when the active workspace has no resolved repo. Called on
     /// diff-mode entry (US-004), workspace switch (US-005), and scope change
@@ -213,8 +213,8 @@ impl PaneFlowApp {
     }
 
     /// US-016: park the displayed diff host before re-pointing (mode exit,
-    /// workspace switch, scope change). Suspends the entity — releasing its OS
-    /// watchers + ending its debounce loop — while the cache (single-repo) or
+    /// workspace switch, scope change). Suspends the entity - releasing its OS
+    /// watchers + ending its debounce loop - while the cache (single-repo) or
     /// the retained slot (Multi-project) keeps it alive with its computed rows.
     /// Clears only the display pointer (pointer-vs-owner split).
     /// Also closes the prior `multi_diff_view` watcher leak (it was never
@@ -247,7 +247,7 @@ impl PaneFlowApp {
         }
         let view = cx.new(|cx| crate::diff::DiffView::new(root, worktrees, cx));
         // Worktree scope: the column-header `×` deselects the branch (rebuild
-        // without it) instead of hiding it in place — shown-or-not, no "N hidden"
+        // without it) instead of hiding it in place - shown-or-not, no "N hidden"
         // limbo. Wire it once on the fresh entity; the subscription + flag persist
         // across cache resume (the key is scope-stamped, so a worktree view is
         // never reused for another scope).
@@ -306,7 +306,7 @@ impl PaneFlowApp {
 
     /// US-013: off the main thread, enumerate the repo's on-disk worktrees and
     /// append any not already open as workspaces (dedup by a case-safe
-    /// normalized path) to the live `DiffView` *in place* via `add_columns` —
+    /// normalized path) to the live `DiffView` *in place* via `add_columns` -
     /// no re-mount, so existing columns keep their loaded content (no
     /// Loading→Loading flash mid-session). Discovered-only worktrees carry
     /// `workspace_id: None`. No-op when nothing new is found.
@@ -363,7 +363,7 @@ impl PaneFlowApp {
 
     /// Worktree-scope branches picker: (re)fetch every worktree of `root` off the
     /// main thread so the picker can offer branches not currently shown (it lists
-    /// the full set; columns show only the chosen subset). Lazy — called when the
+    /// the full set; columns show only the chosen subset). Lazy - called when the
     /// picker opens.
     pub(crate) fn refresh_diff_available_worktrees(
         &mut self,
@@ -432,7 +432,7 @@ impl PaneFlowApp {
     }
 
     /// Worktree scope: a branch column asked to close (its header `×`). Drop it
-    /// from the chosen set and rebuild — same selection model as the branches
+    /// from the chosen set and rebuild - same selection model as the branches
     /// picker, so re-checking it there brings it back. No "hidden" limbo.
     pub(crate) fn handle_diff_view_event(
         &mut self,
@@ -450,7 +450,7 @@ impl PaneFlowApp {
     /// Remove `path` from the active repo's chosen-worktree set, then rebuild so
     /// the column disappears. The "all-shown" default is materialized from the
     /// columns currently on screen (so on-disk-discovered branches survive), then
-    /// `path` is dropped. No-op when only one column remains — a zero-column diff
+    /// `path` is dropped. No-op when only one column remains - a zero-column diff
     /// is meaningless (mirrors [`Self::toggle_chosen_worktree`]'s empty guard).
     fn deselect_diff_worktree(&mut self, path: String, cx: &mut Context<Self>) {
         let Some(root) = self
@@ -515,7 +515,7 @@ impl PaneFlowApp {
     /// engine) when the active workspace backs a git repo, else the
     /// empty-state. The entity is (re)built off-render by
     /// `rebuild_diff_view`; this branch never mutates the view's diff state
-    /// (re-entrancy) — it only PUSHES the scope breadcrumb fragment into the
+    /// (re-entrancy) - it only PUSHES the scope breadcrumb fragment into the
     /// mounted view every frame (`scope_slot`, push-only contract like
     /// `TitleBar`), which the view mounts as the left side of its single
     /// toolbar row (Codex redesign: one row of chrome).
@@ -523,7 +523,7 @@ impl PaneFlowApp {
         use crate::diff::DiffScope;
         let ui = crate::theme::ui_colors();
         let breadcrumb = self.render_scope_header(cx);
-        // No view mounted: a local bare bar hosts the breadcrumb — it carries
+        // No view mounted: a local bare bar hosts the breadcrumb - it carries
         // the scope/project pickers, the only way OUT of an empty scope.
         let empty = |msg: &'static str, breadcrumb: AnyElement| {
             div()

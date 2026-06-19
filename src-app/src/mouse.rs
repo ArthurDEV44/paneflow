@@ -48,7 +48,7 @@ pub fn mouse_button_code(button: MouseButton, modifiers: Modifiers) -> Option<u8
         MouseButton::Middle => 1,
         MouseButton::Right => 2,
         // Side / "back" / "forward" buttons. The X10/SGR mouse report has no
-        // canonical encoding for them — encoding them as `Left` would inject
+        // canonical encoding for them - encoding them as `Left` would inject
         // a phantom primary click into TUI apps with mouse mode active.
         MouseButton::Navigate(_) => return None,
     };
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn normal_utf8_high_coord() {
-        // Position 200 with UTF-8 — should produce multi-byte encoding
+        // Position 200 with UTF-8 - should produce multi-byte encoding
         let result = normal_mouse_report(pt(200, 0), 0, true).unwrap();
         // 200 + 33 = 233 → UTF-8: 0xC3 0xA9
         assert!(result.len() > 5); // prefix(4) + multi-byte col + single-byte row

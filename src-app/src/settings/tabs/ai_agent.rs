@@ -1,12 +1,12 @@
-//! "AI Agent" settings page — compact toggles for the built-in AI launcher
+//! "AI Agent" settings page - compact toggles for the built-in AI launcher
 //! buttons rendered in every tab bar, plus the Claude bypass-permissions guard.
 //!
 //! Two sections, each a lowercase eyebrow ("Tab bar buttons", "Permissions")
 //! followed by a `setting_card` of one row per toggle, separated by `hairline()`
-//! dividers. Only the switch is interactive — the row itself does not hover or
+//! dividers. Only the switch is interactive - the row itself does not hover or
 //! click.
 //!
-//! Persistence goes through [`PaneFlowApp::persist_setting`] — it mutates the
+//! Persistence goes through [`PaneFlowApp::persist_setting`] - it mutates the
 //! cached config for instant feedback and writes `paneflow.json` off the main
 //! thread; `pane.rs` picks up the new state via the ConfigWatcher propagation so
 //! the tab bar reflects changes without a restart. The MCP bridge installer
@@ -244,7 +244,7 @@ impl PaneFlowApp {
             "Adds --permission-mode bypassPermissions whenever Paneflow \
              launches Claude Code in a terminal (tab-bar button and the \
              Agents-view thread picker). Anthropic warns this mode offers \
-             no protection against prompt injection — only enable on \
+             no protection against prompt injection - only enable on \
              machines you trust.",
             None,
             bypass,
@@ -396,7 +396,7 @@ impl PaneFlowApp {
                 "Review prefill delay",
                 "How long Paneflow waits before typing the review prompt into a \
                  freshly launched CLI. The prompt is always copied to the \
-                 clipboard as a fallback — raise this only if a slow-starting \
+                 clipboard as a fallback - raise this only if a slow-starting \
                  CLI keeps missing the auto-fill.",
             ))
             .child(
@@ -470,7 +470,7 @@ fn setting_row(
         .when_some(icon, |d, agent| d.child(agent_icon_el(agent, ui)))
         .child(setting_text(ui, title, description))
         .child(
-            // Only the switch is interactive — the row no longer hovers/toggles.
+            // Only the switch is interactive - the row no longer hovers/toggles.
             div()
                 .id(SharedString::from(id))
                 .flex_shrink_0()

@@ -4,7 +4,7 @@
 //! is just the theme binding: it maps a tree-sitter highlight capture name
 //! (`keyword.control`, `string`, `type.builtin`, …) to a color drawn from the
 //! theme's dedicated [`SyntaxPalette`] (prd-diff-syntax-palette-2026-Q3.md,
-//! EP-001) — a ≈30-slot semantic palette in Paneflow's Catppuccin brand, NOT
+//! EP-001) - a ≈30-slot semantic palette in Paneflow's Catppuccin brand, NOT
 //! the 8-hue ANSI terminal set. Resolution is longest-prefix-wins (Zed's
 //! `SyntaxTheme` model): a dotted capture like `function.method.call` falls
 //! back to the `function` slot, with exact-name arms (`variable.builtin`,
@@ -46,7 +46,7 @@ impl DiffSyntax {
         } else if cap_has(name, "comment") {
             p.comment
         }
-        // Strings — escape / special checked before the generic `string` prefix
+        // Strings - escape / special checked before the generic `string` prefix
         // (which would otherwise swallow `string.escape` / `string.special`).
         else if cap_has(name, "string.escape") || cap_has(name, "escape") {
             p.string_escape
@@ -58,7 +58,7 @@ impl DiffSyntax {
         } else if cap_has(name, "string") || cap_has(name, "character") {
             p.string
         }
-        // Markdown / markup — legacy `text.*` names (tree-sitter-md) and modern
+        // Markdown / markup - legacy `text.*` names (tree-sitter-md) and modern
         // `markup.*` names both map here (US-004).
         else if cap_has(name, "text.literal")
             || cap_has(name, "markup.raw")
@@ -102,7 +102,7 @@ impl DiffSyntax {
         } else if cap_has(name, "number") || cap_has(name, "float") {
             p.number
         }
-        // Constants — builtin before the generic prefix.
+        // Constants - builtin before the generic prefix.
         else if cap_has(name, "constant.builtin") {
             p.constant_builtin
         } else if cap_has(name, "constant") {
@@ -143,7 +143,7 @@ impl DiffSyntax {
             p.tag
         }
         // Object/struct fields & properties (`variable.member` is the modern
-        // capture for a struct field — check it before the `variable` prefix).
+        // capture for a struct field - check it before the `variable` prefix).
         else if cap_has(name, "property")
             || cap_has(name, "field")
             || cap_has(name, "variable.member")
@@ -158,7 +158,7 @@ impl DiffSyntax {
         else if cap_has(name, "namespace") || cap_has(name, "module") {
             p.namespace
         }
-        // Variables — builtin (`self` / `this` / `super`) before the prefix.
+        // Variables - builtin (`self` / `this` / `super`) before the prefix.
         else if cap_has(name, "variable.builtin") {
             p.variable_builtin
         } else if cap_has(name, "variable") {
@@ -168,7 +168,7 @@ impl DiffSyntax {
         else if cap_has(name, "operator") {
             p.operator
         }
-        // Punctuation — special / list markers before the generic prefix.
+        // Punctuation - special / list markers before the generic prefix.
         else if cap_has(name, "punctuation.special")
             || cap_has(name, "punctuation.list_marker")
             || cap_has(name, "markup.list")

@@ -1,4 +1,4 @@
-// Integration test — compiled as its own crate and does not inherit
+// Integration test - compiled as its own crate and does not inherit
 // `src-app/src/main.rs`'s `#![cfg_attr(test, allow(...))]`. Per CLAUDE.md
 // (clippy issue #13981 workaround), declare the same test-allow set
 // locally so `cargo clippy --all-targets -- -D warnings` passes under
@@ -275,7 +275,7 @@ fn h_divider() -> gpui::Div {
 }
 
 /// AC-4: A 3-child container with ratios [0.33, 0.33, 0.34] and 4px dividers
-/// between each pair — all three panes visible with roughly equal size.
+/// between each pair - all three panes visible with roughly equal size.
 /// This replicates the exact div structure LayoutTree::render() produces.
 #[gpui::test]
 fn test_three_children_with_dividers(cx: &mut TestAppContext) {
@@ -351,14 +351,14 @@ fn test_deeply_nested_four_levels(cx: &mut TestAppContext) {
             AvailableSpace::Definite(px(container_h)),
         ),
         |_, _| {
-            // Level 1: Vertical split (flex_row) — left subtree + D
+            // Level 1: Vertical split (flex_row) - left subtree + D
             div()
                 .flex()
                 .flex_row()
                 .size_full()
                 .overflow_hidden()
                 .child(
-                    // Level 2: Horizontal split (flex_col) — top subtree + C
+                    // Level 2: Horizontal split (flex_col) - top subtree + C
                     div()
                         .flex_basis(relative(0.6))
                         .flex_grow()
@@ -374,7 +374,7 @@ fn test_deeply_nested_four_levels(cx: &mut TestAppContext) {
                                 .size_full()
                                 .overflow_hidden()
                                 .child(
-                                    // Level 3: Vertical split (flex_row) — A + B
+                                    // Level 3: Vertical split (flex_row) - A + B
                                     div()
                                         .flex_basis(relative(0.5))
                                         .flex_grow()

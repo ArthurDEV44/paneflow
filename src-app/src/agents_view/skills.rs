@@ -270,7 +270,7 @@ fn render_skill_card(
 
     // Uniform-height card; hover amplifies an accent ring (no dimming of the
     // others) and reveals the Copy button. Background stays `ui.surface` so
-    // the ring is the only emphasis — consistent with the active-pane cue.
+    // the ring is the only emphasis - consistent with the active-pane cue.
     div()
         .id(card_id)
         .group(group)

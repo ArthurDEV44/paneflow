@@ -2,17 +2,17 @@
 //!
 //! Hosts the action handlers and helpers that create, select, split, close,
 //! reorder, zoom, and re-layout workspaces and their pane trees. All methods
-//! are pure code-motion from `main.rs` (US-023 of the src-app refactor PRD) —
+//! are pure code-motion from `main.rs` (US-023 of the src-app refactor PRD) -
 //! behaviour is unchanged.
 //!
 //! Rendering (sidebar, context menus), IPC plumbing, toasts, settings, and
 //! session persistence live in their own siblings under `app/`.
 //!
 //! Module layout:
-//! - [`focus`] — focus-movement handlers (+ swap-on-focus override)
-//! - [`tab`] — tab add/close
-//! - [`swap`] — swap-mode toggle
-//! - [`layout`] — zoom, layout presets, JSON layout application
+//! - [`focus`] - focus-movement handlers (+ swap-on-focus override)
+//! - [`tab`] - tab add/close
+//! - [`swap`] - swap-mode toggle
+//! - [`layout`] - zoom, layout presets, JSON layout application
 
 mod focus;
 mod layout;
@@ -62,8 +62,8 @@ impl PaneFlowApp {
             self.workspaces[idx].focus_first(window, cx);
             // An open sessions sidebar follows the active workspace: re-target
             // it to the new workspace's first pane (rebinds the resume target
-            // + rescans for its cwd). Without this it kept showing — and
-            // resuming into — the PREVIOUS workspace. Closed only if the new
+            // + rescans for its cwd). Without this it kept showing - and
+            // resuming into - the PREVIOUS workspace. Closed only if the new
             // workspace somehow has no pane.
             if self.agent_sessions.sessions_sidebar_open {
                 match self.workspaces[idx]
@@ -86,7 +86,7 @@ impl PaneFlowApp {
     /// US-009 (orchestration-v2): tear down the worktrees a closing workspace
     /// owns, off the render thread (`git status` + `worktree remove` are
     /// subprocesses). Clean ones are removed, dirty/unverifiable ones kept,
-    /// the branch never touched — all enforced by `worktree::teardown_all`.
+    /// the branch never touched - all enforced by `worktree::teardown_all`.
     pub(crate) fn spawn_worktree_teardown(
         worktrees: Vec<crate::workspace::worktree::ManagedWorktree>,
         cx: &mut Context<Self>,
@@ -101,7 +101,7 @@ impl PaneFlowApp {
     }
 
     /// US-005/US-014: if in Diff mode, rebuild the mounted diff (deferred) so it
-    /// follows the current workspace set and active workspace — covers workspace
+    /// follows the current workspace set and active workspace - covers workspace
     /// switch (re-target) and close (Multi-project group reconcile). Deferred so
     /// the rebuild (which mounts a fresh entity) never runs inside a
     /// render/callback. No-op outside Diff mode.
@@ -192,7 +192,7 @@ impl PaneFlowApp {
     /// Working directory for a terminal spawned into the active workspace.
     /// `source_cwd` is the focused/source pane's live cwd (`cwd_now()`), which
     /// is `None` for a markdown pane (US-020) and on every platform that can't
-    /// introspect a child's cwd — notably *always* on Windows, where
+    /// introspect a child's cwd - notably *always* on Windows, where
     /// `cwd_now()` is a stub. Left unhandled, that `None` lets the PTY spawn
     /// drop to the process `current_dir()` (`C:\Program Files\PaneFlow` for an
     /// installed build), stranding new panes outside the project. Fall back to
@@ -216,7 +216,7 @@ impl PaneFlowApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // No split while zoomed — the zoomed view is a temporary single-leaf root
+        // No split while zoomed - the zoomed view is a temporary single-leaf root
         if let Some(ws) = self.active_workspace()
             && ws.is_zoomed()
         {
@@ -290,7 +290,7 @@ impl PaneFlowApp {
             } else {
                 root.focused_pane(window, cx)
             };
-            // US-020: only record undo state for terminal panes — markdown
+            // US-020: only record undo state for terminal panes - markdown
             // panes have no scrollback / cwd to restore. Closing one simply
             // removes it from the layout without populating the undo stack.
             if let Some(pane) = closing_pane
@@ -347,7 +347,7 @@ impl PaneFlowApp {
             }
         }
 
-        // Never destroy a workspace when its last pane closes — respawn a
+        // Never destroy a workspace when its last pane closes - respawn a
         // fresh terminal at the workspace's root cwd. Workspaces are only
         // removed via the explicit "Close workspace" action.
         if let Some(ws) = self.active_workspace()
@@ -356,7 +356,7 @@ impl PaneFlowApp {
             let ws_id = ws.id;
             let cwd = std::path::PathBuf::from(&ws.cwd);
             let terminal = cx.new(|cx| TerminalView::with_cwd(ws_id, Some(cwd), None, cx));
-            // US-028: do NOT subscribe here — `create_pane` already wires
+            // US-028: do NOT subscribe here - `create_pane` already wires
             // `handle_terminal_event` (main.rs:539). The duplicate subscription
             // fired every terminal event twice (double toast / port-scan /
             // mutation) and leaked the extra subscription. `split()` and
@@ -408,7 +408,7 @@ impl PaneFlowApp {
         {
             new_pane.read(cx).focus_handle(cx).focus(window, cx);
         } else if let Some(ws) = self.active_workspace_mut() {
-            // No existing root (empty workspace) — set as the root
+            // No existing root (empty workspace) - set as the root
             ws.root = Some(LayoutTree::Leaf(new_pane.clone()));
             new_pane.read(cx).focus_handle(cx).focus(window, cx);
         }
@@ -609,7 +609,7 @@ impl PaneFlowApp {
         // GUI launchers (.desktop on Linux, Finder on macOS, Start menu on
         // Windows) frequently strip user bin directories from PATH, so editors
         // installed under ~/.local/bin or ~/.cargo/bin can't be found by
-        // Command::new alone — even though they resolve fine from a terminal.
+        // Command::new alone - even though they resolve fine from a terminal.
         let bin = resolve_editor_binary(command);
 
         if let Err(err) = std::process::Command::new(&bin)
@@ -742,10 +742,10 @@ impl PaneFlowApp {
 /// - **macOS** → `open <path>` (Finder dispatches). `open -R <path>`
 ///   would "reveal" with the file highlighted, but the PRD explicitly
 ///   mandates `open <path>` for parity with the Linux "open this
-///   directory" behavior — callers that want reveal-with-highlight
+///   directory" behavior - callers that want reveal-with-highlight
 ///   pass the parent directory.
 /// - **Windows** → `explorer /select,<path>`. The `/select,` flag opens
-///   the parent folder with `<path>` highlighted — the canonical
+///   the parent folder with `<path>` highlighted - the canonical
 ///   "reveal in Explorer" idiom documented by Microsoft.
 ///
 /// Returns `Err(message)` on spawn failure where `message` is already
@@ -759,7 +759,7 @@ pub(crate) fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), Strin
         let result = std::process::Command::new("xdg-open").arg(path).spawn();
         return result.map(|_| ()).map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
-                "xdg-open not found — install xdg-utils to use this feature".to_string()
+                "xdg-open not found - install xdg-utils to use this feature".to_string()
             } else {
                 format!("Could not open file manager: {err}")
             }
@@ -776,7 +776,7 @@ pub(crate) fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), Strin
     {
         // `/select,<path>` highlights the file in its parent folder.
         // The comma is part of the flag spelling Microsoft documents,
-        // and the flag + path MUST form a SINGLE argv token — passing
+        // and the flag + path MUST form a SINGLE argv token - passing
         // `/select,` and `<path>` as two separate `.arg(...)` calls
         // makes Explorer ignore the selection hint and silently open
         // the user's Documents folder instead (US-007 / v0.2.0 US-011
@@ -867,7 +867,7 @@ fn editor_search_paths() -> Vec<std::path::PathBuf> {
 mod tests {
     use super::*;
 
-    // Pure-Rust tests only — spawning actual binaries is brittle in CI
+    // Pure-Rust tests only - spawning actual binaries is brittle in CI
     // (Linux runners may not have xdg-utils, macOS runners may not have
     // `open` on PATH under non-GUI session, etc.). We exercise the
     // error-message shape so the toast copy can't drift silently.
@@ -887,7 +887,7 @@ mod tests {
         // Mirrors the helper's error-mapping branch; a refactor that
         // changes the toast copy in one place will fail this assertion.
         let msg = if err.kind() == std::io::ErrorKind::NotFound {
-            "xdg-open not found — install xdg-utils to use this feature".to_string()
+            "xdg-open not found - install xdg-utils to use this feature".to_string()
         } else {
             format!("Could not open file manager: {err}")
         };
@@ -901,7 +901,7 @@ mod tests {
         // spawn behaviour is OS-dependent and left to CI / manual
         // verification per US-011 AC10.
         let tmp = tempfile::TempDir::new().unwrap();
-        // Don't actually spawn — the test would flake on headless CI
+        // Don't actually spawn - the test would flake on headless CI
         // without a default file-manager registered. We verify the
         // type-shape compiles and the helper is reachable from tests.
         let _callable: fn(&std::path::Path) -> Result<(), String> = reveal_in_file_manager;
@@ -909,7 +909,7 @@ mod tests {
     }
 
     // ════════════════════════════════════════════════════════════════════
-    // Editor-binary resolver — regression coverage for the "Open in
+    // Editor-binary resolver - regression coverage for the "Open in
     // <Editor>" silent-failure bug.
     //
     // Bug: GUI launchers (Linux .desktop, macOS Finder, Windows Start menu)
@@ -917,7 +917,7 @@ mod tests {
     // so editors installed there can't be spawned by `Command::new` alone.
     // Cursor at /usr/bin worked; Zed at ~/.local/bin failed silently.
     //
-    // The fixture-based tests below run on every platform — they don't
+    // The fixture-based tests below run on every platform - they don't
     // require a real editor to be installed. Each per-OS shape test runs
     // only on its target so CI on each platform self-validates its own
     // fallback list. Linux distros (Fedora, Ubuntu/Debian, Arch, openSUSE,
@@ -926,7 +926,7 @@ mod tests {
     // ════════════════════════════════════════════════════════════════════
 
     /// Filename suffix `which_in` will recognize on the current target.
-    /// Windows resolves names against PATHEXT — `.exe` is the canonical
+    /// Windows resolves names against PATHEXT - `.exe` is the canonical
     /// entry; Unix matches the bare name plus the executable bit.
     const EXE_SUFFIX: &str = if cfg!(windows) { ".exe" } else { "" };
 
@@ -949,7 +949,7 @@ mod tests {
     #[test]
     fn resolver_picks_up_binary_from_fallback_dir() {
         // High-entropy stub name so `which::which` against the host's real
-        // PATH cannot resolve it — forcing the resolver into the fallback
+        // PATH cannot resolve it - forcing the resolver into the fallback
         // branch we want to exercise. Without this, the test could pass on
         // the wrong code path if the host happens to have a similarly-
         // named binary installed.
@@ -959,7 +959,7 @@ mod tests {
 
         let resolved = resolve_editor_binary_in(stub, &[dir.path().to_path_buf()]);
 
-        // `which_in` may canonicalize symlinks and `.` components — compare
+        // `which_in` may canonicalize symlinks and `.` components - compare
         // canonical forms so the test is resilient on macOS (/var → /private/var)
         // and on distros where /home is a symlink. Falling back to raw
         // PathBuf comparison would flake on those hosts.

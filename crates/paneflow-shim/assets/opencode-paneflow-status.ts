@@ -1,9 +1,9 @@
-// Paneflow status bridge for OpenCode — INSTALLED AND REMOVED AUTOMATICALLY
+// Paneflow status bridge for OpenCode - INSTALLED AND REMOVED AUTOMATICALLY
 // by paneflow-shim around each `opencode` session started inside a Paneflow
 // terminal. Safe to delete; do not edit (changes are overwritten).
 //
 // Reports lifecycle to the Paneflow sidebar by connecting to Paneflow's IPC
-// endpoint (PANEFLOW_SOCKET_PATH — a Unix socket on Linux/macOS, a named pipe
+// endpoint (PANEFLOW_SOCKET_PATH - a Unix socket on Linux/macOS, a named pipe
 // on Windows) and writing a single JSON-RPC frame, then closing. We do NOT
 // spawn `paneflow-ai-hook` per event: on Windows, firing a fresh
 // `paneflow-ai-hook.exe` rapidly from OpenCode's shell fails to start

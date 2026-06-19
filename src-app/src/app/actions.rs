@@ -58,20 +58,20 @@ actions!(
         ToggleCopyMode,
         ClearScrollHistory,
         ResetTerminal,
-        // EP-006 US-019 (cli-cockpit) — per-pane font zoom. Terminal
+        // EP-006 US-019 (cli-cockpit) - per-pane font zoom. Terminal
         // context; the secondary-=/-/-0 default chords follow the Linux
-        // terminal-emulator zoom convention (gnome-terminal, Ghostty) —
+        // terminal-emulator zoom convention (gnome-terminal, Ghostty) -
         // the readline shadow is the PRD's documented, remappable
         // exception to the no-shadow rule.
         FontSizeIncrease,
         FontSizeDecrease,
         FontSizeReset,
-        // EP-006 US-018 — widen the open search to every pane of every
+        // EP-006 US-018 - widen the open search to every pane of every
         // workspace (fleet grep). Search context (find bar open).
         ToggleFleetSearch,
         StartSelfUpdate,
         /// US-007 AC3: dismiss the update pill for the current launch
-        /// (no persistence — re-prompts on next start). Dispatched by
+        /// (no persistence - re-prompts on next start). Dispatched by
         /// the `×` button on the Idle / Errored pill states.
         DismissUpdate,
         // US-012: macOS native menu-bar actions. Dispatched by `cx.set_menus`
@@ -83,7 +83,7 @@ actions!(
         Paste,
         SelectAll,
         OpenHelp,
-        // US-022 (cmux port 2026-Q2) — markdown pane navigation. Scoped to
+        // US-022 (cmux port 2026-Q2) - markdown pane navigation. Scoped to
         // the `Markdown` key context (root) and `MarkdownSearch` (when the
         // find overlay is open). Defined as separate actions from terminal
         // scroll/copy so the keybinding registry can scope them cleanly.
@@ -94,27 +94,27 @@ actions!(
         MarkdownFindPrev,
         MarkdownFindDismiss,
         MarkdownCopy,
-        // US-005 of tasks/prd-agents-view.md — toggles the lightweight
+        // US-005 of tasks/prd-agents-view.md - toggles the lightweight
         // Agents-view shell that hosts the auth-required card and the
         // missing-agents empty state. US-008 will repurpose the same
         // action as the full AppMode toggle.
         OpenAgentsView,
-        // US-003 of tasks/prd-multi-worktree-diff-2026-Q3.md — open the
+        // US-003 of tasks/prd-multi-worktree-diff-2026-Q3.md - open the
         // multi-worktree diff view for the active workspace's repo. Resolves
         // the repo from `active_idx`'s `repo_root` and opens a `DiffView` tab
         // seeded with every sibling worktree. Also invoked directly by the
         // sidebar group header's "Diff all" button.
         OpenMultiDiff,
-        // US-003 of tasks/prd-git-diff-mode-2026-Q3.md — toggle the
+        // US-003 of tasks/prd-git-diff-mode-2026-Q3.md - toggle the
         // dedicated Git Diff mode (AppMode::Diff): a full-screen diff
         // surface entered via the CLI / Diff / Agents sidebar toggle.
         // Distinct from `OpenMultiDiff` (the ephemeral tab path), which
         // stays alive as a secondary entry.
         OpenDiffView,
-        // US-003 of tasks/prd-ai-in-diff-2026-Q3.md — copy the hunk under the
+        // US-003 of tasks/prd-ai-in-diff-2026-Q3.md - copy the hunk under the
         // cursor as a unified diff (Ctrl+Shift+C inside the DiffView context).
         CopyDiffHunk,
-        // EP-003 US-009 (prd-review-redesign-2026-Q3.md) — keyboard-first review
+        // EP-003 US-009 (prd-review-redesign-2026-Q3.md) - keyboard-first review
         // loop. All scoped to `DiffView && !Terminal && !TextInput` so they drive
         // the diff body without stealing keystrokes from an embedded review/shell
         // terminal or the base-branch filter input.
@@ -126,20 +126,20 @@ actions!(
         DiffToggleView,
         DiffToggleSync,
         DiffDismiss,
-        // EP-005 US-018 (prd-review-redesign-2026-Q3.md) — direct the active
+        // EP-005 US-018 (prd-review-redesign-2026-Q3.md) - direct the active
         // review CLI at the hunk under the cursor (or the viewport hunk, for a
         // keyboard-only loop). Same `DiffView && !Terminal && !TextInput` context
         // as the rest of the review-loop keys.
         DiffActOnHunk,
-        // US-011 of tasks/prd-agents-ui-codex-redesign-2026-Q3.md — open the
+        // US-011 of tasks/prd-agents-ui-codex-redesign-2026-Q3.md - open the
         // overflow (`⋯`) menu for the current Agents thread/chat. Dispatched
         // by the title-bar `⋯` button (a SEPARATE `TitleBar` entity with no
         // access to agents state), caught by `PaneFlowApp` which resolves the
         // selected target and opens the shared thread context menu. The
-        // button never calls agents methods directly — it dispatches this
+        // button never calls agents methods directly - it dispatches this
         // typed action, mirroring the update pill's `StartSelfUpdate`.
         OpenAgentsThreadMenu,
-        // EP-001 (prd-cli-cockpit-ergonomics-2026-Q3.md) — Cli-cockpit
+        // EP-001 (prd-cli-cockpit-ergonomics-2026-Q3.md) - Cli-cockpit
         // steering. `OpenComposer` (US-001) anchors the multi-line prompt
         // Composer to the focused pane; `ToggleBroadcastMember` and
         // `OpenBroadcastGroups` (US-002) manage the named pane groups the
@@ -147,7 +147,7 @@ actions!(
         OpenComposer,
         ToggleBroadcastMember,
         OpenBroadcastGroups,
-        // EP-002 (prd-cli-cockpit-ergonomics-2026-Q3.md) — triage & launch.
+        // EP-002 (prd-cli-cockpit-ergonomics-2026-Q3.md) - triage & launch.
         // `OpenAttentionQueue` (US-004) lists every WaitingForInput session
         // cross-workspace with its question + wait time; `OpenLaunchPad`
         // (US-005) is the worktree + split + agent + prefill one-gesture

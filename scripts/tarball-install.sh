@@ -33,7 +33,7 @@ mkdir -p "$LOCAL" "$BIN" "$APPS"
 # ------------------------------------------------------------------------
 
 # If a stale .app.old exists from a prior failed install, refuse to clobber
-# it — the user should inspect/remove it manually.
+# it - the user should inspect/remove it manually.
 if [ -e "$APP_OLD" ]; then
     echo "error: $APP_OLD already exists (from a prior failed install)." >&2
     echo "       Inspect it, then run: rm -rf '$APP_OLD'" >&2
@@ -64,7 +64,7 @@ trap cleanup_on_failure EXIT
 mkdir -p "$APP"
 cp -R "$SCRIPT_DIR"/. "$APP"/
 
-# Staging succeeded — clear the failure trap and remove the old backup.
+# Staging succeeded - clear the failure trap and remove the old backup.
 trap - EXIT
 if [ "$HAD_PREVIOUS" -eq 1 ]; then
     rm -rf "$APP_OLD"

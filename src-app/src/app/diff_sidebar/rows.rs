@@ -15,7 +15,7 @@ impl PaneFlowApp {
     /// directory + +/- counts. Click selects `col_idx`'s branch AND scrolls its
     /// diff body to the file (so clicking a file in any branch section focuses
     /// that branch); no re-diff. `is_active` is whether `col_idx` is the column
-    /// currently driving the body — only then does the selected-file highlight
+    /// currently driving the body - only then does the selected-file highlight
     /// light up, so a filename present in several branches isn't highlighted in
     /// every section.
     pub(super) fn render_diff_file_row(
@@ -43,7 +43,7 @@ impl PaneFlowApp {
         // For a rename, show the source path as the dimmed tail (`← old`) instead
         // of the destination directory, so the move is legible at a glance. In
         // tree mode (indent > 0) the enclosing directory is already the folder
-        // node above, so the plain dir tail is redundant and dropped — renames
+        // node above, so the plain dir tail is redundant and dropped - renames
         // still keep their `← old` source.
         let dir = match (entry.change, &entry.old_path) {
             (FileChange::Renamed, Some(old)) => format!("← {old}"),

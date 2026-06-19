@@ -5,7 +5,7 @@ every Windows release is promoted from pre-release to the public
 "latest" tag. Referenced by US-021 in
 [`tasks/prd-windows-port.md`](../tasks/prd-windows-port.md).
 
-CI cannot exercise these scenarios — the `windows-2022` GitHub-hosted
+CI cannot exercise these scenarios - the `windows-2022` GitHub-hosted
 runner image covers compile + signtool verification only
 (`.github/workflows/ci.yml` windows-check job, US-018), and end-to-end
 install + UI behaviour requires a real desktop session with SmartScreen,
@@ -23,7 +23,7 @@ Run this runbook against every release candidate **before** the
 Windows asset is attached to the public GitHub Release. The expected
 cadence mirrors `docs/validation-aarch64.md`:
 
-1. Maintainer pushes `vX.Y.Z-rc.1` — the release workflow cuts a
+1. Maintainer pushes `vX.Y.Z-rc.1` - the release workflow cuts a
    pre-release (`release.yml` detects `rc` in tag name and sets
    `prerelease: true`). The `release-assets-x86_64-Windows` workflow
    artifact contains the signed MSI + SHA-256 sidecar.
@@ -32,11 +32,11 @@ cadence mirrors `docs/validation-aarch64.md`:
 3. Maintainer executes §5 on both VMs and attaches the screenshot
    gallery (§7) to the release PR.
 4. If every scenario passes or is explicitly marked "known limitation
-   — documented", maintainer retags `vX.Y.Z` to trigger the final
+   - documented", maintainer retags `vX.Y.Z` to trigger the final
    release. Otherwise triage per §6.
 
 Do NOT skip a release's smoke test because "nothing changed on
-Windows since last release" — GPUI commits, cargo-wix output, and
+Windows since last release" - GPUI commits, cargo-wix output, and
 Azure Artifact Signing cert rotations all silently shift behaviour;
 every release is a fresh validation.
 
@@ -55,7 +55,7 @@ minimum Windows version PaneFlow supports (ConPTY was introduced in
 
 - Recommended VM host: VirtualBox, VMware Workstation Player, or Hyper-V
 - Minimum resources: 4 GB RAM, 2 vCPU, 40 GB disk, 3D acceleration
-  enabled (DirectX 11 is required — GPUI renders via the DX11 backend
+  enabled (DirectX 11 is required - GPUI renders via the DX11 backend
   per the US-001 spike)
 - Snapshot after first boot so every smoke run starts from a clean state
 
@@ -89,10 +89,10 @@ Before starting any scenario:
    # Compare against the .sha256 sidecar content
    ```
    A mismatch means the asset was corrupted between CI and your
-   download — re-download before proceeding.
+   download - re-download before proceeding.
 3. Copy the verified MSI into each VM via a shared folder or a
    throwaway HTTP server on the host. Do NOT re-download inside the
-   VM from GitHub — re-downloading inside the VM re-stamps the file
+   VM from GitHub - re-downloading inside the VM re-stamps the file
    with a fresh Mark-of-the-Web zone marker, which may produce a
    different SmartScreen verdict than the file a real user downloads
    via their browser from the CDN. Keep the MSI's origin traceable
@@ -104,9 +104,9 @@ Before starting any scenario:
 
 Each scenario is run on BOTH Windows 10 1809 and Windows 11 unless
 explicitly noted otherwise. Capture a screenshot at the step marked
-`[📸]` — these populate the release-PR gallery per §7.
+`[📸]` - these populate the release-PR gallery per §7.
 
-### Scenario 1 — Fresh install via double-click MSI
+### Scenario 1 - Fresh install via double-click MSI
 
 **Steps:**
 1. In the clean VM, locate the copied-in MSI via File Explorer.
@@ -124,12 +124,12 @@ explicitly noted otherwise. Capture a screenshot at the step marked
 
 ---
 
-### Scenario 2 — SmartScreen shows "Signed by Strivex"
+### Scenario 2 - SmartScreen shows "Signed by Strivex"
 
 **Steps:**
 1. Restore the VM to its pre-scenario-1 clean snapshot (or use a
    second clean VM). Scenario 2 specifically measures the
-   first-time-trust dialog a real user sees — do NOT run it
+   first-time-trust dialog a real user sees - do NOT run it
    immediately after scenario 1, because Windows caches the
    Authenticode decision once the user clicks through once.
 2. Double-click the MSI.
@@ -151,7 +151,7 @@ path works. Red dialog = FAIL.
 
 ---
 
-### Scenario 3 — Launch from Start Menu
+### Scenario 3 - Launch from Start Menu
 
 **Steps:**
 1. After scenario 1's install completes, press the Windows key.
@@ -169,7 +169,7 @@ path works. Red dialog = FAIL.
 
 ---
 
-### Scenario 4 — `Ctrl+Shift+N` creates a new workspace
+### Scenario 4 - `Ctrl+Shift+N` creates a new workspace
 
 **Steps:**
 1. With PaneFlow running from scenario 3, press `Ctrl+Shift+N`.
@@ -183,7 +183,7 @@ path works. Red dialog = FAIL.
 
 ---
 
-### Scenario 5 — `Ctrl+Shift+D` horizontal split
+### Scenario 5 - `Ctrl+Shift+D` horizontal split
 
 **Steps:**
 1. In any workspace, press `Ctrl+Shift+D`.
@@ -191,22 +191,22 @@ path works. Red dialog = FAIL.
 
 **Expected:**
 - The pane splits into two: top and bottom halves (horizontal
-  divider per the split system in `src-app/src/split.rs` — note
+  divider per the split system in `src-app/src/split.rs` - note
   `SplitDirection::Horizontal` means a horizontal divider bar, panes
   stacked vertically, consistent with the repo convention).
 - Both halves host their own shell; focus is on the new (bottom) pane.
 - Dragging the divider bar resizes the panes (min 80px per pane,
-  ratio clamped 0.1–0.9).
+  ratio clamped 0.1-0.9).
 
 ---
 
-### Scenario 6 — PowerShell 7 spawns correctly
+### Scenario 6 - PowerShell 7 spawns correctly
 
 **Steps:**
 1. Ensure `pwsh.exe` is installed on the VM. Windows 11 typically
-   ships it; Windows 10 1809 does not — install via
+   ships it; Windows 10 1809 does not - install via
    `winget install Microsoft.PowerShell` (or skip this scenario and
-   note `pwsh: not installed — testing windows powershell 5.1
+   note `pwsh: not installed - testing windows powershell 5.1
    fallback` in the run log).
 2. Close any open PaneFlow windows, relaunch.
 3. At the shell prompt in the default pane, run:
@@ -224,7 +224,7 @@ path works. Red dialog = FAIL.
 
 ---
 
-### Scenario 7 — 100 chars + resize does not crash ConPTY
+### Scenario 7 - 100 chars + resize does not crash ConPTY
 
 **Steps:**
 1. At any shell prompt, type 100 characters of plain text (e.g.
@@ -240,7 +240,7 @@ path works. Red dialog = FAIL.
 - No crash dialog, no application exit.
 - Text remains legible; resizing causes reflow without dropped
   characters.
-- ConPTY does not emit a panic — PaneFlow's stderr (if captured
+- ConPTY does not emit a panic - PaneFlow's stderr (if captured
   via `RUST_LOG=info` on a follow-up run) shows no
   `ClosePseudoConsole` / `ResizePseudoConsole` errors.
 
@@ -250,7 +250,7 @@ ConPTY driver. Crash → FAIL; harmless render glitch → PASS with note.
 
 ---
 
-### Scenario 8 — `Ctrl+C` at shell prompt interrupts
+### Scenario 8 - `Ctrl+C` at shell prompt interrupts
 
 **Steps:**
 1. At a shell prompt, start a long-running foreground command:
@@ -272,12 +272,12 @@ ConPTY `Ctrl+C` signal propagation is known-imperfect. In some shell
 configurations the signal can propagate to parent processes
 unexpectedly. The scenario is still testable: as long as the running
 command stops and the prompt returns, the scenario PASSES. Mark
-"PASS with upstream caveat" in the run log — do NOT block the
+"PASS with upstream caveat" in the run log - do NOT block the
 release on this specific edge case unless PaneFlow itself crashes.
 
 ---
 
-### Scenario 9 — Close + reopen preserves config
+### Scenario 9 - Close + reopen preserves config
 
 **Steps:**
 1. Open PaneFlow, confirm its config file exists at
@@ -285,21 +285,21 @@ release on this specific edge case unless PaneFlow itself crashes.
    - On Windows this path resolves via `dirs::config_dir()` to
      `C:\Users\<you>\AppData\Roaming\paneflow\`.
 2. Edit the config (e.g., change `theme` from "One Dark" to
-   "PaneFlow Light") and save. Watch for hot-reload (500ms polling) —
+   "PaneFlow Light") and save. Watch for hot-reload (500ms polling) -
    theme should update within ~1 second.
 3. Close all PaneFlow windows.
 4. Relaunch from Start Menu.
 5. `[📸]` Capture the window showing the PaneFlow Light theme still applied.
 
 **Expected:**
-- Config file persists across launches — the "PaneFlow Light" setting
+- Config file persists across launches - the "PaneFlow Light" setting
   from step 2 is honored on relaunch.
 - No "default config created" message (would indicate the config
   file was wiped).
 
 ---
 
-### Scenario 10 — Uninstall preserves user config
+### Scenario 10 - Uninstall preserves user config
 
 **Steps:**
 1. Open `Add or Remove Programs` (Settings → Apps → Apps & features
@@ -316,9 +316,9 @@ release on this specific edge case unless PaneFlow itself crashes.
 **Expected:**
 - WiX uninstall removes install-time files from `Program Files` but
   leaves user config at `%APPDATA%\paneflow\` untouched (AC-6 of
-  US-013 — idiomatic Windows uninstall behaviour).
+  US-013 - idiomatic Windows uninstall behaviour).
 - Reinstalling the same version and relaunching picks up the
-  preserved config — the user's theme and preferences from
+  preserved config - the user's theme and preferences from
   `paneflow.json` survive the reinstall cycle.
 
 ---
@@ -328,7 +328,7 @@ release on this specific edge case unless PaneFlow itself crashes.
 When a scenario fails on either VM, classify the failure into exactly
 one of three buckets, in this order:
 
-### Bucket A — Fix in-PRD (reopen a prior story)
+### Bucket A - Fix in-PRD (reopen a prior story)
 
 The failure traces to a code defect in a story that is still within
 the current PRD's scope. Reopen the offending story from `IN_REVIEW`
@@ -343,7 +343,7 @@ Examples:
   instead of `%APPDATA%`: reopen US-009 (interprocess ipc + the
   `runtime_paths` Windows branch that resolves `dirs::config_dir()`).
 
-### Bucket B — Log as known-v1 issue in `docs/WINDOWS.md`
+### Bucket B - Log as known-v1 issue in `docs/WINDOWS.md`
 
 The failure is a known upstream limitation, a cosmetic bug, or a
 functional gap explicitly scoped out of v1 (see "Out of Scope" in
@@ -356,7 +356,7 @@ functional gap explicitly scoped out of v1 (see "Out of Scope" in
 
 The release still ships; users are warned.
 
-### Bucket C — Block release
+### Bucket C - Block release
 
 The failure is a user-visible crash, data loss, or a security issue.
 Do NOT ship the release. Open a GitHub issue with a clear repro, a
@@ -365,7 +365,7 @@ fix (bucket A applied selectively) or defer the entire Windows
 release one cadence cycle.
 
 **Default triage for ambiguity:** when in doubt between bucket B and
-bucket C, prefer bucket C — shipping a known-broken installer
+bucket C, prefer bucket C - shipping a known-broken installer
 damages publisher reputation faster than a one-release delay. The
 SmartScreen "Signed by Strivex" reputation takes 6-8 weeks to build
 and can be reset by a single crash-on-first-launch bug.
@@ -394,24 +394,24 @@ reviewer can download all 20 screenshots (10 scenarios × 2 VMs)
 without leaving GitHub.
 
 Retention: the `smoke/` archive is deliberately NOT committed to the
-repo — images inflate clone size and the release PR thread serves
+repo - images inflate clone size and the release PR thread serves
 as the permanent record.
 
 ---
 
 ## Cross-references
 
-- [`tasks/prd-windows-port.md`](../tasks/prd-windows-port.md) — the
+- [`tasks/prd-windows-port.md`](../tasks/prd-windows-port.md) - the
   PRD containing US-021 (this runbook) and the risks table
-- [`docs/WINDOWS.md`](WINDOWS.md) — user-facing known-limitations
+- [`docs/WINDOWS.md`](WINDOWS.md) - user-facing known-limitations
   catalog. **NOTE:** the file does not exist in the repo until US-022
   ships; the link above 404s today. Triage bucket B entries land here
   once the doc is authored.
-- [`docs/validation-aarch64.md`](validation-aarch64.md) —
+- [`docs/validation-aarch64.md`](validation-aarch64.md) -
   structural sibling for aarch64 Linux validation
 - [`.github/workflows/release.yml`](../.github/workflows/release.yml)
-  — the pipeline that emits the MSI under test
-- [`packaging/wix/main.wxs`](../packaging/wix/main.wxs) — WiX source
+  - the pipeline that emits the MSI under test
+- [`packaging/wix/main.wxs`](../packaging/wix/main.wxs) - WiX source
   under test (ProductCode, UpgradeCode, install path)
-- alacritty#3075 — upstream ConPTY Ctrl-C limitation referenced by
+- alacritty#3075 - upstream ConPTY Ctrl-C limitation referenced by
   scenario 8

@@ -4,7 +4,7 @@
 # US-014. The `.icns` file is consumed by `scripts/bundle-macos.sh`
 # (US-013), which copies it into `Contents/Resources/` of the .app bundle.
 #
-# This script is idempotent and arg-less — paths are fixed relative to the
+# This script is idempotent and arg-less - paths are fixed relative to the
 # repo root. Run it whenever the PNG sources change, then commit the
 # regenerated `assets/PaneFlow.icns`.
 #
@@ -12,7 +12,7 @@
 #   1. iconutil        (macOS, Apple-blessed, best quality)
 #   2. png2icns        (Linux, from libicns)
 #   3. icnsutil        (Linux, Python package)
-#   4. python3 + inline packer   (guaranteed fallback — stdlib only)
+#   4. python3 + inline packer   (guaranteed fallback - stdlib only)
 #
 # AC3 of the PRD lists `png2icns` or `icnsutil` as the Linux fallback.
 # The Python stdlib fallback is added last because (a) Python3 is
@@ -65,7 +65,7 @@ ICONSET="$STAGING/PaneFlow.iconset"
 mkdir -p "$ICONSET"
 
 # Generate 64 px from the 128 px source (downscale = sharper than upscaling
-# the 32 px). 1024 px is the only real upscale — from 512 — and is
+# the 32 px). 1024 px is the only real upscale - from 512 - and is
 # permitted by AC1.
 resize_png "$SRC_DIR/paneflow-128.png" "$STAGING/paneflow-64.png"   64
 resize_png "$SRC_DIR/paneflow-512.png" "$STAGING/paneflow-1024.png" 1024
@@ -145,7 +145,7 @@ with open(out, "wb") as f:
     f.write(total)
 PY
 else
-    die "no .icns packer found — install one of: iconutil (macOS built-in), \
+    die "no .icns packer found - install one of: iconutil (macOS built-in), \
 png2icns (libicns package), icnsutil (pip install icnsutil), or python3"
 fi
 

@@ -3,18 +3,18 @@
 //! The cache is a process-global `Mutex<Option<CachedTheme>>` resolved on
 //! first call to [`active_theme`]. Invalidation comes from two paths:
 //!
-//!   1. **Event-driven (preferred)** — [`ThemeWatcher`] (US-006) installs a
+//!   1. **Event-driven (preferred)** - [`ThemeWatcher`] (US-006) installs a
 //!      `notify::RecommendedWatcher` on the config-directory parent, debounces
 //!      events at 300 ms, and calls [`invalidate_theme_cache`] + the user
 //!      callback on every relevant change.
-//!   2. **Polling fallback** — when `notify` initialisation fails (filesystem
+//!   2. **Polling fallback** - when `notify` initialisation fails (filesystem
 //!      that doesn't support inotify/FSEvents/ReadDirectoryChangesW, locked-down
 //!      sandbox, …), [`active_theme`] falls back to its historical 500 ms
 //!      mtime-throttled poll. The fallback is gated by the
-//!      [`WATCHER_ACTIVE`] flag — when the watcher is live the throttle is
+//!      [`WATCHER_ACTIVE`] flag - when the watcher is live the throttle is
 //!      skipped entirely (cache is trusted; events drive invalidation).
 //!
-//! The watched file is `paneflow.json` itself — the theme is the
+//! The watched file is `paneflow.json` itself - the theme is the
 //! `theme: <name>` field on that file, not a separate per-theme JSON.
 
 use std::path::PathBuf;
@@ -31,7 +31,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use super::builtin::{one_dark, theme_by_name};
 use super::model::{TerminalTheme, apply_surface_overrides};
 
-/// Polling fallback throttle — only consulted when [`WATCHER_ACTIVE`] is
+/// Polling fallback throttle - only consulted when [`WATCHER_ACTIVE`] is
 /// `false`. With the watcher running, the cache is invalidated synchronously
 /// from the watcher thread and `active_theme` simply reads the cached value.
 const THEME_CHECK_INTERVAL: Duration = Duration::from_millis(500);
@@ -52,7 +52,7 @@ static THEME_CACHE: Mutex<Option<CachedTheme>> = Mutex::new(None);
 
 /// US-006: set to `true` once a [`ThemeWatcher`] has installed an OS watcher
 /// successfully. While `true`, [`active_theme`] trusts the cache and skips
-/// its 500 ms mtime poll — invalidation now comes from notify events. On
+/// its 500 ms mtime poll - invalidation now comes from notify events. On
 /// init failure the flag stays `false` and the polling fallback applies.
 static WATCHER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -92,7 +92,7 @@ pub fn config_mtime() -> Option<SystemTime> {
 ///     an FS event). No throttle is needed because invalidation is
 ///     event-driven.
 ///   - **Watcher inactive (fallback)**: throttle stat() to once per
-///     [`THEME_CHECK_INTERVAL`] (500 ms) — historical behaviour preserved
+///     [`THEME_CHECK_INTERVAL`] (500 ms) - historical behaviour preserved
 ///     so the function still self-heals when notify isn't available.
 ///
 /// If the config is corrupted or missing, the resolver falls back to
@@ -105,11 +105,11 @@ pub fn active_theme() -> TerminalTheme {
 
     if let Some(cached) = cache.as_ref() {
         if WATCHER_ACTIVE.load(Ordering::Acquire) {
-            // Event-driven path — cache is the source of truth until the
+            // Event-driven path - cache is the source of truth until the
             // watcher invalidates it.
             return cached.theme;
         }
-        // Polling fallback — only re-stat once per interval.
+        // Polling fallback - only re-stat once per interval.
         if cached.last_check.elapsed() < THEME_CHECK_INTERVAL {
             return cached.theme;
         }
@@ -118,7 +118,7 @@ pub fn active_theme() -> TerminalTheme {
     let current_mtime = config_mtime();
     let needs_reload = match (&*cache, current_mtime) {
         (None, _) => true,
-        // Config file missing/unreadable — always reload to pick up recovery
+        // Config file missing/unreadable - always reload to pick up recovery
         (_, None) => true,
         (Some(cached), Some(_)) => cached.mtime != current_mtime,
     };
@@ -132,7 +132,7 @@ pub fn active_theme() -> TerminalTheme {
         });
         theme
     } else {
-        // mtime unchanged — update last_check and return cached theme.
+        // mtime unchanged - update last_check and return cached theme.
         // SAFETY: branch is reachable only when `cache.is_some()` per the
         // `match` above.
         #[allow(clippy::expect_used)]
@@ -145,7 +145,7 @@ pub fn active_theme() -> TerminalTheme {
 }
 
 // =====================================================================
-// US-006 — event-driven theme watcher
+// US-006 - event-driven theme watcher
 // =====================================================================
 
 /// Watches `paneflow.json` for changes and invalidates the theme cache
@@ -154,10 +154,10 @@ pub fn active_theme() -> TerminalTheme {
 ///
 ///   - Watches the **parent directory** non-recursively so atomic-save
 ///     patterns (delete + recreate) are caught.
-///   - Filters events by **file name** (cross-platform safe — see notes
+///   - Filters events by **file name** (cross-platform safe - see notes
 ///     on macOS FSEvents canonicalisation in the config watcher).
 ///   - Debounces at [`DEBOUNCE_DURATION`] (300 ms) using `recv_timeout`,
-///     never `thread::sleep` — so the loop wakes up only on FS events.
+///     never `thread::sleep` - so the loop wakes up only on FS events.
 ///   - No `Drop` impl: the background thread terminates when the
 ///     `notify::RecommendedWatcher` is dropped (which closes the
 ///     `mpsc::Sender` captured in the watcher's closure).
@@ -173,7 +173,7 @@ impl ThemeWatcher {
     /// Build a watcher that resolves the config path via
     /// [`paneflow_config::loader::config_path`]. Returns `None` when the
     /// config directory cannot be determined (no `$XDG_CONFIG_HOME`, no
-    /// `%APPDATA%`, …) — the caller should fall back to polling.
+    /// `%APPDATA%`, …) - the caller should fall back to polling.
     pub fn new(callback: Arc<dyn Fn() + Send + Sync>) -> Option<Self> {
         let config_path = paneflow_config::loader::config_path()?;
         Some(Self {
@@ -199,7 +199,7 @@ impl ThemeWatcher {
     ///
     /// Single-start contract: a process can have at most one live
     /// `ThemeWatcher`. Calling `start()` twice (on the same instance or two
-    /// distinct ones) is a programming error — the second call returns
+    /// distinct ones) is a programming error - the second call returns
     /// `notify::Error::generic("already running")` without spawning a
     /// second OS watcher or a second background thread, which would leak
     /// an inotify fd on Linux. This guard is a process-global
@@ -207,14 +207,14 @@ impl ThemeWatcher {
     /// flag's "is the OS watch live?" semantics.
     pub fn start(&self) -> Result<(), notify::Error> {
         // Take the single-start lease BEFORE allocating any OS resources.
-        // If the swap fails, another `start()` already won — bail out
+        // If the swap fails, another `start()` already won - bail out
         // without touching `notify` so we don't leak a watcher.
         if WATCHER_ACTIVE
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
             return Err(notify::Error::generic(
-                "theme watcher already running — start() called twice",
+                "theme watcher already running - start() called twice",
             ));
         }
 
@@ -228,11 +228,11 @@ impl ThemeWatcher {
         result
     }
 
-    /// Inner setup — extracted so [`Self::start`] can centralise the
+    /// Inner setup - extracted so [`Self::start`] can centralise the
     /// `WATCHER_ACTIVE` lease release on failure. Never call directly.
     fn install_watcher(&self) -> Result<(), notify::Error> {
         // Invariant: `config_path` is built by `config_path()` and is always
-        // a file inside `<config_dir>/paneflow/` — `.parent()` is always Some.
+        // a file inside `<config_dir>/paneflow/` - `.parent()` is always Some.
         #[allow(clippy::expect_used)]
         let watch_dir = self
             .config_path
@@ -285,7 +285,7 @@ fn is_relevant_event(kind: &EventKind) -> bool {
 
 /// Returns `true` if any path in the event matches the config file by name.
 /// File-name match (rather than full-path equality) matches the cross-platform
-/// approach in the config watcher — see the comment there for FSEvents /
+/// approach in the config watcher - see the comment there for FSEvents /
 /// UNC-prefix rationale.
 fn event_targets_config(event: &Event, config_path: &std::path::Path) -> bool {
     let target_name = config_path.file_name();
@@ -293,7 +293,7 @@ fn event_targets_config(event: &Event, config_path: &std::path::Path) -> bool {
 }
 
 /// Background event loop. `_watcher` is held by reference so the OS watch
-/// stays alive — dropping the `RecommendedWatcher` would stop the watch and
+/// stays alive - dropping the `RecommendedWatcher` would stop the watch and
 /// close the channel, breaking the loop.
 fn event_loop(
     rx: mpsc::Receiver<notify::Result<Event>>,
@@ -307,17 +307,17 @@ fn event_loop(
         let event_result = if let Some(deadline) = pending_reload {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                // Debounce window expired — fire.
+                // Debounce window expired - fire.
                 pending_reload = None;
                 fire_reload(callback);
                 continue;
             }
             rx.recv_timeout(remaining)
         } else {
-            // Idle — block until the next event.
+            // Idle - block until the next event.
             match rx.recv() {
                 Ok(ev) => Ok(ev),
-                Err(_) => break, // Channel closed — watcher was dropped.
+                Err(_) => break, // Channel closed - watcher was dropped.
             }
         };
 
@@ -336,12 +336,12 @@ fn event_loop(
                 fire_reload(callback);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                break; // Channel closed — graceful shutdown.
+                break; // Channel closed - graceful shutdown.
             }
         }
     }
 
-    // The thread is exiting — make sure `active_theme` falls back to
+    // The thread is exiting - make sure `active_theme` falls back to
     // polling so the UI keeps refreshing on subsequent edits.
     WATCHER_ACTIVE.store(false, Ordering::Release);
     log::debug!("theme watcher event loop exited");
@@ -363,7 +363,7 @@ mod tests {
     use tempfile::TempDir;
 
     /// Test helper: poll a predicate until it returns `true` or the timeout
-    /// elapses. Mirrors the helper in `paneflow_config::watcher::tests` —
+    /// elapses. Mirrors the helper in `paneflow_config::watcher::tests` -
     /// FSEvents on macOS CI can take 200+ ms to fire, so we never sleep
     /// for a fixed duration.
     fn wait_for<F: FnMut() -> bool>(mut pred: F, timeout: Duration) -> bool {
@@ -382,8 +382,8 @@ mod tests {
     /// the new `compare_exchange` lease in `start()` would then make tests
     /// flake against each other (whichever runs second sees the flag as
     /// `true` and gets `Err("already running")`). Each test takes this
-    /// guard, runs, and lets the lock release on scope exit — even on
-    /// panic — so the static flag is always reset before the next test.
+    /// guard, runs, and lets the lock release on scope exit - even on
+    /// panic - so the static flag is always reset before the next test.
     static SERIAL_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Drops the test's serial guard AND resets `WATCHER_ACTIVE` so the
@@ -405,7 +405,7 @@ mod tests {
         std::fs::write(path, format!(r#"{{"theme": "{theme}"}}"#)).unwrap();
     }
 
-    /// US-006 AC #1+#2 — successful init wires the watcher and sets the
+    /// US-006 AC #1+#2 - successful init wires the watcher and sets the
     /// global flag so `active_theme()` stops polling.
     #[test]
     fn test_theme_watcher_start_succeeds_and_flips_flag() {
@@ -423,7 +423,7 @@ mod tests {
         assert!(WATCHER_ACTIVE.load(Ordering::Acquire));
     }
 
-    /// US-006 AC #1 — a relevant FS event triggers the user callback after
+    /// US-006 AC #1 - a relevant FS event triggers the user callback after
     /// the debounce window expires.
     #[test]
     fn test_theme_watcher_invokes_callback_on_change() {
@@ -442,7 +442,7 @@ mod tests {
         );
         watcher.start().expect("start must succeed");
 
-        // Mutate the watched file — should trigger one debounced callback.
+        // Mutate the watched file - should trigger one debounced callback.
         write_config(&path, "One Dark");
 
         // Wait up to 1.5 s: 300 ms debounce + macOS FSEvents slack.
@@ -453,7 +453,7 @@ mod tests {
         assert!(fired, "callback should fire at least once on a file modify");
     }
 
-    /// US-006 AC #1 — a burst of writes within the debounce window
+    /// US-006 AC #1 - a burst of writes within the debounce window
     /// coalesces into a single callback fire (debounce semantics).
     #[test]
     fn test_theme_watcher_debounce_coalesces_burst() {
@@ -487,7 +487,7 @@ mod tests {
         // bound (`<= 2`, then `<= 4`) was tightened to assert "the
         // debounce collapses". In practice it caught CI runner load on
         // aarch64 Linux (3 fires, then 5 fires under sustained pressure),
-        // not real regressions — notify's per-OS batching window varies,
+        // not real regressions - notify's per-OS batching window varies,
         // and the debounce is functionally exercised by the watcher
         // startup tests (`test_theme_watcher_emits_on_modify`,
         // `test_theme_watcher_atomic_save`). Keep the lower bound only.
@@ -497,7 +497,7 @@ mod tests {
         );
     }
 
-    /// US-006 AC #3 — when init fails (here, by passing a non-existent
+    /// US-006 AC #3 - when init fails (here, by passing a non-existent
     /// parent path that we can't `create_dir_all` because the leading
     /// component is invalid), `start()` returns `Err` and the global flag
     /// stays `false` so the polling fallback in `active_theme()` is in force.
@@ -506,11 +506,11 @@ mod tests {
     fn test_theme_watcher_start_failure_keeps_polling_fallback() {
         let _g = serial();
 
-        // /proc/self is a kernel-managed virtual directory — we can't
+        // /proc/self is a kernel-managed virtual directory - we can't
         // create files inside it, and notify can't watch its parent
         // either. The error could come from `create_dir_all`, the
         // `RecommendedWatcher` constructor, or `watcher.watch`; any of
-        // the three is acceptable for AC #3 — we only need to assert
+        // the three is acceptable for AC #3 - we only need to assert
         // the global flag is left in a polling-fallback state.
         let bogus = PathBuf::from("/proc/self/__paneflow_us006_test/paneflow.json");
         let watcher = ThemeWatcher::new_with_path(bogus, Arc::new(|| {}));
@@ -523,7 +523,7 @@ mod tests {
         );
     }
 
-    /// US-006 hardening — the second `start()` call must NOT install a
+    /// US-006 hardening - the second `start()` call must NOT install a
     /// duplicate OS watcher (which would leak an inotify fd on Linux).
     /// The compare-exchange lease in `start()` enforces single-watcher
     /// process-wide.
@@ -538,11 +538,11 @@ mod tests {
         w1.start().expect("first start must succeed");
         assert!(WATCHER_ACTIVE.load(Ordering::Acquire));
 
-        // Second start on a different instance — compare_exchange must reject.
+        // Second start on a different instance - compare_exchange must reject.
         let w2 = ThemeWatcher::new_with_path(path.clone(), Arc::new(|| {}));
         let err = w2
             .start()
-            .expect_err("second start must reject — single-watcher contract");
+            .expect_err("second start must reject - single-watcher contract");
         // The error message is best-effort; we only require that an error
         // is returned and the flag is still `true` (held by the first).
         let _ = err;
@@ -552,10 +552,10 @@ mod tests {
         );
     }
 
-    /// US-006 AC #6 — documents the cooperative-shutdown contract: dropping
+    /// US-006 AC #6 - documents the cooperative-shutdown contract: dropping
     /// the `ThemeWatcher` struct does NOT synchronously stop the OS
     /// watcher. The `RecommendedWatcher` is moved into the background
-    /// thread's stack frame, so it lives until the thread exits — which
+    /// thread's stack frame, so it lives until the thread exits - which
     /// happens when the inotify backend disconnects, e.g. when the `tx`
     /// closure goes out of scope. This contract matches `ConfigWatcher`.
     /// Renamed from `test_theme_watcher_cleanup_on_drop` to make the
@@ -572,7 +572,7 @@ mod tests {
             watcher.start().expect("start must succeed");
             assert!(WATCHER_ACTIVE.load(Ordering::Acquire));
         }
-        // Struct dropped — but the watcher and its thread are alive.
+        // Struct dropped - but the watcher and its thread are alive.
         // The flag may stay `true` until the OS notifies a disconnect.
         // We don't assert which way it lands; this test only documents
         // that no panic / immediate cleanup occurs at struct drop.

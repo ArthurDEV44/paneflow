@@ -1,23 +1,23 @@
 //! Agents-style UI primitives shared across every settings tab.
 //!
 //! Visual recipes mirror `agents_view::view` + `app::agents_sidebar`:
-//! - **section_header** — lowercase eyebrow (12px, NORMAL, `ui.muted`), no
+//! - **section_header** - lowercase eyebrow (12px, NORMAL, `ui.muted`), no
 //!   border below. Matches `threads_section_header` in the agents sidebar.
-//! - **section_header_with_action** — same eyebrow with a right-aligned
+//! - **section_header_with_action** - same eyebrow with a right-aligned
 //!   secondary button (used by Shortcuts/Appearance "Reset to defaults").
-//! - **setting_card** — explicit theme-aware panel (white/`#e5e5ed` in light,
+//! - **setting_card** - explicit theme-aware panel (white/`#e5e5ed` in light,
 //!   `#232323`/`#303030` in dark) with a 1px border and a generous Apple-
 //!   approximating radius. Wraps row groups so each section reads as a card the
 //!   way Agents content cards do.
-//! - **hairline** — 1px row separator (border at ~50% alpha), used inside
+//! - **hairline** - 1px row separator (border at ~50% alpha), used inside
 //!   cards to split rows without competing with the card border.
-//! - **toggle_pill** — Codex/iOS switch: a 36x22 pill, solid `#339cff` track
+//! - **toggle_pill** - Codex/iOS switch: a 36x22 pill, solid `#339cff` track
 //!   when on / soft neutral when off, with a white thumb.
-//! - **secondary_button** — filled, agents cancel-button style
+//! - **secondary_button** - filled, agents cancel-button style
 //!   (`ui.subtle` bg, no border).
 //!
 //! All helpers return `impl IntoElement` or `Div`. They take no listeners
-//! beyond the explicit on_click on `secondary_button` — parent rows wire
+//! beyond the explicit on_click on `secondary_button` - parent rows wire
 //! their own `.id()` and `.on_click()`.
 
 use gpui::{
@@ -90,7 +90,7 @@ pub fn card_colors() -> (Hsla, Hsla) {
 }
 
 /// Card container for grouped setting rows. Codex-style polish: an explicit
-/// theme-aware fill/border (see [`card_colors`]) — not the theme `ui.surface` —
+/// theme-aware fill/border (see [`card_colors`]) - not the theme `ui.surface` -
 /// plus a generous Apple-approximating corner radius. `_ui` is retained for
 /// call-site compatibility (every tab already has it in scope).
 ///
@@ -116,7 +116,7 @@ pub fn hairline(ui: crate::theme::UiColors) -> impl IntoElement {
 
 /// Pure-visual pill toggle, Codex / iOS style: a solid `#339cff` track when on
 /// (fixed in both themes, per design), a soft neutral gray when off, and a white
-/// thumb sliding between the ends — borderless for the clean filled look. The
+/// thumb sliding between the ends - borderless for the clean filled look. The
 /// parent row owns the `id` + `on_click`.
 pub fn toggle_pill(on: bool, ui: crate::theme::UiColors) -> impl IntoElement {
     let track_bg = if on {
@@ -278,7 +278,7 @@ pub fn select_menu_surface(ui: crate::theme::UiColors) -> Hsla {
 /// [`select_menu_surface`]), which in dark themes is lighter than `ui.border`
 /// (`0x2a2a2a` vs `0x252525`), so a `ui.border` divider has near-zero contrast
 /// and vanishes. The structural app borders (sidebar/terminal divider, title
-/// bar) read as `ui.border` only because they sit on the near-black terminal —
+/// bar) read as `ui.border` only because they sit on the near-black terminal -
 /// same color, far darker backdrop. A text-tint lifts off the menu surface in
 /// either theme; at 0.12 it lands on ~`ui.border` over a light theme's white
 /// menu (no regression there) while staying clearly visible on the dark menu.
@@ -286,8 +286,8 @@ pub fn menu_divider_color(ui: crate::theme::UiColors) -> Hsla {
     with_alpha(ui.text, 0.12)
 }
 
-/// Apply the elevated floating-menu *skin* — radius, lifted surface, and a
-/// hairline border at 0.6 alpha — to any element. The single source of
+/// Apply the elevated floating-menu *skin* - radius, lifted surface, and a
+/// hairline border at 0.6 alpha - to any element. The single source of
 /// truth for the Settings "Shell" select look, shared by [`select_menu`] (the
 /// fixed-width container) and by every variable-width app menu/popover that
 /// anchors to its own trigger (context menus, the diff scope/base pickers, the

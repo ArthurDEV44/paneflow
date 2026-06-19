@@ -2,12 +2,12 @@
 //!
 //! opencode's schema diverges from every other agent:
 //! - the container key is **`mcp`**, not `mcpServers`;
-//! - the entry is `{type: "local", command: [<path>], enabled: true}` —
+//! - the entry is `{type: "local", command: [<path>], enabled: true}` -
 //!   `command` is an **array**, with the binary path as its first element.
 //!
 //! Config lives at `~/.config/opencode/opencode.json` (XDG; `%APPDATA%`
 //! on Windows). No CLI mutates server config, so this is always a direct
-//! merge — preserving `$schema` and any sibling `mcp.*` entries.
+//! merge - preserving `$schema` and any sibling `mcp.*` entries.
 //!
 //! **Volatility:** opencode's config schema is young; re-verify the `mcp`
 //! key, `type: "local"`, and array `command` if registration regresses.

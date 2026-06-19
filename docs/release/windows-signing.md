@@ -4,7 +4,7 @@ One-time setup, secret rotation, and ACME auto-renewal tracking for the
 PaneFlow Windows release pipeline. The `release.yml` workflow signs every
 `x86_64-pc-windows-msvc` `.msi` produced by `cargo wix build` when the six
 `AZURE_*` GitHub Secrets are populated. If any secret is missing the leg
-degrades to an **unsigned** build with a banner in the job summary — by
+degrades to an **unsigned** build with a banner in the job summary - by
 design (US-024 AC-5).
 
 This document is operator-only. Application code never reads from any of
@@ -29,7 +29,7 @@ target/wix/paneflow-<version>-x86_64.msi
    `bin/x64/Azure.CodeSigning.Dlib.dll`.
 2. **Writes a `metadata.json`** with `Endpoint`, `CodeSigningAccountName`,
    `CertificateProfileName`, and an `ExcludeCredentials` list narrowing
-   `DefaultAzureCredential` to `EnvironmentCredential` only — without this
+   `DefaultAzureCredential` to `EnvironmentCredential` only - without this
    narrowing the dlib hangs for minutes on managed-identity probes on
    GitHub-hosted runners.
 3. **Calls `signtool.exe sign /dlib ... /dmdf ...`** with a 3-host
@@ -45,7 +45,7 @@ target/wix/paneflow-<version>-x86_64.msi
 
 The CI `Verify MSI signature` step then re-runs the bare `signtool
 verify /pa /v` at the workflow level, greps for the AC-6 sentinel
-`"Successfully verified"`, and fails if absent — making verification
+`"Successfully verified"`, and fails if absent - making verification
 unambiguously visible in the run log.
 
 ## 2. Why a script and not the official action
@@ -74,14 +74,14 @@ change.
 
 1. **Azure subscription.** Decided 2026-04-18: Azure Trusted Signing
    under the Strivex (France SAS) Azure subscription, owner
-   `arthur.jean@strivex.fr`. Business onboarding is the only path —
+   `arthur.jean@strivex.fr`. Business onboarding is the only path -
    individual developers cannot currently use Azure Trusted Signing.
 2. **Provision the Trusted Signing account** in Azure Portal → Trusted
    Signing → Create. Pick the closest region (the endpoint URL becomes
    `https://<region>.codesigning.azure.net/`). Tier: **Basic**
    ($9.99/mo) is sufficient for our signing volume.
 3. **Create a Certificate Profile.** Name it `PaneFlow-Release`, type
-   **Public Trust** (NOT "Private Trust" — the latter is enterprise-only
+   **Public Trust** (NOT "Private Trust" - the latter is enterprise-only
    and won't satisfy SmartScreen). Public-Trust profiles ACME-rotate the
    underlying signing certificate automatically (currently a 3-day cert
    lifetime per Microsoft Learn): no manual renewal, no expiration
@@ -92,7 +92,7 @@ change.
      `GitHub-ActionsSigning`. Single tenant.
    - Note the Application (client) ID and Directory (tenant) ID.
    - Certificates & secrets → New client secret. **Copy the value
-     immediately** — Azure never shows it again. Set the expiration to
+     immediately** - Azure never shows it again. Set the expiration to
      24 months, mark a calendar reminder for **30 days before expiry**.
    - Trusted Signing account → Access control (IAM) → Add role
      assignment → **Trusted Signing Certificate Profile Signer** →
@@ -117,18 +117,18 @@ change.
    > secret.
 6. **Dry-run on a test tag.** Push `vX.Y.Z-rc1`, watch the Windows leg in
    `release.yml`. The `Verify MSI signature` step must emit the literal
-   string `Successfully verified` — that is AC-6. Download the resulting
+   string `Successfully verified` - that is AC-6. Download the resulting
    `paneflow-X.Y.Z-x86_64-pc-windows-msvc.msi` artifact and on a clean
    Windows 11 VM confirm the SmartScreen prompt shows `Strivex` (not
    "Unknown Publisher"). New publishers build SmartScreen reputation
-   over ~3,000 unique downloads or 6–8 weeks; an initial "Unknown
+   over ~3,000 unique downloads or 6-8 weeks; an initial "Unknown
    Publisher" prompt is expected and not a signing failure.
 
 ## 4. Secret rotation
 
 ### `AZURE_CLIENT_SECRET` (every 24 months by default)
 
-Azure AD client secrets expire — usually 24 months, shorter if
+Azure AD client secrets expire - usually 24 months, shorter if
 subscription policy tightens. Set a calendar reminder **30 days before
 expiry**. The rotation procedure:
 
@@ -143,7 +143,7 @@ expiry**. The rotation procedure:
    safety net.
 5. Update the rotation date in `memory/project_windows_signing.md`.
 
-### Signing certificate (automatic — ACME)
+### Signing certificate (automatic - ACME)
 
 No manual rotation required. The Public-Trust certificate profile
 issues a fresh leaf cert per sign operation via ACME (currently 3-day
@@ -159,18 +159,18 @@ This is the principal reason Azure Trusted Signing was chosen over a
 | **Service principal secret expired** | `AADSTS7000215 Invalid client secret`. | Rotate per §4 above; re-run the workflow via `workflow_dispatch`. |
 | **Cert profile deleted** | `CertificateProfile not found`. | Recreate the profile with the same name (`PaneFlow-Release`) in Azure Portal → Trusted Signing. The next sign picks up a fresh leaf via ACME. |
 | **Azure subscription suspended / billing issue** | Sign step fails immediately (`continue-on-error` absorbs it). Linux + macOS ship without a Windows asset. | Resolve billing in Azure Portal → Cost Management. Re-run via `workflow_dispatch`. |
-| **SmartScreen still flags "Unknown Publisher" after onboarding** | Users report SmartScreen warning even on signed builds. | Reputation builds over time. Per Microsoft, trust propagates after ~3,000 unique verified downloads OR within 6–8 weeks of consistent signing. **No action needed** — expected for the first month of a new publisher identity. |
+| **SmartScreen still flags "Unknown Publisher" after onboarding** | Users report SmartScreen warning even on signed builds. | Reputation builds over time. Per Microsoft, trust propagates after ~3,000 unique verified downloads OR within 6-8 weeks of consistent signing. **No action needed** - expected for the first month of a new publisher identity. |
 | **Runner image dropped Windows SDK** | `signtool.exe not found`. | Add an explicit `microsoft/setup-msbuild@v2` or Windows 11 SDK install step to the Windows leg, mirroring the `Preflight WiX v3 toolchain` pattern. Pin the SDK version. |
 
-## 6. OV-cert fallback (decoupled — local script ready)
+## 6. OV-cert fallback (decoupled - local script ready)
 
 If onboarding stalls > 6 weeks (PRD US-024 AC-4) or Azure Trusted
 Signing becomes unavailable, fall back to an OV (Organization
 Validation) code-signing certificate. **Per Microsoft's March 2024
 SmartScreen change, OV and EV are now equal on reputation build-time**
-— there is no longer a reason to pay the $300–580/yr EV premium.
+ -  there is no longer a reason to pay the $300-580/yr EV premium.
 
-The fallback is **not implemented in CI** — only a local-only signing
+The fallback is **not implemented in CI** - only a local-only signing
 script (`scripts/sign-windows-ov.ps1`) and the operator runbook below.
 Wiring CI for OV is a fork of the Sign MSI step that swaps
 `/dlib ... /dmdf ...` for `/f <p12> /p $env:OV_CERT_PASSWORD`.
@@ -178,13 +178,13 @@ Wiring CI for OV is a fork of the Sign MSI step that swaps
 ### Procurement
 
 - **Vendor:** Sectigo (preferred, ~$150/yr) or DigiCert (~$400/yr).
-- **Validity:** 1–3 years. The cert lives in a `.p12` (PKCS#12) file.
+- **Validity:** 1-3 years. The cert lives in a `.p12` (PKCS#12) file.
 
 ### Local signing
 
 ```powershell
 # OV cert + password locally on a developer machine. NEVER commit the
-# .p12 file to the repo — keep it in 1Password / Bitwarden, base64 in a
+# .p12 file to the repo - keep it in 1Password / Bitwarden, base64 in a
 # GitHub Secret if/when CI wiring is added.
 $env:OV_CERT_PATH = 'C:\path\to\paneflow-ov.p12'
 $env:OV_CERT_PASSWORD = '<password from password manager>'
@@ -199,10 +199,10 @@ US-024-fallback story (to be opened then):
 
 1. Procure OV cert.
 2. Upload `.p12` as `OV_CERT_P12` (base64) and `OV_CERT_PASSWORD` GitHub
-   Secrets — same pattern as macOS `APPLE_DEVELOPER_CERT_P12`.
+   Secrets - same pattern as macOS `APPLE_DEVELOPER_CERT_P12`.
 3. Branch in `sign-windows.ps1`: `Azure path` when `$env:AZURE_CLIENT_ID`
    is set, `OV path` otherwise. Keep the same 3-server timestamp retry
-   chain — the timestamp servers are vendor-neutral.
+   chain - the timestamp servers are vendor-neutral.
 4. Replace this section with the canonical OV runbook.
 
 ## 7. Verifying releases (user-facing)
@@ -218,7 +218,7 @@ The output must contain:
 
 - `"Successfully verified: paneflow-X.Y.Z-x86_64-pc-windows-msvc.msi"`
 - A signer chain anchoring to `O=Strivex` (the canonical organization
-  RDN — anchor on `O=`, not on a bare substring; a hostile clone could
+  RDN - anchor on `O=`, not on a bare substring; a hostile clone could
   use `CN=Strivex-Evil-Clone`).
 
 Alternatively, right-click the `.msi` → Properties → Digital Signatures.
@@ -251,14 +251,14 @@ US-024's Windows-only scope.
 
 ## 9. References
 
-- `scripts/sign-windows.ps1` — primary signing implementation.
-- `scripts/sign-windows-ov.ps1` — local OV-cert fallback (not in CI).
-- `.github/workflows/release.yml` Windows section (lines ~790–980) — CI
+- `scripts/sign-windows.ps1` - primary signing implementation.
+- `scripts/sign-windows-ov.ps1` - local OV-cert fallback (not in CI).
+- `.github/workflows/release.yml` Windows section (lines ~790-980) - CI
   orchestration.
-- `memory/project_windows_signing.md` — Strivex-specific metadata
+- `memory/project_windows_signing.md` - Strivex-specific metadata
   (account names, expiration dates, rotation reminders).
-- `tasks/prd-cmux-port-2026-q2.md` US-024 — acceptance criteria.
-- Microsoft Learn — Trusted Signing:
+- `tasks/prd-cmux-port-2026-q2.md` US-024 - acceptance criteria.
+- Microsoft Learn - Trusted Signing:
   <https://learn.microsoft.com/en-us/azure/trusted-signing/>
-- Microsoft Learn — `signtool sign`:
+- Microsoft Learn - `signtool sign`:
   <https://learn.microsoft.com/en-us/windows/win32/seccrypto/signtool>

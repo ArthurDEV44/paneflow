@@ -245,7 +245,7 @@ impl PaneFlowApp {
 
     /// Append a Terminal Thread to `project_idx`. Same shape as
     /// [`Self::add_thread`] but stamps [`crate::project::ThreadKind::Terminal`]
-    /// and never touches `threads.db` — the PTY is the source of truth
+    /// and never touches `threads.db` - the PTY is the source of truth
     /// for Terminal Threads and no message rows exist to persist.
     /// `terminal_agent` is the CLI auto-launched on first PTY mount
     /// (`None` for a bare shell).
@@ -306,7 +306,7 @@ impl PaneFlowApp {
     }
 
     /// Select a free chat as the center target (US-003). Leaves
-    /// `active_project_idx` untouched — a chat is not part of any project,
+    /// `active_project_idx` untouched - a chat is not part of any project,
     /// so the rail's focused-project anchor does not move. Returns `Err`
     /// if `chat_idx` is out of bounds.
     pub(crate) fn select_chat(
@@ -405,7 +405,7 @@ impl PaneFlowApp {
 }
 
 /// Resolve the cwd for a free chat: the user's home directory (US-002).
-/// Cross-platform via `dirs::home_dir()` — never `$HOME` raw, never a
+/// Cross-platform via `dirs::home_dir()` - never `$HOME` raw, never a
 /// hardcoded POSIX path. Documented fallback chain when home cannot be
 /// resolved (Edge Case #1): the current working directory, then `"."`
 /// (always a valid relative cwd). Never panics.
@@ -430,8 +430,8 @@ fn now_unix_millis() -> u64 {
 // ---------------------------------------------------------------------------
 // US-003: pure center-target re-mapping (free functions, no `&self`/`cx`).
 //
-// Extracted from the `cx`-bound ops so the index arithmetic — the part that
-// must never produce a stale target after a removal/move — is unit-testable
+// Extracted from the `cx`-bound ops so the index arithmetic - the part that
+// must never produce a stale target after a removal/move - is unit-testable
 // without a live GPUI `App`. Each takes the current target and returns the
 // re-mapped one; callers assign the result back to `self.agents_target`.
 // ---------------------------------------------------------------------------

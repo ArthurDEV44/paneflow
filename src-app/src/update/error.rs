@@ -5,7 +5,7 @@
 //! `DiskFull`, `Other`).
 //!
 //! Extracted from `self_update/mod.rs` per US-031. The `libc::ENOSPC` arm of
-//! `is_disk_full` is gated `#[cfg(unix)]` per US-034 — on Windows the
+//! `is_disk_full` is gated `#[cfg(unix)]` per US-034 - on Windows the
 //! `std::io::ErrorKind::StorageFull` branch alone is sufficient.
 
 use std::path::PathBuf;
@@ -27,19 +27,19 @@ pub enum UpdateError {
     /// AppImage runtime needs libfuse2 and it's not installed. The toast
     /// suggests `--appimage-extract-and-run` as an immediate workaround.
     Fuse2Missing,
-    /// ENOSPC on a write inside the update flow. `path` is best-effort — we
+    /// ENOSPC on a write inside the update flow. `path` is best-effort - we
     /// don't always know which write failed, in which case this is an empty
     /// `PathBuf` and the toast renders without the "at {path}" clause.
     DiskFull { path: PathBuf },
     /// Pinned release asset returned 404 (US-005). Distinct from `Network`:
     /// the user isn't offline, the upstream dated tag or asset path
-    /// disappeared — PaneFlow itself needs a new release with an updated
+    /// disappeared - PaneFlow itself needs a new release with an updated
     /// pin. `url` is the missing asset so the user can report it verbatim.
     ReleaseAssetMissing { url: String },
     /// Install step was declined by the OS or user (US-009 / US-010 /
     /// US-002-pkexec). Distinct from `DiskFull` / `Other`: the update
     /// was downloaded and verified cleanly, but the actual installation
-    /// couldn't proceed — typical causes are `/Applications/` being
+    /// couldn't proceed - typical causes are `/Applications/` being
     /// non-writable, SIP blocking the replace, Windows UAC cancel
     /// (msiexec 1602), polkit auth cancel on Linux (pkexec exit 126),
     /// or the running process holding a lock on the install path. The
@@ -86,7 +86,7 @@ pub enum UpdateError {
 
 impl UpdateError {
     /// Render the PRD-mandated toast copy for this variant. The strings are
-    /// intentionally frozen — changing them in one place but not the other
+    /// intentionally frozen - changing them in one place but not the other
     /// would break US-013 acceptance tests.
     pub fn user_message(&self) -> String {
         match self {
@@ -98,7 +98,7 @@ impl UpdateError {
                     .to_string()
             }
             UpdateError::Fuse2Missing => {
-                "Update requires FUSE 2. Run: `./paneflow-*.AppImage --appimage-extract-and-run` — or install libfuse2."
+                "Update requires FUSE 2. Run: `./paneflow-*.AppImage --appimage-extract-and-run` - or install libfuse2."
                     .to_string()
             }
             UpdateError::DiskFull { path } => {
@@ -112,11 +112,11 @@ impl UpdateError {
                 }
             }
             UpdateError::ReleaseAssetMissing { url } => format!(
-                "Update blocked: a required asset is no longer published ({url}). Please file a bug — PaneFlow needs a refreshed release pin."
+                "Update blocked: a required asset is no longer published ({url}). Please file a bug - PaneFlow needs a refreshed release pin."
             ),
             UpdateError::InstallDeclined { message } => message.clone(),
             UpdateError::InstallFailed { log_path } => {
-                // Empty path = pkexec/dnf/apt branch (US-002-pkexec) —
+                // Empty path = pkexec/dnf/apt branch (US-002-pkexec) -
                 // the CLI package managers don't write a self-contained
                 // log file; their stderr is captured at `log::debug!`
                 // by the runner instead. "PaneFlow log" would be
@@ -127,14 +127,14 @@ impl UpdateError {
                     "Update install failed. Retry later, or update via your package manager directly.".to_string()
                 } else {
                     format!(
-                        "Update install failed. Verbose log saved to `{}` — attach it to a bug report.",
+                        "Update install failed. Verbose log saved to `{}` - attach it to a bug report.",
                         log_path.display()
                     )
                 }
             }
             UpdateError::EnvironmentBroken { message } => message.clone(),
             UpdateError::Timeout => {
-                "Update timed out. The download or install stalled — retry when your connection is stable."
+                "Update timed out. The download or install stalled - retry when your connection is stable."
                     .to_string()
             }
             UpdateError::Other(msg) => msg.clone(),
@@ -144,9 +144,9 @@ impl UpdateError {
     /// Bucket an `anyhow::Error` into a variant.
     ///
     /// Preference order (most specific first):
-    ///   1. Downcast to `UpdateError` — lower layers can bail with a
+    ///   1. Downcast to `UpdateError` - lower layers can bail with a
     ///      pre-classified error for free.
-    ///   2. Downcast to [`IntegrityMismatch`] — carries `expected`/`got`.
+    ///   2. Downcast to [`IntegrityMismatch`] - carries `expected`/`got`.
     ///   3. Walk the chain looking for `std::io::Error` with ENOSPC.
     ///   4. Substring-match on the formatted error chain for FUSE /
     ///      network / integrity / disk-full keywords.
@@ -154,7 +154,7 @@ impl UpdateError {
     pub fn classify(err: &anyhow::Error) -> Self {
         // Walk the full cause chain. `Error::downcast_ref` only inspects the
         // outermost error, which would miss a pre-classified tag wrapped by
-        // `.context(...)` — probe every cause so callers are free to add
+        // `.context(...)` - probe every cause so callers are free to add
         // context without losing classification.
         for cause in err.chain() {
             if let Some(tag) = cause.downcast_ref::<UpdateError>() {
@@ -168,7 +168,7 @@ impl UpdateError {
             }
             // US-001: the update flow bounds every ureq call with a 30 s
             // global timeout. When it fires at the request/response layer,
-            // the error surfaces as `ureq::Error::Timeout(_)` — treat it as
+            // the error surfaces as `ureq::Error::Timeout(_)` - treat it as
             // a network failure so the title bar renders the "no connection"
             // toast instead of the generic `Other` catch-all.
             if let Some(ureq::Error::Timeout(_)) = cause.downcast_ref::<ureq::Error>() {
@@ -200,7 +200,7 @@ impl UpdateError {
         // crafted error like "checksum timed out" cannot silently route a
         // genuine integrity failure into the Network toast. Typed
         // `IntegrityMismatch` downcasts happen earlier in the cause-chain
-        // walk, so real SHA mismatches are unaffected — this ordering only
+        // walk, so real SHA mismatches are unaffected - this ordering only
         // matters for stringly-typed errors coming from external tools.
         if lower.contains("failed integrity check")
             || lower.contains("integrity check")
@@ -222,7 +222,7 @@ impl UpdateError {
             || lower.contains("network is unreachable")
             || lower.contains("no such host")
             // US-001: body-stream timeouts arrive as io::Error wrapped by
-            // std::io::copy — the typed downcast above misses them because
+            // std::io::copy - the typed downcast above misses them because
             // the chain no longer carries the original ureq::Error.
             || lower.contains("timed out")
             || lower.contains("timeout")
@@ -250,7 +250,7 @@ impl std::error::Error for UpdateError {}
 
 /// Tag error for SHA-256 verification failures. Attached via `anyhow::bail!`
 /// so the outer classifier can [`downcast_ref`](anyhow::Error::downcast_ref)
-/// to recover the exact `expected`/`got` digests — substring-parsing a
+/// to recover the exact `expected`/`got` digests - substring-parsing a
 /// human message would lose them.
 #[derive(Debug, Clone)]
 pub struct IntegrityMismatch {
@@ -271,7 +271,7 @@ impl std::fmt::Display for IntegrityMismatch {
 impl std::error::Error for IntegrityMismatch {}
 
 /// True if `err` represents ENOSPC. Covers both the typed `StorageFull`
-/// variant (platform-independent, stable since Rust 1.83) and — on Unix —
+/// variant (platform-independent, stable since Rust 1.83) and - on Unix -
 /// the raw-errno fallback for older syscalls that surface `28` via
 /// `raw_os_error()` without setting the typed kind.
 ///
@@ -431,8 +431,8 @@ mod tests {
     fn classify_ureq_timeout_variant_as_network() {
         // US-001 AC4: a direct `ureq::Error::Timeout(_)` in the cause chain
         // is classified as `Network`, not `Other`. The context is
-        // intentionally neutral — it contains no pre-existing network
-        // keyword — so this test actually exercises the typed-downcast arm
+        // intentionally neutral - it contains no pre-existing network
+        // keyword - so this test actually exercises the typed-downcast arm
         // and would fail if that arm were removed.
         let err = anyhow::Error::new(ureq::Error::Timeout(ureq::Timeout::Global))
             .context("update checker main loop");
@@ -568,7 +568,7 @@ mod tests {
         // cause chain so its user-visible message isn't flattened into
         // the generic Other bucket.
         let tagged = UpdateError::InstallDeclined {
-            message: "Unable to replace /Applications/PaneFlow.app — reinstall manually".into(),
+            message: "Unable to replace /Applications/PaneFlow.app - reinstall manually".into(),
         };
         let err = anyhow::Error::new(tagged.clone()).context("self-update/dmg");
         assert_eq!(UpdateError::classify(&err), tagged);
@@ -577,11 +577,11 @@ mod tests {
     #[test]
     fn user_message_install_declined_passes_through() {
         let err = UpdateError::InstallDeclined {
-            message: "Unable to replace /Applications/PaneFlow.app — reinstall manually".into(),
+            message: "Unable to replace /Applications/PaneFlow.app - reinstall manually".into(),
         };
         assert_eq!(
             err.user_message(),
-            "Unable to replace /Applications/PaneFlow.app — reinstall manually"
+            "Unable to replace /Applications/PaneFlow.app - reinstall manually"
         );
     }
 
@@ -589,7 +589,7 @@ mod tests {
     fn classify_install_failed_roundtrips() {
         // US-010 AC7: InstallFailed carries its verbose log path through
         // the cause chain so the toast can name it verbatim for bug
-        // reports — flattening to Other would lose the path.
+        // reports - flattening to Other would lose the path.
         let tagged = UpdateError::InstallFailed {
             log_path: PathBuf::from("C:\\Users\\u\\AppData\\Local\\Temp\\paneflow-msi-1234.log"),
         };
@@ -612,7 +612,7 @@ mod tests {
         // US-010 AC9: EnvironmentBroken survives the cause chain so the
         // "msiexec not found" toast is specific rather than generic.
         let tagged = UpdateError::EnvironmentBroken {
-            message: "msiexec.exe not found on PATH — Windows system install appears broken".into(),
+            message: "msiexec.exe not found on PATH - Windows system install appears broken".into(),
         };
         let err = anyhow::Error::new(tagged.clone()).context("self-update/msi");
         assert_eq!(UpdateError::classify(&err), tagged);
@@ -629,7 +629,7 @@ mod tests {
     // ─── US-003 (pkexec): verify classify() walks the anyhow chain that
     // `linux/system_package::run_update` actually produces. The runner
     // returns `Err(anyhow::Error::new(UpdateError::X).context("pkexec
-    // exited with code N"))` — the outer layer is the plain context
+    // exited with code N"))` - the outer layer is the plain context
     // string, NOT an `UpdateError`. Without chain-walking, the
     // classifier would collapse every pkexec failure into `Other` and
     // the toast would render the raw context string instead of the
@@ -679,7 +679,7 @@ mod tests {
             "empty-backticks leaked into user-visible copy: {msg}"
         );
         assert!(
-            !msg.contains("`` —"),
+            !msg.contains("`` -"),
             "empty-path placeholder leaked into user-visible copy: {msg}"
         );
         assert!(

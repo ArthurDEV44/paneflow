@@ -57,7 +57,7 @@ pub fn register_keybindings(cx: &mut App) {
     ]);
 
     // Primary-modifier clipboard bindings. macOS uses Cmd, Linux/Windows use
-    // Ctrl — matching the platform convention (and OS text-input expectations).
+    // Ctrl - matching the platform convention (and OS text-input expectations).
     #[cfg(target_os = "macos")]
     cx.bind_keys([
         KeyBinding::new("cmd-a", SelectAll, Some("TextInput")),
@@ -214,7 +214,7 @@ impl TextInput {
 
     fn paste(&mut self, _: &TextInputPaste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            // US-035: single-line input — coerce newlines to spaces. Collapse
+            // US-035: single-line input - coerce newlines to spaces. Collapse
             // CRLF to one space first, then any lone CR/LF, so a Windows-style
             // paste doesn't leave a stray `\r` that snaps the cursor to column
             // 0 and visually corrupts the field.
@@ -466,7 +466,7 @@ impl EntityInputHandler for TextInput {
 }
 
 // ---------------------------------------------------------------------------
-// Low-level element — shapes the line and paints text + caret + selection.
+// Low-level element - shapes the line and paints text + caret + selection.
 // ---------------------------------------------------------------------------
 
 struct TextElement {
@@ -585,7 +585,7 @@ impl Element for TextElement {
                 Some(fill(
                     Bounds::new(
                         point(bounds.left() + cursor_pos, bounds.top()),
-                        // 1px hairline caret (Codex-quiet) — 2px read as a
+                        // 1px hairline caret (Codex-quiet) - 2px read as a
                         // block on small input text.
                         size(px(1.), bounds.bottom() - bounds.top()),
                     ),
@@ -661,7 +661,7 @@ impl Element for TextElement {
 }
 
 // ---------------------------------------------------------------------------
-// Render impl — just the key/mouse hit area; caller styles the outer box.
+// Render impl - just the key/mouse hit area; caller styles the outer box.
 // ---------------------------------------------------------------------------
 
 impl Render for TextInput {
@@ -696,7 +696,7 @@ impl Render for TextInput {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .child(TextElement {
                 input: cx.entity(),
-                // White caret (ui.text), not accent — the accent stays reserved
+                // White caret (ui.text), not accent - the accent stays reserved
                 // for status; a blue caret shouted in every input.
                 caret_color: ui.text,
                 selection_color: selection,

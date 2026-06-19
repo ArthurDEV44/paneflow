@@ -50,7 +50,7 @@ impl LayoutTree {
         }
     }
 
-    /// Zero-alloc short-circuiting `any` over leaf panes — replaces
+    /// Zero-alloc short-circuiting `any` over leaf panes - replaces
     /// `collect_leaves().iter().any(pred)`, which allocates a
     /// `Vec<Entity<Pane>>` (cloning every leaf) before scanning. The `&mut`
     /// predicate is reborrowed across recursion so a capturing closure (e.g.
@@ -70,7 +70,7 @@ impl LayoutTree {
     }
 
     /// True iff `pane` is a leaf anywhere in this tree. Zero-alloc membership
-    /// test that short-circuits on the first match — replaces
+    /// test that short-circuits on the first match - replaces
     /// `collect_leaves().contains(&pane)`. Hot on the pane-event path where the
     /// owning workspace is resolved by membership.
     pub fn contains_leaf(&self, pane: &Entity<Pane>) -> bool {

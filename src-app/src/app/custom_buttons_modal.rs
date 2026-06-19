@@ -1,4 +1,4 @@
-//! Manage-custom-buttons modal — opened from the workspace card context
+//! Manage-custom-buttons modal - opened from the workspace card context
 //! menu in the sidebar. Lets the user add / edit / delete user-defined
 //! command buttons that appear in the workspace's tab bar, to the right
 //! of the built-in defaults (Claude / Codex).
@@ -22,7 +22,7 @@ use crate::widgets::scrollbar;
 use crate::widgets::text_input::TextInput;
 
 // ---------------------------------------------------------------------------
-// Icon picker inventory — curated subset of the bundled tabler icons that
+// Icon picker inventory - curated subset of the bundled tabler icons that
 // make sense for dev / terminal / git / deploy / ops commands. Claude and
 // Codex colour icons are intentionally excluded (reserved for the defaults).
 // ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ pub(crate) const AVAILABLE_ICONS: &[&str] = &[
 ];
 
 fn default_icon() -> String {
-    // US-058: `.first()` instead of `[0]` — the const is non-empty today, but a
+    // US-058: `.first()` instead of `[0]` - the const is non-empty today, but a
     // future trim of the list must degrade gracefully, not panic.
     AVAILABLE_ICONS
         .first()
@@ -237,7 +237,7 @@ impl PaneFlowApp {
             }
         };
 
-        // Silent no-op when required fields are empty — the Save button is
+        // Silent no-op when required fields are empty - the Save button is
         // rendered disabled in this case, so this guard is just defensive.
         if name.is_empty() || command.is_empty() {
             return;
@@ -326,7 +326,7 @@ impl PaneFlowApp {
         let ws = &self.workspaces[ws_idx];
         let ui = crate::theme::ui_colors();
 
-        // Codex-quiet header: no own background, no divider — the title sits
+        // Codex-quiet header: no own background, no divider - the title sits
         // directly on the card; hierarchy comes from type + spacing. The
         // workspace context rides along as a muted suffix instead of an
         // em-dash compound title.
@@ -554,7 +554,7 @@ impl PaneFlowApp {
                 let name = btn.name.clone();
                 let cmd_preview = btn.command.clone();
                 // Hover-reveal actions (Codex/Agents idiom): edit + delete stay
-                // `.invisible()` (in flow — zero layout shift) until the row is
+                // `.invisible()` (in flow - zero layout shift) until the row is
                 // hovered.
                 let row_group = SharedString::from(format!("cbtn-row-g-{btn_id}"));
                 list = list.child(
@@ -742,7 +742,7 @@ impl PaneFlowApp {
             .when_some(bar, |d, sb| d.child(sb));
 
         // No "Done" footer (Codex-minimal): ✕, Esc, and the backdrop click
-        // already dismiss — a primary close button was a third affordance for
+        // already dismiss - a primary close button was a third affordance for
         // the same action. A small bottom pad keeps the list off the edge.
         div()
             .flex()
@@ -768,7 +768,7 @@ impl PaneFlowApp {
         let name_field = Self::render_input_field("Name", name_input.clone(), ui);
         let command_field = Self::render_input_field("Command", command_input.clone(), ui);
 
-        // Icon picker — responsive flex-wrap grid.
+        // Icon picker - responsive flex-wrap grid.
         let mut icon_grid = div().flex().flex_row().flex_wrap().gap(px(6.)).mt(px(4.));
         for &path in AVAILABLE_ICONS {
             let is_selected = path == icon;
@@ -827,7 +827,7 @@ impl PaneFlowApp {
         };
 
         // Quiet form footer: no divider (separation by spacing), Cancel is a
-        // bare quiet button — only the primary CTA carries weight.
+        // bare quiet button - only the primary CTA carries weight.
         let footer = div()
             .flex()
             .flex_row()
@@ -963,7 +963,7 @@ impl PaneFlowApp {
 
     /// Label + styled container wrapping a cursor-aware `TextInput` entity.
     /// The `TextInput` is a GPUI entity, so we hand it off as a child element
-    /// directly — its own Render produces the IBeam hit area, mouse handlers
+    /// directly - its own Render produces the IBeam hit area, mouse handlers
     /// and text shaping.
     fn render_input_field(
         label: &str,

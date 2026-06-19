@@ -18,7 +18,7 @@ impl PaneFlowApp {
         cx: &mut Context<Self>,
     ) {
         if self.swap_source.is_some() {
-            // Already in swap mode — toggle off (cancel)
+            // Already in swap mode - toggle off (cancel)
             self.swap_source = None;
             SWAP_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
         } else if let Some(ws) = self.active_workspace()

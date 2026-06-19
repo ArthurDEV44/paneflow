@@ -24,7 +24,7 @@ pub struct ShortcutEntry {
 /// Format a GPUI keystroke string for display.
 ///
 /// On Linux: `"secondary-shift-d"` → `"Ctrl+Shift+D"` (readable, plus-separated).
-/// On macOS: `"secondary-shift-d"` → `"⌘⇧D"` (Apple HIG glyphs, no separator —
+/// On macOS: `"secondary-shift-d"` → `"⌘⇧D"` (Apple HIG glyphs, no separator -
 /// matches the native macOS menu bar convention consumed by US-012).
 ///
 /// `secondary` is GPUI's cross-platform shorthand that resolves to `cmd` on
@@ -34,7 +34,7 @@ pub struct ShortcutEntry {
 pub fn format_keystroke(key: &str) -> String {
     let is_macos = cfg!(target_os = "macos");
     let parts = key.split('-').map(|part| match part {
-        // Modifiers — platform-dependent rendering.
+        // Modifiers - platform-dependent rendering.
         "secondary" => {
             if is_macos {
                 "\u{2318}".to_string() // ⌘
@@ -70,7 +70,7 @@ pub fn format_keystroke(key: &str) -> String {
                 "Alt".to_string()
             }
         }
-        // Non-modifier tokens — same on both platforms, just capitalized.
+        // Non-modifier tokens - same on both platforms, just capitalized.
         "tab" => "Tab".to_string(),
         "pageup" => "PageUp".to_string(),
         "pagedown" => "PageDown".to_string(),
@@ -222,7 +222,7 @@ mod tests {
     fn effective_shortcuts_action_name_survives_unbind_shift() {
         // Regression for the `action_name_at(idx) → DEFAULTS[idx]` bug: once a
         // default is unbound the displayed list shifts, so the row at index 0
-        // is the SECOND default — not `DEFAULTS[0]`. Reading the carried
+        // is the SECOND default - not `DEFAULTS[0]`. Reading the carried
         // `action_name` must reflect the shifted row, otherwise the editor
         // rebinds the wrong action.
         let mut overrides = HashMap::new();

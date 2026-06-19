@@ -1,10 +1,10 @@
-//! Background paint pass — terminal fill, bell flash, per-cell background
+//! Background paint pass - terminal fill, bell flash, per-cell background
 //! rects with edge extension, and pixel-perfect block quads.
 //!
 //! ## Pixel alignment (US-004)
 //!
 //! Cell rects and block quads share a single pair of per-frame integer
-//! pixel boundary arrays — `cell_x_boundaries` and `cell_y_boundaries`.
+//! pixel boundary arrays - `cell_x_boundaries` and `cell_y_boundaries`.
 //! Looking up edges through those arrays makes adjacency exact by
 //! construction: `next_rect.x == prev_rect.x + prev_rect.width` for any
 //! two horizontally-adjacent rects, regardless of whether the underlying
@@ -13,7 +13,7 @@
 //! which could leave a 1-px gap or overlap at the seam when `cell_width`
 //! was fractional. Block quads use the same arrays so a full-block (`█`,
 //! `▀`, `▄`) coverage shares its outer edges with the cell background
-//! underneath — the canonical anti-gap fix from `debug_block_char_rendering.md`.
+//! underneath - the canonical anti-gap fix from `debug_block_char_rendering.md`.
 
 use gpui::{Bounds, Pixels, Point, Window, fill, px};
 
@@ -75,7 +75,7 @@ pub fn paint_cell_backgrounds(
     let col_count = layout.desired_cols;
     let row_count = layout.desired_rows;
 
-    // Empty viewport (window minimised, mid-resize) — nothing to paint. The
+    // Empty viewport (window minimised, mid-resize) - nothing to paint. The
     // caller passes empty boundary slices in that case (US-047), so guard
     // before indexing them.
     if col_count == 0 || row_count == 0 {
@@ -89,7 +89,7 @@ pub fn paint_cell_backgrounds(
         let line_end_signed = rect.line + rect.num_lines as i32;
 
         // Defensive bounds check. `build_layout` should never emit a rect
-        // outside the viewport or with zero extent — silent skip beats
+        // outside the viewport or with zero extent - silent skip beats
         // indexing past the boundary arrays or queueing a zero-area quad
         // for the GPU. If this trips in practice, the layout pass has a
         // bug worth surfacing via the probe.
@@ -121,7 +121,7 @@ pub fn paint_cell_backgrounds(
         // band. The widget-wide `paint_base_fill` covers the gutter with
         // the theme background; cell rects sit on top of it inside the grid.
         //
-        // Vertical extension remains unconditional — half-pixel residue at
+        // Vertical extension remains unconditional - half-pixel residue at
         // the top and bottom of the grid would otherwise show a thin band
         // of widget-bg between the first/last cell row and the widget edge.
         if rect.line == 0 {
@@ -161,7 +161,7 @@ pub fn paint_cell_backgrounds(
 ///
 /// Uses the same shared-boundary arrays as [`paint_cell_backgrounds`] so
 /// a full-block coverage (`█`, `▀`, `▄` with `fx=fy=0, fw=fh=1`) lines
-/// up exactly with the cell background underneath — no sub-pixel seam.
+/// up exactly with the cell background underneath - no sub-pixel seam.
 /// Partial-block coverage applies floor on both inner edges to preserve
 /// the same shared-boundary property between adjacent block cells.
 pub fn paint_block_quads(
@@ -186,7 +186,7 @@ pub fn paint_block_quads(
         }
         let line = bq.line as usize;
 
-        // Outer cell extents from the shared-boundary arrays — these are
+        // Outer cell extents from the shared-boundary arrays - these are
         // identical to the cell background's edges, by construction.
         let cell_x_left = x_boundaries[bq.col];
         let cell_x_right = x_boundaries[col_end];
@@ -209,7 +209,7 @@ pub fn paint_block_quads(
         let qh = (q_bottom - qy).max(px(0.0));
 
         // PANEFLOW_PIXEL_PROBE: block quads are the canonical "fix this
-        // gap" surface from `debug_block_char_rendering.md` — log the
+        // gap" surface from `debug_block_char_rendering.md` - log the
         // exact submitted geometry so a future investigation can compare
         // against the corresponding cell background and glyph X.
         #[cfg(debug_assertions)]
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn adjacent_cells_have_non_negative_width() {
         // The shared-boundary invariant follows from the boundaries being
-        // monotonically non-decreasing — pairwise differences are cell
+        // monotonically non-decreasing - pairwise differences are cell
         // widths, and a non-negative cell width per pair means no overlap
         // and (since both edges come from the same array) no gap either.
         // The previous-rect's right edge IS the next-rect's left edge by

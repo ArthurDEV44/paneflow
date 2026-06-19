@@ -1,4 +1,4 @@
-//! "Terminal" settings tab (US-016) — cursor shape/blink, bell mode,
+//! "Terminal" settings tab (US-016) - cursor shape/blink, bell mode,
 //! scrollback, font family, font size, line height, ligatures, and
 //! option-as-meta.
 //!
@@ -188,7 +188,7 @@ impl PaneFlowApp {
             .child(self.terminal_stepper_row(
                 "term-font-size",
                 "Font size",
-                "Terminal font size in pixels (8–32). Hot-reloads.",
+                "Terminal font size in pixels (8-32). Hot-reloads.",
                 font_size,
                 8.0,
                 32.0,
@@ -202,7 +202,7 @@ impl PaneFlowApp {
             .child(self.terminal_stepper_row(
                 "term-line-height",
                 "Line height",
-                "Line height multiplier (1.0–2.5). Hot-reloads.",
+                "Line height multiplier (1.0-2.5). Hot-reloads.",
                 line_height,
                 1.0,
                 2.5,
@@ -308,7 +308,7 @@ impl PaneFlowApp {
 
         if self.font_dropdown_open {
             let search = self.font_search.to_lowercase();
-            let default_label = format!("PaneFlow default — {default_font}");
+            let default_label = format!("PaneFlow default - {default_font}");
             let default_matches =
                 search.is_empty() || default_label.to_lowercase().contains(&search);
             let filtered: Vec<&String> = self
@@ -584,7 +584,7 @@ impl PaneFlowApp {
             )
     }
 
-    /// A toggle row — only the switch is interactive (the row itself does not
+    /// A toggle row - only the switch is interactive (the row itself does not
     /// hover or click). `nested` routes the write to the `terminal` block (e.g.
     /// `ligatures`) vs. a top-level key (`option_as_meta`).
     #[allow(clippy::too_many_arguments)]

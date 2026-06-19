@@ -4,7 +4,7 @@
 //!   1. Download the tar.gz asset to `$HOME/.cache/paneflow/update-<pid>.tar.gz`.
 //!   2. Verify the asset's detached **minisign** signature (`.minisig`
 //!      sibling) against a public key baked into this binary (US-001).
-//!      A missing or invalid signature deletes the download and aborts —
+//!      A missing or invalid signature deletes the download and aborts -
 //!      the same-host `.sha256` it replaced gave no real trust (a mirror
 //!      that swaps the tarball swaps the checksum too).
 //!   3. Extract into `<parent>/paneflow.app.new/` (a sibling of the live
@@ -13,11 +13,11 @@
 //!      `app_dir` → `app_dir.old`, then `app_dir.new` → `app_dir`, then
 //!      `rm -rf app_dir.old`. The window between the two renames is
 //!      brief. A pre-existing `app_dir.old` (crashed prior update) is a
-//!      hard abort — we do NOT blindly overwrite.
-//!   5. Return `<app_dir>/bin/paneflow` — the caller passes this to
+//!      hard abort - we do NOT blindly overwrite.
+//!   5. Return `<app_dir>/bin/paneflow` - the caller passes this to
 //!      `cx.set_restart_path()` so GPUI's launcher execs the new binary.
 //!
-//! **Invariant — writes stay inside $HOME.** The download lives in
+//! **Invariant - writes stay inside $HOME.** The download lives in
 //! `$HOME/.cache/paneflow/`; extraction and swap happen inside
 //! `<app_dir>` and its parent. No code path writes to `/usr`, `/opt`,
 //! `/bin`, or any absolute path outside `$HOME`. This is essential for
@@ -67,13 +67,13 @@ fn run_update_in(asset_url: &str, app_dir: &Path, cache_dir: &Path) -> Result<()
     let (old_dir, new_dir) = staging_dirs(app_dir)?;
     let parent = app_dir
         .parent()
-        .context("app_dir has no parent directory — refusing to swap at filesystem root")?;
+        .context("app_dir has no parent directory - refusing to swap at filesystem root")?;
 
     // US-008: serialise concurrent updates. Two PaneFlow instances both
     // triggering an update would otherwise race on the fixed-name `.old` /
     // `.new` staging dirs and the two-rename swap. The lock is an OS-advisory
-    // flock that auto-releases when the handle drops — including on process
-    // death — so a crash never leaves a stale lock behind. Held for the whole
+    // flock that auto-releases when the handle drops - including on process
+    // death - so a crash never leaves a stale lock behind. Held for the whole
     // staging+swap below.
     let _update_lock = acquire_update_lock(parent)?;
 
@@ -85,7 +85,7 @@ fn run_update_in(asset_url: &str, app_dir: &Path, cache_dir: &Path) -> Result<()
     recover_and_clean_staging(app_dir, &old_dir)?;
 
     // And if `.new` survived a crash, clean it up so extract() doesn't
-    // merge into a stale tree. `.new` is pure scratch — safe to remove, but
+    // merge into a stale tree. `.new` is pure scratch - safe to remove, but
     // log a warning if the cleanup itself fails so the downstream extract
     // error isn't misdiagnosed as a tarball problem.
     if new_dir.exists()
@@ -108,7 +108,7 @@ fn run_update_in(asset_url: &str, app_dir: &Path, cache_dir: &Path) -> Result<()
     }
 
     let extract_result = extract_and_swap(&tarball, app_dir, &new_dir, &old_dir);
-    // Tarball cleanup is best-effort — keeping a stale ~30 MB file around
+    // Tarball cleanup is best-effort - keeping a stale ~30 MB file around
     // on disk is strictly preferable to failing the update over it.
     let _ = std::fs::remove_file(&tarball);
     extract_result
@@ -117,10 +117,10 @@ fn run_update_in(asset_url: &str, app_dir: &Path, cache_dir: &Path) -> Result<()
 fn staging_dirs(app_dir: &Path) -> Result<(PathBuf, PathBuf)> {
     let parent = app_dir
         .parent()
-        .context("app_dir has no parent directory — refusing to swap at filesystem root")?;
+        .context("app_dir has no parent directory - refusing to swap at filesystem root")?;
     let name = app_dir
         .file_name()
-        .context("app_dir has no file name — refusing to swap")?;
+        .context("app_dir has no file name - refusing to swap")?;
     let name = name.to_string_lossy();
     Ok((
         parent.join(format!("{name}.old")),
@@ -130,7 +130,7 @@ fn staging_dirs(app_dir: &Path) -> Result<(PathBuf, PathBuf)> {
 
 /// Acquire an exclusive, OS-advisory lock so two PaneFlow instances can't
 /// stage+swap concurrently (US-008). The lock auto-releases when the returned
-/// handle drops — including on process death — so a crash never leaves a
+/// handle drops - including on process death - so a crash never leaves a
 /// stale lock that would block future updates.
 ///
 /// Unix-only (`flock`). The tar.gz install method is Linux-only at runtime
@@ -148,7 +148,7 @@ fn acquire_update_lock(parent: &Path) -> Result<Option<std::fs::File>> {
             .open(&lock_path)
             .with_context(|| format!("open update lock {}", lock_path.display()))?;
         // SAFETY: `flock` on a freshly opened, owned fd. `LOCK_NB` makes it
-        // non-blocking — it returns `EWOULDBLOCK` if another instance holds
+        // non-blocking - it returns `EWOULDBLOCK` if another instance holds
         // the lock rather than hanging the update thread.
         let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if rc != 0 {
@@ -207,12 +207,12 @@ fn recover_and_clean_staging(app_dir: &Path, old_dir: &Path) -> Result<()> {
 }
 
 /// Download the asset, verify its detached **minisign** signature, and
-/// persist to `dest`. The signature — not a same-host `.sha256` — is the
+/// persist to `dest`. The signature - not a same-host `.sha256` - is the
 /// trust anchor (US-001): verification runs against a public key baked into
 /// this binary, so a compromised mirror or MITM cannot make us extract a
 /// tampered tarball.
 ///
-/// On any failure the partial download is removed by the caller — we
+/// On any failure the partial download is removed by the caller - we
 /// don't want a half-written tarball to masquerade as a cached update on
 /// the next run.
 fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
@@ -220,7 +220,7 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
 
     // 1. Stream the tarball to a `.partial` sibling so a crashed download
     // doesn't poison the cache. `file` is scoped to this block so its handle
-    // is closed before any `remove_file` — on Windows `DeleteFile` fails with
+    // is closed before any `remove_file` - on Windows `DeleteFile` fails with
     // ERROR_SHARING_VIOLATION while a handle is open. US-001 AC7.
     let partial = append_suffix(dest, ".partial")?;
     let mut response = ureq::get(asset_url)
@@ -249,7 +249,7 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
             .context("stream tarball to disk")
             .and_then(|written| {
                 // US-010: propagate a sync failure (e.g. ENOSPC surfacing
-                // only on flush) instead of swallowing it — the classifier
+                // only on flush) instead of swallowing it - the classifier
                 // needs the real io::Error to render DiskFull rather than a
                 // downstream "corrupt/tampered" misdiagnosis.
                 file.sync_all().context("flush tarball to disk")?;
@@ -266,7 +266,7 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
     if written > MAX_TARBALL_BYTES {
         let _ = std::fs::remove_file(&partial);
         bail!(
-            "Update download exceeded {} MiB — aborting.",
+            "Update download exceeded {} MiB - aborting.",
             MAX_TARBALL_BYTES / 1024 / 1024
         );
     }
@@ -326,7 +326,7 @@ fn extract_and_swap(tarball: &Path, app_dir: &Path, new_dir: &Path, old_dir: &Pa
         extract_hardened(tarball, &scratch)?;
 
         // Move the top-level extracted directory into place as `new_dir`.
-        // Strict "exactly one top-level directory" — the bundler writes
+        // Strict "exactly one top-level directory" - the bundler writes
         // exactly `paneflow.app/` at the top (see
         // `scripts/bundle-tarball.sh`) and any deviation is more likely
         // a CI bug than a layout we should silently accept.
@@ -339,11 +339,11 @@ fn extract_and_swap(tarball: &Path, app_dir: &Path, new_dir: &Path, old_dir: &Pa
 
         // Belt-and-braces: force the restart binary to a known-good mode.
         // The bundler ships it 0o755, but a tampered archive could
-        // downgrade to 0o777 (world-writable — local-priv-esc on shared
+        // downgrade to 0o777 (world-writable - local-priv-esc on shared
         // HOMEs) or upgrade to 0o700 (unexecutable by other session-id
         // processes). Force 0o755, which is the tarball's original mode.
         //
-        // US-005 — Unix-only belt. Windows has no POSIX mode bits, so the
+        // US-005 - Unix-only belt. Windows has no POSIX mode bits, so the
         // threat model above (mode-based priv-esc) does not apply; the
         // analogous concern would be ACL tampering, handled separately
         // if/when Windows ever ships a tar.gz update path (today it
@@ -381,7 +381,7 @@ fn extract_and_swap(tarball: &Path, app_dir: &Path, new_dir: &Path, old_dir: &Pa
     }
     if let Err(e) = std::fs::rename(new_dir, app_dir) {
         // Roll back: restore `app_dir` from `.old`. If the rollback
-        // rename ALSO fails, the user has no live install at all —
+        // rename ALSO fails, the user has no live install at all -
         // surface both errors and the actual on-disk location of their
         // previous version so they can recover manually instead of
         // silently discarding the rollback error.
@@ -416,7 +416,7 @@ fn extract_and_swap(tarball: &Path, app_dir: &Path, new_dir: &Path, old_dir: &Pa
 /// Extract `tarball` into `scratch`, filtering every entry as it is read
 /// (US-003). Unlike `tar::Archive::unpack`, this:
 ///
-/// - **Disables permission and xattr preservation** — a tampered archive
+/// - **Disables permission and xattr preservation** - a tampered archive
 ///   must not be able to set setuid / world-writable bits or attach
 ///   quarantine-bypassing xattrs. The restart binary's mode is forced back
 ///   to `0o755` by the caller after extraction.
@@ -464,7 +464,7 @@ fn extract_hardened(tarball: &Path, scratch: &Path) -> Result<()> {
         validate_extract_path(&path)?;
 
         // `unpack_in` performs its own containment check against
-        // `canonical_root` and returns `false` if it refused the entry —
+        // `canonical_root` and returns `false` if it refused the entry -
         // belt-and-braces against anything `validate_extract_path` missed.
         // It only ever writes under `canonical_root`.
         let unpacked = entry
@@ -472,7 +472,7 @@ fn extract_hardened(tarball: &Path, scratch: &Path) -> Result<()> {
             .with_context(|| format!("unpack entry {}", path.display()))?;
         if !unpacked {
             bail!(
-                "Update archive entry {} escapes the extraction root — refusing to install. Download the release manually from the releases page.",
+                "Update archive entry {} escapes the extraction root - refusing to install. Download the release manually from the releases page.",
                 path.display()
             );
         }
@@ -489,11 +489,11 @@ fn validate_extract_path(path: &Path) -> Result<()> {
     for comp in path.components() {
         match comp {
             Component::Prefix(_) | Component::RootDir => bail!(
-                "Update archive contains an absolute path ({}) — refusing to install.",
+                "Update archive contains an absolute path ({}) - refusing to install.",
                 path.display()
             ),
             Component::ParentDir => bail!(
-                "Update archive contains a `..` traversal ({}) — refusing to install.",
+                "Update archive contains a `..` traversal ({}) - refusing to install.",
                 path.display()
             ),
             Component::CurDir | Component::Normal(_) => {}
@@ -519,7 +519,7 @@ fn find_single_top_level(dir: &Path) -> Result<PathBuf> {
             }
             Ok(only.path())
         }
-        [] => bail!("tarball is empty — no top-level entry"),
+        [] => bail!("tarball is empty - no top-level entry"),
         multi => bail!("tarball has {} top-level entries, expected 1", multi.len()),
     }
 }
@@ -695,7 +695,7 @@ mod tests {
         let app_dir = tmp.path().join(".local/paneflow.app");
         std::fs::create_dir_all(&app_dir).unwrap();
         let (old_dir, _new) = staging_dirs(&app_dir).unwrap();
-        // No `.old` — nothing to do, must succeed.
+        // No `.old` - nothing to do, must succeed.
         recover_and_clean_staging(&app_dir, &old_dir).unwrap();
         assert!(app_dir.exists());
     }
@@ -793,7 +793,7 @@ mod tests {
     }
 
     /// US-003 AC4: an entry whose path traverses out of the root via `..`
-    /// is rejected *during* extraction — it never lands on disk and the
+    /// is rejected *during* extraction - it never lands on disk and the
     /// live install is untouched.
     #[test]
     fn extract_rejects_path_traversal_entry() {
@@ -802,7 +802,7 @@ mod tests {
 
         // Craft a tarball with a single `../evil` entry. `append_data` /
         // `set_path` sanitise `..` away, so write the unsanitised name
-        // straight into the GNU header's name field (offset 0..100) — this
+        // straight into the GNU header's name field (offset 0..100) - this
         // is exactly what a hostile, hand-rolled archive looks like.
         let out = root.join("evil.tar.gz");
         let f = std::fs::File::create(&out).unwrap();
@@ -836,18 +836,18 @@ mod tests {
         );
     }
 
-    // US-003 — Unix-only fixture. The test injects a real symlink entry into
+    // US-003 - Unix-only fixture. The test injects a real symlink entry into
     // a tarball via `std::os::unix::fs::symlink`; building that entry on
     // Windows needs `SeCreateSymbolicLinkPrivilege`, which non-admin GH
-    // Actions runs lack. The runtime property — `extract_hardened` refuses
-    // any link entry — is platform-neutral (it checks the tar header's entry
+    // Actions runs lack. The runtime property - `extract_hardened` refuses
+    // any link entry - is platform-neutral (it checks the tar header's entry
     // type, not the host filesystem), so Windows gets the same guard; only
     // the malicious-fixture construction is Unix-only.
     #[cfg(unix)]
     #[test]
     fn extract_rejects_tarball_with_symlink() {
         // Build a tarball that includes a symlink and verify that
-        // `extract_and_swap` refuses to install it — even though the
+        // `extract_and_swap` refuses to install it - even though the
         // symlink itself never leaves the scratch dir, letting it reach
         // the live `app_dir` would let a tampered release point
         // `bin/paneflow` at `/home/u/.ssh/id_rsa` and exfiltrate on
@@ -867,7 +867,7 @@ mod tests {
         let gz = flate2::write::GzEncoder::new(f, flate2::Compression::fast());
         let mut builder = tar::Builder::new(gz);
         // `follow_symlinks(false)` preserves the symlink as a symlink
-        // entry in the archive — the whole point of this test.
+        // entry in the archive - the whole point of this test.
         builder.follow_symlinks(false);
         builder
             .append_dir_all("paneflow.app", root.join("src/paneflow.app"))

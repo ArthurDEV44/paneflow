@@ -76,8 +76,8 @@ pub(super) fn make_binding(
 /// Apply keybindings: clear all, register defaults, then layer user overrides.
 ///
 /// User shortcuts map keystroke strings to action names. Special values:
-/// - `"none"` — unbinds the key (no action registered for it)
-/// - Any valid action name — overrides or adds a binding for that key
+/// - `"none"` - unbinds the key (no action registered for it)
+/// - Any valid action name - overrides or adds a binding for that key
 pub fn apply_keybindings(cx: &mut App, user_shortcuts: &HashMap<String, String>) {
     cx.clear_key_bindings();
 
@@ -168,7 +168,7 @@ pub fn apply_keybindings(cx: &mut App, user_shortcuts: &HashMap<String, String>)
     // selection, Backspace/Delete, clipboard) that are registered once at
     // startup. Re-register them on every apply so text fields keep working after
     // a shortcut rebind, config reload, settings navigation, or IPC-driven
-    // re-apply — otherwise a re-apply silently degrades every input to IME-only
+    // re-apply - otherwise a re-apply silently degrades every input to IME-only
     // typing (the field accepts characters but ignores arrows, selection, and
     // clipboard).
     crate::widgets::text_input::register_keybindings(cx);

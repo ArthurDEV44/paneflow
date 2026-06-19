@@ -14,7 +14,7 @@
 # in-app update prompts from finding the asset.
 #
 # Implementation: follows the Zed bundle-mac pattern
-# (zed-industries/zed `script/bundle-mac:260` upstream) — a single
+# (zed-industries/zed `script/bundle-mac:260` upstream) - a single
 # `hdiutil create -srcfolder ... -format UDZO` invocation that auto-sizes
 # the image from the source folder and produces the final zlib-compressed
 # image in one pass. Earlier revisions of this script ran a UDRW staging
@@ -28,7 +28,7 @@
 # Trade-off: no custom Finder window layout (icon positions, background
 # image). The DMG still presents the standard /Applications symlink for
 # drag-to-install. Cosmetic layout can be re-introduced later by bringing
-# back a UDRW staging stage WITHOUT a fixed -size flag — but the unstyled
+# back a UDRW staging stage WITHOUT a fixed -size flag - but the unstyled
 # DMG ships and notarizes today, which is the priority.
 #
 # Usage:
@@ -86,13 +86,13 @@ FINAL_DMG="$REPO_ROOT/dist/paneflow-${VERSION}-${ARCH}-apple-darwin.dmg"
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
 
-# The enclosed app bundle — `cp -R` preserves the embedded code signature
+# The enclosed app bundle - `cp -R` preserves the embedded code signature
 # and extended attributes (notarization ticket). `ditto` would also work
 # but `cp -R` keeps the dependency surface minimal.
 cp -R "$APP" "$STAGING/"
 BUNDLE_NAME="$(basename "$APP")"
 
-# Drag target — a symlink to /Applications gives the familiar macOS
+# Drag target - a symlink to /Applications gives the familiar macOS
 # "drag here to install" UX. `ln -s /Applications` creates an absolute
 # symlink that resolves against /Applications when the DMG is mounted
 # on a user's Mac (the symlink target is a string, not a resolved inode).
@@ -104,12 +104,12 @@ ln -s /Applications "$STAGING/Applications"
 # previous run (idempotent re-runs).
 #
 # Flags deliberately omitted vs. earlier revisions:
-#   -size <N>m       — caused ENOSPC inside hdiutil's virtual device
+#   -size <N>m       - caused ENOSPC inside hdiutil's virtual device
 #                      when the fixed allocation could not fit content +
 #                      filesystem overhead. Auto-sizing avoids this.
-#   -fs HFS+         — UDZO defaults to HFS+ for backwards compatibility;
+#   -fs HFS+         - UDZO defaults to HFS+ for backwards compatibility;
 #                      passing it explicitly was redundant.
-#   -fsargs '-c …'   — pre-grew the HFS+ catalog/attributes/extents
+#   -fsargs '-c …'   - pre-grew the HFS+ catalog/attributes/extents
 #                      B-trees, competing with payload for fixed-size
 #                      budget. Default newfs_hfs sizing is correct.
 mkdir -p "$(dirname "$FINAL_DMG")"
@@ -123,11 +123,11 @@ hdiutil create \
     "$FINAL_DMG" >/dev/null
 
 # --- Verify -------------------------------------------------------------
-# `hdiutil verify` checksums the compressed image — catches truncation.
+# `hdiutil verify` checksums the compressed image - catches truncation.
 hdiutil verify "$FINAL_DMG" >/dev/null
 
 # AC3: codesign inside the DMG must still verify. Mount the final image
-# read-only and run codesign against the embedded .app — any signature
+# read-only and run codesign against the embedded .app - any signature
 # drift (e.g., from a buggy hdiutil that rewrote extended attributes)
 # would surface here, not at Gatekeeper time on a user's Mac.
 VERIFY_MOUNT="$(hdiutil attach -nobrowse -readonly -noautoopen "$FINAL_DMG")"

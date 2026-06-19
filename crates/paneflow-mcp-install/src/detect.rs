@@ -12,7 +12,7 @@ use std::path::PathBuf;
 pub enum Presence {
     /// CLI on PATH or a config file/dir exists.
     Present,
-    /// Neither signal fired — the agent is skipped (not an error).
+    /// Neither signal fired - the agent is skipped (not an error).
     Absent,
 }
 

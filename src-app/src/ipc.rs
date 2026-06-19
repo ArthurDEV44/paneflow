@@ -9,7 +9,7 @@
 //! POSIX and named pipes on Windows transparently. The wire protocol
 //! (newline-delimited JSON-RPC 2.0) is byte-identical across platforms.
 //!
-//! ## Trust model — local-only, owner-UID enforcement (US-010)
+//! ## Trust model - local-only, owner-UID enforcement (US-010)
 //!
 //! The IPC server is **strictly local**: it has no network surface,
 //! no port binding, no remote identity. Trust derives entirely from
@@ -22,7 +22,7 @@
 //!   `getsockopt(SO_PEERCRED)` (Linux) / `LOCAL_PEERCRED` (macOS) and
 //!   compares the peer's UID to the server's. A mismatch returns a
 //!   JSON-RPC `-32001 permission denied` error envelope and closes
-//!   the stream BEFORE any method dispatches. Defence-in-depth — if a
+//!   the stream BEFORE any method dispatches. Defence-in-depth - if a
 //!   privileged third party bypasses the file-mode check
 //!   (e.g. CAP_DAC_OVERRIDE, mode-fixing automation), the kernel
 //!   credential check still rejects them.
@@ -30,7 +30,7 @@
 //!   owning user + LocalSystem + Administrators. SDDL hardening is
 //!   deferred (cf. `prd-stabilization-2026-q2.md` §10 out-of-scope).
 //!
-//! No HMAC tokens, no TLS — both would add complexity without
+//! No HMAC tokens, no TLS - both would add complexity without
 //! meaningful gain on a local-only socket. If the IPC ever grows a
 //! network surface, that decision must be revisited.
 //!
@@ -65,23 +65,23 @@
 //!
 //! ## Methods
 //!
-//! - `system.ping` / `system.capabilities` / `system.identify` — stateless
+//! - `system.ping` / `system.capabilities` / `system.identify` - stateless
 //!   health checks handled directly on the socket thread.
 //! - `workspace.list` / `workspace.current` / `workspace.select` /
-//!   `workspace.close` — workspace navigation.
-//! - `workspace.create` — accepts `name` (string, default "Terminal"),
+//!   `workspace.close` - workspace navigation.
+//! - `workspace.create` - accepts `name` (string, default "Terminal"),
 //!   `cwd` (string path, optional) and `layout` (optional `LayoutNode`
 //!   JSON, US-001). When `layout` is present, the new workspace's pane
 //!   tree is built from the layout in a single round-trip; when absent,
 //!   behavior is unchanged (a single default pane). A malformed `layout`
 //!   payload returns the JSON-RPC `-32602 Invalid params` error envelope
 //!   and leaves no orphan workspace behind.
-//! - `workspace.restore_layout` — apply a `LayoutNode` to the active
+//! - `workspace.restore_layout` - apply a `LayoutNode` to the active
 //!   workspace (used by session restore).
 //! - `surface.list` / `surface.send_text` / `surface.send_keystroke` /
-//!   `surface.split` — pane operations.
+//!   `surface.split` - pane operations.
 //! - `ai.session_start` / `ai.prompt_submit` / `ai.tool_use` /
-//!   `ai.notification` / `ai.stop` / `ai.exit` / `ai.session_end` — AI
+//!   `ai.notification` / `ai.stop` / `ai.exit` / `ai.session_end` - AI
 //!   hook lifecycle (`ai.exit` carries the wrapped agent binary's real
 //!   exit status, EP-004 US-010).
 //!
@@ -109,7 +109,7 @@ use interprocess::local_socket::ListenerNonblockingMode;
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
-// IPC request type — sent from socket thread to GPUI thread
+// IPC request type - sent from socket thread to GPUI thread
 // ---------------------------------------------------------------------------
 
 pub struct IpcRequest {
@@ -121,7 +121,7 @@ pub struct IpcRequest {
     /// dispatch timeout fired and the client already got an error). The GPUI
     /// consumer checks this before running the handler so a slow non-idempotent
     /// mutation (workspace.create, surface.split) can't execute after the
-    /// client gave up — otherwise a client retry would create duplicate
+    /// client gave up - otherwise a client retry would create duplicate
     /// workspaces/panes.
     pub cancelled: Arc<AtomicBool>,
     /// EP-003 US-010 (agent-control-plane): the socket peer's PID, captured
@@ -231,7 +231,7 @@ pub fn start_server() -> (
     // Singleton guard: probe the socket BEFORE the IPC thread spawns and
     // before `bind_socket` blindly `remove_file`s any existing socket. If
     // another live Paneflow instance is already listening, two parallel
-    // processes will otherwise enter an endless mutual clobber loop —
+    // processes will otherwise enter an endless mutual clobber loop -
     // each detects the other's rebind at the next 5 s health check, drops
     // its listener, and re-creates the file, perpetuating the cycle.
     // During every micro-window between drop and re-create, the AI shim's
@@ -274,13 +274,13 @@ pub fn start_server() -> (
             let Some(socket_path) = socket_path() else {
                 thread_status.disable();
                 log::warn!(
-                    "paneflow: could not resolve a usable IPC socket path — IPC server disabled. \
+                    "paneflow: could not resolve a usable IPC socket path - IPC server disabled. \
                      See earlier runtime_paths warnings for the specific cause."
                 );
                 return;
             };
 
-            // Only Unix needs the containing directory to exist — the
+            // Only Unix needs the containing directory to exist - the
             // Windows named-pipe path lives in the kernel namespace, not
             // the filesystem.
             #[cfg(unix)]
@@ -289,7 +289,7 @@ pub fn start_server() -> (
                 // Lock the socket's containing dir to the owner. Under
                 // $XDG_RUNTIME_DIR this already holds, but the fallback chain
                 // ($TMPDIR / ~/.cache/run) can land in a world-traversable
-                // /tmp — 0700 stops other local users from reaching the socket
+                // /tmp - 0700 stops other local users from reaching the socket
                 // at all (defense-in-depth atop the socket's own 0600 +
                 // SO_PEERCRED).
                 use std::os::unix::fs::PermissionsExt as _;
@@ -317,7 +317,7 @@ pub fn start_server() -> (
             // re-verify the socket inode (clobber detection) without starving
             // connections. On Windows there is no inode/clobber check, and
             // `interprocess`'s non-blocking named-pipe accept mismanages pipe
-            // instances — the accepted `Stream` does not correspond to the
+            // instances - the accepted `Stream` does not correspond to the
             // client that actually wrote, so the handler's read blocks forever
             // (the frame is "sent OK" by the hook but never delivered to the
             // server read), and that blocked read aborts the whole process at
@@ -385,7 +385,7 @@ pub fn start_server() -> (
                         }
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        // No pending connection — brief sleep to avoid busy-spin
+                        // No pending connection - brief sleep to avoid busy-spin
                         std::thread::sleep(Duration::from_millis(10));
                     }
                     Err(e) => {
@@ -484,7 +484,7 @@ fn bind_socket(socket_path: &std::path::Path) -> Option<Listener> {
         }
     };
 
-    // chmod 0o600 — Unix only. Named pipes on Windows use ACLs; the
+    // chmod 0o600 - Unix only. Named pipes on Windows use ACLs; the
     // default DACL from `CreateNamedPipe` grants access to LocalSystem,
     // Administrators, and the owning user only, which matches the intent
     // of 0o600. A custom SecurityDescriptor could be set via
@@ -495,7 +495,7 @@ fn bind_socket(socket_path: &std::path::Path) -> Option<Listener> {
         use std::os::unix::fs::PermissionsExt;
         // U-031: the 0600 mode is the PRIMARY trust boundary (peer-UID is
         // defence-in-depth). If chmod fails, the socket keeps its umask-derived
-        // creation mode — possibly group/world-connectable — so fail closed:
+        // creation mode - possibly group/world-connectable - so fail closed:
         // remove the socket and refuse to serve rather than expose it.
         if let Err(e) =
             std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
@@ -524,10 +524,10 @@ fn socket_inode(path: &std::path::Path) -> Option<u64> {
 /// is already serving on it.
 ///
 /// Returns `Some(identity_string)` if a `system.identify` round-trip
-/// succeeds and the response advertises `"PaneFlow"` — the caller must
+/// succeeds and the response advertises `"PaneFlow"` - the caller must
 /// refuse to start. Returns `None` for any other outcome (missing file,
 /// stale socket from a SIGKILL'd prior run, non-Paneflow listener, parse
-/// failure, timeout) — the caller can safely proceed to `bind_socket`'s
+/// failure, timeout) - the caller can safely proceed to `bind_socket`'s
 /// existing remove-then-rebind path.
 ///
 /// Resilient to the rebind race window: the legacy `bind_socket` recreates
@@ -553,7 +553,7 @@ fn detect_existing_instance(socket_path: &std::path::Path) -> Option<String> {
     for attempt in 0..3 {
         if attempt > 0 {
             // Cross the legacy rebind window. The bind_socket recreate
-            // path is bounded by `remove_file` + `create_sync` + chmod —
+            // path is bounded by `remove_file` + `create_sync` + chmod -
             // typically well under 10 ms; 70 ms is a comfortable margin.
             std::thread::sleep(Duration::from_millis(70));
         }
@@ -598,7 +598,7 @@ fn detect_existing_instance(socket_path: &std::path::Path) -> Option<String> {
 
         // The `system.identify` result includes `"name":"PaneFlow"` (see
         // `handle_connection`). Match on the literal so a non-Paneflow
-        // listener squatting on the same path doesn't pin us to exit —
+        // listener squatting on the same path doesn't pin us to exit -
         // we'd rather clobber an unknown squatter than refuse to start.
         if line.contains("\"PaneFlow\"") {
             return Some(line.trim().to_string());
@@ -613,7 +613,7 @@ fn detect_existing_instance(socket_path: &std::path::Path) -> Option<String> {
 enum LineRead {
     /// Clean end of stream.
     Eof,
-    /// The line reached `MAX_REQUEST_LEN` without a newline — oversized.
+    /// The line reached `MAX_REQUEST_LEN` without a newline - oversized.
     TooLong,
     /// A complete (or trailing) line was read into the buffer.
     Got,
@@ -654,7 +654,7 @@ fn reject_overloaded(mut stream: Stream) {
 /// EP-003 US-010 (agent-control-plane): the connected peer's PID, for tracing
 /// writes granted by AI free-access mode. `SO_PEERCRED` exposes it on Linux;
 /// macOS `LOCAL_PEERCRED` and Windows named pipes do not, so this returns None
-/// there. Best-effort and advisory only — never an authorization input (the
+/// there. Best-effort and advisory only - never an authorization input (the
 /// peer-UID check in `auth::check_peer` is the security boundary).
 #[cfg(unix)]
 fn peer_pid(stream: &Stream) -> Option<i64> {
@@ -692,13 +692,13 @@ fn handle_connection(
     // a BufReader, because the cleanest way to query peer credentials
     // on `interprocess::local_socket::Stream` is the trait method
     // `Stream::peer_creds()` (brought in by `prelude::*`), and that
-    // method needs the bare stream — once wrapped in BufReader, the
+    // method needs the bare stream - once wrapped in BufReader, the
     // method is no longer reachable through `get_ref()` (BufReader
     // only re-exports `Read`-shaped methods). The check is
     // `#[cfg(unix)]`-only; Windows pipe ACLs cover the same surface
     // (see module doc) and SDDL hardening is deferred per PRD §10.
     // On a peer-cred query failure we fall back to perms-0600 only
-    // with a warn log (AC6) — the kernel filesystem check still
+    // with a warn log (AC6) - the kernel filesystem check still
     // gates non-owner connects, so the residual exposure is bounded.
     let mut writer = writer_stream;
 
@@ -744,7 +744,7 @@ fn handle_connection(
     // can't pin this handler thread forever. Enforced at the OS level; a
     // best-effort failure leaves the previous (blocking) behavior. NOTE: on
     // Windows named pipes this returns ErrorKind::Unsupported (no idle bound),
-    // which is acceptable — clients send a frame immediately on connect.
+    // which is acceptable - clients send a frame immediately on connect.
     let _ = stream.set_recv_timeout(Some(IPC_IDLE_TIMEOUT));
 
     let mut reader = BufReader::new(stream);
@@ -780,7 +780,7 @@ fn handle_connection(
         // writes one frame and closes its pipe IMMEDIATELY, never reading a
         // reply. Writing a JSON-RPC response back to that already-closed Windows
         // named pipe makes `interprocess`'s overlapped write panic internally,
-        // and its `CannotUnwind` guard converts the panic to `abort()` —
+        // and its `CannotUnwind` guard converts the panic to `abort()` -
         // crashing the WHOLE app (confirmed with a live debugger: the fault was
         // `handle_connection` → `write_all` → interprocess `CannotUnwind::drop`
         // → `std::process::abort`). So suppress the reply for those frames; the
@@ -900,12 +900,12 @@ fn handle_connection(
         }
 
         // Windows: serve exactly ONE request per connection. Every paneflow
-        // client closes after a single exchange — `paneflow-ai-hook` is
+        // client closes after a single exchange - `paneflow-ai-hook` is
         // fire-and-forget (writes one frame, closes immediately without reading
         // the reply), and `paneflow-ipc-client` does one request/response then
         // drops the stream. Looping back to a SECOND read on a now peer-closed
         // Windows named pipe also aborts the ENTIRE process inside `interprocess`
-        // (STATUS_STACK_BUFFER_OVERRUN 0xC0000409 — the read `__fastfail`s
+        // (STATUS_STACK_BUFFER_OVERRUN 0xC0000409 - the read `__fastfail`s
         // instead of returning EOF; confirmed with a live debugger). Unix has no
         // such abort (EOF is returned cleanly), so it keeps the multi-request loop.
         #[cfg(windows)]
@@ -981,7 +981,7 @@ fn dispatch_to_gpui(
     caller_pid: Option<i64>,
 ) -> Value {
     let (resp_tx, resp_rx) = mpsc::channel();
-    // U-053: shared cancel flag — set if we time out below so the GPUI
+    // U-053: shared cancel flag - set if we time out below so the GPUI
     // consumer skips a request the client already gave up on.
     let cancelled = Arc::new(AtomicBool::new(false));
     let ipc_req = IpcRequest {
@@ -1003,7 +1003,7 @@ fn dispatch_to_gpui(
 
 /// Wait up to `timeout` for the GPUI handler's response. On timeout, set
 /// `cancelled` so the GPUI consumer skips the (possibly not-yet-run) handler
-/// — U-053: prevents a non-idempotent mutation from executing after the
+/// U-053: prevents a non-idempotent mutation from executing after the
 /// client received a timeout error and (likely) retried. Split out so the
 /// timeout/cancel contract is unit-testable without a 5 s wait.
 fn await_or_cancel(
@@ -1039,12 +1039,12 @@ mod auth {
     //!
     //! Splits cleanly so each layer is testable in isolation:
     //!
-    //! - [`authorize`]: pure policy decision — given a server UID and a
+    //! - [`authorize`]: pure policy decision - given a server UID and a
     //!   peer UID, allow or deny. No I/O, exhaustively unit-tested
     //!   (matching pair → allow, mismatched pair → deny).
     //! - [`server_uid`]: thin wrapper over `getuid(2)`.
     //! - [`check_peer`]: glue that runs `Stream::peer_creds()` (provided
-    //!   by interprocess 2.4 — `getsockopt(SO_PEERCRED)` on Linux,
+    //!   by interprocess 2.4 - `getsockopt(SO_PEERCRED)` on Linux,
     //!   `LOCAL_PEERCRED` on macOS, `xucred` on the BSDs) and feeds
     //!   the result into `authorize`.
     //!
@@ -1059,7 +1059,7 @@ mod auth {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(super) enum AuthOutcome {
-        /// Peer UID matches server UID — proceed to dispatch.
+        /// Peer UID matches server UID - proceed to dispatch.
         Allow,
         /// Peer UID query succeeded and the value did NOT match the
         /// server's UID. Caller emits the JSON-RPC EPERM envelope.
@@ -1114,7 +1114,7 @@ mod auth {
                     // `peer_creds()` succeeded but the platform doesn't
                     // expose an effective UID (NetBSD ucred lacks
                     // euid, for example). Same fallback as the Err
-                    // branch — perms-0600 stays as the line of
+                    // branch - perms-0600 stays as the line of
                     // defence.
                     log::warn!(
                         "IPC: peer-cred query returned no euid on this OS; \
@@ -1159,7 +1159,7 @@ mod auth {
         }
 
         /// `geteuid(2)` must return the same value on two successive
-        /// calls — the kernel doesn't change a process's effective UID
+        /// calls - the kernel doesn't change a process's effective UID
         /// without an explicit `setuid(2)` / `seteuid(2)` call. Stable
         /// across calls is the property the auth path actually relies
         /// on (we capture the server euid once and compare every
@@ -1171,7 +1171,7 @@ mod auth {
             assert_eq!(a, b, "geteuid must be stable across calls");
         }
 
-        /// Symmetric to `authorize_accepts_matching_uid` — root running
+        /// Symmetric to `authorize_accepts_matching_uid` - root running
         /// the server is an explicit policy choice, not an accidental
         /// bypass: any non-root peer is denied even when the server is
         /// uid 0. The matching-UID accept at `(0, 0)` is the only
@@ -1253,7 +1253,7 @@ mod dispatch_tests {
         // U-053: when the GPUI handler doesn't respond within the deadline,
         // await_or_cancel must (a) return a -32001 timeout envelope to the
         // client AND (b) set the shared cancel flag so the GPUI consumer skips
-        // the not-yet-run handler — preventing a duplicate non-idempotent
+        // the not-yet-run handler - preventing a duplicate non-idempotent
         // mutation on the client's retry. _tx is kept alive so we exercise the
         // Timeout path (not Disconnected); a short deadline keeps the test fast.
         let (_tx, rx) = mpsc::channel::<serde_json::Value>();

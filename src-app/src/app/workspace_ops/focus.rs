@@ -1,6 +1,6 @@
 //! Focus-movement handlers for `PaneFlowApp`.
 //!
-//! Part of the US-023 workspace_ops decomposition — behaviour identical to
+//! Part of the US-023 workspace_ops decomposition - behaviour identical to
 //! the pre-refactor `main.rs` implementation.
 
 use gpui::{Context, Focusable, Window};
@@ -85,7 +85,7 @@ impl PaneFlowApp {
     /// through the waiting set via `jump_cursor`; activating a background
     /// tab is part of the jump (the waiting surface may be hidden). No
     /// waiting agent → silent no-op (an empty queue is the good news).
-    /// Sessions without a resolved surface are skipped (US-017 fallback —
+    /// Sessions without a resolved surface are skipped (US-017 fallback -
     /// never jump to a guessed pane).
     pub(crate) fn handle_jump_next_waiting(
         &mut self,

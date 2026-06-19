@@ -7,12 +7,12 @@
         clippy::panic
     )
 )]
-//! paneflow-ipc-client — blocking JSON-RPC client for Paneflow's local IPC socket.
+//! paneflow-ipc-client - blocking JSON-RPC client for Paneflow's local IPC socket.
 //!
 //! Mirrors the server wire protocol at `src-app/src/ipc.rs`: newline-delimited
 //! JSON-RPC 2.0 over an `interprocess` local socket (Unix domain socket /
 //! Windows named pipe). Unlike `paneflow-ai-hook` (fire-and-forget), this
-//! client is request/response — it reads back the one-line response the
+//! client is request/response - it reads back the one-line response the
 //! server writes on the same connection.
 //!
 //! One connection per request: simple and robust (a stale connection can't
@@ -37,8 +37,8 @@ const IPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// U-029: per-reply read cap on the untrusted IPC socket. Mirrors the server's
 /// `MAX_REQUEST_LEN` (`src-app/src/ipc.rs`). The recv timeout bounds wall-clock
-/// time but not memory — a same-UID peer can deliver many GB before the
-/// deadline — so the read is also byte-bounded and a reply that hits the cap
+/// time but not memory - a same-UID peer can deliver many GB before the
+/// deadline - so the read is also byte-bounded and a reply that hits the cap
 /// without a terminating newline is a framing error, not a partial parse.
 const MAX_RESPONSE_LEN: u64 = 256 * 1024;
 
@@ -115,12 +115,12 @@ pub(crate) fn parse_response(line: &str) -> Result<Value, String> {
 /// US-023: the read deadline is enforced at the OS level via
 /// `set_recv_timeout` (Unix `SO_RCVTIMEO`, Windows named-pipe read timeout).
 /// The previous scratch-thread + `recv_timeout` pattern leaked one OS thread
-/// and one socket FD on every timeout — the spawned reader owned `stream` and
+/// and one socket FD on every timeout - the spawned reader owned `stream` and
 /// stayed blocked in `read_line` forever (no deadline ever reached it), so an
 /// agent retrying `read_pane` against a wedged Paneflow exhausted the
 /// long-lived bridge's threads/FDs. With an OS deadline, `read_line` returns
 /// the error itself, the owning `BufReader` drops, and the FD is released.
-/// Collapse an `ErrorKind::Unsupported` result to `Ok(())` — used for the
+/// Collapse an `ErrorKind::Unsupported` result to `Ok(())` - used for the
 /// optional socket-deadline setters, which Windows named pipes reject. Any
 /// other error is forwarded unchanged. See [`send_and_receive`] for why the
 /// timeout is best-effort.
@@ -167,7 +167,7 @@ fn send_and_receive(socket: &Path, request: &Value) -> io::Result<String> {
         )),
         Ok(_) => Ok(line),
         // SO_RCVTIMEO surfaces as EAGAIN/`WouldBlock` on Unix and `TimedOut`
-        // on Windows — normalize both to a friendly timeout message.
+        // on Windows - normalize both to a friendly timeout message.
         Err(e)
             if matches!(
                 e.kind(),
@@ -218,7 +218,7 @@ pub fn subscribe_stream(
 
 /// Resolve the Paneflow IPC socket path. `PANEFLOW_SOCKET_PATH` (inherited
 /// from the Paneflow PTY through the agent that launched this process) is
-/// authoritative — it carries the exact path the running instance bound,
+/// authoritative - it carries the exact path the running instance bound,
 /// including the debug `paneflow-dev` vs release distinction. Falls back to
 /// the release default when the env var is absent.
 pub fn resolve_socket_path() -> Option<PathBuf> {
@@ -252,7 +252,7 @@ fn default_socket_path() -> Option<PathBuf> {
         })
         // 4th level, mirroring the server's `dirs::cache_dir().join("run")`
         // (`runtime_paths::runtime_dir`). Without this, a client whose $TMPDIR
-        // is stripped (launchd/cron) returned None — "IPC unreachable" — even
+        // is stripped (launchd/cron) returned None - "IPC unreachable" - even
         // though the server had bound under the cache dir.
         .or_else(cache_run_dir)?;
     Some(runtime.join("paneflow").join("paneflow.sock"))
@@ -366,7 +366,7 @@ mod tests {
 
     /// US-005 AC: a full request/response round-trip over a real local socket
     /// (not just the pure helpers). Spins up an `interprocess` listener that
-    /// speaks the Paneflow framing — read one newline-delimited request, echo
+    /// speaks the Paneflow framing - read one newline-delimited request, echo
     /// its `id` back in a JSON-RPC `result` envelope. Unix-only: the test path
     /// is a filesystem socket, not a Windows `\\.\pipe\` name.
     #[cfg(unix)]

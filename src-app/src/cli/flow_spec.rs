@@ -1,11 +1,11 @@
 //! Declarative agent-flow spec for `paneflow flow` (EP-003,
-//! prd-orchestration-v2 — US-010 schema/validation, US-013 foreach
+//! prd-orchestration-v2 - US-010 schema/validation, US-013 foreach
 //! expansion, US-014 variable rules).
 //!
 //! A `flow.toml` describes a DAG of steps. Each step either SPAWNS a pane
-//! (reusing [`PaneSpec`] — agent/command, cwd, env, worktree…) or SENDS text
+//! (reusing [`PaneSpec`] - agent/command, cwd, env, worktree…) or SENDS text
 //! into a pane created by an earlier step. A step may declare a `ready`
-//! barrier (regex over the pane's recent scrollback — the
+//! barrier (regex over the pane's recent scrollback - the
 //! `process_log_ready` pattern, reliable here because Paneflow owns the PTY),
 //! and a `capture` (last N lines at match time, exposed as `${var}` to later
 //! steps' prompts/texts).
@@ -44,7 +44,7 @@ use super::up_cmd::extract_tokens;
 use super::workspace_spec::{LayoutPreset, PaneSpec, validate_pane};
 use crate::layout::MAX_PANES;
 
-/// Capture window cap — mirrors the `surface.read` poll window the executor
+/// Capture window cap - mirrors the `surface.read` poll window the executor
 /// uses (a capture can never exceed what one poll reads).
 pub const MAX_CAPTURE_LINES: u64 = 500;
 
@@ -65,7 +65,7 @@ pub struct FlowSpec {
 #[serde(deny_unknown_fields)]
 pub struct FlowDefaults {
     /// Default `ready` timeout. A step with `ready` and no timeout anywhere
-    /// is a validation error — an unbounded barrier blocks forever.
+    /// is a validation error - an unbounded barrier blocks forever.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
     /// `"fail_fast"` (default) or `"continue"`.
@@ -76,7 +76,7 @@ pub struct FlowDefaults {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StepSpec {
-    /// Unique step id — also the default pane name for spawn steps.
+    /// Unique step id - also the default pane name for spawn steps.
     pub id: String,
     #[serde(default)]
     pub needs: Vec<String>,
@@ -111,7 +111,7 @@ pub struct SendSpec {
     /// id) or any selector the instance resolves.
     pub target: String,
     pub text: String,
-    /// Submit after injection (US-012). Default false — pre-fill only.
+    /// Submit after injection (US-012). Default false - pre-fill only.
     #[serde(default)]
     pub submit: Option<bool>,
 }
@@ -139,20 +139,20 @@ pub enum OnFailure {
     Continue,
 }
 
-/// One executable unit — a step, or one `foreach` instance of a step, with
+/// One executable unit - a step, or one `foreach` instance of a step, with
 /// `${item}` already substituted everywhere it is allowed.
 #[derive(Debug, Clone)]
 pub struct Unit {
     /// `"build"` or `"shard[api]"` for a foreach instance.
     pub id: String,
-    /// The declaring step's id — `needs` resolve against groups, so a need on
+    /// The declaring step's id - `needs` resolve against groups, so a need on
     /// a foreach step is a fan-in over all its instances (US-013).
     pub group: String,
     pub needs: Vec<String>,
     pub action: UnitAction,
-    /// `(pattern, timeout_secs)` — timeout already resolved with defaults.
+    /// `(pattern, timeout_secs)` - timeout already resolved with defaults.
     pub ready: Option<(String, u64)>,
-    /// `(var_key, lines)` — key is `var.item` for foreach instances.
+    /// `(var_key, lines)` - key is `var.item` for foreach instances.
     pub capture: Option<(String, u64)>,
     pub submit: bool,
 }
@@ -181,7 +181,7 @@ pub struct FlowPlan {
 }
 
 impl FlowPlan {
-    /// True when any unit submits (pane prompt or send) — the executor
+    /// True when any unit submits (pane prompt or send) - the executor
     /// refuses to run (or dry-run) without the instance scripting gate then
     /// (US-012).
     pub fn requires_submit(&self) -> bool {
@@ -303,7 +303,7 @@ fn validate(spec: &FlowSpec) -> Result<(), String> {
             if ready.pattern.is_empty() {
                 return Err(format!("step '{}': ready.pattern is empty", step.id));
             }
-            // `${item}` is substituted at expansion — validate the regex on a
+            // `${item}` is substituted at expansion - validate the regex on a
             // representative instantiation, not on the raw template (`${`
             // alone is invalid regex syntax).
             regex::Regex::new(&ready.pattern.replace("${item}", "x"))
@@ -456,7 +456,7 @@ fn validate_tokens(step: &StepSpec, vars: &HashMap<&str, &StepSpec>) -> Result<(
             // A NON-submitting spawn prompt is prefilled by the server
             // verbatim (the engine's substitution only runs on the feed
             // path), so a capture ref there would surface as a literal
-            // `${var}` in the agent's input box — silently (US-014 AC3).
+            // `${var}` in the agent's input box - silently (US-014 AC3).
             if *label == "pane.prompt" && !step.submit.unwrap_or(false) {
                 return Err(err_in(
                     step,
@@ -509,7 +509,7 @@ fn err_in(step: &StepSpec, label: &str, msg: &str) -> String {
     format!("step '{}': {label}: {msg}", step.id)
 }
 
-/// Static cycle detection on the step graph (US-010 — refuse at parse, the
+/// Static cycle detection on the step graph (US-010 - refuse at parse, the
 /// process-compose pattern). DFS with a path stack so the error names an
 /// actual cycle, not just "there is one".
 fn detect_cycles(spec: &FlowSpec) -> Result<(), String> {
@@ -649,7 +649,7 @@ fn instantiate(spec: &FlowSpec, step: &StepSpec, item: Option<&str>) -> Result<U
             // `validate` compiled the pattern with `${item}` → "x"; an item
             // containing regex syntax (`(`, `[`…) can still make the EXPANDED
             // pattern invalid. Compile it here so the executor's recompile is
-            // genuinely infallible — a parse error, never an engine panic.
+            // genuinely infallible - a parse error, never an engine panic.
             regex::Regex::new(&pattern).map_err(|e| {
                 format!("unit '{id}': ready.pattern invalid after ${{item}} substitution: {e}")
             })?;
@@ -824,7 +824,7 @@ mod tests {
         )
         .unwrap_err();
         // Cycle fires first here, but a flow whose only roots are sends is
-        // caught by the bootstrap rule — exercised via the cycle-free shape:
+        // caught by the bootstrap rule - exercised via the cycle-free shape:
         assert!(err.contains("cycle"), "got: {err}");
     }
 
@@ -845,7 +845,7 @@ mod tests {
     #[test]
     fn expanded_item_cannot_smuggle_a_flag_branch_past_validation() {
         // CWE-88: `worktree = "${item}"` passes template validation, but the
-        // EXPANDED branch must be re-validated — `-evil` would otherwise read
+        // EXPANDED branch must be re-validated - `-evil` would otherwise read
         // as a git flag in `worktree add` argv.
         let src = "[defaults]\ntimeout_secs = 60\n\n[[step]]\nid = \"s\"\nforeach = [\"-evil\"]\npane = { cwd = \"/tmp\", command = \"true\", worktree = \"${item}\" }\n";
         let err = load(src).unwrap_err();
@@ -868,7 +868,7 @@ mod tests {
     #[test]
     fn capture_var_in_non_submitting_prompt_is_rejected() {
         // US-014 AC3: a non-submitting prompt is prefilled verbatim by the
-        // server — a `${var}` there would silently surface unsubstituted.
+        // server - a `${var}` there would silently surface unsubstituted.
         let src = "[defaults]\ntimeout_secs = 60\n\n[[step]]\nid = \"root\"\npane = { command = \"true\" }\nready = { pattern = \"ok\" }\ncapture = { var = \"sum\", lines = 5 }\n\n[[step]]\nid = \"next\"\nneeds = [\"root\"]\npane = { command = \"true\", prompt = \"use ${sum}\" }\n";
         let err = load(src).unwrap_err();
         assert!(err.contains("submit = true"), "got: {err}");

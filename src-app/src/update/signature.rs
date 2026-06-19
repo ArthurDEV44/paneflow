@@ -1,4 +1,4 @@
-//! Detached minisign (Ed25519) signature verification — the independent
+//! Detached minisign (Ed25519) signature verification - the independent
 //! root of trust for the self-updater (US-001, prd-audit-remediation-2026-Q3).
 //!
 //! ## Why this exists
@@ -8,7 +8,7 @@
 //! the artifact and trusted it. That is not a trust anchor: a compromised
 //! mirror or a MITM serves a malicious binary together with a matching
 //! `.sha256` and the check passes. The downloaded code then runs as the
-//! user — an RCE-class hole.
+//! user - an RCE-class hole.
 //!
 //! minisign fixes this by binding the artifact to a key the running binary
 //! already carries. The public key is baked in at **build time** (CI sets
@@ -26,13 +26,13 @@
 //! - No public key embedded in this build (dev / unsigned build).
 //! - No `.minisig` published next to the asset (404 or network error).
 //! - Signature malformed, key-id unknown, or the bytes don't verify.
-//! - Legacy (non-prehashed) signature — we only accept the modern format.
+//! - Legacy (non-prehashed) signature - we only accept the modern format.
 //!
 //! There is no silent skip and no `.sha256` fallback.
 //!
 //! ## Dual-key rotation
 //!
-//! Two slots are embedded — `PANEFLOW_MINISIGN_PUBKEY` (current) and
+//! Two slots are embedded - `PANEFLOW_MINISIGN_PUBKEY` (current) and
 //! `PANEFLOW_MINISIGN_PUBKEY_NEXT` (next). Verification accepts a signature
 //! made by *either* key. That lets a key be rotated without an online
 //! revocation step: ship the next key in a release, switch CI signing to
@@ -42,7 +42,7 @@
 //! ## Cross-platform
 //!
 //! Pure Rust (`minisign-verify` has no C deps) and no platform-specific
-//! syscalls — the module compiles and runs identically on Linux, macOS and
+//! syscalls - the module compiles and runs identically on Linux, macOS and
 //! Windows. The OS-native belt (`codesign`/`spctl`, `WinVerifyTrust`) is a
 //! second, independent layer added per-platform in US-004 / US-005.
 
@@ -67,7 +67,7 @@ const SIG_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Current minisign public key, embedded at build time by CI (US-002). This
 /// is the **base64 line** of a `minisign.pub` file (the second line, not the
 /// untrusted-comment header). `None` in any build that did not set the env
-/// var — dev builds, and any release cut before US-002 wired CI signing.
+/// var - dev builds, and any release cut before US-002 wired CI signing.
 const EMBEDDED_PUBKEY_CURRENT: Option<&str> = option_env!("PANEFLOW_MINISIGN_PUBKEY");
 
 /// Next minisign public key for rotation (US-002). A signature made by this
@@ -78,7 +78,7 @@ const EMBEDDED_PUBKEY_NEXT: Option<&str> = option_env!("PANEFLOW_MINISIGN_PUBKEY
 
 /// Parse the embedded base64 public keys into verifier keys.
 ///
-/// A malformed slot is logged and skipped rather than aborting — one bad
+/// A malformed slot is logged and skipped rather than aborting - one bad
 /// env var must not disable a second, good key. The returned set is empty
 /// only when this build embeds no usable key, in which case every caller
 /// fails closed.
@@ -106,7 +106,7 @@ fn embedded_public_keys() -> Vec<PublicKey> {
     .collect()
 }
 
-/// True when this build carries at least one usable signing key — i.e. the
+/// True when this build carries at least one usable signing key - i.e. the
 /// in-app updater has a trust anchor and can verify downloads. Callers can
 /// use this to short-circuit the whole update flow on unsigned builds with
 /// a clear message instead of downloading an artifact they can never trust.
@@ -116,7 +116,7 @@ pub(crate) fn has_embedded_key() -> bool {
 
 /// Build the fail-closed tagged error for a verification failure. Uses the
 /// [`IntegrityMismatch`] tag so the main-thread classifier routes it to the
-/// frozen "corrupt or tampered" toast (US-013) — exactly the right message
+/// frozen "corrupt or tampered" toast (US-013) - exactly the right message
 /// whether the bytes were tampered, the signature is missing, or this build
 /// has no key.
 fn reject(reason: impl Into<String>) -> anyhow::Error {
@@ -139,7 +139,7 @@ fn reject(reason: impl Into<String>) -> anyhow::Error {
 fn verify_with_keys(artifact: &Path, sig_text: &str, keys: &[PublicKey]) -> Result<()> {
     if keys.is_empty() {
         return Err(reject(
-            "no verification key embedded in this build — refusing to install an unverifiable update",
+            "no verification key embedded in this build - refusing to install an unverifiable update",
         ));
     }
 
@@ -155,7 +155,7 @@ fn verify_with_keys(artifact: &Path, sig_text: &str, keys: &[PublicKey]) -> Resu
     for key in keys {
         let mut verifier = match key.verify_stream(&signature) {
             Ok(v) => v,
-            // Wrong key-id or legacy format for this candidate — try the next
+            // Wrong key-id or legacy format for this candidate - try the next
             // embedded key without touching the file.
             Err(_) => continue,
         };
@@ -183,7 +183,7 @@ fn verify_with_keys(artifact: &Path, sig_text: &str, keys: &[PublicKey]) -> Resu
 
     if key_id_matched {
         Err(reject(
-            "artifact does not match its signature — corrupt or tampered",
+            "artifact does not match its signature - corrupt or tampered",
         ))
     } else {
         Err(reject(
@@ -203,7 +203,7 @@ pub(crate) fn verify_detached_file(artifact: &Path, sig_text: &str) -> Result<()
 /// single entry point each installer calls **before** any
 /// extraction / mount / exec.
 ///
-/// A 404 (no signature published) or any network failure is a hard abort —
+/// A 404 (no signature published) or any network failure is a hard abort -
 /// the unhappy path mandated by US-001: we never install an unsigned
 /// artifact.
 pub(crate) fn fetch_and_verify(artifact: &Path, asset_url: &str) -> Result<()> {
@@ -211,7 +211,7 @@ pub(crate) fn fetch_and_verify(artifact: &Path, asset_url: &str) -> Result<()> {
     // we could never check.
     if !has_embedded_key() {
         return Err(reject(
-            "no verification key embedded in this build — refusing to install an unverifiable update",
+            "no verification key embedded in this build - refusing to install an unverifiable update",
         ));
     }
 
@@ -240,7 +240,7 @@ fn fetch_signature_text(sig_url: &str) -> Result<String> {
     if !status.is_success() {
         if status.as_u16() == 404 {
             return Err(reject(
-                "this release is not signed (no .minisig published) — download the latest version from the releases page",
+                "this release is not signed (no .minisig published) - download the latest version from the releases page",
             ));
         }
         return Err(reject(format!(
@@ -255,7 +255,7 @@ fn fetch_signature_text(sig_url: &str) -> Result<String> {
         .read_to_string(&mut text)
         .context("read .minisig body")?;
     if read as u64 > MAX_SIG_BYTES {
-        return Err(reject("update signature is implausibly large — aborting"));
+        return Err(reject("update signature is implausibly large - aborting"));
     }
     Ok(text)
 }
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn rejects_a_tampered_artifact() {
-        // Sign the real bytes, then verify DIFFERENT bytes on disk — the
+        // Sign the real bytes, then verify DIFFERENT bytes on disk - the
         // exact MITM scenario US-001 closes. Must fail before any caller
         // would extract/exec.
         let data = b"the genuine release payload";
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn empty_embedded_slots_yield_no_keys() {
         // The const slots are unset in a normal `cargo test` build, so the
-        // real embedded set is empty and `has_embedded_key()` is false —
+        // real embedded set is empty and `has_embedded_key()` is false -
         // proving dev/test builds fail closed by construction.
         assert!(!has_embedded_key());
         assert!(embedded_public_keys().is_empty());

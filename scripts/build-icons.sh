@@ -115,7 +115,7 @@ MASK_RADIUS_PCT=2237
 # with transparent margin around it. 80.47% (≈10% margin each side) is the
 # value GNOME and macOS independently converge on:
 #   - GNOME HIG square keyline: 103/128 = 80.47%  (developer.gnome.org/hig
-#     /guidelines/app-icons.html — "drawn within 128px but shouldn't fill it")
+#     /guidelines/app-icons.html - "drawn within 128px but shouldn't fill it")
 #   - macOS Big Sur grid:       824/1024 = 80.47% (Apple rounded-rect body)
 #   - KDE Breeze is close (40/48 = 83%); freedesktop mandates no padding.
 # Without this inset the icon is FULL-BLEED and renders ~23% larger than

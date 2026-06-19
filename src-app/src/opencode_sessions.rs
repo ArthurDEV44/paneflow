@@ -1,4 +1,4 @@
-//! OpenCode CLI session discovery — shells out to
+//! OpenCode CLI session discovery - shells out to
 //! `opencode session list --format json` and produces unified
 //! [`SessionMeta`](crate::agent_sessions::SessionMeta) entries for the
 //! sessions popover.
@@ -11,10 +11,10 @@
 //! schema rewrites because the maintainers update the JSON serialiser
 //! when columns move. The trade-off is a ~ 0.65 s wall-clock cost per
 //! popover open and a runtime requirement that `opencode` be on `PATH`
-//! — both validated by the US-001 spike (see
+//! both validated by the US-001 spike (see
 //! `tasks/prd-opencode-sessions-decisions.md`).
 //!
-//! All process I/O happens off the GPUI main thread — call
+//! All process I/O happens off the GPUI main thread - call
 //! [`read_sessions_for_cwd`] from inside `smol::unblock`.
 
 use std::io;
@@ -41,7 +41,7 @@ const OPENCODE_STDOUT_CAP: u64 = 8 * 1024 * 1024;
 /// given cwd. Returns sessions sorted by `timestamp` descending (most
 /// recent first).
 ///
-/// **Blocking I/O** — call from inside `smol::unblock` or
+/// **Blocking I/O** - call from inside `smol::unblock` or
 /// `cx.background_executor`. The CLI is invoked with no caching: each
 /// call spawns a fresh process. Caching is intentionally out of scope
 /// for v1 (PRD US-002 AC6).
@@ -75,7 +75,7 @@ fn run_opencode_list(program: &str) -> Option<Vec<u8>> {
 
     // U-032: bound the subprocess. run_with_timeout nulls stdin (mandatory: a
     // GUI process on Windows would otherwise inherit the parent stdin and a
-    // child reading it — auth/consent prompt — would block forever) and caps
+    // child reading it - auth/consent prompt - would block forever) and caps
     // stdout at OPENCODE_STDOUT_CAP so a hijacked/chatty binary can't stream
     // gigabytes into memory or hang the smol::unblock worker.
     let output =
@@ -218,7 +218,7 @@ fn value_as_i64(v: &Value) -> Option<i64> {
 
 /// Convert a Unix epoch in milliseconds into an ISO 8601 string of the
 /// form `YYYY-MM-DDTHH:MM:SSZ`. Uses Howard Hinnant's "civil from days"
-/// algorithm — inverse of `parse_iso8601_to_unix_secs` in
+/// algorithm - inverse of `parse_iso8601_to_unix_secs` in
 /// `agent_sessions.rs`. UTC; sub-second precision is dropped (the
 /// popover's relative-time formatter rounds to the nearest minute
 /// anyway).
@@ -269,7 +269,7 @@ mod tests {
             Some("New session - 2026-05-08T14:16:47.441Z")
         );
         // updated = 1778249807482 ms → 2026-05-08T14:16:47Z (sub-second
-        // dropped by design — relative-time formatter rounds to minute).
+        // dropped by design - relative-time formatter rounds to minute).
         assert_eq!(meta.timestamp, "2026-05-08T14:16:47Z");
     }
 
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn read_sessions_returns_empty_when_binary_missing() {
-        // Deterministic ENOENT — pick a name no shell will resolve. This
+        // Deterministic ENOENT - pick a name no shell will resolve. This
         // covers AC3 without depending on the test runner's PATH.
         let sessions =
             read_sessions_with_program("opencode-does-not-exist-zzz-9d2c1a", "/home/arthur");
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn unix_ms_to_iso8601_matches_known_epoch() {
-        // 2025-01-15T12:30:45Z — same anchor used by
+        // 2025-01-15T12:30:45Z - same anchor used by
         // agent_sessions::tests::iso8601_parses_z. 1_736_944_245 secs
         // → 1_736_944_245_000 ms.
         assert_eq!(

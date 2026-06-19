@@ -1,7 +1,7 @@
 //! Claude Code writer (EP-003 US-007).
 //!
 //! Preferred path: shell out to `claude mcp add -s user --transport stdio
-//! paneflow -- <bridge>` when the `claude` CLI is on PATH — it owns the
+//! paneflow -- <bridge>` when the `claude` CLI is on PATH - it owns the
 //! schema and writes user-scope servers to `~/.claude.json`. Fallback when
 //! `claude` is absent (or the add fails): merge the entry directly into
 //! `~/.claude.json` under `mcpServers.paneflow`.
@@ -86,7 +86,7 @@ impl AgentConfigWriter for ClaudeCode {
 
         if self.allow_cli && support::cli_on_path(CLI) {
             // A stale entry would make `add` conflict; remove it first
-            // (best-effort — a missing entry just no-ops).
+            // (best-effort - a missing entry just no-ops).
             if had_prior {
                 let _ = support::shell_out(CLI, &["mcp", "remove", "paneflow"]);
             }
@@ -127,7 +127,7 @@ impl AgentConfigWriter for ClaudeCode {
         // US-021: a present-but-unparseable `~/.claude.json` must surface a
         // loud error, not be silently mistaken for "nothing to remove". The
         // tolerant `current_json_command` below swallows parse failures
-        // (`.ok()?` → None), so probe parseability first — `read_json_or_default`
+        // (`.ok()?` → None), so probe parseability first - `read_json_or_default`
         // is `Err` on a present malformed file and `Ok` (skeleton) when absent.
         if path.exists() {
             merge::read_json_or_default(path)?;
@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn uninstall_malformed_config_is_error() {
         // US-021: a present-but-unparseable config is corruption, not
-        // "nothing to remove" — surface a loud error so the user fixes it
+        // "nothing to remove" - surface a loud error so the user fixes it
         // rather than silently believing the entry was already gone.
         let dir = tempfile::TempDir::new().unwrap();
         let p = dir.path().join(".claude.json");

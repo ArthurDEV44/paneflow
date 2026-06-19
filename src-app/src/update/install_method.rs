@@ -3,7 +3,7 @@
 //! The in-app updater needs to pick different strategies depending on whether
 //! the running binary came from a distro package, an AppImage, a user-local
 //! tar.gz install, or an unknown location. We determine this from the binary
-//! path alone — no config, no env var (except `$APPIMAGE`, which the AppImage
+//! path alone - no config, no env var (except `$APPIMAGE`, which the AppImage
 //! runtime already sets for us).
 //!
 //! Detection runs at startup. The caller canonicalises `current_exe()` before
@@ -13,7 +13,7 @@
 //!
 //! Every public API in this module is consumed by the updater work in
 //! US-009/010/011/012. Until those stories land, much of it is only
-//! reachable through the unit tests — hence the crate-level dead-code
+//! reachable through the unit tests - hence the crate-level dead-code
 //! suppression.
 
 #![allow(dead_code)]
@@ -21,7 +21,7 @@
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
-/// Package manager used for system-wide installs. Advisory only — the updater
+/// Package manager used for system-wide installs. Advisory only - the updater
 /// uses this to pick the correct in-app update strategy (pkexec dnf/apt) or
 /// UI hint (generic clipboard-copy / rpm-ostree informational toast).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +29,7 @@ pub enum PackageManager {
     Apt,
     Dnf,
     /// Immutable Fedora variants (Silverblue, Kinoite, Bazzite). Detected
-    /// via `/run/ostree-booted` — these systems have `/etc/fedora-release`
+    /// via `/run/ostree-booted` - these systems have `/etc/fedora-release`
     /// too, so the ostree probe MUST run before the Dnf probe. `dnf`
     /// cannot mutate the read-only `/usr`; updates must go through
     /// `rpm-ostree upgrade` which stages a new deployment for next boot.
@@ -45,7 +45,7 @@ pub enum PackageManager {
 /// How the running binary was installed on the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallMethod {
-    /// `/usr/bin/paneflow` or `/usr/local/bin/paneflow` — the apt/dnf managed
+    /// `/usr/bin/paneflow` or `/usr/local/bin/paneflow` - the apt/dnf managed
     /// binary. In-app updates are disabled; user is pointed at the system
     /// package manager.
     SystemPackage { manager: PackageManager },
@@ -61,20 +61,20 @@ pub enum InstallMethod {
     /// Update flow downloads a new tarball and atomically swaps the app dir.
     TarGz { app_dir: PathBuf },
 
-    /// macOS `.app` bundle layout (US-007) — the running binary lives at
+    /// macOS `.app` bundle layout (US-007) - the running binary lives at
     /// `<bundle_path>/Contents/MacOS/paneflow`, whether under
     /// `/Applications`, `$HOME/Applications`, or anywhere the user dragged
     /// the bundle. The updater pairs this with `AssetFormat::Dmg`
     /// (US-008) to download a matching `.dmg`.
     AppBundle { bundle_path: PathBuf },
 
-    /// Windows MSI install (US-010 — prd-windows-port.md). The running
+    /// Windows MSI install (US-010 - prd-windows-port.md). The running
     /// `paneflow.exe` lives under one of two canonical PaneFlow install
     /// directories:
     ///
-    /// - `%ProgramFiles%\PaneFlow\paneflow.exe` — machine-wide MSI install
+    /// - `%ProgramFiles%\PaneFlow\paneflow.exe` - machine-wide MSI install
     ///   (the default target of `msiexec /i` with admin rights).
-    /// - `%LocalAppData%\Programs\PaneFlow\paneflow.exe` — per-user MSI
+    /// - `%LocalAppData%\Programs\PaneFlow\paneflow.exe` - per-user MSI
     ///   install (non-admin / ALLUSERS="" deployment).
     ///
     /// `install_path` is the containing PaneFlow directory (not the exe).
@@ -91,7 +91,7 @@ pub enum InstallMethod {
     /// This mirrors Zed's `ZED_UPDATE_EXPLANATION` convention: distro and
     /// store packagers (Flatpak, Snap, Solus, NixOS, Fedora COPR, …) bake
     /// the env var into their wrapper / manifest at build time, and the
-    /// in-app updater stays out of their way at runtime — the package
+    /// in-app updater stays out of their way at runtime - the package
     /// manager is the only path to a new version.
     ExternallyManaged { explanation: String },
 
@@ -104,7 +104,7 @@ pub enum InstallMethod {
 pub fn detect() -> InstallMethod {
     // Dev-only override: lets `cargo run` simulate any install-method
     // branch without having to reinstall over /usr/bin/paneflow. Only
-    // compiled in debug builds — release binaries ignore it.
+    // compiled in debug builds - release binaries ignore it.
     #[cfg(debug_assertions)]
     if let Ok(force) = std::env::var("PANEFLOW_DEV_INSTALL_METHOD") {
         match force.trim().to_ascii_lowercase().as_str() {
@@ -131,7 +131,7 @@ pub fn detect() -> InstallMethod {
     // path-based heuristic. A Flatpak install of PaneFlow has its real
     // binary at `/app/bin/paneflow` (which would otherwise look like an
     // ad-hoc system install), and a Snap install lives in
-    // `/snap/paneflow/current/bin/paneflow` — both are immutable and the
+    // `/snap/paneflow/current/bin/paneflow` - both are immutable and the
     // in-app updater would silently fail. We disable it up front so the
     // pill copies the right `flatpak update` / `snap refresh` command
     // instead of attempting a download. Mirrors Zed's
@@ -158,17 +158,17 @@ pub fn detect() -> InstallMethod {
     // (rust-lang/rust#42869). `windows_msi_install_path` compares this against
     // the non-verbatim `%ProgramFiles%` / `%LOCALAPPDATA%` env values, and
     // `Path::starts_with`'s leading component (`Prefix(VerbatimDisk)` vs
-    // `Prefix(Disk)`) never matches — so every MSI install would fall through
+    // `Prefix(Disk)`) never matches - so every MSI install would fall through
     // to `Unknown` and the updater would wrongly take the Linux `$HOME` tar.gz
     // path. Strip the verbatim prefix so the comparison lines up.
     let canonical = strip_verbatim_prefix(std::fs::canonicalize(&exe).unwrap_or(exe));
 
-    // US-039 — Windows MSI install detection. The env var is `LOCALAPPDATA`
+    // US-039 - Windows MSI install detection. The env var is `LOCALAPPDATA`
     // (canonical uppercase); reading `LocalAppData` returned `None` on real
     // Windows hosts, silently disabling in-app updates for every per-user
     // (non-admin) install at `%LOCALAPPDATA%\Programs\PaneFlow`.
     //
-    // B.2 — type-gate the WindowsMsi arm to the Windows target: on non-Windows
+    // B.2 - type-gate the WindowsMsi arm to the Windows target: on non-Windows
     // we feed `None` regardless of any leaked `ProgramFiles`/`LOCALAPPDATA`
     // (Wine, cross-build, CI), so a Linux binary can never be misclassified as
     // WindowsMsi. The pure `classify` keeps its logic so its tests still run on
@@ -189,19 +189,19 @@ pub fn detect() -> InstallMethod {
         local_app_data,
     );
 
-    // US-007 AC3 — on macOS, a binary that is NOT inside a .app bundle means
+    // US-007 AC3 - on macOS, a binary that is NOT inside a .app bundle means
     // someone extracted paneflow ad-hoc (e.g. copied to ~/bin/). In-app
     // updates can't target such installs, so surface the reason once at
     // startup instead of silently showing a never-firing update prompt.
     #[cfg(target_os = "macos")]
     if matches!(result, InstallMethod::Unknown) {
         // In a debug build the binary lives under `target/debug/` and is never
-        // inside a .app — this is the expected dev path, so log it at debug
+        // inside a .app - this is the expected dev path, so log it at debug
         // level to avoid spamming a warning on every `cargo run`. A release
         // binary running outside a bundle is a genuine ad-hoc extraction worth
         // surfacing at warn level.
         let msg = format!(
-            "paneflow: running binary at {} is not inside a .app bundle — in-app updates disabled",
+            "paneflow: running binary at {} is not inside a .app bundle - in-app updates disabled",
             canonical.display()
         );
         if cfg!(debug_assertions) {
@@ -218,15 +218,15 @@ pub fn detect() -> InstallMethod {
 /// `Some(InstallMethod::ExternallyManaged)` when any of the inputs signals
 /// that a third party owns this install:
 ///
-/// - `runtime_explanation` — `PANEFLOW_UPDATE_EXPLANATION` env var read at
+/// - `runtime_explanation` - `PANEFLOW_UPDATE_EXPLANATION` env var read at
 ///   startup. Highest priority because it's the explicit opt-out a packager
 ///   set in the host wrapper / launcher.
-/// - `build_explanation` — same env var captured at build time via
+/// - `build_explanation` - same env var captured at build time via
 ///   `option_env!("PANEFLOW_UPDATE_EXPLANATION")`. Distro packagers (Fedora
 ///   COPR, AUR, Solus, NixOS) bake this into their RPM/PKGBUILD/derivation.
-/// - `flatpak_id` — `FLATPAK_ID` is set by `flatpak-spawn` when the binary
+/// - `flatpak_id` - `FLATPAK_ID` is set by `flatpak-spawn` when the binary
 ///   runs inside a Flatpak sandbox. Fixed copy: `flatpak update <id>`.
-/// - `snap` — `SNAP` env var is set by snapd for Snap packages. Fixed
+/// - `snap` - `SNAP` env var is set by snapd for Snap packages. Fixed
 ///   copy: `sudo snap refresh paneflow`.
 ///
 /// Pure (no I/O, no FS reads) so the unit tests can mock all four signals.
@@ -272,7 +272,7 @@ fn detect_externally_managed(
     None
 }
 
-/// Pure classifier — no I/O beyond the `/etc/*-release` probe for package
+/// Pure classifier - no I/O beyond the `/etc/*-release` probe for package
 /// manager inference, which is only reached on the SystemPackage arm. All
 /// other inputs are parameters so callers (and tests) control them.
 fn classify(
@@ -348,9 +348,9 @@ fn classify(
 /// Return the PaneFlow MSI install directory if `canonical` points at a binary
 /// under one of the two standard Windows locations:
 /// `%ProgramFiles%\PaneFlow\` or `%LocalAppData%\Programs\PaneFlow\`
-/// (US-010 — prd-windows-port.md).
+/// (US-010 - prd-windows-port.md).
 ///
-/// Pure path manipulation — no FS access, no env-var reads. The two env
+/// Pure path manipulation - no FS access, no env-var reads. The two env
 /// var values come in as parameters so tests can mock `ProgramFiles` and
 /// `LocalAppData` on any host (this file's tests run on Linux CI).
 fn windows_msi_install_path(
@@ -375,8 +375,8 @@ fn windows_msi_install_path(
 /// install is misdetected as `Unknown` (and the updater wrongly tries the
 /// Linux `$HOME` tar.gz path).
 ///
-/// No-op for any path not in verbatim form — every Unix path, and any Windows
-/// path that was never canonicalized — so it is safe to call on all targets.
+/// No-op for any path not in verbatim form - every Unix path, and any Windows
+/// path that was never canonicalized - so it is safe to call on all targets.
 /// Pure string logic, so the regression test runs on Linux CI.
 fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
     // Decide on a borrowed view, then move `path` only in the fall-through:
@@ -394,7 +394,7 @@ fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
 
 /// Infer the system package manager from distro-identifier files.
 ///
-/// Only reached when the binary is at `/usr/bin` or `/usr/local/bin` — i.e.
+/// Only reached when the binary is at `/usr/bin` or `/usr/local/bin` - i.e.
 /// we already know a system package put it there. Returns `Other` when no
 /// recognised marker is found so the UI can degrade to a generic hint
 /// instead of pretending `apt` is available.
@@ -421,7 +421,7 @@ fn detect_package_manager_with_probes(
     // Endless OS is Debian-based but boots ostree (immutable rootfs), so it
     // carries BOTH `/etc/debian_version` AND `/run/ostree-booted`. An
     // `apt install` would fail on its read-only deployment, and it is NOT
-    // rpm-ostree either — route it to the generic externally-managed hint
+    // rpm-ostree either - route it to the generic externally-managed hint
     // rather than the broken `apt` path.
     if debian_marker && ostree_booted {
         return PackageManager::Other;
@@ -430,7 +430,7 @@ fn detect_package_manager_with_probes(
     if debian_marker {
         return PackageManager::Apt;
     }
-    // Ostree marker beats the Fedora marker — Silverblue has both.
+    // Ostree marker beats the Fedora marker - Silverblue has both.
     if ostree_booted {
         return PackageManager::RpmOstree;
     }
@@ -441,9 +441,9 @@ fn detect_package_manager_with_probes(
 }
 
 /// Return the enclosing `.app` bundle path if `path` points at a binary
-/// inside a macOS app bundle, else `None`. We check structurally — parent
+/// inside a macOS app bundle, else `None`. We check structurally - parent
 /// must be `MacOS`, grandparent `Contents`, great-grandparent ends with
-/// `.app` — so drag-installs to arbitrary locations (e.g. `~/Downloads/`)
+/// `.app` - so drag-installs to arbitrary locations (e.g. `~/Downloads/`)
 /// are still detected, not just the canonical `/Applications` path.
 fn app_bundle_path(path: &Path) -> Option<PathBuf> {
     let macos_dir = path.parent()?;
@@ -483,7 +483,7 @@ fn appimage_mount_point(path: &Path) -> Option<PathBuf> {
     if !mount_str.starts_with(".mount_") {
         return None;
     }
-    // Require at least one component after the mount dir — `current_exe()`
+    // Require at least one component after the mount dir - `current_exe()`
     // always returns a file path, so a bare mount dir would be impossible,
     // but the guard makes the classifier resistant to malformed inputs.
     comps.next()?;
@@ -702,13 +702,13 @@ mod tests {
     /// tar.gz install layout. Detection in `detect()` relies on this so the
     /// symlink at `~/.local/bin/paneflow` doesn't get misclassified.
     ///
-    /// US-007 (prd-windows-port.md) — Unix-only. `TarGz` is a Linux/macOS
+    /// US-007 (prd-windows-port.md) - Unix-only. `TarGz` is a Linux/macOS
     /// install method; Windows uses `WindowsMsi` from US-010 which installs
     /// `paneflow.exe` directly to `%ProgramFiles%\PaneFlow\` with no
     /// symlink indirection. Creating symlinks on Windows also requires
     /// `SeCreateSymbolicLinkPrivilege`, which non-admin users lack by
     /// default. AC-6 of US-007 explicitly permits "self-update skips
-    /// symlink creation on Windows entirely" — this codebase has no
+    /// symlink creation on Windows entirely" - this codebase has no
     /// runtime symlink creators anywhere, so there is no `make_symlink`
     /// helper to document; the cfg-gate here IS the design choice.
     ///
@@ -747,7 +747,7 @@ mod tests {
         }
     }
 
-    // ---- US-010 tests — Windows MSI install detection. ----
+    // ---- US-010 tests - Windows MSI install detection. ----
     //
     // Pure string/path manipulation; mocked env-var values (ProgramFiles,
     // LocalAppData) fed directly to `classify`. No Windows-only types, so
@@ -759,7 +759,7 @@ mod tests {
     // (which sees backslashes from `current_exe()` and `ProgramFiles`)
     // and the test path both resolve into the same component sequence.
     // On Linux, `Path::starts_with` is component-based and only honors
-    // `/` as a separator — using backslashes here would collapse the
+    // `/` as a separator - using backslashes here would collapse the
     // whole Windows path into a single component and break `starts_with`.
 
     #[test]
@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn windows_binary_outside_standard_paths_is_unknown() {
-        // A dev build running from `target/release/paneflow.exe` — not
+        // A dev build running from `target/release/paneflow.exe` - not
         // inside %ProgramFiles%\PaneFlow\ nor %LocalAppData%\Programs\PaneFlow\.
         let r = classify(
             Path::new("C:/dev/paneflow/target/release/paneflow.exe"),
@@ -842,13 +842,13 @@ mod tests {
         // Regression (US-039 follow-up): `std::fs::canonicalize` on Windows
         // yields the `\\?\` extended-length form, whose leading
         // `Prefix(VerbatimDisk)` component never matched the non-verbatim
-        // `%ProgramFiles%` in `windows_msi_install_path` — so a real MSI
+        // `%ProgramFiles%` in `windows_msi_install_path` - so a real MSI
         // install fell through to `Unknown` and the updater tried the Linux
         // `$HOME` tar.gz path. `detect()` now strips the prefix first; this
         // proves the strip → classify pipeline lands on `WindowsMsi`.
         //
         // Forward slashes in the tail (after the backslash `\\?\` prefix) so
-        // `Path::starts_with` is component-based on Linux CI too — same
+        // `Path::starts_with` is component-based on Linux CI too - same
         // dual-representation trick the other Windows tests use.
         let canonical =
             strip_verbatim_prefix(PathBuf::from(r"\\?\C:/Program Files/PaneFlow/paneflow.exe"));
@@ -864,7 +864,7 @@ mod tests {
 
     #[test]
     fn windows_msi_detection_ignored_when_env_vars_missing() {
-        // Linux / macOS call site — `ProgramFiles` and `LocalAppData` are
+        // Linux / macOS call site - `ProgramFiles` and `LocalAppData` are
         // None. Even if someone crafts a path that looks like a Windows
         // install, the detection short-circuits (no candidate dirs to
         // test against).
@@ -935,7 +935,7 @@ mod tests {
         // Endless OS (Debian-based with an ostree layer) carries BOTH
         // `/etc/debian_version` and `/run/ostree-booted`. An `apt install`
         // would fail against its read-only ostree base, and it is NOT
-        // rpm-ostree either — so `(debian && ostree)` routes to the generic
+        // rpm-ostree either - so `(debian && ostree)` routes to the generic
         // externally-managed `Other` hint, checked BEFORE the plain-Debian
         // `Apt` arm.
         assert_eq!(

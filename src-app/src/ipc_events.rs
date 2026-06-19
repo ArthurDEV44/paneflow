@@ -1,6 +1,6 @@
 //! EP-002 (agent-control-plane): the outbound event bus.
 //!
-//! The IPC server was request/response only — the lifecycle events the GPUI
+//! The IPC server was request/response only - the lifecycle events the GPUI
 //! thread already observes (agent state transitions, pane output) had no way
 //! OUT to a client, so the flow engine and any conductor had to poll. This is
 //! the efferent path: an `events.subscribe` connection registers a subscriber
@@ -79,7 +79,7 @@ impl EventFilter {
 
     /// Does an event of `type_` for `surface_id` match this filter? A surface-
     /// scoped subscriber never receives an event with no surface (e.g. an
-    /// unresolved-PID `ai.*` frame) — it asked for specific panes.
+    /// unresolved-PID `ai.*` frame) - it asked for specific panes.
     pub fn matches(&self, type_: &str, surface_id: Option<u64>) -> bool {
         if let Some(types) = &self.types
             && !types.contains(type_)
@@ -108,7 +108,7 @@ pub struct EventBus {
 }
 
 /// A live subscription handed to the connection thread. Drops out of the
-/// registry (RAII) when the thread ends — i.e. when the client disconnects.
+/// registry (RAII) when the thread ends - i.e. when the client disconnects.
 pub struct Subscription {
     pub id: u64,
     pub rx: Receiver<String>,

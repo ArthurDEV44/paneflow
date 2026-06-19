@@ -14,9 +14,9 @@
 //! (each agent self-authenticates in its own launched terminal). What
 //! remains is the minimal surface the app still references:
 //!
-//! - [`discovery::AgentKind`] — identity enum for legacy `Thread.agent`
+//! - [`discovery::AgentKind`] - identity enum for legacy `Thread.agent`
 //!   metadata.
-//! - [`spawn::scrub_claudecode_env`] — strip the `CLAUDECODE` env var so
+//! - [`spawn::scrub_claudecode_env`] - strip the `CLAUDECODE` env var so
 //!   child CLIs do not refuse to launch inside a host Claude Code
 //!   session. Called once from `main()` before any thread spawns.
 

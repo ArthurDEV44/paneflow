@@ -79,7 +79,7 @@ pub enum ConfigRead {
     Contents(String),
     /// File does not exist (normal at cold start; a deletion at runtime).
     Absent,
-    /// File exists but was rejected — over the size cap or unreadable. The
+    /// File exists but was rejected - over the size cap or unreadable. The
     /// reason was already logged.
     Rejected,
 }
@@ -87,7 +87,7 @@ pub enum ConfigRead {
 /// US-029: read the config file to a string with the oversize guard applied
 /// BEFORE allocating (cheap `metadata` stat first). Shared by the cold loader
 /// and the hot watcher reload so the DoS guard can never be missing on either
-/// path — the watcher's `attempt_reload` previously read with no cap at all.
+/// path - the watcher's `attempt_reload` previously read with no cap at all.
 pub fn read_config_string(path: &Path) -> ConfigRead {
     if !path.exists() {
         return ConfigRead::Absent;
@@ -175,7 +175,7 @@ pub fn try_parse_and_validate(json: &str) -> Result<PaneFlowConfig, serde_json::
         .collect();
     if !validated.is_empty() {
         warn!(
-            "config contains {} command(s), but workspace commands are not yet implemented — they will be ignored",
+            "config contains {} command(s), but workspace commands are not yet implemented - they will be ignored",
             validated.len()
         );
     }
@@ -203,7 +203,7 @@ fn validate_command(cmd: &CommandDefinition) -> bool {
 }
 
 /// US-011: total pane (leaf) budget for a single restored layout. Mirrors
-/// src-app's `MAX_PANES` — defined locally because `paneflow-config` is a leaf
+/// src-app's `MAX_PANES` - defined locally because `paneflow-config` is a leaf
 /// crate that cannot import the src-app constant (US-013 documents the pairing).
 const MAX_LAYOUT_LEAVES: usize = 32;
 
@@ -220,7 +220,7 @@ const MAX_PANE_SURFACES: usize = 64;
 ///   OR deep tree can never restore more terminals than that from session.json
 ///   content, so a hand-edited / agent-written file can't spawn unbounded PTYs.
 ///   (A pruned split may gain ≤1 app-synthesized pad pane to stay structurally
-///   valid; that is bounded and not attacker-amplified — see the pad note.)
+///   valid; that is bounded and not attacker-amplified - see the pad note.)
 /// - Split nodes: direct children bounded to [`MAX_SPLIT_CHILDREN`]; must have
 ///   at least 2 children; legacy `ratio` clamped to [0.1, 0.9] and (for a
 ///   2-child split) converted to an explicit `ratios` pair (U-007); per-child
@@ -273,7 +273,7 @@ fn validate_node(node: &mut LayoutNode, leaf_budget: &mut usize) {
             // The DoS guarantee is about ATTACKER-DRIVEN leaves: those are hard
             // capped at MAX_LAYOUT_LEAVES above. These pad panes are
             // app-synthesized to keep a split structurally valid (>= 2
-            // children) and add at most one per pruned split — a bounded
+            // children) and add at most one per pruned split - a bounded
             // structural overshoot, never attacker-amplified PTY spawning.
             while children.len() < 2 {
                 warn!(
@@ -301,7 +301,7 @@ fn validate_node(node: &mut LayoutNode, leaf_budget: &mut usize) {
             }
 
             // U-007: a legacy single `ratio` is only meaningful for a 2-child
-            // split — convert it to an explicit `ratios` pair so it survives
+            // split - convert it to an explicit `ratios` pair so it survives
             // restore (resolved_ratios only honors it transiently). For an
             // N-ary split it is ambiguous, so warn that it is ignored rather
             // than silently returning equal shares.
@@ -363,7 +363,7 @@ fn validate_node(node: &mut LayoutNode, leaf_budget: &mut usize) {
         LayoutNode::Pane {
             ref mut surfaces, ..
         } => {
-            // U-008: bound tabs per pane — a pane is one leaf in the tree (so
+            // U-008: bound tabs per pane - a pane is one leaf in the tree (so
             // the leaf budget does not catch it), but each surface still spawns
             // a real terminal on restore.
             if surfaces.len() > MAX_PANE_SURFACES {
@@ -1082,7 +1082,7 @@ mod tests {
         // EP-010 review: post-US-057-parity invariant. NaN/negative are floored,
         // 2.0 is clamped to 1.0; every ratio is finite and in `[0.01, 1.0]`. The
         // post-normalize re-clamp (matching `validate_layout`) keeps the floor,
-        // so the sum is ~1.0 but not exactly — the renderer re-normalizes at
+        // so the sum is ~1.0 but not exactly - the renderer re-normalizes at
         // paint. Assert the floor + a sane sum band, not `== 1.0`.
         assert!(rs
             .iter()
@@ -1100,7 +1100,7 @@ mod tests {
         // must honour the 0.01 floor AFTER normalize, matching the config path
         // (`validate_layout`, see `test_per_child_ratios_floor_respected_after_normalize`).
         // `[1.0, 0.005]` clamps to `[1.0, 0.01]` (sum 1.01); normalizing alone
-        // would push the second child to ~0.0099 — below the floor. The
+        // would push the second child to ~0.0099 - below the floor. The
         // post-normalize re-clamp must pull it back to 0.01.
         let node = LayoutNode::Split {
             direction: "vertical".to_string(),
@@ -1342,7 +1342,7 @@ mod tests {
 
     #[test]
     fn test_session_corrupted_json_returns_none() {
-        // Truncated JSON — simulates crash during write
+        // Truncated JSON - simulates crash during write
         let corrupted = r#"{"version":1,"active_workspace":0,"workspaces":[{"title":"ma"#;
         let result: Result<SessionState, _> = serde_json::from_str(corrupted);
         assert!(result.is_err(), "Corrupted JSON should fail to parse");
@@ -1402,7 +1402,7 @@ mod tests {
             })
         );
 
-        // Round-trip: re-serialize then re-parse — the consent answer
+        // Round-trip: re-serialize then re-parse - the consent answer
         // must survive without loss so the modal never re-prompts.
         let json = serde_json::to_string(&config).unwrap();
         let reparsed = parse_and_validate(&json);
@@ -1424,7 +1424,7 @@ mod tests {
         assert_eq!(reparsed.telemetry, config.telemetry);
     }
 
-    // ─── Terminal config — ligatures (US-008) ─────────────────────────────
+    // ─── Terminal config - ligatures (US-008) ─────────────────────────────
     //
     // Behavior contract:
     //   - block missing                   → terminal = None    (default off)
@@ -1586,7 +1586,7 @@ mod tests {
         );
     }
 
-    // US-022: scroll_multiplier resolver — default, clamp, in-range, round-trip.
+    // US-022: scroll_multiplier resolver - default, clamp, in-range, round-trip.
     #[test]
     fn test_scroll_multiplier_resolver_default_and_clamp() {
         assert_eq!(
@@ -1766,7 +1766,7 @@ mod tests {
     fn test_session_pre_refonte_defaults_chats_empty_and_unpinned() {
         // A pre-refonte session.json: a project thread with no `pinned`
         // key, and no top-level `chats` key. Must restore as `chats = []`
-        // and `pinned = false` everywhere — no migration, no error.
+        // and `pinned = false` everywhere - no migration, no error.
         let legacy = r#"{
             "version": 1,
             "active_workspace": 0,
@@ -1966,7 +1966,7 @@ mod tests {
 
     #[test]
     fn validate_layout_caps_surfaces_per_pane() {
-        // U-008: a pane is one leaf, but each surface spawns a terminal — cap it.
+        // U-008: a pane is one leaf, but each surface spawns a terminal - cap it.
         let mut node = LayoutNode::Pane {
             surfaces: (0..200).map(|_| Default::default()).collect(),
         };

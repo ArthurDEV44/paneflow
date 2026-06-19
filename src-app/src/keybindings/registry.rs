@@ -1,8 +1,8 @@
 //! Unified action registry.
 //!
 //! A single [`ActionMeta`] table (`ACTIONS`) replaces three parallel match
-//! statements — `action_from_name`, `context_for_action`, `action_description`
-//! — so adding an action requires exactly one edit.
+//! statements - `action_from_name`, `context_for_action`, `action_description`
+//! so adding an action requires exactly one edit.
 
 use gpui::Action;
 
@@ -476,7 +476,7 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         description: "Diff: direct agent at this hunk",
     },
     // EP-001 (prd-cli-cockpit-ergonomics-2026-Q3.md): Cli-cockpit steering.
-    // Global context — the handlers gate on `AppMode::Cli` themselves.
+    // Global context - the handlers gate on `AppMode::Cli` themselves.
     ActionMeta {
         name: "open_composer",
         factory: || Box::new(crate::OpenComposer),

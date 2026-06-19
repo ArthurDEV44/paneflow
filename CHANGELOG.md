@@ -251,7 +251,7 @@ Linux or macOS.
 
 - Windows self-update. Clicking "Update" on an MSI install failed with "HOME
   environment variable is not set" and never updated. The running binary's
-  install location was misdetected — `std::fs::canonicalize` returns the
+  install location was misdetected - `std::fs::canonicalize` returns the
   extended-length `\\?\C:\…` path on Windows, which did not match
   `%ProgramFiles%`, so the install was classified as unknown and the updater
   fell back to the Linux tar.gz path (which reads `$HOME`). MSI installs are
@@ -260,7 +260,7 @@ Linux or macOS.
   updater either.
 
   Note: because the currently-running build carries the old, broken detection,
-  it cannot self-update to this fix — install the 0.5.2 `.msi` manually once
+  it cannot self-update to this fix - install the 0.5.2 `.msi` manually once
   from the releases page, and the in-app updater will work for every release
   after it.
 
@@ -280,7 +280,7 @@ right icon, and the stray console window is gone. No changes on Linux or macOS.
   resource and fell back to the generic Windows icon; it now ships the same
   multi-resolution PaneFlow icon as the installer.
 - The Windows installer icon. The 0.5.0 MSI still showed the old logo on its
-  Start Menu shortcut and Add-or-Remove-Programs entry — the WiX icon was the
+  Start Menu shortcut and Add-or-Remove-Programs entry - the WiX icon was the
   one output the new-logo regeneration had missed. It is now regenerated from
   the new logo, and the icon pipeline mirrors it on every run so it can no
   longer go stale.

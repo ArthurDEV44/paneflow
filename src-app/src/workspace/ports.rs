@@ -4,11 +4,11 @@
 //! it returns a per-terminal [`PaneScan`] attributing LISTEN ports and
 //! recognised agent binaries to each terminal's PTY process subtree. Each
 //! port carries an OS-side frontend classification ([`PortEntry`]) derived
-//! from the socket-owning process's argv — the sidebar's clickable chips key
+//! from the socket-owning process's argv - the sidebar's clickable chips key
 //! off this, not off PTY-text scraping (which is timing-dependent and stays
 //! enrichment-only: exact URLs, backend labels).
 //!
-//! Cost contract (US-012): the process table is traversed ONCE per tick —
+//! Cost contract (US-012): the process table is traversed ONCE per tick -
 //! a shared `visited` set spans all roots so no pid is walked twice, each
 //! pid's `comm` is read at most once, and `/proc/net/tcp[6]` is parsed a
 //! single time for the whole scan (the pre-refactor code re-walked the
@@ -16,12 +16,12 @@
 //! cheaper per tick at any pane count).
 //!
 //! Three platform branches:
-//! - **Linux** — `/proc/{pid}/task/{pid}/children` BFS, `/proc/{pid}/comm`,
+//! - **Linux** - `/proc/{pid}/task/{pid}/children` BFS, `/proc/{pid}/comm`,
 //!   `/proc/{pid}/fd` socket inodes cross-referenced with `/proc/net/tcp[6]`.
-//! - **macOS** — `libc::proc_listchildpids` BFS, `libproc` name +
+//! - **macOS** - `libc::proc_listchildpids` BFS, `libproc` name +
 //!   `listpidinfo::<ListFDs>`/`pidfdinfo::<SocketFDInfo>` (naturally
 //!   per-pid, so per-subtree attribution needs no global socket table).
-//! - **Everything else (Windows, BSDs)** — stub returning an empty map; the
+//! - **Everything else (Windows, BSDs)** - stub returning an empty map; the
 //!   sidebar chips and tab badges degrade to absent without error (US-012
 //!   AC, parity with the historical `detect_ports` stub).
 //!
@@ -60,7 +60,7 @@ pub struct PaneScan {
 
 /// Soft cap on PIDs walked per root subtree (fork-bomb bound, both
 /// platforms). Checked at dequeue time, so one last fanout batch can
-/// overshoot it by up to one process's child count — the bound is
+/// overshoot it by up to one process's child count - the bound is
 /// "≈512", which is all the memory guarantee needs.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const MAX_PIDS_PER_ROOT: usize = 512;
@@ -71,7 +71,7 @@ const MAX_PIDS_PER_ROOT: usize = 512;
 
 /// Filter a BFS-ordered stream of process names down to recognised agent
 /// binaries, preserving first-seen (nearest-root) order and deduplicating.
-/// Exact basename match only — `claude-code-cli` or a wrapper script must
+/// Exact basename match only - `claude-code-cli` or a wrapper script must
 /// not trigger (parity with the historical `AI_PROCESS_NAMES` contract).
 ///
 /// Consumed only by the Linux/macOS `scan_panes` paths and the unit tests;
@@ -117,7 +117,7 @@ fn parse_listen_line(line: &str) -> Option<(u16, u64)> {
 
 /// Frontend dev servers recognisable from the socket owner's argv. The table
 /// is deliberately frontend-only: a hit arms a CLICKABLE sidebar chip, so
-/// precision beats recall here — backend labels keep flowing from the
+/// precision beats recall here - backend labels keep flowing from the
 /// PTY-text enrichment path, where a mislabel is cosmetic.
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 const FRONTEND_ARGV: &[(&str, &str)] = &[
@@ -137,7 +137,7 @@ const FRONTEND_ARGV: &[(&str, &str)] = &[
 /// Matches per-argument BASENAMES (directory components and `.js`-family
 /// extensions stripped) so `node /…/node_modules/.bin/vite` hits while
 /// `/srv/invite/server.js` cannot. One special case: Next.js rewrites its
-/// process title to `next-server (vX.Y.Z)` — a single argv token, matched by
+/// process title to `next-server (vX.Y.Z)` - a single argv token, matched by
 /// prefix. Only the leading args are inspected; launchers always carry the
 /// tool name up front.
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
@@ -178,7 +178,7 @@ fn classify_frontend_argv<'a>(args: impl Iterator<Item = &'a str>) -> Option<&'s
 fn bfs_descendants_linux(root_pid: u32, visited: &mut std::collections::HashSet<u32>) -> Vec<u32> {
     // Fast path: /proc/<pid>/task/<pid>/children. If that file is MISSING for
     // the root (an `Err`, NOT an empty `Ok`), the kernel was built without
-    // CONFIG_PROC_CHILDREN (hardened / minimal / some container kernels) — fall
+    // CONFIG_PROC_CHILDREN (hardened / minimal / some container kernels) - fall
     // back to a ppid map so agent-CLI and dev-server detection still work there
     // instead of seeing only the shell.
     let root_children = format!("/proc/{root_pid}/task/{root_pid}/children");
@@ -263,7 +263,7 @@ fn bfs_descendants_via_ppid_linux(
 
 /// ppid (proc(5) field 4) of `pid` from `/proc/<pid>/stat`. Fields are taken
 /// after the LAST `)` because the comm field (field 2) is parenthesized and may
-/// itself contain spaces/parens — the kernel-documented safe parse.
+/// itself contain spaces/parens - the kernel-documented safe parse.
 #[cfg(target_os = "linux")]
 fn ppid_of_linux(pid: u32) -> Option<u32> {
     let stat = read_capped(std::path::Path::new(&format!("/proc/{pid}/stat")), 4096).ok()?;
@@ -271,7 +271,7 @@ fn ppid_of_linux(pid: u32) -> Option<u32> {
     after_comm.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// argv of a pid from `/proc/{pid}/cmdline` (NUL-separated). 4 KiB cap —
+/// argv of a pid from `/proc/{pid}/cmdline` (NUL-separated). 4 KiB cap -
 /// the classifiable token always sits in the leading args; non-UTF-8 argv
 /// degrades to "unclassified", never an error.
 #[cfg(target_os = "linux")]
@@ -309,10 +309,10 @@ fn socket_inodes_of(pid: u32, inodes: &mut Vec<u64>) {
 
 /// Scan every terminal's PTY subtree in one pass (see module docs for the
 /// cost contract). `roots` pairs an opaque caller key (the terminal entity
-/// id) with the PTY child pid; `agent_binaries` is the recognition set —
+/// id) with the PTY child pid; `agent_binaries` is the recognition set -
 /// derived by the caller from `TerminalAgent::ALL` (US-012 vocabulary
 /// unification; matching is exact against `/proc/<pid>/comm`, which the
-/// kernel truncates to 15 chars — every current binary name fits).
+/// kernel truncates to 15 chars - every current binary name fits).
 #[cfg(target_os = "linux")]
 pub fn scan_panes(
     roots: &[(u64, u32)],
@@ -354,7 +354,7 @@ pub fn scan_panes(
             socket_inodes_of(pid, &mut inodes);
             for inode in inodes {
                 // First owner wins; subtrees are disjoint (shared `visited`)
-                // so a duplicate inode here means a shared/inherited socket —
+                // so a duplicate inode here means a shared/inherited socket -
                 // keep the earlier (older pane) attribution deterministically.
                 inode_owner.entry(inode).or_insert((idx, pid));
             }
@@ -374,7 +374,7 @@ pub fn scan_panes(
     //    dropped the tail on socket-heavy hosts (Docker, busy dev boxes),
     //    making ports vanish for whole ticks; streaming keeps memory at one
     //    line while reading arbitrarily many sockets. The line cap below
-    //    only bounds a pathological /proc — and the scan runs under
+    //    only bounds a pathological /proc - and the scan runs under
     //    `smol::unblock`, never on the render thread. The owning pid's argv
     //    classifies the port (cached per pid).
     const MAX_TCP_LINES: usize = 65_536;
@@ -404,7 +404,7 @@ pub fn scan_panes(
     }
     for (idx, (key, _)) in subtrees.iter().enumerate() {
         let mut ports = std::mem::take(&mut per_idx_ports[idx]);
-        // Dual-stack v4+v6 binds yield two sockets on one port — keep one
+        // Dual-stack v4+v6 binds yield two sockets on one port - keep one
         // entry, preferring a classified one.
         ports.sort_by_key(|e| (e.port, e.frontend.is_none()));
         ports.dedup_by_key(|e| e.port);
@@ -426,11 +426,11 @@ pub fn scan_panes(
 /// returns 0 children for an unprivileged caller, so the old per-node subtree
 /// walk found nothing and the workspace card never lit its agent dot. Instead
 /// we enumerate all pids (`listpids(ProcAllPIDS)`) and read each one's parent
-/// from `proc_bsdinfo.pbi_ppid` — the very same `proc_pidinfo(PROC_PIDTBSDINFO)`
+/// from `proc_bsdinfo.pbi_ppid` - the very same `proc_pidinfo(PROC_PIDTBSDINFO)`
 /// query that `name()` already succeeds with for same-user processes. Mirrors
 /// the Linux `bfs_descendants_via_ppid_linux` fallback. Processes we can't
 /// inspect (EPERM on SIP-protected / other-user pids, dead-pid races) are
-/// skipped — our agents are same-user PTY children, always readable.
+/// skipped - our agents are same-user PTY children, always readable.
 #[cfg(target_os = "macos")]
 fn macos_children_map() -> std::collections::HashMap<u32, Vec<u32>> {
     use libproc::libproc::bsd_info::BSDInfo;
@@ -442,7 +442,7 @@ fn macos_children_map() -> std::collections::HashMap<u32, Vec<u32>> {
     let pids = match pids_by_type(ProcFilter::All) {
         Ok(pids) => pids,
         Err(e) => {
-            // Wholesale enumeration failure — NOT a routine per-pid EPERM skip:
+            // Wholesale enumeration failure - NOT a routine per-pid EPERM skip:
             // every port badge and agent dot on macOS goes dark at once. This
             // is the `proc_listchildpids`-class failure mode, so make it
             // diagnosable in paneflow-debug.log. Latched to log ONCE: this runs
@@ -452,7 +452,7 @@ fn macos_children_map() -> std::collections::HashMap<u32, Vec<u32>> {
                 std::sync::atomic::AtomicBool::new(false);
             if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 log::warn!(
-                    "macos process enumeration failed (pids_by_type: {e}) — port \
+                    "macos process enumeration failed (pids_by_type: {e}) - port \
                      badges and agent detection will be unavailable"
                 );
             }
@@ -470,7 +470,7 @@ fn macos_children_map() -> std::collections::HashMap<u32, Vec<u32>> {
     children_of
 }
 
-/// macOS descendant walker — BFS over the prebuilt `children_of` ppid map
+/// macOS descendant walker - BFS over the prebuilt `children_of` ppid map
 /// (see [`macos_children_map`]). Kernel equivalent of the Linux
 /// `/proc/{pid}/task/{pid}/children` traversal; `visited` is shared across
 /// roots (same single-walk contract as Linux). Returns pids in BFS order.
@@ -517,8 +517,8 @@ fn listen_ports_of(pid: u32, ports: &mut Vec<u16>) {
     use libproc::libproc::net_info::{SocketFDInfo, SocketInfoKind, TcpSIState};
     use libproc::libproc::proc_pid::listpidinfo;
 
-    // Typical ulimit default on macOS is 256–4096 FDs per process. 1024 is
-    // a sensible over-provisioning ceiling — the buffer is uninitialised
+    // Typical ulimit default on macOS is 256-4096 FDs per process. 1024 is
+    // a sensible over-provisioning ceiling - the buffer is uninitialised
     // memory so allocation cost is a single malloc, not a zeroing pass.
     const MAX_FDS_PER_PROC: usize = 1024;
 
@@ -546,7 +546,7 @@ fn listen_ports_of(pid: u32, ports: &mut Vec<u16>) {
         // `soi_proto` union's `pri_tcp` arm is the active one. The union is
         // POD (`SocketInfoProto` holds `#[repr(C)]` structs all the way
         // down) so reading a different arm would only produce garbage port
-        // bytes, not UB — but we gate on `soi_kind` to keep the data
+        // bytes, not UB - but we gate on `soi_kind` to keep the data
         // meaningful.
         let tcp = unsafe { sfi.psi.soi_proto.pri_tcp };
 
@@ -562,7 +562,7 @@ fn listen_ports_of(pid: u32, ports: &mut Vec<u16>) {
     }
 }
 
-/// argv of a pid via `sysctl(KERN_PROCARGS2)` — macOS's equivalent of Linux
+/// argv of a pid via `sysctl(KERN_PROCARGS2)` - macOS's equivalent of Linux
 /// `/proc/{pid}/cmdline`. EPERM (other-user pids, SIP-protected targets) and
 /// malformed buffers degrade to an empty vec: the port then simply stays
 /// unclassified, parity with the Linux non-UTF-8 fallback.
@@ -571,7 +571,7 @@ fn argv_of_macos(pid: u32) -> Vec<String> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
 
     let mut size: libc::size_t = 0;
-    // SAFETY: standard 3-int MIB size probe — a null buffer with a size
+    // SAFETY: standard 3-int MIB size probe - a null buffer with a size
     // out-param is the documented sysctl(3) calling convention; nothing is
     // written besides `size`.
     let rc = unsafe {
@@ -589,7 +589,7 @@ fn argv_of_macos(pid: u32) -> Vec<String> {
     }
 
     // The probed size covers the full argv+env block, bounded by the
-    // kernel's ARG_MAX (1 MiB) — a transient allocation on the unblock
+    // kernel's ARG_MAX (1 MiB) - a transient allocation on the unblock
     // thread, freed before the scan returns.
     let mut buf = vec![0u8; size];
     // SAFETY: `buf` provides exactly `size` writable bytes; the kernel
@@ -657,7 +657,7 @@ pub fn scan_panes(
         return results;
     }
 
-    // One ppid→children snapshot for the whole scan — every root's subtree is
+    // One ppid→children snapshot for the whole scan - every root's subtree is
     // carved out of it, so the full `listpids` enumeration happens once, not
     // per pane.
     let children_of = macos_children_map();
@@ -665,7 +665,7 @@ pub fn scan_panes(
     for &(key, root_pid) in roots {
         let pids = bfs_descendants_macos(root_pid, &children_of, &mut visited);
 
-        // `libproc::name` returns the kernel's `p_comm` — same semantics
+        // `libproc::name` returns the kernel's `p_comm` - same semantics
         // and 16-char limit as Linux `/proc/<pid>/comm`. EPERM (sandbox /
         // SIP) skips silently.
         let comms: Vec<String> = if agent_binaries.is_empty() {
@@ -693,7 +693,7 @@ pub fn scan_panes(
                     .map(|port| PortEntry { port, frontend }),
             );
         }
-        // Dual-stack v4+v6 binds yield two sockets on one port — keep one
+        // Dual-stack v4+v6 binds yield two sockets on one port - keep one
         // entry, preferring a classified one.
         ports.sort_by_key(|e| (e.port, e.frontend.is_none()));
         ports.dedup_by_key(|e| e.port);
@@ -712,7 +712,7 @@ pub fn scan_panes(
 /// owner-module attribution on Windows and is deferred to a post-v1 PRD
 /// (US-022 surfaces the limitation in `docs/WINDOWS.md`). An empty map
 /// means every tab renders without badges or pills and the workspace
-/// aggregates stay empty — degradation without error (US-012/US-014 AC).
+/// aggregates stay empty - degradation without error (US-012/US-014 AC).
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn scan_panes(
     _roots: &[(u64, u32)],
@@ -730,7 +730,7 @@ mod tests {
     use super::*;
 
     // US-013 AC: "plusieurs binaires agents dans le même sous-arbre → le
-    // plus proche de la racine" — first-seen BFS order wins, duplicates
+    // plus proche de la racine" - first-seen BFS order wins, duplicates
     // collapse to the first occurrence.
     #[test]
     fn agents_in_bfs_order_picks_nearest_root_first_and_dedups() {
@@ -769,7 +769,7 @@ mod tests {
 
     #[test]
     fn classify_frontend_argv_matches_basenames_and_titles() {
-        // node running the .bin shim — the canonical vite/next launch shape.
+        // node running the .bin shim - the canonical vite/next launch shape.
         let argv = ["node", "/repo/node_modules/.bin/vite"];
         assert_eq!(classify_frontend_argv(argv.into_iter()), Some("Vite"));
         // bun executing the package bin JS directly.
@@ -820,7 +820,7 @@ mod tests {
     // Regression for the workspace-card blue dot on Apple: the macOS subtree
     // scan must find a live PTY descendant and resolve its `p_comm`. This
     // failed silently while the walk relied on `proc_listchildpids`, which
-    // returns 0 children for an unprivileged caller — `detected_agents` stayed
+    // returns 0 children for an unprivileged caller - `detected_agents` stayed
     // empty and the dot never lit. We spawn the real, signed `/bin/sleep`
     // (p_comm == "sleep"; no code-signing confound) as a child of the test
     // process and assert it surfaces.

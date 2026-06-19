@@ -1,6 +1,6 @@
 // Integration tests are compiled as a separate binary (not under
 // `cfg(test)` of the library), so the workspace-wide
-// `clippy::panic/unwrap/expect` denies apply to this file directly —
+// `clippy::panic/unwrap/expect` denies apply to this file directly -
 // `clippy.toml`'s `allow-*-in-tests` does NOT cover integration tests
 // (see clippy issue #13981, called out in CLAUDE.md). Panic / unwrap /
 // expect are idiomatic inside test bodies where a failure IS the
@@ -12,7 +12,7 @@
     clippy::unwrap_in_result
 )]
 
-//! US-011 — end-to-end integration tests for `paneflow-ai-hook`.
+//! US-011 - end-to-end integration tests for `paneflow-ai-hook`.
 //!
 //! Each test spins up a mock IPC listener (Unix socket under a `TempDir`
 //! on Linux/macOS, randomly-named Windows named pipe under
@@ -54,7 +54,7 @@ use serde_json::{json, Value};
 /// Path to the `paneflow-ai-hook` binary as produced by the surrounding
 /// `cargo test` run. Cargo sets this env var for every integration test
 /// that lives under `<crate>/tests/` and whose crate has a `[[bin]]`
-/// target — see the Cargo book, "Environment Variables Cargo Sets for
+/// target - see the Cargo book, "Environment Variables Cargo Sets for
 /// Integration Tests". Using this avoids shelling back out to `cargo
 /// run`, which would fork a second cargo instance, recompile the
 /// workspace, and fight the outer lock.
@@ -83,7 +83,7 @@ const EXIT_TIMEOUT: Duration = Duration::from_secs(7);
 ///
 /// Each variant is constructed on exactly one OS; the other variant is
 /// `dead_code` there. Per-variant allow-listing keeps the suppression
-/// precise — if the whole enum were ever unused, the compiler should
+/// precise - if the whole enum were ever unused, the compiler should
 /// still warn.
 enum PathKeepalive {
     /// Unix: the `TempDir` owns the parent directory; dropping it
@@ -137,7 +137,7 @@ impl MockServer {
             // Accept blocks. The test's `recv_timeout` handles the case
             // where the subprocess never connects (e.g., the
             // "socket missing" scenario deliberately points the hook at
-            // a *different* path — that is a different listener, not
+            // a *different* path - that is a different listener, not
             // this one; that test does not start a `MockServer` at all).
             let stream = match listener.accept() {
                 Ok(s) => s,
@@ -238,7 +238,7 @@ fn unique_ipc_path() -> (PathBuf, PathKeepalive) {
     // millisecond timing resolution. The 64-bit `process_nonce()` is
     // seeded once per test process from `RandomState`, which uses OS
     // entropy, so the full name carries >=64 bits of attacker-
-    // unpredictable randomness — well above the brute-force threshold
+    // unpredictable randomness - well above the brute-force threshold
     // for a pipe-squatting false-positive.
     use std::time::{SystemTime, UNIX_EPOCH};
     let n = UNIQUE.fetch_add(1, Ordering::Relaxed);
@@ -296,7 +296,7 @@ fn run_hook(event: &str, env: &HookEnv<'_>, stdin_bytes: &[u8]) -> std::process:
     let mut cmd = Command::new(HOOK_BIN);
     cmd.arg(event)
         // Strip inherited env so the host's `PANEFLOW_*` vars cannot
-        // leak into the hook — crucial on developer machines that run
+        // leak into the hook - crucial on developer machines that run
         // PaneFlow locally while tests execute.
         .env_clear()
         // Preserve OS basics that the hook needs to start at all.
@@ -508,9 +508,9 @@ fn claude_user_prompt_submit_dispatches_ai_prompt_submit() {
 #[test]
 fn claude_notification_dispatches_ai_notification() {
     // Only `permission_prompt` and `elicitation_dialog` count as "needs
-    // input" — informational types like `idle_prompt` / `auth_success`
+    // input" - informational types like `idle_prompt` / `auth_success`
     // are now correctly dropped (otherwise the sidebar would stick on
-    // "needs input" after every clean response — see field bug fixed in
+    // "needs input" after every clean response - see field bug fixed in
     // build_frame's Notification arm).
     let server = MockServer::start();
     let stdin = json!({
@@ -785,7 +785,7 @@ fn codex_user_prompt_submit_dispatches_ai_prompt_submit() {
 
 #[test]
 fn codex_notification_dispatches_ai_notification() {
-    // Same whitelist as Claude — only permission_prompt /
+    // Same whitelist as Claude - only permission_prompt /
     // elicitation_dialog get forwarded; everything else is dropped to
     // avoid false-positive "needs input" badges.
     let server = MockServer::start();
@@ -1002,11 +1002,11 @@ fn malformed_stdin_logs_diagnostic_and_exits_0() {
 #[test]
 fn oversized_stdin_is_rejected_and_drops_frame() {
     // US-020: the ai-hook's only untrusted input is stdin (it is the hook
-    // *producer*, not a JSONL file parser — that surface lives in the
+    // *producer*, not a JSONL file parser - that surface lives in the
     // sibling session loaders, already bounded by EP-003). The stdin read is
     // capped at MAX_STDIN_BYTES (16 MiB; `crates/paneflow-ai-hook/src/main.rs`
     // const) via the `take(MAX + 1)` idiom, so a payload exceeding the cap is
-    // rejected with a diagnostic and no frame is ever sent — a chatty/hostile
+    // rejected with a diagnostic and no frame is ever sent - a chatty/hostile
     // hook cannot drive unbounded allocation. This regression guard pins that
     // bound (it was the one coverage gap in the harness).
     const MAX_STDIN_BYTES: usize = 16 * 1024 * 1024;

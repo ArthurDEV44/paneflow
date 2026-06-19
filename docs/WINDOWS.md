@@ -8,7 +8,7 @@ the top-level [README](../README.md) instead.
 Authored under US-022 of
 [`tasks/prd-windows-port.md`](../tasks/prd-windows-port.md). Scope
 decision (AC-4): the PaneFlow website links directly to this file on
-GitHub rather than re-hosting the content — one source of truth,
+GitHub rather than re-hosting the content - one source of truth,
 no stale mirror.
 
 ---
@@ -19,8 +19,8 @@ no stale mirror.
 |----|-------------|--------------|--------|
 | Windows 10 | **1809** (October 2018 Update, build 17763) | x86_64 | Supported |
 | Windows 11 | 22H2+ recommended | x86_64 | Supported |
-| Windows 10 / 11 | — | ARM64 (`aarch64-pc-windows-msvc`) | **Not in v1** — deferred pending GPUI DX11 ARM64 reliability ([zed#36798](https://github.com/zed-industries/zed/issues/36798)) |
-| Windows 10 | <1809 (pre-ConPTY) | any | Unsupported — ConPTY is required for PTY-based terminals |
+| Windows 10 / 11 | - | ARM64 (`aarch64-pc-windows-msvc`) | **Not in v1** - deferred pending GPUI DX11 ARM64 reliability ([zed#36798](https://github.com/zed-industries/zed/issues/36798)) |
+| Windows 10 | <1809 (pre-ConPTY) | any | Unsupported - ConPTY is required for PTY-based terminals |
 | Windows Server | 2019 / 2022 | x86_64 | Untested, unsupported in v1 |
 
 PaneFlow renders via the GPUI DirectX 11 backend (landed upstream
@@ -53,7 +53,7 @@ package is generally available.
 Download `paneflow-<version>-x86_64-pc-windows-msvc.msi` from the
 [latest GitHub Release](https://github.com/ArthurDEV44/paneflow/releases/latest)
 and double-click to install. The installer is signed via Azure
-Artifact Signing under the **Strivex** certificate profile —
+Artifact Signing under the **Strivex** certificate profile -
 SmartScreen shows "Windows protected your PC" with publisher
 **Strivex** (not "Unknown Publisher"). Click `More info` →
 `Run anyway` to proceed. Reputation accumulates over the first
@@ -63,7 +63,7 @@ SmartScreen stops prompting entirely.
 Uninstall from `Settings → Apps → Installed apps → PaneFlow →
 Uninstall`. The installer removes `%ProgramFiles%\PaneFlow\` but
 leaves `%APPDATA%\paneflow\paneflow.json` and related user config
-untouched — idiomatic Windows uninstall behaviour.
+untouched - idiomatic Windows uninstall behaviour.
 
 ### Building from source
 
@@ -77,7 +77,7 @@ to reproduce the signed MSI end-to-end.
 
 ## 3. Known limitations (v1)
 
-These are PaneFlow's own limitations on Windows — distinct from the
+These are PaneFlow's own limitations on Windows - distinct from the
 upstream risks in §4 below.
 
 - **Services sidebar is empty on Windows.** The port-scan feature
@@ -85,7 +85,7 @@ upstream risks in §4 below.
   (dev server on :3000, etc.) relies on POSIX `/proc/net/tcp` on
   Linux and `sysctl` on macOS. A Windows implementation via
   `GetExtendedTcpTable` is out of scope for v1 and returns an empty
-  list. Workaround: the sidebar simply doesn't populate — no error
+  list. Workaround: the sidebar simply doesn't populate - no error
   is shown, and no feature regresses. Tracked in the PRD's Out of
   Scope list.
 
@@ -113,7 +113,7 @@ upstream risks in §4 below.
 - **Self-update shows a prompt, doesn't auto-download.** On Linux
   and macOS PaneFlow can download and swap in the new version
   in-place. On Windows, the updater shows a "new version
-  available" prompt with a direct link to the MSI — click-to-install
+  available" prompt with a direct link to the MSI - click-to-install
   is deferred to a follow-up PRD because it requires UAC elevation
   and a clean MSI-reinstall flow.
 
@@ -160,7 +160,7 @@ so users know what to expect.
 - **Severity:** blocker (on-RDP only)
 - **Description:** Launching PaneFlow inside an active Remote
   Desktop Protocol session can fail to initialize the DX11 device
-  context — the window comes up but rendering is broken or the
+  context - the window comes up but rendering is broken or the
   process exits with a device-creation error.
 - **v1 workaround:** Use PaneFlow on a local session; avoid
   launching from inside an RDP session. If RDP is unavoidable,
@@ -179,7 +179,7 @@ so users know what to expect.
 - **v1 workaround:** Launch PaneFlow from a regular Windows shell
   (Start Menu, Run dialog, or a native Windows terminal). Do not
   nest through a devcontainer shell. WSL2 *inside* PaneFlow (as a
-  shell choice for a pane) works — the restriction is only on
+  shell choice for a pane) works - the restriction is only on
   launching the app itself from a WSL2 context.
 
 ### GPU `NoSupportedDeviceFound` on older drivers
@@ -223,5 +223,5 @@ get the runtime context they need without a back-and-forth:
   issue; fixes ride along with the relevant dependency bump.
 
 For the smoke-test checklist run on every release, see
-[`WINDOWS-SMOKE-TEST.md`](WINDOWS-SMOKE-TEST.md) (US-021) — sibling
+[`WINDOWS-SMOKE-TEST.md`](WINDOWS-SMOKE-TEST.md) (US-021) - sibling
 runbook in this same `docs/` directory.

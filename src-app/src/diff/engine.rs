@@ -47,7 +47,7 @@ pub struct DiffHunk {
 /// Compute line-level hunks turning `base` into `new`.
 ///
 /// Returns an empty vec when the two texts are identical. Pure and synchronous
-/// — callers run it off the GPUI main thread (US-007). Mirrors Zed's use of
+/// callers run it off the GPUI main thread (US-007). Mirrors Zed's use of
 /// `imara_diff::diff(Algorithm::Histogram, …)` over `lines_with_terminator`.
 pub fn compute_hunks(base: &str, new: &str) -> Vec<DiffHunk> {
     if base == new {
@@ -57,8 +57,8 @@ pub fn compute_hunks(base: &str, new: &str) -> Vec<DiffHunk> {
     imara_diff::diff(Algorithm::Histogram, &input, HunkCollector::default())
 }
 
-/// `imara-diff` sink that turns each `process_change(before, after)` callback —
-/// where `before`/`after` are base/new line ranges — into a [`DiffHunk`].
+/// `imara-diff` sink that turns each `process_change(before, after)` callback -
+/// where `before`/`after` are base/new line ranges - into a [`DiffHunk`].
 #[derive(Default)]
 struct HunkCollector {
     hunks: Vec<DiffHunk>,

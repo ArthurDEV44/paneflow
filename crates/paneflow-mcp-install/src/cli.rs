@@ -5,9 +5,9 @@
 //! [`crate::api`], formats a scriptable per-agent report, and returns a
 //! process exit code:
 //!
-//! - `0` — success (including "no agents detected", which writes nothing).
-//! - `1` — install refused (bridge binary missing) or ≥1 agent errored.
-//! - `2` — usage error (missing / unknown subcommand).
+//! - `0` - success (including "no agents detected", which writes nothing).
+//! - `1` - install refused (bridge binary missing) or ≥1 agent errored.
+//! - `2` - usage error (missing / unknown subcommand).
 //!
 //! Output is line-oriented `<agent-id>: <message>` so the command is
 //! scriptable; diagnostics go to stderr, the report to stdout. The GUI
@@ -20,7 +20,7 @@ use crate::agents::{self, AgentConfigWriter};
 use crate::api::{self, InstallKind, StatusKind, UninstallKind};
 
 const USAGE: &str = "\
-paneflow mcp — register the Paneflow MCP bridge with your CLI agents
+paneflow mcp - register the Paneflow MCP bridge with your CLI agents
 
 Usage:
   paneflow mcp install      Register the bridge with every detected agent
@@ -100,7 +100,7 @@ fn run_install(
     if results.is_empty() {
         let _ = writeln!(
             out,
-            "No supported MCP agents detected — nothing to install."
+            "No supported MCP agents detected - nothing to install."
         );
         return 0;
     }
@@ -125,7 +125,7 @@ fn run_install(
             }
             InstallKind::Error(e) => {
                 had_error = true;
-                let _ = writeln!(out, "{}: error — {e}", r.id);
+                let _ = writeln!(out, "{}: error - {e}", r.id);
             }
         }
     }
@@ -135,7 +135,7 @@ fn run_install(
     {
         let _ = writeln!(
             out,
-            "No supported MCP agents detected — nothing to install."
+            "No supported MCP agents detected - nothing to install."
         );
     }
     i32::from(had_error)
@@ -161,7 +161,7 @@ fn run_uninstall(writers: &[Box<dyn AgentConfigWriter>], out: &mut dyn Write) ->
             }
             UninstallKind::Error(e) => {
                 had_error = true;
-                let _ = writeln!(out, "{}: error — {e}", r.id);
+                let _ = writeln!(out, "{}: error - {e}", r.id);
             }
         }
     }
@@ -190,7 +190,7 @@ fn run_status(
             StatusKind::Stale { found, expected } => {
                 let _ = writeln!(
                     out,
-                    "{}: stale path (config points at {found}, expected {expected}) — re-run `paneflow mcp install`",
+                    "{}: stale path (config points at {found}, expected {expected}) - re-run `paneflow mcp install`",
                     r.id
                 );
             }
@@ -199,7 +199,7 @@ fn run_status(
             }
             StatusKind::Error(e) => {
                 had_error = true;
-                let _ = writeln!(out, "{}: error — {e}", r.id);
+                let _ = writeln!(out, "{}: error - {e}", r.id);
             }
         }
     }

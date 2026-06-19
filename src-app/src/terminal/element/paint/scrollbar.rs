@@ -14,7 +14,7 @@ const TICK_PX: f32 = 2.0;
 /// onto the scrollbar track, decimated by [`TICK_PX`] buckets. Document
 /// space is `total_lines` (history + visible screen); top of track = top
 /// of scrollback. Returns each occupied bucket's tick-top Y relative to
-/// the track top. Pure — unit-tested.
+/// the track top. Pure - unit-tested.
 pub(crate) fn match_tick_offsets(
     lines_from_bottom: impl IntoIterator<Item = usize>,
     total_lines: usize,
@@ -38,12 +38,12 @@ pub(crate) fn match_tick_offsets(
         .collect()
 }
 
-/// EP-006 US-017: paint the search match rail — one [`TICK_PX`]-high quad
+/// EP-006 US-017: paint the search match rail - one [`TICK_PX`]-high quad
 /// per occupied bucket, on the same 4 px right-edge strip as the thumb.
 /// Painted whenever a search has matches, independent of the thumb (which
 /// only shows while scrolled); rail click-to-jump is the EXISTING
 /// proportional track click (`ScrollbarMetrics::offset_for_y` in the
-/// view's mouse handler) — no per-tick hit-test needed.
+/// view's mouse handler) - no per-tick hit-test needed.
 pub fn paint_match_ticks(
     lines_from_bottom: &[usize],
     color: Hsla,
@@ -56,7 +56,7 @@ pub fn paint_match_ticks(
         return;
     }
     // Keep this visible_rows/total_lines derivation IDENTICAL to
-    // `scrollbar_metrics` above — the rail and the thumb must agree on the
+    // `scrollbar_metrics` above - the rail and the thumb must agree on the
     // document space or ticks drift off the offsets the track click jumps to.
     let visible_rows = (bounds.size.height / geom.line_height).floor().max(1.0) as usize;
     let total_lines = layout.history_size + visible_rows;
@@ -84,7 +84,7 @@ pub fn paint_match_ticks(
 /// frame. Computed in [`scrollbar_metrics`] (the single source of truth shared
 /// with [`paint_scrollbar`]) and stashed by `TerminalElement::paint` into a
 /// shared cell so the view's mouse handlers can hit-test clicks/drags against
-/// the exact same geometry that was painted — no formula duplication.
+/// the exact same geometry that was painted - no formula duplication.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ScrollbarMetrics {
     /// Absolute window-space X of the strip's left edge.
@@ -150,7 +150,7 @@ pub(crate) fn scrollbar_metrics(
     // Sit against the element's right edge. Use `bounds.origin.x` (NOT
     // `geom.origin.x`, which is shifted right by the 1-cell left gutter) so the
     // strip lands `strip_width` inside the right edge instead of `cell_width`
-    // past it — past the edge it gets scissored away by the `bounds` content
+    // past it - past the edge it gets scissored away by the `bounds` content
     // mask, making both the painted thumb and the hit zone invisible.
     let strip_left = bounds.origin.x + bounds.size.width - strip_width;
     let track_height = bounds.size.height;
@@ -178,7 +178,7 @@ pub fn paint_scrollbar(
     bounds: Bounds<Pixels>,
     window: &mut Window,
 ) {
-    // Thumb — short-circuit when scrolled to the bottom and there is no
+    // Thumb - short-circuit when scrolled to the bottom and there is no
     // history (legacy behaviour preserved; the thumb is purely a position
     // indicator). Geometry comes from `scrollbar_metrics` so the painted
     // thumb and the view's interactive hit-test never diverge (US-015).
@@ -218,7 +218,7 @@ mod tests {
         }
     }
 
-    // EP-006 US-017 — match-rail projection + decimation.
+    // EP-006 US-017 - match-rail projection + decimation.
 
     #[test]
     fn ticks_project_proportionally_top_to_bottom() {

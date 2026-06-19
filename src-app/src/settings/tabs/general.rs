@@ -1,11 +1,11 @@
-//! "General" settings page — the default landing section.
+//! "General" settings page - the default landing section.
 //!
 //! Hosts two top-level preferences, each rendered with the shared Codex-style
 //! select primitives (`components::select_*`):
-//! - **Default editor** (`external_editor`) — the app used to open files and
+//! - **Default editor** (`external_editor`) - the app used to open files and
 //!   folders (Auto-detect / Zed / Cursor / Windsurf / VS Code / Visual Studio /
 //!   System), each with its brand logo.
-//! - **Shell in the integrated terminal** (`default_shell`) — a curated set of
+//! - **Shell in the integrated terminal** (`default_shell`) - a curated set of
 //!   platform shells. Empty = fall back to `$SHELL` / the platform default.
 //!
 //! Both persist through [`PaneFlowApp::persist_setting`] (cache-mutate, repaint,
@@ -150,7 +150,7 @@ impl PaneFlowApp {
         config_key: &'static str,
         ui: crate::theme::UiColors,
         // Concrete `AnyElement` (not `impl IntoElement`) so the value does not
-        // capture `cx`'s borrow under edition-2024 RPIT — otherwise the two
+        // capture `cx`'s borrow under edition-2024 RPIT - otherwise the two
         // `let` rows above would hold overlapping `&mut cx` borrows.
         cx: &mut Context<Self>,
     ) -> AnyElement {

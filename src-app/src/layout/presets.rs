@@ -49,7 +49,7 @@ impl LayoutTree {
         let right = LayoutTree::from_panes_equal(SplitDirection::Horizontal, others)
             .expect("others is non-empty");
 
-        // Outer: Vertical (side by side) — main 60%, right panel 40%
+        // Outer: Vertical (side by side) - main 60%, right panel 40%
         Some(LayoutTree::Container {
             direction: SplitDirection::Vertical,
             children: vec![

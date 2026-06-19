@@ -13,7 +13,7 @@
 //! - `PANEFLOW_PIXEL_PROBE=1` enables structured `log::debug!` records on the
 //!   `paneflow::pixel_probe` target. Display them with
 //!   `RUST_LOG=paneflow::pixel_probe=debug`.
-//! - `PANEFLOW_PIXEL_PROBE_OVERLAY=1` (independent — NOT activated by the
+//! - `PANEFLOW_PIXEL_PROBE_OVERLAY=1` (independent - NOT activated by the
 //!   first var alone) enables a translucent red bounds overlay above every
 //!   cell after the text pass.
 //!
@@ -58,7 +58,7 @@ pub fn enabled() -> bool {
 }
 
 /// Cached `PANEFLOW_PIXEL_PROBE_OVERLAY=1` flag. Independent of `enabled()`
-/// — the overlay can be drawn without log records and vice versa.
+/// the overlay can be drawn without log records and vice versa.
 pub fn overlay_enabled() -> bool {
     static OVERLAY: OnceLock<bool> = OnceLock::new();
     *OVERLAY.get_or_init(|| std::env::var("PANEFLOW_PIXEL_PROBE_OVERLAY").as_deref() == Ok("1"))
@@ -74,9 +74,9 @@ fn fmt_pix(value: f32) -> String {
 /// invocation, which itself runs once per repaint. Logging both the raw
 /// (font-system measurement) and snapped (US-002 integer-rounded) values
 /// in the same record lets a reader spot a fractional residual at a glance
-/// — the snap is a no-op when the raw value is already integer.
+/// the snap is a no-op when the raw value is already integer.
 ///
-/// The cell origin is not known at measure time — it is computed later in
+/// The cell origin is not known at measure time - it is computed later in
 /// `paint()`. Use [`record_origin`] from the paint pass to log it for the
 /// same frame.
 pub fn record_cell_dimensions(
@@ -101,7 +101,7 @@ pub fn record_cell_dimensions(
 
 /// Log the gutter-adjusted grid origin. Called from `paint()` once per
 /// frame after the [`CellGeometry`](super::geometry::CellGeometry) is
-/// assembled — keeps origin coordinates separate from the dimension
+/// assembled - keeps origin coordinates separate from the dimension
 /// record so a reader can tell which value came from where.
 pub fn record_origin(origin: Point<Pixels>) {
     if !enabled() {
@@ -152,7 +152,7 @@ pub fn record_background(
 }
 
 /// Log a block-element quad. Block quads are already low-cardinality so no
-/// row sampling is applied — useful for spotting fractional residuals on the
+/// row sampling is applied - useful for spotting fractional residuals on the
 /// exact codepoints US-005 will deep-dive.
 pub fn record_block_quad(
     col: usize,
@@ -178,7 +178,7 @@ pub fn record_block_quad(
 /// Test helper used by US-003 / US-004 alignment regressions: assert that
 /// `value` sits on a pixel boundary (within `ALIGNMENT_EPSILON`).
 ///
-/// `assert!` is intentional — fractional values in a snapped path indicate
+/// `assert!` is intentional - fractional values in a snapped path indicate
 /// a real regression and the test must fail loudly. `clippy::panic` targets
 /// the `panic!` macro specifically; `assert!` is permitted.
 ///

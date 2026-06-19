@@ -1,4 +1,4 @@
-//! `TerminalState` and its PTY lifecycle — spawn, notifier wiring, event
+//! `TerminalState` and its PTY lifecycle - spawn, notifier wiring, event
 //! processing, OSC channel drains, CWD resolution, scrollback I/O, and the
 //! drop-time force-kill path.
 //!
@@ -33,7 +33,7 @@ use crate::limits::{MAX_CHARS, MAX_OSC52_BYTES};
 /// Default scrollback history length, in lines. Matches Zed's
 /// `DEFAULT_SCROLL_HISTORY_LINES`. `TermConfig::default()` is `0`, which
 /// disables scrollback entirely. Overridable via
-/// `terminal.scrollback_lines` in `paneflow.json` — see
+/// `terminal.scrollback_lines` in `paneflow.json` - see
 /// [`paneflow_config::TerminalConfig::resolved_scrollback_lines`].
 const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
 
@@ -83,7 +83,7 @@ fn resolved_cursor_style() -> alacritty_terminal::vte::ansi::CursorStyle {
 }
 
 // ---------------------------------------------------------------------------
-// PTY notifier — replaces alacritty's Notifier (US-007, portable-pty)
+// PTY notifier - replaces alacritty's Notifier (US-007, portable-pty)
 // ---------------------------------------------------------------------------
 
 /// Whether a terminal is backed by a real PTY (driven by an alacritty
@@ -101,10 +101,10 @@ pub enum TerminalType {
     DisplayOnly,
 }
 
-/// The write side of a terminal — routes input / resize / shutdown to the PTY
+/// The write side of a terminal - routes input / resize / shutdown to the PTY
 /// `EventLoop` (or drops them for a display-only terminal). Mirrors Zed's
 /// `PtySender` (`crates/terminal/src/alacritty.rs:84-108`), which exposes only
-/// notify / resize / shutdown — never the raw `Msg` channel.
+/// notify / resize / shutdown - never the raw `Msg` channel.
 #[derive(Clone)]
 pub struct PtySender(TerminalType);
 
@@ -129,7 +129,7 @@ impl PtySender {
     }
 
     /// Internal: drop the message for a display-only terminal, otherwise hand it
-    /// to the `EventLoop`. The send error is ignored — a closed channel means
+    /// to the `EventLoop`. The send error is ignored - a closed channel means
     /// the child already exited, which the exit path handles.
     fn send(&self, msg: Msg) {
         if let TerminalType::Pty(sender) = &self.0 {
@@ -159,7 +159,7 @@ impl PtySender {
 }
 
 /// Wrapper for the PTY write channel. Implements `Notify` for input and exposes
-/// the resize convenience — same usage pattern as alacritty's `Notifier` (which
+/// the resize convenience - same usage pattern as alacritty's `Notifier` (which
 /// [`PtySender`] now wraps).
 pub struct PtyNotifier(pub PtySender);
 
@@ -188,7 +188,7 @@ impl PtyNotifier {
 // ---------------------------------------------------------------------------
 
 /// Controls OSC 52 clipboard access. Default: CopyOnly (write-only).
-/// Read path (CopyPaste) is a security risk — clipboard exfiltration.
+/// Read path (CopyPaste) is a security risk - clipboard exfiltration.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Osc52Mode {
     Disabled,
@@ -196,7 +196,7 @@ pub enum Osc52Mode {
     CopyPaste,
 }
 
-/// Deferred clipboard operation from sync() — executed in cx.update() closure.
+/// Deferred clipboard operation from sync() - executed in cx.update() closure.
 pub(super) enum ClipboardOp {
     Store(String),
     Load(std::sync::Arc<dyn Fn(&str) -> String + Sync + Send + 'static>),
@@ -240,7 +240,7 @@ pub struct TerminalState {
     /// US-019: raw fd of the PTY master, captured at spawn before the master
     /// moves into the message-loop thread. macOS uses it to call
     /// `tcgetpgrp(fd)` for live foreground-process naming. `None` on the
-    /// display-only / mock paths (no real PTY). macOS-only — Linux resolves the
+    /// display-only / mock paths (no real PTY). macOS-only - Linux resolves the
     /// foreground process from `/proc`, Windows from `child_pid`.
     #[cfg(target_os = "macos")]
     pty_master_fd: Option<i32>,
@@ -256,7 +256,7 @@ pub struct TerminalState {
     /// persisted to `session.json`. `None` falls back to derivation.
     pub custom_name: Option<String>,
     /// EP-005 US-013: agent CLI detected in this terminal's PTY subtree by
-    /// the per-pane scan — PID-authoritative, never the spoofable OSC
+    /// the per-pane scan - PID-authoritative, never the spoofable OSC
     /// title. Drives the tab identity pill; persisted to `session.json`
     /// as the agent's stable `tag()`.
     pub detected_agent: Option<crate::agent_launcher::TerminalAgent>,
@@ -272,13 +272,13 @@ pub struct TerminalState {
     /// persisted (live resource state).
     pub detected_ports: Vec<(u16, Option<String>)>,
     /// US-014: ports whose service URL was announced in THIS terminal
-    /// while the LISTEN socket belongs to another pane's subtree —
+    /// while the LISTEN socket belongs to another pane's subtree -
     /// `(port, owner pane display name)`. Info-level heuristic; known
     /// false positives (proxies, port-forwards, re-announcements) are
     /// tolerated in v1.
     pub port_conflicts: Vec<(u16, String)>,
     /// US-014: ports announced by service URLs detected in this terminal's
-    /// own output (untrusted text — used only to cross-check against the
+    /// own output (untrusted text - used only to cross-check against the
     /// scan's LISTEN attribution, never to open anything). Bounded.
     pub announced_ports: Vec<u16>,
     /// EP-006 US-019: per-pane font-size override in pixels. `None` follows
@@ -288,13 +288,13 @@ pub struct TerminalState {
     pub font_size_override: Option<f32>,
     /// OSC 52 clipboard access mode (default: copy-only for security).
     pub osc52_mode: Osc52Mode,
-    /// Deferred clipboard operations from sync() — drained in the poll loop
+    /// Deferred clipboard operations from sync() - drained in the poll loop
     /// where cx is available for clipboard read/write.
     pub(super) pending_clipboard_ops: Vec<ClipboardOp>,
     /// Deferred text area size request responses from sync().
     pub(super) pending_size_ops:
         Vec<std::sync::Arc<dyn Fn(AlacWindowSize) -> String + Sync + Send + 'static>>,
-    /// Bell event received — triggers visual flash in poll loop.
+    /// Bell event received - triggers visual flash in poll loop.
     pub bell_active: bool,
     /// Whether the terminal wants the cursor to blink (from CursorBlinkingChange).
     pub cursor_blinking: bool,
@@ -303,12 +303,12 @@ pub struct TerminalState {
     pub dirty: bool,
     /// US-010 (cli-agent-orchestration): monotonic count of processed
     /// PTY-output events (`AlacEvent::Wakeup`). Never reset. `workspace.up`
-    /// polls this as a readiness signal for prompt prefill — it is the only
+    /// polls this as a readiness signal for prompt prefill - it is the only
     /// screen-agnostic "the agent produced output" signal available: `dirty`
     /// is cleared on every repaint, and `extract_scrollback` misses content
     /// painted on the alternate screen (where TUI agents live).
     pub output_generation: u64,
-    /// Counter for throttling output scans — scans every 50th dirty tick.
+    /// Counter for throttling output scans - scans every 50th dirty tick.
     /// Leading-edge throttle for ActivityBurst/service-scan emission
     /// (view.rs): when the last burst was emitted for this terminal.
     pub(super) last_activity_burst: Option<std::time::Instant>,
@@ -341,8 +341,8 @@ pub struct TerminalState {
     /// installed later by [`promote`](Self::promote)). The display-only
     /// notifier silently drops every write, so without this queue an
     /// auto-launch command issued the instant a thread mounts (the
-    /// Agents-view "New thread" picker) — or a keystroke typed in the brief
-    /// pre-promotion window — would be lost. [`promote`](Self::promote)
+    /// Agents-view "New thread" picker) - or a keystroke typed in the brief
+    /// pre-promotion window - would be lost. [`promote`](Self::promote)
     /// flushes it in order. `Mutex` (not `RefCell`) keeps `TerminalState`
     /// `Send` and matches the crate's interior-mutability idiom; the lock is
     /// uncontended (main thread only).
@@ -351,7 +351,7 @@ pub struct TerminalState {
 
 /// Cap on input buffered during the pre-promotion window. Generous for a
 /// launch command plus a burst of typing, tight enough that a terminal that
-/// never promotes (spawn failure — `promote` is never called) cannot
+/// never promotes (spawn failure - `promote` is never called) cannot
 /// accumulate input without bound.
 const MAX_PENDING_INPUT_BYTES: usize = 64 * 1024;
 
@@ -379,7 +379,7 @@ pub(super) struct SpawnedPty {
     child_pid: u32,
     /// The directory the shell was spawned in. Seeds [`TerminalState::current_cwd`]
     /// at promotion so the sessions sidebar can resolve a project before the
-    /// first `cwd_now()` poll — and at all on Windows, where `cwd_now()` is a
+    /// first `cwd_now()` poll - and at all on Windows, where `cwd_now()` is a
     /// stub.
     cwd: std::path::PathBuf,
     #[cfg(target_os = "macos")]
@@ -388,7 +388,7 @@ pub(super) struct SpawnedPty {
 
 /// Foreground (main-thread) signal mask, captured so an off-thread PTY spawn
 /// (US-012) doesn't hand the child the background executor's mask (which blocks
-/// SIGINT/SIGTSTP and would break Ctrl-C / Ctrl-Z). Unix-only — a ZST on
+/// SIGINT/SIGTSTP and would break Ctrl-C / Ctrl-Z). Unix-only - a ZST on
 /// Windows.
 #[cfg(unix)]
 pub type ForegroundSignalMask = libc::sigset_t;
@@ -489,7 +489,7 @@ impl TerminalState {
     }
 
     /// Resolve the shell, the merged + assembled child env, the cwd, and the
-    /// grid size — the cheap, render-thread-safe half of a spawn. Factored out
+    /// grid size - the cheap, render-thread-safe half of a spawn. Factored out
     /// of `new` so the off-thread path (US-012) runs the *blocking* half
     /// ([`open_pty_and_eventloop`]) on the background executor.
     pub(super) fn resolve_spawn_params(
@@ -504,7 +504,7 @@ impl TerminalState {
         // Windows: config → pwsh.exe → powershell.exe → %ComSpec% →
         //          C:\Windows\System32\cmd.exe → bare "cmd.exe"
         //          (PowerShell preferred so we don't default to the legacy
-        //          cmd.exe console — mirrors Zed's get_windows_system_shell)
+        //          cmd.exe console - mirrors Zed's get_windows_system_shell)
         let config = paneflow_config::loader::load_config();
         let shell = {
             let configured = config
@@ -527,7 +527,7 @@ impl TerminalState {
             }
         };
         let mut env = std::collections::HashMap::new();
-        // EP-003 US-007: clean opt-out — with `shell_integration: false` no
+        // EP-003 US-007: clean opt-out - with `shell_integration: false` no
         // rc snippet is written or wired and the shell starts untouched.
         let extra_args = if config.shell_integration.unwrap_or(true) {
             setup_shell_integration(&shell, &mut env)
@@ -537,10 +537,10 @@ impl TerminalState {
         // Assemble the child environment (identity vars, TERM, AI-hook PATH
         // prepend, user-env merge with protected keys). Pure function so the env
         // contract stays unit-testable (the mockable `PtyBackend::spawn` seam is
-        // gone — EP-002 US-004).
+        // gone - EP-002 US-004).
         let env = assemble_pty_env(env, workspace_id, surface_id, merged_env);
         // U-026: on `current_dir()` failure (deleted cwd, permission loss),
-        // fall back to the user's home dir rather than `/` — spawning a shell
+        // fall back to the user's home dir rather than `/` - spawning a shell
         // at the filesystem root is surprising and strands the user. `/` stays
         // only as the absolute last resort if even the home dir is unknown.
         let cwd = working_directory.unwrap_or_else(|| {
@@ -570,7 +570,7 @@ impl TerminalState {
     }
 
     /// Open the PTY and start its `EventLoop` on the given (shared) `term` and
-    /// event channel — the *blocking* half of a spawn (`tty::new` forks). Safe
+    /// event channel - the *blocking* half of a spawn (`tty::new` forks). Safe
     /// to call on a background thread: when `signal_mask` is `Some`, it is
     /// installed on this thread around the `tty::new` fork so the child inherits
     /// the foreground (main-thread) signal disposition and Ctrl-C / Ctrl-Z keep
@@ -649,7 +649,7 @@ impl TerminalState {
             // control (closed in `Drop`). The borrowed `pty.file().as_raw_fd()`
             // is closed when the EventLoop (which takes ownership of `pty`
             // below) tears the PTY down on child exit, and the OS may reuse
-            // that fd number — `tcgetpgrp(stale_fd)` would then report an
+            // that fd number - `tcgetpgrp(stale_fd)` would then report an
             // unrelated process group, defeating the `p > 0` filter.
             let raw = pty.file().as_raw_fd();
             // SAFETY: `raw` is a valid open fd for the PTY master; `dup`
@@ -679,7 +679,7 @@ impl TerminalState {
 
     /// Promote a display-only / pending terminal to a live PTY by installing the
     /// `EventLoop` write channel, child PID, and interactive defaults produced
-    /// by [`open_pty_and_eventloop`]. The grid `Term` is unchanged — the
+    /// by [`open_pty_and_eventloop`]. The grid `Term` is unchanged - the
     /// background `EventLoop` was attached to the same shared `term`, so output
     /// already flows; this just opens the write side and lets `Drop` reach the
     /// child.
@@ -689,7 +689,7 @@ impl TerminalState {
         // Seed the working directory from the launch cwd. On Unix `sync_channels`
         // refines this to the live shell cwd within a few poll ticks via
         // `cwd_now()` (/proc, libproc); on Windows `cwd_now()` is a stub, so this
-        // launch-dir seed is the ONLY source of `current_cwd` — without it the
+        // launch-dir seed is the ONLY source of `current_cwd` - without it the
         // value stayed `None` and the agent-sessions sidebar, which scans the
         // active terminal's cwd, had nothing to resolve and rendered empty.
         if self.current_cwd.is_none() {
@@ -758,7 +758,7 @@ impl TerminalState {
 
         let state = Self {
             term,
-            // No PTY / EventLoop yet — notifier sends are silently dropped until
+            // No PTY / EventLoop yet - notifier sends are silently dropped until
             // `promote()` installs a `Pty` sender.
             notifier: PtyNotifier(PtySender::display_only()),
             events_rx: Some(events_rx),
@@ -802,7 +802,7 @@ impl TerminalState {
     /// would insert an extra `\r`, producing `\r\r\n`). Prefer complete chunks.
     #[allow(dead_code)]
     pub fn write_output(&self, bytes: &[u8]) {
-        // Convert \n to \r\n — bare LF without preceding CR needs CR insertion
+        // Convert \n to \r\n - bare LF without preceding CR needs CR insertion
         let mut converted = Vec::with_capacity(bytes.len());
         let mut prev = 0u8;
         for &b in bytes {
@@ -892,7 +892,7 @@ impl TerminalState {
                 // but carries the numeric signal via `ExitStatusExt::signal()`;
                 // pair it with `strsignal` for the overlay ("11 (Segmentation
                 // fault)"). No `from_raw(code<<8)` reconstruction and no
-                // in-process strsignal reversal — alacritty hands us the number.
+                // in-process strsignal reversal - alacritty hands us the number.
                 #[cfg(unix)]
                 if status.code().is_none()
                     && let Some(sig) = std::os::unix::process::ExitStatusExt::signal(&status)
@@ -920,11 +920,11 @@ impl TerminalState {
             }
             // Windows consoles (pwsh/powershell/cmd) set their initial window
             // title to their own executable path before the user's profile runs
-            // — e.g. `C:\Program Files\PowerShell\7\pwsh.exe`. Adopted verbatim
+            // - e.g. `C:\Program Files\PowerShell\7\pwsh.exe`. Adopted verbatim
             // that leaks the shell install dir as the surface label (tab title,
             // Agents thread title, persisted session `name`) and is never a
             // meaningful name, so a title that is just an absolute path to an
-            // `.exe` is dropped — keep the previous/default name. Real titles
+            // `.exe` is dropped - keep the previous/default name. Real titles
             // (Claude Code, prompt-driven labels) take the guarded arm above.
             AlacEvent::Title(_) => {}
             AlacEvent::ResetTitle => {
@@ -950,7 +950,7 @@ impl TerminalState {
             AlacEvent::ClipboardLoad(..) => {}
 
             AlacEvent::ColorRequest(index, format_fn) => {
-                // Respond synchronously to preserve PTY-write order — match
+                // Respond synchronously to preserve PTY-write order - match
                 // Zed (`crates/terminal/src/terminal.rs:997-1009`). Crossterm's
                 // `query_foreground_color` / `query_background_color` (used by
                 // the OpenAI Codex CLI to detect terminal colors and decide
@@ -1000,11 +1000,11 @@ impl TerminalState {
     }
 
     /// Read the shell's CWD from the OS on demand.
-    /// Fallback for shells that don't emit OSC 7 — used at split time.
+    /// Fallback for shells that don't emit OSC 7 - used at split time.
     #[cfg(target_os = "linux")]
     pub fn cwd_now(&self) -> Option<std::path::PathBuf> {
         // US-034: once the child has exited, `child_pid` is stale and the OS
-        // may have reused it for an unrelated process — reading
+        // may have reused it for an unrelated process - reading
         // `/proc/<pid>/cwd` would silently return a third party's CWD. Bail.
         if self.exited.is_some() {
             return None;
@@ -1027,14 +1027,14 @@ impl TerminalState {
         use std::mem::MaybeUninit;
         use std::os::raw::c_void;
 
-        // US-034: after exit, `child_pid` may have been reused — `proc_pidinfo`
+        // US-034: after exit, `child_pid` may have been reused - `proc_pidinfo`
         // would return an unrelated process's CWD. Bail.
         if self.exited.is_some() {
             return None;
         }
 
         // Display-only terminal (no real PTY) or a child whose pid hasn't been
-        // resolved yet: `child_pid` is 0. Bail before the FFI — `proc_pidinfo(0,
+        // resolved yet: `child_pid` is 0. Bail before the FFI - `proc_pidinfo(0,
         // …)` targets the kernel swapper (pid 0), fails with EPERM, and would
         // spam a misleading "shell may have exited" warning on every poll tick.
         // Mirrors the `foreground_command` guards on every platform.
@@ -1063,14 +1063,14 @@ impl TerminalState {
         if written <= 0 {
             let err = std::io::Error::last_os_error();
             log::warn!(
-                "cwd_now: proc_pidinfo(pid={pid}) returned {written} ({err}) — shell may have exited or SIP / sandbox is denying the read"
+                "cwd_now: proc_pidinfo(pid={pid}) returned {written} ({err}) - shell may have exited or SIP / sandbox is denying the read"
             );
             return None;
         }
 
         if written < size {
             log::warn!(
-                "cwd_now: proc_pidinfo(pid={pid}) wrote {written} of {size} bytes — truncated result discarded"
+                "cwd_now: proc_pidinfo(pid={pid}) wrote {written} of {size} bytes - truncated result discarded"
             );
             return None;
         }
@@ -1183,7 +1183,7 @@ impl TerminalState {
 
     /// US-002: write to the PTY WITHOUT marking the session user-initiated.
     /// For automated protocol writes (DEC 1004 focus in/out reports, search
-    /// RIS reset) that must not flip `keyboard_input_sent` — otherwise a
+    /// RIS reset) that must not flip `keyboard_input_sent` - otherwise a
     /// failed-spawn pane that merely gains focus would wrongly close on exit.
     pub fn write_to_pty_silent(&self, input: impl Into<Cow<'static, [u8]>>) {
         self.notifier.notify(input);
@@ -1191,7 +1191,7 @@ impl TerminalState {
 
     /// US-002: whether a child exit should close the pane. A user-initiated
     /// session (any input was sent) always closes; otherwise only a clean exit
-    /// (code 0) closes — a non-zero exit with no input is a spawn/launch
+    /// (code 0) closes - a non-zero exit with no input is a spawn/launch
     /// failure and stays open so the exit overlay shows the code. Mirrors Zed's
     /// discriminator (crates/terminal/src/terminal.rs:2572-2576).
     pub fn should_close_on_exit(&self) -> bool {
@@ -1208,7 +1208,7 @@ impl TerminalState {
 
     /// US-011: scrollback drain decoupled from `&self` so `save_session` can
     /// run it on a background thread against a cloned [`SharedTerm`] handle
-    /// (the term mutex is `Send + Sync` — it is the only cross-thread state in
+    /// (the term mutex is `Send + Sync` - it is the only cross-thread state in
     /// the app) instead of holding the GPUI main thread. US-012's windowing
     /// keeps the lock bounded to the most-recent `MAX_LINES` rows.
     pub fn extract_scrollback_from(term: &SharedTerm) -> Option<String> {
@@ -1222,7 +1222,7 @@ impl TerminalState {
 
         // US-012: window to the most-recent MAX_LINES *before* the loop so the
         // lock is never held while materializing the full history (scrollback
-        // can be 10k lines — see DEFAULT_SCROLLBACK_LINES). Walk oldest→newest
+        // can be 10k lines - see DEFAULT_SCROLLBACK_LINES). Walk oldest→newest
         // from `bottom - MAX_LINES`, clamped to the topmost line. The drain
         // below stays as a defensive trim (trailing-empty removal can leave at
         // most MAX_LINES + 1 rows).
@@ -1270,7 +1270,7 @@ impl TerminalState {
     /// prd-pane-context-bridge). Returns the command line (argv joined by
     /// spaces) of the process currently in the shell's foreground, or the
     /// shell itself when idle (which the namer maps to `shell`). `None` on
-    /// platforms without a cheap lookup — callers fall back to the OSC title.
+    /// platforms without a cheap lookup - callers fall back to the OSC title.
     #[cfg(target_os = "linux")]
     pub fn foreground_command(&self) -> Option<String> {
         // US-034: stale `child_pid` after exit may name an unrelated process.
@@ -1278,7 +1278,7 @@ impl TerminalState {
             return None;
         }
         // Display-only terminal (no real PTY): `child_pid` is 0. Bail before the
-        // `/proc` lookup — the `highest_pid_child_via_ppid` fallback would
+        // `/proc` lookup - the `highest_pid_child_via_ppid` fallback would
         // otherwise match the kernel processes whose ppid is 0 (PID 1/2) and
         // mis-name a display-only surface. Mirrors the macOS/Windows guards.
         if self.child_pid == 0 {
@@ -1347,7 +1347,7 @@ impl TerminalState {
     }
 
     /// Other platforms (BSDs, etc.): no cheap foreground lookup; naming
-    /// degrades to the OSC title (cross-platform rule — graceful fallback).
+    /// degrades to the OSC title (cross-platform rule - graceful fallback).
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     pub fn foreground_command(&self) -> Option<String> {
         None
@@ -1402,13 +1402,13 @@ impl TerminalState {
     /// Strip every byte that could re-introduce a live escape/CSI/OSC/DCS
     /// sequence (or C1 control) from a single restored-scrollback line, so the
     /// documented "plain, ANSI stripped" invariant (schema.rs `scrollback`
-    /// field) is *enforced* on the restore path — not merely assumed.
+    /// field) is *enforced* on the restore path - not merely assumed.
     ///
     /// A tampered/imported `session.json` can carry raw VT bytes in
     /// `surface.scrollback`; feeding them verbatim into the VTE processor
     /// allows single-line title-spoof / OSC8 clickable-link injection into the
     /// restored grid (phishing primitive). We drop the ESC introducer
-    /// (`0x1b`), all other C0 control code points (keeping only `\t` — `\n`
+    /// (`0x1b`), all other C0 control code points (keeping only `\t` - `\n`
     /// has already been consumed by the line split and `\r\n` is re-added by
     /// the caller), and the C1 control range (U+0080..=U+009F, which alacritty
     /// also treats as escape introducers). Pure string op: cross-platform, no
@@ -1429,11 +1429,11 @@ impl TerminalState {
     /// terminal's output, for the collision cross-check against the scan's
     /// LISTEN attribution. The source text is UNTRUSTED terminal output, so
     /// the list is bounded: a flood of fake announcements can at most fill
-    /// 16 slots (oldest kept — the legitimate dev-server line is printed
+    /// 16 slots (oldest kept - the legitimate dev-server line is printed
     /// once at startup, i.e. first).
     /// Drop announce-dedup state for ports that are no longer LISTEN
     /// anywhere in the workspace. Without this, `reported_ports` was only
-    /// cleared on ChildExit — a dev server restarted inside a live shell
+    /// cleared on ChildExit - a dev server restarted inside a live shell
     /// (nodemon, plain re-run) re-printed its banner but could never re-fire
     /// `ServiceDetected`, leaving the sidebar chip stale until the pane died.
     pub fn retain_reported_ports(&mut self, live: &[u16]) {
@@ -1451,7 +1451,7 @@ impl TerminalState {
     /// Feed saved scrollback text into the terminal grid via VTE processor.
     /// Called during session restore, before the shell has produced output.
     /// Prepends `\x1b[0m` (SGR reset) to clear any dangling style state from
-    /// a prior truncated scrollback — ANSI-safe defense-in-depth (US-012).
+    /// a prior truncated scrollback - ANSI-safe defense-in-depth (US-012).
     pub fn restore_scrollback(&self, text: &str) {
         let mut term = self.term.lock();
         let mut processor = alacritty_terminal::vte::ansi::Processor::<
@@ -1502,7 +1502,7 @@ pub(super) fn cap_scrollback_at_char_boundary(result: &mut String, max_chars: us
 /// Scans backward from the end for an ESC (`\x1b`) that starts a CSI (`\x1b[`),
 /// OSC (`\x1b]`), or DCS (`\x1bP`) sequence. If the sequence is unterminated
 /// (no final byte in the valid range), it is removed. Plain text strings with
-/// no ESC bytes are returned unmodified — truncation is identical to naive splitting.
+/// no ESC bytes are returned unmodified - truncation is identical to naive splitting.
 pub(super) fn strip_partial_ansi_tail(text: &mut String) {
     let Some(esc_pos) = text.rfind('\x1b') else {
         return; // No escape sequences at all
@@ -1539,7 +1539,7 @@ pub(super) fn strip_partial_ansi_tail(text: &mut String) {
             }
         }
         _ => {
-            // Other ESC sequences (SS2, SS3, etc.) are 2 bytes — complete as-is.
+            // Other ESC sequences (SS2, SS3, etc.) are 2 bytes - complete as-is.
         }
     }
 }
@@ -1550,7 +1550,7 @@ fn paneflow_socket_path() -> Option<String> {
     crate::runtime_paths::socket_path().map(|p| p.display().to_string())
 }
 
-/// US-009 — extract the embedded AI-hook binaries into the user's cache
+/// US-009 - extract the embedded AI-hook binaries into the user's cache
 /// dir, then expose that dir via `PANEFLOW_BIN_DIR` and prepend it to
 /// the child shell's `PATH`.
 ///
@@ -1561,7 +1561,7 @@ fn paneflow_socket_path() -> Option<String> {
 /// of AI-hook wiring.
 ///
 /// Factored out of `TerminalState::new` so the helper is independently
-/// testable — the extraction side-effect lives in `ai_hooks::extract`
+/// testable - the extraction side-effect lives in `ai_hooks::extract`
 /// (already unit-tested in US-008); this glue only layers the env
 /// mutations on top of a returned `PathBuf`.
 fn inject_ai_hook_env(env: &mut std::collections::HashMap<String, String>) {
@@ -1570,7 +1570,7 @@ fn inject_ai_hook_env(env: &mut std::collections::HashMap<String, String>) {
         Err(e) => {
             // `{e:#}` emits the full anyhow context chain (each
             // `.with_context()` frame) rather than just the outermost
-            // message — crucial for diagnosing cache-dir permission
+            // message - crucial for diagnosing cache-dir permission
             // errors that arrive with a useful inner IO error.
             log::warn!(
                 "paneflow: AI-hook binary extraction failed ({e:#}); sidebar loader will not activate for this terminal session"
@@ -1593,7 +1593,7 @@ fn inject_ai_hook_env(env: &mut std::collections::HashMap<String, String>) {
 /// `std::env::join_paths`, which emits `:` on Unix and `;` on Windows.
 ///
 /// If join-paths fails (e.g. a `PATH` entry contains a platform
-/// separator byte — invalid but physically possible), logs a warning
+/// separator byte - invalid but physically possible), logs a warning
 /// and leaves the env map unchanged. Better "no prepend" than "broken
 /// PATH".
 fn prepend_bin_dir_to_path(
@@ -1602,7 +1602,7 @@ fn prepend_bin_dir_to_path(
 ) {
     // Order of precedence: explicit map entry first, then process env.
     // `setup_shell_integration` (shell.rs) does not set PATH, so in
-    // practice this always falls through to the process PATH — but the
+    // practice this always falls through to the process PATH - but the
     // explicit-map branch makes the helper reusable and keeps tests
     // decoupled from the process environment.
     let existing: Option<std::ffi::OsString> = env
@@ -1613,7 +1613,7 @@ fn prepend_bin_dir_to_path(
     let mut components: Vec<std::path::PathBuf> = vec![bin_dir.to_path_buf()];
     // Guard against an empty `PATH` string: on Unix, `split_paths("")`
     // yields a single `PathBuf::from("")` which `execvp` resolves as the
-    // current working directory — that would silently put `.` on the
+    // current working directory - that would silently put `.` on the
     // child's PATH (a classic shell-injection surface). Treat empty and
     // absent identically.
     if let Some(existing) = existing.as_deref()
@@ -1625,11 +1625,11 @@ fn prepend_bin_dir_to_path(
     match std::env::join_paths(components) {
         Ok(joined) => {
             // `join_paths` always produces valid UTF-8 when all inputs
-            // were UTF-8 PathBufs + an OsString PATH — on all three
+            // were UTF-8 PathBufs + an OsString PATH - on all three
             // supported OSes, PATH is conventionally UTF-8 so the
             // `to_string_lossy` round-trip is safe. If a real-world PATH
             // entry contains non-UTF-8 bytes, we lose those in the
-            // lossy conversion — but the env map is keyed on
+            // lossy conversion - but the env map is keyed on
             // `HashMap<String, String>` to begin with, so this is a
             // pre-existing constraint inherited from
             // `PtyBackend::spawn`, not introduced here.
@@ -1648,7 +1648,7 @@ fn prepend_bin_dir_to_path(
 /// an untrusted source (an imported `session.json` surface env, or the global
 /// `terminal.env` config) must NOT be allowed to inject into a spawned child:
 /// `LD_PRELOAD` / `LD_LIBRARY_PATH` / `LD_AUDIT` and any `LD_*` on Linux, plus
-/// any `DYLD_*` on macOS. Letting these through is an RCE vector — the operator
+/// any `DYLD_*` on macOS. Letting these through is an RCE vector - the operator
 /// treats imported sessions as untrusted, and the child is always the
 /// configured shell. The match is case-sensitive on purpose: the unix loaders
 /// only honour the exact upper-case spelling, so a lower-case `ld_preload` is
@@ -1661,14 +1661,14 @@ fn is_loader_influencing_env_key(key: &str) -> bool {
 /// True if `key` is a well-formed environment variable name safe to insert into
 /// a child env block: non-empty and free of `=` and NUL, which would otherwise
 /// corrupt the name/value framing. Charset is intentionally NOT restricted to a
-/// strict POSIX set — legitimate user vars (e.g. `ANTHROPIC_API_KEY`) are
+/// strict POSIX set - legitimate user vars (e.g. `ANTHROPIC_API_KEY`) are
 /// already all-caps `[A-Z0-9_]`, and over-restricting would silently drop valid
 /// keys.
 fn is_valid_env_name(key: &str) -> bool {
     !key.is_empty() && !key.contains('=') && !key.contains('\0')
 }
 
-/// True for an OSC 0/2 title that is merely an absolute path to an `.exe` — the
+/// True for an OSC 0/2 title that is merely an absolute path to an `.exe` - the
 /// self-title Windows shells (`pwsh.exe`, `powershell.exe`, `cmd.exe`) emit at
 /// startup before the user's profile runs. Such a title is never a human-facing
 /// surface label, so callers drop it and keep the previous (or default) name.
@@ -1765,7 +1765,7 @@ fn assemble_pty_env(
 
     // Merge user-supplied env on top, EXCEPT the protected keys PaneFlow owns:
     // TERM/COLORTERM drive capability detection; the PANEFLOW_* identity vars
-    // are how the MCP bridge and the AI-hook shim find PaneFlow — letting a user
+    // are how the MCP bridge and the AI-hook shim find PaneFlow - letting a user
     // clobber them would silently break those features.
     if let Some(user_vars) = user_env {
         const PROTECTED: &[&str] = &[
@@ -1787,7 +1787,7 @@ fn assemble_pty_env(
             // imported `session.json` surface env or the global `terminal.env`
             // is untrusted, and these inject a bundled `.so` into the spawned
             // shell (RCE). `PATH` is deliberately still overridable here (a
-            // documented US-014 use case) — it shadows the AI-hook prepend but
+            // documented US-014 use case) - it shadows the AI-hook prepend but
             // is not a loader-preload vector; revisit if untrusted import flows
             // widen.
             if !is_valid_env_name(&k) || is_loader_influencing_env_key(&k) {
@@ -1803,7 +1803,7 @@ fn assemble_pty_env(
     env
 }
 
-/// True when `pid` is still the leader of its own process group — i.e. the
+/// True when `pid` is still the leader of its own process group - i.e. the
 /// session we spawned. alacritty's `tty::new` calls `setsid()` on the child, so
 /// `child_pid` is both the PID and the PGID of the session leader and
 /// `getpgid(pid) == pid` holds for as long as that session lives. After the
@@ -1817,7 +1817,7 @@ fn is_own_session_group(pid: i32) -> bool {
         return false;
     }
     // SAFETY: getpgid is a pure query; it returns the pgid, or -1 (ESRCH) when
-    // no such process exists — neither equals our positive `pid` unless `pid`
+    // no such process exists - neither equals our positive `pid` unless `pid`
     // is genuinely its own group leader.
     unsafe { libc::getpgid(pid) == pid }
 }
@@ -1864,7 +1864,7 @@ impl Drop for TerminalState {
         self.notifier.0.shutdown();
 
         // US-034: close the dup'd PTY master fd we own (macOS). Done exactly
-        // once here — the fd was duplicated at spawn so `tcgetpgrp` stayed
+        // once here - the fd was duplicated at spawn so `tcgetpgrp` stayed
         // valid for this session's lifetime independent of the EventLoop's
         // own copy.
         #[cfg(target_os = "macos")]
@@ -1891,11 +1891,11 @@ impl Drop for TerminalState {
             let pid = self.child_pid as i32;
             // US-034: skip the kill ladder entirely once the child has exited.
             // `child_pid` may have been reused by the OS by now, and signaling
-            // a reused PGID would terminate an unrelated process group — the
+            // a reused PGID would terminate an unrelated process group - the
             // synchronous SIGTERM below has the same PID-reuse window as the
             // delayed SIGKILL. An already-exited child has nothing to kill.
             if pid > 0 && self.exited.is_none() {
-                // US-001: graceful shutdown ladder — send SIGTERM to the group
+                // US-001: graceful shutdown ladder - send SIGTERM to the group
                 // synchronously FIRST so agents/shells run their TERM handlers
                 // (state checkpoint, HISTFILE flush) before the 100ms-grace
                 // SIGKILL escalation below. Mirrors Zed's
@@ -1909,14 +1909,14 @@ impl Drop for TerminalState {
                     // long-running scripts) dies with the shell instead of
                     // becoming an orphan reparented to PID 1. alacritty's
                     // `tty::new` calls `setsid()` on the child, so `child_pid`
-                    // is both the PID and the PGID of the session leader —
+                    // is both the PID and the PGID of the session leader -
                     // `kill(-pgid, sig)` is the canonical POSIX idiom to signal
                     // every process in that group.
                     //
                     // Re-check identity at fire time: 100ms after the child
                     // died the kernel may have recycled `pid` onto an unrelated
                     // group, so confirm `getpgid(pid) == pid` (our setsid
-                    // session leader) before the SIGKILL — a bare `kill(-pid,0)`
+                    // session leader) before the SIGKILL - a bare `kill(-pid,0)`
                     // existence probe would not catch the reuse.
                     if is_own_session_group(pid) {
                         // SAFETY: kill(-pid, SIGKILL) signals every member of
@@ -2084,7 +2084,7 @@ fn command_from_cmdline(bytes: &[u8]) -> Option<String> {
 
 /// macOS (US-019): resolve a pid/pgid to its executable basename via
 /// `proc_pidpath`, mirroring the `cwd_now` FFI style. `None` on any error
-/// (process gone, SIP/sandbox denial — logged at debug, never panics).
+/// (process gone, SIP/sandbox denial - logged at debug, never panics).
 #[cfg(target_os = "macos")]
 fn macos_exe_basename(pid: libc::c_int) -> Option<String> {
     use std::ffi::CStr;
@@ -2153,7 +2153,7 @@ fn windows_foreground_command(root_pid: u32) -> Option<String> {
 
     // Descend parent → child from the shell to the deepest leaf. At each level
     // pick the child with the HIGHEST pid: Windows assigns pids in increasing
-    // order, so the highest pid is the most-recently-spawned child — the best
+    // order, so the highest pid is the most-recently-spawned child - the best
     // available proxy for the foreground job under ConPTY (which, unlike Unix,
     // has no `tcgetpgrp`). `.find()` would instead return snapshot-enumeration
     // order (oldest-first), naming a stale background job in a multi-child
@@ -2210,7 +2210,7 @@ mod tests {
     fn display_only_sender_is_inert() {
         // US-011: the DisplayOnly variant of TerminalType has no EventLoop, so
         // write/resize/shutdown are dropped (no panic) and `is_pty` is false.
-        // This is the spawn-failure fallback's write side — input must never
+        // This is the spawn-failure fallback's write side - input must never
         // reach a child that doesn't exist.
         let s = PtySender::display_only();
         assert!(!s.is_pty());
@@ -2246,7 +2246,7 @@ mod tests {
     #[test]
     fn write_to_pty_buffers_input_while_display_only() {
         // US-012 regression: the Agents-view "New thread" picker writes the
-        // launch command the instant a thread mounts — before the off-thread
+        // launch command the instant a thread mounts - before the off-thread
         // fork promotes the PTY. The display-only notifier drops writes, so
         // without this queue the command (e.g. `claude`) is lost and the
         // terminal opens to a bare shell. `write_to_pty` must buffer instead.
@@ -2289,10 +2289,10 @@ mod tests {
         // US-012 end-to-end: input written while display-only must reach the
         // child after promotion. Mirrors the synchronous `new` composition
         // (new_pending + open_pty_and_eventloop + promote) but injects a write
-        // *between* new_pending and promote — the exact Agents-view ordering.
+        // *between* new_pending and promote - the exact Agents-view ordering.
         let params = TerminalState::resolve_spawn_params(None, 1, 1, Some((80, 24)), None);
         let (mut state, events_tx) = TerminalState::new_pending(params.cols, params.rows);
-        // Buffered while display-only — the live notifier does not exist yet.
+        // Buffered while display-only - the live notifier does not exist yet.
         state.write_to_pty(b"echo PANEFLOW_FLUSH_OK\n".to_vec());
         assert!(!state.notifier.0.is_pty());
 
@@ -2394,7 +2394,7 @@ mod tests {
     fn prepend_uses_platform_separator() {
         // Round-trip invariant: split_paths(join_paths(X)) == X. This
         // implicitly tests that `;` on Windows / `:` on Unix is handled
-        // correctly — we do not assert the raw bytes because that
+        // correctly - we do not assert the raw bytes because that
         // would hardcode per-OS expectations.
         let mut env: HashMap<String, String> = HashMap::new();
         let sep = platform_sep();
@@ -2418,7 +2418,7 @@ mod tests {
 
     #[test]
     fn prepend_treats_empty_path_as_absent() {
-        // An empty `PATH` is not absent — `split_paths("")` on Unix
+        // An empty `PATH` is not absent - `split_paths("")` on Unix
         // yields one `PathBuf::from("")` component that `execvp`
         // resolves as the CWD. We must NOT inherit that phantom entry
         // onto the child's PATH (shell-injection surface).
@@ -2441,7 +2441,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // US-003 — exit-status correctness (real code, first-write-wins).
+    // US-003 - exit-status correctness (real code, first-write-wins).
     // -----------------------------------------------------------------
 
     #[test]
@@ -2498,7 +2498,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // US-002 — keep pane open on launch failure (keyboard_input_sent).
+    // US-002 - keep pane open on launch failure (keyboard_input_sent).
     // -----------------------------------------------------------------
 
     #[test]
@@ -2550,7 +2550,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // US-001 — graceful teardown sends SIGTERM before SIGKILL.
+    // US-001 - graceful teardown sends SIGTERM before SIGKILL.
     // -----------------------------------------------------------------
 
     #[cfg(unix)]
@@ -2559,7 +2559,7 @@ mod tests {
         // US-001 AC: the process group receives SIGTERM (not a hard SIGKILL).
         // The child is its own session/group leader (setsid) and traps SIGTERM
         // to exit 42; a SIGKILL would instead show signal 9 with no exit code.
-        // Proving the trap ran proves SIGTERM was delivered to the group — and
+        // Proving the trap ran proves SIGTERM was delivered to the group - and
         // by construction `Drop` sends it synchronously *before* scheduling the
         // 100ms-grace SIGKILL.
         use std::io::{BufRead, BufReader};
@@ -2570,11 +2570,11 @@ mod tests {
         // `sleep 30 &` + `wait` (not a foreground sleep): POSIX requires the
         // `wait` builtin to be interrupted by a trapped signal, so the trap
         // runs promptly even if the group SIGTERM races `sleep`'s fork→exec
-        // window (where an inherited blocked mask can leave it alive — a
+        // window (where an inherited blocked mask can leave it alive - a
         // foreground sleep then pins the shell for its full 30s before the
         // trap fires, which is exactly the aarch64-CI hang this replaces).
         // `echo ready` is the readiness handshake: once the parent reads it,
-        // setsid + trap + background spawn are all done — no blind warmup.
+        // setsid + trap + background spawn are all done - no blind warmup.
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "trap 'exit 42' TERM; sleep 30 & echo ready; wait"])
             .stdin(Stdio::null())
@@ -2604,7 +2604,7 @@ mod tests {
         );
 
         // The trap exits 42 well within the 100ms grace window; poll for exit
-        // with a generous ceiling — the suite runs fully parallel on 4-core CI
+        // with a generous ceiling - the suite runs fully parallel on 4-core CI
         // runners and a 5s deadline has flaked under that load (same class as
         // the v0.3.9 stdout_cap deflake). A regression still fails, just slower.
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -2631,7 +2631,7 @@ mod tests {
     #[test]
     fn terminate_process_group_is_noop_for_dead_or_invalid_group() {
         // US-001 AC (unhappy path): an empty/invalid group must be a harmless
-        // no-op guarded by the `getpgid(pid) == pid` identity check — no panic,
+        // no-op guarded by the `getpgid(pid) == pid` identity check - no panic,
         // returns false.
         assert!(
             !terminate_process_group(0),
@@ -2658,7 +2658,7 @@ mod tests {
 
     #[test]
     fn pty_spawn_injects_paneflow_bin_dir_and_prepends_path() {
-        // Skip where the cache dir is unresolvable — the helper silent-fails
+        // Skip where the cache dir is unresolvable - the helper silent-fails
         // (correct behavior), but then there's nothing to assert on.
         if dirs::cache_dir().is_none() {
             eprintln!("skip: dirs::cache_dir() unresolvable in this environment");
@@ -2737,7 +2737,7 @@ mod tests {
 
     // f010: dynamic-loader env vars from an untrusted source (imported
     // session.json surface env / global config env) must never reach the child
-    // shell — letting LD_PRELOAD/LD_*/DYLD_* through is an RCE vector.
+    // shell - letting LD_PRELOAD/LD_*/DYLD_* through is an RCE vector.
     #[test]
     fn loader_influencing_env_vars_are_dropped() {
         let mut user = HashMap::new();
@@ -2863,8 +2863,8 @@ mod tests {
         );
     }
 
-    /// US-011: `extract_scrollback_from` drains a *cloned* `SharedTerm` handle —
-    /// the exact handle `serialize_deferred` ships to the background save task —
+    /// US-011: `extract_scrollback_from` drains a *cloned* `SharedTerm` handle -
+    /// the exact handle `serialize_deferred` ships to the background save task -
     /// and round-trips the seeded scrollback. Proves the drain is decoupled from
     /// `&self` so `save_session` can run it off the GPUI main thread. Three
     /// lines fit the visible grid, so the assertion is independent of any
@@ -2894,7 +2894,7 @@ mod tests {
     fn cap_scrollback_truncates_on_char_boundary() {
         const MAX: usize = 100;
         // 99 ASCII bytes, then a 4-byte '🦀' occupying byte indices 99..103, so
-        // byte index `MAX` (100) falls inside the codepoint — the case that
+        // byte index `MAX` (100) falls inside the codepoint - the case that
         // panics a raw `truncate(MAX)`. No newline, so the line-trim is a no-op.
         let mut s = "a".repeat(MAX - 1);
         s.push('🦀');
@@ -2936,7 +2936,7 @@ mod tests {
     /// `alacritty_terminal::tty` + `EventLoop`, write a marker command, and
     /// confirm the EventLoop read->parse path lands the echoed output in the
     /// `Term` grid. This is the only test that exercises `tty::new` +
-    /// `EventLoop::spawn` + `Notifier` end-to-end — the others use the
+    /// `EventLoop::spawn` + `Notifier` end-to-end - the others use the
     /// display-only path. Unix-only (drives `/bin/sh`); the process group is
     /// torn down by `Drop` at scope exit.
     #[cfg(unix)]
@@ -2986,7 +2986,7 @@ mod tests {
 
         // Up to 12s. This test runs on every OS, and PowerShell (the Windows
         // default shell) can cold-start slowly on a loaded CI runner before
-        // emitting its banner — output_generation only advances once the PTY
+        // emitting its banner - output_generation only advances once the PTY
         // produces any output. The loop breaks immediately on success, so the
         // larger budget only costs wall-time when the signal never arrives.
         let mut advanced = false;

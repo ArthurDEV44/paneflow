@@ -1,5 +1,5 @@
 #!/bin/sh
-# RPM `%postun` scriptlet — runs after the package files are removed.
+# RPM `%postun` scriptlet - runs after the package files are removed.
 # Rebuilds the freedesktop icon + desktop caches so the vanishing
 # `/usr/share/icons/hicolor/*/apps/paneflow.png` entries and the
 # removed `paneflow.desktop` stop being surfaced by GNOME Shell / KDE

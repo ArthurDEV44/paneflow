@@ -3,7 +3,7 @@
 //! A `paneflow.workspace.toml` describes one workspace: a layout preset plus a
 //! list of panes, each with an optional cwd, an agent (or raw command) to run,
 //! and a prompt to pre-fill. `deny_unknown_fields` turns a misspelled key into
-//! an explicit error rather than a silently-ignored field — important for a
+//! an explicit error rather than a silently-ignored field - important for a
 //! hand-edited config. Business invariants (non-empty, within MAX_PANES, not
 //! both `agent` and `command`) are validated after deserialization.
 //!
@@ -113,7 +113,7 @@ pub struct PaneSpec {
     /// Wall-clock bound for `setup`, seconds (default 300).
     #[serde(default)]
     pub setup_timeout_secs: Option<u64>,
-    /// Worktree teardown at workspace close (US-009): `"auto"` (default —
+    /// Worktree teardown at workspace close (US-009): `"auto"` (default -
     /// remove when clean, branch never deleted) or `"keep"`.
     #[serde(default)]
     pub worktree_teardown: Option<String>,
@@ -158,7 +158,7 @@ pub(super) fn validate_pane(i: usize, pane: &PaneSpec) -> Result<(), String> {
 /// Worktree-field invariants (EP-002). `worktree` needs a `cwd` to locate the
 /// repo; the companion fields are inert without `worktree`, so their presence
 /// alone is a spec mistake worth refusing (deny_unknown_fields spirit). A
-/// leading `-` in the branch would read as a git flag (CWE-88) — refused here
+/// leading `-` in the branch would read as a git flag (CWE-88) - refused here
 /// rather than trusted to downstream quoting.
 fn validate_worktree_fields(i: usize, pane: &PaneSpec) -> Result<(), String> {
     match pane.worktree.as_deref() {
@@ -172,7 +172,7 @@ fn validate_worktree_fields(i: usize, pane: &PaneSpec) -> Result<(), String> {
                 ));
             }
             // A branch whose filesystem slug is empty (dot-only: `.`, `..`)
-            // has no safe directory name — `..` would be a traversal
+            // has no safe directory name - `..` would be a traversal
             // component of the worktree path (NFR: slugs filesystem-safe).
             if crate::workspace::worktree::branch_slug(branch).is_empty() {
                 return Err(format!(
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn worktree_branch_dot_only_is_rejected() {
         // A dot-only branch slug would be a `..` traversal component in the
-        // (destructive) worktree path — refused at parse, atomically.
+        // (destructive) worktree path - refused at parse, atomically.
         for branch in ["..", ".", "..."] {
             let err = load(&format!(
                 "[[panes]]\ncwd = \"/tmp\"\nagent = \"claude\"\nworktree = \"{branch}\"\n"

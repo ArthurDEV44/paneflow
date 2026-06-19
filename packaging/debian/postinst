@@ -1,10 +1,10 @@
 #!/bin/sh
-# Debian `postinst` maintainer script — runs after the package payload is
+# Debian `postinst` maintainer script - runs after the package payload is
 # unpacked. Wires /etc/apt/sources.list.d/paneflow.list at `pkg.paneflow.dev`
 # so subsequent `apt upgrade paneflow` pulls new releases automatically
 # (US-016).
 #
-# Guardrails (learned from the Cursor .deb `apt update` breakage —
+# Guardrails (learned from the Cursor .deb `apt update` breakage -
 # https://forum.cursor.com/t/installing-cursor-via-apt-deb-package-breaks-apt-update/132008):
 #
 #  - Idempotent: a pre-existing `paneflow.list` is left alone. Users who
@@ -13,7 +13,7 @@
 #    abort the install. `apt update` will later complain about the
 #    missing signature, and the printed message tells the user exactly
 #    how to recover with `curl | gpg --dearmor`.
-#  - Pure /bin/sh (no bashisms) — Debian Policy §4.9 and Ubuntu `dash`
+#  - Pure /bin/sh (no bashisms) - Debian Policy §4.9 and Ubuntu `dash`
 #    compatibility.
 
 set -e
@@ -27,7 +27,7 @@ case "$1" in
 configure)
     # --- Sources file --------------------------------------------------
     # Note on upgrade paths: a future release that moves `pkg.paneflow.dev`
-    # to a new URL cannot repoint existing installs through this script —
+    # to a new URL cannot repoint existing installs through this script -
     # the `[ ! -f "$SOURCES" ]` guard is strict so we never clobber a
     # user-customized mirror, and that same guard blocks our own URL
     # migrations. Such a migration will require either (a) a one-shot
@@ -111,7 +111,7 @@ EOF
     # upgrade: they rebuild deterministically from the current
     # filesystem state. The `|| true` guard keeps the transaction
     # green on minimal Debian installs (server, some containers)
-    # that don't ship these tools — the icons still work on any
+    # that don't ship these tools - the icons still work on any
     # desktop environment because the caches get rebuilt lazily.
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
         gtk-update-icon-cache -q -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
@@ -122,12 +122,12 @@ EOF
     ;;
 
 abort-upgrade|abort-deconfigure|abort-remove)
-    # Rollback hooks — nothing to undo (file creations are idempotent
+    # Rollback hooks - nothing to undo (file creations are idempotent
     # and will be re-tried on the next successful install).
     ;;
 
 *)
-    # Unknown action — exit 0 for forward compatibility with future
+    # Unknown action - exit 0 for forward compatibility with future
     # dpkg actions rather than hard-failing the install.
     ;;
 esac

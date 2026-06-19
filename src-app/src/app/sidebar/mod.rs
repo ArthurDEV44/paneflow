@@ -2,7 +2,7 @@
 //! notification dropdown, and the context-menu row helpers (in the
 //! [`context_menu`] submodule).
 //!
-//! Extracted from `main.rs` per US-025 of the src-app refactor PRD — pure
+//! Extracted from `main.rs` per US-025 of the src-app refactor PRD - pure
 //! code-motion, behaviour unchanged. Toast utilities and sidebar-adjacent
 //! types (`WorkspaceContextMenu`, `WorkspaceDrag`, `WorkspaceDragPreview`)
 //! remain in `main.rs` because they cross module boundaries.
@@ -53,7 +53,7 @@ fn collapse_home(cwd: &str, home: &str) -> String {
 impl PaneFlowApp {
     /// Cheap content signature for the sidebar display order (US-048). Hashes
     /// the workspace count plus each `(id, repo_root)` in positional order, so
-    /// it changes on create / close / reorder / repo-root change — exactly the
+    /// it changes on create / close / reorder / repo-root change - exactly the
     /// inputs [`Self::compute_display_order`] reads. No allocation.
     fn sidebar_order_signature(workspaces: &[Workspace]) -> u64 {
         use std::hash::{Hash, Hasher};
@@ -72,7 +72,7 @@ impl PaneFlowApp {
     /// Sibling-worktree grouping (US-002): workspaces sharing a `repo_root`
     /// render contiguously when ≥2 share it (group appears at the first
     /// member's position); a lone workspace keeps its original position.
-    /// Returns indices into `workspaces`. Pure — memoized by the caller.
+    /// Returns indices into `workspaces`. Pure - memoized by the caller.
     fn compute_display_order(workspaces: &[Workspace]) -> Vec<usize> {
         let mut repo_members: std::collections::HashMap<&std::path::Path, Vec<usize>> =
             std::collections::HashMap::new();
@@ -118,7 +118,7 @@ impl PaneFlowApp {
             // Cockpit rail (#141414), matching the Agents sidebar. The
             // border-right is gone: the rail and the #181818 content gutter
             // separate by a luminance step, not a drawn divider (the OpenAI
-            // surface system — separation by luminance, not borders).
+            // surface system - separation by luminance, not borders).
             .bg(crate::app::constants::cockpit_chrome_background(
                 theme.title_bar_background,
                 window.is_window_active(),
@@ -130,7 +130,7 @@ impl PaneFlowApp {
         // Open Settings) moved into the bottom-of-sidebar Settings
         // popover. The top of the CLI sidebar is now empty -- see
         // `cli_menu_items` for the popover contents.
-        // Workspace list — scrollable area. Wheel-scroll comes from
+        // Workspace list - scrollable area. Wheel-scroll comes from
         // `overflow_y_scroll + track_scroll`; the visible scroll bar
         // is gone, so the list uses the full sidebar width without a
         // trailing gutter.
@@ -227,7 +227,7 @@ impl PaneFlowApp {
         // ── Sibling-worktree grouping (US-002), memoized (US-048) ──
         // The display order depends only on the workspace set/order and each
         // `repo_root`. `render_sidebar` runs on every app `notify()`, so the old
-        // per-frame `HashMap` + `Vec` rebuild was pure waste — recompute only
+        // per-frame `HashMap` + `Vec` rebuild was pure waste - recompute only
         // when a cheap content signature changes. `idx` stays the workspace's
         // real index in `self.workspaces`, so selection/drag/rename are
         // unaffected by the display reordering.
@@ -370,7 +370,7 @@ impl PaneFlowApp {
                     .child(title)
             };
 
-            // Active AI session pastille — one blue dot to the right
+            // Active AI session pastille - one blue dot to the right
             // of the title as soon as the workspace holds at least
             // one live `claude` or `codex` process. Source of truth is
             // `Workspace::detected_agents`, populated by walking the
@@ -425,7 +425,7 @@ impl PaneFlowApp {
 
             card = card.child(title_row);
 
-            // ── Meta line — branch, diff stats, and active ports, all on a
+            // ── Meta line - branch, diff stats, and active ports, all on a
             // single compact muted line (Codex quiet-card: one airy meta row,
             // not a stack of three). `flex_wrap()` lets a long branch or extra
             // ports drop gracefully instead of truncating; the branch keeps its
@@ -529,7 +529,7 @@ impl PaneFlowApp {
                                     })
                                     // US-011 AC4/5/6 + AC7: delegate to the
                                     // `open` crate which already dispatches
-                                    // per-OS — `xdg-open` subprocess on
+                                    // per-OS - `xdg-open` subprocess on
                                     // Linux, `open` subprocess on macOS,
                                     // and `ShellExecuteW` (Win32 API call,
                                     // NOT a `cmd /C start ""` subprocess)
@@ -540,7 +540,7 @@ impl PaneFlowApp {
                                                 let msg = if err.kind()
                                                     == std::io::ErrorKind::NotFound
                                                 {
-                                                    "Could not open URL — install xdg-utils (Linux), or check your default browser".to_string()
+                                                    "Could not open URL - install xdg-utils (Linux), or check your default browser".to_string()
                                                 } else {
                                                     format!("Could not open URL: {err}")
                                                 };
@@ -707,7 +707,7 @@ impl PaneFlowApp {
                     }
                     // EP-004 US-010: a crashed agent reads in red, never as
                     // "done". Color from the dedicated `agent_error` slot
-                    // (FR-08 — distinct from the attention amber above).
+                    // (FR-08 - distinct from the attention amber above).
                     ai_types::AgentState::Errored => {
                         card = card.child(
                             div()
@@ -732,7 +732,7 @@ impl PaneFlowApp {
                         );
                     }
                     // EP-004 US-011: a silent agent is a suspicion, not a
-                    // failure — muted grey-blue from the `agent_stalled`
+                    // failure - muted grey-blue from the `agent_stalled`
                     // slot, alert-triangle icon (information also carried by
                     // the label, never by color alone).
                     ai_types::AgentState::Stalled => {
@@ -762,11 +762,11 @@ impl PaneFlowApp {
             }
 
             // Agents detected in the process tree (per-pane /proc scan) with
-            // NO IPC session — the shim was bypassed (shell alias, rc file
+            // NO IPC session - the shim was bypassed (shell alias, rc file
             // rewriting PATH, absolute binary path) or the agent has no hook
             // support at all. Show an honest static "running" row instead of
             // nothing: the user sees the agent is alive without a fabricated
-            // lifecycle state (no spinner — we genuinely don't know).
+            // lifecycle state (no spinner - we genuinely don't know).
             let hooked_tools: std::collections::HashSet<crate::agent_launcher::TerminalAgent> =
                 ws.agent_sessions.values().map(|s| s.tool).collect();
             let mut unhooked: Vec<&'static str> = ws
@@ -968,7 +968,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn partial_component_is_not_a_prefix() {
-        // US-040 regression: `/home/arth` must NOT match `/home/arthur` — the
+        // US-040 regression: `/home/arth` must NOT match `/home/arthur` - the
         // old `starts_with` + byte slice produced the bogus "~ur/proj".
         assert_eq!(
             collapse_home("/home/arthur/proj", "/home/arth"),

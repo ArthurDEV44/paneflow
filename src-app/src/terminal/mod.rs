@@ -1,4 +1,4 @@
-//! Terminal state and view — PTY management and GPUI view wrapper.
+//! Terminal state and view - PTY management and GPUI view wrapper.
 //!
 //! Manages the alacritty_terminal `Term`, its `tty` + `EventLoop` (EP-002), and
 //! periodic sync. The TerminalView creates a TerminalElement for cell-by-cell

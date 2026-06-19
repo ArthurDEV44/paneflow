@@ -7,10 +7,10 @@
 //! types and therefore stays inside the desktop binary).
 //!
 //! Submodules:
-//! - `client` (US-012) — re-exported from `paneflow-telemetry::client`.
-//! - `id` (US-010) — desktop shim that resolves `runtime_paths::data_dir()`
+//! - `client` (US-012) - re-exported from `paneflow-telemetry::client`.
+//! - `id` (US-010) - desktop shim that resolves `runtime_paths::data_dir()`
 //!   then delegates to `paneflow_telemetry::id::telemetry_id_at`.
-//! - `tags` (US-013) — domain mapping for `InstallMethod` and `UpdateError`
+//! - `tags` (US-013) - domain mapping for `InstallMethod` and `UpdateError`
 //!   (kept here because those types live in `crate::update::*`); the
 //!   canonical-tag format invariant moved to `paneflow_telemetry::tags`.
 //!
@@ -23,7 +23,7 @@
 //! - No event is ever emitted unless `config.telemetry.enabled == Some(true)`
 //!   **and** no kill-switch env var is set (`PANEFLOW_NO_TELEMETRY`,
 //!   `DO_NOT_TRACK`, `NO_TELEMETRY`).
-//! - No PII, no paths, no terminal content is ever transmitted — enforced
+//! - No PII, no paths, no terminal content is ever transmitted - enforced
 //!   at every call site, documented in `tasks/compliance-analytics.md §5`.
 
 pub use paneflow_telemetry::client;

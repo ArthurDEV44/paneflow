@@ -21,7 +21,7 @@ use gpui::{
 use crate::PaneFlowApp;
 use crate::settings::components::with_alpha;
 
-/// Initial panel height. Roughly a dozen rows of shell output — enough to be
+/// Initial panel height. Roughly a dozen rows of shell output - enough to be
 /// useful without swallowing the agent surface above it.
 pub(crate) const BOTTOM_PANEL_DEFAULT_HEIGHT: f32 = 320.0;
 
@@ -50,7 +50,7 @@ impl PaneFlowApp {
     /// Toggle the bottom dock. Opening with no terminals yet spawns the first
     /// one in the active thread's cwd and focuses it; opening with terminals
     /// already present just re-reveals them and refocuses the active tab.
-    /// Closing only hides the panel — terminals stay alive for a warm reopen.
+    /// Closing only hides the panel - terminals stay alive for a warm reopen.
     pub(crate) fn toggle_agents_bottom_panel(
         &mut self,
         _: &ClickEvent,

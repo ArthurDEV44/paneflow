@@ -2,8 +2,8 @@
 //!
 //! Talks to a RUNNING Paneflow instance over the existing IPC JSON-RPC socket
 //! (`paneflow-ipc-client`) and exits before any GPUI init. `main.rs` dispatches
-//! here only when `argv[1]` names a known verb ([`is_cli_verb`]) — mirroring the
-//! `paneflow mcp …` intercept — so every other invocation (no args, unknown
+//! here only when `argv[1]` names a known verb ([`is_cli_verb`]) - mirroring the
+//! `paneflow mcp …` intercept - so every other invocation (no args, unknown
 //! args, `--help`/`--version`/`--update-and-exit`) is left untouched and the GUI
 //! launch path is preserved. clap therefore never has to own the "no subcommand
 //! => launch the GUI" default, and never eats the manually-parsed top-level
@@ -145,7 +145,7 @@ enum Commands {
     ///
     /// Requires `PANEFLOW_IPC_SCRIPTING=1` on the running instance; the text is
     /// written verbatim with no trailing newline so the user/agent reviews and
-    /// presses Enter themselves — unless `--submit` is passed explicitly.
+    /// presses Enter themselves - unless `--submit` is passed explicitly.
     Send {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
         target: String,
@@ -169,7 +169,7 @@ enum Commands {
     /// Send a named keystroke (e.g. `escape`, `ctrl-c`, `tab`) to a pane.
     ///
     /// Requires `PANEFLOW_IPC_SCRIPTING=1` on the running instance. Keystrokes
-    /// that would submit a line (`enter`, `ctrl-m`, `ctrl-j`) are refused —
+    /// that would submit a line (`enter`, `ctrl-m`, `ctrl-j`) are refused -
     /// submission is exclusive to `send --submit`.
     Key {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
@@ -223,7 +223,7 @@ enum Commands {
 #[derive(Subcommand, Debug)]
 enum FlowCommand {
     /// Execute (or validate with --dry-run) a flow file against the running
-    /// instance. Spawns panes, waits on `ready` barriers, feeds steps —
+    /// instance. Spawns panes, waits on `ready` barriers, feeds steps -
     /// submission only with explicit `submit = true` + the scripting gate.
     Run {
         /// Path to a `flow.toml`.
@@ -411,7 +411,7 @@ pub(super) fn print_json(value: &Value) -> Result<(), CliError> {
 /// an ad-hoc `{"error": "<message>"}` payload that does NOT use the
 /// `_jsonrpc_error` sentinel. The dispatcher therefore promotes them under
 /// `result`, so the transport's `parse_response` returns `Ok` and the command
-/// would otherwise print the error and exit 0 — breaking the scriptability
+/// would otherwise print the error and exit 0 - breaking the scriptability
 /// contract (US-005 AC4 "code non-zéro", US-006 AC3). Calling this on every
 /// `result` before printing maps that legacy shape to a non-zero `CliError`.
 ///

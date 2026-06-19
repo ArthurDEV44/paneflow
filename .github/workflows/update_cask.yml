@@ -45,7 +45,7 @@ permissions:
 
 # Serialize cask updates. Two concurrent runs would race-write
 # `Casks/paneflow.rb` in the homebrew tap and one would lose. We never
-# want to interrupt a half-written formula either — `cancel-in-progress:
+# want to interrupt a half-written formula either - `cancel-in-progress:
 # false`. Group by workflow (not tag) so back-to-back tag publishes
 # queue rather than overlap.
 concurrency:
@@ -107,7 +107,7 @@ jobs:
           # Casks/paneflow.rb). Validate strictly before use: leading
           # `v`, then semver major.minor.patch, optional `-prerelease`
           # where prerelease is dot-separated alphanumerics. Anything
-          # else rejects the run — no sed injection via crafted tag.
+          # else rejects the run - no sed injection via crafted tag.
           if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
             echo "::error::tag '$tag' does not match expected format vMAJOR.MINOR.PATCH[-PRERELEASE]"
             exit 1
@@ -143,7 +143,7 @@ jobs:
           set -euo pipefail
           arm_dmg="dmg-staging/paneflow-${VERSION}-aarch64-apple-darwin.dmg"
           intel_dmg="dmg-staging/paneflow-${VERSION}-x86_64-apple-darwin.dmg"
-          # Apple Silicon is P0 (required). x86_64 is currently absent —
+          # Apple Silicon is P0 (required). x86_64 is currently absent -
           # the Intel Mac matrix leg in release.yml is a CLOSED target
           # (removed entirely until Apple Dev secret provisioning +
           # macos-13 queue SLA improvement, see release.yml comment).
@@ -152,7 +152,7 @@ jobs:
           # then Intel users get a 404 on the .dmg URL rather than a
           # checksum error, which is a cleaner failure mode.
           if [ ! -f "$arm_dmg" ]; then
-            echo "::error::missing aarch64 .dmg — Apple Silicon is a P0 artifact and must be present for a cask update"
+            echo "::error::missing aarch64 .dmg - Apple Silicon is a P0 artifact and must be present for a cask update"
             ls -la dmg-staging/ >&2
             exit 1
           fi
@@ -160,7 +160,7 @@ jobs:
           if [ -f "$intel_dmg" ]; then
             intel_sha="$(shasum -a 256 "$intel_dmg" | awk '{print $1}')"
           else
-            echo "::warning::x86_64 .dmg absent for v${VERSION} — falling back to aarch64 SHA for the intel slot (Intel users will hit a 404 until the next release that ships x86_64)"
+            echo "::warning::x86_64 .dmg absent for v${VERSION} - falling back to aarch64 SHA for the intel slot (Intel users will hit a 404 until the next release that ships x86_64)"
             intel_sha="$arm_sha"
           fi
           echo "arm=$arm_sha"   | tee -a "$GITHUB_OUTPUT"
@@ -174,7 +174,7 @@ jobs:
         run: |
           set -euo pipefail
           # sed is deliberately pinned to the three version/sha lines
-          # — any other change to paneflow.rb flows through unmodified,
+          # - any other change to paneflow.rb flows through unmodified,
           # so non-version edits (zap paths, depends_on bumps) make it
           # into the tap on the next release.
           #
@@ -192,7 +192,7 @@ jobs:
       - name: Push to tap repo
         env:
           # SSH deploy key for ArthurDEV44/homebrew-paneflow (write). A
-          # deploy key is repo-scoped and NON-EXPIRING — unlike a PAT it
+          # deploy key is repo-scoped and NON-EXPIRING - unlike a PAT it
           # never silently lapses, and it carries no personal-account
           # coupling. This is the durable auth for cross-repo push from CI.
           DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
@@ -204,7 +204,7 @@ jobs:
           # this whole step so no key material reaches the run log.
           set +x
           if [ -z "${DEPLOY_KEY:-}" ]; then
-            echo "::error::HOMEBREW_TAP_DEPLOY_KEY secret is not set — cannot push to tap repo. See packaging/homebrew/paneflow.rb header for setup steps."
+            echo "::error::HOMEBREW_TAP_DEPLOY_KEY secret is not set - cannot push to tap repo. See packaging/homebrew/paneflow.rb header for setup steps."
             exit 1
           fi
           # Materialize the deploy key to a 0600 temp file and point git at
@@ -228,7 +228,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Casks/paneflow.rb
           if git diff --cached --quiet; then
-            echo "Cask already up-to-date for v${VERSION} — nothing to commit."
+            echo "Cask already up-to-date for v${VERSION} - nothing to commit."
             exit 0
           fi
           git commit -m "paneflow ${VERSION}" -m "Automated update from ArthurDEV44/paneflow release v${VERSION}."

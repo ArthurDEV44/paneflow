@@ -4,13 +4,13 @@ PaneFlow ships two complementary debug-only probes for the terminal renderer.
 Both are gated `#[cfg(debug_assertions)]` and compile to no-ops in release
 builds, so they cost nothing to leave in the source tree.
 
-## `PANEFLOW_LATENCY_PROBE=1` — keystroke-to-pixel timing
+## `PANEFLOW_LATENCY_PROBE=1` - keystroke-to-pixel timing
 
 Captures per-phase latency from `KeyDownEvent` through `paint()` to the next
 display refresh. Useful when investigating perceived input lag. Wired in
 `src-app/src/terminal/view.rs`.
 
-## `PANEFLOW_PIXEL_PROBE=1` — cell / glyph coordinate logging
+## `PANEFLOW_PIXEL_PROBE=1` - cell / glyph coordinate logging
 
 Captures the raw coordinates the terminal renderer hands to GPUI. Use it when
 investigating visual artifacts (gaps between cells, glyph misalignment, block
@@ -40,7 +40,7 @@ residual is visible at a glance.
 | `block_quad` | `col`, `line`, `x`, `y`, `w`, `h` (block elements `▀ ▄ █` etc.) |
 
 Row sampling caps log volume on wide terminals while keeping the visually
-interesting left edge fully covered — gaps and alignment artifacts almost
+interesting left edge fully covered - gaps and alignment artifacts almost
 always surface there first.
 
 ### Example session
@@ -61,7 +61,7 @@ Look for fractional residuals: `frac=+0.400000` means an 8.4-px value reached
 this site, which is the proximate cause US-002 / US-003 / US-004 are designed
 to eliminate.
 
-## `PANEFLOW_PIXEL_PROBE_OVERLAY=1` — visual cell-bounds overlay
+## `PANEFLOW_PIXEL_PROBE_OVERLAY=1` - visual cell-bounds overlay
 
 Independent of `PANEFLOW_PIXEL_PROBE`. Draws a 1-px red border (alpha 0.3) on
 every cell in every visible terminal pane, painted after the text pass so the

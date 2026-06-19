@@ -183,7 +183,7 @@ impl DiffView {
                     .unwrap_or(false)
                 });
                 if !installed {
-                    log::debug!("diff: watcher build superseded (epoch advanced) — dropped");
+                    log::debug!("diff: watcher build superseded (epoch advanced) - dropped");
                     return;
                 }
 
@@ -307,7 +307,7 @@ impl DiffView {
             })
             .await;
             if changed.is_empty() {
-                log::debug!("diff: resume revalidate — no column changed, warm reuse");
+                log::debug!("diff: resume revalidate - no column changed, warm reuse");
                 return;
             }
             let _ = cx.update(|cx| {

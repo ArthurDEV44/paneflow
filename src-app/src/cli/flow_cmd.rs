@@ -1,5 +1,5 @@
-//! `paneflow flow run <file>` — the local-first agent-orchestration engine
-//! (EP-003, prd-orchestration-v2 — US-011 executor, US-012 gated feeds,
+//! `paneflow flow run <file>` - the local-first agent-orchestration engine
+//! (EP-003, prd-orchestration-v2 - US-011 executor, US-012 gated feeds,
 //! US-013 fan-out/fan-in, US-014 captures, US-015 reporting).
 //!
 //! The engine lives in the CLI process and drives the running instance
@@ -7,12 +7,12 @@
 //! workspace with the root spawn steps, later spawn steps arrive via the
 //! spawn-capable `surface.split`, feeds go through `surface.send_text`
 //! (double-gated when submitting), and every `ready` barrier is a
-//! `surface.read` poll — the same machinery as `paneflow wait`. Ctrl-C stops
+//! `surface.read` poll - the same machinery as `paneflow wait`. Ctrl-C stops
 //! the ORCHESTRATION: panes and agents always survive the engine (FR-06).
 //!
 //! Scheduling is a single-threaded tick loop (no threads, no async): each
 //! tick advances the settling/polling units and starts every unit whose
-//! dependencies are READY. Wall-clock resolution is `TICK` (500 ms — the
+//! dependencies are READY. Wall-clock resolution is `TICK` (500 ms - the
 //! `paneflow wait` poll cycle), well under the step durations that matter.
 
 use std::collections::HashMap;
@@ -29,10 +29,10 @@ use super::up_cmd::{self, WorktreePlan};
 use super::{CliError, EXIT_OK, EXIT_RUNTIME, EXIT_TIMEOUT};
 
 /// Scheduler tick. 500 ms = the documented `paneflow wait` poll cycle (NFR:
-/// barrier polls reuse that cadence, not a faster one) — scheduling latency
+/// barrier polls reuse that cadence, not a faster one) - scheduling latency
 /// is irrelevant against steps that run for minutes.
 const TICK: Duration = Duration::from_millis(500);
-/// Barrier poll window — mirrors `paneflow wait` (bounded under the client's
+/// Barrier poll window - mirrors `paneflow wait` (bounded under the client's
 /// response cap; new output lands at the tail).
 const READ_WINDOW_LINES: u64 = 500;
 /// Settle detection before a feed: floor + stability mirror the server-side
@@ -66,7 +66,7 @@ pub fn run(
     let plan = flow_spec::load(&src).map_err(CliError::runtime)?;
 
     // Resolve agent launch commands (PATH-checked) and worktree plans for
-    // every spawn unit — atomic: any failure aborts before side effects.
+    // every spawn unit - atomic: any failure aborts before side effects.
     let config = paneflow_config::loader::load_config();
     let mut commands: Vec<Option<String>> = Vec::with_capacity(plan.units.len());
     let mut worktree_plans: Vec<Option<WorktreePlan>> = Vec::with_capacity(plan.units.len());
@@ -91,7 +91,7 @@ pub fn run(
         .map(|(unit, (command, worktree))| UnitRun::new(unit.clone(), command, worktree))
         .collect();
 
-    // US-012: a submitting flow is refused up-front — run AND dry-run — when
+    // US-012: a submitting flow is refused up-front - run AND dry-run - when
     // the instance gate is off. Never a silent downgrade to non-submitted.
     if plan.requires_submit() {
         check_scripting_gate(client, dry_run)?;
@@ -272,7 +272,7 @@ struct Engine<'c, T: IpcTransport> {
     started: Instant,
     json_out: bool,
     split_count: usize,
-    /// First wave-0 surface — later spawns split off it.
+    /// First wave-0 surface - later spawns split off it.
     anchor: Option<u64>,
 }
 
@@ -285,7 +285,7 @@ impl<T: IpcTransport> Engine<'_, T> {
         {
             let flag = interrupted.clone();
             // A second Ctrl-C falls back to the default disposition via the
-            // handler being a no-op flag set — best-effort; failure to
+            // handler being a no-op flag set - best-effort; failure to
             // install (exotic env) is not fatal to the flow.
             let _ = ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst));
         }
@@ -349,7 +349,7 @@ impl<T: IpcTransport> Engine<'_, T> {
                 ),
                 "command": r.command,
                 // A submitting prompt is fed by the engine after its own
-                // settle wait — never double-prefilled by the server.
+                // settle wait - never double-prefilled by the server.
                 "prompt": if r.unit.submit { None } else { s.pane.prompt.clone() },
                 "focus": s.pane.focus,
                 "env": s.pane.env,
@@ -413,7 +413,7 @@ impl<T: IpcTransport> Engine<'_, T> {
         match &self.runs[i].unit.ready {
             Some((pattern, timeout)) => State::Polling {
                 deadline: Instant::now() + Duration::from_secs(*timeout),
-                // Validated at parse — unreachable in practice.
+                // Validated at parse - unreachable in practice.
                 re: Regex::new(pattern).expect("ready.pattern validated at parse"),
             },
             None => State::Ready,
@@ -421,7 +421,7 @@ impl<T: IpcTransport> Engine<'_, T> {
     }
 
     /// Advance settling + polling units. `Err` aborts the whole flow
-    /// (instance unreachable — US-015 AC5).
+    /// (instance unreachable - US-015 AC5).
     fn progress(&mut self) -> Result<(), String> {
         for i in 0..self.runs.len() {
             match &self.runs[i].state {
@@ -725,7 +725,7 @@ impl<T: IpcTransport> Engine<'_, T> {
     }
 
     /// Final report + exit code (US-015): 0 all READY, 4 when a barrier
-    /// timed out, 1 for any other failure / abort. Always printed — also on
+    /// timed out, 1 for any other failure / abort. Always printed - also on
     /// abort paths (partial report).
     fn report(self, aborted: Option<String>) -> Result<i32, CliError> {
         let any_timeout = self
@@ -791,7 +791,7 @@ impl<T: IpcTransport> Engine<'_, T> {
 }
 
 /// Substitute `${var}` tokens from the capture store. `${item}` was resolved
-/// at expansion, so every remaining token must be a captured variable —
+/// at expansion, so every remaining token must be a captured variable -
 /// unknown means the capturing step failed or was skipped (US-014). The
 /// result is bounded to the `send_text` cap with an explicit marker.
 fn substitute_vars(text: &str, vars: &HashMap<String, String>) -> Result<String, String> {
@@ -943,7 +943,7 @@ mod tests {
     }
 
     /// A submitting flow against a gate-off instance is refused before any
-    /// mutation (US-012) — including under --dry-run.
+    /// mutation (US-012) - including under --dry-run.
     #[test]
     fn submitting_flow_refused_when_gate_off() {
         let dir = tempfile::tempdir().expect("tmp");
@@ -960,7 +960,7 @@ mod tests {
             "got: {}",
             err.message
         );
-        // Only the capabilities probe ran — no mutation.
+        // Only the capabilities probe ran - no mutation.
         let calls = fake.calls.borrow();
         assert!(calls.iter().all(|(m, _)| m == "system.capabilities"));
     }
@@ -984,7 +984,7 @@ mod tests {
     /// Full happy path: root spawns (workspace.up), barrier matches,
     /// capture feeds the second step, feed is sent, flow exits 0 (US-011/
     /// US-012/US-014). The fake's read script: first read misses, second
-    /// matches — exercising at least one real poll wait.
+    /// matches - exercising at least one real poll wait.
     #[test]
     fn two_step_flow_runs_to_ready() {
         let dir = tempfile::tempdir().expect("tmp");
@@ -1014,7 +1014,7 @@ mod tests {
     }
 
     /// A barrier that never matches times out, fails the step, and fail_fast
-    /// skips the dependents — exit 4 (US-011/US-015).
+    /// skips the dependents - exit 4 (US-011/US-015).
     #[test]
     fn timeout_fails_step_and_exits_4() {
         let dir = tempfile::tempdir().expect("tmp");

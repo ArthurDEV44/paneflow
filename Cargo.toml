@@ -59,7 +59,7 @@ unwrap_used = "warn"
 expect_used = "warn"
 unwrap_in_result = "warn"
 
-# Required by GPUI — these forks must stay in sync with the pinned Zed rev
+# Required by GPUI - these forks must stay in sync with the pinned Zed rev
 # in src-app/Cargo.toml. When bumping GPUI rev, verify these still resolve.
 [patch.crates-io]
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }

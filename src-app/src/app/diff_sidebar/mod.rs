@@ -2,7 +2,7 @@
 //! Git Diff mode ([`paneflow_config::schema::AppMode::Diff`]).
 //!
 //! US-008: the panel is the Zed-styled changed-files tree (NOT the workspace
-//! list — workspace switching stays on `Ctrl+1-9` / CLI mode). A "Changes"
+//! list - workspace switching stays on `Ctrl+1-9` / CLI mode). A "Changes"
 //! section header (collapse chevron + aggregate diffstat) tops a list of file rows
 //! (status-colored letter + filename + dimmed directory + +/- counts), with
 //! hover / selected states resolved from the curated `vc_*` theme slots
@@ -25,7 +25,7 @@ mod rows;
 
 /// One node of the changed-files directory tree (tree mode). `subdirs` is
 /// sorted (BTreeMap) so folders render alphabetically; `files` holds indices
-/// into the per-column `visible` slice. Built per render — cheap for the
+/// into the per-column `visible` slice. Built per render - cheap for the
 /// changed-file counts a single diff produces.
 #[derive(Default)]
 struct DirNode {
@@ -72,7 +72,7 @@ impl PaneFlowApp {
             _ => self.diff_mode.diff_view.is_some(),
         };
         if !mounted {
-            // EP-003 US-012 / edge case #1: a designed no-repo state — an icon, a
+            // EP-003 US-012 / edge case #1: a designed no-repo state - an icon, a
             // title, and a one-line positioning hint. The "open a project"
             // affordance is the scope-header project picker in the breadcrumb.
             return crate::ui_primitives::panel_empty_state(
@@ -113,7 +113,7 @@ impl PaneFlowApp {
         };
 
         if lists.is_empty() {
-            // Mounted but no columns yet — the brief cold-mount / discovery window.
+            // Mounted but no columns yet - the brief cold-mount / discovery window.
             // EP-003 US-012 / edge case #2: animated loader + the active branch
             // being diffed, not a bare string.
             let branch = self
@@ -142,13 +142,13 @@ impl PaneFlowApp {
         let collapsed = self.diff_mode.diff_files_collapsed;
 
         // EP-003 US-012: the filter field renders only when a file list actually
-        // exists (≥ 1 changed file across the loaded columns) — filtering an
+        // exists (≥ 1 changed file across the loaded columns) - filtering an
         // empty / still-loading list is meaningless chrome.
         let has_files = lists
             .iter()
             .any(|(_, _, _, st)| matches!(st, FileListState::Loaded(f) if !f.is_empty()));
 
-        // Aggregate diffstat across every branch's files — an at-a-glance sense
+        // Aggregate diffstat across every branch's files - an at-a-glance sense
         // of the total changeset, shown in the header even when collapsed. Same
         // source of truth as the diff view's aggregate strip (Loaded, non-empty
         // columns only) so the two totals can never drift apart.
@@ -541,7 +541,7 @@ impl PaneFlowApp {
     /// One branch section in the multi-branch sidebar: a collapsible sub-header
     /// (branch name + file count + diffstat, active branch accented) over that
     /// branch's filtered file rows. Collapse is keyed by `collapse_key` (the
-    /// worktree PATH, globally unique) — NOT the branch name, which collides
+    /// worktree PATH, globally unique) - NOT the branch name, which collides
     /// across repos in Multi-project scope (every repo has a `main`).
     #[allow(clippy::too_many_arguments)]
     fn render_diff_branch_section(

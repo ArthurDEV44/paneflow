@@ -55,7 +55,7 @@ impl MarkdownState {
 
     /// Update the offset for `path`. Caller is responsible for calling `save`
     /// to persist the change to disk. Non-finite values (NaN, ±Inf) are
-    /// silently dropped — they would round-trip through JSON as `null` or
+    /// silently dropped - they would round-trip through JSON as `null` or
     /// crash GPUI's layout when applied via `set_offset`.
     pub fn record_offset(&mut self, path: &Path, offset_y: f32) {
         if !offset_y.is_finite() {
@@ -113,7 +113,7 @@ pub fn state_file_path() -> Option<PathBuf> {
 }
 
 /// Load the state file from disk. A missing or corrupt file returns the
-/// default empty state — the cache is not load-bearing, so the view always
+/// default empty state - the cache is not load-bearing, so the view always
 /// renders something.
 pub fn load() -> MarkdownState {
     let Some(path) = state_file_path() else {
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn missing_version_falls_back_to_default() {
-        // A pre-version file (or hand-edited) should still load — the
+        // A pre-version file (or hand-edited) should still load - the
         // `default = "default_version"` serde attribute provides v1.
         let json = r#"{ "offsets": { "/x.md": 5.0 } }"#;
         let restored: MarkdownState = serde_json::from_str(json).expect("de");

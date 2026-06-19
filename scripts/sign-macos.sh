@@ -61,7 +61,7 @@ APP="${APP:-dist/PaneFlow.app}"
 [ -d "$APP" ] || { echo "error: bundle not found: $APP" >&2; exit 1; }
 [ -f "$ENTITLEMENTS" ] || { echo "error: entitlements file not found: $ENTITLEMENTS" >&2; exit 1; }
 
-# Validate the entitlements plist before we feed it to codesign — codesign's
+# Validate the entitlements plist before we feed it to codesign - codesign's
 # own error on malformed XML ("error reading entitlements") is hard to
 # correlate with the source file. plutil exits non-zero on any parse error.
 plutil -lint "$ENTITLEMENTS" >/dev/null
@@ -75,7 +75,7 @@ plutil -lint "$ENTITLEMENTS" >/dev/null
 
 # --- Ephemeral keychain ---------------------------------------------------
 # A random password; never re-used, never stored. `openssl rand -hex 32`
-# yields 64 hex chars = 256 bits of entropy — well above what the Keychain
+# yields 64 hex chars = 256 bits of entropy - well above what the Keychain
 # encrypts with.
 KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
 KEYCHAIN="build.keychain"
@@ -88,7 +88,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Decode the cert. macOS ships BSD base64 which uses `-D` (not GNU `--decode`)
-# — the script always runs on a macOS runner so we can hard-code BSD syntax.
+# - the script always runs on a macOS runner so we can hard-code BSD syntax.
 # Feeding the secret over a here-string keeps it out of argv/ps.
 base64 -D > "$CERT_P12" <<< "$APPLE_DEVELOPER_CERT_P12"
 
@@ -100,7 +100,7 @@ security set-keychain-settings -lut 3600 "$KEYCHAIN"
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
 # `security list-keychains` without `-s` appends to the default list only
-# for the current session; `-s` persists the change — safe here because the
+# for the current session; `-s` persists the change - safe here because the
 # trap deletes the keychain on exit, so no stale reference survives.
 # shellcheck disable=SC2046
 security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
@@ -163,8 +163,8 @@ fi
 # Flags:
 #   --force        replace any prior signature (idempotent re-signs).
 #   --options runtime
-#                  enable hardened runtime — required for notarization.
-#   --timestamp    embed an Apple-supplied RFC3161 timestamp — required
+#                  enable hardened runtime - required for notarization.
+#   --timestamp    embed an Apple-supplied RFC3161 timestamp - required
 #                  for notarization. Without --timestamp, notarytool rejects
 #                  with "The signature does not include a secure timestamp."
 #   --entitlements bind the entitlements plist to the signature so
@@ -186,14 +186,14 @@ NESTED_PATTERNS=(
 # them in a first pass with no entitlements, then walk executables /
 # .framework / .xpc bundles in a second pass with entitlements. `find -d`
 # is the macOS-idiomatic depth-first flag (must precede the path on BSD
-# find — placing -depth as a primary mid-expression is portable but ugly);
+# find - placing -depth as a primary mid-expression is portable but ugly);
 # the explicit \( … \) grouping keeps the alternation tight against the
 # implicit -and that find inserts before -print0.
 for sub in "${NESTED_PATTERNS[@]}"; do
     dir="$APP/$sub"
     [ -d "$dir" ] || continue
 
-    # Pass 1: plain dylibs — sign WITHOUT --entitlements.
+    # Pass 1: plain dylibs - sign WITHOUT --entitlements.
     while IFS= read -r -d '' nested; do
         codesign \
             --force \
@@ -203,7 +203,7 @@ for sub in "${NESTED_PATTERNS[@]}"; do
             "$nested"
     done < <(find -d "$dir" -name '*.dylib' -print0)
 
-    # Pass 2: executables and bundle types — sign WITH --entitlements.
+    # Pass 2: executables and bundle types - sign WITH --entitlements.
     # Explicit \( … \) grouping makes the alternation independent of
     # find's -a / -o precedence; the trailing -print0 binds to the whole
     # OR with implicit -and. `! -name '*.dylib'` excludes dylibs that

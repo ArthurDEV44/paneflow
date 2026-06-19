@@ -8,7 +8,7 @@
 # Required env vars (sourced from GitHub Secrets in release.yml):
 #   APPLE_ID                        developer account email
 #   APPLE_APP_SPECIFIC_PASSWORD     app-specific password (NOT the Apple ID
-#                                   password — generate at
+#                                   password - generate at
 #                                   appleid.apple.com > App-Specific Passwords)
 #   APPLE_TEAM_ID                   10-char team ID
 #
@@ -43,7 +43,7 @@ ditto -c -k --keepParent "$APP" "$ZIP"
 # --- Submit (non-blocking) -----------------------------------------------
 # Originally this script used `notarytool submit --wait`, which blocks the
 # CI runner inside a single API call until Apple returns a terminal status.
-# `--wait` produces no output during the wait — when Apple's notary backend
+# `--wait` produces no output during the wait - when Apple's notary backend
 # is in a deep queue (observed 30+ min for first-time submissions from a
 # new Developer account), the runner appears frozen with no heartbeat in
 # the CI log, no submission ID exposed for out-of-band recovery, and no
@@ -63,7 +63,7 @@ ditto -c -k --keepParent "$APP" "$ZIP"
 #     (~30 min) plus first-submission scrutiny margin (typically 45-60
 #     min) without consuming a 6h runner reservation when Apple stalls.
 #
-# `--output-format json` keeps parsing deterministic — the human-readable
+# `--output-format json` keeps parsing deterministic - the human-readable
 # default text shifts between Xcode releases.
 echo "Submitting $ZIP to notarytool..."
 SUBMIT_JSON="$(xcrun notarytool submit "$ZIP" \
@@ -118,7 +118,7 @@ while true; do
                 --apple-id "$APPLE_ID" \
                 --password "$APPLE_APP_SPECIFIC_PASSWORD" \
                 --team-id "$APPLE_TEAM_ID" \
-                >&2 || echo "(failed to retrieve log — Apple may still be processing)" >&2
+                >&2 || echo "(failed to retrieve log - Apple may still be processing)" >&2
             exit 1
             ;;
         "In Progress")
@@ -126,9 +126,9 @@ while true; do
             ;;
         *)
             # Any unexpected status (network blip mid-poll, unknown
-            # transient Apple state) — keep polling until terminal or
+            # transient Apple state) - keep polling until terminal or
             # timeout, but flag the anomaly in the log.
-            echo "[+${ELAPSED_FMT}] Unexpected status: $STATUS — continuing to poll"
+            echo "[+${ELAPSED_FMT}] Unexpected status: $STATUS - continuing to poll"
             ;;
     esac
 

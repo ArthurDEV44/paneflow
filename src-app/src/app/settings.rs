@@ -1,14 +1,14 @@
 //! Settings lifecycle + persistence + key handlers for `PaneFlowApp`.
 //!
-//! The settings *UI* — the Codex-style nav rail, the content panel, and the
-//! per-section bodies — lives in `crate::settings` (`chrome` + `tabs::*`). This
+//! The settings *UI* - the Codex-style nav rail, the content panel, and the
+//! per-section bodies - lives in `crate::settings` (`chrome` + `tabs::*`). This
 //! module owns the glue on `PaneFlowApp`:
-//! - [`PaneFlowApp::open_settings_window`] / [`PaneFlowApp::close_settings`] —
+//! - [`PaneFlowApp::open_settings_window`] / [`PaneFlowApp::close_settings`] -
 //!   toggle the embedded settings (set/clear `settings_section`).
-//! - [`PaneFlowApp::persist_setting`] — the shared cache-mutate + repaint +
+//! - [`PaneFlowApp::persist_setting`] - the shared cache-mutate + repaint +
 //!   off-thread write used by every settings control.
 //! - [`PaneFlowApp::handle_settings_key_down`] /
-//!   [`PaneFlowApp::handle_shortcut_recording`] — key routing for the font-picker
+//!   [`PaneFlowApp::handle_shortcut_recording`] - key routing for the font-picker
 //!   typeahead, Escape handling, and shortcut capture.
 
 use gpui::{Context, KeyDownEvent, Window, prelude::*};
@@ -20,7 +20,7 @@ impl PaneFlowApp {
     /// title-bar / macOS menu route here; it sets `settings_section`, and
     /// `main.rs` then swaps the left rail for the settings nav and the content
     /// area for the section panel. The name is kept for call-site compatibility
-    /// — there is no separate settings *window* anymore.
+    /// there is no separate settings *window* anymore.
     pub(crate) fn open_settings_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.workspace_menu_open = None;
         self.profile_menu_open = None;

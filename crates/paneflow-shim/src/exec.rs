@@ -14,32 +14,32 @@ use crate::locate_sibling_hook_binary;
 use std::io::Write;
 
 // ---------------------------------------------------------------------------
-// Run chain — spawn the real AI binary and wait for it
+// Run chain - spawn the real AI binary and wait for it
 // ---------------------------------------------------------------------------
 //
 
 // US-004 originally used `CommandExt::exec()` on Unix for zero-fork process
 // replacement. US-005 introduced the `HookConfigGuard` drop-cleanup contract,
-// which is incompatible with `exec()` — process replacement skips every Rust
+// which is incompatible with `exec()` - process replacement skips every Rust
 // destructor, so the guard would never fire. Both platforms now use
 // `Command::status()`; the shim pays one fork (~1-3 ms, well under the 15 ms
 // budget) in exchange for reliable cleanup.
 //
 // `Command` inherits the parent env by default, so `.envs(env::vars_os())`
-// is redundant — but the PRD AC bullet 5 lists it explicitly to make the
+// is redundant - but the PRD AC bullet 5 lists it explicitly to make the
 // env-pass-through contract discoverable in the source. The `.env(...)`
 // calls afterward shadow per-key (Command::env is last-write-wins).
 //
-// PANEFLOW_AI_TOOL — set so `paneflow-ai-hook` (US-003) can tag every
+// PANEFLOW_AI_TOOL - set so `paneflow-ai-hook` (US-003) can tag every
 // outbound IPC frame with the right tool identity (`claude` vs `codex`).
 // Without this, `paneflow-ai-hook::detect_tool_from(None)` defaults to
 // `TOOL_CLAUDE`, which makes the sidebar render "Claude thinking…" for
-// every Codex turn — visible regression observed in the field.
+// every Codex turn - visible regression observed in the field.
 
 // EP-004 US-010 (cli-cockpit): `run_real` also returns the agent binary's RAW
 // exit code (`Some(i32)`, shell `128+signum` convention for signal deaths) so
 // `main` can emit the `ai.exit` IPC frame. `None` means the agent never ran
-// (spawn failure) or its status is unknown (wait failure) — no frame is
+// (spawn failure) or its status is unknown (wait failure) - no frame is
 // emitted and the server keeps today's `ai.stop`-driven behavior.
 
 pub(crate) fn run_real(tool: &str, path: &Path, args: &[OsString]) -> (ExitCode, Option<i32>) {
@@ -47,15 +47,15 @@ pub(crate) fn run_real(tool: &str, path: &Path, args: &[OsString]) -> (ExitCode,
     cmd.args(args)
         .envs(env::vars_os())
         .env("PANEFLOW_AI_TOOL", tool)
-        // PANEFLOW_AI_PID — stable session identity propagated to every
+        // PANEFLOW_AI_PID - stable session identity propagated to every
         // `paneflow-ai-hook` invocation fired by claude/codex during this
         // session. Without it, the server's `Workspace::agent_sessions`
         // (keyed by PID) collapses every Claude Code into one entry, so
         // the sidebar shows `Claude thinking` for two concurrent sessions
         // instead of `Claude thinking +1`. We use the shim's own PID
         // (process::id()) rather than the child's because (a) the child
-        // PID isn't known until after spawn — too late for an env var on
-        // Command — and (b) the shim outlives the child via `waitpid`,
+        // PID isn't known until after spawn - too late for an env var on
+        // Command - and (b) the shim outlives the child via `waitpid`,
         // so the PID stays reachable for the stale-PID sweep.
         .env("PANEFLOW_AI_PID", std::process::id().to_string());
 
@@ -66,7 +66,7 @@ pub(crate) fn run_real(tool: &str, path: &Path, args: &[OsString]) -> (ExitCode,
     //   - `SIG_IGN` for SIGHUP/SIGTERM (shim survives PTY close / kill)
     //   - `SIG_BLOCK` mask for SIGINT (consumed synchronously by the
     //     `sigwait` thread in `install_sigint_watcher`, so the shim can
-    //     emit an `ai.stop` IPC frame on every Ctrl+C — including
+    //     emit an `ai.stop` IPC frame on every Ctrl+C - including
     //     mid-response interrupts where claude/codex intentionally fire
     //     no `Stop` hook of their own).
     //
@@ -137,7 +137,7 @@ pub(crate) fn run_real(tool: &str, path: &Path, args: &[OsString]) -> (ExitCode,
                 // (our parent) already died in the window between fork() and
                 // this prctl, the kernel never delivers the signal. A getppid()
                 // that no longer matches the shim's captured PID means we were
-                // already reparented — to init (PID 1) OR, on a host where
+                // already reparented - to init (PID 1) OR, on a host where
                 // Paneflow runs under `systemd --user` (a PR_SET_CHILD_SUBREAPER
                 // reaper), to the user manager whose PID is not 1. Comparing to
                 // the captured `shim_pid` rather than the literal 1 catches the
@@ -255,7 +255,7 @@ pub(crate) fn raw_exit_code_from_status(status: &std::process::ExitStatus) -> i3
 /// Make the shim survive PTY-close + kill signals so the child
 /// (claude/codex) can handle them without taking us down with it.
 ///
-/// SIGINT is intentionally NOT in this list — it's handled by
+/// SIGINT is intentionally NOT in this list - it's handled by
 /// `install_sigint_watcher` via `sigwait` so we can emit a per-interrupt
 /// `ai.stop` IPC frame (mid-response Ctrl+C interrupts fire no hook from
 /// claude/codex, so this is the only signal we have).
@@ -307,7 +307,7 @@ pub(crate) fn install_sigint_watcher(tool: &str) {
             // wakeups are not part of the POSIX contract; if it ever does
             // return non-zero, exit the loop (the shim continues running,
             // we just lose interrupt-driven notifications for this
-            // session — graceful degradation per PRD C4).
+            // session - graceful degradation per PRD C4).
             let sig = unsafe {
                 let mut set: libc::sigset_t = std::mem::zeroed();
                 libc::sigemptyset(&mut set);
@@ -343,12 +343,12 @@ static INFLIGHT_REAPERS: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 ///
 /// Reaping policy: the wait happens on a detached helper thread, NOT on
 /// the calling sigwait thread. If the hook hangs (socket back-pressure,
-/// filesystem stall) the reaper thread hangs with it — but the sigwait
+/// filesystem stall) the reaper thread hangs with it - but the sigwait
 /// thread stays responsive, so the next Ctrl+C lands as a fresh `ai.stop`
 /// rather than queuing behind the previous one. Without the helper, a
 /// dropped `Child` would leak a zombie until shim exit.
 ///
-/// U-025: the reaper count is bounded by [`MAX_INFLIGHT_REAPERS`] — once that
+/// U-025: the reaper count is bounded by [`MAX_INFLIGHT_REAPERS`] - once that
 /// many hooks are simultaneously stuck, further Ctrl+C stops are dropped so a
 /// wedged peer can't drive unbounded thread/child growth. We deliberately keep
 /// the `{}`-on-stdin contract (so the hook reads a valid empty payload) and do

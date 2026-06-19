@@ -6,7 +6,7 @@
 //!   2. Verify the asset's detached **minisign** signature (`.minisig`
 //!      sibling) against a key baked into this binary (US-001) **before
 //!      mounting**. A missing/invalid signature deletes the partial and
-//!      bails — replaces the old same-host `.sha256`, which a compromised
+//!      bails - replaces the old same-host `.sha256`, which a compromised
 //!      mirror could swap alongside the bundle.
 //!   3. macOS belt-and-braces: `codesign --verify` + `spctl --assess` on
 //!      the extracted `.app` before promotion (US-004).
@@ -18,11 +18,11 @@
 //!      `/Applications/PaneFlow.app.old`, then `.new` → `PaneFlow.app`,
 //!      then `rm -rf .old`. If the second rename fails, the first is
 //!      rolled back so `/Applications/PaneFlow.app` never disappears.
-//!   7. `hdiutil detach <mount>` — run unconditionally (RAII guard) so a
+//!   7. `hdiutil detach <mount>` - run unconditionally (RAII guard) so a
 //!      mid-flow error still cleans up the mounted volume.
 //!   8. Return the `.app` bundle path for `cx.set_restart_path()`. GPUI's
 //!      macOS `restart()` runs `open "<path>"`, which relaunches a *bundle*
-//!      but NOT a bare Mach-O — so it must receive `PaneFlow.app`, not the
+//!      but NOT a bare Mach-O - so it must receive `PaneFlow.app`, not the
 //!      inner `Contents/MacOS/paneflow`. Mirrors Zed returning `Ok(None)`,
 //!      which falls back to the `NSBundle.bundlePath` (the `.app`).
 //!
@@ -30,7 +30,7 @@
 //! the enclosing crate is a single compile-closure (no cfg churn in
 //! `self_update_flow.rs`). `hdiutil` obviously only exists on macOS; the
 //! dispatcher only routes `InstallMethod::AppBundle` here, and that
-//! variant is produced solely by macOS path detection — so on Linux /
+//! variant is produced solely by macOS path detection - so on Linux /
 //! Windows the function compiles but is runtime-unreachable.
 //!
 //! **Error mapping.** `cp -R` hitting a read-only `/Applications/` or
@@ -60,7 +60,7 @@ const MAX_DMG_BYTES: u64 = 500 * 1024 * 1024;
 
 /// Run the DMG self-update end-to-end. Replaces the bundle **at its detected
 /// location** (`bundle_path`, from `InstallMethod::AppBundle`) rather than a
-/// hardcoded `/Applications/PaneFlow.app` (US-004) — so a user who installed
+/// hardcoded `/Applications/PaneFlow.app` (US-004) - so a user who installed
 /// into `~/Applications` is updated in place. A bundle outside an expected
 /// location is refused: writing into an arbitrary path the user dragged the
 /// app to would be surprising and unsafe.
@@ -91,13 +91,13 @@ pub fn install(asset_url: &str, bundle_path: &Path) -> Result<PathBuf> {
     install_in(asset_url, bundle_path, &cache_dir, &HdiutilProcessRunner)?;
     // Return the `.app` bundle itself, NOT the inner Mach-O. GPUI's macOS
     // `restart()` does `open "<path>"`; `open` relaunches a bundle but treats a
-    // bare executable as a file to open — so passing the Mach-O left the old
+    // bare executable as a file to open - so passing the Mach-O left the old
     // process dead and the new one never started after a successful update.
     Ok(bundle_path.to_path_buf())
 }
 
 /// True when `bundle_path` sits directly under `/Applications` or
-/// `$HOME/Applications` — the two locations the DMG updater is allowed to
+/// `$HOME/Applications` - the two locations the DMG updater is allowed to
 /// replace in place (US-004). Pure path logic, unit-tested on Linux CI.
 fn is_expected_bundle_location(bundle_path: &Path, home: &Path) -> bool {
     let Some(parent) = bundle_path.parent() else {
@@ -112,7 +112,7 @@ fn is_expected_bundle_location(bundle_path: &Path, home: &Path) -> bool {
 /// `/private/var/folders/.../AppTranslocation/...` rather than its real
 /// location. `current_exe()` reports that translocated path (unlike
 /// `NSBundle.bundlePath`, which the OS de-translocates), so the updater cannot
-/// find — let alone replace — the real bundle. Detecting it lets `install`
+/// find - let alone replace - the real bundle. Detecting it lets `install`
 /// surface "move the app to /Applications" instead of a generic error. Pure
 /// string logic, unit-tested on every platform.
 fn is_translocated_path(path: &Path) -> bool {
@@ -127,7 +127,7 @@ fn is_translocated_path(path: &Path) -> bool {
 /// validly-notarised-but-*foreign* bundle.
 ///
 /// US-018: the plain `codesign --verify` + `spctl --assess` checks below
-/// only prove "signed by *someone* Apple trusts and notarised" — NOT
+/// only prove "signed by *someone* Apple trusts and notarised" - NOT
 /// "signed by us". A second developer's notarised app would pass them. This
 /// pin closes that gap (defense-in-depth on top of the minisign root-of-trust
 /// that already gates the DMG bytes before the bundle is ever mounted).
@@ -141,12 +141,12 @@ const APPLE_TEAM_ID: &str = "228F9H5P95";
 /// `-R <requirement>` argument as a file path: codesign tries to open the
 /// inline requirement text as a file and aborts ("No such file or directory /
 /// invalid requirement specification"), so the Team-ID pin silently failed on
-/// every run — which froze the DMG self-update at the 3-strikes "Update keeps
+/// every run - which froze the DMG self-update at the 3-strikes "Update keeps
 /// failing" toast (in-app updates worked on Linux/Windows, which have no such
 /// codesign gate). The attached form is parsed as inline requirement source on
 /// every supported macOS.
 ///
-/// Pure string builder — gated `#[cfg(any(target_os = "macos", test))]` so the
+/// Pure string builder - gated `#[cfg(any(target_os = "macos", test))]` so the
 /// regression test runs on Linux CI without a signed fixture, while non-macOS
 /// release builds don't carry it as dead code.
 #[cfg(any(target_os = "macos", test))]
@@ -162,7 +162,7 @@ fn team_id_requirement_arg(team_id: &str) -> String {
 /// nonzero rejects the update with a tagged `IntegrityMismatch`.
 ///
 /// macOS-only; untestable on the Linux CI leg (no `codesign`/`spctl`, no
-/// notarised fixture) — exercised by the macOS release leg against the real
+/// notarised fixture) - exercised by the macOS release leg against the real
 /// signed bundle.
 #[cfg(target_os = "macos")]
 fn verify_macos_bundle(bundle: &Path) -> Result<()> {
@@ -231,7 +231,7 @@ fn install_in(
     }
 
     // Deterministic mount point under `/private/tmp`. `hdiutil attach`
-    // requires the directory to not pre-exist — it creates it. `.<pid>`
+    // requires the directory to not pre-exist - it creates it. `.<pid>`
     // avoids clashes between concurrent updates.
     let mount_point = PathBuf::from(format!(
         "/private/tmp/paneflow-update-{}.mount",
@@ -246,7 +246,7 @@ fn install_in(
     })?;
 
     // RAII detach: whatever happens below, the mounted volume is
-    // released. `hdiutil detach` is best-effort on the error path —
+    // released. `hdiutil detach` is best-effort on the error path -
     // leaving a lingering mount is annoying but harmless.
     let _detach_guard = DetachGuard {
         runner,
@@ -254,7 +254,7 @@ fn install_in(
     };
 
     // US-004: OS-native gatekeeper check on the bundle inside the (read-only,
-    // signature-verified) mounted DMG before we copy it into place —
+    // signature-verified) mounted DMG before we copy it into place -
     // fail-closed, a second layer over the minisign verification of the DMG
     // bytes. cfg(macos) so the Linux/Windows compile-closure and the
     // platform-neutral copy/swap unit tests stay free of `codesign`/`spctl`.
@@ -278,7 +278,7 @@ fn install_in(
 }
 
 /// Download the DMG, verify its detached **minisign** signature (US-001),
-/// and persist at `dest` on success. Mirrors the `targz.rs` pattern —
+/// and persist at `dest` on success. Mirrors the `targz.rs` pattern -
 /// see it for the detailed rationale on each guard (partial→rename,
 /// 500 MB cap, RO body stream). The signature, not a same-host `.sha256`,
 /// is the trust anchor and is checked **before** the DMG is ever mounted.
@@ -330,7 +330,7 @@ fn download_with_verification(asset_url: &str, dest: &Path) -> Result<()> {
     if written > MAX_DMG_BYTES {
         let _ = std::fs::remove_file(&partial);
         bail!(
-            "Update download exceeded {} MiB — aborting.",
+            "Update download exceeded {} MiB - aborting.",
             MAX_DMG_BYTES / 1024 / 1024
         );
     }
@@ -357,7 +357,7 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
     let source_bundle = mounted_volume.join(bundle_file_name(install_dir)?);
     if !source_bundle.exists() {
         bail!(
-            "DMG did not contain the {} bundle at {} — archive appears malformed.",
+            "DMG did not contain the {} bundle at {} - archive appears malformed.",
             bundle_file_name(install_dir)?.to_string_lossy(),
             source_bundle.display()
         );
@@ -365,7 +365,7 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
 
     let (old_dir, new_dir) = staging_dirs(install_dir)?;
 
-    // Crashed prior update left `.old` around? Hard abort — silently
+    // Crashed prior update left `.old` around? Hard abort - silently
     // overwriting could destroy the user's recovery copy.
     if old_dir.exists() {
         return Err(anyhow::Error::new(UpdateError::InstallDeclined {
@@ -375,7 +375,7 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
             ),
         }));
     }
-    // `.new` from a crashed prior flow is pure scratch — safe to remove
+    // `.new` from a crashed prior flow is pure scratch - safe to remove
     // before the fresh copy. Log a warning on failure so a downstream
     // copy error isn't misdiagnosed as a DMG problem.
     if new_dir.exists()
@@ -387,7 +387,7 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
         );
     }
 
-    // `cp -R` preserves bundle structure, symlinks, and extended attributes —
+    // `cp -R` preserves bundle structure, symlinks, and extended attributes -
     // notably the code-signed `_CodeSignature` tree (a hand-rolled recursive
     // copy risks corrupting it). NOTE: preserving xattrs also carries any
     // `com.apple.quarantine` flag through to the install, which is why
@@ -411,7 +411,7 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
 
     if !cp_out.status.success() {
         let stderr = String::from_utf8_lossy(&cp_out.stderr);
-        // Best-effort cleanup — if the partial copy left files behind,
+        // Best-effort cleanup - if the partial copy left files behind,
         // drop them before the next try. Ignore the result (scratch dir).
         let _ = std::fs::remove_dir_all(&new_dir);
         return Err(classify_filesystem_error(
@@ -423,8 +423,8 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
     // #9: re-verify the COPIED bundle BEFORE the swap, not just the read-only
     // source on the DMG. A `cp -R` that exits 0 yet produced a corrupt tree
     // would otherwise promote an unverified (possibly invalidly-signed) bundle.
-    // `not(test)` so the filesystem-only `copy_and_swap` unit tests — which
-    // stage a fake unsigned bundle and genuinely cannot satisfy codesign —
+    // `not(test)` so the filesystem-only `copy_and_swap` unit tests - which
+    // stage a fake unsigned bundle and genuinely cannot satisfy codesign -
     // keep exercising the copy/rename logic without spawning codesign/spctl.
     #[cfg(all(target_os = "macos", not(test)))]
     if let Err(e) = verify_macos_bundle(&new_dir) {
@@ -436,7 +436,7 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
     // exist is vanishingly small and bracketed by the rollback below.
     //
     // US-008: discriminate the first rename's error. `NotFound` means a fresh
-    // install into an empty `/Applications/` — expected, fall through. ANY
+    // install into an empty `/Applications/` - expected, fall through. ANY
     // other error (permission denied, SIP, bundle busy) is a hard abort:
     // proceeding would risk a half-installed state.
     if let Err(e) = std::fs::rename(install_dir, &old_dir) {
@@ -454,9 +454,9 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
         }
     }
     if let Err(e) = std::fs::rename(&new_dir, install_dir) {
-        // Second rename failed — restore the live bundle so the user isn't
+        // Second rename failed - restore the live bundle so the user isn't
         // left without `/Applications/PaneFlow.app`. US-008: verify the
-        // rollback. If it ALSO fails, the user has no live bundle at all —
+        // rollback. If it ALSO fails, the user has no live bundle at all -
         // surface that as a hard `InstallFailed` (catastrophic), not the
         // recoverable filesystem-error classification, so the toast tells
         // them to reinstall rather than implying a transient retry.
@@ -468,7 +468,7 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
                 log_path: PathBuf::new(),
             })
             .context(format!(
-                "promote {} → {} failed ({e}); rollback from {} also failed ({rb}) — no live install remains, reinstall PaneFlow manually",
+                "promote {} → {} failed ({e}); rollback from {} also failed ({rb}) - no live install remains, reinstall PaneFlow manually",
                 new_dir.display(),
                 install_dir.display(),
                 old_dir.display()
@@ -481,7 +481,7 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
         ));
     }
 
-    // Success — drop `.old`. Failure is non-fatal (scratch dir);
+    // Success - drop `.old`. Failure is non-fatal (scratch dir);
     // next update will fail-fast on the "previous update did not clean
     // up" guard above, which is strictly better than silent overwrite.
     if old_dir.exists()
@@ -495,7 +495,7 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
 
     // #7: strip com.apple.quarantine from the freshly promoted bundle. `cp -R`
     // preserved any flag the DMG (or a file in it) carried, which could prompt
-    // Gatekeeper on first launch. Best-effort — a notarized bundle launches
+    // Gatekeeper on first launch. Best-effort - a notarized bundle launches
     // without it regardless.
     #[cfg(target_os = "macos")]
     strip_quarantine(install_dir);
@@ -506,10 +506,10 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
 fn staging_dirs(install_dir: &Path) -> Result<(PathBuf, PathBuf)> {
     let parent = install_dir
         .parent()
-        .context("install_dir has no parent — refusing to swap at filesystem root")?;
+        .context("install_dir has no parent - refusing to swap at filesystem root")?;
     let name = install_dir
         .file_name()
-        .context("install_dir has no file name — refusing to swap")?;
+        .context("install_dir has no file name - refusing to swap")?;
     let name = name.to_string_lossy();
     Ok((
         parent.join(format!("{name}.old")),
@@ -524,14 +524,14 @@ fn staging_dirs(install_dir: &Path) -> Result<(PathBuf, PathBuf)> {
 fn bundle_file_name(install_dir: &Path) -> Result<&std::ffi::OsStr> {
     install_dir
         .file_name()
-        .context("install_dir has no file name — cannot locate the bundle inside the DMG")
+        .context("install_dir has no file name - cannot locate the bundle inside the DMG")
 }
 
 /// Best-effort removal of `com.apple.quarantine` from a freshly promoted
 /// bundle. `cp -R` PRESERVES extended attributes, so a quarantined source
 /// would yield a quarantined install and Gatekeeper could prompt on first
 /// launch. A notarized bundle is trusted regardless, and a missing attribute
-/// or an `xattr` failure must not fail an otherwise-successful update — hence
+/// or an `xattr` failure must not fail an otherwise-successful update - hence
 /// the ignored result.
 #[cfg(target_os = "macos")]
 fn strip_quarantine(bundle: &Path) {
@@ -567,17 +567,17 @@ fn classify_filesystem_error(raw: &str, context: &str) -> anyhow::Error {
     {
         return anyhow::Error::new(UpdateError::InstallDeclined {
             message:
-                "Unable to replace /Applications/PaneFlow.app — reinstall manually from the DMG."
+                "Unable to replace /Applications/PaneFlow.app - reinstall manually from the DMG."
                     .to_string(),
         })
         .context(format!("{context}: {}", raw.trim()));
     }
-    anyhow::Error::msg(format!("{context} — {}", raw.trim()))
+    anyhow::Error::msg(format!("{context} - {}", raw.trim()))
 }
 
 /// Abstraction over `hdiutil attach/detach` so tests can inject a fake
 /// mount directory without spawning the real tool. The return value is
-/// the actual mount path — `hdiutil` normally honours `-mountpoint` but
+/// the actual mount path - `hdiutil` normally honours `-mountpoint` but
 /// falls back to `/Volumes/<label>` if the target is inaccessible; the
 /// trait lets a test return a known temp path instead.
 trait Hdiutil {
@@ -623,7 +623,7 @@ impl Hdiutil for HdiutilProcessRunner {
         // Best-effort. A still-mounted volume blocks /private/tmp
         // cleanup for the next update but is not an install failure.
         // `-force` ejects even if a file on the volume is still open (e.g. the
-        // `cp` we just ran briefly held one), matching Zed — without it a busy
+        // `cp` we just ran briefly held one), matching Zed - without it a busy
         // volume lingers and the next update's `attach` to the same mountpoint
         // fails.
         let status = Command::new("hdiutil")
@@ -676,7 +676,7 @@ mod tests {
         // Regression: macOS 15+/26 codesign treats a SEPARATE `-R <arg>` as a
         // file path, so the inline requirement was opened as a (missing) file
         // ("No such file or directory / invalid requirement specification") and
-        // the Team-ID pin failed every DMG self-update — pinning the updater at
+        // the Team-ID pin failed every DMG self-update - pinning the updater at
         // the "Update keeps failing" toast. The arg MUST be the attached
         // `-R=<requirement>` form (one argv element), which codesign parses as
         // inline requirement source.
@@ -775,7 +775,7 @@ mod tests {
     #[test]
     fn classify_sip_operation_not_permitted_as_install_declined() {
         // SIP-protected paths surface as EPERM ("Operation not permitted")
-        // rather than EACCES on modern macOS — must also route to
+        // rather than EACCES on modern macOS - must also route to
         // InstallDeclined so the toast is the actionable "reinstall
         // manually" copy, not the generic "update failed".
         let err = classify_filesystem_error(
@@ -842,7 +842,7 @@ mod tests {
     }
 
     /// Build a minimal PaneFlow.app skeleton under `root/PaneFlow.app/`
-    /// for the stubs to mount. The file contents don't matter — the
+    /// for the stubs to mount. The file contents don't matter - the
     /// swap code only cares about the directory structure.
     fn fake_bundle_at(root: &Path) -> PathBuf {
         let bundle = root.join("PaneFlow.app");
@@ -892,7 +892,7 @@ mod tests {
     }
 
     /// US-008: a fresh install (no pre-existing bundle at `install_dir`)
-    /// must succeed — the first rename fails with `NotFound`, which is the
+    /// must succeed - the first rename fails with `NotFound`, which is the
     /// one error the swap is allowed to ignore.
     #[test]
     fn copy_and_swap_fresh_install_no_existing_bundle() {
@@ -939,7 +939,7 @@ mod tests {
 
     /// AC7: hdiutil attach failure must surface to the caller (no
     /// silent fall-through). The DetachGuard must NOT run detach on
-    /// an attach that never succeeded — the RefCell counter proves it.
+    /// an attach that never succeeded - the RefCell counter proves it.
     #[test]
     fn install_in_propagates_hdiutil_attach_error() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -994,7 +994,7 @@ mod tests {
     }
 
     // Sanity: `append_suffix` preserves the `.AppImage`/`.dmg` tail the
-    // same way targz's equivalent does — keeps a dedicated regression
+    // same way targz's equivalent does - keeps a dedicated regression
     // check here so a refactor in either module can't silently drift.
     #[test]
     fn append_suffix_preserves_full_name() {

@@ -1,4 +1,4 @@
-//! Codex CLI session discovery — reads the on-disk transcript store at
+//! Codex CLI session discovery - reads the on-disk transcript store at
 //! `~/.codex/sessions/YYYY/MM/DD/rollout-<TS>-<uuid>.jsonl` and produces
 //! unified [`SessionMeta`](crate::agent_sessions::SessionMeta) entries
 //! for the sessions popover.
@@ -10,7 +10,7 @@
 //! record, so the title falls back to the first
 //! `event_msg.user_message.message` content.
 //!
-//! All filesystem work happens off the GPUI main thread — call
+//! All filesystem work happens off the GPUI main thread - call
 //! [`read_sessions_for_cwd`] from inside `smol::unblock`.
 
 use std::fs;
@@ -47,7 +47,7 @@ pub fn sessions_root() -> Option<PathBuf> {
 /// directory. Returns sessions sorted by timestamp descending (most
 /// recent first).
 ///
-/// **Blocking I/O** — call from inside `smol::unblock` or
+/// **Blocking I/O** - call from inside `smol::unblock` or
 /// `cx.background_executor`. Codex's flat date-bucketed layout
 /// (`YYYY/MM/DD`) means we must scan every rollout file and read the
 /// first line to filter by `cwd`. For the typical user (≤ 200 sessions)
@@ -60,7 +60,7 @@ pub fn read_sessions_for_cwd(cwd: &str) -> Vec<SessionMeta> {
 
 /// EP-004 US-014/US-016: like [`read_sessions_for_cwd`] but each rollout is
 /// scanned deeper to populate `model` (`turn_context`) + cumulative `usage`
-/// (last `token_count` event). **Blocking I/O** — call from inside
+/// (last `token_count` event). **Blocking I/O** - call from inside
 /// `smol::unblock`.
 pub fn read_sessions_with_usage_for_cwd(cwd: &str) -> Vec<SessionMeta> {
     read_sessions_for_cwd_inner(cwd, true)
@@ -83,7 +83,7 @@ fn read_sessions_for_cwd_inner(cwd: &str, scan_usage: bool) -> Vec<SessionMeta> 
     sessions
 }
 
-/// Codex's layout is `YYYY/MM/DD/*.jsonl` — three levels below the root — so
+/// Codex's layout is `YYYY/MM/DD/*.jsonl` - three levels below the root - so
 /// a depth bound of 8 leaves generous slack while making a pathologically deep
 /// tree (or any symlink cycle that slips past the `file_type` guard) terminate
 /// instead of overflowing the stack (U-003).
@@ -101,7 +101,7 @@ fn walk_jsonl_files_bounded(dir: &Path, depth_left: u32, visit: &mut impl FnMut(
     };
     for entry in entries.flatten() {
         // U-003: `DirEntry::file_type()` reports the entry's *own* type (from
-        // the readdir record, or an lstat) and does NOT follow symlinks —
+        // the readdir record, or an lstat) and does NOT follow symlinks -
         // unlike `Path::is_dir()`, which dereferences. A symlinked directory
         // therefore reports as neither dir nor file and is skipped, so a
         // planted cycle (`sessions/loop -> ../../sessions`) can never be
@@ -194,7 +194,7 @@ fn read_session_meta_inner(path: &Path, scan_usage: bool) -> Option<SessionMeta>
     }
     // Inner timestamp is the session start; outer envelope timestamp is
     // the moment the file was opened. They're typically within seconds
-    // of each other — prefer the inner (session-relative) value.
+    // of each other - prefer the inner (session-relative) value.
     let timestamp = payload
         .get("timestamp")
         .and_then(|v| v.as_str())
@@ -216,7 +216,7 @@ fn read_session_meta_inner(path: &Path, scan_usage: bool) -> Option<SessionMeta>
         timestamp,
         cwd,
         // Codex doesn't record git branch in `session_meta`. Leave empty
-        // so the row collapses to `<time>` only — matches what the user
+        // so the row collapses to `<time>` only - matches what the user
         // sees when they run `codex resume`.
         git_branch: String::new(),
         summary,
@@ -302,7 +302,7 @@ fn scan_tail_with_usage(
                                 cache_read: cached,
                                 cache_creation: 0,
                             };
-                            // Cumulative — last non-empty wins.
+                            // Cumulative - last non-empty wins.
                             if !u.is_empty() {
                                 usage = Some(u);
                             }
@@ -559,7 +559,7 @@ mod tests {
     }
 
     /// U-003: a deep-but-acyclic tree within the depth bound still yields every
-    /// real `.jsonl` leaf — the guard must not drop legitimate sessions.
+    /// real `.jsonl` leaf - the guard must not drop legitimate sessions.
     #[test]
     fn walk_discovers_jsonl_in_deep_acyclic_tree() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -601,7 +601,7 @@ mod tests {
     /// mode. The Windows equivalent (NTFS junction / `IO_REPARSE_TAG_*`) is
     /// reported by `DirEntry::file_type()` on the pinned toolchain (Rust 1.95)
     /// with `is_symlink() = true` and `is_dir() = false` for native Win10/11
-    /// volumes — so the same `is_dir()` guard skips it. Treated as
+    /// volumes - so the same `is_dir()` guard skips it. Treated as
     /// inspection-only per US-002 AC4 (no Win symlink CI leg yet); a junction
     /// on a CIFS/remote-mapped volume is the residual gap to revisit if a
     /// Windows integration test lands.
@@ -620,7 +620,7 @@ mod tests {
         let mut found = Vec::new();
         walk_jsonl_files(dir.path(), &mut |p| found.push(p.to_path_buf()));
         // Terminates (no stack overflow) and still finds the one real file
-        // exactly once — the symlinked directory was never descended.
+        // exactly once - the symlinked directory was never descended.
         assert_eq!(found, vec![jsonl]);
     }
 }

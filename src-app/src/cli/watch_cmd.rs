@@ -1,4 +1,4 @@
-//! `paneflow watch` — stream lifecycle events from the running instance (EP-002
+//! `paneflow watch` - stream lifecycle events from the running instance (EP-002
 //! US-007).
 //!
 //! Opens a persistent `events.subscribe` connection and prints each pushed event

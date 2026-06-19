@@ -1,6 +1,6 @@
 //! Git-metadata probing for workspace CWDs: branch detection, diff stats, and
 //! worktree-aware `.git` lookup. All functions are pure (no shared mutable
-//! state) and cross-platform — `git diff --shortstat` is spawned for diff
+//! state) and cross-platform - `git diff --shortstat` is spawned for diff
 //! stats, everything else reads `.git/HEAD` directly without subprocesses.
 //!
 //! Extracted from `workspace.rs` per US-030 of the src-app refactor PRD.
@@ -18,14 +18,14 @@ pub struct GitDiffStats {
 /// `.git/config` external helper that hangs.
 const GIT_DIFF_STAT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// stdout cap for `git diff --shortstat` — the command emits a single summary
+/// stdout cap for `git diff --shortstat` - the command emits a single summary
 /// line, so 256 KiB is far beyond any real output while bounding a hijacked git.
 const GIT_DIFF_STAT_STDOUT_CAP: u64 = 256 * 1024;
 
 impl GitDiffStats {
     /// Run `git diff --shortstat` in the given directory and parse the result.
     /// On spawn failure, timeout, or a nonzero exit this returns the empty
-    /// (`is_empty()`) default — the "stats unavailable" state the badge renders.
+    /// (`is_empty()`) default - the "stats unavailable" state the badge renders.
     pub fn from_cwd(cwd: &str) -> Self {
         let mut cmd = std::process::Command::new("git");
         cmd.args(["diff", "--shortstat"])
@@ -35,7 +35,7 @@ impl GitDiffStats {
             .env("GIT_TERMINAL_PROMPT", "0");
 
         // U-035: bound the subprocess (run_with_timeout also nulls stdin) so a
-        // dead mount or slow helper can't hang the blocking-pool task — repeated
+        // dead mount or slow helper can't hang the blocking-pool task - repeated
         // CWD changes would otherwise pile up hung tasks. Timeout falls back to
         // "no stats" exactly like a nonzero exit.
         let output = match paneflow_process::run_with_timeout(
@@ -150,7 +150,7 @@ fn canonicalize_or(path: &std::path::Path) -> std::path::PathBuf {
 ///
 /// US-056: a relative `commondir` (`../..`) joined onto a worktree git dir
 /// yields a path littered with `..`. When the target exists `canonicalize_or`
-/// resolves them, but on a missing/unresolvable path it returns the raw form —
+/// resolves them, but on a missing/unresolvable path it returns the raw form -
 /// so two sibling worktrees would *not* collapse to the same `repo_root`.
 /// Normalizing first guarantees the best-effort fallback still collapses them.
 /// This mirrors the component walk `canonicalize` performs, minus symlink
@@ -180,7 +180,7 @@ fn normalize_lexically(path: &std::path::Path) -> std::path::PathBuf {
 /// Resolve the shared (main) `.git` directory for a given worktree git dir.
 ///
 /// For a linked worktree, `git_dir` is `<main>/.git/worktrees/<name>` and holds
-/// a `commondir` file pointing — usually relatively, e.g. `../..` — at the
+/// a `commondir` file pointing - usually relatively, e.g. `../..` - at the
 /// shared `<main>/.git`. For a normal checkout, `git_dir` is already the main
 /// `.git` and no `commondir` file exists, so it is returned as-is. An absolute
 /// `commondir` is honored verbatim (no double-join). Result is canonicalized
@@ -209,7 +209,7 @@ pub fn resolve_main_git_dir(git_dir: &std::path::Path) -> Option<std::path::Path
 ///
 /// - `repo_root`: the working directory of the shared repository (parent of the
 ///   main `.git`), canonicalized so sibling worktrees of one repo yield an
-///   identical value — the key invariant for grouping siblings.
+///   identical value - the key invariant for grouping siblings.
 /// - `is_worktree`: true when `git_dir` is a *linked* worktree (it carries a
 ///   `commondir` file). The main checkout of a repo is not a worktree.
 ///
@@ -224,7 +224,7 @@ pub fn resolve_repo_root(git_dir: &std::path::Path) -> (Option<std::path::PathBu
 
 /// Parse branch name from a known `.git` directory's `HEAD` file.
 ///
-/// Returns `(branch_name, true)`. On read failure returns `("", true)` —
+/// Returns `(branch_name, true)`. On read failure returns `("", true)` -
 /// the directory is a git repo but the branch is unknown.
 /// Only `refs/heads/` branches are resolved; tags and remote refs return empty.
 pub(super) fn parse_head(git_dir: &std::path::Path) -> (String, bool) {
@@ -244,16 +244,16 @@ pub(super) fn parse_head(git_dir: &std::path::Path) -> (String, bool) {
         // review prompt that is written verbatim into a PTY with no bracketed
         // paste). Drop all control chars at this trust boundary: `is_control()`
         // covers C0 (incl. `\n`/`\r`/ESC 0x1b), DEL (0x7f), and C1 (0x80-0x9f).
-        // Pure string filtering — identical on Linux, macOS, and Windows.
+        // Pure string filtering - identical on Linux, macOS, and Windows.
         (branch.chars().filter(|c| !c.is_control()).collect(), true)
     } else if content.chars().all(|c| c.is_ascii_hexdigit())
         && (content.len() == 40 || content.len() == 64)
     {
-        // Detached HEAD — raw SHA-1 (40 chars) or SHA-256 (64 chars)
+        // Detached HEAD - raw SHA-1 (40 chars) or SHA-256 (64 chars)
         let short = &content[..7];
         (format!("({short})"), true)
     } else {
-        // Unrecognized format (tag ref, remote ref, corrupted) — git repo but branch unknown
+        // Unrecognized format (tag ref, remote ref, corrupted) - git repo but branch unknown
         (String::new(), true)
     }
 }
@@ -409,7 +409,7 @@ mod tests {
     fn detect_branch_strips_control_chars_from_malicious_head() {
         // A crafted `.git/HEAD` smuggles a newline + ESC payload after a valid
         // ref line. git itself resolves HEAD to `main` (line-oriented read), so
-        // the repo still diffs and the Review button is reachable — but the
+        // the repo still diffs and the Review button is reachable - but the
         // returned branch must never carry the injected `\n`/ESC bytes into the
         // PTY-bound review prompt or the sidebar.
         let dir = tempfile::tempdir().unwrap();
@@ -603,7 +603,7 @@ mod tests {
     fn from_cwd_on_non_repo_yields_unavailable_default() {
         // U-035: a non-git directory makes `git diff --shortstat` exit nonzero,
         // and the bounded run must fall back to the empty (`is_empty()`) default
-        // — the "stats unavailable" badge state — rather than panic or hang.
+        // - the "stats unavailable" badge state - rather than panic or hang.
         let dir = tempfile::tempdir().unwrap();
         let stats = GitDiffStats::from_cwd(dir.path().to_str().unwrap());
         assert!(

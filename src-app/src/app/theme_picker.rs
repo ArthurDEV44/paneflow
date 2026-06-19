@@ -1,4 +1,4 @@
-//! Theme picker modal — command-palette style selector opened from the
+//! Theme picker modal - command-palette style selector opened from the
 //! title-bar burger menu. Lists bundled themes from `crate::theme::THEMES`
 //! with a typeahead filter and keyboard navigation.
 
@@ -173,7 +173,7 @@ impl PaneFlowApp {
                 // `is_selected` is the keyboard cursor (what Enter applies);
                 // `is_current` is the theme already in effect. The cursor reads
                 // as the `select_item` whisper highlight, the current theme as a
-                // neutral trailing check — no accent-blue focus text.
+                // neutral trailing check - no accent-blue focus text.
                 let is_selected = idx == self.theme_picker_selected_idx;
                 let is_current = *name == current_name.as_str();
                 let label = if *name == "One Dark" {

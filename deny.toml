@@ -1,7 +1,7 @@
 # cargo-deny configuration.
 #
 # Graduated-severity posture (Bevy pattern). The CI `security_audit`
-# job is BLOCKING and required via `tests_pass` — false positives are
+# job is BLOCKING and required via `tests_pass` - false positives are
 # absorbed inside this file, not via `continue-on-error` on the job.
 #
 #   * advisories.vulnerabilities → deny (cargo-deny 0.19 default)
@@ -29,10 +29,10 @@ unmaintained = "workspace"
 # warranted for a release-engineering PRD.
 yanked = "warn"
 # Fail if the local copy of the RustSec advisory DB is older than 30
-# days — guards against a stale CI runner silently missing recent
+# days - guards against a stale CI runner silently missing recent
 # advisories. P30D is ISO 8601 duration syntax (30 days).
 maximum-db-staleness = "P30D"
-# Surface stale `ignore` entries — when a dep tree change drops the
+# Surface stale `ignore` entries - when a dep tree change drops the
 # vulnerable crate, the corresponding ignore becomes inert noise.
 # Warn (don't fail) so a routine GPUI bump doesn't suddenly block a
 # tag cut; the warning bubbles up to the CI log and gets cleaned in
@@ -44,14 +44,14 @@ unused-ignored-advisory = "warn"
 #   2. what triggers re-evaluation (upstream patch, code-path change)
 # Reviewed 2026-05-27.
 ignore = [
-    # RUSTSEC-2023-0071 — Marvin Attack on the `rsa` crate
+    # RUSTSEC-2023-0071 - Marvin Attack on the `rsa` crate
     # (timing side-channel during RSA private-key decryption).
     #
     # Why ignored:
     #   * `rsa v0.9.x` is a transitive dep via
     #     zed/markdown → zed/language → zed/rpc → rsa.
     #     PaneFlow uses Zed's `markdown` crate purely for AST +
-    #     rendering — we never instantiate the `language` server
+    #     rendering - we never instantiate the `language` server
     #     wiring, never connect to rpc.zed.dev, and the linker
     #     keeps the RSA code only because cargo cannot prove it's
     #     dead at link-time. `grep -rn 'rsa::' src-app/ crates/`
@@ -59,10 +59,10 @@ ignore = [
     #   * The attack requires the victim to decrypt
     #     attacker-controlled ciphertext and leak timing
     #     differences. PaneFlow's binary never decrypts anything
-    #     from a network surface — there is no exploitable code
+    #     from a network surface - there is no exploitable code
     #     path.
     #   * Upstream RustCrypto position (per the advisory itself):
-    #     "No safe upgrade is available!" — no fixed rsa version
+    #     "No safe upgrade is available!" - no fixed rsa version
     #     exists as of 2026-05. The recommended migration is to a
     #     different crate, which has to happen on the Zed side
     #     (zed/rpc/Cargo.toml), not ours.
@@ -92,9 +92,9 @@ ignore = [
 # (Unicode-3.0 for the Unicode crates, Zlib for miniz_oxide, BSD
 # variants for misc parsers, plus extras pulled in by GPUI's image /
 # font-kit dep tree: 0BSD, MPL-2.0, CC0-1.0, CDLA-Permissive-2.0,
-# bzip2-1.0.6, NCSA — all OSI-approved or public-domain-equivalent).
+# bzip2-1.0.6, NCSA - all OSI-approved or public-domain-equivalent).
 #
-# GPL-3.0 / GPL-3.0-or-later — accepted globally (2026-05-27).
+# GPL-3.0 / GPL-3.0-or-later - accepted globally (2026-05-27).
 # The Zed monorepo we pin GPUI from contains 33+ crates licensed
 # `GPL-3.0` that land in our dep tree as transitive deps of `gpui` /
 # `gpui_platform` / `collections` (askpass, clock, component, fs,
@@ -102,7 +102,7 @@ ignore = [
 # paths, proto, release_channel, rope, rpc, settings*, syntax_theme,
 # task, telemetry*, text, theme*, ui*, zed_actions, ...). The
 # previous per-crate `[[licenses.exceptions]]` for zlog / ztracing
-# was unsustainable — every GPUI pin bump shifted the list and the
+# was unsustainable - every GPUI pin bump shifted the list and the
 # CI gate fell out of sync. PaneFlow already statically links these,
 # so cargo-deny's noise-vs-block dilemma was the wrong frame: the
 # right question is whether PaneFlow's binary distribution license

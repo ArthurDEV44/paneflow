@@ -2,13 +2,13 @@
 //! prd-multi-worktree-diff-2026-Q3.md).
 //!
 //! Zed keeps the two sides of a split diff vertically aligned by inserting
-//! balancing blank ("phantom") rows on the shorter side of each hunk — the
+//! balancing blank ("phantom") rows on the shorter side of each hunk - the
 //! `Companion` mechanism welded into its `DisplayMap` block pipeline. Paneflow
 //! has no editor, so this reimplements the *insight* as ~100 lines of pure
 //! layout math over a flat row list: a `Vec<AlignedRow>` where every row pairs
 //! a left (base) cell with a right (new) cell, padding with `Phantom` where one
 //! side has fewer lines. Rendering each pair as a single row (US-009) makes
-//! synchronized scroll automatic — both halves live in one row of one list.
+//! synchronized scroll automatic - both halves live in one row of one list.
 
 use super::engine::DiffHunk;
 
@@ -81,7 +81,7 @@ pub fn align_rows(
         }
 
         // Hunk body: pair removed (left) with added (right), pad with phantoms.
-        // Index directly into the ranges — no per-hunk `Vec<u32>` allocation.
+        // Index directly into the ranges - no per-hunk `Vec<u32>` allocation.
         let rem_start = h.base_row_range.start;
         let add_start = h.new_row_range.start;
         let rem_len = h.base_row_range.end - rem_start;

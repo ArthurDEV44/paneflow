@@ -126,7 +126,7 @@ impl PaneFlowApp {
             .flex_shrink_0()
             .h_full()
             // Cockpit rail/chrome (#141414) against the #181818 right panel;
-            // no divider — the bg step + the
+            // no divider - the bg step + the
             // floating rounded panel provide the separation.
             .bg(crate::app::constants::cockpit_chrome_background(
                 theme.title_bar_background,
@@ -579,7 +579,7 @@ impl PaneFlowApp {
             )
             .child(title_el)
             .when(!git_stats.is_empty(), |d| {
-                // Trailing `+N -N` badge — git diff --shortstat of the
+                // Trailing `+N -N` badge - git diff --shortstat of the
                 // project's cwd, cached + refreshed on the 30 s poller
                 // in `app/bootstrap.rs`. Shared diff palette (Codex green/red on
                 // dark, theme vc_* on light) so it matches the diff dock, the
@@ -626,9 +626,9 @@ impl PaneFlowApp {
         } = args;
         let timestamp = format_relative_ts(now_ms, created_at_ms);
         // Codex-style activity indicator: while the agent's turn is in
-        // flight the relative timestamp gives way to a rotating arc —
+        // flight the relative timestamp gives way to a rotating arc -
         // the SAME muted `loader-circle.svg` for every agent (Arthur:
-        // no per-agent branding here, match the Codex app's sidebar) —
+        // no per-agent branding here, match the Codex app's sidebar) -
         // or a static amber attention dot (WaitingForInput, same amber
         // as the CLI sidebar badge). Idle restores the timestamp. The
         // arc self-animates via the declarative Animation+Transformation
@@ -668,7 +668,7 @@ impl PaneFlowApp {
         // on itself. Mirrors `pane.rs:401-464`. US-006: the scope prefix
         // keeps element ids unique when a pinned thread renders BOTH in the
         // PINNED section and in its own project/chat section (same
-        // `thread_id`, different rows) — duplicate GPUI ids would panic.
+        // `thread_id`, different rows) - duplicate GPUI ids would panic.
         let row_group: SharedString = format!("agents-{row_scope}-row-{thread_id}").into();
 
         let title_el: gpui::AnyElement = if let Some(input) = rename_input {
@@ -742,7 +742,7 @@ impl PaneFlowApp {
         if is_active {
             // Codex-style selection: a neutral, slightly translucent light-gray
             // overlay (a low-opacity white lift) against the rail's #141414
-            // cockpit color — not the theme's `ui.surface` (too close to read as
+            // cockpit color - not the theme's `ui.surface` (too close to read as
             // selected) nor an opaque blue-gray fill. Shared tint with the
             // workspace cards and settings nav (`sidebar_tab_active_background`).
             row = row.bg(crate::app::constants::sidebar_tab_active_background());
@@ -847,8 +847,8 @@ impl PaneFlowApp {
             .is_empty();
 
         // Mirrors the Settings "Search settings…" pill (`settings/chrome.rs`):
-        // a filled `ui.subtle` gray, borderless, and fully inert — nothing
-        // changes on focus or hover, the blinking caret is the only focus cue —
+        // a filled `ui.subtle` gray, borderless, and fully inert - nothing
+        // changes on focus or hover, the blinking caret is the only focus cue -
         // so both app search fields read as one system.
         // Mirrors the Settings "Search settings…" pill via the shared
         // [`filter_pill`] primitive (same recipe as the diff sidebar filter).
@@ -1002,7 +1002,7 @@ fn is_renaming_target(
     )
 }
 
-/// US-004: section eyebrow — a small uppercase muted label introducing a
+/// US-004: section eyebrow - a small uppercase muted label introducing a
 /// rail section (PINNED / PROJECTS / CHATS). When `add_button_id` is
 /// `Some`, a trailing `+` opens the folder picker (the PROJECTS section's
 /// create affordance, US-007). The caller passes an already-uppercased
@@ -1207,7 +1207,7 @@ fn hover_actions_cluster(
     cx: &mut Context<PaneFlowApp>,
 ) -> gpui::AnyElement {
     // Inline delete-confirm (ergonomics): once the trash is clicked the row
-    // arms — show a single red "Delete" button, always visible (the cursor has
+    // arms - show a single red "Delete" button, always visible (the cursor has
     // left the trash icon), and run the delete on the next click. Clicking
     // elsewhere (selecting a row / opening a menu / arming another) cancels it.
     if armed {
@@ -1247,7 +1247,7 @@ fn hover_actions_cluster(
     }
 
     // US-006: pin / unpin toggle. A text glyph (★ filled = pinned, ☆ outline
-    // = unpinned) instead of an SVG — Paneflow ships no pin asset and the
+    // = unpinned) instead of an SVG - Paneflow ships no pin asset and the
     // glyph reads correctly at this size. Toggling persists via
     // `toggle_pin_for_target` (flips `thread.pinned` + saves the session).
     let pin_glyph = if is_pinned { "★" } else { "☆" };

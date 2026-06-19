@@ -1,5 +1,5 @@
 #!/bin/sh
-# Debian `postrm` maintainer script — cleans up artifacts our `postinst`
+# Debian `postrm` maintainer script - cleans up artifacts our `postinst`
 # created (US-016 hygiene follow-up).
 #
 # Debian convention:
@@ -13,7 +13,7 @@
 # source so `apt install paneflow` later works without re-running the
 # first-install flow; `apt purge paneflow` opts into full cleanup.
 #
-# Pure /bin/sh (no bashisms) — Debian Policy §4.9 compliance.
+# Pure /bin/sh (no bashisms) - Debian Policy §4.9 compliance.
 
 set -e
 
@@ -29,7 +29,7 @@ remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
     ;;
 
 *)
-    # Unknown action — exit 0 for forward compatibility.
+    # Unknown action - exit 0 for forward compatibility.
     ;;
 esac
 

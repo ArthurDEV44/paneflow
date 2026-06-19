@@ -1,9 +1,9 @@
-//! Pane — a tabbed container holding one or more views (terminals or markdown
+//! Pane - a tabbed container holding one or more views (terminals or markdown
 //! viewers, freely mixed within the same tab strip).
 //!
 //! Each leaf in the split tree holds an `Entity<Pane>`. A Pane manages an
 //! ordered list of [`TabContent`] tabs and a single `selected_idx` cursor.
-//! Markdown tabs and terminal tabs share the strip — the user opens markdown
+//! Markdown tabs and terminal tabs share the strip - the user opens markdown
 //! files by clicking the doc icon (or Cmd/Ctrl-clicking a `.md` path inside a
 //! terminal), and a new tab is appended to the same pane rather than splitting.
 //!
@@ -35,12 +35,12 @@ use crate::pane_drag::{
 use crate::terminal::{TerminalEvent, TerminalView};
 
 // ---------------------------------------------------------------------------
-// TabContent — a tab can hold either a terminal or a markdown viewer
+// TabContent - a tab can hold either a terminal or a markdown viewer
 // ---------------------------------------------------------------------------
 
 /// A single tab inside a pane. Terminal and markdown tabs share the strip so
 /// the user keeps tab navigation (Ctrl+Tab, click) regardless of content type
-/// — opening a markdown file from a terminal pane appends a tab next to the
+/// opening a markdown file from a terminal pane appends a tab next to the
 /// existing terminals rather than splitting the layout.
 #[derive(Clone)]
 pub enum TabContent {
@@ -71,7 +71,7 @@ impl TabContent {
 }
 
 // ---------------------------------------------------------------------------
-// Tab bar color helpers — derived from active theme
+// Tab bar color helpers - derived from active theme
 // ---------------------------------------------------------------------------
 
 fn tab_colors() -> crate::theme::UiColors {
@@ -79,7 +79,7 @@ fn tab_colors() -> crate::theme::UiColors {
 }
 
 /// First line of an agent question, bounded for the collapsed peek badge
-/// (US-020, orchestration-v2). Pure — unit-tested below.
+/// (US-020, orchestration-v2). Pure - unit-tested below.
 fn peek_badge_line(message: &str) -> String {
     const BADGE_MAX_CHARS: usize = 80;
     let first = message.lines().next().unwrap_or("").trim();
@@ -140,18 +140,18 @@ fn truncate_tab_title(raw: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Pane events — emitted to parent via cx.emit()
+// Pane events - emitted to parent via cx.emit()
 // ---------------------------------------------------------------------------
 
 pub enum PaneEvent {
-    /// The last tab was closed — parent should remove this pane from the split tree.
+    /// The last tab was closed - parent should remove this pane from the split tree.
     Remove,
     /// Request a split in the given direction from this pane.
     Split(crate::layout::SplitDirection),
     /// Request a fresh terminal tab in this pane. Routed to `PaneFlowApp` (not
     /// handled in the `Pane`) so the new terminal spawns at the owning
-    /// workspace's cwd — the `Pane` knows only its `workspace_id`, not the
-    /// directory — and gets the app-level CWD/port/service subscription wired,
+    /// workspace's cwd - the `Pane` knows only its `workspace_id`, not the
+    /// directory - and gets the app-level CWD/port/service subscription wired,
     /// exactly like `DropSplit` / `DuplicateTabInto`. Without this, a new tab on
     /// Windows opened in the process `current_dir()` (`C:\Program Files\PaneFlow`).
     NewTerminalTab,
@@ -171,7 +171,7 @@ pub enum PaneEvent {
     /// name via `collect_surface_meta` so the copied value matches what the
     /// MCP `list_panes` tool advertises.
     CopySurfaceRef(u64),
-    /// A surface's custom name changed via inline rename (US-013) — the parent
+    /// A surface's custom name changed via inline rename (US-013) - the parent
     /// should persist the session so the name survives restart.
     SurfaceRenamed,
     /// Right-click on a tab requested the "Move to pane…" context menu
@@ -191,14 +191,14 @@ pub enum PaneEvent {
         source_pane: Entity<Pane>,
         source_idx: usize,
         /// `true` when the duplicate modifier was held (Ctrl on Linux/Windows,
-        /// Alt on macOS) — spawn a fresh terminal at the dragged tab's CWD
+        /// Alt on macOS) - spawn a fresh terminal at the dragged tab's CWD
         /// instead of moving the original (US-010).
         duplicate: bool,
     },
     /// A tab was dropped on this pane's tab strip (or content center) with the
     /// duplicate modifier held (EP-003 US-010). The parent spawns a fresh
-    /// terminal at the dragged tab's CWD and inserts it into this — the
-    /// emitting — pane at `dest_idx`, leaving the original in place. Routed to
+    /// terminal at the dragged tab's CWD and inserts it into this - the
+    /// emitting - pane at `dest_idx`, leaving the original in place. Routed to
     /// `PaneFlowApp` because spawning a terminal needs the app-level CWD/port
     /// subscription wiring (mirrors `DropSplit`'s duplicate path).
     DuplicateTabInto {
@@ -209,8 +209,8 @@ pub enum PaneEvent {
     /// An agent-session row was dropped out of the sessions sidebar onto this
     /// pane (bridges `prd-agent-sessions-sidebar` × `prd-pane-drag-drop`). The
     /// parent spawns a *fresh* terminal at `cwd` running the agent's resume
-    /// command, then — for `edge = Some` — splits this (the emitting target)
-    /// pane toward that edge, or — for `edge = None` (center) — appends it as a
+    /// command, then - for `edge = Some` - splits this (the emitting target)
+    /// pane toward that edge, or - for `edge = None` (center) - appends it as a
     /// new tab here. Routed to `PaneFlowApp` because spawning a terminal needs
     /// the app-level CWD/port subscription wiring (mirrors `DropSplit`).
     DropSessionSplit {
@@ -241,7 +241,7 @@ struct TabRename {
 }
 
 // ---------------------------------------------------------------------------
-// Pane — tabbed terminal container
+// Pane - tabbed terminal container
 // ---------------------------------------------------------------------------
 
 pub struct Pane {
@@ -254,13 +254,13 @@ pub struct Pane {
     /// US-018/US-020 (orchestration-v2): terminals of this pane whose agent
     /// session is `WaitingForInput`, with the agent's question (≤512 chars,
     /// UNTRUSTED display-only text). Pushed by `PaneFlowApp::sync_attention`
-    /// — recomputed from the session truth on every transition, never
+    /// recomputed from the session truth on every transition, never
     /// mutated locally. Drives the attention ring, the tab dot and the peek
     /// overlay.
     attention: std::collections::HashMap<gpui::EntityId, Option<String>>,
     /// EP-004 US-010 (cli-cockpit): terminals of this pane whose agent
     /// session is `Errored` (the agent binary exited non-zero). Pushed by
-    /// `PaneFlowApp::sync_attention` alongside `attention` — same idempotent
+    /// `PaneFlowApp::sync_attention` alongside `attention` - same idempotent
     /// recompute-from-session-truth contract. Drives the dedicated
     /// `agent_error` tab dot (tab-anatomy state slot, ranked above the
     /// waiting dot and the bell).
@@ -268,9 +268,9 @@ pub struct Pane {
     /// EP-006 US-018 (cli-cockpit): transient fleet-grep match counts per
     /// terminal. Pushed by `PaneFlowApp::push_fleet_badges` after a fan-out,
     /// cleared 4 s later or when the fleet overlay closes. FR-11: the
-    /// LOWEST-priority tab adornment — first to yield its slot.
+    /// LOWEST-priority tab adornment - first to yield its slot.
     search_hits: std::collections::HashMap<gpui::EntityId, usize>,
-    /// US-020: the peek badge is hovered — render the full question panel.
+    /// US-020: the peek badge is hovered - render the full question panel.
     peek_expanded: bool,
     /// Set to true when the workspace is zoomed on this pane.
     pub zoomed: bool,
@@ -323,7 +323,7 @@ pub struct Pane {
     /// EP-001 US-001/US-003 (cli-cockpit): the Composer overlay pushed by
     /// `PaneFlowApp::refresh_composer_slot` when this pane is the Composer
     /// target. `None` on every other pane. The pane renders it bottom-anchored
-    /// and routes gestures back through the slot's closures — it never reads
+    /// and routes gestures back through the slot's closures - it never reads
     /// app state.
     composer_slot: Option<crate::app::composer::ComposerSlot>,
     /// EP-001 US-003: terminals of this pane holding a queued prompt
@@ -334,7 +334,7 @@ pub struct Pane {
     /// EP-001 US-002: broadcast-group stripe color index (`UiColors::group_*`)
     /// when this pane is a group member. Pushed by
     /// `PaneFlowApp::sync_broadcast_stripes`. The stripe is a DISTINCT element
-    /// from the attention border below — the pane border slot stays the glow's.
+    /// from the attention border below - the pane border slot stays the glow's.
     broadcast_stripe: Option<usize>,
 }
 
@@ -374,8 +374,8 @@ impl Pane {
 
     /// Create a new pane wrapping an existing tab moved in from elsewhere
     /// (EP-003 drop-to-split). The pane-level subscription is wired for a
-    /// terminal tab so `ChildExited`/`TitleChanged` route here, but — unlike
-    /// [`crate::PaneFlowApp::create_pane`] — the app-level terminal
+    /// terminal tab so `ChildExited`/`TitleChanged` route here, but - unlike
+    /// [`crate::PaneFlowApp::create_pane`] - the app-level terminal
     /// subscription is NOT re-added, because the moved terminal already has
     /// one from its original creation (re-adding would double CWD/port events).
     pub fn new_with_tab(tab: TabContent, workspace_id: u64, cx: &mut Context<Self>) -> Self {
@@ -411,7 +411,7 @@ impl Pane {
 
     /// US-018/US-020 (orchestration-v2): replace this pane's attention map
     /// (terminals whose agent waits for input + their question). Idempotent
-    /// push from `PaneFlowApp::sync_attention` — repaints only on change.
+    /// push from `PaneFlowApp::sync_attention` - repaints only on change.
     pub fn set_attention(
         &mut self,
         attention: std::collections::HashMap<gpui::EntityId, Option<String>>,
@@ -428,7 +428,7 @@ impl Pane {
 
     /// EP-004 US-010 (cli-cockpit): replace this pane's Errored set
     /// (terminals whose agent binary exited non-zero). Same idempotent
-    /// push contract as [`Pane::set_attention`] — repaints only on change.
+    /// push contract as [`Pane::set_attention`] - repaints only on change.
     pub fn set_errored(
         &mut self,
         errored: std::collections::HashSet<gpui::EntityId>,
@@ -454,7 +454,7 @@ impl Pane {
     }
 
     /// EP-001 US-001 (cli-cockpit): install/clear the Composer overlay on
-    /// this pane. Always notifies — the slot carries live `busy`/group data
+    /// this pane. Always notifies - the slot carries live `busy`/group data
     /// recomputed by the pusher, and the closure fields defeat `PartialEq`.
     pub fn set_composer_slot(
         &mut self,
@@ -466,7 +466,7 @@ impl Pane {
     }
 
     /// EP-001 US-003: replace the queued-prompt indicator set. Idempotent
-    /// push from `PaneFlowApp::sync_pending_chips` — repaints only on change.
+    /// push from `PaneFlowApp::sync_pending_chips` - repaints only on change.
     pub fn set_pending_prefill(
         &mut self,
         pending: std::collections::HashSet<gpui::EntityId>,
@@ -487,7 +487,7 @@ impl Pane {
         }
     }
 
-    /// EP-001 US-001/US-003: the Composer overlay — a bottom-anchored prompt
+    /// EP-001 US-001/US-003: the Composer overlay - a bottom-anchored prompt
     /// panel over a click-swallowing backdrop, so the terminal underneath
     /// receives neither keystrokes (the TextArea holds focus) nor clicks
     /// while the user is composing (theme-picker overlay model).
@@ -541,7 +541,7 @@ impl Pane {
 
         if slot.busy {
             // US-001 AC5 chip (US-003 unified semantics): the target's agent
-            // is generating — validation queues instead of delivering.
+            // is generating - validation queues instead of delivering.
             header = header.child(
                 div()
                     .px(px(6.))
@@ -550,7 +550,7 @@ impl Pane {
                     .text_size(px(10.))
                     .bg(ui.vc_modified.opacity(0.15))
                     .text_color(ui.vc_modified)
-                    .child("agent generating — Enter queues"),
+                    .child("agent generating - Enter queues"),
             );
         }
 
@@ -584,7 +584,7 @@ impl Pane {
             "Ctrl+Enter"
         };
         let hint: SharedString = if slot.broadcast {
-            "Enter pre-fills every ready member — broadcast never submits".into()
+            "Enter pre-fills every ready member - broadcast never submits".into()
         } else {
             format!("Enter pre-fills without submitting · {submit_chord} pre-fills and submits")
                 .into()
@@ -638,7 +638,7 @@ impl Pane {
 
     /// US-020 (orchestration-v2): a compact badge on the pane showing the
     /// waiting agent's question without stealing focus; hover expands to the
-    /// full message (≤512 chars, plain inert text — no links, no ANSI).
+    /// full message (≤512 chars, plain inert text - no links, no ANSI).
     /// Top-right under the tab bar so the agent's prompt line stays visible.
     fn render_peek_overlay(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if self.attention.is_empty() {
@@ -696,7 +696,7 @@ impl Pane {
     }
 
     /// Iterate over the terminal entities in this pane. Markdown tabs are
-    /// skipped. Used by event handlers that need to scan terminals — sidebar
+    /// skipped. Used by event handlers that need to scan terminals - sidebar
     /// counters, AI-tool PID owner lookups, layout serialization.
     pub fn terminals(&self) -> impl Iterator<Item = &Entity<TerminalView>> {
         self.tabs.iter().filter_map(TabContent::as_terminal)
@@ -716,7 +716,7 @@ impl Pane {
 
     /// Append a markdown viewer tab and focus it. Used by the doc-button
     /// handler in this pane's tab strip and by the Cmd/Ctrl-click flow on
-    /// `.md` paths inside a terminal — both routes converge on this method
+    /// `.md` paths inside a terminal - both routes converge on this method
     /// via `PaneFlowApp::open_markdown_in_pane`.
     ///
     /// Markdown tabs don't need an event subscription: `MarkdownView` does
@@ -735,7 +735,7 @@ impl Pane {
         self.selected_idx = self.tabs.len().saturating_sub(1);
     }
 
-    /// Subscribe to a terminal's events — close tab on exit, repaint on title change.
+    /// Subscribe to a terminal's events - close tab on exit, repaint on title change.
     fn subscribe_terminal(terminal: &Entity<TerminalView>, cx: &mut Context<Self>) {
         cx.subscribe(terminal, |this, terminal, event: &TerminalEvent, cx| {
             match event {
@@ -781,7 +781,7 @@ impl Pane {
     /// Both variants are capped at 24 chars (Zed `MAX_TAB_TITLE_LEN`,
     /// `crates/editor/src/items.rs:64`). The CSS truncation chain
     /// (`min_w_0 + overflow_x_hidden + text_ellipsis`) on the title div
-    /// is a second layer that catches edge cases — but Zed's experience is
+    /// is a second layer that catches edge cases - but Zed's experience is
     /// that flex layouts with `max_w` (no explicit `w`) sometimes fail to
     /// propagate the constraint, so capping the string up front is
     /// load-bearing for visual consistency. Without this, a long markdown
@@ -845,7 +845,7 @@ impl Pane {
                 if !last.is_empty() {
                     return last.to_string();
                 }
-                // Root "/" — show "/"
+                // Root "/" - show "/"
                 return "/".into();
             }
         }
@@ -872,7 +872,7 @@ impl Pane {
 
     /// A 14px tab-bar icon. Monochrome logos render as a `text_color`-tinted
     /// `svg()` mask; multi-color logos render via `img()`, which rasterizes
-    /// the SVG (resvg) and keeps every native fill/gradient — a `text_color`
+    /// the SVG (resvg) and keeps every native fill/gradient - a `text_color`
     /// tint has no effect there, so `tint` is ignored when `multicolor`.
     fn command_icon(icon_path: SharedString, tint: Hsla, multicolor: bool) -> AnyElement {
         if multicolor {
@@ -939,7 +939,7 @@ impl Pane {
 
     /// Move a tab from one slot to another within this pane (EP-001 US-002).
     ///
-    /// Single mutation entry point for same-pane reordering — drag-drop today,
+    /// Single mutation entry point for same-pane reordering - drag-drop today,
     /// any future keyboard/menu reorder routes through here too. The moved tab
     /// becomes the selected tab so `selected_idx` follows it (per the AC). A
     /// no-op move (origin slot, out of range, or a trailing drop that resolves
@@ -961,7 +961,7 @@ impl Pane {
 
     /// Remove a tab for a cross-pane move (EP-002 US-004). Unlike
     /// [`Self::close_tab_at`], this does NOT emit `PaneEvent::Remove` when the
-    /// pane empties — the move orchestration ([`crate::pane_drag::move_tab_into`])
+    /// pane empties - the move orchestration ([`crate::pane_drag::move_tab_into`])
     /// decides source cleanup so the tree owner reflows exactly once. Clamps
     /// `selected_idx` if it pointed past the removed slot. Returns the tab, or
     /// `None` if the index is out of range.
@@ -980,7 +980,7 @@ impl Pane {
     /// selected, focused tab. Terminal tabs are re-subscribed so
     /// `ChildExited`/`TitleChanged` route to this pane; the source's now-stale
     /// subscription degrades to a no-op (it can't find the moved terminal in
-    /// its own `tabs`). `dest_idx` is clamped to `[0, len]` — pass `tabs.len()`
+    /// its own `tabs`). `dest_idx` is clamped to `[0, len]` - pass `tabs.len()`
     /// to append.
     pub fn insert_moved_tab(
         &mut self,
@@ -1069,7 +1069,7 @@ impl Pane {
     }
 
     /// Get the currently selected terminal entity, if any. Returns `None`
-    /// when the active tab is a markdown viewer or the pane is empty — all
+    /// when the active tab is a markdown viewer or the pane is empty - all
     /// callers must handle the absence (event handlers, workspace ops, IPC,
     /// in-pane action buttons) so a markdown tab never triggers a panic.
     pub fn active_terminal_opt(&self) -> Option<&Entity<TerminalView>> {
@@ -1079,7 +1079,7 @@ impl Pane {
     }
 
     // -----------------------------------------------------------------------
-    // Tab bar rendering — Zed-style design
+    // Tab bar rendering - Zed-style design
     // -----------------------------------------------------------------------
 
     /// Render a tab's title slot. While that tab is being renamed (US-013) the
@@ -1185,7 +1185,7 @@ impl Pane {
         let self_entity = cx.entity();
         let accent = ui.accent;
         // Tab strip uses the terminal background so it melts into the terminal
-        // body below it — one clean surface (Arthur). No active/inactive chrome
+        // body below it - one clean surface (Arthur). No active/inactive chrome
         // split: the blue focus ring is gone, so the strip no longer carries a
         // pane-focus signal either.
         let bar_bg = theme.background;
@@ -1225,7 +1225,7 @@ impl Pane {
                 if matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2) {
                     // Routed to PaneFlowApp so the new terminal spawns at the
                     // workspace cwd (the Pane doesn't know it) with app-level
-                    // subscriptions wired — see `PaneEvent::NewTerminalTab`.
+                    // subscriptions wired - see `PaneEvent::NewTerminalTab`.
                     cx.emit(PaneEvent::NewTerminalTab);
                 }
             }));
@@ -1248,7 +1248,7 @@ impl Pane {
         // the last tab. `flex_1` claims whatever width the tabs don't, so a
         // drop here moves the dragged tab to the last slot. When the strip
         // overflows (overflow_x_scroll), this collapses to zero width and is
-        // simply not a drop target — which is correct, there is no trailing
+        // simply not a drop target - which is correct, there is no trailing
         // area to aim at. Lives inside `tabs_row` so it never overlaps a tab,
         // keeping its `on_drop` distinct from the per-tab handlers.
         tabs_row = tabs_row.child(div().id("pane-tabs-trailing").flex_1().h_full().on_drop(
@@ -1320,10 +1320,10 @@ impl Pane {
         // unacknowledged bell. Zero-size placeholder otherwise so tab
         // layout/truncation is unaffected.
         // US-018 (orchestration-v2): an agent waiting for input in this tab
-        // shows the attention-colored dot — it wins over the bell (the more
+        // shows the attention-colored dot - it wins over the bell (the more
         // actionable signal), so a hidden waiting tab stays discoverable.
         // EP-004 US-010: an Errored agent (binary exited non-zero) wins over
-        // both — a crash is the most salient state and must never hide
+        // both - a crash is the most salient state and must never hide
         // behind a waiting dot. Dedicated `agent_error` slot, distinct from
         // the attention orange (a session is either waiting OR errored, but
         // two terminals of the same tab strip can show one of each).
@@ -1361,7 +1361,7 @@ impl Pane {
             div().into_any_element()
         };
 
-        // EP-001 US-003 (cli-cockpit): queued-prompt chip — tab-anatomy slot
+        // EP-001 US-003 (cli-cockpit): queued-prompt chip - tab-anatomy slot
         // ranked just below the state dot. Zero-size placeholder otherwise so
         // tab layout/truncation is unaffected (same convention as bell_dot).
         let has_pending = self
@@ -1384,7 +1384,7 @@ impl Pane {
             div().into_any_element()
         };
 
-        // EP-005 US-013/US-014 + EP-006 US-018 — identity pill, port badges
+        // EP-005 US-013/US-014 + EP-006 US-018 - identity pill, port badges
         // and the transient fleet-match badge, governed by the FR-11 tab
         // anatomy: at most 2 adornments per tab, in priority order state
         // dot > queued chip > identity pill > port badges > match badge.
@@ -1392,7 +1392,7 @@ impl Pane {
         // its icon alone ("point coloré") when it shares the tab with
         // another adornment; the port badges only render while a slot
         // remains (their own internal fallback is the "+N" fold); and the
-        // match badge — lowest priority, "s'efface en premier" — takes the
+        // match badge - lowest priority, "s'efface en premier" - takes the
         // last slot if any.
         let (agent_pill, port_badges, match_badge) = {
             let term_meta = self.tabs.get(i).and_then(|t| t.as_terminal()).map(|t| {
@@ -1491,7 +1491,7 @@ impl Pane {
                     },
                 )
                 // Insertion indicator: 2px border on the side the tab will
-                // land. Same-pane only — a cross-pane hover shows nothing
+                // land. Same-pane only - a cross-pane hover shows nothing
                 // in the strip (EP-002 adds the pane-level highlight); the
                 // drag's own origin slot shows nothing either.
                 .drag_over::<TabDrag>(move |style, drag, _window, _cx| {
@@ -1547,7 +1547,7 @@ impl Pane {
                 );
         }
 
-        // Close button — chip style (matches the Agents bottom-panel tabs):
+        // Close button - chip style (matches the Agents bottom-panel tabs):
         // always visible, a muted glyph in a rounded hit target that washes in
         // on hover. `on_mouse_down` swallows the press so closing never selects
         // the tab underneath.
@@ -1602,7 +1602,7 @@ impl Pane {
             // Critical: as the only flex child of `tab` (which uses
             // `max_w(TAB_MAX_WIDTH)`), `content` defaults to
             // `min-width: auto` and refuses to shrink below its
-            // natural size — which for a 24-char title is ~270px,
+            // natural size - which for a 24-char title is ~270px,
             // overflowing the tab's 200px cap and pushing the title
             // visibly past the close-button slot. `min_w_0()` opts
             // into the "can shrink to anything" mode so the flex
@@ -1663,7 +1663,7 @@ impl Pane {
     ) -> gpui::AnyElement {
         // Multi-color brand logos need `img()` (resvg keeps every fill);
         // monochrome logos are `svg()` masks tinted with the brand accent
-        // or the theme text color — same split as the tab-bar launchers.
+        // or the theme text color - same split as the tab-bar launchers.
         let icon: gpui::AnyElement = if agent.icon_multicolor() {
             img(agent.icon_path())
                 .w(px(11.))
@@ -1682,7 +1682,7 @@ impl Pane {
         let tooltip_label: SharedString = if confirmed {
             agent.display_name().into()
         } else {
-            format!("{} (last known — awaiting scan)", agent.display_name()).into()
+            format!("{} (last known - awaiting scan)", agent.display_name()).into()
         };
         let mut pill = div()
             .id(SharedString::from(format!("tab-agent-pill-{tab_idx}")))
@@ -1719,7 +1719,7 @@ impl Pane {
         .into_any_element()
     }
 
-    /// EP-005 US-014: port badges for one tab — conflicted announcements
+    /// EP-005 US-014: port badges for one tab - conflicted announcements
     /// first (alert style + owner tooltip), then owned LISTEN ports
     /// (clickable when a frontend URL is known, textual otherwise), at
     /// most 2 badges with the overflow folded into "+N" (FR-11).
@@ -1833,7 +1833,7 @@ impl Pane {
     /// Trailing action-button cluster of the tab bar (US-051: code-motion out
     /// of `render_tab_bar`). Zoom badge + surface-ref / new-tab / split / files
     /// / sessions buttons, the built-in agent launchers, and the per-workspace
-    /// custom buttons. Self-contained — recomputes the palette it needs.
+    /// custom buttons. Self-contained - recomputes the palette it needs.
     fn render_end_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = tab_colors();
         // End section: action buttons. No separator rules: the chip strip melts
@@ -2011,7 +2011,7 @@ impl gpui::Focusable for Pane {
 impl Render for Pane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // US-006: clear the bell dot for any tab whose terminal currently holds
-        // focus — the user is looking at it, so the signal is acknowledged.
+        // focus - the user is looking at it, so the signal is acknowledged.
         if !self.bell_pending.is_empty() {
             let focused: Vec<gpui::EntityId> = self
                 .tabs
@@ -2061,8 +2061,8 @@ impl Render for Pane {
 
         // Translucent preview: full pane for center (move-into), or the half
         // the new split would occupy for an edge. `invisible()` by default and
-        // only shown via `group_drag_over`, so it never paints — and so never
-        // hit-tests / blocks terminal mouse input — unless a tab is being
+        // only shown via `group_drag_over`, so it never paints - and so never
+        // hit-tests / blocks terminal mouse input - unless a tab is being
         // dragged over this pane (US-008). Geometry is set per-frame by the
         // glide animator below (absolute px), not statically.
         // The overlay is also the drop target. Carrying `on_drop` here (rather
@@ -2070,7 +2070,7 @@ impl Render for Pane {
         // hitbox: GPUI's `should_insert_hitbox` keys off `drop_listeners`
         // (among others) but NOT off `group_drag_over`, so a handler-less div
         // never allocates a hitbox and its `group_drag_over` style is never
-        // evaluated — i.e. the overlay would stay `invisible()` forever. This
+        // evaluated - i.e. the overlay would stay `invisible()` forever. This
         // mirrors Zed's `crates/workspace/src/pane.rs` drag-target div, which
         // is likewise `.invisible()` + `group_drag_over` + `on_drop`. The
         // hitbox is `HitboxBehavior::Normal`, so it never blocks the terminal's
@@ -2091,7 +2091,7 @@ impl Render for Pane {
             .group_drag_over::<TabDrag>(group_name.clone(), |s| s.visible())
             // A session dragged from the sidebar lights up the same overlay.
             .group_drag_over::<SessionDrag>(group_name.clone(), |s| s.visible())
-            // A markdown file dragged from the Files sidebar — same overlay.
+            // A markdown file dragged from the Files sidebar - same overlay.
             .group_drag_over::<MarkdownFileDrag>(group_name.clone(), |s| s.visible())
             // Markdown drop: open the file via `MarkdownView`, split toward the
             // previewed edge (or append as a tab for center). Tree mutation +
@@ -2185,7 +2185,7 @@ impl Render for Pane {
                     // Inset the visible box by a uniform margin so it floats
                     // inside the region (gap on every side, including the center
                     // line). The margin is applied *after* the lerp and is NOT
-                    // stored in `live_rect` — seeding the next glide stays in the
+                    // stored in `live_rect` - seeding the next glide stays in the
                     // un-inset region space so `from`/`to` remain consistent.
                     let m = OVERLAY_MARGIN;
                     let cur = (
@@ -2214,7 +2214,7 @@ impl Render for Pane {
             .size_full()
             .overflow_hidden()
             // US-007: map the cursor within the content bounds to a split edge.
-            // Stays on `content` (full pane) — the overlay shrinks to a half
+            // Stays on `content` (full pane) - the overlay shrinks to a half
             // when `dir = Some(edge)`, so probing there would miss the cursor
             // moving back toward the center band. `content` keeps its hitbox via
             // `.group(group_name)`.
@@ -2244,7 +2244,7 @@ impl Render for Pane {
         // can paint without reflow.
         //
         // US-018 (orchestration-v2): a pane whose agent waits for input glows
-        // with the attention color — amplify the waiting pane, never degrade
+        // with the attention color - amplify the waiting pane, never degrade
         // the others. This stays: it signals "agent needs you", not focus.
         let is_active = self.focus_handle(cx).is_focused(window);
         let has_attention = !self.attention.is_empty();
@@ -2265,7 +2265,7 @@ impl Render for Pane {
             .child(self.render_tab_bar(is_active, window, cx))
             .child(content)
             .children(peek)
-            // EP-001 US-002: broadcast-group stripe — a DISTINCT left-edge
+            // EP-001 US-002: broadcast-group stripe - a DISTINCT left-edge
             // element; the pane border slot above stays the attention glow's
             // (Files NOT to Modify). Absolutely positioned so it never
             // perturbs the tab/content flex chain.

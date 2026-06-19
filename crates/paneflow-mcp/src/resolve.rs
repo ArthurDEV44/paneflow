@@ -7,7 +7,7 @@
 
 use serde_json::Value;
 
-/// Minimal view of a surface entry from `surface.list` — only what name
+/// Minimal view of a surface entry from `surface.list` - only what name
 /// resolution needs.
 #[derive(Debug, Clone)]
 pub struct SurfaceRef {

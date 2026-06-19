@@ -1,12 +1,12 @@
-//! Markdown viewer pane (US-020 — prd-cmux-port-2026-q2.md, EP-006).
+//! Markdown viewer pane (US-020 - prd-cmux-port-2026-q2.md, EP-006).
 //!
 //! Three-layer split:
-//! - `parser` — pulldown-cmark event walker → owned `MdNode` AST. Pure Rust,
+//! - `parser` - pulldown-cmark event walker → owned `MdNode` AST. Pure Rust,
 //!   no GPUI deps; unit-tested in isolation.
-//! - `theme`  — semantic palette derived from the active `TerminalTheme`. The
+//! - `theme`  - semantic palette derived from the active `TerminalTheme`. The
 //!   markdown viewer never owns colors; it borrows the terminal palette so a
 //!   user theme switch repaints everything consistently.
-//! - `view`   — `MarkdownView: Render` GPUI entity that walks the AST and
+//! - `view`   - `MarkdownView: Render` GPUI entity that walks the AST and
 //!   emits a nested `div` element tree.
 //!
 //! Out of scope here: live reload (US-021), scroll-state persistence (US-022),
@@ -14,7 +14,7 @@
 
 mod parser;
 // `security` is currently unreferenced because the StyledText-based render
-// path doesn't yet support per-run click hit-testing — link spans are styled
+// path doesn't yet support per-run click hit-testing - link spans are styled
 // but not clickable. The URL validator stays in-tree on purpose so the
 // follow-up that restores click handling has a reviewed safeguard ready.
 #[allow(dead_code)]

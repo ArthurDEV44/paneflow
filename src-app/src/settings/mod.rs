@@ -1,11 +1,11 @@
-//! Embedded settings — Codex-style settings rendered *inside* the main window
+//! Embedded settings - Codex-style settings rendered *inside* the main window
 //! (grouped nav rail + content panel) rather than a separate GPUI window.
 //!
 //! Layout:
-//! - `chrome`     — the nav rail (`render_settings_nav`) + content panel
+//! - `chrome`     - the nav rail (`render_settings_nav`) + content panel
 //!   (`render_settings_content_panel`) + section dispatch, all on `PaneFlowApp`.
-//! - `components` — shared UI primitives (cards, toggles, section headers).
-//! - `tabs`       — per-section bodies (`general`, `appearance`, `shortcuts`,
+//! - `components` - shared UI primitives (cards, toggles, section headers).
+//! - `tabs`       - per-section bodies (`general`, `appearance`, `shortcuts`,
 //!   `terminal`, `ai_agent`, `mcp`), each `impl PaneFlowApp`.
 //!
 //! The Settings button (`PaneFlowApp::open_settings_window`, in `app::settings`)

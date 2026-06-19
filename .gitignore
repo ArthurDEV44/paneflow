@@ -50,12 +50,12 @@ LOG_*.text
 # Local-only logo explorations (kept out of the public repo)
 /logo-concepts/
 
-# Local Claude Code agent state (memory, scheduled tasks) — never share publicly
+# Local Claude Code agent state (memory, scheduled tasks) - never share publicly
 **/.claude/
 .vercel
 
 # Local-only security pipeline artifacts (vuln-scan/triage/patch). Contain
-# exploit recipes for live findings — never publish to the OSS repo.
+# exploit recipes for live findings - never publish to the OSS repo.
 /VULN-FINDINGS.json
 /VULN-FINDINGS.md
 /TRIAGE.json
@@ -66,12 +66,12 @@ LOG_*.text
 /.patch-state/
 
 # Local-only /ultron deep-audit reports (finding details, same class as the
-# security pipeline output above) — never publish to the OSS repo.
+# security pipeline output above) - never publish to the OSS repo.
 /ULTRON/
 
 # Local-only LinkedIn post drafts (personal marketing, not project source).
 /linkedin/
 
 # Local-only distribution/growth strategy notes (personal marketing, not
-# project source) — never publish to the OSS repo.
+# project source) - never publish to the OSS repo.
 /DISTRIBUTION.md

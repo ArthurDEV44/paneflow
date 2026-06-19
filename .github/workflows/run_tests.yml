@@ -18,14 +18,14 @@ concurrency:
 # Least-privilege default for GITHUB_TOKEN. Every job in this workflow
 # only reads the repo (checkout + cargo + cache). If a future job ever
 # needs write (push a tag, post a PR comment), it must elevate
-# explicitly via `permissions: contents: write` at the job level —
+# explicitly via `permissions: contents: write` at the job level -
 # making the escalation visible in code review rather than implicit.
 permissions:
   contents: read
 
 # Match Zed's run_tests.yml: -e fail-on-error, -u error-on-unset, -x
 # trace each command (CI logs stay greppable), -o pipefail propagate
-# pipe failures. Per-step `shell: pwsh` overrides this default — the
+# pipe failures. Per-step `shell: pwsh` overrides this default - the
 # Windows steps below already declare pwsh explicitly.
 defaults:
   run:
@@ -46,7 +46,7 @@ jobs:
   #                       smoke jobs are designed to protect
   #   - changed_packages: space-separated cargo workspace member names
   #                       whose source tree changed. Empty string means
-  #                       "workspace-wide change OR cannot compute" —
+  #                       "workspace-wide change OR cannot compute" -
   #                       downstream consumers must treat empty as
   #                       "everything changed" (fail-safe). Computed
   #                       dynamically via `cargo metadata --no-deps`
@@ -59,7 +59,7 @@ jobs:
   # docs-only / non-workflow .github/** PRs.
   #
   # Filter scope: the workflow file itself is included in `rust` and
-  # `rendering` — a PR that edits run_tests.yml to tune a gate MUST
+  # `rendering` - a PR that edits run_tests.yml to tune a gate MUST
   # also exercise that gate, otherwise "fix the CI" PRs self-skip and
   # ship broken.
   orchestrate:
@@ -100,15 +100,15 @@ jobs:
               # contrast, and the resolved family chain on macOS Core
               # Text + Windows DirectWrite).
               - 'src-app/src/theme/**'
-              # Window chrome / CSD — affects content rect + DPR on both
+              # Window chrome / CSD - affects content rect + DPR on both
               # macOS (NSWindow) and Windows (HWND).
               - 'src-app/src/window_chrome/**'
-              # Pane / layout — emits the GPUI flex tree that hosts the
+              # Pane / layout - emits the GPUI flex tree that hosts the
               # terminal element; a regression here can produce 0-sized
               # frames that no-op the paint pass without crashing.
               - 'src-app/src/pane.rs'
               - 'src-app/src/layout/render.rs'
-              # The workflow itself — a PR editing the smoke jobs must
+              # The workflow itself - a PR editing the smoke jobs must
               # exercise them.
               - '.github/workflows/run_tests.yml'
 
@@ -117,7 +117,7 @@ jobs:
       # test --workspace` already runs cheap), but exposing it now lets
       # future jobs gate per-crate (e.g. when crate count grows or
       # nextest is adopted). Empty `changed_packages` means "treat as
-      # full rebuild" — fail-safe default.
+      # full rebuild" - fail-safe default.
       #
       # cargo + jq are preinstalled on ubuntu-latest. cargo metadata's
       # output is JSON; jq extracts the member-name × directory map.
@@ -128,16 +128,16 @@ jobs:
           set -euo pipefail
 
           if [ -z "${GITHUB_BASE_REF:-}" ]; then
-            echo "Push event — comparing against HEAD~1"
+            echo "Push event - comparing against HEAD~1"
             COMPARE_REV="$(git rev-parse HEAD~1 2>/dev/null || true)"
           else
-            echo "PR event — comparing against merge-base with ${GITHUB_BASE_REF}"
+            echo "PR event - comparing against merge-base with ${GITHUB_BASE_REF}"
             git fetch origin "$GITHUB_BASE_REF" --depth=350 || true
             COMPARE_REV="$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD 2>/dev/null || true)"
           fi
 
           if [ -z "$COMPARE_REV" ]; then
-            echo "Cannot determine compare base — treating as full rebuild"
+            echo "Cannot determine compare base - treating as full rebuild"
             echo "changed_packages=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -150,7 +150,7 @@ jobs:
           # root manifest/lockfile, or workflow files forces a full
           # rebuild because the change can affect every crate.
           if echo "$CHANGED_FILES" | grep -qE '^(rust-toolchain\.toml|\.cargo/|Cargo\.lock$|Cargo\.toml$|\.github/workflows/)'; then
-            echo "Workspace-wide change detected — emitting empty changed_packages (treat as full rebuild)"
+            echo "Workspace-wide change detected - emitting empty changed_packages (treat as full rebuild)"
             echo "changed_packages=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -171,7 +171,7 @@ jobs:
           echo "$DIR_TO_PKG"
 
           if [ -z "$DIR_TO_PKG" ]; then
-            echo "cargo metadata returned no members — treating as full rebuild"
+            echo "cargo metadata returned no members - treating as full rebuild"
             echo "changed_packages=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -187,13 +187,13 @@ jobs:
 
           # Empty CHANGED_PKGS means the diff touched files outside every
           # workspace member dir (e.g. root-level deny.toml, docs/, tasks/).
-          # Treat as a no-op for per-package gating — downstream consumers
+          # Treat as a no-op for per-package gating - downstream consumers
           # interpret empty changed_packages as "full rebuild" (fail-safe).
           # The early-return avoids piping empty input into `grep -v '^$'`,
           # which exits 1 on no-match and trips `set -euo pipefail` because
           # bash propagates command-substitution exit status under `set -e`.
           if [ -z "${CHANGED_PKGS// /}" ]; then
-            echo "No workspace member touched — emitting empty changed_packages"
+            echo "No workspace member touched - emitting empty changed_packages"
             echo "changed_packages=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -212,7 +212,7 @@ jobs:
   # faster PR feedback, which is the right tradeoff here.
   #
   # Each job pins ubuntu-22.04 (matches release.yml matrix legs, same
-  # glibc 2.35 + system library set — see US-004 in
+  # glibc 2.35 + system library set - see US-004 in
   # prd-v0.2.0-release-hardening). Do NOT revert to ubuntu-latest;
   # GitHub began rolling that label to 24.04 in early 2025 and the
   # drift would silently diverge CI from release.
@@ -330,7 +330,7 @@ jobs:
           prefix-key: "v1-rust"
           key: release_build_linux
 
-      # US-012 (prd-ai-hooks-cross-platform.md) — the 6-triple matrix
+      # US-012 (prd-ai-hooks-cross-platform.md) - the 6-triple matrix
       # requires each job to run `cargo build --workspace --release`.
       # On Linux x86_64 this also triggers `src-app/build.rs` to stage
       # the embedded `paneflow-shim` + `paneflow-ai-hook` binaries into
@@ -341,7 +341,7 @@ jobs:
       - name: Release build (workspace)
         run: cargo build --workspace --release
 
-      # US-012 AC-4 — enforce the per-binary size caps from the PRD
+      # US-012 AC-4 - enforce the per-binary size caps from the PRD
       # Goals table, measured on the `release-min` profile (workspace
       # Cargo.toml) which applies `opt-level = "z"`, `lto = "fat"`,
       # `strip = "symbols"`, `panic = "abort"`.
@@ -363,7 +363,7 @@ jobs:
       #   paneflow-ai-hook  = 359 168 B   (50 KB over soft 300 KB cap)
       # Hard caps below reflect the as-measured reality plus ~6 %
       # regression headroom. paneflow-ai-hook MUST be shrunk to the
-      # 300 KB soft cap before v0.3.0 ships — tracked as a US-001
+      # 300 KB soft cap before v0.3.0 ships - tracked as a US-001
       # follow-up in memory and in the US-012 story summary.
       #
       # Caps are gated at x86_64 Linux only (matches the PRD Goals
@@ -376,7 +376,7 @@ jobs:
           SHIM_BIN="$TARGET_DIR/paneflow-shim"
           HOOK_BIN="$TARGET_DIR/paneflow-ai-hook"
           if [ ! -f "$SHIM_BIN" ] || [ ! -f "$HOOK_BIN" ]; then
-            echo "::error::US-012: expected nested binaries under $TARGET_DIR — did src-app/build.rs run?"
+            echo "::error::US-012: expected nested binaries under $TARGET_DIR - did src-app/build.rs run?"
             ls -la "$TARGET_DIR" 2>&1 || true
             exit 1
           fi
@@ -410,7 +410,7 @@ jobs:
           fi
           exit $fail
 
-  # cargo-deny gate. BLOCKING since 2026-05-27 — promoted from
+  # cargo-deny gate. BLOCKING since 2026-05-27 - promoted from
   # warn-only after the lockfile reached audit-clean (Marvin Attack
   # ignored with documented rationale, GPL-3 transitive deps from
   # GPUI accepted globally, bitstream-io 4.10 dropped yanked core2).
@@ -433,7 +433,7 @@ jobs:
   # a noisy false positive. Following Bevy's reference pattern
   # (bevyengine/bevy/.github/workflows/dependencies.yml).
   #
-  # Gate on `orchestrate.rust` for consistency with the `check_*` jobs above —
+  # Gate on `orchestrate.rust` for consistency with the `check_*` jobs above -
   # Cargo.toml/Cargo.lock edits are in that filter, so any change that
   # could affect the advisory result triggers the scan.
   security_audit:
@@ -474,7 +474,7 @@ jobs:
         run: |
           set -euo pipefail
           if ! cargo deny check advisories licenses sources; then
-            echo "→ cargo-deny failed on first attempt — sleeping 30s and retrying once (probable RustSec DB rate-limit)" >&2
+            echo "→ cargo-deny failed on first attempt - sleeping 30s and retrying once (probable RustSec DB rate-limit)" >&2
             sleep 30
             if ! cargo deny check advisories licenses sources; then
               echo "::error::cargo-deny check failed after retry. See https://embarkstudios.github.io/cargo-deny/ and the --help output below."
@@ -505,7 +505,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # US-003 — fail fast if the runner image drifts away from a full Xcode
+      # US-003 - fail fast if the runner image drifts away from a full Xcode
       # install. The macos-14 hosted image ships Xcode 15+ with the Metal
       # toolchain preinstalled, so under normal conditions every check here
       # succeeds silently; the value is turning an otherwise cryptic mid-compile
@@ -513,14 +513,14 @@ jobs:
       # that points at the runner configuration rather than the Rust source.
       #
       # The same step is expected to be ported to release.yml's macos-14 matrix
-      # leg when US-019 adds it — keep this block in sync across workflows.
+      # leg when US-019 adds it - keep this block in sync across workflows.
       - name: Verify Xcode CLT + Metal toolchain
         run: |
           set -euo pipefail
 
           CLT_PATH="$(xcode-select -p 2>/dev/null || true)"
           if [ -z "$CLT_PATH" ] || [ ! -d "$CLT_PATH" ]; then
-            echo "::error::Xcode Command Line Tools not found (xcode-select -p returned '$CLT_PATH'). GitHub macos-14 runners should ship Xcode preinstalled — this indicates a runner image drift or a misconfigured self-hosted runner."
+            echo "::error::Xcode Command Line Tools not found (xcode-select -p returned '$CLT_PATH'). GitHub macos-14 runners should ship Xcode preinstalled - this indicates a runner image drift or a misconfigured self-hosted runner."
             exit 1
           fi
           echo "Xcode CLT path: $CLT_PATH"
@@ -533,7 +533,7 @@ jobs:
           echo "macOS SDK path: $SDK_PATH"
 
           if ! xcrun --find metal >/dev/null 2>&1; then
-            echo "::error::Metal compiler (xcrun --find metal) not available — the Metal Developer Tools component is missing from this Xcode install. gpui_macos compiles .metal shaders and will fail without it."
+            echo "::error::Metal compiler (xcrun --find metal) not available - the Metal Developer Tools component is missing from this Xcode install. gpui_macos compiles .metal shaders and will fail without it."
             exit 1
           fi
           echo "Metal compiler: $(xcrun --find metal)"
@@ -549,7 +549,7 @@ jobs:
         with:
           toolchain: "1.95"
           targets: aarch64-apple-darwin
-          # US-018 AC2 adds cargo fmt + cargo clippy steps below — those
+          # US-018 AC2 adds cargo fmt + cargo clippy steps below - those
           # need the rustfmt + clippy components, which dtolnay's action
           # does NOT install by default even when `targets:` is set.
           components: rustfmt, clippy
@@ -559,7 +559,7 @@ jobs:
           prefix-key: "v1-rust"
           key: aarch64-apple-darwin
 
-      # US-018 AC2 — formatting + lint on macOS. fmt is platform-agnostic
+      # US-018 AC2 - formatting + lint on macOS. fmt is platform-agnostic
       # but runs here too so formatter version drift between local Linux
       # dev machines and the macOS runner never sneaks past the gate.
       - name: cargo fmt --check
@@ -580,15 +580,15 @@ jobs:
       - name: cargo test --workspace
         run: cargo test --workspace --target aarch64-apple-darwin
 
-      # AC1 — cargo check must exit 0 with no linker errors.
+      # AC1 - cargo check must exit 0 with no linker errors.
       - name: cargo check (aarch64-apple-darwin)
         run: cargo check --workspace --target aarch64-apple-darwin
 
-      # AC2 — release build produces the expected binary path.
+      # AC2 - release build produces the expected binary path.
       - name: cargo build --release (aarch64-apple-darwin)
         run: cargo build --release -p paneflow-app --target aarch64-apple-darwin
 
-      # AC3 — verify the produced binary is a Mach-O arm64 executable.
+      # AC3 - verify the produced binary is a Mach-O arm64 executable.
       - name: Verify Mach-O arm64 binary
         run: |
           BIN=target/aarch64-apple-darwin/release/paneflow
@@ -596,7 +596,7 @@ jobs:
           file "$BIN"
           file "$BIN" | grep -q 'Mach-O 64-bit executable arm64'
 
-      # AC4 — on failure the job logs already capture the failing crate and
+      # AC4 - on failure the job logs already capture the failing crate and
       # error; uploading the binary on success gives reviewers an artifact
       # they can `file`/`otool` locally if something downstream misbehaves.
       - name: Upload aarch64 binary artifact
@@ -609,7 +609,7 @@ jobs:
           retention-days: 7
 
   # ───────────────────────────────────────────────────────────────────────
-  # Visual rendering smoke test — macOS aarch64.
+  # Visual rendering smoke test - macOS aarch64.
   #
   # Catches the exact class of regression fixed in commit c3e2331
   # ("fix(font): macOS empty-text rendering across sidebar, tabs, and
@@ -617,7 +617,7 @@ jobs:
   # cleanly but renders zero glyphs because Core Text inside a `.app`
   # bundle silently fails to surface the configured monospace family
   # and no embedded font fallback is wired. The release pipeline never
-  # noticed because no leg ever launched the `.app` — every gate was
+  # noticed because no leg ever launched the `.app` - every gate was
   # compile/sign/notarize, none was visual. This job closes that hole at
   # the PR gate so the regression cannot reach `main`.
   #
@@ -629,15 +629,15 @@ jobs:
   # PR's macOS rendering even when the OCR gate is happy.
   #
   # Gates:
-  #   * HARD — `font: resolved family=...` line MUST appear in the app
+  #   * HARD - `font: resolved family=...` line MUST appear in the app
   #     log (proves the renderer reached `cached_font_config()`, i.e.
   #     the app didn't crash before first frame).
-  #   * SOFT — OCR finds ≥10 alphanumeric chars (the macOS menubar
+  #   * SOFT - OCR finds ≥10 alphanumeric chars (the macOS menubar
   #     alone passes this trivially when rendering works; failure
   #     means we're staring at a black screen or empty cells).
   #
   # Runner: macos-14 hosts a real macOS user session with WindowServer
-  # access — GUI apps launch and render normally, exactly the pattern
+  # access - GUI apps launch and render normally, exactly the pattern
   # used by Electron / Flutter / native-Cocoa CI setups.
   # ───────────────────────────────────────────────────────────────────────
   macos_render_smoke:
@@ -670,7 +670,7 @@ jobs:
 
       - name: Bundle .app
         # Reuse the production bundling script so the smoke test exercises
-        # the SAME `.app` skeleton end-users get — Info.plist, .icns,
+        # the SAME `.app` skeleton end-users get - Info.plist, .icns,
         # MacOS/paneflow layout. Unsigned: signing is not what the bug
         # was about (the original c3e2331 root cause reproduced equally
         # in unsigned bundles per Core Text's bundle-context behavior),
@@ -685,7 +685,7 @@ jobs:
           APP="dist/PaneFlow.app"
 
           # Launch the binary INSIDE the bundle directly (rather than
-          # `open -a`) so stdout/stderr can be redirected — `open` does
+          # `open -a`) so stdout/stderr can be redirected - `open` does
           # not tee child output and the `font: resolved family=` log
           # line is our hard gate. The bundle path is preserved, so
           # Info.plist + Resources/ load correctly and Core Text sees
@@ -713,16 +713,16 @@ jobs:
 
           # HARD GATE: the resolved-font log line must be present.
           # Absence means the app crashed before reaching
-          # cached_font_config() — i.e. before the renderer ever asked
+          # cached_font_config() - i.e. before the renderer ever asked
           # for a font, which is upstream of every rendering-correctness
           # property this job exists to verify.
           echo "── Resolved font ──"
           if grep "font: resolved family=" paneflow.log; then
             if grep -q "font: resolved family='JetBrains Mono'" paneflow.log; then
-              echo "::warning::Embedded JetBrains Mono fallback was selected — Core Text did not surface a system mono family (Menlo / Monaco / Courier). The fallback is the safety net working as designed, but persistent selection on macos-14 indicates a Core Text drift worth investigating."
+              echo "::warning::Embedded JetBrains Mono fallback was selected - Core Text did not surface a system mono family (Menlo / Monaco / Courier). The fallback is the safety net working as designed, but persistent selection on macos-14 indicates a Core Text drift worth investigating."
             fi
           else
-            echo "::error::No 'font: resolved family=' line in app log. The app likely crashed before first render — paneflow.log + screenshot.png artifacts will pin down the exact failure."
+            echo "::error::No 'font: resolved family=' line in app log. The app likely crashed before first render - paneflow.log + screenshot.png artifacts will pin down the exact failure."
             exit 1
           fi
 
@@ -743,10 +743,10 @@ jobs:
           # Threshold rationale: the macOS menubar (Apple logo,
           # "Finder", clock, date) alone OCRs to ~30+ chars on a healthy
           # session. <10 chars almost always means rendering is broken
-          # — either the screen is black or every glyph rendered as a
+          # - either the screen is black or every glyph rendered as a
           # blank cell, which is the c3e2331 failure mode.
           if [ "$char_count" -lt 10 ]; then
-            echo "::warning::OCR found <10 alphanumeric chars. Visual rendering may be broken — inspect screenshot.png artifact."
+            echo "::warning::OCR found <10 alphanumeric chars. Visual rendering may be broken - inspect screenshot.png artifact."
           fi
 
       - name: Upload visual smoke artifacts
@@ -784,7 +784,7 @@ jobs:
     # gate itself does NOT sign anything (signing happens in release.yml
     # only) but it's pointless to spend Windows runner minutes catching
     # MSVC regressions while we cannot ship a signed Windows binary
-    # anyway — re-enabling once signing is live also re-introduces this
+    # anyway - re-enabling once signing is live also re-introduces this
     # gate naturally. Memory: project_windows_signing.md tracks the
     # Azure $9.99/mo Basic onboarding path under the Strivex
     # subscription. Re-enable by flipping `if: false` back to the
@@ -809,7 +809,7 @@ jobs:
       # merged. GitHub Actions force-migrates to Node 24 on 2026-06-02
       # and removes Node 20 on 2026-09-16. This env shim instructs the
       # runner to execute the action on the node24 binary regardless
-      # of its declared runtime — documented in
+      # of its declared runtime - documented in
       # https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
       # Remove this env once `ilammy/msvc-dev-cmd` publishes a tag
       # that declares `using: node24` natively, and pin to that tag.
@@ -841,13 +841,13 @@ jobs:
             Sort-Object Name -Descending |
             Select-Object -First 1
           if (-not $sdkBin) {
-            throw "Windows 10 SDK bin directory not found under $sdkRoot — runner image drift?"
+            throw "Windows 10 SDK bin directory not found under $sdkRoot - runner image drift?"
           }
           $signtoolDir = Join-Path $sdkBin.FullName 'x64'
           Write-Output "Using SDK bin: $signtoolDir"
           Add-Content -Path $env:GITHUB_PATH -Value $signtoolDir
 
-      # AC-2 — toolchain binaries all on PATH.
+      # AC-2 - toolchain binaries all on PATH.
       - name: Verify signtool.exe / cl.exe / link.exe on PATH
         shell: pwsh
         run: |
@@ -872,9 +872,9 @@ jobs:
       # Note: WiX toolset is NOT installed in this PR gate. The MSI build
       # lives in release.yml only (US-016), which uses WiX v3 (candle.exe +
       # light.exe) via the windows-2022 preinstalled toolset paired with
-      # cargo-wix 0.3.9 (cargo-wix has no WiX v4/v5 backend — see
+      # cargo-wix 0.3.9 (cargo-wix has no WiX v4/v5 backend - see
       # volks73/cargo-wix#202). Installing `dotnet tool install --global wix`
-      # here would surface WiX v5 — incompatible with the release pipeline
+      # here would surface WiX v5 - incompatible with the release pipeline
       # and unused by the fmt/clippy/test/check gate below, so it's omitted
       # to keep the CI check accurate to what it verifies.
 
@@ -893,7 +893,7 @@ jobs:
         run: cargo fmt --all --check
 
       # AC-2 step 2/4: clippy. `--target x86_64-pc-windows-msvc` selects
-      # the Windows codepaths — cfg-gated modules (terminal::TerminateProcess,
+      # the Windows codepaths - cfg-gated modules (terminal::TerminateProcess,
       # install_method::WindowsMsi, ipc's interprocess branch, etc.) are
       # only type-checked when this target is chosen. `-D warnings`
       # promotes every clippy lint + unused-import warning to an error,
@@ -927,7 +927,7 @@ jobs:
 
       # AC-2 step 4/4: final check. Redundant with clippy in practice
       # (clippy is a superset), but kept as a belt-and-braces signal and
-      # because the PRD AC lists it explicitly — a bare `cargo check`
+      # because the PRD AC lists it explicitly - a bare `cargo check`
       # failure is a clearer error surface than clippy's noisier output
       # when the problem is a pure compile error (missing API, linker
       # symbol, etc.) rather than a lint. No `continue-on-error` anymore
@@ -935,7 +935,7 @@ jobs:
       - name: cargo check --workspace --target x86_64-pc-windows-msvc
         run: cargo check --workspace --target x86_64-pc-windows-msvc
 
-      # US-012 (prd-ai-hooks-cross-platform.md) AC — the matrix requires
+      # US-012 (prd-ai-hooks-cross-platform.md) AC - the matrix requires
       # `cargo build --workspace --release` on every leg. On Windows this
       # also triggers the `src-app/build.rs` nested build of
       # `paneflow-shim` + `paneflow-ai-hook`, ensuring their PE binaries
@@ -945,7 +945,7 @@ jobs:
         # LTO ("thin") + codegen-units=1 from [profile.release] are runtime-perf
         # knobs, irrelevant to a CI compile gate, and roughly double the link
         # time. From a cold cache the release build blew past the 30-min timeout
-        # — and the kill skips the rust-cache save step, so every run restarted
+        # - and the kill skips the rust-cache save step, so every run restarted
         # cold (a vicious cycle). Override them here to keep the gate fast; the
         # real LTO release build is still validated by release.yml on every tag.
         env:
@@ -968,7 +968,7 @@ jobs:
           retention-days: 7
 
   # ───────────────────────────────────────────────────────────────────────
-  # Visual rendering smoke test — Windows x86_64.
+  # Visual rendering smoke test - Windows x86_64.
   #
   # Mirrors `macos_render_smoke` for the Windows GPUI rendering stack
   # (Direct2D / DirectWrite, DX11 backend GA Oct 2025). Catches the
@@ -976,24 +976,24 @@ jobs:
   # but renders no glyphs because DirectWrite font enumeration silently
   # fails to surface the configured monospace family. The embedded
   # JetBrains Mono fallback wired by commit c3e2331 protects against
-  # this on Windows too — this job verifies the safety net actually
+  # this on Windows too - this job verifies the safety net actually
   # holds end-to-end on a hosted runner.
   #
   # Gates:
-  #   * HARD — `font: resolved family=...` must appear in the app log.
-  #   * SOFT — visual artifact uploaded for human review (no OCR gate
+  #   * HARD - `font: resolved family=...` must appear in the app log.
+  #   * SOFT - visual artifact uploaded for human review (no OCR gate
   #     because tesseract on Windows requires a heavier install path
   #     and the screenshot+log signal is already enough to spot the
   #     "boxes drawn, no glyphs" failure mode).
   #
-  # Runner: windows-2022 hosts a real Windows desktop session — GUI
+  # Runner: windows-2022 hosts a real Windows desktop session - GUI
   # apps launch and render normally, exactly the pattern used by
   # WPF / WinUI / Electron CI setups.
   # ───────────────────────────────────────────────────────────────────────
   windows_render_smoke:
     name: Windows x86_64 render smoke (visual)
     needs: [orchestrate, windows_check]
-    # DISABLED — depends on windows_check (also disabled until Azure
+    # DISABLED - depends on windows_check (also disabled until Azure
     # Trusted Signing is provisioned). The artifact this smoke loads
     # is produced by windows_check, so the job would skip anyway via
     # the `needs:` chain; this explicit `if: false` makes the
@@ -1023,7 +1023,7 @@ jobs:
           # Launch detached so we can sleep + capture, with stdout +
           # stderr teed to a log file. RUST_LOG=info is required to
           # surface the `font: resolved family=` line emitted by
-          # terminal/element/font.rs:215 — the hard gate below greps
+          # terminal/element/font.rs:215 - the hard gate below greps
           # for it.
           $env:RUST_LOG = 'info'
           $proc = Start-Process -FilePath $exe `
@@ -1036,7 +1036,7 @@ jobs:
           # runner contention + DX11 swap-chain init.
           Start-Sleep -Seconds 10
 
-          # Capture the primary display via System.Drawing — works on
+          # Capture the primary display via System.Drawing - works on
           # every windows-2022 runner without external tooling. The
           # bounds-then-CopyFromScreen pattern is the canonical .NET
           # screenshot recipe used by every Windows GUI CI setup.
@@ -1070,12 +1070,12 @@ jobs:
           Write-Output "── Resolved font ──"
           $fontLine = Select-String -Path 'paneflow.log' -Pattern 'font: resolved family=' -SimpleMatch
           if (-not $fontLine) {
-            Write-Output "::error::No 'font: resolved family=' line in app log. The app likely crashed before first render — paneflow.log + screenshot.png artifacts will pin down the exact failure."
+            Write-Output "::error::No 'font: resolved family=' line in app log. The app likely crashed before first render - paneflow.log + screenshot.png artifacts will pin down the exact failure."
             exit 1
           }
           $fontLine | ForEach-Object { Write-Output $_.Line }
           if ($fontLine.Line -match "family='JetBrains Mono'") {
-            Write-Output "::warning::Embedded JetBrains Mono fallback was selected — DirectWrite did not surface a system mono family (Cascadia Mono / Cascadia Code / Consolas). The fallback is the safety net working as designed, but persistent selection on windows-2022 indicates a DirectWrite drift worth investigating."
+            Write-Output "::warning::Embedded JetBrains Mono fallback was selected - DirectWrite did not surface a system mono family (Cascadia Mono / Cascadia Code / Consolas). The fallback is the safety net working as designed, but persistent selection on windows-2022 indicates a DirectWrite drift worth investigating."
           }
 
       - name: Upload visual smoke artifacts
@@ -1090,15 +1090,15 @@ jobs:
           retention-days: 7
 
   # ───────────────────────────────────────────────────────────────────────
-  # US-012 (prd-ai-hooks-cross-platform.md) — matrix completion.
+  # US-012 (prd-ai-hooks-cross-platform.md) - matrix completion.
   # Existing jobs cover:
-  #   * check         — x86_64-unknown-linux-gnu   (Linux x64 full gate)
-  #   * macos_check   — aarch64-apple-darwin       (Apple Silicon full gate)
-  #   * windows_check — x86_64-pc-windows-msvc     (Windows x64 full gate)
+  #   * check         - x86_64-unknown-linux-gnu   (Linux x64 full gate)
+  #   * macos_check   - aarch64-apple-darwin       (Apple Silicon full gate)
+  #   * windows_check - x86_64-pc-windows-msvc     (Windows x64 full gate)
   # The three jobs below close the remaining triples:
-  #   * linux_aarch64_check   — aarch64-unknown-linux-gnu
-  #   * macos_x86_64_check    — x86_64-apple-darwin
-  #   * windows_aarch64_check — aarch64-pc-windows-msvc (check-only; no
+  #   * linux_aarch64_check   - aarch64-unknown-linux-gnu
+  #   * macos_x86_64_check    - x86_64-apple-darwin
+  #   * windows_aarch64_check - aarch64-pc-windows-msvc (check-only; no
   #                              native Windows-arm64 hosted runner as of
   #                              2026-04. Deferred per US-012 AC.)
   # All three are gated on `needs.orchestrate.outputs.rust == 'true'` so
@@ -1110,7 +1110,7 @@ jobs:
     needs: orchestrate
     if: needs.orchestrate.outputs.rust == 'true'
     # Native ARM runner (GitHub public preview since late 2024, used
-    # by release.yml on the same pattern — see the comment at
+    # by release.yml on the same pattern - see the comment at
     # release.yml:34-37). Same image basis as ubuntu-22.04 so the
     # system-deps list mirrors the x86_64 `check` job above without
     # drift.
@@ -1169,7 +1169,7 @@ jobs:
   macos_x86_64_check:
     name: macOS x86_64 (x86_64-apple-darwin)
     needs: orchestrate
-    # DISABLED until v0.3.0 — `release.yml` already marks this leg CLOSED
+    # DISABLED until v0.3.0 - `release.yml` already marks this leg CLOSED
     # (queue-time volatility + Apple Dev secrets not provisioned). Even
     # with `continue-on-error: true` the queued job kept the overall run
     # in `in_progress` for 30-60 min waiting for a `macos-13` runner,
@@ -1221,7 +1221,7 @@ jobs:
     # US-012 AC explicitly defers integration tests on Windows aarch64
     # because no native Windows-arm64 hosted runner is available on
     # GitHub-hosted Actions as of 2026-04. This leg cross-compiles from
-    # an x86_64 MSVC host and runs `cargo check` only — enough to catch
+    # an x86_64 MSVC host and runs `cargo check` only - enough to catch
     # type-level regressions in cfg(windows) + target_arch = "aarch64"
     # code paths without requiring QEMU or a self-hosted arm64 Windows
     # box. Promote to full test coverage once GitHub ships a native
@@ -1238,13 +1238,13 @@ jobs:
         shell: pwsh
     timeout-minutes: 50
     env:
-      # Same Node 24 forcing as windows_check above — ilammy/msvc-dev-cmd
+      # Same Node 24 forcing as windows_check above - ilammy/msvc-dev-cmd
       # hasn't shipped a node24-native tag yet.
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v5
 
-      # Load the amd64-hosted arm64 MSVC env — `amd64_arm64` populates
+      # Load the amd64-hosted arm64 MSVC env - `amd64_arm64` populates
       # INCLUDE/LIB/LIBPATH with the aarch64 Windows SDK paths plus the
       # x64 host tools, so any future C/C++ `build.rs` in the dep
       # closure that targets aarch64 Windows can resolve headers /
@@ -1276,7 +1276,7 @@ jobs:
         run: cargo check --workspace --target aarch64-pc-windows-msvc
 
   # ───────────────────────────────────────────────────────────────────────
-  # Single aggregator job — mirrors Zed's run_tests.yml `tests_pass`
+  # Single aggregator job - mirrors Zed's run_tests.yml `tests_pass`
   # pattern. Every upstream job is listed here; the step body iterates
   # over each result and fails the aggregator if any non-skipped job
   # came back as anything other than "success".
@@ -1293,7 +1293,7 @@ jobs:
   # `security_audit` is INCLUDED in the gate (since 2026-05-27). Its
   # warn-vs-deny graduation lives in deny.toml, not in CI flags, so
   # a green job means "no unignored advisories, all licenses
-  # allow-listed, all sources accepted" — which is exactly what we
+  # allow-listed, all sources accepted" - which is exactly what we
   # want to enforce.
   tests_pass:
     name: tests_pass

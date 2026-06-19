@@ -1,4 +1,4 @@
-# Zed Agent — Référence technique complète
+# Zed Agent - Référence technique complète
 
 > Document de référence pour la refonte de l'interface Agent de Paneflow.
 > Synthèse de l'exploration de `~/dev/zed` (crates `agent`, `acp_thread`, `agent_servers`,
@@ -43,10 +43,10 @@
 
 Zed traite l'agent comme un **premier citoyen de l'IDE** : c'est un panel latéral persistant, dockable gauche/droite uniquement (pas en bas), avec un système de threads sauvegardés en SQLite et reprises de session. Le moteur supporte **deux types d'agents** sous une même interface :
 
-- **Native agent** (`NativeAgent`) — moteur intégré qui parle directement aux providers LLM (Anthropic, OpenAI, Ollama, Gemini, etc.) et exécute les outils en process.
-- **External ACP agents** (Claude Code, Codex, Gemini CLI, n'importe quel binaire qui parle ACP en JSON-RPC sur stdio) — sous-processus encapsulés derrière la même abstraction.
+- **Native agent** (`NativeAgent`) - moteur intégré qui parle directement aux providers LLM (Anthropic, OpenAI, Ollama, Gemini, etc.) et exécute les outils en process.
+- **External ACP agents** (Claude Code, Codex, Gemini CLI, n'importe quel binaire qui parle ACP en JSON-RPC sur stdio) - sous-processus encapsulés derrière la même abstraction.
 
-Cette abstraction passe par le **trait `AgentConnection`** dans `acp_thread`, et l'UI ne sait pas — ne doit pas savoir — quel type d'agent est derrière. C'est le levier d'extensibilité fondamental.
+Cette abstraction passe par le **trait `AgentConnection`** dans `acp_thread`, et l'UI ne sait pas - ne doit pas savoir - quel type d'agent est derrière. C'est le levier d'extensibilité fondamental.
 
 **Couches** (de bas en haut) :
 
@@ -96,7 +96,7 @@ agent_servers → acp_thread
 context_server (autonome, consommé par agent)
 ```
 
-`agent_skills` et `prompt_store` sont des crates feuilles. `acp_thread` ne dépend pas de `agent` — c'est `agent` qui dépend de `acp_thread` pour `UserMessageId`, `AcpThread`, et le trait `AgentConnection`.
+`agent_skills` et `prompt_store` sont des crates feuilles. `acp_thread` ne dépend pas de `agent` - c'est `agent` qui dépend de `acp_thread` pour `UserMessageId`, `AcpThread`, et le trait `AgentConnection`.
 
 ---
 
@@ -104,7 +104,7 @@ context_server (autonome, consommé par agent)
 
 **ACP** est un protocole JSON-RPC sur stdio qui permet à Zed de parler à des agents externes (Claude Code, Codex, etc.) avec la même interface que son agent natif. Les types Rust typés vivent dans le crate `agent_client_protocol` (`acp::PromptRequest`, `acp::ToolCall`, `acp::SessionId`, etc.).
 
-**Trait central — `AgentConnection`** (`acp_thread/src/connection.rs:47`) :
+**Trait central - `AgentConnection`** (`acp_thread/src/connection.rs:47`) :
 
 ```rust
 pub trait AgentConnection {
@@ -121,9 +121,9 @@ pub trait AgentConnection {
 
 **Deux implémentations** :
 
-1. **`NativeAgentConnection`** (`agent/src/agent.rs:1748`) — enveloppe une `Entity<NativeAgent>`. Son `prompt()` (ligne 2206) appelle `thread.send(id, content, cx)` qui drive la stack LM Zed directement. Aucun subprocess.
+1. **`NativeAgentConnection`** (`agent/src/agent.rs:1748`) - enveloppe une `Entity<NativeAgent>`. Son `prompt()` (ligne 2206) appelle `thread.send(id, content, cx)` qui drive la stack LM Zed directement. Aucun subprocess.
 
-2. **`AcpConnection`** (`agent_servers/src/acp.rs:1453`) — enveloppe un canal JSON-RPC vers un subprocess. Son `prompt()` (ligne 1864) envoie `acp::PromptRequest` sur le fil via `connection.send_request(params)`. C'est par là que passent Claude Code, Gemini CLI, Codex, et tout serveur ACP custom. Tool calls, requests d'autorisation, session modes, options de config : tout passe par le même canal RPC.
+2. **`AcpConnection`** (`agent_servers/src/acp.rs:1453`) - enveloppe un canal JSON-RPC vers un subprocess. Son `prompt()` (ligne 1864) envoie `acp::PromptRequest` sur le fil via `connection.send_request(params)`. C'est par là que passent Claude Code, Gemini CLI, Codex, et tout serveur ACP custom. Tool calls, requests d'autorisation, session modes, options de config : tout passe par le même canal RPC.
 
 Au-dessus, le trait **`AgentServer`** (`agent_servers/src/agent_servers.rs:47`) est une factory : sa méthode `connect()` retourne `Task<Result<Rc<dyn AgentConnection>>>`. `NativeAgentServer` produit une `NativeAgentConnection` ; les serveurs externes produisent une `AcpConnection` après avoir lancé leur subprocess.
 
@@ -220,25 +220,25 @@ Soumission user → réponse finale. Trace concrète :
 
 6. **`Thread::run_turn_internal()`** (`thread.rs:2044`) entre dans une boucle. Chaque itération :
    - Appelle `build_completion_request(intent, cx)` (`thread.rs:2945`) qui assemble le `LanguageModelRequest` (system prompt via `build_request_messages` ligne 3154, tous les `messages`, les outils courants, température, thinking).
-   - Appelle `model.stream_completion(request, cx).await` (ligne 2080) — **l'appel LM réel**.
+   - Appelle `model.stream_completion(request, cx).await` (ligne 2080) - **l'appel LM réel**.
 
-7. **Stream processing** (boucle ligne 2088) — race entre `events.next()`, futures d'outils, et cancellation. Chaque `LanguageModelCompletionEvent` est dispatché par `handle_completion_event()` :
+7. **Stream processing** (boucle ligne 2088) - race entre `events.next()`, futures d'outils, et cancellation. Chaque `LanguageModelCompletionEvent` est dispatché par `handle_completion_event()` :
    - **Text chunk** → push dans `pending_message.content` comme `AgentMessageContent::Text`.
    - **Thinking chunk** → push comme `AgentMessageContent::Thinking`.
    - **ToolUse event** → dispatch via `spawn_tool()`, retourne `Task<LanguageModelToolResult>` ajoutée à `tool_results: FuturesUnordered`.
 
-8. **Tool execution** — outils en concurrence. Si un outil nécessite autorisation, un `ThreadEvent::ToolCallAuthorization` est envoyé au canal upstream. L'UI présente la dialog et renvoie la décision via un `oneshot::Sender`.
+8. **Tool execution** - outils en concurrence. Si un outil nécessite autorisation, un `ThreadEvent::ToolCallAuthorization` est envoyé au canal upstream. L'UI présente la dialog et renvoie la décision via un `oneshot::Sender`.
 
-9. **`handle_thread_events()`** (`agent.rs:1832`) tourne en tâche externe — celle qui retourne le `Task<Result<acp::PromptResponse>>` final. Elle reçoit les `ThreadEvent` et les forward vers `AcpThread` :
+9. **`handle_thread_events()`** (`agent.rs:1832`) tourne en tâche externe - celle qui retourne le `Task<Result<acp::PromptResponse>>` final. Elle reçoit les `ThreadEvent` et les forward vers `AcpThread` :
    - `AgentText(text)` → `acp_thread.push_assistant_content_block(text, false, cx)` (1858)
    - `ToolCall(call)` → `acp_thread.upsert_tool_call(call, cx)` (1893)
    - `Stop(reason)` → retourne `Ok(acp::PromptResponse::new(stop_reason))` (1917)
 
-10. **Boucle tool results** — après fin du stream et settlement des outils (`tool_results.next().await`), `process_tool_result()` (`thread.rs:2254`) écrit le résultat dans `pending_message.tool_results`, puis `flush_pending_message()` déplace l'`AgentMessage` assemblé dans `self.messages`.
+10. **Boucle tool results** - après fin du stream et settlement des outils (`tool_results.next().await`), `process_tool_result()` (`thread.rs:2254`) écrit le résultat dans `pending_message.tool_results`, puis `flush_pending_message()` déplace l'`AgentMessage` assemblé dans `self.messages`.
 
-11. **Next iteration** — s'il y a des tool results et aucun message en file d'attente, `intent = CompletionIntent::ToolResults` et la boucle continue avec un nouvel appel modèle portant les tool results.
+11. **Next iteration** - s'il y a des tool results et aucun message en file d'attente, `intent = CompletionIntent::ToolResults` et la boucle continue avec un nouvel appel modèle portant les tool results.
 
-12. **Title generation** — après le premier turn, `generate_title()` (ligne 2206) lance un appel LM secondaire pour produire le titre du thread.
+12. **Title generation** - après le premier turn, `generate_title()` (ligne 2206) lance un appel LM secondaire pour produire le titre du thread.
 
 **Insight pour Paneflow** : la boucle est un **loop tool-result-aware**, pas un simple appel-réponse. Tant que le modèle émet des `tool_use`, on continue. C'est ce qui transforme un chat en agent.
 
@@ -266,13 +266,13 @@ CREATE TABLE threads (
 
 La colonne `data` stocke un **blob JSON zstd-compressé** de `DbThread` (version `"0.3.0"`). Toute la conversation (messages, tool uses, results, thinking blocks) est dans ce blob. Compression niveau 3.
 
-**`ThreadStore`** (`thread_store.rs:12`) — global GPUI qui expose `load_thread()`, `save_thread()`, `delete_thread()`, `reload()`. `ThreadsDatabase::connect()` est idempotent.
+**`ThreadStore`** (`thread_store.rs:12`) - global GPUI qui expose `load_thread()`, `save_thread()`, `delete_thread()`, `reload()`. `ThreadsDatabase::connect()` est idempotent.
 
 **Resume** :
 - **Native** : `NativeAgentConnection::load_thread()` (`agent.rs:1800`) charge le `DbThread`, reconstruit un `Thread` et crée un nouveau `AcpThread` initialisé avec l'historique (replay via `push_user_content_block` / `push_assistant_content_block` / `upsert_tool_call` pour chaque message stocké).
 - **ACP externe** : si `supports_load_session()`, on envoie le session_id au protocole (le subprocess restaure son propre état). Si `supports_resume_session()`, on reconnecte sans replay. Par défaut les deux sont `false`.
 
-**Métadonnées thread** (séparé du blob) : `ThreadMetadataStore` (`agent_ui/src/thread_metadata_store.rs:550`) — autre SQLite, schéma `sidebar_threads` (thread_id, session_id, agent_id, title, title_override, updated_at, created_at, interacted_at, folder_paths, archived, remote_connection). C'est ce que la sidebar d'historique lit pour la liste rapide sans charger les blobs complets.
+**Métadonnées thread** (séparé du blob) : `ThreadMetadataStore` (`agent_ui/src/thread_metadata_store.rs:550`) - autre SQLite, schéma `sidebar_threads` (thread_id, session_id, agent_id, title, title_override, updated_at, created_at, interacted_at, folder_paths, archived, remote_connection). C'est ce que la sidebar d'historique lit pour la liste rapide sans charger les blobs complets.
 
 **Drafts** (saisie en cours, non envoyée) : stockés à part dans le `KeyValueStore` namespace `"agent_draft_prompts"`, valeur = `Vec<acp::ContentBlock>` JSON-sérialisé (préserve les mentions). Voir §20.
 
@@ -356,7 +356,7 @@ La zone visible est gouvernée par `VisibleSurface` qui switche entre `AgentThre
 
 `impl Panel for AgentPanel` (`agent_panel.rs:4245`) :
 
-- `position_is_valid` rejette explicitement `DockPosition::Bottom` (4258-4260) — **gauche/droite uniquement**.
+- `position_is_valid` rejette explicitement `DockPosition::Bottom` (4258-4260) - **gauche/droite uniquement**.
 - `default_size` lit `AgentSettings::default_width` / `default_height` (4276-4281).
 - `MIN_PANEL_WIDTH = px(300.)` (4284-4288).
 - `flexible` opt-in via settings, permet de partager l'espace avec l'éditeur (4291-4303).
@@ -369,20 +369,20 @@ La zone visible est gouvernée par `VisibleSurface` qui switche entre `AgentThre
 
 La toolbar a quatre modes selon l'état du panneau :
 
-**Mode EmptyThread** (aucun message, projet ouvert) — la partie gauche entière devient un **gros bouton agent-selector** : `Button::new("agent-selector-trigger", label)` avec leading icon (SVG custom ou `IconName::ZedAgent`) et trailing chevron qui flip selon ouverture du menu (`agent_panel.rs:5363-5408`). Couleurs : `Color::Accent` quand déployé, sinon `Color::Default` / `Color::Muted`.
+**Mode EmptyThread** (aucun message, projet ouvert) - la partie gauche entière devient un **gros bouton agent-selector** : `Button::new("agent-selector-trigger", label)` avec leading icon (SVG custom ou `IconName::ZedAgent`) et trailing chevron qui flip selon ouverture du menu (`agent_panel.rs:5363-5408`). Couleurs : `Color::Accent` quand déployé, sinon `Color::Default` / `Color::Muted`.
 
 **Modes ActiveThread / Terminal / Overlay** :
 - Gauche : petite icône fixe (`px_0p5`) de l'agent à `IconSize` par défaut en `Color::Muted`, avec animation `pulsating_between(0.2, 0.6)` à 1s en boucle pendant le chargement (5299-5311).
 - À côté : zone titre via `render_title_view`.
 
-**Cluster droit** (tous modes) — `h_flex` avec `gap_1`, `pl_1`, `pr_1` :
-1. **New Thread** — `IconButton(IconName::Plus)`, `IconSize::Small`, ancré `TopRight` (5431-5447).
-2. **Full-screen toggle** — `IconName::Maximize` / `IconName::Minimize` (5344-5349).
-3. **Options menu** — `IconButton(IconName::Ellipsis)`, ancré `TopRight` (5837-5849).
+**Cluster droit** (tous modes) - `h_flex` avec `gap_1`, `pl_1`, `pr_1` :
+1. **New Thread** - `IconButton(IconName::Plus)`, `IconSize::Small`, ancré `TopRight` (5431-5447).
+2. **Full-screen toggle** - `IconName::Maximize` / `IconName::Minimize` (5344-5349).
+3. **Options menu** - `IconButton(IconName::Ellipsis)`, ancré `TopRight` (5837-5849).
 
 **Menu options** (sections) : Current Thread (regenerate title) · MCP Servers · Skills · Rules · Profiles · Settings · Toggle Threads Sidebar · (optionnel) Reauthenticate / Log Out (4854-4982).
 
-**Title area** (`render_title_view`, 4599) — prend l'espace horizontal restant. Quand un thread native est actif, le titre est un `Editor` inline click-to-edit. Pendant la génération AI du titre, un `Label` avec animation `alpha` 0.4–0.8 sur 2s en `Color::Muted`. **Détail à voler** : un `GradientFade` de 64 px overlay le bord droit pour fade dans le background toolbar, avec un bouton `IconName::Pencil` `visible_on_hover` (4727-4756).
+**Title area** (`render_title_view`, 4599) - prend l'espace horizontal restant. Quand un thread native est actif, le titre est un `Editor` inline click-to-edit. Pendant la génération AI du titre, un `Label` avec animation `alpha` 0.4-0.8 sur 2s en `Color::Muted`. **Détail à voler** : un `GradientFade` de 64 px overlay le bord droit pour fade dans le background toolbar, avec un bouton `IconName::Pencil` `visible_on_hover` (4727-4756).
 
 ---
 
@@ -391,22 +391,22 @@ La toolbar a quatre modes selon l'état du panneau :
 Le composer wrap directement l'`Editor` de Zed (`message_editor.rs:468`). C'est un `Buffer::local("")` → `MultiBuffer::singleton` → `Editor::new(mode, ...)`.
 
 **Configuration de l'éditeur** :
-- Mode `EditorMode::AutoHeight { min_lines: 1, max_lines: None }` (2482-2484) — grandit sans limite ; le scroll interne n'apparaît que si le flex parent contraint.
+- Mode `EditorMode::AutoHeight { min_lines: 1, max_lines: None }` (2482-2484) - grandit sans limite ; le scroll interne n'apparaît que si le flex parent contraint.
 - `set_placeholder_text(placeholder, ...)` (479).
 - `set_soft_wrap()` activé, indent guides off, `set_show_completions_on_input(Some(true))`, modal editing on, context menu cap 12 (480-489).
 
-**Submit key** — contrôlé par `use_modifier_to_send` :
+**Submit key** - contrôlé par `use_modifier_to_send` :
 - `false` (défaut) : `enter` → `agent::Chat` ; `ctrl-enter` → `agent::ChatWithFollow`.
 - `true` : `ctrl-enter` → submit ; `enter` → newline. Implémenté en injectant la chaîne `"use_modifier_to_send"` dans le key context (2052-2053), ce qui flip la binding active.
 - `agent::SendImmediately` (toujours `ctrl-shift-enter`) bypass toute file d'attente.
 
 **Events émis par le `MessageEditor`** : `Send`, `SendImmediately`, `Cancel`, `Focus`, `LostFocus`, `SlashAutocompleteOpened`, `InputAttempted` (203-217).
 
-**Container visuel** — `h_flex().p_2().bg(editor_background)` avec `border_t_1().border_color(border)` quand une conversation est déjà en cours (`thread_view.rs:3573-3586`). Quand le panel est vide, le composer remplit l'espace (`flex_1().size_full()`).
+**Container visuel** - `h_flex().p_2().bg(editor_background)` avec `border_t_1().border_color(border)` quand une conversation est déjà en cours (`thread_view.rs:3573-3586`). Quand le panel est vide, le composer remplit l'espace (`flex_1().size_full()`).
 
 **Expand toggle** : peut être expandé à `vh(0.8)` via un `IconButton` Maximize/Minimize qui apparaît à `opacity(0.5)` top-right, monte à `opacity(1.0)` au hover (3605-3636).
 
-**Footer bar** — `h_flex().w_full().flex_wrap().justify_between()` :
+**Footer bar** - `h_flex().w_full().flex_wrap().justify_between()` :
 
 - **Cluster gauche** (`gap_0p5`) : `+` add-context (ouvre ContextMenu slash/refs ancré `BottomLeft`) · follow-toggle · fast-mode (staff-only, `IconName::FastForward` / `IconName::FastForwardOff`) · thinking-mode toggle.
 - **Cluster droit** (`gap_1`, `flex_wrap`) : token-usage ring → profile selector → mode selector → model selector → send button (3639-3665).
@@ -420,7 +420,7 @@ Le composer wrap directement l'`Editor` de Zed (`message_editor.rs:468`). C'est 
 | Generating, vide | `Stop` | `Tinted(TintColor::Error)` | `Error` |
 | Generating, contenu | `QueueMessage` | `Filled` | `Accent` |
 
-Pas un seul bouton à `disabled=true` — **trois éléments différents** selon l'état. Tooltip à deux lignes quand le mode "queue" : explique séparément "Queue and Send" et "Send Immediately" comme actions distinctes keybindables (4324-4402). Pattern propre, à voler.
+Pas un seul bouton à `disabled=true` - **trois éléments différents** selon l'état. Tooltip à deux lignes quand le mode "queue" : explique séparément "Queue and Send" et "Send Immediately" comme actions distinctes keybindables (4324-4402). Pattern propre, à voler.
 
 ---
 
@@ -432,7 +432,7 @@ Tous trois utilisent un pattern **popover/picker**, pas de dropdown inline. Tous
 - trailing `ChevronDown` / `ChevronUp` à `IconSize::XSmall`
 - couleur `Color::Accent` quand déployé, `Color::Muted` sinon
 
-### Model selector — `Picker<ModelPickerDelegate>` (`model_selector.rs:29`)
+### Model selector - `Picker<ModelPickerDelegate>` (`model_selector.rs:29`)
 
 - Width `20rem`, max height `20rem`, scrollbar (42-43).
 - Liste typée `AgentModelList` (`connection.rs:468`) : `Flat(Vec)` ou `Grouped(IndexMap<AgentModelGroupName, Vec>)`.
@@ -441,20 +441,20 @@ Tous trois utilisent un pattern **popover/picker**, pas de dropdown inline. Tous
 - Star toggle button hover-reveal sur chaque ligne (`ui/model_selector_components.rs:128-180`).
 - Footer "Configure" outlined button.
 
-### Mode selector — `ContextMenu` (`mode_selector.rs:166`)
+### Mode selector - `ContextMenu` (`mode_selector.rs:166`)
 
 - **Modes dynamiques**, pas un enum hardcodé. Vient de `AgentSessionModes::all_modes()` / `current_mode()` exposé par le trait sur la connection.
 - Chaque mode peut avoir un `documentation_aside` rendu à gauche ou droite.
 - **Holding ⌘ + click** = set comme défaut. Communiqué via composant `HoldForDefault` : "Hold ⌘ to set as default" en `text_sm`, `Color::Muted`, séparé par un border-top.
 - `cycle_mode()` action keybindable.
 
-### Profile selector — `PickerPopoverMenu` (`profile_selector.rs:161`)
+### Profile selector - `PickerPopoverMenu` (`profile_selector.rs:161`)
 
 - Width `18rem`, max height `20rem`, ancré `BottomRight`.
 - Lignes groupées "Built-in" / "Custom" avec fuzzy highlight (219-228).
 - `ProfileProvider` trait (25) abstrait native vs ACP.
 
-**Tooltip riche** sur les trois — `v_flex().gap_1()` à deux lignes : action principale + keybinding ; deuxième ligne pour le cycle shortcut.
+**Tooltip riche** sur les trois - `v_flex().gap_1()` à deux lignes : action principale + keybinding ; deuxième ligne pour le cycle shortcut.
 
 ---
 
@@ -463,8 +463,8 @@ Tous trois utilisent un pattern **popover/picker**, pas de dropdown inline. Tous
 ### Structure
 
 Deux niveaux d'entités :
-- **`ConversationView`** (`conversation_view.rs:500`) — outer shell. `Render` impl à 3079 dispatch sur `ServerState` (loading, error, auth, connected).
-- **`ThreadView`** (`thread_view.rs:537`) — owns la liste de messages.
+- **`ConversationView`** (`conversation_view.rs:500`) - outer shell. `Render` impl à 3079 dispatch sur `ServerState` (loading, error, auth, connected).
+- **`ThreadView`** (`thread_view.rs:537`) - owns la liste de messages.
 
 La liste est une **GPUI `list()` virtualized** backed by `ListState` (`conversation_view.rs:1088`) :
 
@@ -487,20 +487,20 @@ Items ancrés en haut, follow-tail pour l'auto-scroll, 2048 px d'overscan. Chaqu
 - Padding : `py_3`, `px_2` (outer), `pt_2`, `pb_3`, `px_2` (column).
 
 **Assistant message** (5057) :
-- `chunks: Vec<AssistantMessageChunk>` — `Message { block }` ou `Thought { block }`, chaque block tient lazily une `Markdown` entity.
-- Visuel : **aucun background** — flush sur le bg du panel. `px_5`, `py_1p5`, dernier message ajoute `pb_4`. Chunks multiples empilés `v_flex().gap_3()`.
+- `chunks: Vec<AssistantMessageChunk>` - `Message { block }` ou `Thought { block }`, chaque block tient lazily une `Markdown` entity.
+- Visuel : **aucun background** - flush sur le bg du panel. `px_5`, `py_1p5`, dernier message ajoute `pb_4`. Chunks multiples empilés `v_flex().gap_3()`.
 - Messages assistant blank (whitespace-only) supprimés entièrement (5108).
 
-**Tool calls** (5128) — dispatch sur `render_any_tool_call` (6631) qui route vers terminal / subagent / standard. Voir §13.
+**Tool calls** (5128) - dispatch sur `render_any_tool_call` (6631) qui route vers terminal / subagent / standard. Voir §13.
 
-**Completed plans** — `render_completed_plan` (3228).
+**Completed plans** - `render_completed_plan` (3228).
 
 **Indented entries (subagent content)** : `is_indented() == true` ⇒ left vertical border (`w_px()`, `bg(border.opacity(0.6))`) + `pl_5`, visuellement nesting des turns subagent sous le parent (5193).
 
 ### Streaming
 
 Pendant la génération, la `ListState` a un item virtuel supplémentaire au-delà des entries réelles : l'**indicateur de génération** (`render_generating`, 5743) :
-- `SpinnerVariant::Dots` (`GeneratingSpinnerElement`) — stateful animated view.
+- `SpinnerVariant::Dots` (`GeneratingSpinnerElement`) - stateful animated view.
 - Awaiting confirmation : `SpinnerVariant::Sand` + `LoadingLabel::new("Awaiting Confirmation")`.
 - Optionnel : elapsed time label (après 30s, `STOPWATCH_THRESHOLD`) + token count (après 250 tokens, `TOKEN_THRESHOLD`), muted/small.
 - Layout : `h_flex`, `py_2`, `px(22px)`, `gap_2`.
@@ -530,7 +530,7 @@ Le `render_agent_markdown` (`conversation_view.rs:3145`) wrap `MarkdownElement::
 - `code_block_renderer` avec `CopyButtonVisibility::VisibleOnHover` + `WrapButtonVisibility::VisibleOnHover`.
 - Image resolver qui mappe URLs relatives → paths absolus worktree-relative.
 - `on_url_click` callback `open_link`.
-- `on_code_span_link` callback `AgentCodeSpanResolver` (LRU 2048 entries, 3176) — convertit les inline code spans qui ressemblent à un path (`src/main.rs:42`) en liens cliquables workspace.
+- `on_code_span_link` callback `AgentCodeSpanResolver` (LRU 2048 entries, 3176) - convertit les inline code spans qui ressemblent à un path (`src/main.rs:42`) en liens cliquables workspace.
 
 ### Code blocks
 
@@ -538,27 +538,27 @@ Highlight via `language::Language::highlight_text` + tree-sitter. Theme = `Synta
 
 **Standard markdown code blocks** : `bg(editor_background)`, `border(border_variant)` 1px, padding 8px, marge top 8px / bottom 12px. Buffer font à `buffer_font_size`. Overflow horizontal → `overflow_x_scroll` (220). Bouton copy + wrap-toggle visible au hover.
 
-**`read_file` tool output — numbered code blocks** : path spécial. `render_numbered_read_file_output` (`thread_view.rs:8113`) parse les sorties `cat -n` et appelle `render_cat_numbered_code_block` (308) qui :
+**`read_file` tool output - numbered code blocks** : path spécial. `render_numbered_read_file_output` (`thread_view.rs:8113`) parse les sorties `cat -n` et appelle `render_cat_numbered_code_block` (308) qui :
 - Render une **gutter** avec numéros de ligne droite-alignés en `text_muted`.
 - Code avec syntax highlighting via `highlight_code_runs` (409) → `language.highlight_text()`.
 - Bouton copy custom positionné `absolute().top_0().right_0()`, visible sur hover du groupe `"read-file-code-block"`.
 
 ### Diffs
 
-**`AgentDiffPane`** (`agent_diff.rs:41`) — pane item séparé (pas inline dans le thread), centre du workspace. `SplittableEditor` wrap un `MultiBuffer` qui aggregate les hunks de tous les fichiers changés.
+**`AgentDiffPane`** (`agent_diff.rs:41`) - pane item séparé (pas inline dans le thread), centre du workspace. `SplittableEditor` wrap un `MultiBuffer` qui aggregate les hunks de tous les fichiers changés.
 
 - Style (split vs unified) contrôlé par `EditorSettings::diff_view_style` (95).
 - `update_excerpts` (132) monitore le `action_log` du thread, extrait les ranges de hunks + context lines. Fichiers triés alphabétiquement (142). Fichiers supprimés foldés par défaut (212).
 - Hunk controls inline (accept/reject par hunk) via `set_render_diff_hunk_controls` (104).
 
-**Diff inline dans le thread** : `render_diff_editor` (`thread_view.rs:8025`) render un editor inline pour un seul diff **seulement** si `diff.has_revealed_range(cx)` — i.e. après que l'agent a streamé l'edit réel. Pendant le streaming (InProgress/Pending), `render_diff_loading` à la place.
+**Diff inline dans le thread** : `render_diff_editor` (`thread_view.rs:8025`) render un editor inline pour un seul diff **seulement** si `diff.has_revealed_range(cx)` - i.e. après que l'agent a streamé l'edit réel. Pendant le streaming (InProgress/Pending), `render_diff_loading` à la place.
 
 ### Tool call cards
 
 `render_tool_call` (6686). Trois variants.
 
 **Standard** :
-- Header (`render_tool_call_label`, 7699) — 1 line-height moins 2px, `h_flex`. Contient :
+- Header (`render_tool_call_label`, 7699) - 1 line-height moins 2px, `h_flex`. Contient :
   - Icon left : file icon (extension) pour Edit ; sinon `ToolSearch`, `ToolPencil`, `ToolDeleteFile`, `ArrowRightLeft`, `ToolTerminal`, `ToolThink`, `ToolWeb`, `ToolHammer` selon `acp::ToolKind`.
   - Edit failed + diff revealed → `DecoratedIcon` avec badge warning triangle.
   - Tool label text truncated avec **gradient overlay 48px** linear-gradient → transparent au bord droit.
@@ -570,9 +570,9 @@ Highlight via `language::Language::highlight_text` + tree-sitter. Theme = `Synta
 
 **Terminal tool call** (`render_terminal_tool_call`, 6328) :
 - Header : working dir, elapsed time, exit status, line count.
-- Command rendue via `render_collapsible_command` (6269) — code block buffer font 12px. Copy button supprimé sur le markdown interne ; un `CopyButton` extérieur capture le raw text (sans fences).
+- Command rendue via `render_collapsible_command` (6269) - code block buffer font 12px. Copy button supprimé sur le markdown interne ; un `CopyButton` extérieur capture le raw text (sans fences).
 
-**Subagent tool call** (`render_subagent_tool_call`, 8210) — card avec titre, status icon, diff stats, sous-thread expandable. Status icons : `SpinnerLabel` (running), `IconName::Circle` dimmed (cancelled), `IconName::Close` error, `IconName::Check` success. Sans titre ou failed/cancelled → `border_dashed`.
+**Subagent tool call** (`render_subagent_tool_call`, 8210) - card avec titre, status icon, diff stats, sous-thread expandable. Status icons : `SpinnerLabel` (running), `IconName::Circle` dimmed (cancelled), `IconName::Close` error, `IconName::Check` success. Sans titre ou failed/cancelled → `border_dashed`.
 
 ### Thinking blocks
 
@@ -592,7 +592,7 @@ Highlight via `language::Language::highlight_text` + tree-sitter. Theme = `Synta
 - Triggé par `right_click_menu` wrap du message body.
 - Items : Copy This Agent Response · Copy Selected Text (si sélection markdown) · Open Link (si right-click sur lien) · Scroll to Top / Bottom.
 
-**Thread-end controls** (`render_thread_controls`, 5306) — sous le dernier entry :
+**Thread-end controls** (`render_thread_controls`, 5306) - sous le dernier entry :
 - Icon buttons opacity 0.6 → 1.0 au hover : Open Thread as Markdown (`FileMarkdown`) · Scroll To Most Recent User Prompt (`ForwardArrow`) · Scroll To Top (`ArrowUp`).
 - Optionnel : turn stats (durée + tokens en small muted).
 - Optionnel : thumbs-up / thumbs-down si `enable_feedback`.
@@ -607,7 +607,7 @@ Highlight via `language::Language::highlight_text` + tree-sitter. Theme = `Synta
 
 Deux traits dans `agent/src/thread.rs` :
 
-`AgentTool` (3501) — trait typé :
+`AgentTool` (3501) - trait typé :
 ```rust
 trait AgentTool {
     type Input: Deserialize + Serialize + JsonSchema;
@@ -622,7 +622,7 @@ trait AgentTool {
 
 L'erreur typée comme `Output` permet de retourner les erreurs au modèle comme **contenu structuré** plutôt que comme exception.
 
-`AnyAgentTool` (3596) — version object-safe. Stocké comme `Arc<dyn AnyAgentTool>` dans `BTreeMap<SharedString, ...>` (976).
+`AnyAgentTool` (3596) - version object-safe. Stocké comme `Arc<dyn AnyAgentTool>` dans `BTreeMap<SharedString, ...>` (976).
 
 ### Outils built-in (`add_default_tools()`, thread.rs:1654)
 
@@ -643,14 +643,14 @@ L'erreur typée comme `Output` permet de retourner les erreurs au modèle comme 
 2. **Non-streaming** : input complet → `ToolInput::ready(tool_use.input)` → `run_tool()` (2523).
 3. **`run_tool()`** (2535) wrap exécution dans foreground task. Filtre les images de l'output si le modèle ne supporte pas (2560).
 
-**Gating par profil** : `enabled_tools()` (3008) consulte `AgentProfileSettings` — seuls les outils où `profile.is_tool_enabled(tool_name) == true` sont dans `running_turn.tools`. Le modèle ne **voit même pas** les outils désactivés.
+**Gating par profil** : `enabled_tools()` (3008) consulte `AgentProfileSettings` - seuls les outils où `profile.is_tool_enabled(tool_name) == true` sont dans `running_turn.tools`. Le modèle ne **voit même pas** les outils désactivés.
 
 ### Permissions
 
 `ToolPermissionMode` (`settings_content/src/agent.rs:639`) :
-- `Allow` — auto-approuve.
-- `Deny` — auto-rejette avec erreur.
-- `Confirm` (défaut) — toujours prompt.
+- `Allow` - auto-approuve.
+- `Deny` - auto-rejette avec erreur.
+- `Confirm` (défaut) - toujours prompt.
 
 `ToolPermissions` (`agent_settings.rs:338`) : `default: ToolPermissionMode` global + map `tool_name → ToolRules` (373) avec listes regex `always_allow`, `always_deny`, `always_confirm`.
 
@@ -659,11 +659,11 @@ L'erreur typée comme `Output` permet de retourner les erreurs au modèle comme 
 **Flow d'approbation** : quand un tool nécessite confirmation, `run_authorization_loop()` (`thread.rs:4092`) :
 1. Check `ToolPermissionDecision` from settings. Si `Allow` → return. Si `Deny` → error. Si `Confirm` → continue.
 2. Émet `ThreadEvent::ToolCallAuthorization` avec `ToolCallAuthorization { title, PermissionOptions, oneshot_sender }`. `PermissionOptions` contient `acp::PermissionOption` avec IDs `"allow"`, `"deny"`, `"always_allow_pattern"`, `"always_deny_pattern"`.
-3. Loop race **user input vs settings live changes** — si l'user modifie settings.json pendant prompt pending, la loop re-évalue et peut auto-résoudre sans action (4155).
-4. UI rend les options comme button group sur la tool call card via `render_permission_buttons` (`thread_view.rs:7138`) — variantes flat ou dropdown avec "Allow Once / Allow Always / Reject".
-5. Sur sélection pattern-based, `persist_permission_outcome()` (4204) écrit dans settings.json — devient permanent.
+3. Loop race **user input vs settings live changes** - si l'user modifie settings.json pendant prompt pending, la loop re-évalue et peut auto-résoudre sans action (4155).
+4. UI rend les options comme button group sur la tool call card via `render_permission_buttons` (`thread_view.rs:7138`) - variantes flat ou dropdown avec "Allow Once / Allow Always / Reject".
+5. Sur sélection pattern-based, `persist_permission_outcome()` (4204) écrit dans settings.json - devient permanent.
 
-Pour `TerminalTool`, les options "Always allow" pattern sont supprimées sur shells qui ne supportent pas le chaining POSIX (`&&`, `||`, `;`, `|`) — Nushell, Elvish, Rc — parce que sans parsing fiable des sub-commands, le pattern matching n'est pas safe (785).
+Pour `TerminalTool`, les options "Always allow" pattern sont supprimées sur shells qui ne supportent pas le chaining POSIX (`&&`, `||`, `;`, `|`) - Nushell, Elvish, Rc - parce que sans parsing fiable des sub-commands, le pattern matching n'est pas safe (785).
 
 ---
 
@@ -689,9 +689,9 @@ Pour `TerminalTool`, les options "Always allow" pattern sont supprimées sur she
 | `TerminalSelection` | Sélection dans terminal |
 | `MergeConflict` | Contenu de merge conflict |
 
-**Completion** (`completion_provider.rs:156`) — `PromptContextType` : `File`, `Symbol`, `Fetch`, `Thread`, `Skill`, `Diagnostics`, `BranchDiff`. Au-delà de File et Symbol, nécessite `prompt_capabilities.embedded_context` (`message_editor.rs:96`).
+**Completion** (`completion_provider.rs:156`) - `PromptContextType` : `File`, `Symbol`, `Fetch`, `Thread`, `Skill`, `Diagnostics`, `BranchDiff`. Au-delà de File et Symbol, nécessite `prompt_capabilities.embedded_context` (`message_editor.rs:96`).
 
-**Affichage chips** : `MentionCrease` (`ui/mention_crease.rs:21`) — `ButtonLike` :
+**Affichage chips** : `MentionCrease` (`ui/mention_crease.rs:21`) - `ButtonLike` :
 - `ButtonStyle::Outlined` base, `ButtonStyle::Tinted(TintColor::Accent)` quand toggled/selected.
 - `ButtonSize::Compact`, hauteur = `line_height - 1px`.
 - Icon `XSmall`, `Color::Muted`, label en buffer font à `agent_buffer_font_size`.
@@ -708,17 +708,17 @@ Ces chips vivent dans le display map de l'`Editor` comme **creases** (inline dec
 Parsing dans `PromptCompletionProvider` : `SlashCommandCompletion::try_parse()` (`completion_provider.rs:1807`) walk en arrière depuis le curseur pour le dernier `/` à word boundary.
 
 Sources :
-- `AvailableCommand` entries from `session_capabilities.available_commands` — déclarés par le serveur ACP via `acp::AvailableCommand`. Champs : `name`, `description`, `requires_argument`, optionnel `source`.
+- `AvailableCommand` entries from `session_capabilities.available_commands` - déclarés par le serveur ACP via `acp::AvailableCommand`. Champs : `name`, `description`, `requires_argument`, optionnel `source`.
 - `AvailableSkill` entries discovered file-system.
 
-Skills surfacent comme `/<scope>:<name>` — scope vide = global, sinon worktree root name. Skills avec `disable_model_invocation = true` cachés au modèle mais accessibles via slash command.
+Skills surfacent comme `/<scope>:<name>` - scope vide = global, sinon worktree root name. Skills avec `disable_model_invocation = true` cachés au modèle mais accessibles via slash command.
 
 ### Attachments / drag-drop
 
 Trois `on_drop` handlers sur `AgentPanel` (`agent_panel.rs:5632`) :
-1. **`DraggedTab`** — extrait `project_path` du pane item.
-2. **`DraggedSelection`** — extrait paths du project panel.
-3. **`ExternalPaths`** — `handle_external_paths_drop()` (5654) qui résout les paths OS en project paths (ajoute worktrees si besoin), puis `conversation_view.insert_dragged_files()`.
+1. **`DraggedTab`** - extrait `project_path` du pane item.
+2. **`DraggedSelection`** - extrait paths du project panel.
+3. **`ExternalPaths`** - `handle_external_paths_drop()` (5654) qui résout les paths OS en project paths (ajoute worktrees si besoin), puis `conversation_view.insert_dragged_files()`.
 
 **Paste** : `resolve_pasted_context_items()` (`message_editor.rs:314`) gère `ClipboardEntry::Image` (wrap en `MentionUri::PastedImage` si modèle supporte) et `ClipboardEntry::ExternalPaths`. `supports_images()` vient de `session_capabilities.prompt_capabilities.image`.
 
@@ -728,10 +728,10 @@ Trois `on_drop` handlers sur `AgentPanel` (`agent_panel.rs:5632`) :
 
 ### MCP (Model Context Protocol)
 
-Dans Zed, **"context server" = "MCP server"** — c'est le nom interne. `ContextServer` (`context_server/src/context_server.rs:40`) supporte trois transports :
-- **stdio** (`ContextServerTransport::Stdio`) — subprocess local, communication stdin/stdout.
-- **HTTP** — URL distante, streamable HTTP transport (64).
-- **Custom** — `Arc<dyn Transport>` (84).
+Dans Zed, **"context server" = "MCP server"** - c'est le nom interne. `ContextServer` (`context_server/src/context_server.rs:40`) supporte trois transports :
+- **stdio** (`ContextServerTransport::Stdio`) - subprocess local, communication stdin/stdout.
+- **HTTP** - URL distante, streamable HTTP transport (64).
+- **Custom** - `Arc<dyn Transport>` (84).
 
 Protocol versions trackées : `2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25` (`types.rs:8-11`).
 
@@ -739,7 +739,7 @@ Requests définies : `tools/list`, `tools/call`, `resources/list`, `resources/re
 
 ### Configuration utilisateur
 
-Dans `settings.json` sous `context_servers` (section projet). `ConfigureContextServerModal` (`agent_ui/src/agent_configuration/configure_context_server_modal.rs`) — wizard UI pour stdio ou HTTP. Quand une extension Zed qui déclare des context servers est installée, `context_server_configuration.rs:27` ouvre auto le modal via `ExtensionEvents::ExtensionInstalled`. Désinstallation → `remove_context_server_settings()` (66) clean les settings.
+Dans `settings.json` sous `context_servers` (section projet). `ConfigureContextServerModal` (`agent_ui/src/agent_configuration/configure_context_server_modal.rs`) - wizard UI pour stdio ou HTTP. Quand une extension Zed qui déclare des context servers est installée, `context_server_configuration.rs:27` ouvre auto le modal via `ExtensionEvents::ExtensionInstalled`. Désinstallation → `remove_context_server_settings()` (66) clean les settings.
 
 **Pas d'auto-discovery**, pas de trust tiers. L'utilisateur doit explicitement ajouter.
 
@@ -759,11 +759,11 @@ Voir §7 pour la struct. Trois built-in : `write` (défaut), `ask`, `minimal`.
 
 Sélection : `Thread::set_profile()` (`thread.rs:1738`) appelle `Self::resolve_profile_model()` qui swap au modèle préféré du profil si configuré.
 
-UI : `ProfileSelector` (`profile_selector.rs:39`) — Picker popover. Observe `SettingsStore`. Expose `cycle_profile()` action.
+UI : `ProfileSelector` (`profile_selector.rs:39`) - Picker popover. Observe `SettingsStore`. Expose `cycle_profile()` action.
 
 ### Modes
 
-**Dynamiques** — pas d'enum hardcodé. `ModeSelector` (`mode_selector.rs:19`) query `self.connection.all_modes()` et `current_mode()`. Noms et descriptions sont des `acp::SessionModeId` / `SharedString` opaques définis par le serveur agent connecté. C'est cohérent avec la philosophie ACP : le serveur sait quels modes il offre.
+**Dynamiques** - pas d'enum hardcodé. `ModeSelector` (`mode_selector.rs:19`) query `self.connection.all_modes()` et `current_mode()`. Noms et descriptions sont des `acp::SessionModeId` / `SharedString` opaques définis par le serveur agent connecté. C'est cohérent avec la philosophie ACP : le serveur sait quels modes il offre.
 
 ### Model selector
 
@@ -775,26 +775,26 @@ Trait `LanguageModelProvider` (`language_model/src/language_model.rs:271`) : `id
 
 Registration : `register_language_model_providers()` (`language_models/src/language_models.rs:222`). Liste complète :
 
-- `CloudLanguageModelProvider` — Zed Cloud hébergé (OAuth)
+- `CloudLanguageModelProvider` - Zed Cloud hébergé (OAuth)
 - `AnthropicLanguageModelProvider`
 - `OpenAiLanguageModelProvider`
-- `OllamaLanguageModelProvider` — local Ollama
-- `LmStudioLanguageModelProvider` — local LM Studio
+- `OllamaLanguageModelProvider` - local Ollama
+- `LmStudioLanguageModelProvider` - local LM Studio
 - `DeepSeekLanguageModelProvider`
-- `GoogleLanguageModelProvider` — Gemini
+- `GoogleLanguageModelProvider` - Gemini
 - `MistralLanguageModelProvider`
-- `BedrockLanguageModelProvider` — AWS
+- `BedrockLanguageModelProvider` - AWS
 - `OpenRouterLanguageModelProvider`
 - `VercelAiGatewayLanguageModelProvider`
-- `XAiLanguageModelProvider` — Grok
+- `XAiLanguageModelProvider` - Grok
 - `OpenCodeLanguageModelProvider`
-- `CopilotChatLanguageModelProvider` — GitHub Copilot
-- `OpenAiSubscribedProvider` — ChatGPT Plus
-- `OpenAiCompatibleLanguageModelProvider` — n'importe quel endpoint OpenAI-compatible, **dynamiquement registré** depuis `AllLanguageModelSettings.openai_compatible` map (105)
+- `CopilotChatLanguageModelProvider` - GitHub Copilot
+- `OpenAiSubscribedProvider` - ChatGPT Plus
+- `OpenAiCompatibleLanguageModelProvider` - n'importe quel endpoint OpenAI-compatible, **dynamiquement registré** depuis `AllLanguageModelSettings.openai_compatible` map (105)
 
 Extensions tierces : `LanguageModelRegistry::sync_installed_llm_extensions()` appelé sur events `ExtensionStore` (58).
 
-UI auth : `AgentConfiguration` (`agent_configuration.rs:54`) itère `LanguageModelRegistry::visible_providers()` et appelle `provider.configuration_view()` — UI auth par provider. La plupart : API keys via `CredentialsProvider`. Cloud : OAuth Zed.
+UI auth : `AgentConfiguration` (`agent_configuration.rs:54`) itère `LanguageModelRegistry::visible_providers()` et appelle `provider.configuration_view()` - UI auth par provider. La plupart : API keys via `CredentialsProvider`. Cloud : OAuth Zed.
 
 ---
 
@@ -803,20 +803,20 @@ UI auth : `AgentConfiguration` (`agent_configuration.rs:54`) itère `LanguageMod
 Skills = fichiers `SKILL.md` avec frontmatter YAML, dans `<scope>/.agents/skills/<name>/`. Crate `agent_skills` autonome.
 
 **Trois tiers de scopes** (`agent_skills.rs:77`), priorité décroissante :
-1. `BuiltIn` — compilé dans le binaire (seul : `create-skill`).
-2. `Global` — `~/.agents/skills/`.
-3. `ProjectLocal { worktree_id, worktree_root_name }` — `{worktree}/.agents/skills/`.
+1. `BuiltIn` - compilé dans le binaire (seul : `create-skill`).
+2. `Global` - `~/.agents/skills/`.
+3. `ProjectLocal { worktree_id, worktree_root_name }` - `{worktree}/.agents/skills/`.
 
 Same-named higher-priority shadow lower.
 
-**Loading** (`agent_skills.rs:473`) — `load_skills_from_directory(fs, directory, source)` async :
-1. `find_skill_files()` — read one level deep, `<entry_dir>/SKILL.md`.
+**Loading** (`agent_skills.rs:473`) - `load_skills_from_directory(fs, directory, source)` async :
+1. `find_skill_files()` - read one level deep, `<entry_dir>/SKILL.md`.
 2. Jusqu'à 16 I/O en parallèle, `load_skill_frontmatter()` lit en chunks 4096 bytes jusqu'au closing `---`, parse via `parse_skill_frontmatter()`.
 3. **Seul le frontmatter est lu à discovery time**. Body full lu on-demand quand le modèle invoke.
 
 **Struct `Skill`** (57) : `name`, `description`, `source`, `directory_path`, `skill_file_path`, `disable_model_invocation: bool`, `embedded_body: Option<&'static str>`.
 
-**Global index** : `SkillIndex` (165) — global GPUI avec `global_skills` + `project_skills: Vec<ProjectSkillGroup>`. Peuplé par `NativeAgent` qui appelle `load_skills_from_directory()` pour chaque worktree + path global au startup et sur worktree changes.
+**Global index** : `SkillIndex` (165) - global GPUI avec `global_skills` + `project_skills: Vec<ProjectSkillGroup>`. Peuplé par `NativeAgent` qui appelle `load_skills_from_directory()` pour chaque worktree + path global au startup et sur worktree changes.
 
 **Dans le system prompt** : `ProjectContext` (`prompt_store/src/prompts.rs:37`) carry `skills: Vec<SkillSummary>` (name + description + path). Le template Handlebars les rend dans un catalog `<available_skills>`, cappé à `MAX_SKILL_DESCRIPTIONS_SIZE = 50 KB`.
 
@@ -830,7 +830,7 @@ Same-named higher-priority shadow lower.
 
 ### Buffer inline assistant
 
-**Entry** : `InlineAssistant::inline_assist` (`inline_assistant.rs:206`) — workspace action handler. Résout la target (editor ou terminal via `resolve_inline_assist_target`), check model config errors (unauth → re-auth ; autre erreur → prompt natif `["Configure", "Cancel"]`, 266-296), puis dispatch.
+**Entry** : `InlineAssistant::inline_assist` (`inline_assistant.rs:206`) - workspace action handler. Résout la target (editor ou terminal via `resolve_inline_assist_target`), check model config errors (unauth → re-auth ; autre erreur → prompt natif `["Configure", "Cancel"]`, 266-296), puis dispatch.
 
 **Trigger** : `ctrl-enter` dans context `editor` → `assistant::InlineAssist`.
 
@@ -840,7 +840,7 @@ Same-named higher-priority shadow lower.
 3. `PromptEditor` (`inline_prompt_editor.rs`) holds son propre `Editor` pour le prompt text. Submit (Enter/`menu::Confirm`) → `handle_confirm` (545) → `PromptEditorEvent::StartRequested` si status `Idle` ou `Error`.
 4. `start_assist` (1229) commence le stream `BufferCodegen`.
 5. Pendant `CodegenStatus::Pending` : toolbar montre `IconButton(IconName::Stop)` rouge, tooltip "Changes won't be discarded" (820-833). Stop → `StopRequested`.
-6. Sur `Done` : boutons accept apparaissent — `alt-y` / `ctrl-alt-y` → `agent::Keep` ; `ctrl-alt-z` → `agent::Reject`. Si user edit le prompt après Done, restart button (`IconName::RotateCw`, 839).
+6. Sur `Done` : boutons accept apparaissent - `alt-y` / `ctrl-alt-y` → `agent::Keep` ; `ctrl-alt-z` → `agent::Reject`. Si user edit le prompt après Done, restart button (`IconName::RotateCw`, 839).
 7. Erreur `BufferCodegen` → `CodegenStatus::Error`. Sans décorations visibles → `workspace.show_toast(Toast::new(id, error))` (1738).
 
 **History** : jusqu'à 20 prompt strings dans `InlineAssistant::prompt_history` (80, 94), cyclables up/down arrow.
@@ -853,24 +853,24 @@ Même entry (`inline_assist`), dispatch vers `TerminalInlineAssistant::assist` (
 - Pas de buffer ranges, codegen direct sur le PTY.
 - `TerminalCodegen` (`terminal_codegen.rs:12`) tient un `TerminalTransaction` qui stream chunks via `terminal.input(bytes)` (118-119). Sanitization anti-execution accidentelle.
 - **Undo** : `TerminalTransaction::undo` envoie `\x15` (Ctrl-U, clear ligne) sur Unix, `\x03` (Ctrl-C) sur Windows (176-179).
-- **Accept** : `complete` envoie `\x0d` (CR) — execute la commande générée (208-210).
+- **Accept** : `complete` envoie `\x0d` (CR) - execute la commande générée (208-210).
 - `PromptEditor` en mode terminal : `secondary_confirm` (Shift-Enter) execute immédiatement au lieu de juste insérer (535-543).
 - Contexte limité aux `DEFAULT_CONTEXT_LINES = 50` dernières lignes (37).
-- Pas de blocs management — chaque `assist` → nouveau `TerminalInlineAssistId`.
+- Pas de blocs management - chaque `assist` → nouveau `TerminalInlineAssistId`.
 
 ---
 
 ## 19. Historique & archive
 
-`ThreadsArchiveView` (`threads_archive_view.rs:140`) — sidebar séparée, pas dans le panel. Toggle via "Toggle Threads Sidebar" du menu options.
+`ThreadsArchiveView` (`threads_archive_view.rs:140`) - sidebar séparée, pas dans le panel. Toggle via "Toggle Threads Sidebar" du menu options.
 
 ### Layout
 
-**Search header** (`render_header`, 842) — `platform_title_bar_height` tall, `border_b_1`. `IconName::MagnifyingGlass` `IconSize::Small` `Color::Muted` + `Editor` inline pour search (placeholder "Search all threads…") + `IconName::Close` clear button visible seulement si query.
+**Search header** (`render_header`, 842) - `platform_title_bar_height` tall, `border_b_1`. `IconName::MagnifyingGlass` `IconSize::Small` `Color::Muted` + `Editor` inline pour search (placeholder "Search all threads…") + `IconName::Close` clear button visible seulement si query.
 
-**Toolbar** (`render_toolbar`, 930) — `Tab::content_height` row. Gauche : thread count label `LabelSize::Small` `Color::Muted`. Droite : `IconName::Download` (Import Threads) + `IconName::Archive` (toggle archived-only, toggleable state).
+**Toolbar** (`render_toolbar`, 930) - `Tab::content_height` row. Gauche : thread count label `LabelSize::Small` `Color::Muted`. Droite : `IconName::Download` (Import Threads) + `IconName::Archive` (toggle archived-only, toggleable state).
 
-**Thread list** — virtualized GPUI `list`. Deux types d'items :
+**Thread list** - virtualized GPUI `list`. Deux types d'items :
 
 - **`BucketSeparator`** : `div().px_2p5().pt_3().pb_1()` header avec `LabelSize::Small` `Color::Muted`. Buckets : Today, Yesterday, This Week, Past Week, Older (94-100).
 - **`Entry`** : `ThreadItem` avec agent icon (`ZedAgent` natif, `Sparkle` externe), titre + fuzzy-match highlight, timestamp formaté, folder paths projet. Hover → action slot droite : `Archive` actif, `Trash` archivé, `Close` cancel restore. Archivés en `Color::Muted` + icon `opacity(0.6)`.
@@ -889,15 +889,15 @@ Click thread → `ThreadsArchiveViewEvent::Activate { thread }` (133). Parent pa
 
 ### Thread worktree archive
 
-`thread_worktree_archive.rs` — companion. À archive : snapshot état branche (staged/unstaged hashes, branch name) dans `archived_git_worktrees`. À restore : worktree recréé.
+`thread_worktree_archive.rs` - companion. À archive : snapshot état branche (staged/unstaged hashes, branch name) dans `archived_git_worktrees`. À restore : worktree recréé.
 
 ### Import de threads
 
 Deux paths (`thread_import.rs`) :
 
-**Cross-channel** (606-683) — `import_threads_from_other_channels` lit `database_dir`, pour chaque `ReleaseChannel` non-current et non-Dev, ouvre le SQLite directement via `sqlez::connection::Connection::open_file` (682) sans migrations, appelle `list_thread_metadata_from_connection`. Nouveaux threads (by `thread_id`) save via `save_all`. `StatusToast` on completion. Flag `"dismissed-cross-channel-thread-import"` gate le first-run prompt.
+**Cross-channel** (606-683) - `import_threads_from_other_channels` lit `database_dir`, pour chaque `ReleaseChannel` non-current et non-Dev, ouvre le SQLite directement via `sqlez::connection::Connection::open_file` (682) sans migrations, appelle `list_thread_metadata_from_connection`. Nouveaux threads (by `thread_id`) save via `save_all`. `StatusToast` on completion. Flag `"dismissed-cross-channel-thread-import"` gate le first-run prompt.
 
-**ACP thread import** (32-47, `ThreadImportModal`) — modal liste agents ACP disponibles, user select lesquels importer. Track `unchecked_agents`. Import via `acp_thread::AgentSessionListRequest` (214).
+**ACP thread import** (32-47, `ThreadImportModal`) - modal liste agents ACP disponibles, user select lesquels importer. Track `unchecked_agents`. Import via `acp_thread::AgentSessionListRequest` (214).
 
 **Pas de formats externes** (JSON export, markdown). Que des row data SQLite ou réponses ACP live.
 
@@ -909,7 +909,7 @@ Deux paths (`thread_import.rs`) :
 
 `draft_prompt_store.rs`. Storage = `KeyValueStore` (SQLite KVP) namespace `"agent_draft_prompts"` (23).
 
-- Key : `thread_id.to_key_string()` — UUID hyphenated.
+- Key : `thread_id.to_key_string()` - UUID hyphenated.
 - Value : JSON-sérialisé `Vec<acp::ContentBlock>` (preserve mentions resource links, pas que plain text) (45).
 - Write : `cx.background_spawn` (49). Read : synchrone (28-36). Delete : à first message sent ou thread deleted (52-55).
 
@@ -919,7 +919,7 @@ Deux paths (`thread_import.rs`) :
 
 ### Agent connection store
 
-`AgentConnectionStore` (`agent_connection_store.rs:68`) — entité non-globale (une par panel/project) qui mappe `Agent` → `Entity<AgentConnectionEntry>`.
+`AgentConnectionStore` (`agent_connection_store.rs:68`) - entité non-globale (une par panel/project) qui mappe `Agent` → `Entity<AgentConnectionEntry>`.
 
 **States** (16-24) : `Connecting { connect_task }`, `Connected(AgentConnectedState)`, `Error { error: LoadError }`.
 
@@ -1018,7 +1018,7 @@ Taxonomy (`conversation_view.rs:127-160`) : `PaymentRequired`, `RateLimitExceede
 
 **Panel-level cancel** : `MessageEditorEvent::Cancel` émis (escape → `editor::Cancel` propagated, `message_editor.rs:1998`). `ThreadView` handle via `cancel_generation` (`thread_view.rs:978`, 1693-1698) → set `user_interrupted_generation = true` et envoie signal cancel ACP.
 
-**Stop button visuel** (`thread_view.rs:4339-4345`) — `IconButton(IconName::Stop)`, tooltip "Stop Generation" bound à `editor::actions::Cancel`. Visible seulement pendant génération.
+**Stop button visuel** (`thread_view.rs:4339-4345`) - `IconButton(IconName::Stop)`, tooltip "Stop Generation" bound à `editor::actions::Cancel`. Visible seulement pendant génération.
 
 **Partial output** : sur interruption, contenu déjà streamé reste dans la liste. Flag `user_interrupted_generation` empêche le prochain message en queue d'auto-fire (1565-1569).
 
@@ -1028,12 +1028,12 @@ Taxonomy (`conversation_view.rs:127-160`) : `PaymentRequired`, `RateLimitExceede
 
 ### Notifications
 
-`ConversationView::notify_with_sound` (2547) appelé à fin de génération. Gated par `!self.agent_status_visible(window, cx)` (2627) — pas de notif si panel visible et focused dans active window.
+`ConversationView::notify_with_sound` (2547) appelé à fin de génération. Gated par `!self.agent_status_visible(window, cx)` (2627) - pas de notif si panel visible et focused dans active window.
 
 **Popup** : `show_notification` → `pop_up` crée une nouvelle fenêtre GPUI avec `AgentNotification` view (2694, 2709). Selon `notify_when_agent_waiting` :
-- `PrimaryScreen` — un popup primary display.
-- `AllScreens` — un par display.
-- `Never` — rien.
+- `PrimaryScreen` - un popup primary display.
+- `AllScreens` - un par display.
+- `Never` - rien.
 
 **Triggers** :
 - Génération complète → "New message" OU "Finished running tools" (selon usage tools, 1589-1598).
@@ -1068,20 +1068,20 @@ Click popup → `AgentNotificationEvent::Accepted` → focus le thread relevant.
 ### Espacement (échelle Tailwind-like GPUI)
 
 Valeurs dominantes observées :
-- `p_2` (8px) — composer outer padding
-- `gap_1` (4px) — entre toolbar buttons
-- `gap_2` (8px) — dans message rows
-- `gap_0p5` (2px) — icon+label group serré
-- `px_5`, `py_1p5` — assistant message
-- `py_3`, `px_2` — user message outer
-- `px_2p5`, `pt_3`, `pb_1` — archive bucket headers
-- `DynamicSpacing::Base04.rems(cx)` — toolbar left padding (scale avec user font-size pref)
+- `p_2` (8px) - composer outer padding
+- `gap_1` (4px) - entre toolbar buttons
+- `gap_2` (8px) - dans message rows
+- `gap_0p5` (2px) - icon+label group serré
+- `px_5`, `py_1p5` - assistant message
+- `py_3`, `px_2` - user message outer
+- `px_2p5`, `pt_3`, `pb_1` - archive bucket headers
+- `DynamicSpacing::Base04.rems(cx)` - toolbar left padding (scale avec user font-size pref)
 
-Content centred avec `mx_auto()` capped à `max_content_width` configurable — readability sur grand écran.
+Content centred avec `mx_auto()` capped à `max_content_width` configurable - readability sur grand écran.
 
 ### Iconographie
 
-Toutes les icônes viennent de l'enum centralisée `IconName` (icons Zed, SVG). Icons externes : `Icon::from_external_svg(path)` — point d'extensibilité pour agents tiers.
+Toutes les icônes viennent de l'enum centralisée `IconName` (icons Zed, SVG). Icons externes : `Icon::from_external_svg(path)` - point d'extensibilité pour agents tiers.
 
 Variantes dominantes :
 
@@ -1132,7 +1132,7 @@ La toolbar se **reshape complètement** selon qu'il y a des messages ou non. En 
 
 ### 2. Gradient fade + edit button hover-reveal sur titre
 
-Un `GradientFade` 64px fade le bg toolbar sur le bord droit du titre, puis un `visible_on_hover` group reveal un bouton `IconName::Pencil` positionné. Affordance edit cachée jusqu'au besoin **sans aucun layout shift** — le fade masque l'overflow text pendant que le bouton apparaît au même endroit (4727-4756).
+Un `GradientFade` 64px fade le bg toolbar sur le bord droit du titre, puis un `visible_on_hover` group reveal un bouton `IconName::Pencil` positionné. Affordance edit cachée jusqu'au besoin **sans aucun layout shift** - le fade masque l'overflow text pendant que le bouton apparaît au même endroit (4727-4756).
 
 ### 3. `HoldForDefault` modifier-key affordance
 
@@ -1140,11 +1140,11 @@ Dans les selectors (mode/model), holding ⌘ pendant le click set l'item comme d
 
 ### 4. Activity bar comme floating rounded card
 
-`rounded_t_md` + `border_1.border_b_0` + ombre subtile (`black().opacity(0.12)`, 1px offset, 2px blur). Visuellement "flotte" au-dessus du composer. Sections séparées par `Divider::horizontal()`. **Apparait seulement si contenu** — sinon 0 hauteur. Cache l'éphémère sans noise.
+`rounded_t_md` + `border_1.border_b_0` + ombre subtile (`black().opacity(0.12)`, 1px offset, 2px blur). Visuellement "flotte" au-dessus du composer. Sections séparées par `Divider::horizontal()`. **Apparait seulement si contenu** - sinon 0 hauteur. Cache l'éphémère sans noise.
 
 ### 5. Send button à 3 états (pas un disabled)
 
-Send button n'est **pas un seul bouton à disabled** — c'est **trois éléments différents** :
+Send button n'est **pas un seul bouton à disabled** - c'est **trois éléments différents** :
 - Vide idle → ghost icon disabled `Muted`
 - Contenu idle → `Send` filled `Accent`
 - Generating vide → `Stop` rouge `Tinted(Error)`
@@ -1158,11 +1158,11 @@ Pour les sorties `read_file` (format `cat -n`), Zed parse et render avec une **v
 
 ### 7. Mention chips comme creases
 
-Les `@file`/`@symbol`/etc dans l'input ne sont **pas des éléments UI séparés** — ce sont des **creases inline** dans le display map de l'`Editor`. Rendu comme `ButtonLike` `Outlined` / `Tinted(Accent)` quand toggled, hauteur = `line_height - 1px`, icon `XSmall` + label buffer-font compact. Loading state = animation pulsante 2s. Click → ouvre la ref. Tooltip = preview image pour les pasted images. Pattern fondamental pour un input qui mélange texte et entités.
+Les `@file`/`@symbol`/etc dans l'input ne sont **pas des éléments UI séparés** - ce sont des **creases inline** dans le display map de l'`Editor`. Rendu comme `ButtonLike` `Outlined` / `Tinted(Accent)` quand toggled, hauteur = `line_height - 1px`, icon `XSmall` + label buffer-font compact. Loading state = animation pulsante 2s. Click → ouvre la ref. Tooltip = preview image pour les pasted images. Pattern fondamental pour un input qui mélange texte et entités.
 
 ### 8. Thinking blocks à 4 modes d'affichage
 
-`Auto` (collapsed + auto-expand du dernier streaming), `Preview` (collapsed mais 256px preview avec gradient fade panel_bg → transparent au top), `AlwaysExpanded`, `AlwaysCollapsed`. User toggle manuel tracké séparément (`user_toggled_thinking_blocks`). Le `Preview` avec linear-gradient est particulièrement élégant — donne envie d'expand sans bloquer la lecture.
+`Auto` (collapsed + auto-expand du dernier streaming), `Preview` (collapsed mais 256px preview avec gradient fade panel_bg → transparent au top), `AlwaysExpanded`, `AlwaysCollapsed`. User toggle manuel tracké séparément (`user_toggled_thinking_blocks`). Le `Preview` avec linear-gradient est particulièrement élégant - donne envie d'expand sans bloquer la lecture.
 
 ### 9. Tool call card avec status-driven layout
 
@@ -1184,7 +1184,7 @@ Les options "Allow Once / Allow Always / Reject" sont rendues **dans la tool car
 
 ### 12. Resume + Replay pour les threads sauvegardés
 
-Le `DbThread` est zstd-compressé JSON sérialisé du `Thread` complet. Au resume, `NativeAgentConnection::load_thread` reconstruit puis **replay tous les push_* events** sur un nouvel `AcpThread`. Aucune logique spéciale dans l'UI pour distinguer "thread loaded" vs "thread live" — le flux est identique.
+Le `DbThread` est zstd-compressé JSON sérialisé du `Thread` complet. Au resume, `NativeAgentConnection::load_thread` reconstruit puis **replay tous les push_* events** sur un nouvel `AcpThread`. Aucune logique spéciale dans l'UI pour distinguer "thread loaded" vs "thread live" - le flux est identique.
 
 ### 13. Title-as-Editor click-to-edit
 
@@ -1196,41 +1196,41 @@ Drafts sauvegardés à part dans KV store namespace `"agent_draft_prompts"`, val
 
 ### 15. Sidebar archive séparée du panel
 
-L'historique n'est **pas dans le panel** — c'est une sidebar séparée toggleable. Buckets temporels (Today / Yesterday / This Week / Past Week / Older) avec separator rows injectés. Search inline fuzzy avec highlight positions stockés. Filter All/ArchivedOnly avec auto-reset si plus rien à montrer. Action slot droit hover-reveal (Archive / Trash / Close).
+L'historique n'est **pas dans le panel** - c'est une sidebar séparée toggleable. Buckets temporels (Today / Yesterday / This Week / Past Week / Older) avec separator rows injectés. Search inline fuzzy avec highlight positions stockés. Filter All/ArchivedOnly avec auto-reset si plus rien à montrer. Action slot droit hover-reveal (Archive / Trash / Close).
 
 ---
 
 ## 26. Recommandations concrètes pour Paneflow
 
-Tu pars d'un seul crate `paneflow-ai-hook` — donc tu as une carte blanche relative. Voici l'ordre de bataille recommandé :
+Tu pars d'un seul crate `paneflow-ai-hook` - donc tu as une carte blanche relative. Voici l'ordre de bataille recommandé :
 
-### Phase 0 — Architecture
+### Phase 0 - Architecture
 
 1. **Définis un trait `AgentConnection`-like dès le départ**, même si tu n'as qu'un seul backend au début. C'est le pivot qui te permet d'ajouter Claude Code, ChatGPT, ou n'importe quoi d'autre plus tard sans refactor massif. Sépare bien :
    - **Moteur** (le truc qui appelle un LLM et exécute des outils)
-   - **Display model** (`AcpThread`-like) — la liste d'entries que l'UI traverse
+   - **Display model** (`AcpThread`-like) - la liste d'entries que l'UI traverse
    - **Connection** (la glue entre les deux)
 
 2. **Sépare en 3 stockages** :
-   - Liste rapide pour sidebar (`ThreadMetadata`) — quelques colonnes typées dans SQLite.
+   - Liste rapide pour sidebar (`ThreadMetadata`) - quelques colonnes typées dans SQLite.
    - Blob complet du thread (zstd JSON).
    - Drafts (KV store séparé, par thread_id).
 
 3. **Le data flow d'un turn est une boucle, pas un appel-réponse**. Tant que le modèle émet `tool_use`, on continue le loop. Sans ça tu n'as pas un agent, tu as un chat.
 
-### Phase 1 — UI structurale
+### Phase 1 - UI structurale
 
-4. **Panel = `v_flex().justify_between()`** avec 4 zones (toolbar, optional banner, message stream, composer). Dock left/right only (interdis bottom — c'est moche pour les conversations). `MIN_PANEL_WIDTH = 300px`.
+4. **Panel = `v_flex().justify_between()`** avec 4 zones (toolbar, optional banner, message stream, composer). Dock left/right only (interdis bottom - c'est moche pour les conversations). `MIN_PANEL_WIDTH = 300px`.
 
-5. **Toolbar context-adaptive** (pattern §25.1) — l'empty state mérite un vrai bouton "Démarrer un thread" qui prend de la place. L'active state collapse en petite icon + titre éditable.
+5. **Toolbar context-adaptive** (pattern §25.1) - l'empty state mérite un vrai bouton "Démarrer un thread" qui prend de la place. L'active state collapse en petite icon + titre éditable.
 
 6. **Composer en bas** avec footer bar de selectors + send button. Le composer wrap un éditeur multiline auto-height (pas un `<textarea>`). Send button = **3 éléments différents** selon état, pas un disabled (pattern §25.5).
 
 7. **Message stream = liste virtualisée** avec follow-mode tail. Sur grand écran, cap la colonne de texte à `max_content_width` configurable + center.
 
-### Phase 2 — Rendering
+### Phase 2 - Rendering
 
-8. **Markdown avec font Agent dédiée** (séparée de l'éditeur de code). Heading scale serrée (1.15 → 0.875rem, pas 2rem). Inline code en buffer font avec fond subtil 0.08 opacity. Links accent + underline 0.5 opacity. Pas de styles "chat bubble" — l'assistant est flush sur le bg du panel, sans background.
+8. **Markdown avec font Agent dédiée** (séparée de l'éditeur de code). Heading scale serrée (1.15 → 0.875rem, pas 2rem). Inline code en buffer font avec fond subtil 0.08 opacity. Links accent + underline 0.5 opacity. Pas de styles "chat bubble" - l'assistant est flush sur le bg du panel, sans background.
 
 9. **Tool call cards collapsibles** avec icon par catégorie (search/edit/terminal/think/web). Header truncated avec **gradient fade** au lieu d'ellipsis. Status driven : open forcé pendant `WaitingForConfirmation`, `border_dashed` en cas de failed.
 
@@ -1238,7 +1238,7 @@ Tu pars d'un seul crate `paneflow-ai-hook` — donc tu as une carte blanche rela
 
 11. **Mention chips = creases dans l'éditeur**, pas des éléments UI séparés. Hauteur exacte = `line_height - 1px`. ButtonStyle Outlined par défaut, Tinted(Accent) quand toggled. Loading state = pulse 2s.
 
-### Phase 3 — Workflows
+### Phase 3 - Workflows
 
 12. **Slash commands + mentions @** dans le même completion provider. Triggers : `/` au début d'un word, `@` avec word boundary avant. Tu peux commencer avec File/Symbol et étendre.
 
@@ -1248,20 +1248,20 @@ Tu pars d'un seul crate `paneflow-ai-hook` — donc tu as une carte blanche rela
 
 15. **Drafts** dès le départ (§25.14). Sauvegarde async sur change, lit synchrone à l'ouverture. Sinon les users perdent leur prompt sur thread switch et te haïssent.
 
-### Phase 4 — Polish
+### Phase 4 - Polish
 
-16. **Title-as-Editor** (§25.13) — click-to-edit, animation alpha pendant l'auto-génération.
+16. **Title-as-Editor** (§25.13) - click-to-edit, animation alpha pendant l'auto-génération.
 
 17. **Sidebar archive séparée** (§25.15) avec buckets temporels et fuzzy search. C'est ce qui transforme un chat tool en "outil de pensée long terme".
 
 18. **Notifications de fin** si panel non visible, configurables (PrimaryScreen / AllScreens / Never). Audio en option.
 
-19. **Cancel sur escape** dans l'input, pas un bouton Stop standalone — l'utilisateur n'a pas à viser. Stop button visible seulement pendant génération, rouge `Tinted(Error)`.
+19. **Cancel sur escape** dans l'input, pas un bouton Stop standalone - l'utilisateur n'a pas à viser. Stop button visible seulement pendant génération, rouge `Tinted(Error)`.
 
 ### Ce que je ne ferais PAS
 
 - ❌ **Pas de chat bubbles** style WhatsApp. L'assistant est flush, pas de background. Ça scale beaucoup mieux pour du texte long.
-- ❌ **Pas d'avatars circulaires** à côté de chaque message. Zed n'en met pas — économise du chrome.
+- ❌ **Pas d'avatars circulaires** à côté de chaque message. Zed n'en met pas - économise du chrome.
 - ❌ **Pas de timestamps individuels** par message. Ça pollue. Met-les en hover ou en footer du thread.
 - ❌ **Pas de "typing indicator"** style ChatGPT (les trois dots en bubble). Le spinner inline de la liste suffit.
 - ❌ **Pas de dock bottom**. C'est une conversation longue, pas un terminal.
@@ -1269,7 +1269,7 @@ Tu pars d'un seul crate `paneflow-ai-hook` — donc tu as une carte blanche rela
 
 ---
 
-## Annexe — Fichiers à lire en priorité dans Zed
+## Annexe - Fichiers à lire en priorité dans Zed
 
 Si tu veux aller plus loin sur un point précis :
 

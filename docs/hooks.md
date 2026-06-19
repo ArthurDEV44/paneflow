@@ -85,7 +85,7 @@ scan.
 
 Safety properties shared by every ephemeral installer: idempotent merge,
 ownership detection by command basename (`paneflow-ai-hook`), orphan sweep on
-the next launch after a SIGKILL, and refusal paths that protect user files —
+the next launch after a SIGKILL, and refusal paths that protect user files -
 a symlinked config dir, an unparseable PRIMARY config (`opencode.json`,
 `~/.hermes/config.yaml` with an existing `hooks:` key), or a `.jsonc`-only
 OpenCode setup all skip the install instead of clobbering. The TS bridges are
@@ -94,7 +94,7 @@ outside a Paneflow terminal.
 
 Deliberately not integrated (no safe surface): **Copilot CLI** (no hooks, no
 JSON stream), **Factory Droid** (dashboard-managed hooks), **Kiro** (hooks
-live inside per-agent definition files — no per-session surface),
+live inside per-agent definition files - no per-session surface),
 **Antigravity / Openclaw** and the remaining launchers (no stable public
 hook surface). They still get the universal exit/session-end lifecycle and
 the "running" row.

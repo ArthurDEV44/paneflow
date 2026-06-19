@@ -2,7 +2,7 @@
 //!
 //! A 128-bit UUID v4 is generated on first launch and persisted at
 //! `<base>/telemetry_id`. Every subsequent launch re-reads the file and
-//! returns the same UUID — so events from the same installation correlate
+//! returns the same UUID - so events from the same installation correlate
 //! without PostHog ever learning anything about the user.
 //!
 //! The file is the only state written to disk by the telemetry subsystem.
@@ -12,16 +12,16 @@
 //! Path resolution lives in the consumer crate (US-003 split): callers
 //! pass the persistent data directory as a `&Path` to
 //! [`telemetry_id_at`]. When the consumer cannot resolve a usable
-//! directory, [`ephemeral_id`] returns a session-only UUID — same
+//! directory, [`ephemeral_id`] returns a session-only UUID - same
 //! degraded-mode contract as the previous in-process API, just routed
 //! through two function calls instead of one.
 //!
-//! Degraded modes — all three return an ephemeral (session-scoped) UUID
+//! Degraded modes - all three return an ephemeral (session-scoped) UUID
 //! and log at DEBUG, never surface to the user:
 //! 1. The directory exists but the file is unwritable or unreadable
 //!    (read-only FS, permission denied, ENOSPC).
 //! 2. The file exists but contains a value that does not parse as a UUID
-//!    (user edited it manually, partial write, disk corruption) — we do
+//!    (user edited it manually, partial write, disk corruption) - we do
 //!    not overwrite it, so an intentional edit by a curious user is
 //!    preserved; telemetry simply runs session-scoped until they fix or
 //!    delete the file.
@@ -71,10 +71,10 @@ pub fn telemetry_id_at(base: &Path) -> (String, bool) {
     }
 
     // First launch: generate, persist, return. If persistence fails (disk
-    // full, read-only FS), surface the freshly minted UUID anyway — it
+    // full, read-only FS), surface the freshly minted UUID anyway - it
     // only stays alive for this process. A failed persist is NOT a first
     // run for telemetry purposes: next launch will also fail to read, so
-    // every launch would otherwise claim first-run — we suppress the flag
+    // every launch would otherwise claim first-run - we suppress the flag
     // to avoid that double-count.
     let fresh = Uuid::new_v4().to_string();
     match std::fs::write(&file, &fresh) {

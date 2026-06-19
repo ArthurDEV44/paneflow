@@ -1,4 +1,4 @@
-// Build scripts idiomatically `panic!` on fatal errors — that is how
+// Build scripts idiomatically `panic!` on fatal errors - that is how
 // Cargo surfaces build-time failures to the user. The workspace-wide
 // `clippy::panic = "deny"` policy targets production runtime code, not
 // build tooling; a `?`-returning `main() -> Result<…>` here would only
@@ -18,14 +18,14 @@
 //!    still embeds the previous value until an unrelated source change
 //!    forces a rebuild.
 //!
-//! 2. **US-008 / EP-001 — embedded binary staging.** Build the
+//! 2. **US-008 / EP-001 - embedded binary staging.** Build the
 //!    `paneflow-shim`, `paneflow-ai-hook` and `paneflow-mcp` workspace
 //!    binaries for the current target triple and stage them into
 //!    `src-app/target/embed/bin/<target>/` so the `Bins` `RustEmbed` struct
 //!    in `src-app/src/assets.rs` picks them up at compile time. A nested
 //!    `cargo build` is used rather than relying on workspace build ordering
 //!    because `paneflow-app` does not directly depend on any of those
-//!    crates — without this step they would not be guaranteed to exist when
+//!    crates - without this step they would not be guaranteed to exist when
 //!    `rust-embed` expands. `paneflow-mcp` (the MCP pane-context bridge) is
 //!    embedded here so every package ships it with zero new CI step; it is
 //!    extracted at launch to a stable path by
@@ -44,11 +44,11 @@
 //!    `paneflow` binary.
 //!
 //!    Escape hatch: setting `PANEFLOW_SKIP_EMBED_BUILD=1` skips the nested
-//!    build — useful in CI pre-stages that build the nested crates
+//!    build - useful in CI pre-stages that build the nested crates
 //!    separately and pre-populate `target/embed/bin/<target>/`, and for
 //!    fast iteration on the main crate when the nested binaries have not
 //!    changed. The staging dir must still be populated when the `Bins`
-//!    `RustEmbed` macro expands — rust-embed 8.x panics on missing folders.
+//!    `RustEmbed` macro expands - rust-embed 8.x panics on missing folders.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -58,7 +58,7 @@ use std::process::Command;
 /// Hard cap on the total bytes staged under `target/embed/bin/<target>/`.
 /// Enforced to keep the main PaneFlow binary slim.
 ///
-/// EP-001 US-002 — measured release-min sizes (Linux x86_64, 2026-05-29):
+/// EP-001 US-002 - measured release-min sizes (Linux x86_64, 2026-05-29):
 ///
 /// ```text
 ///   paneflow-shim      455_320 B
@@ -77,13 +77,13 @@ use std::process::Command;
 const EMBED_SIZE_LIMIT_BYTES: u64 = 1_835_008;
 
 fn main() {
-    // 1. Telemetry env vars (unchanged behavior — preserved so a key
+    // 1. Telemetry env vars (unchanged behavior - preserved so a key
     //    rotation forces the downstream `option_env!` to be re-resolved).
     println!("cargo:rerun-if-env-changed=POSTHOG_API_KEY");
     println!("cargo:rerun-if-env-changed=POSTHOG_HOST");
     println!("cargo:rerun-if-env-changed=PANEFLOW_SKIP_EMBED_BUILD");
 
-    // 2. US-008 — stage the AI-hook binaries into a dir that
+    // 2. US-008 - stage the AI-hook binaries into a dir that
     //    `assets::Bins` (rust-embed) will ingest.
     let target = std::env::var("TARGET").expect("cargo always sets TARGET for build scripts");
     // Expose the triple to source code via `env!("PANEFLOW_TARGET_TRIPLE")`
@@ -141,7 +141,7 @@ fn main() {
     );
     // Explicit per-FILE watches for the shim's `include_str!`'d plugin assets.
     // A directory `rerun-if-changed` only catches add/remove/rename (the dir
-    // mtime), NOT a content edit of a nested file on Windows — so without these
+    // mtime), NOT a content edit of a nested file on Windows - so without these
     // an edited `*-paneflow-status.ts` would silently not be re-embedded.
     for asset in [
         "crates/paneflow-shim/assets/opencode-paneflow-status.ts",
@@ -158,7 +158,7 @@ fn main() {
         stage_ai_hook_binaries(&workspace_root, &target, &embed_dir);
     } else {
         println!(
-            "cargo:warning=PANEFLOW_SKIP_EMBED_BUILD is set — assuming {} is already populated",
+            "cargo:warning=PANEFLOW_SKIP_EMBED_BUILD is set - assuming {} is already populated",
             embed_dir.display()
         );
     }
@@ -200,7 +200,7 @@ fn stage_ai_hook_binaries(workspace_root: &Path, target: &str, embed_dir: &Path)
         .arg("-p")
         .arg("paneflow-mcp")
         // Prevent the nested cargo from inheriting the outer cargo's
-        // target-dir via `CARGO_TARGET_DIR` — the explicit `--target-dir`
+        // target-dir via `CARGO_TARGET_DIR` - the explicit `--target-dir`
         // above already pins it, but removing the env avoids confusion if
         // the parent environment sets it.
         .env_remove("CARGO_TARGET_DIR")
@@ -239,7 +239,7 @@ fn stage_ai_hook_binaries(workspace_root: &Path, target: &str, embed_dir: &Path)
 
         if !src.exists() {
             panic!(
-                "US-008: expected nested build artifact {} is missing — \
+                "US-008: expected nested build artifact {} is missing - \
                  did the child cargo build silently skip this binary?",
                 src.display()
             );
@@ -258,7 +258,7 @@ fn stage_ai_hook_binaries(workspace_root: &Path, target: &str, embed_dir: &Path)
 }
 
 /// Enforce the `EMBED_SIZE_LIMIT_BYTES` total embedded-bytes cap.
-/// Inspects only top-level files in `embed_dir` — there are no subdirs
+/// Inspects only top-level files in `embed_dir` - there are no subdirs
 /// in the per-target staging layout so a recursive walk is not warranted.
 fn enforce_embed_size_budget(embed_dir: &Path) {
     let mut total: u64 = 0;

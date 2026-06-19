@@ -38,12 +38,12 @@ impl PaneFlowApp {
     /// GPUI main thread.
     ///
     /// A recursive `notify` watch walks the entire subtree at registration
-    /// (inotify adds one watch per directory — ~23k for a repo carrying a
+    /// (inotify adds one watch per directory - ~23k for a repo carrying a
     /// `target/`), which previously froze the render thread ("not responding"
     /// on Wayland). Both the directory reads ([`FilesTreeState::hydrated`]) and
     /// the watch registration now run on a background task; results are
     /// re-injected only if the sidebar is still open on the SAME root (it may
-    /// close or re-root during the walk — EP-003 identity guard). A root shell
+    /// close or re-root during the walk - EP-003 identity guard). A root shell
     /// renders immediately so the panel never looks frozen.
     pub(crate) fn spawn_files_hydration(
         &mut self,
@@ -59,7 +59,7 @@ impl PaneFlowApp {
 
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                // Stage 1 — directory reads (fast): inject the populated tree first
+                // Stage 1 - directory reads (fast): inject the populated tree first
                 // so content appears before the (slower) recursive watch walk ends.
                 let tree = smol::unblock({
                     let root = root.clone();
@@ -83,7 +83,7 @@ impl PaneFlowApp {
                     return;
                 }
 
-                // Stage 2 — recursive watch registration (the slow walk): inject the
+                // Stage 2 - recursive watch registration (the slow walk): inject the
                 // handles when ready so live updates start, still off the render thread.
                 let built = smol::unblock({
                     let root = root.clone();
@@ -106,7 +106,7 @@ impl PaneFlowApp {
 
     /// Apply a debounced, prefix-coalesced batch of changed directories
     /// (US-005), called from the background drain loop in `bootstrap`. Re-reads
-    /// only the cached (expanded) directories among the affected parents — a
+    /// only the cached (expanded) directories among the affected parents - a
     /// change under a collapsed/uncached dir is ignored until it's expanded
     /// (then read fresh by `toggle_dir`). `rescan` (a notify overflow/Rescan
     /// signal, US-006 AC3) forces a root re-read. Never walks the whole tree.
@@ -140,7 +140,7 @@ impl PaneFlowApp {
 }
 
 /// US-018: build a recursive `notify` watch on `root`, returning the watcher +
-/// its event channel, or `None` (logged) on failure — notably Linux `ENOSPC`
+/// its event channel, or `None` (logged) on failure - notably Linux `ENOSPC`
 /// when a large repo exhausts `fs.inotify.max_user_watches` (default often
 /// 8192). The caller falls back to on-expand reads (US-006); raise the kernel
 /// limit with `sudo sysctl fs.inotify.max_user_watches=524288` (persist in

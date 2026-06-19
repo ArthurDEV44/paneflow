@@ -21,7 +21,7 @@ pub struct TitleBar {
     /// primary text in Agents mode (current thread/chat title, or a neutral
     /// "Agents"/project label in the picker state). `None` in Cli/Diff leaves
     /// the brand slot empty. PUSHED by `PaneFlowApp::render` only on the Agents
-    /// arm; `TitleBar` never reads `AppMode` — the render branch tests the
+    /// arm; `TitleBar` never reads `AppMode` - the render branch tests the
     /// presence of this field, not the mode (push-only contract).
     pub agents_thread_title: Option<String>,
     /// US-010: the secondary "· context" text (project name for a project
@@ -55,7 +55,7 @@ pub struct TitleBar {
 #[derive(Clone)]
 pub struct UpdateInfo {
     pub version: String,
-    /// Which pill to render — the in-app flow or the system-package hint.
+    /// Which pill to render - the in-app flow or the system-package hint.
     pub kind: UpdatePillKind,
 }
 
@@ -64,7 +64,7 @@ pub enum UpdatePillKind {
     /// In-app self-update flow (AppImage / tar.gz / unknown fallback).
     InApp(SelfUpdatePillState),
     /// Managed by the host's package manager (US-012). Clicking the pill
-    /// never downloads — it shows a toast with the exact upgrade command.
+    /// never downloads - it shows a toast with the exact upgrade command.
     SystemManaged(SystemPackageKind),
 }
 
@@ -74,7 +74,7 @@ pub enum SelfUpdatePillState {
     Downloading,
     Installing,
     /// Background install completed; the next click only invokes
-    /// `cx.restart()`. Mirrors Zed's "Restart to Update" CTA — the heavy
+    /// `cx.restart()`. Mirrors Zed's "Restart to Update" CTA - the heavy
     /// work happened while the user was busy doing something else, so the
     /// click→restart latency is bounded by GPUI's relauncher only (~100 ms).
     ReadyToRestart,
@@ -83,7 +83,7 @@ pub enum SelfUpdatePillState {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SystemPackageKind {
-    /// Immutable Fedora variants (Silverblue / Kinoite / Bazzite) —
+    /// Immutable Fedora variants (Silverblue / Kinoite / Bazzite) -
     /// detected via `/run/ostree-booted`. The pill surfaces a
     /// `rpm-ostree upgrade` hint rather than the usual `dnf`/`apt` copy.
     RpmOstree,
@@ -153,12 +153,12 @@ impl Render for TitleBar {
         let is_csd = matches!(decorations, Decorations::Client { .. });
         // #9: under real server-side decorations (`window_decorations: server`,
         // opt-in; e.g. KDE Plasma) the compositor draws its own caption bar AND
-        // this custom bar renders below it — they double up. We can't simply
+        // this custom bar renders below it - they double up. We can't simply
         // drop this bar under SSD: it carries app chrome the compositor caption
         // does NOT (sidebar toggle, Files/Help menus, workspace tabs). The
         // min/max/close pill IS gated on `is_csd` below so those don't double;
         // the brand/menus row is best-effort under SSD. The default `client`
-        // (CSD) path — which PaneFlow uses everywhere it can — avoids this
+        // (CSD) path - which PaneFlow uses everywhere it can - avoids this
         // entirely, which is why it is the default.
 
         // --- Title bar background from theme, switching on window focus ---
@@ -189,7 +189,7 @@ impl Render for TitleBar {
         // Paint our own window controls under CSD (Linux) and always on
         // Windows, where the transparent titlebar (`appears_transparent: true`)
         // hides the native caption buttons while gpui still reports
-        // `Decorations::Server` — so `is_csd` is false and, without this guard,
+        // `Decorations::Server` - so `is_csd` is false and, without this guard,
         // the minimize/maximize/close buttons vanish entirely on Windows.
         // macOS keeps its native traffic lights, so it stays gated on `is_csd`
         // (false there). Mirrors the settings title bar (settings/window.rs).
@@ -230,7 +230,7 @@ impl Render for TitleBar {
         // so the brand keeps the historical `pl_3()` (12px) padding.
         //
         // In macOS fullscreen AppKit hides the traffic lights, so the 80px
-        // reservation would leave a dead gap before the brand cluster — drop
+        // reservation would leave a dead gap before the brand cluster - drop
         // back to 12px there (matches Zed's `is_fullscreen()` gate).
         let brand_pl = if cfg!(target_os = "macos") && !window.is_fullscreen() {
             gpui::px(80.0)
@@ -361,12 +361,12 @@ impl Render for TitleBar {
                     .child("Help"),
             );
         if self.is_agents {
-            // Agents: no brand text in the chrome — the thread/chat name is
+            // Agents: no brand text in the chrome - the thread/chat name is
             // already shown in the rail (active row) and in the terminal
             // itself, and the rail-width title bar would only clip it. Keep the
             // slot empty so just the window controls remain top-left.
         } else if let Some(title) = self.agents_thread_title.clone() {
-            // US-010: contextual brand in Agents mode — `thread title · context`.
+            // US-010: contextual brand in Agents mode - `thread title · context`.
             // The title truncates first; the context label and the `⋯` button
             // stay pinned.
             let mut label_row = div()
@@ -408,7 +408,7 @@ impl Render for TitleBar {
             brand = brand.child(label_row);
             if self.agents_overflow {
                 // US-011: `⋯` overflow button. on_mouse_down + stop_propagation
-                // (NOT on_click) — same Wayland first-press / drag race the
+                // (NOT on_click) - same Wayland first-press / drag race the
                 // update pill documents (title_bar.rs ~354). Dispatches a typed
                 // action; `PaneFlowApp` resolves the current target and opens
                 // the shared thread context menu.
@@ -442,7 +442,7 @@ impl Render for TitleBar {
         // --- Center section: workspace name breadcrumb (muted) ---
         // Takes the remaining flex space and centers the current workspace
         // name. Acts as drag area when the workspace is unnamed / unset.
-        // Cockpit (Cli): the breadcrumb is dropped — the workspace name already
+        // Cockpit (Cli): the breadcrumb is dropped - the workspace name already
         // anchors the sidebar, so the title bar centre stays a clean drag area.
         // Diff keeps it.
         let mut content = div()
@@ -485,7 +485,7 @@ impl Render for TitleBar {
         // --- Update available pill ---
         // Cockpit modes (Agents + Cli): the bar is a rail-confined overlay
         // entirely filled by the brand slot, so the pill would never be
-        // visible — its cockpit home is the sidebar update banner
+        // visible - its cockpit home is the sidebar update banner
         // (`render_sidebar_update_banner`). Diff keeps the title-bar pill.
         let update_pill_visible = !self.is_agents && !self.cockpit;
         let update_pill = update_pill_visible
@@ -577,7 +577,7 @@ impl Render for TitleBar {
                 // a window drag. Same idiom Zed's `ButtonLike` relies on.
                 // US-007 AC3: a small `×` dismiss affordance on the
                 // non-busy states. We deliberately omit it during
-                // Downloading/Installing/ReadyToRestart — those have a
+                // Downloading/Installing/ReadyToRestart - those have a
                 // user-perceivable side effect already in flight (or
                 // sitting one click away from `cx.restart()`); a stray
                 // dismiss there would be jarring. Errored remains
@@ -627,7 +627,7 @@ impl Render for TitleBar {
                             // stop_propagation on BOTH mouse-down and click
                             // so the click never reaches the parent pill's
                             // `on_click` handler that dispatches
-                            // `StartSelfUpdate` — otherwise hitting the `×`
+                            // `StartSelfUpdate` - otherwise hitting the `×`
                             // would (a) dismiss the pill (b) immediately
                             // start the update we just dismissed.
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -670,7 +670,7 @@ impl Render for TitleBar {
                     }
                     // SystemHint is a button that copies the upgrade command
                     // to the clipboard via a toast. It's still a button, so
-                    // the cursor must hint that — `cursor_pointer()` matches
+                    // the cursor must hint that - `cursor_pointer()` matches
                     // every other clickable surface in the chrome.
                     PillStyle::SystemHint => {
                         pill = pill
@@ -688,7 +688,7 @@ impl Render for TitleBar {
                 }
                 pill
             });
-        // Cockpit modes: same rail-confinement story as the update pill — the
+        // Cockpit modes: same rail-confinement story as the update pill - the
         // notice lives in the sidebar (`render_sidebar_ipc_banner`). Diff
         // keeps the title-bar pill.
         let ipc_pill = (update_pill_visible && self.ipc_state == crate::ipc::IpcState::Disabled)

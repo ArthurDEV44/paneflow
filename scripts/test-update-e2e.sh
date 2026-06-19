@@ -14,9 +14,9 @@
 #   7. Asserting the binary at the install path now reports NEW_VERSION
 #
 # Three scenarios are exercised:
-#   (a) tar.gz happy path  — exit 0, version bumps
-#   (b) tampered artifact  — exit 4 (UpdateError::IntegrityMismatch via minisign verify)
-#   (c) feed unreachable   — exit 3 (HTTP server killed before invocation)
+#   (a) tar.gz happy path  - exit 0, version bumps
+#   (b) tampered artifact  - exit 4 (UpdateError::IntegrityMismatch via minisign verify)
+#   (c) feed unreachable   - exit 3 (HTTP server killed before invocation)
 #
 # AC3a (AppImage swap) is deferred: appimageupdatetool isn't part of the
 # default CI image, has no in-process SHA verify, and would test the same
@@ -29,7 +29,7 @@
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
-# Configuration — env-overridable so the same script works in CI and locally.
+# Configuration - env-overridable so the same script works in CI and locally.
 # -----------------------------------------------------------------------------
 OLD_VERSION="${OLD_VERSION:-0.2.10}"
 OLD_TAG="${OLD_TAG:-v${OLD_VERSION}}"
@@ -56,14 +56,14 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 NEW_VERSION="$(awk -F'"' '/^version = / { print $2; exit }' "$REPO_ROOT/Cargo.toml")"
 
 # -----------------------------------------------------------------------------
-# Logging helpers — keep CI logs greppable.
+# Logging helpers - keep CI logs greppable.
 # -----------------------------------------------------------------------------
 log()  { printf '[e2e] %s\n' "$*" >&2; }
 fail() { printf '[e2e] FAIL: %s\n' "$*" >&2; exit 1; }
 ok()   { printf '[e2e] PASS: %s\n' "$*" >&2; }
 
 # -----------------------------------------------------------------------------
-# Cleanup — always run, even on early exit.
+# Cleanup - always run, even on early exit.
 # -----------------------------------------------------------------------------
 HTTP_PID=""
 HTTP_LOG=""
@@ -86,7 +86,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # -----------------------------------------------------------------------------
-# Phase 0 — workspace prep.
+# Phase 0 - workspace prep.
 # -----------------------------------------------------------------------------
 log "OLD_VERSION=${OLD_VERSION}  NEW_VERSION=${NEW_VERSION}  WORK_DIR=${WORK_DIR}"
 rm -rf "${WORK_DIR}"
@@ -99,7 +99,7 @@ export HOME="${WORK_DIR}/home"
 mkdir -p "${HOME}/.local"
 
 # -----------------------------------------------------------------------------
-# Phase 1 — stage NEW tar.gz into the fixture dir.
+# Phase 1 - stage NEW tar.gz into the fixture dir.
 #
 # Fast path (CI): E2E_NEW_TARBALL points at a prebuilt tarball (produced
 # by release.yml's matrix `build` job or downloaded from a GitHub
@@ -144,16 +144,16 @@ if [ -n "${NEW_MINISIG_SRC}" ] && [ -s "${NEW_MINISIG_SRC}" ]; then
 elif [ "$(printf '%s\n' "0.3.9" "${OLD_VERSION}" | sort -V | head -n1)" = "0.3.9" ]; then
     # No signature available and the OLD client verifies fail-closed
     # (≥ 0.3.9). Refusing the unsigned install is the binary BEHAVING
-    # CORRECTLY, not a regression — there is nothing meaningful to
+    # CORRECTLY, not a regression - there is nothing meaningful to
     # test, so no-op instead of reporting a false failure. This is the
     # dry-run / local source-build path, where the artifact is never
     # signed (the signing key is rightly unreachable from here).
-    log "phase 1: no .minisig for the NEW tarball and OLD v${OLD_VERSION} verifies fail-closed — harness no-op"
+    log "phase 1: no .minisig for the NEW tarball and OLD v${OLD_VERSION} verifies fail-closed - harness no-op"
     exit 0
 fi
 
 # -----------------------------------------------------------------------------
-# Phase 2 — stage OLD paneflow binary.
+# Phase 2 - stage OLD paneflow binary.
 #
 # Fast path (CI): E2E_OLD_TARBALL points at a previously published
 # tar.gz (downloaded by the workflow via `gh release download
@@ -182,7 +182,7 @@ else
     # `rust-toolchain.toml` was introduced in commit 1884237 (post-v0.2.11),
     # so the OLD worktree at v0.2.10 / v0.2.11 has no toolchain pin. In CI
     # the dtolnay/rust-toolchain action installs 1.95 but does NOT set a
-    # rustup default — running plain `cargo` in a directory without a
+    # rustup default - running plain `cargo` in a directory without a
     # toolchain file fails with "rustup could not choose a version of cargo
     # to run, because one wasn't specified explicitly".
     #
@@ -226,12 +226,12 @@ log "phase 2: OLD binary staged at ${INSTALL_BIN}"
 # Self-bootstrap guard: the `--update-and-exit` CLI flag was added in
 # the same commit cycle as this harness (commit 0e733e3, post-v0.2.11),
 # so any tag <= v0.2.11 lacks the flag. Without it, invoking the OLD
-# binary would try to open a GPUI window — which fails on a headless
+# binary would try to open a GPUI window - which fails on a headless
 # CI runner with `neither DISPLAY nor WAYLAND_DISPLAY is set` and
 # bombs the whole e2e job on a problem the test was never designed to
 # catch.
 #
-# Probe via `strings` (binutils) on the binary's .rodata — the literal
+# Probe via `strings` (binutils) on the binary's .rodata - the literal
 # `"--update-and-exit"` argument string only appears in binaries that
 # include the flag's match arm. Cannot probe via `--help` output: the
 # flag is intentionally undocumented in the help text. Cannot probe via
@@ -242,18 +242,18 @@ log "phase 2: OLD binary staged at ${INSTALL_BIN}"
 # shipped --update-and-exit (v0.2.12+).
 if ! strings "${INSTALL_BIN}" 2>/dev/null | grep -q -- "--update-and-exit"; then
     log "phase 2: OLD binary v${OLD_VERSION} predates --update-and-exit (added in commit 0e733e3, first shipped in v0.2.12)"
-    log "phase 2: skipping update scenarios — re-engages automatically once OLD_VERSION advances to 0.2.12+"
+    log "phase 2: skipping update scenarios - re-engages automatically once OLD_VERSION advances to 0.2.12+"
     ok "self-bootstrap: harness no-op until next release cycle"
     exit 0
 fi
 
 # -----------------------------------------------------------------------------
-# Phase 3 — start localhost HTTP server.
+# Phase 3 - start localhost HTTP server.
 # -----------------------------------------------------------------------------
 HTTP_LOG="${WORK_DIR}/http-server.log"
 log "phase 3: starting python3 -m http.server in ${WORK_DIR}/fixture (port=${HTTP_PORT})"
 # `-u` forces unbuffered stdout/stderr. Without it, Python block-buffers
-# stdout when it's redirected to a regular file (NOT a terminal) — the
+# stdout when it's redirected to a regular file (NOT a terminal) - the
 # `Serving HTTP on 127.0.0.1 port N (...) ...` announce line stays in
 # the buffer indefinitely because it's far smaller than the buffer
 # size, so the wait loop below never sees the regex match within 5 s
@@ -276,7 +276,7 @@ FEED_BASE="http://127.0.0.1:${HTTP_PORT_ACTUAL}"
 log "phase 3: server up at ${FEED_BASE}"
 
 # -----------------------------------------------------------------------------
-# Phase 4 — write the fixture latest.json (mirrors GitHub Releases API).
+# Phase 4 - write the fixture latest.json (mirrors GitHub Releases API).
 # -----------------------------------------------------------------------------
 LATEST_JSON="${WORK_DIR}/fixture/latest"
 cat > "${LATEST_JSON}" <<EOF
@@ -302,7 +302,7 @@ reset_install() {
 }
 
 # -----------------------------------------------------------------------------
-# Scenario A — tar.gz happy path (AC3b).
+# Scenario A - tar.gz happy path (AC3b).
 # -----------------------------------------------------------------------------
 run_happy() {
     log "scenario: tar.gz happy path"
@@ -327,7 +327,7 @@ run_happy() {
 }
 
 # -----------------------------------------------------------------------------
-# Scenario B — hash mismatch (AC3c).
+# Scenario B - hash mismatch (AC3c).
 # -----------------------------------------------------------------------------
 run_hash_mismatch() {
     log "scenario: tampered artifact (integrity mismatch)"
@@ -335,13 +335,13 @@ run_hash_mismatch() {
 
     # Clients ≥ v0.4.0 verify a detached minisign signature over the
     # downloaded artifact bytes (update/signature.rs); the `.sha256`
-    # sidecar is no longer fetched at all — the v0.4.2 release run
+    # sidecar is no longer fetched at all - the v0.4.2 release run
     # proved it: corrupting the sidecar (this scenario's original
     # tamper) no longer fails the install, the harness saw exit 0.
     # Tamper the tarball BODY instead, leaving the genuine `.minisig`
     # in place: verification fails over the mutated bytes and
     # `--update-and-exit` maps the resulting `IntegrityMismatch` to
-    # exit 4 — the modern equivalent of the original sha256-mismatch
+    # exit 4 - the modern equivalent of the original sha256-mismatch
     # assertion (and still the right gate if a future client re-adds a
     # sidecar pre-check: both paths classify as IntegrityMismatch).
     tarball_path="${WORK_DIR}/fixture/paneflow-${NEW_VERSION}-x86_64.tar.gz"
@@ -371,7 +371,7 @@ run_hash_mismatch() {
 }
 
 # -----------------------------------------------------------------------------
-# Scenario C — feed unreachable (AC6).
+# Scenario C - feed unreachable (AC6).
 # -----------------------------------------------------------------------------
 run_feed_unreachable() {
     log "scenario: feed unreachable"

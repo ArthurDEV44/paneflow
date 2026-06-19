@@ -208,7 +208,7 @@ impl PaneFlowApp {
             }),
         ));
 
-        // Manage Custom Buttons — opens the per-workspace button editor modal.
+        // Manage Custom Buttons - opens the per-workspace button editor modal.
         context_menu = context_menu.child(self.render_select_menu_item(
             "workspace-context-custom-buttons".into(),
             "Manage Custom Buttons…",
@@ -360,7 +360,7 @@ impl PaneFlowApp {
         } else {
             for (orig_idx, dest) in others {
                 let label = format!(
-                    "Move to Pane {} — {}",
+                    "Move to Pane {} - {}",
                     orig_idx + 1,
                     dest.read(cx).active_tab_label(cx)
                 );
@@ -409,7 +409,7 @@ impl PaneFlowApp {
             }
         }
 
-        // EP-001 US-003 (cli-cockpit): cancel this tab's queued prompt —
+        // EP-001 US-003 (cli-cockpit): cancel this tab's queued prompt -
         // the non-Composer cancel path. Only shown when a buffer exists.
         let pending_sid = source
             .read(cx)

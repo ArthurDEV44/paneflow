@@ -1,7 +1,7 @@
 //! Adopt the login shell's **PATH** at startup (GUI-launch PATH fix).
 //!
 //! When PaneFlow is launched from a `.desktop` entry / Dock / Finder, it
-//! inherits the minimal systemd-user / launchd environment — the PATH is
+//! inherits the minimal systemd-user / launchd environment - the PATH is
 //! missing Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`), a Nix profile,
 //! distro `/etc/profile.d` additions, and anything the user appended in their
 //! login profile. Terminals opened inside that process then cannot find the
@@ -20,16 +20,16 @@
 //! solve.)
 //!
 //! Properties:
-//! - **skipped on a terminal launch** (stdin is a TTY) — PATH was already
+//! - **skipped on a terminal launch** (stdin is a TTY) - PATH was already
 //!   inherited correctly;
-//! - **portable** — uses POSIX `env` (not GNU `env -0`) so it works on
+//! - **portable** - uses POSIX `env` (not GNU `env -0`) so it works on
 //!   BusyBox / Alpine, and falls back to `/bin/sh` for shells whose `-l -i -c`
 //!   can't run the POSIX capture script (nushell, tcsh, xonsh, …); `/bin/sh`
 //!   still sources `/etc/profile` + `/etc/profile.d` + `~/.profile`, i.e. the
 //!   system PATH;
 //! - **bounded** by a 5 s timeout so a pathological rc script can't wedge
 //!   startup;
-//! - **best-effort** — any failure logs and leaves the inherited PATH untouched.
+//! - **best-effort** - any failure logs and leaves the inherited PATH untouched.
 //!
 //! Safety: like [`crate::runtime_paths::augment_path_for_gui_launch`], this
 //! mutates the process-global environment and MUST run on the main thread
@@ -49,7 +49,7 @@ pub fn load_login_shell_env() {
     use std::time::Duration;
 
     // A terminal launch already inherited the login PATH from its parent shell
-    // — skip the (~50-200 ms) re-capture. Only GUI launches (Finder / Dock /
+    // - skip the (~50-200 ms) re-capture. Only GUI launches (Finder / Dock /
     // `.desktop`) lack a controlling TTY on stdin.
     // SAFETY: `isatty` is a side-effect-free query on a file descriptor.
     if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
@@ -60,7 +60,7 @@ pub fn load_login_shell_env() {
     // Only POSIX-family shells (and fish, which parses `printf …; exec env`)
     // understand the capture script. Exotic shells (nushell / tcsh / csh /
     // xonsh / elvish) reject `-l -i -c '<posix>'`, so capture with `/bin/sh` as
-    // the login shell instead — it still sources `/etc/profile`,
+    // the login shell instead - it still sources `/etc/profile`,
     // `/etc/profile.d/*`, and `~/.profile`, which is where the system PATH
     // (Homebrew, Nix, distro additions) lives. We only need PATH, so that's
     // enough.
@@ -80,7 +80,7 @@ pub fn load_login_shell_env() {
     let mut cmd = Command::new(&capture_shell);
     cmd.arg("-l").arg("-i").arg("-c").arg(&script);
     if let Some(home) = dirs::home_dir() {
-        // Spawn from $HOME — a sane cwd for a login shell. (We intentionally do
+        // Spawn from $HOME - a sane cwd for a login shell. (We intentionally do
         // NOT prefix `cd` in the script: we only consume PATH, so per-directory
         // hooks like direnv/asdf/mise are irrelevant here.)
         cmd.current_dir(home);
@@ -143,7 +143,7 @@ pub fn load_login_shell_env() {
     match extract_path(&buf, MARKER.as_bytes()) {
         Some(path) if !path.is_empty() => {
             // SAFETY: main thread, before GPUI / any worker thread is spawned;
-            // the reader thread was joined above. We import ONLY PATH — see the
+            // the reader thread was joined above. We import ONLY PATH - see the
             // module doc for why adopting the full login environment is unsafe.
             unsafe { std::env::set_var("PATH", &path) };
             log::info!(

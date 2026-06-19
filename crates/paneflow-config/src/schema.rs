@@ -20,19 +20,19 @@ pub struct PaneFlowConfig {
     pub commands: Vec<CommandDefinition>,
     /// Window decoration mode: `"client"` (CSD, default) or `"server"` (SSD).
     pub window_decorations: Option<String>,
-    /// Terminal line height multiplier (default: 1.3, valid range: 1.0–2.5).
+    /// Terminal line height multiplier (default: 1.3, valid range: 1.0-2.5).
     pub line_height: Option<f32>,
     /// Terminal font family (default: platform-specific monospace fallback).
     pub font_family: Option<String>,
     /// Ordered fallback font families, consulted in order for glyphs the
-    /// primary `font_family` does not cover — e.g. a Nerd Font for the
+    /// primary `font_family` does not cover - e.g. a Nerd Font for the
     /// Powerline / icon glyphs used by Starship, oh-my-posh or Terminal-Icons,
     /// which no system font provides on Windows. `None` (or an empty list)
     /// keeps GPUI's built-in fallback stack only. Mirrors Zed's
     /// `terminal.font_fallbacks`. Hot-reloaded via the 500 ms font cache, so a
     /// config edit takes effect on the next new terminal without a restart.
     pub font_fallbacks: Option<Vec<String>>,
-    /// Terminal font size in pixels (default: 14.0, valid range: 8.0–32.0).
+    /// Terminal font size in pixels (default: 14.0, valid range: 8.0-32.0).
     pub font_size: Option<f32>,
     /// Treat Alt key as Meta (send ESC prefix). Default: true on Linux.
     /// Set to false for future macOS where Option produces Unicode characters.
@@ -40,7 +40,7 @@ pub struct PaneFlowConfig {
     /// EP-003 US-007 (cli-cockpit): master switch for the per-shell rc
     /// injection (OSC 7 CWD reporting + OSC 133 command marks). `None`/`true`
     /// = enabled (the long-standing default behavior); `false` = no snippet
-    /// is written or wired — the shell starts exactly as it would outside
+    /// is written or wired - the shell starts exactly as it would outside
     /// Paneflow.
     pub shell_integration: Option<bool>,
     /// EP-004 US-011 (cli-cockpit): master switch for Stalled detection.
@@ -48,7 +48,7 @@ pub struct PaneFlowConfig {
     /// no hook activity past the silence threshold is flagged `Stalled` and
     /// notified ONCE per stall episode (the flag clears on the next hook
     /// event, so a legitimately long turn costs at most one notification).
-    /// `false` = kill switch — no `Stalled` state is ever produced.
+    /// `false` = kill switch - no `Stalled` state is ever produced.
     pub agent_stall_detection: Option<bool>,
     /// EP-004 US-011: silence threshold in seconds before a `Thinking`
     /// session is flagged `Stalled`. `None` resolves to 60 s; values are
@@ -63,7 +63,7 @@ pub struct PaneFlowConfig {
     /// The fixed delay exists because there is no reliable cross-platform
     /// "readline is ready" signal: firing too early (on the shell's echo of the
     /// launch command, before the CLI's prompt exists) sends the prefill into a
-    /// not-ready buffer and LOSES it — a regression impossible to verify on
+    /// not-ready buffer and LOSES it - a regression impossible to verify on
     /// Windows ConPTY cold-start from here. The prompt is therefore ALWAYS copied
     /// to the clipboard as a synchronous safety net (surfaced in the review
     /// terminal header), so a missed window degrades to a one-keystroke paste
@@ -96,7 +96,7 @@ pub struct PaneFlowConfig {
     /// `Some(false)` or `None` (the default) keeps the per-tool confirmation
     /// prompts enabled.
     /// Per Anthropic's docs bypass mode offers no protection against
-    /// prompt injection — opt out (toggle off in Settings -> AI Agent)
+    /// prompt injection - opt out (toggle off in Settings -> AI Agent)
     /// if you want explicit confirmation for every tool call. The key
     /// retains its `claude_code_` prefix for backwards compatibility
     /// with existing user configs even though the scope now covers
@@ -182,7 +182,7 @@ pub struct PaneFlowConfig {
     ///   consent question is still unanswered (e.g. user dismissed the
     ///   first-run modal without choosing).
     /// - `Some(TelemetryConfig { enabled: Some(true|false) })`: explicit
-    ///   user answer — consent granted or refused.
+    ///   user answer - consent granted or refused.
     ///
     /// The consent modal (US-011) only appears when `telemetry.enabled`
     /// resolves to `None` under both the outer and inner Option layers.
@@ -221,12 +221,12 @@ impl PaneFlowConfig {
     /// Lower bound: below the 30 s sweep cadence the threshold cannot be
     /// honored and every long tool call would false-positive.
     pub const MIN_AGENT_STALL_THRESHOLD_SECS: u64 = 30;
-    /// Upper bound: a day — past this the feature is effectively off, so
+    /// Upper bound: a day - past this the feature is effectively off, so
     /// use [`PaneFlowConfig::agent_stall_detection`] instead.
     pub const MAX_AGENT_STALL_THRESHOLD_SECS: u64 = 86_400;
 
     /// EP-003 US-011: default review-prefill delay. 2000 ms is a slightly safer
-    /// floor than the historical 1800 ms — enough headroom for `claude` /
+    /// floor than the historical 1800 ms - enough headroom for `claude` /
     /// `codex` / `opencode` / `pi` to boot their readline on a warm start, while
     /// the clipboard fallback covers any cold-start miss.
     pub const DEFAULT_REVIEW_PREFILL_DELAY_MS: u64 = 2000;
@@ -506,7 +506,7 @@ pub struct TerminalConfig {
     /// Read once at PTY spawn time; changing this value takes effect on
     /// the next new terminal.
     pub scrollback_lines: Option<usize>,
-    /// US-005: how a BEL (`\a`) is surfaced — `visual` flash, `audible` system
+    /// US-005: how a BEL (`\a`) is surfaced - `visual` flash, `audible` system
     /// bell, `both`, or `off`. `None` resolves to `Visual` (historical
     /// default). Read once at terminal construction; takes effect on the next
     /// new terminal.
@@ -919,7 +919,7 @@ impl LayoutNode {
     /// Returns `ratios` if present, else converts legacy `ratio` to binary
     /// `[ratio, 1-ratio]`, else returns equal ratios for the child count.
     ///
-    /// US-056: persisted ratios are untrusted input — a hand-edited or corrupt
+    /// US-056: persisted ratios are untrusted input - a hand-edited or corrupt
     /// `session.json` can carry NaN, negative, zero, or wrong-length values. Any
     /// user-supplied set is run through [`sanitize_ratios`] (clamp into
     /// `[MIN_RATIO, 1.0]`, reject non-finite/negative, normalize to sum 1.0)
@@ -958,8 +958,8 @@ const MIN_RATIO: f64 = 0.01;
 
 /// Clamp every ratio into `[MIN_RATIO, 1.0]` (mapping NaN/inf/negative to the
 /// floor), then normalize so the set sums to 1.0. A length mismatch with the
-/// child count is unrecoverable — we cannot know which child a stale ratio was
-/// meant for — so it degrades to equal shares.
+/// child count is unrecoverable - we cannot know which child a stale ratio was
+/// meant for - so it degrades to equal shares.
 fn sanitize_ratios(mut ratios: Vec<f64>, n: usize) -> Vec<f64> {
     if ratios.len() != n {
         return vec![1.0 / n as f64; n];
@@ -984,7 +984,7 @@ fn sanitize_ratios(mut ratios: Vec<f64>, n: usize) -> Vec<f64> {
     // (`loader::validate_layout`) already re-clamps for this exact reason
     // (US-057); the session path must match so both frontiers honour the same
     // 0.01 floor. The renderer re-normalizes proportionally at paint time, so
-    // the post-re-clamp sum need not be exactly 1.0 — the floor is the invariant.
+    // the post-re-clamp sum need not be exactly 1.0 - the floor is the invariant.
     for r in ratios.iter_mut() {
         *r = r.clamp(MIN_RATIO, 1.0);
     }
@@ -1032,7 +1032,7 @@ pub struct SessionState {
     /// state regardless of this value).
     #[serde(default)]
     pub active_project: usize,
-    /// Free chats — terminal threads not attached to any project, anchored
+    /// Free chats - terminal threads not attached to any project, anchored
     /// on the user's home dir (US-002 of
     /// `prd-agents-ui-codex-redesign-2026-Q3.md`). A separate list from
     /// `projects` by design (no implicit "~" project). `skip_serializing_if`
@@ -1049,7 +1049,7 @@ pub struct SessionState {
     /// time, snake_case (`"project"` / `"multi_project"` / `"worktree"`),
     /// restored into `AppMode::Diff` on boot when reconstructable. Stored as a
     /// string so this config crate stays independent of the app's `DiffScope`
-    /// type. Absent / `None` on sessions written before this field — defaults
+    /// type. Absent / `None` on sessions written before this field - defaults
     /// to the app's `DiffScope::default()` (Project).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_scope: Option<String>,
@@ -1138,7 +1138,7 @@ pub struct ThreadSession {
     /// `prd-agents-ui-codex-redesign-2026-Q3.md`). Pinned threads are
     /// surfaced in the rail's PINNED section across both projects and
     /// free chats. `#[serde(default)]` so a session.json written before
-    /// this field deserialises cleanly as `false` — no migration.
+    /// this field deserialises cleanly as `false` - no migration.
     #[serde(default)]
     pub pinned: bool,
     /// Forced agent session UUID for a Claude Terminal Thread, passed as
@@ -1199,7 +1199,7 @@ pub struct ManagedWorktreeDef {
     pub path: String,
     /// Main repository root (where `git worktree` commands run).
     pub repo_root: String,
-    /// Branch checked out in the worktree (diagnostics only — never deleted).
+    /// Branch checked out in the worktree (diagnostics only - never deleted).
     pub branch: String,
     /// Teardown policy: `"auto"` | `"keep"`. Unknown values read as `"auto"`;
     /// the data-loss protection is the clean-check, not this flag.
@@ -1211,7 +1211,7 @@ pub struct ManagedWorktreeDef {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ButtonCommand {
-    /// Stable identifier (opaque string) — survives reorderings and renames.
+    /// Stable identifier (opaque string) - survives reorderings and renames.
     pub id: String,
     /// Display name (also used as hover tooltip).
     pub name: String,
@@ -1254,7 +1254,7 @@ pub struct SurfaceDefinition {
     pub agent: Option<String>,
     /// EP-006 US-019: per-pane font-size override in pixels. `None` =
     /// follow the global config. Validated at restore ingress (NaN/inf
-    /// dropped, finite values clamped to [8.0, 32.0]) — never fed raw to
+    /// dropped, finite values clamped to [8.0, 32.0]) - never fed raw to
     /// the cell geometry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_size: Option<f32>,

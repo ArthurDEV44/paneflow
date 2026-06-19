@@ -6,10 +6,10 @@
 //! is materialized by walking the parent-PID chain from the agent up until a
 //! known `child_pid` is hit. Per-OS parent lookup mirrors `ports.rs`:
 //! Linux reads `/proc/<pid>/stat`, macOS asks `libproc`, Windows is a
-//! documented stub (same as the ports scan) — an unresolved PID degrades
+//! documented stub (same as the ports scan) - an unresolved PID degrades
 //! gracefully to the workspace-level badge, never to a wrong pane.
 //!
-//! The walk does I/O (`/proc` reads) — callers run it OFF the render thread
+//! The walk does I/O (`/proc` reads) - callers run it OFF the render thread
 //! (`smol::unblock`) and deposit the result back on the main thread.
 
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ use std::collections::HashMap;
 const MAX_DEPTH: usize = 32;
 
 /// Resolve `pid` to a surface id by walking its ancestor chain against the
-/// `child_pid → surface_id` candidate map. Pure walk — the platform lookup
+/// `child_pid → surface_id` candidate map. Pure walk - the platform lookup
 /// is injected so the rule is unit-testable with a mocked process tree.
 pub fn resolve_with(
     pid: u32,
@@ -55,7 +55,7 @@ fn parent_of(pid: u32) -> Option<u32> {
 
 /// Extract the ppid (field 4) from `/proc/<pid>/stat`. The comm field
 /// (field 2) is parenthesized and may itself contain spaces, parens or
-/// newlines, so fields are taken AFTER the LAST `)` — the kernel-documented
+/// newlines, so fields are taken AFTER the LAST `)` - the kernel-documented
 /// safe parse (proc(5)).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_stat_ppid(stat: &str) -> Option<u32> {
@@ -76,7 +76,7 @@ fn parent_of(pid: u32) -> Option<u32> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn parent_of(_pid: u32) -> Option<u32> {
     // Windows: no parent lookup yet (Toolhelp32 needs a winapi dependency
-    // the ports scan also avoids — same documented stub). The session stays
+    // the ports scan also avoids - same documented stub). The session stays
     // at workspace level: badge in the sidebar, no per-pane glow.
     None
 }
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn parse_stat_ppid_survives_hostile_comm() {
-        // comm may contain spaces AND parens — fields come after the LAST ')'.
+        // comm may contain spaces AND parens - fields come after the LAST ')'.
         assert_eq!(
             parse_stat_ppid("300 (my (weird) comm) S 200 300 1"),
             Some(200)

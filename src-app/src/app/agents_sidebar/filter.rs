@@ -95,7 +95,7 @@ pub(crate) fn first_matching_thread(
 /// Are there ZERO matching projects/threads/chats? Used by the render path
 /// to swap the list for the empty-state row from AC #7.
 ///
-/// US-009: extended to the free `chats` source — the rail shows the
+/// US-009: extended to the free `chats` source - the rail shows the
 /// "no matches" hint only when NOTHING across all three sections
 /// (Pinned/Projects/Chats) hits.
 pub(crate) fn nothing_matches(
@@ -149,7 +149,7 @@ pub(crate) fn match_positions(haystack: &str, lowered_needle: &str) -> Option<(u
 
     // Map lowered byte offsets back to original byte offsets. A hit that
     // begins or ends in the MIDDLE of a lowered multi-byte expansion (e.g.
-    // inside the "ss" a lowered ß produced) has no clean original boundary —
+    // inside the "ss" a lowered ß produced) has no clean original boundary -
     // render no highlight rather than slice mid-codepoint. `map` is sorted by
     // lowered offset, so binary-search it.
     let start = map
@@ -259,7 +259,7 @@ mod tests {
     fn match_positions_maps_non_ascii_offsets_to_original() {
         // U-012: the hit's byte range must index the ORIGINAL string, even
         // when `to_lowercase()` changed byte lengths before the match.
-        // "Café" — the needle "fé" follows the multi-byte 'é' position.
+        // "Café" - the needle "fé" follows the multi-byte 'é' position.
         let title = "Café au lait";
         let (s, e) = match_positions(title, "fé").expect("match");
         assert_eq!(&title[s..e], "fé", "range must slice the original cleanly");
@@ -275,7 +275,7 @@ mod tests {
         );
         assert_eq!(s2, 0);
 
-        // German ß lowercases to itself (already lowercase) — a plain
+        // German ß lowercases to itself (already lowercase) - a plain
         // multi-byte match still slices the original safely.
         let title3 = "straße";
         let (s3, e3) = match_positions(title3, "ße").expect("match");

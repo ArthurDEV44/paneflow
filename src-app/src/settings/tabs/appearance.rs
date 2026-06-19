@@ -1,4 +1,4 @@
-//! "Themes" settings tab — light, dark, and system theme selection.
+//! "Themes" settings tab - light, dark, and system theme selection.
 
 use gpui::{
     ClickEvent, Context, CursorStyle, InteractiveElement, IntoElement, ParentElement, Styled, div,
@@ -25,7 +25,7 @@ impl PaneFlowApp {
         );
         let header = section_header_with_action(ui, "Theme", reset_btn);
 
-        // Theme mode selector (Light / Dark / System) — the Codex-style card at
+        // Theme mode selector (Light / Dark / System) - the Codex-style card at
         // the top of the page. `theme_mode` is UI state for now; selecting a
         // segment highlights it, ready to drive theme resolution once the light
         // theme lands.
@@ -62,7 +62,7 @@ impl PaneFlowApp {
                 .px(px(10.))
                 .py(px(5.))
                 // Generous radius approximating Codex's Apple-style corner
-                // smoothing (GPUI draws circular-arc corners — no true squircle).
+                // smoothing (GPUI draws circular-arc corners - no true squircle).
                 .rounded(SETTINGS_CONTROL_CORNER_RADIUS)
                 .child(svg().size(px(14.)).flex_none().path(icon).text_color(fg))
                 .child(
@@ -100,7 +100,7 @@ impl PaneFlowApp {
             ))
             .child(div().flex_shrink_0().child(mode_switch));
         // Shared Codex-style card look (white/#f2f2f2 in light, #232323/#303030
-        // in dark, generous Apple-approximating radius) — see `setting_card`.
+        // in dark, generous Apple-approximating radius) - see `setting_card`.
         let theme_card = setting_card(ui).child(theme_row);
 
         div().flex().flex_col().child(header).child(theme_card)

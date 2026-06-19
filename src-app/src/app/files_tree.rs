@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// One entry in a directory listing. `is_ignored`/`is_hidden` only drive
-/// styling (dimming) — the tree shows everything, never filters.
+/// styling (dimming) - the tree shows everything, never filters.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FileNode {
     pub path: PathBuf,
@@ -35,7 +35,7 @@ pub(crate) struct VisibleRow {
 
 /// In-memory tree state for the open Files sidebar. Rebuilt on open and on
 /// workspace re-root; cleared on close. `children` is a lazy cache keyed by
-/// directory path — a directory is read on first expand and kept thereafter.
+/// directory path - a directory is read on first expand and kept thereafter.
 #[derive(Default)]
 pub(crate) struct FilesTreeState {
     pub root: PathBuf,
@@ -44,7 +44,7 @@ pub(crate) struct FilesTreeState {
 }
 
 impl FilesTreeState {
-    /// US-018: a root-only shell — the root marked expanded but with no
+    /// US-018: a root-only shell - the root marked expanded but with no
     /// directory listings read yet. Shown synchronously the instant the sidebar
     /// opens so the panel renders without blocking, while
     /// [`crate::PaneFlowApp::spawn_files_hydration`] fills the listings + installs
@@ -61,7 +61,7 @@ impl FilesTreeState {
 
     /// Build a state rooted at `root`, restoring `persisted` expanded
     /// directories (US-007). The root is always expanded; each persisted path
-    /// is restored only if it still resolves to a directory under the root —
+    /// is restored only if it still resolves to a directory under the root -
     /// stale paths (deleted folders) are silently dropped. Every restored dir's
     /// listing is read so the flatten has a cache to walk.
     pub(crate) fn hydrated(root: PathBuf, persisted: &[PathBuf]) -> Self {
@@ -85,7 +85,7 @@ impl FilesTreeState {
 }
 
 /// Case-insensitive `.md` / `.markdown` / `.mdx` predicate. Gates
-/// click-to-open + drag actionability — everything else is inert in v1.
+/// click-to-open + drag actionability - everything else is inert in v1.
 pub(crate) fn is_markdown(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -152,7 +152,7 @@ pub(crate) fn read_dir_sorted(root: &Path, dir: &Path) -> Vec<FileNode> {
 /// Build a gitignore matcher rooted at `root` that folds in every `.gitignore`
 /// from the root down to `dir`. Approximation: all globs are evaluated against
 /// `root` (a nested `.gitignore`'s dir-relative semantics aren't fully
-/// reproduced), which is sufficient for the dominant case — the repo-root
+/// reproduced), which is sufficient for the dominant case - the repo-root
 /// `.gitignore` tinting `target/` / `node_modules/`. Styling-only; never
 /// filters.
 fn build_gitignore(root: &Path, dir: &Path) -> Option<ignore::gitignore::Gitignore> {
@@ -169,7 +169,7 @@ fn build_gitignore(root: &Path, dir: &Path) -> Option<ignore::gitignore::Gitigno
 }
 
 /// Flatten (root + expanded set + cached listings) into the ordered list of
-/// visible rows, skipping collapsed (or uncached) subtrees. Pure — the root
+/// visible rows, skipping collapsed (or uncached) subtrees. Pure - the root
 /// itself is rendered by the header, so this starts at the root's children at
 /// depth 0.
 pub(crate) fn flatten_visible(
@@ -194,7 +194,7 @@ pub(crate) fn workspace_relative_path(root: &Path, path: &Path) -> String {
 
 /// Coalesce a batch of affected directory paths into the minimal set to
 /// re-read (US-005): dedup, then drop any path that has an ancestor also in
-/// the set — a parent re-read subsumes its queued descendants (the burst-safe
+/// the set - a parent re-read subsumes its queued descendants (the burst-safe
 /// "parent change drops queued child events" rule). Pure / unit-tested.
 pub(crate) fn coalesce_by_prefix(dirs: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut unique: Vec<PathBuf> = Vec::new();
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn coalesce_does_not_treat_name_prefix_as_ancestor() {
-        // `/r/src2` is NOT under `/r/src` — string-prefix would wrongly fold
+        // `/r/src2` is NOT under `/r/src` - string-prefix would wrongly fold
         // it, but `Path::starts_with` is component-wise so both survive.
         let mut out = coalesce_by_prefix(vec![PathBuf::from("/r/src"), PathBuf::from("/r/src2")]);
         out.sort();

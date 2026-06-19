@@ -32,7 +32,7 @@ use alacritty_terminal::vte::ansi::{
 
 use crate::terminal::ZedListener;
 
-/// Shared terminal-grid handle — the single piece of cross-thread state. Aliased
+/// Shared terminal-grid handle - the single piece of cross-thread state. Aliased
 /// in this seam module so the renderer can hold it without naming
 /// `alacritty_terminal` directly (EP-003 confinement).
 pub type SharedTerm = Arc<FairMutex<Term<ZedListener>>>;
@@ -42,7 +42,7 @@ pub type SharedTerm = Arc<FairMutex<Term<ZedListener>>>;
 // ---------------------------------------------------------------------------
 
 /// A grid line index. Paneflow-owned mirror of `alacritty_terminal::index::Line`
-/// (a `pub i32` newtype) — signed because alacritty's scrollback rows are
+/// (a `pub i32` newtype) - signed because alacritty's scrollback rows are
 /// negative. Keeping the `.0` tuple shape lets callers that read `point.line.0`
 /// migrate by swapping the import, not every field access.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -96,7 +96,7 @@ impl From<Point> for AlacPoint {
 // Neutral cursor shape
 // ---------------------------------------------------------------------------
 
-/// Cursor rendering shape, mirror of `vte::ansi::CursorShape` — the five shapes
+/// Cursor rendering shape, mirror of `vte::ansi::CursorShape` - the five shapes
 /// Paneflow paints. The `From` conversion is exhaustive with no wildcard arm, so
 /// a future upstream variant is caught at compile time (a human maps it), never
 /// silently mishandled or panicked at runtime.
@@ -134,7 +134,7 @@ pub struct Rgb {
     pub b: u8,
 }
 
-/// Named palette slot, mirror of `vte::ansi::NamedColor` (exhaustive — the
+/// Named palette slot, mirror of `vte::ansi::NamedColor` (exhaustive - the
 /// alacritty enum has exactly these 29 variants, which is why the renderer's
 /// `named_color` match needs no wildcard arm).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,7 +242,7 @@ impl From<AlacColor> for Color {
 // ---------------------------------------------------------------------------
 
 /// Cell attribute flags, Paneflow-owned mirror of the `term::cell::Flags`
-/// subset the renderer reads. Hand-rolled (no `bitflags` dep) — the API surface
+/// subset the renderer reads. Hand-rolled (no `bitflags` dep) - the API surface
 /// the element needs is just `empty`/`contains`/`insert`/`|`. `BOLD_ITALIC` is
 /// the combined mask, so `contains(BOLD_ITALIC)` requires *both* bits, matching
 /// alacritty.
@@ -442,7 +442,7 @@ pub struct Cell {
     pub flags: CellFlags,
     pub zerowidth: Option<Vec<char>>,
     /// Whether the cell carries an OSC 8 hyperlink. Only the boolean is
-    /// snapshotted (the renderer just needs the underline affordance — alacritty
+    /// snapshotted (the renderer just needs the underline affordance - alacritty
     /// 0.26 doesn't auto-set `UNDERLINE` on OSC 8 cells); the id/uri are read
     /// straight off the `Term` by the hover/click path in `input.rs`, so we
     /// avoid allocating two `String`s per OSC 8 cell every frame.
@@ -465,7 +465,7 @@ pub struct RenderableCursor {
     pub italic: bool,
 }
 
-/// A complete, neutral snapshot of the renderable terminal state — the output
+/// A complete, neutral snapshot of the renderable terminal state - the output
 /// of the single read seam ([`content_from_term`]). The element consumes this
 /// instead of locking `Term` and importing alacritty types (US-009). Mirror of
 /// Zed's `TerminalContent`.
@@ -480,10 +480,10 @@ pub struct Content {
 
 /// The single read seam: lock-free snapshot of `Term` into neutral [`Content`].
 ///
-/// Reproduces exactly what `TerminalElement::build_layout` read under lock —
+/// Reproduces exactly what `TerminalElement::build_layout` read under lock -
 /// cells in viewport coords (`display_offset` applied), the cursor in raw
 /// grid coords plus its under-cursor cell attributes, the selection, and the
-/// scroll/history metadata — so swapping the element onto this producer
+/// scroll/history metadata - so swapping the element onto this producer
 /// (US-009) is a zero `LayoutState` delta change. The caller holds the lock;
 /// this takes `&Term` so the same guard can also drive a resize.
 pub fn content_from_term(term: &Term<ZedListener>) -> Content {
@@ -587,7 +587,7 @@ pub enum HyperlinkSource {
     Osc8,
     /// Regex pattern match on terminal output.
     Regex,
-    /// Markdown file path (`.md` / `.markdown`) — opens in the in-pane
+    /// Markdown file path (`.md` / `.markdown`) - opens in the in-pane
     /// markdown viewer via `TerminalEvent::OpenMarkdownPath`.
     FilePath,
     /// Source-code file path (`.rs`, `.ts`, `.py`, ...) optionally followed
@@ -673,7 +673,7 @@ mod tests {
             Color::from(AlacColor::Named(AlacNamedColor::Cursor)),
             Color::Named(NamedColor::Cursor)
         );
-        // Spec (truecolor) — every channel preserved.
+        // Spec (truecolor) - every channel preserved.
         let rgb = alacritty_terminal::vte::ansi::Rgb {
             r: 1,
             g: 254,
@@ -687,7 +687,7 @@ mod tests {
                 b: 127
             })
         );
-        // Indexed — full byte range endpoints.
+        // Indexed - full byte range endpoints.
         assert_eq!(Color::from(AlacColor::Indexed(0)), Color::Indexed(0));
         assert_eq!(Color::from(AlacColor::Indexed(255)), Color::Indexed(255));
     }

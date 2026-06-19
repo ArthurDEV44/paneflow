@@ -2,7 +2,7 @@
 //!
 //! GPUI's `overflow_y_scroll` enables wheel scrolling but doesn't render a
 //! visible thumb (Zed's `crates/ui/src/components/scrollbar.rs` is a custom
-//! `Element` that paints quads — out of scope for PaneFlow's hand-rolled
+//! `Element` that paints quads - out of scope for PaneFlow's hand-rolled
 //! popover-style menus). This module provides a thin overlay built from
 //! plain divs, plus the math + listener helpers each call site needs.
 //!
@@ -74,10 +74,10 @@ pub const SCROLLBAR_WIDTH: Pixels = px(6.);
 /// Padding the parent should reserve on the right edge so list content
 /// doesn't run under the scrollbar.
 pub const SCROLLBAR_GUTTER: Pixels = px(10.);
-/// Minimum thumb height — below this the thumb is too small to grab even
+/// Minimum thumb height - below this the thumb is too small to grab even
 /// when the content is huge relative to the viewport.
 const SCROLLBAR_MIN_THUMB: f32 = 24.0;
-/// `max_offset` magnitudes below this are treated as "no overflow" — the
+/// `max_offset` magnitudes below this are treated as "no overflow" - the
 /// content effectively fits, and showing a scrollbar would be visual
 /// noise. Mirrors Zed's behaviour for tiny rounding artefacts.
 const NO_OVERFLOW_EPSILON: f32 = 0.5;
@@ -139,7 +139,7 @@ pub fn drag_offset(handle: &ScrollHandle, drag: &ScrollDragState, mouse_y: Pixel
     let track_range = (viewport_h - thumb_h).max(1.0);
     let delta_mouse = f32::from(mouse_y - drag.start_mouse_y);
     // Dragging the thumb DOWN (positive delta_mouse) makes the offset
-    // MORE negative — content scrolls up, revealing rows below.
+    // MORE negative - content scrolls up, revealing rows below.
     let delta_offset = -delta_mouse * max_off_y / track_range;
     let start_off = f32::from(drag.start_offset_y);
     Some((start_off + delta_offset).clamp(-max_off_y, 0.0))
@@ -150,11 +150,11 @@ pub fn drag_offset(handle: &ScrollHandle, drag: &ScrollDragState, mouse_y: Pixel
 ///
 /// `estimate` is `(content_h, max_viewport_h)` and is used as a fallback
 /// for the first frame, before `track_scroll` has populated the handle's
-/// real bounds. Pass `None` to skip the fallback — the scrollbar then
+/// real bounds. Pass `None` to skip the fallback - the scrollbar then
 /// only appears once real bounds exist (1+ frame after open).
 ///
 /// Returns `None` when the content fits the viewport (no scrolling
-/// possible) — caller should `when_some` the result onto its child list.
+/// possible) - caller should `when_some` the result onto its child list.
 pub fn render(
     handle: &ScrollHandle,
     ui: UiColors,
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn no_overflow_returns_none() {
         let handle = ScrollHandle::new();
-        // Fresh handle: bounds and max_offset are zero — no overflow.
+        // Fresh handle: bounds and max_offset are zero - no overflow.
         assert!(track_click_offset(&handle, px(50.)).is_none());
     }
 

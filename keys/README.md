@@ -18,7 +18,7 @@ the workflow lands the deferred signing step) the `.tar.gz` and
 **For verification instructions, read
 [`docs/release/linux-signing.md`](../docs/release/linux-signing.md)
 first.** Do not import this file into your trust store before
-verifying the fingerprint per the runbook §1 — pre-emptive imports
+verifying the fingerprint per the runbook §1 - pre-emptive imports
 defeat the trust-bootstrap step.
 
 ## `paneflow-release.asc` ↔ `packaging/paneflow-release.asc`
@@ -27,9 +27,9 @@ This file is byte-identical to
 [`packaging/paneflow-release.asc`](../packaging/paneflow-release.asc).
 The duplication exists for two distinct audiences:
 
-- `keys/` — end-user-discoverable path referenced by
+- `keys/` - end-user-discoverable path referenced by
   `docs/release/linux-signing.md` and `README.md`.
-- `packaging/` — maintainer-canonical path referenced by
+- `packaging/` - maintainer-canonical path referenced by
   `docs/release-signing.md` and the `pkg.paneflow.dev` repo-publish
   workflow.
 

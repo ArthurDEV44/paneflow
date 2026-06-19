@@ -81,7 +81,7 @@ impl Error for ProcError {
 /// - stdin is `/dev/null` so the child can never block waiting on a prompt.
 /// - stdout/stderr are read on dedicated threads so a child that writes more
 ///   than the cap is drained (and discarded past the cap) instead of blocking
-///   on a full pipe — bounded memory, no deadlock.
+///   on a full pipe - bounded memory, no deadlock.
 /// - the child is polled with [`Child::try_wait`]; if `deadline` elapses first
 ///   the child is killed and reaped and [`ProcError::Timeout`] is returned.
 ///
@@ -129,14 +129,14 @@ pub fn run_with_timeout(
             None => {
                 if start.elapsed() >= deadline {
                     // Deadline hit. `kill()` only SENDS a signal (non-blocking);
-                    // it is `wait()` and the reader `join`s that can block —
+                    // it is `wait()` and the reader `join`s that can block -
                     // and they block FOREVER on a child wedged in uninterruptible
                     // sleep (D-state on a dead NFS/CIFS mount: the exact US-035
                     // scenario), because SIGKILL is not delivered until the
                     // kernel unblocks the task, and the readers can't hit EOF
                     // while that child still holds the pipe write ends. So we
                     // kill best-effort and hand the reap + drain to a DETACHED
-                    // thread, then return immediately — the deadline must bound
+                    // thread, then return immediately - the deadline must bound
                     // when the CALLER is freed, not just when the child is
                     // signalled. (Bounded leak: one cleanup thread + its readers
                     // per timed-out process, finishing whenever the OS finally
@@ -180,7 +180,7 @@ where
         // continuously SATURATES the pipe (a hijacked `yes`-like binary) would
         // otherwise spin this thread at 100% of a core for the whole deadline.
         // A read that comes back full is the saturation signal, so sleep 1 ms
-        // on it — that caps the discard rate near 8 MB/s at ~0 CPU while an
+        // on it - that caps the discard rate near 8 MB/s at ~0 CPU while an
         // honest bursty producer (whose reads return short or block) drains at
         // full speed.
         let mut scratch = [0u8; 8 * 1024];

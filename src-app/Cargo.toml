@@ -16,7 +16,7 @@ name = "paneflow"
 path = "src/main.rs"
 
 [dependencies]
-# GPUI framework — pinned to a minimal Paneflow fork of Zed while
+# GPUI framework - pinned to a minimal Paneflow fork of Zed while
 # prd-markdown-append-fix-2026-Q3.md (US-021 of cli-hardening-followup
 # 2026-Q3) is in flight. The fork branch carries ONE additive patch on
 # `crates/markdown/src/markdown.rs` (Markdown::append amortised via a
@@ -33,7 +33,7 @@ path = "src/main.rs"
 # To bump within the fork: `git -C ~/dev/zed-paneflow-fork pull
 # --rebase` then `cargo update`.
 #
-# `gpui_platform` MUST carry the `font-kit` feature on macOS — without it,
+# `gpui_platform` MUST carry the `font-kit` feature on macOS - without it,
 # `gpui_macos` compiles cleanly but the optional `zed-font-kit` dep + Core
 # Text glyph rasterization path are excluded (gated on `dep:font-kit` in
 # `gpui_macos/Cargo.toml`). The visible symptom is the v0.2.12 "boxes
@@ -43,21 +43,21 @@ path = "src/main.rs"
 # Zed enables this feature explicitly in `zed/crates/zed/Cargo.toml`.
 # The feature is a no-op on Linux/Windows (where `gpui_macos` isn't
 # compiled in), so it's safe in the cross-platform default declaration
-# below — the Linux-only override on line ~97 adds wayland/x11 on top.
+# below - the Linux-only override on line ~97 adds wayland/x11 on top.
 gpui = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-append-fix" }
 gpui_platform = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-append-fix", features = ["font-kit"] }
 collections = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-append-fix" }
 
 # Zed markdown rendering pipeline + design-system primitives. Pinned at the
 # same rev as gpui so the workspace graph resolves consistently. Pulls ~51
-# Zed workspace crates transitively (language/theme/ui/lsp/...) — accepted
+# Zed workspace crates transitively (language/theme/ui/lsp/...) - accepted
 # trade-off for visual parity with Zed's agent panel.
 markdown = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-append-fix" }
 # Bootstraps Zed's `GlobalTheme` at startup. `MarkdownElement::paint` reads
 # `cx.theme().colors()` unconditionally for secondary chrome (borders, panel
 # backgrounds, etc.) regardless of the `MarkdownStyle` we pass in, so the
 # global must exist. `theme::init(LoadThemes::JustBase, cx)` is the minimal
-# bootstrap — no JSON theme bundles, no `theme_settings` integration.
+# bootstrap - no JSON theme bundles, no `theme_settings` integration.
 theme = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-append-fix" }
 # Zed's design-system primitives (Icon + IconName, Disclosure, Label, ...).
 # Pinned at the same rev as gpui/markdown/theme. Required so the agent-panel
@@ -66,12 +66,12 @@ theme = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdow
 # hand-rolled svg() paths.
 ui = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-append-fix" }
 
-# Alacritty terminal emulation (upstream crates.io — migrated from Zed fork in US-005)
+# Alacritty terminal emulation (upstream crates.io - migrated from Zed fork in US-005)
 alacritty_terminal = "0.26"
 # EP-003 US-006: named directly because the `TeePty` byte tap implements
 # alacritty_terminal's public `tty::EventedReadWrite` traits, whose
 # signatures expose `polling` types (not re-exported by the crate). Same
-# semver line as alacritty_terminal's own dependency — one shared instance.
+# semver line as alacritty_terminal's own dependency - one shared instance.
 polling = "3"
 
 # Internal crates
@@ -145,10 +145,10 @@ open = "5"
 # file-chooser portal (no GTK3 runtime dep) and adds Wayland integration so
 # the dialog parents to our window. macOS uses NSOpenPanel, Windows uses the
 # native COM file-open dialog. `pollster` is pulled in by xdg-portal as the
-# tiny block-on executor — keeps the picker runtime-agnostic so we can drive
+# tiny block-on executor - keeps the picker runtime-agnostic so we can drive
 # `AsyncFileDialog` from `cx.spawn` without a tokio/async-std dep.
 rfd = "0.17"
-# Markdown viewer pane (US-020 — prd-cmux-port-2026-q2.md). CommonMark + tables
+# Markdown viewer pane (US-020 - prd-cmux-port-2026-q2.md). CommonMark + tables
 # + strikethrough + footnotes via the event API (we walk events directly into
 # a GPUI element tree rather than rendering HTML).
 pulldown-cmark = { version = "0.10", default-features = false }
@@ -164,7 +164,7 @@ ureq = { version = "3", features = ["json"] }
 imara-diff = "0.1.8"
 
 # Diff syntax highlighting (prd-diff-syntax-highlight-2026-Q3.md). Tree-sitter,
-# the same engine Zed uses — fast enough (ms-scale parse) that we highlight at
+# the same engine Zed uses - fast enough (ms-scale parse) that we highlight at
 # build time off-thread, no lazy-viewport machinery needed. Core `tree-sitter`
 # 0.26 is already a transitive workspace dep (via the Zed fork); grammars below
 # all bridge through `tree-sitter-language` 0.1 (LANGUAGE: LanguageFn, ABI 15,
@@ -181,7 +181,7 @@ tree-sitter-md = "0.5"
 # Expanded language coverage (prd-diff-syntax-palette-2026-Q3.md, EP-002).
 # All bridge through `tree-sitter-language` 0.1 (verified compatible with the
 # 0.26 runtime). NOTE: tree-sitter-c / tree-sitter-cpp expose `HIGHLIGHT_QUERY`
-# (singular) — every other grammar here uses `HIGHLIGHTS_QUERY` (plural).
+# (singular) - every other grammar here uses `HIGHLIGHTS_QUERY` (plural).
 # tree-sitter-yaml is the maintained `tree-sitter-grammars` fork (crates.io name
 # resolves to it); its highlights query is bundled as a const.
 tree-sitter-go = "0.25"   # US-003: P1
@@ -199,7 +199,7 @@ semver = "1"
 # Re-added as a direct dep: forced per-thread Claude session IDs
 # (`claude --session-id <uuid>`) so a live Agents thread maps 1:1 to its
 # on-disk session file and can adopt the LLM `ai-title` for its sidebar
-# row. `v4` only — already in the build graph via `paneflow-telemetry`.
+# row. `v4` only - already in the build graph via `paneflow-telemetry`.
 uuid = { version = "1", features = ["v4"] }
 # Resolve `appimageupdatetool` on $PATH before falling back to download (US-010).
 which = "8"
@@ -216,13 +216,13 @@ sha2 = "0.10"
 tar = "0.4"
 flate2 = "1"
 
-# US-008 — atomic rename for extracted AI-hook binaries
+# US-008 - atomic rename for extracted AI-hook binaries
 # (`src-app/src/ai_hooks/extract.rs`). `NamedTempFile::persist` wraps
 # `rename(2)` on Unix and `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` on
 # Windows so the cache-dir publish step is atomic on all three OSes.
 tempfile = "3"
 
-# Cross-platform local IPC (US-009 — prd-windows-port.md). Dispatches to Unix
+# Cross-platform local IPC (US-009 - prd-windows-port.md). Dispatches to Unix
 # domain sockets on Linux/macOS and Windows named pipes (`\\.\pipe\...`)
 # transparently, so the JSON-RPC newline-delimited protocol is byte-identical
 # across platforms.
@@ -230,10 +230,10 @@ interprocess = "2"
 
 # Grapheme-cluster boundaries for the cursor-aware TextInput widget
 # (widgets/text_input.rs). Already a transitive dep via GPUI, so Cargo
-# deduplicates — the direct declaration is only needed to `use` the trait.
+# deduplicates - the direct declaration is only needed to `use` the trait.
 unicode-segmentation = "1"
 
-# US-019 (prd-agents-view.md) — composer extensions.
+# US-019 (prd-agents-view.md) - composer extensions.
 #
 # `ignore` is the gitignore-respecting walker used by ripgrep. Powers the
 # `@`-mention file completion popup (AC: "recursive, gitignore-respecting,
@@ -259,7 +259,7 @@ base64 = "0.22"
 notify-rust = "4"
 
 # US-001 (prd-audit-remediation): detached minisign (Ed25519) signature
-# verification — the independent root of trust for the self-updater
+# verification - the independent root of trust for the self-updater
 # (`update/signature.rs`). Verify-only and pure Rust (no libsodium / C dep),
 # so it adds no system build deps and compiles identically on the three
 # targets. The matching signing side runs in CI (US-002, `minisign`/`rsign2`).
@@ -276,12 +276,12 @@ wayland-client = { version = "0.31.14", features = ["dlopen", "system"] }
 wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }
 x11rb = { version = "0.13.2", features = ["allow-unsafe-code"] }
 
-# macOS: libproc powers detect_ports() (US-006) — walks per-PID socket FDs
+# macOS: libproc powers detect_ports() (US-006) - walks per-PID socket FDs
 # via proc_pidinfo/proc_pidfdinfo wrappers. The macOS-only gate keeps it
 # out of the Linux dep closure entirely.
 #
 # core-text (US-012) powers the Core-Text-backed monospace enumeration in
-# fonts.rs — the macOS path no longer shells out to fc-list (which needs
+# fonts.rs - the macOS path no longer shells out to fc-list (which needs
 # Homebrew fontconfig). Already a transitive dep via gpui_macos +
 # zed-font-kit, so declaring it direct here adds zero compile units; the
 # explicit entry just makes the direct use discoverable.
@@ -300,10 +300,10 @@ cocoa = "0.26"
 objc = "0.2"
 
 # Windows: windows-sys powers the TerminateProcess path in TerminalState::drop
-# (US-004 — prd-windows-port.md). Feature set kept minimal on purpose: adding
+# (US-004 - prd-windows-port.md). Feature set kept minimal on purpose: adding
 # a new Win32 API elsewhere in the app should require an explicit feature
 # append here, not a silent surface expansion. alacritty_terminal 0.26 pulls
-# in the same crate at the same version on Windows for its ConPTY path — the
+# in the same crate at the same version on Windows for its ConPTY path - the
 # Cargo resolver deduplicates.
 #   - Win32_System_Diagnostics{,_ToolHelp}: US-019 foreground-process naming
 #     walks the process tree via CreateToolhelp32Snapshot / Process32{First,Next}W.
@@ -347,7 +347,7 @@ winresource = "0.1.31"
 
 [dev-dependencies]
 gpui = { git = "https://github.com/ArthurDEV44/zed", branch = "paneflow/markdown-append-fix", features = ["test-support"] }
-# US-001: the sign-capable counterpart to `minisign-verify`. Test-only — used
+# US-001: the sign-capable counterpart to `minisign-verify`. Test-only - used
 # to generate ephemeral keypairs and sign fixtures so `update/signature.rs`
 # exercises a real verify round-trip (happy path + tampered/wrong-key/no-key
 # negatives) without baking a private key into the repo.
@@ -356,7 +356,7 @@ tracing-test = "0.2"
 
 # Clippy lint policy (US-007). Mirrors `[workspace.lints.clippy]` in the
 # root Cargo.toml EXCEPT the unwrap/expect family is demoted from "warn"
-# to "allow" in this crate — src-app has pre-existing calls in GPUI UI code
+# to "allow" in this crate - src-app has pre-existing calls in GPUI UI code
 # where the failure mode is "app crashes" (acceptable for desktop UI) and
 # fixing each is out of scope for US-007. New crates (paneflow-ai-hook,
 # paneflow-shim, paneflow-config) keep the strict defaults via
@@ -385,21 +385,21 @@ unwrap_in_result = "allow"
 # is macOS-only) while keeping the lint live for our own code.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
 
-# Windows MSI packaging (US-013 — prd-windows-port.md). Source WXS +
+# Windows MSI packaging (US-013 - prd-windows-port.md). Source WXS +
 # License.rtf + paneflow.ico live under `packaging/wix/` (kept alongside
 # `packaging/{apt,rpm,homebrew,debian}/` per project convention).
 # Build: cargo wix build --package paneflow-app --target x86_64-pc-windows-msvc
 #
 # GUIDs below were generated once by `cargo wix init` and MUST remain
 # stable for the lifetime of this product line:
-#   * upgrade-guid — the MSI `UpgradeCode` used by `MajorUpgrade` to
+#   * upgrade-guid - the MSI `UpgradeCode` used by `MajorUpgrade` to
 #     detect and replace previous installs. Changing it makes new MSIs
 #     install alongside the old one instead of upgrading in-place,
 #     breaking every existing user's update flow.
-#   * path-guid    — the `Path` component GUID controlling the PATH
+#   * path-guid    - the `Path` component GUID controlling the PATH
 #     environment-variable entry. Changing it orphans the old entry
 #     (it's keyed off the GUID, not the name).
-# Both values are also mirrored in packaging/wix/main.wxs — edit in pairs
+# Both values are also mirrored in packaging/wix/main.wxs - edit in pairs
 # if they ever must change (only with a v2.0 product-line cut).
 [package.metadata.wix]
 wxs = "../packaging/wix/main.wxs"
@@ -410,7 +410,7 @@ path-guid = "49700ADE-7E1B-466E-A25E-A138A2FC96F3"
 # (`-x86_64-pc-windows-msvc.msi`).
 name = "paneflow"
 
-# Debian packaging (US-003) — explicit deps, never `$auto` (cargo-deb issue #170).
+# Debian packaging (US-003) - explicit deps, never `$auto` (cargo-deb issue #170).
 # Build: cargo deb -p paneflow-app --target x86_64-unknown-linux-gnu
 [package.metadata.deb]
 name = "paneflow"
@@ -423,7 +423,7 @@ priority = "optional"
 revision = "1"
 # Debian maintainer scripts: `packaging/debian/` contains `postinst` (wires
 # the pkg.paneflow.dev apt source on first install; US-016). The directory
-# path is resolved relative to THIS Cargo.toml (cargo-deb convention —
+# path is resolved relative to THIS Cargo.toml (cargo-deb convention -
 # differs from cargo-generate-rpm below, which resolves relative to the
 # workspace root). cargo-deb auto-sets 755 on all control scripts.
 maintainer-scripts = "../packaging/debian"
@@ -453,15 +453,15 @@ assets = [
     ["../assets/io.github.arthurdev44.paneflow.metainfo.xml", "usr/share/metainfo/io.github.arthurdev44.paneflow.metainfo.xml", "644"],
 ]
 
-# RPM packaging (US-014) — mirrors the Debian asset list plus an explicit
+# RPM packaging (US-014) - mirrors the Debian asset list plus an explicit
 # LICENSE entry (on the deb side LICENSE comes in via `license-file`, not
 # the `assets` array). Built by cargo-generate-rpm 0.20.0:
 # `cargo generate-rpm -p src-app --target x86_64-unknown-linux-gnu`.
-# (Note: `-p src-app` is the DIRECTORY path — cargo-generate-rpm 0.20.0
+# (Note: `-p src-app` is the DIRECTORY path - cargo-generate-rpm 0.20.0
 # resolves `-p` strictly as a path, not the crate name `paneflow-app`.)
 #
 # - Asset `source` paths are resolved relative to the workspace root by
-#   cargo-generate-rpm 0.20.0, NOT to this Cargo.toml's directory — hence
+#   cargo-generate-rpm 0.20.0, NOT to this Cargo.toml's directory - hence
 #   `assets/` rather than `../assets/`. The special `target/release/*`
 #   prefix is auto-rewritten to the `--target` output directory.
 # - `auto-req = "no"` mirrors the reason we avoid `$auto` in cargo-deb
@@ -470,7 +470,7 @@ assets = [
 #   RHEL/Rocky/openSUSE.
 # - `%license` is NOT a supported asset tag in cargo-generate-rpm 0.20.0
 #   (the crate exposes `doc` but not `license`). The LICENSE file is
-#   therefore installed with `%doc` instead — functionally equivalent for
+#   therefore installed with `%doc` instead - functionally equivalent for
 #   `rpm -qlp` inspection, but upstream RPM purists note the distinction.
 #   If we ever move to `rpmbuild`, restore the `%license` tag.
 [package.metadata.generate-rpm]
@@ -483,7 +483,7 @@ release = "1"
 auto-req = "no"
 # RPM `%post` scriptlet: wires /etc/yum.repos.d/paneflow.repo on first
 # install (US-016). Path is resolved relative to the workspace root
-# (cargo-generate-rpm's path-resolution convention — differs from the
+# (cargo-generate-rpm's path-resolution convention - differs from the
 # crate-relative `maintainer-scripts` above).
 post_install_script = "packaging/rpm/postinst.sh"
 # RPM `%preun` scriptlet: removes /etc/yum.repos.d/paneflow.repo on full
@@ -526,7 +526,7 @@ assets = [
 # requires-set that resolves on Fedora 30+, RHEL 8+, Rocky, Mageia,
 # openSUSE Leap 15+, and openSUSE Tumbleweed without per-distro fan-out.
 # The `(64bit)` ABI tag is correct for both x86_64 and aarch64 RPM
-# builds — it indicates the 64-bit ABI, not CPU arch (i686 would use
+# builds - it indicates the 64-bit ABI, not CPU arch (i686 would use
 # `(32bit)`). Verified against pkgs.org SONAME lookup for each library.
 [package.metadata.generate-rpm.requires]
 "libvulkan.so.1()(64bit)" = "*"
