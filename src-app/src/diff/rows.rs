@@ -174,6 +174,65 @@ pub fn split_max_line_no(rows: &[SplitRow]) -> u32 {
         .unwrap_or(0)
 }
 
+/// One file's extent in a display-row set: the index of its `FileHeader` row
+/// and the width (in monospace cells) of its widest code line. The widest-line
+/// width drives the file's horizontal-scroll bound; precomputed off the render
+/// path (in `recompute_display` / `AgentsDiffData::recompute`) and shared with
+/// `DiffElement`, which offsets each file's code by its own scroll position
+/// instead of re-measuring every row per frame. `max_chars` counts `char`s (not
+/// bytes), matching the monospace-cell estimate the element scrolls by; it is
+/// `0` for a collapsed file (header only) or a binary/fold-only file.
+#[derive(Clone, Copy)]
+pub struct FileSpan {
+    pub header_row: usize,
+    pub max_chars: usize,
+}
+
+/// Per-file spans for a unified row set, one entry per `FileHeader` in file
+/// order (so `partition_point` on `header_row` maps any row back to its file).
+pub fn unified_file_spans(rows: &[DisplayRow]) -> Vec<FileSpan> {
+    let mut spans: Vec<FileSpan> = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        match r.kind {
+            RowKind::FileHeader => spans.push(FileSpan {
+                header_row: i,
+                max_chars: 0,
+            }),
+            RowKind::Context | RowKind::Added | RowKind::Removed => {
+                if let Some(span) = spans.last_mut() {
+                    span.max_chars = span.max_chars.max(r.text.chars().count());
+                }
+            }
+            // Folds, binary notes and the truncation row never scroll.
+            RowKind::Fold | RowKind::Binary | RowKind::Truncated => {}
+        }
+    }
+    spans
+}
+
+/// Side-by-side analog of [`unified_file_spans`]. Each `Pair` row's wider half
+/// cell contributes to its file's `max_chars` (the offset applies per half, but
+/// one file-level bound covers the widest cell on either side).
+pub fn split_file_spans(rows: &[SplitRow]) -> Vec<FileSpan> {
+    let mut spans: Vec<FileSpan> = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        match r {
+            SplitRow::Header(_) => spans.push(FileSpan {
+                header_row: i,
+                max_chars: 0,
+            }),
+            SplitRow::Pair { left, right } => {
+                if let Some(span) = spans.last_mut() {
+                    let w = left.text.chars().count().max(right.text.chars().count());
+                    span.max_chars = span.max_chars.max(w);
+                }
+            }
+            SplitRow::Note(_) | SplitRow::Fold(_) => {}
+        }
+    }
+    spans
+}
+
 /// Cap on rendered rows across a whole column. Beyond this the column shows a
 /// truncation notice instead of freezing the frame on a pathological diff.
 pub const MAX_DISPLAY_ROWS: usize = 10_000;

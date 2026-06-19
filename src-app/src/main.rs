@@ -433,6 +433,12 @@ struct AgentsViewState {
     /// Live drag anchor `(cursor_x, width_at_grab)` while the dock's left edge is
     /// being dragged to resize; `None` when not resizing.
     pub(crate) agents_diff_resize: Option<(f32, f32)>,
+    /// Per-file horizontal scroll offsets (px) for the diff dock, indexed by
+    /// stable file position. Driven by Shift+wheel / trackpad horizontal gestures
+    /// (`apply_agents_diff_hwheel`) and applied per file by `DiffElement`; lazily
+    /// resized to the file count at render (collapse/split never change the
+    /// count, so offsets stay aligned).
+    pub(crate) agents_diff_h_offsets: Vec<f32>,
     /// Whether the Codex-style full-width bottom terminal dock is open. Toggled
     /// by the `layout-bottombar` toolbar button (and its own × button).
     pub(crate) bottom_panel_open: bool,

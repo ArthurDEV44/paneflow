@@ -31,7 +31,7 @@ use std::path::Path;
 
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    ScrollWheelEvent, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use self::git::build_agents_diff;
@@ -41,7 +41,7 @@ use self::render::{
     render_diff_resize_handle,
 };
 use crate::PaneFlowApp;
-use crate::diff::{DiffBody, DiffElement, palette, row_at_offset};
+use crate::diff::{DiffBody, DiffElement, file_at_row, palette, row_at_offset, set_file_offset};
 
 impl PaneFlowApp {
     /// Toggle the Codex-style diff dock. Opening (re)computes the diff for the
@@ -257,6 +257,17 @@ impl PaneFlowApp {
         let split = self.agents_view.agents_diff_split;
         let toolbar = render_diff_files_toolbar(data, &collapsed, ui, &entity);
 
+        // Per-file horizontal offsets, lazily resized to the current file count
+        // (collapse/split never change it) so a fresh diff with a different file
+        // set starts unscrolled. Cloned into the element each frame.
+        let file_count = data.disp_unified_spans.len();
+        if self.agents_view.agents_diff_h_offsets.len() != file_count {
+            self.agents_view
+                .agents_diff_h_offsets
+                .resize(file_count, 0.0);
+        }
+        let h_offsets = std::rc::Rc::new(self.agents_view.agents_diff_h_offsets.clone());
+
         // Collapse-filtered rows + cached layout inputs (recomputed only on a
         // collapse / split change), handed to the direct-paint element.
         let body = if split {
@@ -264,22 +275,45 @@ impl PaneFlowApp {
                 rows: data.disp_split.clone(),
                 offsets: data.disp_split_offsets.clone(),
                 max_line_no: data.disp_split_max_no,
+                spans: data.disp_split_spans.clone(),
+                h_offsets: h_offsets.clone(),
             }
         } else {
             DiffBody::Unified {
                 rows: data.disp_unified.clone(),
                 offsets: data.disp_unified_offsets.clone(),
                 max_line_no: data.disp_unified_max_no,
+                spans: data.disp_unified_spans.clone(),
+                h_offsets,
             }
         };
         let pal = palette(ui);
         let scroll = self.agents_view.agents_diff_scroll.clone();
 
-        // Custom direct-paint element hosted in an overflow-scroll div: the
-        // element reports full content height; the div clips/scrolls and supplies
-        // the viewport clip the element culls against. A body click maps its Y to
-        // a row and toggles that file's collapse if it landed on a file header.
-        let element = div()
+        // Custom direct-paint element hosted in a scroll-tracked div, exactly
+        // like the Review view (`diff/view/render.rs`): `overflow_y_scroll` so
+        // GPUI's native handler owns VERTICAL - it translates the child's origin
+        // by the scroll offset, which is the ONLY thing that moves `DiffElement`
+        // (it positions every row off its prepainted `bounds.origin`, never off
+        // `window.element_offset()`; under `overflow_hidden` that origin never
+        // moves and the body looks frozen). `track_scroll` keeps the handle's
+        // `offset()`/`bounds()`/`max_offset()` live for the click→row mapping.
+        //
+        // `restrict_scroll_to_axis = Some(true)` is the Zed opt-in (style.rs doc;
+        // used by markdown.rs / thread_view.rs / data_table.rs) that stops a
+        // vertical wheel from bleeding into a horizontally-scrollable child - and,
+        // crucially here, stops the native Y handler back-filling `delta_y` from
+        // `delta.x` under Shift+wheel (div.rs: the `else if !restrict_scroll_to_axis
+        // && overflow.x != Scroll` fallback). On Linux/Windows the platform layer
+        // already swaps Shift+wheel onto the X axis (delta.x set, delta.y zeroed),
+        // so without this flag a Shift gesture would scroll the list vertically.
+        // With it: Shift → native does nothing, our handler scrolls horizontal.
+        //
+        // HORIZONTAL stays per-file and fully custom: `overflow.x` is Hidden, so
+        // the native handler never touches X; `apply_agents_diff_wheel` reads
+        // `delta.x` (the platform-swapped Shift value, or a trackpad swipe) and
+        // shifts the file under the cursor. A body click toggles a file's collapse.
+        let mut element = div()
             .id("agents-diff-scroll")
             .flex_1()
             .min_h_0()
@@ -289,7 +323,13 @@ impl PaneFlowApp {
             .on_click(cx.listener(|this, ev: &ClickEvent, _w, cx| {
                 this.handle_agents_diff_body_click(ev, cx);
             }))
+            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, window, cx| {
+                this.apply_agents_diff_wheel(ev, window, cx);
+            }))
             .child(DiffElement::new(body, pal));
+        // Not exposed as a builder method on the pinned fork - set on the style
+        // refinement directly, the same raw mutation Zed uses.
+        element.style().restrict_scroll_to_axis = Some(true);
 
         div()
             .id("agents-diff-body")
@@ -301,6 +341,90 @@ impl PaneFlowApp {
             .child(toolbar)
             .child(element)
             .into_any_element()
+    }
+
+    /// Wheel gesture over the diff body. Handles ONLY the per-file HORIZONTAL
+    /// axis; the host's `overflow_y_scroll` native handler owns vertical (it both
+    /// translates the `DiffElement` and updates the scroll handle - duplicating
+    /// it here would double-scroll the list). `restrict_scroll_to_axis` on the
+    /// host keeps the native handler off the X axis and stops it bleeding a Shift
+    /// gesture into vertical - see the host comment in `render_agents_diff_body`.
+    ///
+    /// The horizontal delta always arrives on `delta.x`: the platform layer swaps
+    /// Shift+wheel onto X (Linux X11/Wayland + Windows; `delta.y` is zeroed under
+    /// Shift), and a trackpad horizontal swipe is natively on X. So read `delta.x`
+    /// unconditionally - no `modifiers.shift` branch. A bare `delta.y` (plain
+    /// vertical wheel) is ignored here and handled natively.
+    fn apply_agents_diff_wheel(
+        &mut self,
+        ev: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let delta = ev.delta.pixel_delta(window.line_height());
+        let dx = f32::from(delta.x);
+        if dx != 0.0 {
+            let split = self.agents_view.agents_diff_split;
+            let width = self.agents_view.agents_diff_width;
+            let bounds = self.agents_view.agents_diff_scroll.bounds();
+            let content_y = f32::from(
+                ev.position.y - bounds.top() - self.agents_view.agents_diff_scroll.offset().y,
+            )
+            .max(0.0);
+            if let Some(file_idx) = self.agents_diff_file_at_content_y(content_y, split) {
+                let spans = self.agents_diff_spans(split);
+                let cur = self
+                    .agents_view
+                    .agents_diff_h_offsets
+                    .get(file_idx)
+                    .copied()
+                    .unwrap_or(0.0);
+                // GPUI scroll deltas go negative toward the end; subtract to grow
+                // our positive offset and reveal the right of the line.
+                set_file_offset(
+                    &mut self.agents_view.agents_diff_h_offsets,
+                    &spans,
+                    file_idx,
+                    cur - dx,
+                    split,
+                    width,
+                );
+            }
+            // Only horizontal scroll mutates our state here; vertical is native
+            // (it notifies on its own). Notifying unconditionally would double-
+            // render every plain vertical wheel tick.
+            cx.notify();
+        }
+    }
+
+    /// File owning the display row at content pixel `content_y` (0 = first row),
+    /// in the current view mode. `None` when there is no diff or `content_y`
+    /// lands past the last row.
+    fn agents_diff_file_at_content_y(&self, content_y: f32, split: bool) -> Option<usize> {
+        let data = self.agents_view.agents_diff.as_ref()?;
+        let (offsets, spans) = if split {
+            (&data.disp_split_offsets, &data.disp_split_spans)
+        } else {
+            (&data.disp_unified_offsets, &data.disp_unified_spans)
+        };
+        let row = row_at_offset(offsets, content_y)?;
+        file_at_row(spans, row)
+    }
+
+    /// The per-file scroll spans for the current view mode (empty `Rc` when no
+    /// diff is loaded), cloned for the wheel handler that mutates offsets.
+    fn agents_diff_spans(&self, split: bool) -> std::rc::Rc<Vec<crate::diff::FileSpan>> {
+        self.agents_view
+            .agents_diff
+            .as_ref()
+            .map(|d| {
+                if split {
+                    d.disp_split_spans.clone()
+                } else {
+                    d.disp_unified_spans.clone()
+                }
+            })
+            .unwrap_or_default()
     }
 
     /// Map a body click to a row and, if it landed on a file header, toggle that

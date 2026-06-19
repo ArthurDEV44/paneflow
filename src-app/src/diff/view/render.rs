@@ -623,16 +623,21 @@ impl DiffView {
                 // marks this column the sync driver; the click listener maps the
                 // click Y to a row and toggles that file's collapse if it landed
                 // on a file header.
+                let h_offsets = std::rc::Rc::new(col.h_offsets.clone());
                 let body = match mode {
                     ViewMode::Split => DiffBody::Split {
                         rows: col.disp_split.clone(),
                         offsets: col.disp_split_offsets.clone(),
                         max_line_no: col.disp_split_max_no,
+                        spans: col.disp_split_spans.clone(),
+                        h_offsets: h_offsets.clone(),
                     },
                     ViewMode::Unified => DiffBody::Unified {
                         rows: col.disp_unified.clone(),
                         offsets: col.disp_unified_offsets.clone(),
                         max_line_no: col.disp_unified_max_no,
+                        spans: col.disp_unified_spans.clone(),
+                        h_offsets,
                     },
                 };
                 // EP-003 US-010: hover-to-ask affordance over a changed line. In

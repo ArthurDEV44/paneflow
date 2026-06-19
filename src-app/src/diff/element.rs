@@ -22,7 +22,10 @@ use gpui::{
 };
 
 use super::align::CellKind;
-use super::rows::{DisplayRow, HalfCell, HeaderParts, ROW_HEIGHT, RowKind, RowPalette, SplitRow};
+use super::hscroll::{file_at_row, max_h_scroll};
+use super::rows::{
+    DisplayRow, FileSpan, HalfCell, HeaderParts, ROW_HEIGHT, RowKind, RowPalette, SplitRow,
+};
 
 const PAD: f32 = 6.0; // file-header text inset
 const CHEVRON_W: f32 = 14.0; // collapsible-section chevron column on file headers
@@ -52,11 +55,23 @@ pub enum DiffBody {
         rows: Rc<Vec<DisplayRow>>,
         offsets: Rc<Vec<f32>>,
         max_line_no: u32,
+        /// Per-file horizontal-scroll spans (widest line per file) + live
+        /// per-file horizontal offsets (px), lockstep with `rows`. The element
+        /// shifts each file's code left by its own offset; everything else
+        /// (gutter, headers, sticky bar) stays pinned.
+        spans: Rc<Vec<FileSpan>>,
+        h_offsets: Rc<Vec<f32>>,
     },
     Split {
         rows: Rc<Vec<SplitRow>>,
         offsets: Rc<Vec<f32>>,
         max_line_no: u32,
+        /// Per-file horizontal-scroll spans (widest line per file) + live
+        /// per-file horizontal offsets (px), lockstep with `rows`. The element
+        /// shifts each file's code left by its own offset; everything else
+        /// (gutter, headers, sticky bar) stays pinned.
+        spans: Rc<Vec<FileSpan>>,
+        h_offsets: Rc<Vec<f32>>,
     },
 }
 
@@ -85,6 +100,22 @@ impl DiffBody {
     fn offsets_rc(&self) -> Rc<Vec<f32>> {
         match self {
             DiffBody::Unified { offsets, .. } | DiffBody::Split { offsets, .. } => offsets.clone(),
+        }
+    }
+
+    /// Per-file scroll spans (widest line + header row per file).
+    fn spans_rc(&self) -> Rc<Vec<FileSpan>> {
+        match self {
+            DiffBody::Unified { spans, .. } | DiffBody::Split { spans, .. } => spans.clone(),
+        }
+    }
+
+    /// Live per-file horizontal offsets (px), indexed by file position.
+    fn h_offsets_rc(&self) -> Rc<Vec<f32>> {
+        match self {
+            DiffBody::Unified { h_offsets, .. } | DiffBody::Split { h_offsets, .. } => {
+                h_offsets.clone()
+            }
         }
     }
 }
@@ -399,6 +430,7 @@ impl DiffElement {
         width: Pixels,
         row_h: Pixels,
         collapsed: bool,
+        h_offset: Pixels,
         quads: &mut Vec<Quad>,
         glyphs: &mut Vec<Glyphs>,
     ) {
@@ -494,14 +526,19 @@ impl DiffElement {
                     num_color,
                     glyphs,
                 );
-                // Text — no +/- sign column (the bar + wash convey status).
+                // Text - no +/- sign column (the bar + wash convey status). The
+                // code shifts left by this file's horizontal offset; the gutter
+                // (painted above) stays pinned and the clip holds the shifted
+                // text inside the code column.
                 let text_x = origin.x + px(BAR_W + PAD2) + self.gutter_w;
+                let code_x = text_x - h_offset;
                 if !row.text.is_empty() {
                     let line = self.shape(window, &row.text, &row.syntax_runs, p.text);
                     if let Some(wbg) = word_bg {
                         self.push_word_quads(
                             &line,
                             &row.word_ranges,
+                            code_x,
                             text_x,
                             origin.y,
                             lh,
@@ -510,7 +547,7 @@ impl DiffElement {
                         );
                     }
                     glyphs.push(Glyphs {
-                        origin: point(text_x, origin.y),
+                        origin: point(code_x, origin.y),
                         line,
                         clip: Some(Bounds::new(
                             point(text_x, origin.y),
@@ -532,6 +569,7 @@ impl DiffElement {
         width: Pixels,
         row_h: Pixels,
         collapsed: bool,
+        h_offset: Pixels,
         quads: &mut Vec<Quad>,
         glyphs: &mut Vec<Glyphs>,
     ) {
@@ -570,7 +608,15 @@ impl DiffElement {
                 let half_w = ((width - px(1.)) / 2.0).max(px(0.));
                 let left_x = origin.x;
                 let right_x = origin.x + half_w + px(1.);
-                self.layout_half(window, left, point(left_x, origin.y), half_w, quads, glyphs);
+                self.layout_half(
+                    window,
+                    left,
+                    point(left_x, origin.y),
+                    half_w,
+                    h_offset,
+                    quads,
+                    glyphs,
+                );
                 // Divider.
                 quads.push(Quad {
                     bounds: Bounds::new(point(origin.x + half_w, origin.y), size(px(1.), lh)),
@@ -581,6 +627,7 @@ impl DiffElement {
                     right,
                     point(right_x, origin.y),
                     half_w,
+                    h_offset,
                     quads,
                     glyphs,
                 );
@@ -589,12 +636,14 @@ impl DiffElement {
     }
 
     /// One half-cell of a split row, occupying `[origin.x, origin.x + width)`.
+    #[allow(clippy::too_many_arguments)]
     fn layout_half(
         &self,
         window: &mut Window,
         cell: &HalfCell,
         origin: Point<Pixels>,
         width: Pixels,
+        h_offset: Pixels,
         quads: &mut Vec<Quad>,
         glyphs: &mut Vec<Glyphs>,
     ) {
@@ -643,13 +692,23 @@ impl DiffElement {
             glyphs,
         );
         let text_x = origin.x + px(BAR_W + HALF_PAD) + self.gutter_w;
+        let code_x = text_x - h_offset;
         if !cell.text.is_empty() {
             let line = self.shape(window, &cell.text, &cell.syntax_runs, p.text);
             if let Some(wbg) = word_bg {
-                self.push_word_quads(&line, &cell.word_ranges, text_x, origin.y, lh, wbg, quads);
+                self.push_word_quads(
+                    &line,
+                    &cell.word_ranges,
+                    code_x,
+                    text_x,
+                    origin.y,
+                    lh,
+                    wbg,
+                    quads,
+                );
             }
             glyphs.push(Glyphs {
-                origin: point(text_x, origin.y),
+                origin: point(code_x, origin.y),
                 line,
                 clip: Some(Bounds::new(
                     point(text_x, origin.y),
@@ -694,7 +753,8 @@ impl DiffElement {
         &self,
         line: &ShapedLine,
         ranges: &[Range<usize>],
-        text_x: Pixels,
+        code_x: Pixels,
+        clip_left: Pixels,
         y: Pixels,
         lh: Pixels,
         color: Hsla,
@@ -707,8 +767,12 @@ impl DiffElement {
             if start >= end {
                 continue;
             }
-            let x0 = text_x + line.x_for_index(start);
-            let x1 = text_x + line.x_for_index(end);
+            // The code is shifted left by the file's horizontal offset; clamp
+            // the word-diff background to the viewport's left edge so a scrolled
+            // span never bleeds over the pinned gutter (its right side stays
+            // bounded by the element's content mask).
+            let x0 = (code_x + line.x_for_index(start)).max(clip_left);
+            let x1 = code_x + line.x_for_index(end);
             let w = (x1 - x0).max(px(0.));
             if w <= px(0.) {
                 continue;
@@ -805,6 +869,10 @@ impl Element for DiffElement {
         );
         self.gutter_w = px((GUTTER_PAD_L + digits as f32 * digit_w + NUM_GAP).max(GUTTER_W));
 
+        // Per-file horizontal scroll inputs (spans + live offsets), read once so
+        // the shaping loop offsets each file's code without re-borrowing `body`.
+        let spans = self.body.spans_rc();
+        let h_offsets = self.body.h_offsets_rc();
         let mut quads = Vec::new();
         let mut glyphs = Vec::new();
         let mut sticky_quads = Vec::new();
@@ -831,6 +899,16 @@ impl Element for DiffElement {
                             HitboxBehavior::Normal,
                         ));
                     }
+                    let h_offset = px(file_at_row(&spans, i)
+                        .map(|f| {
+                            let raw = h_offsets.get(f).copied().unwrap_or(0.0);
+                            let max = spans
+                                .get(f)
+                                .map(|s| max_h_scroll(s.max_chars, false, f32::from(width)))
+                                .unwrap_or(0.0);
+                            raw.clamp(0.0, max)
+                        })
+                        .unwrap_or(0.0));
                     self.layout_unified(
                         window,
                         &rows[i],
@@ -838,6 +916,7 @@ impl Element for DiffElement {
                         width,
                         row_h,
                         collapsed,
+                        h_offset,
                         &mut quads,
                         &mut glyphs,
                     );
@@ -906,6 +985,16 @@ impl Element for DiffElement {
                             HitboxBehavior::Normal,
                         ));
                     }
+                    let h_offset = px(file_at_row(&spans, i)
+                        .map(|f| {
+                            let raw = h_offsets.get(f).copied().unwrap_or(0.0);
+                            let max = spans
+                                .get(f)
+                                .map(|s| max_h_scroll(s.max_chars, true, f32::from(width)))
+                                .unwrap_or(0.0);
+                            raw.clamp(0.0, max)
+                        })
+                        .unwrap_or(0.0));
                     self.layout_split(
                         window,
                         &rows[i],
@@ -913,6 +1002,7 @@ impl Element for DiffElement {
                         width,
                         row_h,
                         collapsed,
+                        h_offset,
                         &mut quads,
                         &mut glyphs,
                     );

@@ -19,6 +19,7 @@ mod extract;
 mod git;
 mod highlighter;
 mod hit_test;
+mod hscroll;
 mod multi_view;
 mod review_terminal;
 mod rows;
@@ -46,9 +47,10 @@ pub use view::{
 pub(crate) use element::{DiffBody, DiffElement};
 pub(crate) use git::compute_head_diff;
 pub(crate) use hit_test::row_at_offset;
+pub(crate) use hscroll::{file_at_row, set_file_offset};
 pub(crate) use rows::{
-    DisplayRow, RowKind, SplitRow, apply_collapse_split, apply_collapse_unified,
-    build_display_rows, build_split_rows, palette, split_max_line_no, split_offsets,
-    unified_max_line_no, unified_offsets,
+    DisplayRow, FileSpan, RowKind, SplitRow, apply_collapse_split, apply_collapse_unified,
+    build_display_rows, build_split_rows, palette, split_file_spans, split_max_line_no,
+    split_offsets, unified_file_spans, unified_max_line_no, unified_offsets,
 };
 pub(crate) use syntax::DiffSyntax;
