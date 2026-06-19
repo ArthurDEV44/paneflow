@@ -183,6 +183,39 @@ fn send_and_receive(socket: &Path, request: &Value) -> io::Result<String> {
     }
 }
 
+/// EP-002 (agent-control-plane): open a persistent `events.subscribe` stream.
+/// Writes the subscribe request, then invokes `on_line` for every newline-
+/// delimited event the server pushes, until the connection closes (server side)
+/// or `on_line` returns `false`. Unlike [`send_and_receive`], the read side is
+/// NOT deadline-bounded: an idle stream is normal (the server heartbeats every
+/// 30 s), so only a real disconnect (EOF / error) ends the loop.
+pub fn subscribe_stream(
+    socket: &Path,
+    params: Value,
+    mut on_line: impl FnMut(&str) -> bool,
+) -> io::Result<()> {
+    let name = socket.to_fs_name::<GenericFilePath>()?;
+    let mut stream = Stream::connect(name)?;
+    let request = build_request(1, "events.subscribe", params);
+    let mut payload =
+        serde_json::to_vec(&request).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    payload.push(b'\n');
+    stream.write_all(&payload)?;
+    stream.flush()?;
+
+    let reader = BufReader::new(stream);
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if !on_line(&line) {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// Resolve the Paneflow IPC socket path. `PANEFLOW_SOCKET_PATH` (inherited
 /// from the Paneflow PTY through the agent that launched this process) is
 /// authoritative — it carries the exact path the running instance bound,

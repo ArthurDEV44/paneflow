@@ -598,6 +598,32 @@ fn surface_status_value(
     }
 }
 
+/// EP-002 US-006: the wire shape of an `ai.*` event pushed to subscribers. All
+/// fields but `ts` are caller-supplied, so the shape is unit-tested directly.
+#[allow(clippy::too_many_arguments)]
+fn session_event_value(
+    method: &str,
+    workspace_id: Option<u64>,
+    pid: Option<u32>,
+    tool: Option<&str>,
+    state: Option<&str>,
+    surface_id: Option<u64>,
+    message: Option<&str>,
+    active_tool: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": method,
+        "workspace_id": workspace_id,
+        "pid": pid,
+        "tool": tool,
+        "state": state,
+        "surface_id": surface_id,
+        "message": message,
+        "active_tool_name": active_tool,
+        "ts": crate::ipc_events::now_ms(),
+    })
+}
+
 impl PaneFlowApp {
     pub(crate) fn process_ipc_requests(&mut self, cx: &mut Context<Self>) {
         while let Ok(req) = self.ipc_rx.try_recv() {
@@ -613,8 +639,99 @@ impl PaneFlowApp {
                 continue;
             }
             let result = self.handle_ipc(&req.method, &req.params, cx);
+            // EP-002 US-006: mirror a SUCCESSFUL ai.* lifecycle frame to event-
+            // bus subscribers. Broadcast after the handler so the looked-up
+            // session carries the just-applied state.
+            if req.method.starts_with("ai.")
+                && result.get("error").is_none()
+                && result.get("_jsonrpc_error").is_none()
+            {
+                self.broadcast_ai_frame(&req.method, &req.params);
+            }
             let _ = req.response_tx.send(result);
         }
+    }
+
+    /// EP-002 US-006: push a successful `ai.*` lifecycle frame to event-bus
+    /// subscribers. The post-handler session (looked up by pid) carries the new
+    /// state and the resolved surface; when absent (e.g. `ai.session_end`) the
+    /// event still carries the method + pid + tool so a conductor can correlate.
+    fn broadcast_ai_frame(&self, method: &str, params: &serde_json::Value) {
+        if !self.event_bus.has_subscribers() {
+            return;
+        }
+        let workspace_id = params.get("workspace_id").and_then(|v| v.as_u64());
+        let pid = read_session_pid(params);
+        let tool = read_tool(params);
+        let session = match (workspace_id, pid) {
+            (Some(wid), Some(p)) => self
+                .workspaces
+                .iter()
+                .find(|w| w.id == wid)
+                .and_then(|w| w.agent_sessions.get(&p)),
+            _ => None,
+        };
+        let (state, surface_id, message, active_tool) = match session {
+            Some(s) => (
+                Some(s.state.wire_str()),
+                s.surface_id,
+                s.message.clone(),
+                s.active_tool_name.clone(),
+            ),
+            None => (None, None, None, None),
+        };
+        let event = session_event_value(
+            method,
+            workspace_id,
+            pid,
+            tool.map(|t| t.binary()),
+            state,
+            surface_id,
+            message.as_deref(),
+            active_tool.as_deref(),
+        );
+        self.event_bus.broadcast(method, surface_id, &event);
+    }
+
+    /// EP-002 US-006: emit a `surface_changed` event for every pane whose
+    /// `output_generation` advanced since the last sweep. Runs on the 50 ms IPC
+    /// pump, which provides the debounce for free; skips all work when nobody is
+    /// subscribed.
+    pub(crate) fn broadcast_surface_changes(&mut self, cx: &mut Context<Self>) {
+        if !self.event_bus.has_subscribers() {
+            return;
+        }
+        // Snapshot (surface_id, output_generation) for every pane first, so the
+        // immutable workspace/entity reads end before the cache is mutated.
+        let mut current: Vec<(u64, u64)> = Vec::new();
+        for ws in &self.workspaces {
+            if let Some(root) = &ws.root {
+                for pane in root.collect_leaves() {
+                    for terminal in pane.read(cx).terminals() {
+                        let sid = terminal.entity_id().as_u64();
+                        let generation = terminal.read(cx).terminal.output_generation;
+                        current.push((sid, generation));
+                    }
+                }
+            }
+        }
+        let mut seen: HashSet<u64> = HashSet::with_capacity(current.len());
+        for (sid, generation) in &current {
+            seen.insert(*sid);
+            if self.last_broadcast_gen.get(sid).copied() != Some(*generation) {
+                self.last_broadcast_gen.insert(*sid, *generation);
+                let event = serde_json::json!({
+                    "type": "surface_changed",
+                    "surface_id": sid,
+                    "output_generation": generation,
+                    "ts": crate::ipc_events::now_ms(),
+                });
+                self.event_bus
+                    .broadcast("surface_changed", Some(*sid), &event);
+            }
+        }
+        // Forget closed surfaces so the cache can't grow without bound.
+        self.last_broadcast_gen.retain(|k, _| seen.contains(k));
     }
 
     /// Apply any pending config change deposited by the background `ConfigWatcher`.
@@ -3176,5 +3293,35 @@ mod tests {
         assert_eq!(v["state"], "thinking");
         assert_eq!(v["tool"], "codex");
         assert_eq!(v["output_generation"], 12);
+    }
+
+    // EP-002 US-006: the ai.* event wire shape (timestamp aside).
+    #[test]
+    fn session_event_value_carries_method_and_session_fields() {
+        let v = session_event_value(
+            "ai.stop",
+            Some(7),
+            Some(4321),
+            Some("claude"),
+            Some("finished"),
+            Some(42),
+            None,
+            None,
+        );
+        assert_eq!(v["type"], "ai.stop");
+        assert_eq!(v["workspace_id"], 7);
+        assert_eq!(v["pid"], 4321);
+        assert_eq!(v["tool"], "claude");
+        assert_eq!(v["state"], "finished");
+        assert_eq!(v["surface_id"], 42);
+        assert!(v.get("ts").is_some());
+    }
+
+    #[test]
+    fn session_event_value_nulls_missing_fields() {
+        let v = session_event_value("ai.session_end", None, None, None, None, None, None, None);
+        assert_eq!(v["type"], "ai.session_end");
+        assert_eq!(v["pid"], serde_json::Value::Null);
+        assert_eq!(v["surface_id"], serde_json::Value::Null);
     }
 }

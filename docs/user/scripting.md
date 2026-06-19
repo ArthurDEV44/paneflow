@@ -49,6 +49,7 @@ initialization.
 | `send <target> <text>`              | Inject text, **never submits** without `--submit` (`--broadcast`)       | Gated             |
 | `key <target> <keystroke>`          | Send one named keystroke (`escape`, `ctrl-c`, …)                        | Gated             |
 | `wait --match <sel> --pattern <re>` | Block until a regex appears in a pane (`--timeout`, `--any`/`--all`)    | No                |
+| `watch [--surface <sel>] [--type <t>]` | Stream lifecycle events as JSONL until Ctrl-C (Unix only)            | No                |
 | `up <file>`                         | Spawn a declarative agent workspace from TOML (`--dry-run`)             | Prefill only      |
 | `flow run <file>`                   | Execute a multi-agent pipeline from `flow.toml` (`--dry-run`, `--json`) | Gated for submits |
 
@@ -130,6 +131,10 @@ paneflow status backend
 
 # surface.read / surface.status also return `output_generation`, a monotonic
 # counter a script can poll to detect a pane going idle without a timer guess.
+
+# Stream events as they happen instead of polling: react when an agent
+# finishes a turn or asks for input. Each line is one JSON event.
+paneflow watch --type ai.stop --type ai.notification
 
 # Workspace with two panes, focus the editor side
 paneflow new --name api --cwd ~/dev/api
