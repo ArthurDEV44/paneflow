@@ -655,10 +655,13 @@ impl<T: IpcTransport> Engine<'_, T> {
     }
 
     fn read_window(&self, sid: u64, lines: u64) -> Result<Read, String> {
-        match self
-            .client
-            .call("surface.read", json!({ "surface_id": sid, "lines": lines }))
-        {
+        match self.client.call(
+            "surface.read",
+            // EP-003 US-011: the settling poll compares raw output across
+            // reads, so it must NOT be fenced (the per-call id would change
+            // every read and never settle). Opt out of the injection fence.
+            json!({ "surface_id": sid, "lines": lines, "fenced": false }),
+        ) {
             Ok(result) => {
                 if result.get("error").is_some() {
                     return Ok(Read::Gone);

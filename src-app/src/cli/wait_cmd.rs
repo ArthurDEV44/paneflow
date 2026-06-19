@@ -126,7 +126,9 @@ fn is_done(mode: MatchMode, matched: usize, total: usize) -> bool {
 fn read_matches(client: &impl IpcTransport, id: u64, re: &Regex) -> Result<PaneState, CliError> {
     match client.call(
         "surface.read",
-        json!({ "surface_id": id, "lines": READ_WINDOW_LINES }),
+        // EP-003 US-011: `wait` regex-matches raw scrollback; the untrusted
+        // fence wrapper would corrupt the match window, so opt out of it.
+        json!({ "surface_id": id, "lines": READ_WINDOW_LINES, "fenced": false }),
     ) {
         Ok(result) => {
             let text = result.get("text").and_then(Value::as_str).unwrap_or("");
