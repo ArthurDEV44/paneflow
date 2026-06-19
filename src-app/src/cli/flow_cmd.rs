@@ -46,6 +46,14 @@ const SETTLE_WINDOW_LINES: u64 = 50;
 /// truncated to fit, with an explicit marker (US-014).
 const MAX_SEND_LEN: usize = 64 * 1024;
 
+/// EP-004 US-014 (agent-control-plane): the settle/bailout decision. Fire when
+/// the pane output has been stable across >=2 reads past the floor, OR
+/// unconditionally at `max` (the bailout for output that never settles, e.g. a
+/// spinner). Pure, so the bailout is unit-tested without an 8 s wall-clock wait.
+fn settle_fire(elapsed: Duration, stable: u8, floor: Duration, max: Duration) -> bool {
+    elapsed >= max || (stable >= 2 && elapsed >= floor)
+}
+
 /// `paneflow flow run <file> [--dry-run] [--json]`.
 pub fn run(
     client: &impl IpcTransport,
@@ -464,9 +472,12 @@ impl<T: IpcTransport> Engine<'_, T> {
                                 } else {
                                     stable = 0;
                                 }
-                                if stable >= 2 && elapsed >= SETTLE_FLOOR {
-                                    fire = true;
-                                } else {
+                                // EP-004 US-014: settle once stable past the
+                                // floor; `settle_fire` also carries the bailout
+                                // (exercised by the initial check above, and
+                                // unit-tested) so the rule lives in one place.
+                                fire = settle_fire(elapsed, stable, SETTLE_FLOOR, SETTLE_MAX);
+                                if !fire {
                                     self.runs[i].state = State::Settling {
                                         last: Some(text),
                                         stable,
@@ -816,6 +827,33 @@ fn last_lines(text: &str, n: usize) -> String {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn settle_fire_bails_at_max_and_fires_when_stable_past_floor() {
+        // EP-004 US-014 AC2: output that never settles (stable stays 0) must
+        // NOT fire before the max, and MUST bail out at the max regardless.
+        assert!(
+            !settle_fire(Duration::from_millis(7999), 0, SETTLE_FLOOR, SETTLE_MAX),
+            "below max with no stability keeps waiting"
+        );
+        assert!(
+            settle_fire(SETTLE_MAX, 0, SETTLE_FLOOR, SETTLE_MAX),
+            "bailout fires at the max even if the output never settled"
+        );
+        // The settled path: stable across >=2 reads AND past the floor.
+        assert!(
+            !settle_fire(Duration::from_millis(1799), 9, SETTLE_FLOOR, SETTLE_MAX),
+            "stable but below the floor keeps waiting"
+        );
+        assert!(
+            !settle_fire(Duration::from_millis(2000), 1, SETTLE_FLOOR, SETTLE_MAX),
+            "past the floor but only one stable read keeps waiting"
+        );
+        assert!(
+            settle_fire(SETTLE_FLOOR, 2, SETTLE_FLOOR, SETTLE_MAX),
+            "two stable reads past the floor settles"
+        );
+    }
 
     #[test]
     fn substitute_vars_replaces_known_and_reports_unknown() {
