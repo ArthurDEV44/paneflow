@@ -111,6 +111,31 @@ Two more guardrails hold even with the gate on:
 
 A single `send` payload is capped at 64 KiB.
 
+## What is the injection fence? [#what-is-the-injection-fence]
+
+When one agent (a "conductor") reads another pane to decide what to do
+next, that pane's output is **untrusted**: a malicious repo or a
+compromised tool could print fake instructions to hijack the reader.
+So `surface.read` (and therefore `paneflow read`) wraps the returned
+text in an `<untrusted_terminal_output id="…">` envelope with a random
+per-call id, the same fence the MCP bridge uses. A pane cannot forge a
+matching closing tag to break out, and any literal closing sentinel in
+the body is defanged.
+
+The fence is controlled by the `ai_injection_fence` setting
+(Settings -> AI Agent), **on by default**, and stays on even in
+free-access mode because it protects the conductor without restricting
+it. Turning it off gives the AI no extra capability; it only opens a
+hijack vector that resuming control by hand will not catch in time.
+
+* Per call, pass `fenced: false` to get raw text (or `fenced: true` to
+  force the fence when the global setting is off).
+* `paneflow read --raw` is the shorthand a human uses to pipe raw
+  scrollback into `grep` etc.
+* The MCP bridge and the `flow`/`wait` poll loops opt out
+  (`fenced:false`): the bridge re-fences the text itself, and the poll
+  loops compare raw output across reads.
+
 ## CLI examples [#cli-examples]
 
 ```bash
@@ -325,7 +350,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"system.capabilities","params":{},"id":
 | `workspace.up`                                                                                             | `name`, `layout`, `panes[]`                                                                     | Declarative spawn (used by `paneflow up`/`flow`); returns `{index, title, panes, surface_ids[]}` |
 | `workspace.restore_layout`                                                                                 | `layout`                                                                                        | Apply a layout tree to the active workspace                                                      |
 | `surface.list`                                                                                             | —                                                                                               | `{surfaces: [{surface_id, name, title, cwd, cmd, workspace}]}`                                   |
-| `surface.read`                                                                                             | `surface_id`, `lines?`, `offset?`                                                               | `{text, lines, total_lines, eof}`; `lines` clamped to 1–4000                                     |
+| `surface.read`                                                                                             | `surface_id`, `lines?`, `offset?`, `fenced?`                                                    | `{text, lines, total_lines, eof, output_generation}`; `text` fenced as `<untrusted_terminal_output>` unless `fenced:false` |
 | `surface.search`                                                                                           | `surface_id`, `pattern`, `max_matches?`                                                         | Substring search; `max_matches` clamped to 1–1000                                                |
 | `surface.rename`                                                                                           | `surface_id`, `name`                                                                            | Rename a pane                                                                                    |
 | `surface.focus`                                                                                            | `surface_id`                                                                                    | Focus a pane (switches workspace/tab)                                                            |

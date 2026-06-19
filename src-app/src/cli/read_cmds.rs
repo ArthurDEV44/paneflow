@@ -2,8 +2,10 @@
 //!
 //! Thin wrappers over the existing `surface.list` / `surface.read` /
 //! `surface.search` IPC methods. Introspection (`ls`, `search`) emits JSON by
-//! default for scripts; `read` prints the raw scrollback text by default (it's
-//! terminal output, not structured data) and only wraps it in the
+//! default for scripts; `read` prints the scrollback text (wrapped in the
+//! anti-injection `<untrusted_terminal_output>` fence when the
+//! `ai_injection_fence` setting is on, the default; pass `--raw` to bypass it
+//! for a human piping into `grep`) and only wraps it in the
 //! `{text, lines, total_lines, eof}` envelope under `--json`.
 
 use paneflow_ipc_client::IpcTransport;
@@ -27,13 +29,14 @@ pub fn ls(client: &impl IpcTransport, human: bool) -> Result<i32, CliError> {
     Ok(EXIT_OK)
 }
 
-/// `paneflow read <target> [--lines N] [--offset N] [--json]`.
+/// `paneflow read <target> [--lines N] [--offset N] [--json] [--raw]`.
 pub fn read(
     client: &impl IpcTransport,
     target: &str,
     lines: Option<u64>,
     offset: Option<u64>,
     json_out: bool,
+    raw: bool,
 ) -> Result<i32, CliError> {
     let surface_id = resolve_target(client, target)?;
     let mut params = json!({ "surface_id": surface_id });
@@ -42,6 +45,12 @@ pub fn read(
     }
     if let Some(offset) = offset {
         params["offset"] = json!(offset);
+    }
+    // EP-003 US-011 (agent-control-plane): surface.read fences its output as
+    // untrusted by default (the `ai_injection_fence` setting). `--raw` forces
+    // the historical unwrapped output for a human piping into `grep` etc.
+    if raw {
+        params["fenced"] = json!(false);
     }
     let result = super::reject_legacy_error(
         client

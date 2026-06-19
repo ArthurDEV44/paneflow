@@ -85,6 +85,11 @@ enum Commands {
         /// Emit the `{text, lines, total_lines, eof}` envelope as JSON.
         #[arg(long)]
         json: bool,
+        /// Return raw scrollback, bypassing the anti-injection fence that
+        /// otherwise wraps the output as `<untrusted_terminal_output>` (the
+        /// fence is on by default; see the ai_injection_fence setting).
+        #[arg(long)]
+        raw: bool,
     },
     /// Search a pane's scrollback for a substring/pattern.
     Search {
@@ -338,7 +343,8 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             lines,
             offset,
             json,
-        } => read_cmds::read(client, &target, lines, offset, json),
+            raw,
+        } => read_cmds::read(client, &target, lines, offset, json, raw),
         Commands::Search {
             target,
             pattern,

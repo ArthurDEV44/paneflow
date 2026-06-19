@@ -106,6 +106,10 @@ fn read_pane<T: IpcTransport>(args: &Value, transport: &T) -> Result<String, Str
     let surface_id = resolve_target(args, transport)?;
     let mut params = serde_json::Map::new();
     params.insert("surface_id".into(), json!(surface_id));
+    // EP-003 US-011 (agent-control-plane): surface.read now fences its own
+    // output by default. This bridge re-wraps the text in `wrap_untrusted`
+    // below, so opt the server fence OUT to avoid a redundant double fence.
+    params.insert("fenced".into(), json!(false));
     if let Some(lines) = args.get("lines").and_then(Value::as_u64) {
         params.insert("lines".into(), json!(lines.clamp(1, MAX_LINES)));
     }
@@ -269,6 +273,9 @@ pub fn read_resource<T: IpcTransport>(uri: &str, transport: &T) -> Result<Value,
 
     let mut params = serde_json::Map::new();
     params.insert("surface_id".into(), json!(surface_id));
+    // EP-003 US-011: re-fenced below via `wrap_untrusted`; opt the server
+    // fence out so the resource body is not double-wrapped.
+    params.insert("fenced".into(), json!(false));
     let result = transport.call("surface.read", Value::Object(params))?;
     let text = result.get("text").and_then(Value::as_str).unwrap_or("");
     let total = result
