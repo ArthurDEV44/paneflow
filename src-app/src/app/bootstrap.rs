@@ -613,6 +613,16 @@ impl PaneFlowApp {
             posthog_host,
             &telemetry_distinct_id,
         ));
+        // EP-003 US-008 (agent-control-plane): one-shot boot warn when AI
+        // free-access mode is enabled, mirroring the PANEFLOW_IPC_SCRIPTING
+        // boot warn in `ipc::start_server()`. Reuses the snapshot already
+        // loaded for telemetry so the file is not re-read. The fence is
+        // independent and defaults ON, so it does not warn.
+        if telemetry_config_snapshot.ai_unrestricted_enabled() {
+            tracing::warn!(
+                "ai.unrestricted is ON; same-UID callers may auto-submit prompts to agent panes without PANEFLOW_IPC_SCRIPTING (toggle in Settings -> AI Agent)"
+            );
+        }
         // US-007: now that the telemetry client exists, fire off the
         // background update check. The detached worker emits
         // `update_check_started` immediately and `update_available`

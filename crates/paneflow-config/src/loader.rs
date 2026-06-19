@@ -885,6 +885,8 @@ mod tests {
             agent_stall_threshold_secs: None,
             review_prefill_delay_ms: None,
             claude_code_bypass_permissions: None,
+            ai_unrestricted: None,
+            ai_injection_fence: None,
             claude_code_button_visible: None,
             codex_button_visible: None,
             opencode_button_visible: None,

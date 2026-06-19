@@ -102,6 +102,29 @@ pub struct PaneFlowConfig {
     /// with existing user configs even though the scope now covers
     /// Codex too.
     pub claude_code_bypass_permissions: Option<bool>,
+    /// EP-003 US-008 (agent-control-plane): "AI free access" master switch.
+    /// `Some(true)` debrays the *bridling* guardrails so a conductor (a CLI
+    /// agent or external orchestrator) can drive its peers without friction:
+    /// `surface.send_text submit:true` is authorized without the
+    /// `PANEFLOW_IPC_SCRIPTING` env gate, and every such write is traced.
+    /// `Some(false)` / `None` (the default) keeps the current behavior
+    /// strictly unchanged (prefill-not-submitted + env-gated writes).
+    /// Re-evaluated per IPC call, so the mode takes effect (or is revoked)
+    /// hot with no residual capability. A non-boolean value resolves to
+    /// `None` (false) with a warn, never an accidentally-open state.
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub ai_unrestricted: Option<bool>,
+    /// EP-003 US-008/US-011 (agent-control-plane): anti-injection fence on
+    /// the `surface.read` CLI/IPC path, INDEPENDENT of `ai_unrestricted`.
+    /// `Some(true)` / `None` (the default) wraps returned terminal text in
+    /// the `<untrusted_terminal_output id="…">` marker (parity with the MCP
+    /// bridge) so a malicious peer pane cannot hijack a conductor reading it.
+    /// `Some(false)` returns raw text (historical behavior), a risk the user
+    /// assumes. The fence PROTECTS the AI from being redirected; it does not
+    /// bridle it, so it stays ON by default even in free-access mode. A
+    /// non-boolean value resolves to `None` (fence ON) with a warn.
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub ai_injection_fence: Option<bool>,
     /// Show the built-in "Claude Code" command button in the tab bar.
     /// `Some(true)` always renders the button, `Some(false)` hides it, and
     /// `None` (default) renders it only when the CLI binary is installed.
@@ -262,6 +285,48 @@ impl PaneFlowConfig {
         }
         clamped
     }
+
+    /// EP-003 US-008 (agent-control-plane): resolve the AI free-access master
+    /// switch. Default OFF (`false`) so a fresh config never opens the mode.
+    pub fn ai_unrestricted_enabled(&self) -> bool {
+        self.ai_unrestricted.unwrap_or(false)
+    }
+
+    /// EP-003 US-008/US-011 (agent-control-plane): resolve the anti-injection
+    /// fence. Default ON (`true`): a missing or malformed value fails closed
+    /// to fenced, even when free-access mode is on (the fence protects the
+    /// conductor, it does not bridle it).
+    pub fn ai_injection_fence_enabled(&self) -> bool {
+        self.ai_injection_fence.unwrap_or(true)
+    }
+}
+
+/// Lenient `Option<bool>` deserializer for the security-sensitive AI-access
+/// toggles (`ai_unrestricted`, `ai_injection_fence`). A non-boolean value
+/// (e.g. the string `"true"`) deserializes to `None` with a `warn!` instead
+/// of hard-erroring, which would propagate to `parse_and_validate` and wipe
+/// EVERY sibling setting on a single typo (the all-or-nothing fallback the
+/// terminal enums avoid for the same reason). `None` then resolves to each
+/// field's safe default via its resolver (`ai_unrestricted` -> false,
+/// `ai_injection_fence` -> true), so a malformed value can never accidentally
+/// open the free-access mode nor disable the fence (US-008 AC #3).
+fn lenient_opt_bool<'de, D>(d: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(match v {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Bool(b)) => Some(b),
+        Some(other) => {
+            tracing::warn!(
+                target: "paneflow_config",
+                value = %other,
+                "expected a boolean for an AI-access toggle, ignoring (using safe default)",
+            );
+            None
+        }
+    })
 }
 
 /// Per-tool permission patterns persisted under `"tool_permissions"`
@@ -1248,6 +1313,8 @@ mod tests {
             review_prefill_delay_ms: Some(2000),
             external_editor: Some("auto".to_string()),
             claude_code_bypass_permissions: Some(false),
+            ai_unrestricted: Some(true),
+            ai_injection_fence: Some(false),
             claude_code_button_visible: Some(true),
             codex_button_visible: Some(true),
             opencode_button_visible: Some(true),
@@ -1352,6 +1419,43 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cfg.resolved_agent_stall_threshold_secs(), 600);
+    }
+
+    #[test]
+    fn ai_access_toggles_default_safe_and_tolerate_garbage() {
+        // EP-003 US-008 AC #1/#5: a fresh config never opens free-access and
+        // always fences.
+        let cfg = PaneFlowConfig::default();
+        assert!(!cfg.ai_unrestricted_enabled(), "unrestricted defaults OFF");
+        assert!(cfg.ai_injection_fence_enabled(), "fence defaults ON");
+
+        // Explicit booleans round-trip through the lenient deserializer.
+        let cfg: PaneFlowConfig =
+            serde_json::from_str(r#"{"ai_unrestricted": true, "ai_injection_fence": false}"#)
+                .unwrap();
+        assert!(cfg.ai_unrestricted_enabled());
+        assert!(!cfg.ai_injection_fence_enabled());
+
+        // AC #3: a non-boolean value fails CLOSED (unrestricted -> false, fence
+        // -> true) instead of erroring the whole parse, and does NOT wipe the
+        // sibling settings the all-or-nothing loader fallback would have lost.
+        let cfg: PaneFlowConfig = serde_json::from_str(
+            r#"{"theme": "One Dark", "ai_unrestricted": "yes", "ai_injection_fence": 0}"#,
+        )
+        .unwrap();
+        assert!(
+            !cfg.ai_unrestricted_enabled(),
+            "a garbage value must never open the mode"
+        );
+        assert!(
+            cfg.ai_injection_fence_enabled(),
+            "a garbage value must never drop the fence"
+        );
+        assert_eq!(
+            cfg.theme.as_deref(),
+            Some("One Dark"),
+            "siblings survive a malformed AI-access toggle"
+        );
     }
 
     #[test]
