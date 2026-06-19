@@ -13,6 +13,14 @@
 //! `try_send`) and a `dropped` counter conveys the loss; the broadcaster (the
 //! render thread) is never blocked.
 
+// The subscribe side of this bus (`events.subscribe`, its filter parser, the
+// `Subscription` RAII handle) is Unix-only: the Windows named pipe is
+// one-request-per-connection and cannot stream, so the IPC handler returns
+// -32004 there and never registers a subscriber. The broadcast side stays live
+// on every platform, so on non-Unix targets the subscribe-side items are
+// intentionally unused rather than dead - keep dead-code detection on for Unix.
+#![cfg_attr(not(unix), allow(dead_code))]
+
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
