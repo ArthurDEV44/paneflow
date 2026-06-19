@@ -155,6 +155,16 @@
       "description": "When true, the built-in 'Claude Code' tab-bar button launches the CLI with --permission-mode bypassPermissions, disabling all permission prompts. Per Anthropic's docs this mode offers no protection against prompt injection — opt in only on machines where that risk is acceptable.",
       "default": false
     },
+    "ai_unrestricted": {
+      "type": ["boolean", "null"],
+      "description": "AI free-access mode. When true, a conductor (a CLI agent or external orchestrator) may auto-submit prompts to other panes (surface.send_text submit:true) WITHOUT the PANEFLOW_IPC_SCRIPTING env gate, and every such write is traced. Null/false (default) keeps the current behavior strictly unchanged. Re-evaluated per call, so toggling it off revokes the capability with no residual access.",
+      "default": false
+    },
+    "ai_injection_fence": {
+      "type": ["boolean", "null"],
+      "description": "Anti-injection fence on the surface.read CLI/IPC path, independent of ai_unrestricted. Null/true (default) wraps returned terminal text in an <untrusted_terminal_output> marker so a malicious peer pane cannot hijack a conductor reading it. False returns raw text (an assumed risk). Stays ON by default even in free-access mode because the fence protects the AI, it does not bridle it.",
+      "default": true
+    },
     "claude_code_button_visible": {
       "type": ["boolean", "null"],
       "description": "Show the built-in 'Claude Code' command button. Null/omitted auto-detects the CLI binary.",
