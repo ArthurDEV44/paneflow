@@ -195,7 +195,11 @@ impl IpcStatus {
 /// on Windows have different lifecycle semantics (the second process to
 /// claim the pipe name fails at creation, not silently), so the clobber
 /// detection is Unix-only.
-pub fn start_server() -> (mpsc::Receiver<IpcRequest>, IpcStatus) {
+pub fn start_server() -> (
+    mpsc::Receiver<IpcRequest>,
+    IpcStatus,
+    Arc<crate::ipc_events::EventBus>,
+) {
     // US-012 (cli-hardening-followup-2026-Q3): one-time boot-time
     // warn-log when scripting is enabled. The per-call gate in
     // `surface.send_text` / `surface.send_keystroke` stays the
@@ -212,6 +216,12 @@ pub fn start_server() -> (mpsc::Receiver<IpcRequest>, IpcStatus) {
     let (tx, rx) = mpsc::channel();
     let status = IpcStatus::online();
     let thread_status = status.clone();
+
+    // EP-002 (agent-control-plane): the outbound event bus. One handle stays in
+    // start_server to be returned to the GPUI app (it broadcasts); a clone moves
+    // into the IPC thread so each accepted connection can register a subscriber.
+    let event_bus = crate::ipc_events::EventBus::new();
+    let thread_event_bus = Arc::clone(&event_bus);
 
     // Singleton guard: probe the socket BEFORE the IPC thread spawns and
     // before `bind_socket` blindly `remove_file`s any existing socket. If
@@ -346,6 +356,7 @@ pub fn start_server() -> (mpsc::Receiver<IpcRequest>, IpcStatus) {
                         active_connections.fetch_add(1, Ordering::AcqRel);
                         let guard = ActiveGuard(Arc::clone(&active_connections));
                         let tx = tx.clone();
+                        let bus = Arc::clone(&thread_event_bus);
                         // EP-001 US-005 parity: use the fallible `Builder::spawn`,
                         // never the panicking `thread::spawn`. Under
                         // RLIMIT_NPROC / EAGAIN the latter panics and unwinds
@@ -359,7 +370,7 @@ pub fn start_server() -> (mpsc::Receiver<IpcRequest>, IpcStatus) {
                             .name("paneflow-ipc-conn".into())
                             .spawn(move || {
                                 let _guard = guard;
-                                handle_connection(stream, tx);
+                                handle_connection(stream, tx, bus);
                             })
                         {
                             log::warn!(
@@ -433,7 +444,7 @@ pub fn start_server() -> (mpsc::Receiver<IpcRequest>, IpcStatus) {
         // app runs normally, only external IPC clients can't reach it.
     }
 
-    (rx, status)
+    (rx, status, event_bus)
 }
 
 /// Bind a new listener at the given path/pipe name.
@@ -635,7 +646,16 @@ fn reject_overloaded(mut stream: Stream) {
     let _ = stream.flush();
 }
 
-fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
+fn handle_connection(
+    stream: Stream,
+    request_tx: mpsc::Sender<IpcRequest>,
+    event_bus: Arc<crate::ipc_events::EventBus>,
+) {
+    // `event_bus` is consumed only by the Unix subscription path; silence the
+    // unused-variable warning on Windows where event streaming is stubbed.
+    #[cfg(not(unix))]
+    let _ = &event_bus;
+
     // `Stream::try_clone` is provided by `interprocess::TryClone` and
     // works on both Unix domain sockets and Windows named pipes. One
     // handle reads, the other writes, so request/response flow does not
@@ -748,6 +768,20 @@ fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
                     .to_string();
                 let params = req.get("params").cloned().unwrap_or(json!({}));
 
+                // EP-002 (agent-control-plane): an `events.subscribe` connection
+                // STOPS being request/response and becomes a persistent event
+                // stream. On Unix it takes over this connection until the client
+                // disconnects (bypassing the one-request Windows break below).
+                // Windows is handled as a documented error in the match: named-
+                // pipe streaming risks an `interprocess` overlapped-write abort
+                // on client disconnect that can't be verified from a non-Windows
+                // host (tracked EP-002 follow-up).
+                #[cfg(unix)]
+                if method == "events.subscribe" {
+                    serve_subscription(&mut writer, &params, &event_bus);
+                    return;
+                }
+
                 // Hook-chain diagnostic: confirm the IPC server received the
                 // lifecycle frame at all (vs. the hook never connecting). Only
                 // `ai.*` frames drive the sidebar status, so scope the log to
@@ -785,6 +819,7 @@ fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
                                 "surface.send_text", "surface.send_keystroke", "surface.split",
                                 "surface.focus", "surface.status",
                                 "fleet.list",
+                                "events.subscribe",
                                 "ai.session_start",
                                 "ai.prompt_submit",
                                 "ai.tool_use",
@@ -800,6 +835,17 @@ fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
                             "name": "PaneFlow",
                             "version": env!("CARGO_PKG_VERSION"),
                             "protocol": "jsonrpc-2.0"
+                        }, "id": id})
+                    }
+                    // EP-002: Windows event-streaming stub (the Unix path
+                    // returns before reaching this match). Documented error so
+                    // a `paneflow watch` on Windows fails clearly rather than
+                    // hanging or risking the named-pipe write abort.
+                    #[cfg(not(unix))]
+                    "events.subscribe" => {
+                        json!({"jsonrpc": "2.0", "error": {
+                            "code": -32004,
+                            "message": "event streaming is not supported on Windows yet; subscribe over the Unix socket"
                         }, "id": id})
                     }
                     _ => {
@@ -835,6 +881,66 @@ fn handle_connection(stream: Stream, request_tx: mpsc::Sender<IpcRequest>) {
         // such abort (EOF is returned cleanly), so it keeps the multi-request loop.
         #[cfg(windows)]
         break;
+    }
+}
+
+/// EP-002 (agent-control-plane): serve a persistent `events.subscribe` stream.
+/// Registers a subscriber, writes a `subscribed` ack, then writes each pushed
+/// event line until the client disconnects. A 30 s idle tick emits a heartbeat
+/// (US-007) so a dead client is detected even when no events flow, and any
+/// backlog shed under backpressure (US-004) is reported as a `dropped` marker.
+/// Returns when a write fails (client gone) or the bus shuts down; the
+/// `Subscription` drops here, unsubscribing (RAII). Unix-only: Windows named-
+/// pipe streaming is stubbed at the dispatch site.
+#[cfg(unix)]
+fn serve_subscription(writer: &mut Stream, params: &Value, bus: &Arc<crate::ipc_events::EventBus>) {
+    use std::sync::mpsc::RecvTimeoutError;
+
+    const HEARTBEAT: Duration = Duration::from_secs(30);
+
+    let filter = match crate::ipc_events::EventFilter::from_params(params) {
+        Ok(f) => f,
+        Err(msg) => {
+            let err = json!({
+                "jsonrpc": "2.0",
+                "error": {"code": -32602, "message": msg},
+                "id": Value::Null,
+            });
+            let _ = writeln!(writer, "{}", err);
+            let _ = writer.flush();
+            return;
+        }
+    };
+    let sub = bus.subscribe(filter);
+    let ack = json!({"type": "subscribed", "id": sub.id});
+    if writeln!(writer, "{}", ack).is_err() || writer.flush().is_err() {
+        return;
+    }
+
+    loop {
+        // Report any events shed under backpressure since the last write.
+        let dropped = sub.take_dropped();
+        if dropped > 0 {
+            let marker = json!({"type": "dropped", "count": dropped});
+            if writeln!(writer, "{}", marker).is_err() || writer.flush().is_err() {
+                break;
+            }
+        }
+        match sub.rx.recv_timeout(HEARTBEAT) {
+            Ok(line) => {
+                // `line` already carries its trailing newline.
+                if writer.write_all(line.as_bytes()).is_err() || writer.flush().is_err() {
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                let hb = json!({"type": "heartbeat"});
+                if writeln!(writer, "{}", hb).is_err() || writer.flush().is_err() {
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
     }
 }
 

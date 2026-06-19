@@ -21,6 +21,7 @@ mod selector;
 mod send_cmd;
 mod up_cmd;
 mod wait_cmd;
+mod watch_cmd;
 mod workspace_spec;
 
 /// Process exit codes. Kept distinct so scripts can branch on the failure
@@ -39,7 +40,7 @@ pub const EXIT_TIMEOUT: i32 = 4;
 /// path stays byte-for-byte unchanged for any other `argv[1]`.
 const VERBS: &[&str] = &[
     "ls", "read", "search", "ps", "status", "new", "select", "split", "send", "up", "wait",
-    "focus", "key", "flow",
+    "watch", "focus", "key", "flow",
 ];
 
 /// True when `argv[1]` names one of our subcommands.
@@ -202,6 +203,15 @@ enum Commands {
         /// Require ALL matching panes to match the pattern.
         #[arg(long)]
         all: bool,
+    },
+    /// Stream lifecycle events from the running instance as JSONL (EP-002).
+    Watch {
+        /// Only stream events for this pane (selector). Omit for all panes.
+        #[arg(long)]
+        surface: Option<String>,
+        /// Only stream these event types (repeatable). Omit for all types.
+        #[arg(long = "type", value_name = "TYPE")]
+        types: Vec<String>,
     },
 }
 
@@ -374,6 +384,7 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             };
             wait_cmd::wait(client, &selector, &pattern, timeout, mode)
         }
+        Commands::Watch { surface, types } => watch_cmd::watch(client, surface.as_deref(), &types),
     }
 }
 
@@ -484,6 +495,33 @@ mod tests {
         assert_eq!(err.exit_code(), 2);
         let cli = Cli::try_parse_from(["paneflow", "key", "backend", "escape"]).expect("parse");
         assert!(matches!(cli.command, Some(Commands::Key { .. })));
+    }
+
+    #[test]
+    fn watch_parses_optional_surface_and_repeatable_types() {
+        let cli = Cli::try_parse_from(["paneflow", "watch"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Watch { surface: None, .. })
+        ));
+        let cli = Cli::try_parse_from([
+            "paneflow",
+            "watch",
+            "--surface",
+            "backend",
+            "--type",
+            "ai.stop",
+            "--type",
+            "ai.notification",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Commands::Watch { surface, types }) => {
+                assert_eq!(surface.as_deref(), Some("backend"));
+                assert_eq!(types, vec!["ai.stop", "ai.notification"]);
+            }
+            other => panic!("expected Watch, got {other:?}"),
+        }
     }
 
     #[test]

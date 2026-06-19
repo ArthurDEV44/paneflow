@@ -41,6 +41,7 @@ mod diff;
 mod editor;
 mod fonts;
 mod ipc;
+mod ipc_events;
 mod keybindings;
 mod keys;
 mod layout;
@@ -507,6 +508,12 @@ struct PaneFlowApp {
     cached_config: paneflow_config::schema::PaneFlowConfig,
     ipc_rx: std::sync::mpsc::Receiver<ipc::IpcRequest>,
     ipc_status: ipc::IpcStatus,
+    /// EP-002 (agent-control-plane): outbound event bus shared with the IPC
+    /// server. `broadcast` is called from the render thread (non-blocking).
+    event_bus: std::sync::Arc<ipc_events::EventBus>,
+    /// EP-002 US-006: last `output_generation` broadcast per surface, so the
+    /// 50 ms sweep emits `surface_changed` only on an actual change (debounce).
+    last_broadcast_gen: std::collections::HashMap<u64, u64>,
     title_bar: Entity<title_bar::TitleBar>,
     /// Visibility of the primary left rail shared by CLI, Agents, and Diff.
     /// Ephemeral by design: each launch starts with navigation visible.
