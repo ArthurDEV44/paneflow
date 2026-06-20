@@ -374,7 +374,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"system.capabilities","params":{},"id":
 | `surface.send_text`                                                                                        | `surface_id`, `text`, `submit?`                                                                 | **Gated**; 64 KiB cap; `submit` appends the carriage return                                      |
 | `surface.send_keystroke`                                                                                   | `surface_id`, `keystroke`                                                                       | **Gated**; refuses submitting keys; CRLF bytes rejected unconditionally                          |
 | `surface.split`                                                                                            | `direction`, `surface_id?`, `cwd?`, `command?`, `prompt?`, `env?`, `name?`, `managed_worktree?` | Returns the new `surface_id`; bounded by the pane cap                                            |
-| `events.subscribe`                                                                                         | `surfaces?: [id…]`, `types?: [type…]`                                                            | **Unix only.** Turns the connection into a persistent event stream (see below). Read-only, no scripting gate. An unknown `types` value is rejected with `-32602`; on Windows the method returns `-32004` (stream over the Unix socket instead). |
+| `events.subscribe`                                                                                         | `surfaces?: [id…]`, `types?: [type…]`                                                            | Turns the connection into a persistent event stream (see below). Read-only, no scripting gate. An unknown `types` value is rejected with `-32602`. Works on Linux, macOS, and Windows (the Windows named-pipe push is guarded against the disconnect abort, US-013). |
 | `ai.session_start` / `ai.prompt_submit` / `ai.tool_use` / `ai.notification` / `ai.stop` / `ai.session_end` | hook payloads                                                                                   | Lifecycle telemetry from `paneflow-ai-hook` (see below); read-only on the UI side                |
 
 Handlers signal structured failures as JSON-RPC `error` envelopes
@@ -389,11 +389,17 @@ server-initiated push instead of polling. Unlike every other method it does
 **not** return a single response then close: the connection stays open and the
 server writes one JSON object per line until the client disconnects.
 
-* **Per-OS design**: implemented over the Unix domain socket only. The Windows
-  named pipe is one-request-per-connection (a second read on a peer-closed pipe
-  aborts the process inside `interprocess`), so `events.subscribe` returns
-  `-32004` there; stream over the Unix socket. The same peer-UID + `0600` trust
-  check as every other connection applies before the stream starts.
+* **Per-OS design**: streamed over the Unix domain socket and the Windows named
+  pipe alike (US-013). Request/response methods stay one-exchange-per-connection
+  on Windows (a second read on a peer-closed pipe aborts the process inside
+  `interprocess`), but `events.subscribe` takes the connection over for the whole
+  stream, and each push is gated by a `PeekNamedPipe` liveness probe so a
+  disconnected subscriber (`Ctrl+C` on `paneflow watch`) is evicted cleanly
+  instead of aborting. The same trust check as every other connection applies
+  before the stream starts: peer-UID + `0600` on Unix, the default named-pipe
+  DACL (owner + SYSTEM + Administrators) on Windows. Note: `paneflow wait --idle`
+  additionally needs a recv-timeout the Windows named pipe rejects, so on Windows
+  use `paneflow watch` or a sentinel `wait --pattern` for turn-end detection.
 * **Filtering**: `surfaces` limits to those pane ids; `types` limits to those
   event types. Omit a field to match everything on that axis. A surface-scoped
   subscriber never receives an unscoped event (e.g. an unresolved-PID `ai.*`

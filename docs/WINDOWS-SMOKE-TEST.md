@@ -323,6 +323,126 @@ release on this specific edge case unless PaneFlow itself crashes.
 
 ---
 
+## Part 2 - Agent control-plane runtime smokes (EP-006 / US-014)
+
+These scenarios validate the agent control-plane paths that are
+**compile-verified on the Linux build host but only runtime-observable on
+Windows**: the named-pipe event bus (`events.subscribe` / `paneflow watch`),
+ConPTY bracketed paste, and ConPTY `Ctrl+C` -> `ai.stop`. They are referenced by
+US-013 / US-014 of
+[`tasks/prd-agent-control-plane-hardening-2026-Q3.md`](../tasks/prd-agent-control-plane-hardening-2026-Q3.md).
+
+Unlike Part 1 (run every release), run Part 2 whenever the control plane
+changes (the IPC server, the shim's Ctrl-C path, or the EP-001 paste path).
+Windows 11 (current ConPTY) is the minimum leg; Windows 10 1809 is a bonus.
+
+**Prerequisites:** a PaneFlow build carrying the EP-006 change, `paneflow.exe`
+on `PATH` (or invoked by full path), at least one hookable agent CLI installed
+(Claude Code or Codex), and PaneFlow launched with `PANEFLOW_IPC_SCRIPTING=1` in
+its environment so `send --submit` is permitted. Run PaneFlow from a console
+build (or with `RUST_LOG=info`) so any process abort is captured on stderr.
+
+### CP-1 - `Ctrl+C` mid-turn emits `ai.stop` and frees the spinner
+
+Validates `crates/paneflow-shim/src/exec.rs:404` (the ConPTY `Ctrl+C` ->
+`ai.stop` path), compile-verified only until now.
+
+**Steps:**
+1. Spawn a hooked agent (`paneflow up <spec>` or the in-app picker); confirm
+   `paneflow ps --json` shows it `hooked:true`.
+2. In a separate shell, start `paneflow watch --type ai.stop`.
+3. Dispatch a long task (`paneflow send <agent> "..." --submit`) so the thinking
+   spinner shows.
+4. Focus the agent pane and press `Ctrl+C` mid-turn.
+
+**Expected:**
+- The thinking spinner clears (sidebar state returns to idle/finished).
+- `paneflow watch` prints one `ai.stop` JSONL line for that surface.
+- No PaneFlow crash.
+
+**Known limitation pointer:** ConPTY `Ctrl+C` propagation is imperfect
+(alacritty#3075, see Scenario 8). PASS as long as the turn stops and `ai.stop`
+fires; otherwise "PASS with upstream caveat".
+
+### CP-2 - Bracketed paste survives ConPTY (US-001)
+
+Validates that the EP-001 bracketed-paste submit (`ESC[200~` ... `ESC[201~` plus
+a deferred `\r`) is not mangled by ConPTY.
+
+**Steps:**
+1. With a hooked agent that enables bracketed paste (Claude Code sends
+   `ESC[?2004h`), dispatch a multi-line prompt with `paneflow send <agent>
+   "line one<newline>line two" --submit`.
+2. Watch the agent's input box and whether the turn starts on its own.
+
+**Expected:**
+- The agent receives the prompt as ONE pasted block (Claude Code shows
+  `[Pasted text #1]`), with the newline kept INSIDE the paste rather than
+  submitting early.
+- The turn starts without a manual Enter (the deferred `\r` lands);
+  `paneflow status <agent> --json` shows `state:"thinking"` shortly after.
+
+**Fallback (documented, satisfies the AC):** if ConPTY strips the
+`ESC[200~`/`ESC[201~` wrappers (no paste indicator, the multi-line text submits
+line by line), record it here as the ConPTY-filters-paste limitation and fall
+back to single-line prompts on Windows.
+
+### CP-3 - Agent without bracketed paste enabled
+
+**Steps:**
+1. Use a pane that does NOT send `ESC[?2004h` (a bare shell, or an agent with
+   paste disabled).
+2. `paneflow send <pane> "some text" --submit`.
+
+**Expected:**
+- The text arrives verbatim and the `\r` submits it; NO `ESC[200~`/`ESC[201~`
+  bytes leak into the buffer as literal characters (no silent corruption). The
+  server auto-selects the raw path for a non-agent pane
+  (`resolve_paste_mode`), so the wrappers are never sent.
+
+### CP-4 - `events.subscribe` / `watch` disconnect must NOT abort the app (US-013)
+
+The headline EP-006 scenario. A disconnected subscriber must evict cleanly via
+the `PeekNamedPipe` liveness gate (`ipc.rs::subscriber_connected`) instead of
+aborting the whole process through interprocess's overlapped-write
+`CannotUnwind` guard.
+
+**Steps:**
+1. Launch PaneFlow with at least one pane producing output.
+2. In a shell: `paneflow watch`. Confirm JSONL events stream (drive some agent
+   activity, or just wait for the 30 s `{"type":"heartbeat"}` line).
+3. Press `Ctrl+C` in the `paneflow watch` shell to disconnect the subscriber.
+4. Back in PaneFlow, keep producing output (type in a pane, trigger an agent
+   turn) so the server pushes more events to the now-dead pipe.
+5. Repeat connect / `Ctrl+C` 10+ times rapidly, including once mid-burst
+   (`Ctrl+C` the watcher while a flood of events is being pushed).
+
+**Expected:**
+- `paneflow watch` exits cleanly (exit 0) on `Ctrl+C`.
+- PaneFlow keeps running after EVERY disconnect - no crash, no
+  `STATUS_STACK_BUFFER_OVERRUN` (0xC0000409), no silent process exit.
+- A fresh `paneflow watch` after a disconnect re-subscribes and streams again.
+- Backpressure parity: with a paused/slow reader and an event flood, the next
+  delivered frame is a `{"type":"dropped","count":N}` marker (not unbounded
+  memory growth).
+
+**Residual race (documented):** the liveness probe sits immediately before the
+write, so a peer closing in the sub-microsecond window between probe and the
+overlapped write can still abort. Step 5's mid-burst `Ctrl+C` is the stressor.
+If an abort is ever observed, capture the iteration count and file it as a
+bucket-C blocker - the gate would then need a stronger mechanism (e.g. a raw
+synchronous write path that returns `ERROR_BROKEN_PIPE` instead of aborting).
+
+### Recording results
+
+Log each CP scenario as `PASS` / `PASS with caveat` / `FAIL (bucket A/B/C)`,
+with the Windows build number and the PaneFlow version, in the EP-006 review
+note (or the release PR). Until a maintainer runs these on real Windows, the
+EP-006 stories carry "compile-verified on Linux; Windows runtime smoke pending"
+- the same posture as `crates/paneflow-shim` US-017 of the Windows-port PRD.
+
+---
+
 ## Failure triage (AC-4)
 
 When a scenario fails on either VM, classify the failure into exactly

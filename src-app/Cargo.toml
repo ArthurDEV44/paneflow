@@ -332,6 +332,12 @@ windows-sys = { version = "0.59", features = [
     # since `windows_subsystem = "windows"` otherwise detaches it (and stops
     # the OS from popping a stray console window on a GUI launch).
     "Win32_System_Console",
+    # EP-006 US-013 (agent-control-plane-hardening): PeekNamedPipe gates every
+    # events.subscribe push on the named pipe's liveness, so a disconnected
+    # `paneflow watch` evicts the subscription (RAII) instead of tripping
+    # interprocess's overlapped-write CannotUnwind abort. PeekNamedPipe is under
+    # Win32_System_Pipes; GetLastError + ERROR_* already live in _Foundation.
+    "Win32_System_Pipes",
 ] }
 # US-003: process-wide Job Object with KILL_ON_JOB_CLOSE so a kill -9
 # of Paneflow (or any uncaught crash) takes all spawned agent CLIs and

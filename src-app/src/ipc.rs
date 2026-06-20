@@ -675,10 +675,9 @@ fn handle_connection(
     request_tx: mpsc::Sender<IpcRequest>,
     event_bus: Arc<crate::ipc_events::EventBus>,
 ) {
-    // `event_bus` is consumed only by the Unix subscription path; silence the
-    // unused-variable warning on Windows where event streaming is stubbed.
-    #[cfg(not(unix))]
-    let _ = &event_bus;
+    // EP-006 US-013: `event_bus` now feeds `serve_subscription` on BOTH
+    // platforms (the Windows event stream is no longer stubbed), so the former
+    // `#[cfg(not(unix))] let _ = &event_bus;` unused-variable shim is gone.
 
     // `Stream::try_clone` is provided by `interprocess::TryClone` and
     // works on both Unix domain sockets and Windows named pipes. One
@@ -797,15 +796,15 @@ fn handle_connection(
                     .to_string();
                 let params = req.get("params").cloned().unwrap_or(json!({}));
 
-                // EP-002 (agent-control-plane): an `events.subscribe` connection
-                // STOPS being request/response and becomes a persistent event
-                // stream. On Unix it takes over this connection until the client
-                // disconnects (bypassing the one-request Windows break below).
-                // Windows is handled as a documented error in the match: named-
-                // pipe streaming risks an `interprocess` overlapped-write abort
-                // on client disconnect that can't be verified from a non-Windows
-                // host (tracked EP-002 follow-up).
-                #[cfg(unix)]
+                // EP-002 / EP-006 (agent-control-plane): an `events.subscribe`
+                // connection STOPS being request/response and becomes a
+                // persistent event stream. It takes over this connection on BOTH
+                // platforms and `return`s before the one-request Windows `break`
+                // below. The Windows push path is guarded by a PeekNamedPipe
+                // liveness probe (US-013) so a disconnected subscriber evicts
+                // cleanly via RAII instead of tripping interprocess's overlapped-
+                // write abort - the same abort the request/response path dodges
+                // with `suppress_reply` + the one-request break.
                 if method == "events.subscribe" {
                     serve_subscription(&mut writer, &params, &event_bus);
                     return;
@@ -866,19 +865,11 @@ fn handle_connection(
                             "protocol": "jsonrpc-2.0"
                         }, "id": id})
                     }
-                    // EP-002: Windows event-streaming stub (the Unix path
-                    // returns before reaching this match). Documented error so
-                    // a `paneflow watch` on Windows fails clearly rather than
-                    // hanging or risking the named-pipe write abort.
-                    #[cfg(not(unix))]
-                    "events.subscribe" => {
-                        json!({"jsonrpc": "2.0", "error": {
-                            "code": -32004,
-                            "message": "event streaming is not supported on Windows yet; subscribe over the Unix socket"
-                        }, "id": id})
-                    }
                     _ => {
-                        // Dispatch to GPUI thread and wait for response
+                        // Dispatch to GPUI thread and wait for response.
+                        // `events.subscribe` never reaches here: it is handled by
+                        // the persistent-stream early return above on BOTH
+                        // platforms (EP-006 US-013).
                         dispatch_to_gpui(&request_tx, method, params, id, caller_pid)
                     }
                 }
@@ -913,15 +904,22 @@ fn handle_connection(
     }
 }
 
-/// EP-002 (agent-control-plane): serve a persistent `events.subscribe` stream.
-/// Registers a subscriber, writes a `subscribed` ack, then writes each pushed
-/// event line until the client disconnects. A 30 s idle tick emits a heartbeat
-/// (US-007) so a dead client is detected even when no events flow, and any
-/// backlog shed under backpressure (US-004) is reported as a `dropped` marker.
-/// Returns when a write fails (client gone) or the bus shuts down; the
-/// `Subscription` drops here, unsubscribing (RAII). Unix-only: Windows named-
-/// pipe streaming is stubbed at the dispatch site.
-#[cfg(unix)]
+/// EP-002 / EP-006 (agent-control-plane): serve a persistent `events.subscribe`
+/// stream. Registers a subscriber, writes a `subscribed` ack, then writes each
+/// pushed event line until the client disconnects. A 30 s idle tick emits a
+/// heartbeat (US-007) so a dead client is detected even when no events flow, and
+/// any backlog shed under backpressure (US-004) is reported as a `dropped`
+/// marker. Returns when a push fails (client gone) or the bus shuts down; the
+/// `Subscription` drops here, unsubscribing (RAII).
+///
+/// Cross-platform (US-013). On Windows, every push goes through [`push_frame`] /
+/// [`push_line`], which probe the named pipe's liveness with `PeekNamedPipe`
+/// BEFORE writing: a write to an already-disconnected named pipe does NOT return
+/// an error from `interprocess` - it aborts the whole process via the overlapped
+/// `WriteFileEx` `CannotUnwind` guard (the same abort the request/response path
+/// dodges with `suppress_reply`), and no `catch_unwind` can stop a `process::
+/// abort`. The probe turns a `watch` client's Ctrl-C into a clean RAII eviction.
+/// Runtime behaviour is smoke-tested on Windows (US-014); the build host is Linux.
 fn serve_subscription(writer: &mut Stream, params: &Value, bus: &Arc<crate::ipc_events::EventBus>) {
     use std::sync::mpsc::RecvTimeoutError;
 
@@ -935,14 +933,15 @@ fn serve_subscription(writer: &mut Stream, params: &Value, bus: &Arc<crate::ipc_
                 "error": {"code": -32602, "message": msg},
                 "id": Value::Null,
             });
-            let _ = writeln!(writer, "{}", err);
-            let _ = writer.flush();
+            // Guarded like every other push: on Windows the subscribe request's
+            // pipe may already be abandoned by the time we reply.
+            push_frame(writer, &err);
             return;
         }
     };
     let sub = bus.subscribe(filter);
     let ack = json!({"type": "subscribed", "id": sub.id});
-    if writeln!(writer, "{}", ack).is_err() || writer.flush().is_err() {
+    if !push_frame(writer, &ack) {
         return;
     }
 
@@ -951,26 +950,96 @@ fn serve_subscription(writer: &mut Stream, params: &Value, bus: &Arc<crate::ipc_
         let dropped = sub.take_dropped();
         if dropped > 0 {
             let marker = json!({"type": "dropped", "count": dropped});
-            if writeln!(writer, "{}", marker).is_err() || writer.flush().is_err() {
+            if !push_frame(writer, &marker) {
                 break;
             }
         }
         match sub.rx.recv_timeout(HEARTBEAT) {
             Ok(line) => {
                 // `line` already carries its trailing newline.
-                if writer.write_all(line.as_bytes()).is_err() || writer.flush().is_err() {
+                if !push_line(writer, line.as_bytes()) {
                     break;
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
                 let hb = json!({"type": "heartbeat"});
-                if writeln!(writer, "{}", hb).is_err() || writer.flush().is_err() {
+                if !push_frame(writer, &hb) {
                     break;
                 }
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+}
+
+/// Write one JSON value as a newline-terminated frame to a subscription stream,
+/// guarded by [`subscriber_connected`]. Returns `false` when the peer is gone or
+/// the write/flush fails - the caller breaks and the `Subscription` drops (RAII).
+fn push_frame(writer: &mut Stream, value: &Value) -> bool {
+    if !subscriber_connected(writer) {
+        return false;
+    }
+    writeln!(writer, "{}", value).is_ok() && writer.flush().is_ok()
+}
+
+/// Like [`push_frame`] but for bytes that ALREADY carry their trailing newline
+/// (a pushed event line, written verbatim). Same Windows liveness guard.
+fn push_line(writer: &mut Stream, line: &[u8]) -> bool {
+    if !subscriber_connected(writer) {
+        return false;
+    }
+    writer.write_all(line).is_ok() && writer.flush().is_ok()
+}
+
+/// EP-006 US-013: Unix path - a no-op `true`. A write to a closed Unix socket
+/// returns `Err(BrokenPipe)` cleanly (Rust ignores SIGPIPE), which the caller
+/// already handles, so no pre-probe is needed.
+#[cfg(not(windows))]
+fn subscriber_connected(_writer: &Stream) -> bool {
+    true
+}
+
+/// EP-006 US-013: Windows path - probe the named pipe's liveness BEFORE a push so
+/// a disconnected subscriber is dropped cleanly instead of aborting the process.
+///
+/// `PeekNamedPipe` with a zero-length buffer and all-null out-params is the
+/// documented "just check the pipe" call: it consumes no data and issues no
+/// overlapped I/O, so it can never trip interprocess's `CannotUnwind` abort
+/// (unlike the overlapped `WriteFileEx` a write would issue). A broken/closed
+/// pipe returns 0 (e.g. `ERROR_BROKEN_PIPE`); any failure is treated as "gone".
+///
+/// A vanishingly small race remains - the peer can close between this probe and
+/// the subsequent write - which is the residual the Windows runtime smoke
+/// (US-014) validates; in practice a `watch` client's events are seconds apart
+/// and the 30 s heartbeat is the dominant write, so the window is negligible.
+#[cfg(windows)]
+fn subscriber_connected(writer: &Stream) -> bool {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+
+    // interprocess 2.4's generic local_socket `Stream` forwards `Read`/`Write`
+    // but NOT `AsHandle`; on Windows its sole (public, non-`#[non_exhaustive]`)
+    // variant wraps the platform named-pipe stream that DOES expose the OS
+    // handle, so match the variant to reach it. The match is exhaustive on
+    // Windows (one variant); a future interprocess variant would fail to compile
+    // here, forcing a review rather than silently mis-probing.
+    let Stream::NamedPipe(np) = writer;
+    let handle = np.as_handle().as_raw_handle();
+    // SAFETY: `handle` is a valid, open named-pipe handle borrowed from `np` for
+    // the duration of this call. Every optional out-param is null and the buffer
+    // length is 0 - the documented connection-status-only form of PeekNamedPipe,
+    // which consumes nothing and issues no overlapped I/O.
+    let connected = unsafe {
+        PeekNamedPipe(
+            handle as _,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    connected != 0
 }
 
 fn dispatch_to_gpui(

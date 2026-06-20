@@ -13,12 +13,17 @@
 //! `try_send`) and a `dropped` counter conveys the loss; the broadcaster (the
 //! render thread) is never blocked.
 
-// The subscribe side of this bus (`events.subscribe`, its filter parser, the
-// `Subscription` RAII handle) is Unix-only: the Windows named pipe is
-// one-request-per-connection and cannot stream, so the IPC handler returns
-// -32004 there and never registers a subscriber. The broadcast side stays live
-// on every platform, so on non-Unix targets the subscribe-side items are
-// intentionally unused rather than dead - keep dead-code detection on for Unix.
+// EP-006 US-013: `events.subscribe` now streams on Windows too - the named-pipe
+// push path (`ipc.rs::serve_subscription`) is no longer Unix-only, and its write
+// side is guarded by a PeekNamedPipe liveness probe so a disconnected subscriber
+// evicts cleanly instead of aborting the process. So the subscribe-side items
+// here (filter parser, `Subscription` RAII handle, `EventBus::subscribe`) have a
+// caller on every platform now. The `allow` is kept as a defensive belt only:
+// the full paneflow-app cannot be cross-checked for Windows on the Linux build
+// host (an unrelated dep, `psm`, fails to assemble), so it guards against a
+// surprise `-D warnings` dead-code failure on the Windows CI leg should any one
+// subscribe-side helper go unexercised there. Drop it once a Windows build
+// confirms every item is live. The broadcast side stays live on every platform.
 #![cfg_attr(not(unix), allow(dead_code))]
 
 use std::collections::HashSet;
