@@ -350,7 +350,8 @@ fn file_matches_digest(path: &Path, expected: &[u8]) -> Result<bool> {
 /// Write `bytes` to `final_path` atomically: create a temp file in the
 /// same directory, flush + chmod + rename. The rename is atomic on
 /// POSIX and on Windows NTFS (via `MoveFileEx` + `REPLACE_EXISTING`
-/// semantics inside `tempfile::NamedTempFile::persist`).
+/// semantics inside `tempfile::NamedTempFile::persist`); see
+/// [`persist_atomic`] for the Windows AV-lock retry around that rename.
 fn write_atomic(final_path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = final_path
         .parent()
@@ -377,15 +378,67 @@ fn write_atomic(final_path: &Path, bytes: &[u8]) -> Result<()> {
             .with_context(|| format!("US-008: chmod 0o755 on {} failed", tmp.path().display()))?;
     }
 
-    tmp.persist(final_path).map_err(|e| {
-        anyhow!(
-            "US-008: atomic rename {} -> {} failed: {}",
-            e.file.path().display(),
-            final_path.display(),
-            e.error
-        )
-    })?;
-    Ok(())
+    persist_atomic(tmp, final_path)
+}
+
+/// Persist `tmp` over `final_path`, atomically.
+///
+/// On Windows a just-written executable (and the existing one being replaced)
+/// is briefly locked by the AV / Defender on-access scanner, so the
+/// `MoveFileEx`-with-`REPLACE_EXISTING` inside `persist` can transiently fail
+/// with `ERROR_ACCESS_DENIED` (5) or `ERROR_SHARING_VIOLATION` (32). That makes
+/// an idempotent re-extraction over an existing wrapper (e.g. after the shim is
+/// rebuilt, so the SHA256 no longer matches and the bytes must be rewritten)
+/// spuriously fail. Retry a few times with a short backoff - the standard
+/// Windows pattern rustup/cargo use - so the lock window is ridden out.
+///
+/// Unix `rename(2)` is a single atomic syscall with no such scanner window, so
+/// it gets exactly one attempt and any error surfaces immediately (no masking).
+fn persist_atomic(tmp: tempfile::NamedTempFile, final_path: &Path) -> Result<()> {
+    #[cfg(windows)]
+    {
+        // 10 x 50 ms ≈ 0.5 s, comfortably past a Defender on-access scan of a
+        // ~300 KiB wrapper without hanging an unwritable-dir failure.
+        const MAX_ATTEMPTS: u32 = 10;
+        const BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+        let mut tmp = tmp;
+        let mut attempt: u32 = 0;
+        loop {
+            match tmp.persist(final_path) {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    attempt += 1;
+                    // 5 = ERROR_ACCESS_DENIED, 32 = ERROR_SHARING_VIOLATION:
+                    // the transient AV-lock signatures. Anything else (or a
+                    // budget-exhausted lock) is a real failure.
+                    let transient = matches!(e.error.raw_os_error(), Some(5) | Some(32));
+                    if transient && attempt < MAX_ATTEMPTS {
+                        tmp = e.file;
+                        std::thread::sleep(BACKOFF);
+                        continue;
+                    }
+                    return Err(anyhow!(
+                        "US-008: atomic rename {} -> {} failed after {attempt} attempt(s): {}",
+                        e.file.path().display(),
+                        final_path.display(),
+                        e.error
+                    ));
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        tmp.persist(final_path).map_err(|e| {
+            anyhow!(
+                "US-008: atomic rename {} -> {} failed: {}",
+                e.file.path().display(),
+                final_path.display(),
+                e.error
+            )
+        })?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

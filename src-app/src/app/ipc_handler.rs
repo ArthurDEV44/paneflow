@@ -4082,18 +4082,28 @@ mod tests {
     #[test]
     fn read_transcript_path_absolute_only() {
         use super::read_transcript_path;
+        // A real Stop-hook transcript path is OS-absolute (Claude Code emits a
+        // platform-native path), so the fixtures must be absolute on the HOST
+        // OS: `Path::is_absolute()` requires a drive/UNC root on Windows, where
+        // a leading-slash `/abs/...` is relative and would (correctly) be
+        // rejected by the production guard.
+        #[cfg(windows)]
+        let (abs_a, abs_b) = (r"C:\abs\a.jsonl", r"C:\abs\b.jsonl");
+        #[cfg(not(windows))]
+        let (abs_a, abs_b) = ("/abs/a.jsonl", "/abs/b.jsonl");
         // Top-level and hook-payload, absolute -> Some.
-        let p = serde_json::json!({"transcript_path": "/abs/a.jsonl"});
+        let p = serde_json::json!({ "transcript_path": abs_a });
         assert_eq!(
             read_transcript_path(&p).as_deref(),
-            Some(std::path::Path::new("/abs/a.jsonl"))
+            Some(std::path::Path::new(abs_a))
         );
-        let p = serde_json::json!({"hook_payload": {"transcript_path": "/abs/b.jsonl"}});
+        let p = serde_json::json!({ "hook_payload": { "transcript_path": abs_b } });
         assert_eq!(
             read_transcript_path(&p).as_deref(),
-            Some(std::path::Path::new("/abs/b.jsonl"))
+            Some(std::path::Path::new(abs_b))
         );
         // Relative / empty / absent -> None (a clobbered frame is never guessed).
+        // `rel/x.jsonl` has no root component on any OS.
         assert!(
             read_transcript_path(&serde_json::json!({"transcript_path": "rel/x.jsonl"})).is_none()
         );
