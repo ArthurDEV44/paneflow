@@ -811,6 +811,10 @@ fn build_fleet_rows(
                     "tool": s.tool.binary(),
                     "state": s.state.wire_str(),
                     "hooked": true,
+                    // EP-002 US-006: symmetric with the unhooked shape so a
+                    // conductor can always read `.reason`; null when hooked
+                    // (the events ARE trustworthy).
+                    "reason": serde_json::Value::Null,
                     "surface_id": s.surface_id,
                     "surface_name": surface_name,
                     "workspace": ws.idx,
@@ -843,6 +847,11 @@ fn build_fleet_rows(
                     "tool": tool.binary(),
                     "state": "unknown_running",
                     "hooked": false,
+                    // EP-002 US-006: the row exists only because the /proc scan
+                    // saw the binary; no hook ever fired, so events/state are
+                    // unavailable. `no_hook` tells the conductor to fall back
+                    // (the agent was likely launched outside `paneflow up`).
+                    "reason": "no_hook",
                     "surface_id": serde_json::Value::Null,
                     "surface_name": serde_json::Value::Null,
                     "workspace": ws.idx,
@@ -871,6 +880,9 @@ fn surface_status_value(
         Some(s) => serde_json::json!({
             "surface_id": sid,
             "state": s.state.wire_str(),
+            // EP-002 US-006: an explicit `hooked` flag so the conductor knows
+            // the state is hook-derived (trustworthy) here…
+            "hooked": true,
             "tool": s.tool.binary(),
             "active_tool_name": s.active_tool_name,
             "message": s.message,
@@ -881,9 +893,15 @@ fn surface_status_value(
             "idle_ms": now.saturating_duration_since(s.last_activity).as_millis() as u64,
             "output_generation": output_generation,
         }),
+        // …and `hooked:false` when no agent session tracks the pane. `idle` is
+        // the honest default (correct for a plain shell, and for an unhooked
+        // agent it signals "precise state unavailable" rather than a scan-
+        // fabricated thinking/idle). The conductor reads `hooked` to decide
+        // whether to trust `state`.
         None => serde_json::json!({
             "surface_id": sid,
             "state": "idle",
+            "hooked": false,
             "output_generation": output_generation,
         }),
     }
@@ -4087,6 +4105,10 @@ mod tests {
         assert_eq!(unhooked[0]["tool"], "copilot");
         assert_eq!(unhooked[0]["state"], "unknown_running");
         assert_eq!(unhooked[0]["pid"], serde_json::Value::Null);
+        // EP-002 US-006: the unhooked row carries an explicit reason; the
+        // hooked row's reason is null (its events ARE trustworthy).
+        assert_eq!(unhooked[0]["reason"], "no_hook");
+        assert_eq!(hooked[0]["reason"], serde_json::Value::Null);
     }
 
     // EP-001 US-002: surface.status is pure - idle vs live session.
@@ -4097,6 +4119,9 @@ mod tests {
         assert_eq!(v["state"], "idle");
         assert_eq!(v["output_generation"], 99);
         assert!(v.get("tool").is_none());
+        // EP-002 US-006: no session -> hooked:false so the conductor knows the
+        // `idle` is a default, not a hook-derived reading.
+        assert_eq!(v["hooked"], false);
     }
 
     #[test]
@@ -4108,6 +4133,8 @@ mod tests {
         assert_eq!(v["state"], "thinking");
         assert_eq!(v["tool"], "codex");
         assert_eq!(v["output_generation"], 12);
+        // EP-002 US-006: a tracked session reports hooked:true.
+        assert_eq!(v["hooked"], true);
     }
 
     // EP-002 US-006: the ai.* event wire shape (timestamp aside).

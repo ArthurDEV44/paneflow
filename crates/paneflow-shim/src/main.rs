@@ -56,7 +56,12 @@ use hooks::*;
 /// it (and Claude Code surfaces hook stderr in its UI). The app, shim, agent,
 /// and ai-hook all honour the same env var, so one file captures the whole
 /// pipeline and shows exactly where the chain stops on Windows.
-fn diagnose(msg: &str) {
+///
+/// EP-002 US-004 (agent-control-plane-hardening): `pub(crate)` so the hook
+/// installer (`hooks.rs`) can pinpoint WHICH `None` branch it took - the
+/// top-level `install_hook_guard = None` line alone cannot tell a persistent-
+/// hook skip from a filesystem refusal.
+pub(crate) fn diagnose(msg: &str) {
     let Some(path) = env::var_os("PANEFLOW_HOOK_LOG") else {
         return;
     };

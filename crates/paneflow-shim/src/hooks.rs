@@ -387,9 +387,26 @@ impl HookConfigGuard {
     /// hook config that would invoke a dead handler would just create
     /// config noise per C4.
     pub(crate) fn install() -> Option<Self> {
-        let cwd = env::current_dir().ok()?;
+        // EP-002 US-004 (agent-control-plane-hardening): every `None` branch
+        // below now names itself in `PANEFLOW_HOOK_LOG`. The top-level
+        // `install_hook_guard = None` line in `main` cannot distinguish a
+        // persistent-hook skip from a filesystem refusal; these lines can, so
+        // a `send "claude"` that lands `unknown_running` is self-diagnosing.
+        let cwd = match env::current_dir() {
+            Ok(c) => c,
+            Err(e) => {
+                crate::diagnose(&format!(
+                    "claude: hook install skipped - current_dir() failed: {e}"
+                ));
+                return None;
+            }
+        };
         let claude_dir = cwd.join(".claude");
         if !paneflow_ipc_reachable() {
+            crate::diagnose(
+                "claude: hook install skipped - no Paneflow IPC socket reachable \
+                 (PANEFLOW_SOCKET_PATH unset/stale); swept any orphan config",
+            );
             sweep_orphan_hook_config(
                 &claude_dir.join("settings.local.json"),
                 remove_paneflow_hooks,
@@ -402,13 +419,37 @@ impl HookConfigGuard {
         // the agent fires each hook exactly once and no `.claude/
         // settings.local.json` is planted in the project.
         if persistent_claude_hooks_present() {
+            // EP-002 US-004: this was the ONLY `None` branch with no diagnostic
+            // at all. If the persistent hook is stale or points at a moved
+            // binary, the agent stays permanently unhooked with zero signal -
+            // name it so the log shows the suppression and points at the
+            // user-scope config to inspect.
+            crate::diagnose(
+                "claude: project-local hook install suppressed - a Paneflow-managed \
+                 persistent hook in ~/.claude/settings.json takes precedence (that hook \
+                 must be the one firing ai.* events); swept any orphan config",
+            );
             sweep_orphan_hook_config(
                 &claude_dir.join("settings.local.json"),
                 remove_paneflow_hooks,
             );
             return None;
         }
-        Self::install_at(&claude_dir)
+        match Self::install_at(&claude_dir) {
+            Some(guard) => Some(guard),
+            None => {
+                // `install_at` logs the precise filesystem reason to stderr
+                // (symlinked `.claude`, non-writable cwd, write failure). Mirror
+                // a summary into PANEFLOW_HOOK_LOG so the whole chain lands in
+                // one file (parity with the Windows named-pipe diagnostics).
+                crate::diagnose(&format!(
+                    "claude: hook install_at({}) returned None - filesystem refused \
+                     (symlinked .claude, non-writable cwd, or write failure; see shim stderr)",
+                    claude_dir.display()
+                ));
+                None
+            }
+        }
     }
 
     /// Testable inner. Takes the absolute path to the `.claude/` directory.
