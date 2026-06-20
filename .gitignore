@@ -44,7 +44,6 @@ LOG_*.text
 /zed-terminal-architecture.md
 
 # Local-only PRDs, spikes, and task-tracking notes (kept out of the public repo)
-/tasks/
 /paneflow-site/tasks/
 
 # Local-only logo explorations (kept out of the public repo)
