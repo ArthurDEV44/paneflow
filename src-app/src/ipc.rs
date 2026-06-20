@@ -1354,3 +1354,153 @@ mod dispatch_tests {
         assert_eq!(resp["id"], 3);
     }
 }
+
+/// EP-006 US-013 / US-014 (runbook scenario CP-4): the headline Windows
+/// invariant, as an automated regression test instead of a manual-only smoke.
+///
+/// A subscriber that disconnects (a `paneflow watch` Ctrl-C) MUST be evicted by
+/// the `PeekNamedPipe` liveness probe BEFORE the next push, so the server never
+/// issues an overlapped write to a closed named pipe - interprocess converts
+/// that into a `CannotUnwind` -> `process::abort` (STATUS_STACK_BUFFER_OVERRUN
+/// 0xC0000409) that no `catch_unwind` can stop. These tests drive the real
+/// named-pipe push path (`push_frame` / `push_line` / `subscriber_connected`)
+/// that the Linux build host can only compile-check, so the eviction has a
+/// deterministic guard, not just the `docs/WINDOWS-SMOKE-TEST.md` checklist.
+///
+/// Windows-only: on Unix `subscriber_connected` is a no-op `true` (a write to a
+/// closed socket returns `BrokenPipe` cleanly, no probe needed).
+#[cfg(all(test, windows))]
+mod windows_pipe_tests {
+    use super::{push_frame, push_line, subscriber_connected};
+    use interprocess::local_socket::{
+        GenericFilePath, Listener, ListenerOptions, Stream, prelude::*,
+    };
+    use serde_json::json;
+    use std::io::Read;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// A process-unique pipe path so parallel test threads never collide and a
+    /// stray prior instance can't shadow this one. Distinct `paneflow-test-`
+    /// prefix keeps it clear of a live `\\.\pipe\paneflow{,-dev}` server.
+    fn unique_pipe_path() -> std::path::PathBuf {
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        std::path::PathBuf::from(format!(
+            r"\\.\pipe\paneflow-test-{}-{}",
+            std::process::id(),
+            seq
+        ))
+    }
+
+    /// Bind a listener and return a live (server, client) named-pipe pair plus
+    /// the listener (kept alive by the caller). Mirrors `bind_socket`'s name +
+    /// `ListenerOptions` setup so the test drives the same construction
+    /// production does. The client connects on its own thread to dodge the
+    /// single-thread connect/accept deadlock.
+    fn connected_pair() -> (Stream, Stream, Listener) {
+        let path = unique_pipe_path();
+        let listener = {
+            // `to_fs_name` consumes its receiver, so call it on a borrowed
+            // `&Path` (like `bind_socket` does) to leave `path` owned and
+            // movable into the client thread below.
+            let name = path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("build pipe name");
+            ListenerOptions::new()
+                .name(name)
+                .create_sync()
+                .expect("bind test listener")
+        };
+        let client_thread = std::thread::spawn(move || {
+            let name = path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("build client pipe name");
+            Stream::connect(name).expect("client connect")
+        });
+        let server = listener.accept().expect("accept client");
+        let client = client_thread.join().expect("join client thread");
+        (server, client, listener)
+    }
+
+    /// Poll the liveness probe until it reports the peer gone, bounded by
+    /// `timeout`. A closed named pipe surfaces as `ERROR_BROKEN_PIPE` from
+    /// `PeekNamedPipe` (probe returns 0), but the OS can take a beat to settle
+    /// after the peer's handle closes, so we poll rather than assume instant.
+    fn wait_until_disconnected(server: &Stream, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if !subscriber_connected(server) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn live_subscriber_reads_as_connected_and_receives_push() {
+        let (mut server, client, _listener) = connected_pair();
+        assert!(
+            subscriber_connected(&server),
+            "a live named-pipe peer must probe as connected"
+        );
+        assert!(
+            push_frame(&mut server, &json!({"type": "subscribed", "id": 1})),
+            "push to a live subscriber succeeds"
+        );
+
+        // End-to-end: the pushed line actually reaches the client. Read on a
+        // worker thread with a channel deadline - Windows named pipes reject
+        // `set_recv_timeout` (see the `handle_connection` note), so a channel
+        // recv timeout is the only hang-proof bound on a blocking read.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut client = client;
+            let mut buf = [0u8; 256];
+            let n = client.read(&mut buf).unwrap_or(0);
+            let _ = tx.send(String::from_utf8_lossy(&buf[..n]).into_owned());
+        });
+        let line = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("client receives the pushed frame within 2s");
+        assert!(
+            line.contains("subscribed"),
+            "client received the frame verbatim, got: {line:?}"
+        );
+    }
+
+    #[test]
+    fn disconnected_subscriber_is_evicted_without_process_abort() {
+        let (mut server, client, _listener) = connected_pair();
+        assert!(subscriber_connected(&server), "connected before drop");
+
+        // Simulate `paneflow watch` Ctrl-C: the subscriber closes its end.
+        drop(client);
+
+        assert!(
+            wait_until_disconnected(&server, Duration::from_secs(2)),
+            "PeekNamedPipe must report the closed peer (the CP-4 eviction gate)"
+        );
+
+        // The EP-006 headline invariant: a push to the now-dead subscriber is
+        // refused by the guard and returns false - it must NOT reach an
+        // overlapped write to the closed pipe, which aborts the whole process.
+        // Reaching these asserts at all proves no abort happened; `false` proves
+        // the guard short-circuited the dangerous write. (Safe by construction:
+        // both helpers re-probe internally, and we only get here after the probe
+        // already read `false`, so neither ever attempts the write.)
+        assert!(
+            !push_frame(&mut server, &json!({"type": "heartbeat"})),
+            "push_frame evicts a disconnected subscriber instead of writing"
+        );
+        assert!(
+            !push_line(&mut server, b"{\"type\":\"ai.stop\"}\n"),
+            "push_line evicts a disconnected subscriber instead of writing"
+        );
+    }
+}

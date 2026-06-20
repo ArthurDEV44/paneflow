@@ -407,6 +407,19 @@ the `PeekNamedPipe` liveness gate (`ipc.rs::subscriber_connected`) instead of
 aborting the whole process through interprocess's overlapped-write
 `CannotUnwind` guard.
 
+**Automated coverage (2026-06-20):** the eviction mechanism is now a
+deterministic regression test, not a manual-only smoke -
+`ipc::windows_pipe_tests::{live_subscriber_reads_as_connected_and_receives_push,
+disconnected_subscriber_is_evicted_without_process_abort}` in
+`src-app/src/ipc.rs` (Windows-only `#[cfg(all(test, windows))]`). It drives a
+real named-pipe pair through the production push path: a live peer probes
+connected and receives a `push_frame`, then the peer is dropped and the test
+asserts `subscriber_connected` reports it gone and `push_frame`/`push_line`
+refuse the write (so no overlapped write to a closed pipe, no abort). Run with
+`cargo test -p paneflow-app windows_pipe_tests`. The manual steps below still
+cover what the unit test cannot stage: the full GUI + `paneflow watch` path and
+the mid-burst reconnect race.
+
 **Steps:**
 1. Launch PaneFlow with at least one pane producing output.
 2. In a shell: `paneflow watch`. Confirm JSONL events stream (drive some agent
@@ -437,9 +450,31 @@ synchronous write path that returns `ERROR_BROKEN_PIPE` instead of aborting).
 
 Log each CP scenario as `PASS` / `PASS with caveat` / `FAIL (bucket A/B/C)`,
 with the Windows build number and the PaneFlow version, in the EP-006 review
-note (or the release PR). Until a maintainer runs these on real Windows, the
-EP-006 stories carry "compile-verified on Linux; Windows runtime smoke pending"
-- the same posture as `crates/paneflow-shim` US-017 of the Windows-port PRD.
+note (or the release PR).
+
+**Recorded run - 2026-06-20 (Windows 11 Pro 26200, Rust 1.95.0,
+x86_64-pc-windows-msvc):**
+
+- Native compile + lint + tests: `cargo fmt --check`,
+  `cargo clippy --workspace -- -D warnings`, and
+  `cargo test --workspace --no-fail-fast` all PASS. This closes the
+  "compile-verified on Linux only" posture the EP-006 commit shipped with: the
+  `cfg(windows)` event-bus branches (`serve_subscription`, `subscriber_connected`
+  / `PeekNamedPipe`, `push_frame`/`push_line`) had never been built on a real
+  Windows host until now.
+- CP-4 eviction mechanism: PASS, now an automated regression test (see CP-4
+  above), so it no longer carries "Windows runtime smoke pending".
+- CP-1 / CP-2 / CP-3 and the full GUI-driven end-to-end CP-4 (mid-burst
+  reconnect race): still require a live agent + desktop session - run manually
+  per the steps above. A live `paneflow.exe` instance was present during this
+  run, so a maintainer can drive them without extra setup.
+- Incidental Windows test-portability fixes landed alongside (this was the
+  first-ever native `cargo test --workspace`; Windows CI only does compile +
+  signtool, so these were latent): a cross-platform absolute-path fixture in the
+  `read_transcript_path` test; an AV-lock retry in the binary-extract atomic
+  rename (`ai_hooks::extract::persist_atomic`); and an `asInvoker` manifest on
+  the `paneflow-mcp-install` test binary (its "install" name tripped Windows
+  installer-detection, failing to launch with os error 740).
 
 ---
 
