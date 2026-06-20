@@ -216,6 +216,127 @@ pub fn subscribe_stream(
     Ok(())
 }
 
+/// What a single read slice of [`subscribe_stream_timed`] yielded.
+pub enum StreamEvent<'a> {
+    /// A complete, non-empty event line from the server (JSON).
+    Line(&'a str),
+    /// `slice` elapsed with no complete line: the caller's quiescence tick.
+    /// This is the signal a bare [`subscribe_stream`] cannot deliver.
+    Tick,
+    /// EOF or a mid-stream socket error: the server vanished.
+    Closed,
+}
+
+/// EP-003 US-007 (agent-control-plane-hardening): a [`subscribe_stream`] variant
+/// whose read side IS deadline-bounded by `slice`. Where `subscribe_stream`
+/// blocks forever between events, this wakes every `slice` with a
+/// [`StreamEvent::Tick`] so the caller can detect the ABSENCE of events (output
+/// quiescence) - the basis of `wait --idle`, with zero client-side polling of
+/// pane content. A complete line yields [`StreamEvent::Line`]; EOF or a
+/// mid-stream socket error yields [`StreamEvent::Closed`] then returns `Ok(())`
+/// (the caller maps it to a clean "server gone" exit). Only a failed connect /
+/// subscribe-write returns `Err` (no instance). `on_event` returns `false` to
+/// stop.
+///
+/// Unlike [`send_and_receive`], the recv deadline here is REQUIRED, not
+/// best-effort: the `Tick` contract is impossible without it, and a platform
+/// that drops the timeout (Windows named pipes -> `Unsupported`) would block
+/// forever in `read_line` instead of ticking - a hang past the caller's overall
+/// deadline. So an `Unsupported` recv timeout is surfaced as `Err` (the caller
+/// degrades to a clear "use `wait --pattern`" message) rather than swallowed.
+pub fn subscribe_stream_timed(
+    socket: &Path,
+    params: Value,
+    slice: Duration,
+    mut on_event: impl FnMut(StreamEvent<'_>) -> bool,
+) -> io::Result<()> {
+    let name = socket.to_fs_name::<GenericFilePath>()?;
+    let mut stream = Stream::connect(name)?;
+    // REQUIRED (see the doc note): without a recv deadline the read below would
+    // block forever between events, so refuse rather than hang.
+    stream.set_recv_timeout(Some(slice)).map_err(|e| {
+        if e.kind() == io::ErrorKind::Unsupported {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the event stream needs a recv-timeout-capable socket (this \
+                 platform's named pipe rejects it); use `wait --pattern` instead",
+            )
+        } else {
+            e
+        }
+    })?;
+    let request = build_request(1, "events.subscribe", params);
+    let mut payload =
+        serde_json::to_vec(&request).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    payload.push(b'\n');
+    stream.write_all(&payload)?;
+    stream.flush()?;
+
+    let mut reader = BufReader::new(stream);
+    // BYTES, not a `String`: `read_line` validates UTF-8 on every read, so a
+    // multibyte codepoint bisected by a recv-slice boundary would surface as
+    // `InvalidData` and be mis-read as a disconnect. `read_until(b'\n')` defers
+    // validation to the complete line. Reused across slices so a split line is
+    // reassembled rather than fed in halves.
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        // Bound each line at the same 256 KiB cap as a request/response reply,
+        // so a same-UID server flooding one unterminated line can't grow `buf`
+        // without bound (parity with `send_and_receive`). `remaining` shrinks as
+        // the line accumulates across slices.
+        let remaining = MAX_RESPONSE_LEN.saturating_sub(buf.len() as u64);
+        if remaining == 0 {
+            // One line exceeded the cap without terminating: framing abuse - the
+            // server is not speaking our protocol, treat it as gone.
+            on_event(StreamEvent::Closed);
+            return Ok(());
+        }
+        match reader.by_ref().take(remaining).read_until(b'\n', &mut buf) {
+            // Clean EOF: the server closed the stream.
+            Ok(0) => {
+                on_event(StreamEvent::Closed);
+                return Ok(());
+            }
+            // A whole line landed (terminated by the newline).
+            Ok(_) if buf.last() == Some(&b'\n') => {
+                let keep = {
+                    let line = String::from_utf8_lossy(&buf);
+                    let line = line.trim();
+                    line.is_empty() || on_event(StreamEvent::Line(line))
+                };
+                buf.clear();
+                if !keep {
+                    return Ok(());
+                }
+            }
+            // `Ok(n>0)` with no trailing newline = EOF mid-line (or the cap was
+            // hit, handled by `remaining == 0` next pass): server gone.
+            Ok(_) => {
+                on_event(StreamEvent::Closed);
+                return Ok(());
+            }
+            // The recv slice elapsed with no (further) bytes: a quiescence tick.
+            // Any partial bytes already read stay in `buf` for the next slice.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                if !on_event(StreamEvent::Tick) {
+                    return Ok(());
+                }
+            }
+            // A mid-stream socket error means the peer vanished; surface it as
+            // Closed (a clean caller exit), not Err (which means "no instance").
+            Err(_) => {
+                on_event(StreamEvent::Closed);
+                return Ok(());
+            }
+        }
+    }
+}
+
 /// Resolve the Paneflow IPC socket path. `PANEFLOW_SOCKET_PATH` (inherited
 /// from the Paneflow PTY through the agent that launched this process) is
 /// authoritative - it carries the exact path the running instance bound,

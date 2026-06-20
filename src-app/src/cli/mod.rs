@@ -196,7 +196,7 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Block until a regex appears in a pane's recent output (orchestration).
+    /// Block until a pane goes idle, or a regex appears in its output (orchestration).
     Wait {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
         /// Note: `cmdline:` matches the full argv on Linux but only the
@@ -204,16 +204,29 @@ enum Commands {
         /// portable selector.
         #[arg(long = "match", value_name = "SELECTOR")]
         selector: String,
-        /// Regex to wait for in the pane's recent scrollback.
+        /// Regex to wait for in the pane's recent scrollback. Required unless
+        /// `--idle` is set. With `--idle` it is an optional sentinel: it is
+        /// checked on each new output and EITHER signal (pattern match OR going
+        /// idle) returns first (EP-003 US-008).
+        #[arg(long, required_unless_present = "idle")]
+        pattern: Option<String>,
+        /// Wait until the pane's output goes quiet (no `output_generation`
+        /// change for `--for` ms) by subscribing to the push stream - zero
+        /// client-side polling (EP-003 US-007). Single-target.
         #[arg(long)]
-        pattern: String,
+        idle: bool,
+        /// With `--idle`: the quiescence window in milliseconds (default 1000).
+        /// The pane must produce no new output for this long to count as idle.
+        #[arg(long = "for", value_name = "MS")]
+        for_ms: Option<u64>,
         /// Max seconds to wait before giving up (default 300).
         #[arg(long)]
         timeout: Option<u64>,
-        /// Succeed as soon as ANY matching pane matches (selector may hit several).
+        /// Succeed as soon as ANY matching pane matches (selector may hit
+        /// several). `--pattern` mode only; ignored with `--idle`.
         #[arg(long, conflicts_with = "all")]
         any: bool,
-        /// Require ALL matching panes to match the pattern.
+        /// Require ALL matching panes to match the pattern. `--pattern` mode only.
         #[arg(long)]
         all: bool,
     },
@@ -386,18 +399,34 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
         Commands::Wait {
             selector,
             pattern,
+            idle,
+            for_ms,
             timeout,
             any,
             all,
         } => {
-            let mode = if all {
-                wait_cmd::MatchMode::All
-            } else if any {
-                wait_cmd::MatchMode::Any
+            if idle {
+                // EP-003 US-007: push-based quiescence; optional sentinel (US-008).
+                wait_cmd::wait_idle(client, &selector, for_ms, timeout, pattern.as_deref())
             } else {
-                wait_cmd::MatchMode::Single
-            };
-            wait_cmd::wait(client, &selector, &pattern, timeout, mode)
+                // Pattern-only poll path (unchanged). clap's
+                // `required_unless_present="idle"` guarantees `Some` here; guard
+                // defensively so a future flag change can't smuggle an empty
+                // (match-everything) regex through.
+                let Some(pattern) = pattern else {
+                    return Err(CliError::runtime(
+                        "wait requires --pattern <regex> unless --idle is set",
+                    ));
+                };
+                let mode = if all {
+                    wait_cmd::MatchMode::All
+                } else if any {
+                    wait_cmd::MatchMode::Any
+                } else {
+                    wait_cmd::MatchMode::Single
+                };
+                wait_cmd::wait(client, &selector, &pattern, timeout, mode)
+            }
         }
         Commands::Watch { surface, types } => watch_cmd::watch(client, surface.as_deref(), &types),
     }
@@ -520,6 +549,54 @@ mod tests {
         assert_eq!(err.exit_code(), 2);
         let cli = Cli::try_parse_from(["paneflow", "key", "backend", "escape"]).expect("parse");
         assert!(matches!(cli.command, Some(Commands::Key { .. })));
+    }
+
+    #[test]
+    fn wait_idle_and_pattern_parsing() {
+        // EP-003 US-007: `--idle` parses WITHOUT `--pattern` (the sentinel is
+        // optional in idle mode); `--for` carries the quiescence window.
+        let cli = Cli::try_parse_from([
+            "paneflow", "wait", "--match", "agent", "--idle", "--for", "500",
+        ])
+        .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Wait {
+                idle: true,
+                pattern: None,
+                for_ms: Some(500),
+                ..
+            })
+        ));
+        // US-008: `--idle` + `--pattern` coexist (OR semantics, first to fire).
+        let cli = Cli::try_parse_from([
+            "paneflow",
+            "wait",
+            "--match",
+            "a",
+            "--idle",
+            "--pattern",
+            "DONE",
+        ])
+        .expect("parse");
+        assert!(
+            matches!(cli.command, Some(Commands::Wait { idle: true, pattern: Some(p), .. }) if p == "DONE")
+        );
+        // `--pattern` alone (no `--idle`) still parses (the existing poll path).
+        let cli = Cli::try_parse_from(["paneflow", "wait", "--match", "a", "--pattern", "DONE"])
+            .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Wait {
+                idle: false,
+                pattern: Some(_),
+                ..
+            })
+        ));
+        // Neither `--idle` nor `--pattern` -> clap usage error (exit 2), never a
+        // silent empty-regex that matches everything.
+        let err = Cli::try_parse_from(["paneflow", "wait", "--match", "a"]).expect_err("usage");
+        assert_eq!(err.exit_code(), 2);
     }
 
     #[test]
