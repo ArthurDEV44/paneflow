@@ -1863,6 +1863,22 @@ fn main() {
         std::process::exit(cli::run());
     }
 
+    // EP-005 US-011: an argv[1] shaped like a verb but not one we own
+    // (`paneflow blah`, a mistyped `paneflow searh`, or the MCP tool name had
+    // an alias not been wired) is a typo, not a GUI launch. The `mcp`/`hooks`/
+    // known-verb intercepts above have all exited by now, so anything still
+    // here is genuinely unknown: print an actionable error and exit non-zero
+    // (clap's usage-error code 2) instead of falling through to the bootstrap,
+    // which would silently trip the single-instance guard. A bare `paneflow`
+    // (no argv[1]) and any `-`/`--` flag are NOT flagged, so the GUI and the
+    // global-flag scans keep their existing behaviour.
+    if let Some(verb) = args.get(1)
+        && cli::looks_like_unknown_verb(Some(verb.as_str()))
+    {
+        eprintln!("paneflow: unknown verb '{verb}'; see `paneflow --help` for the verb list");
+        std::process::exit(2);
+    }
+
     warn_if_legacy_run_install();
     #[cfg(target_os = "macos")]
     warn_if_rosetta_translated();

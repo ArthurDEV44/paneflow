@@ -38,14 +38,51 @@ pub const EXIT_TIMEOUT: i32 = 4;
 /// The verbs this CLI owns. `main.rs` gates the whole CLI dispatch (and the
 /// manual `--help`/`--version` scans) on membership here so the GUI launch
 /// path stays byte-for-byte unchanged for any other `argv[1]`.
+///
+/// EP-005 US-011: the trailing `list_panes`/`read_pane`/`search_pane` are the
+/// `paneflow` MCP tool names, accepted as CLI aliases (clap maps each to its
+/// canonical subcommand via `#[command(alias = ...)]`) so a conductor that types
+/// the tool name reaches the matching verb instead of tripping the GUI
+/// single-instance guard. This list only gates the `main.rs` intercept.
 const VERBS: &[&str] = &[
-    "ls", "read", "search", "ps", "status", "new", "select", "split", "send", "up", "wait",
-    "watch", "focus", "key", "flow",
+    "ls",
+    "read",
+    "search",
+    "ps",
+    "status",
+    "new",
+    "select",
+    "split",
+    "send",
+    "up",
+    "wait",
+    "watch",
+    "focus",
+    "key",
+    "flow",
+    "list_panes",
+    "read_pane",
+    "search_pane",
 ];
 
-/// True when `argv[1]` names one of our subcommands.
+/// True when `argv[1]` names one of our subcommands (including the MCP-tool
+/// aliases above).
 pub fn is_cli_verb(arg: Option<&str>) -> bool {
     matches!(arg, Some(v) if VERBS.contains(&v))
+}
+
+/// True when `argv[1]` is shaped like a subcommand (present, non-empty, and not
+/// a `-`/`--` flag) but is NOT one this CLI owns. `main.rs` calls this only
+/// AFTER the `mcp`/`hooks`/known-verb intercepts have each had their chance and
+/// exited, so a `true` here is an unmistakable typo (`paneflow blah`, a
+/// mistyped `paneflow searh`): it prints an actionable "unknown verb" error and
+/// exits non-zero instead of falling through to the GUI launch, which would
+/// otherwise trip the single-instance guard with no message (EP-005 US-011).
+/// A bare `paneflow` (argv[1] is `None`) returns `false` so the GUI still
+/// launches, and a leading-`-` token is a flag, not a verb, so it stays on the
+/// GUI/global-flag path.
+pub fn looks_like_unknown_verb(arg: Option<&str>) -> bool {
+    matches!(arg, Some(v) if !v.is_empty() && !v.starts_with('-') && !VERBS.contains(&v))
 }
 
 #[derive(Parser, Debug)]
@@ -67,12 +104,16 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// List the panes (surfaces) of the active workspace.
+    // EP-005 US-011: `list_panes` is the MCP tool name; accept it as a hidden
+    // alias so a conductor can type either.
+    #[command(alias = "list_panes")]
     Ls {
         /// Human-readable table instead of the default JSON.
         #[arg(long)]
         human: bool,
     },
     /// Print a pane's scrollback (raw text by default).
+    #[command(alias = "read_pane")]
     Read {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
         target: String,
@@ -92,6 +133,7 @@ enum Commands {
         raw: bool,
     },
     /// Search a pane's scrollback for a substring/pattern.
+    #[command(alias = "search_pane")]
     Search {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
         target: String,
@@ -476,6 +518,43 @@ mod tests {
         assert!(!is_cli_verb(Some("mcp")));
         assert!(!is_cli_verb(Some("--version")));
         assert!(!is_cli_verb(None));
+    }
+
+    #[test]
+    fn mcp_tool_names_alias_to_their_verbs() {
+        // EP-005 US-011: the MCP tool names gate the CLI dispatch in main.rs...
+        assert!(is_cli_verb(Some("search_pane")));
+        assert!(is_cli_verb(Some("read_pane")));
+        assert!(is_cli_verb(Some("list_panes")));
+        // ...and clap routes each alias to its canonical subcommand, so a
+        // conductor that types the MCP name never lands on the GUI launch path.
+        let cli = Cli::try_parse_from(["paneflow", "search_pane", "backend", "needle"])
+            .expect("parse search_pane");
+        assert!(matches!(cli.command, Some(Commands::Search { .. })));
+        let cli =
+            Cli::try_parse_from(["paneflow", "read_pane", "backend"]).expect("parse read_pane");
+        assert!(matches!(cli.command, Some(Commands::Read { .. })));
+        let cli = Cli::try_parse_from(["paneflow", "list_panes"]).expect("parse list_panes");
+        assert!(matches!(cli.command, Some(Commands::Ls { .. })));
+    }
+
+    #[test]
+    fn unknown_verb_detected_but_bare_and_flags_are_not() {
+        // EP-005 US-011: a verb-shaped typo is flagged so main.rs errors
+        // actionably instead of launching the GUI / tripping the singleton.
+        assert!(looks_like_unknown_verb(Some("blah")));
+        assert!(looks_like_unknown_verb(Some("searh")));
+        // Known verbs and MCP aliases are NOT unknown.
+        assert!(!looks_like_unknown_verb(Some("search")));
+        assert!(!looks_like_unknown_verb(Some("search_pane")));
+        assert!(!looks_like_unknown_verb(Some("ls")));
+        // A bare `paneflow` (None) and an empty token still launch the GUI.
+        assert!(!looks_like_unknown_verb(None));
+        assert!(!looks_like_unknown_verb(Some("")));
+        // Flags stay on the global-flag / GUI path, never the unknown-verb error.
+        assert!(!looks_like_unknown_verb(Some("--help")));
+        assert!(!looks_like_unknown_verb(Some("-v")));
+        assert!(!looks_like_unknown_verb(Some("--update-and-exit")));
     }
 
     #[test]
