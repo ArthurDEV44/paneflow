@@ -138,9 +138,11 @@ fn sanitize_notification_message(raw: &str) -> String {
 /// EP-004 US-015 (agent-control-plane): best-effort extraction of a last-turn
 /// summary from an `ai.stop` frame, for the session's `last_result`. Checks the
 /// top-level params then the hook payload for a `last_result` / `summary` /
-/// `result` string; returns `None` when none is present (the common case today
-/// Claude Code's Stop hook carries only a transcript path, not the turn
-/// text). Sanitized (bidi-strip + a 2 KiB cap) like the question, since it is
+/// `result` string; returns `None` when none is present (the common case:
+/// Claude Code's Stop hook carries only a transcript path, not the turn text).
+/// When this returns `None` the `ai.stop` handler falls back to reading that
+/// transcript off-thread via [`extract_last_result_from_transcript`] (US-010).
+/// Sanitized (bidi-strip + a 2 KiB cap) like the question, since it is
 /// untrusted, display-only text a conductor may surface.
 fn read_last_result(params: &serde_json::Value) -> Option<String> {
     let hook = params.get("hook_payload");
@@ -154,6 +156,105 @@ fn read_last_result(params: &serde_json::Value) -> Option<String> {
     Some(crate::markdown::strip_bidi_zero_width(
         raw.chars().take(2048).collect(),
     ))
+}
+
+/// EP-004 US-010 (agent-control-plane-hardening): a Stop-hook transcript larger
+/// than this is skipped - `last_result` stays null and the conductor falls back
+/// to the file-report discipline (US-009). Bounds the off-thread read so a long
+/// session can't load an unbounded file onto the heap.
+const TRANSCRIPT_READ_CAP: u64 = 4 * 1024 * 1024;
+
+/// EP-004 US-010: extract the absolute transcript path a Claude Code Stop hook
+/// carries (`hook_payload.transcript_path`), if any. Absolute-only: a relative
+/// path means a clobbered frame, and guessing a cwd could read the wrong file.
+///
+/// No allow-list / prefix scoping is applied on purpose: the `ai.stop` frame
+/// arrives over the peer-UID-gated IPC socket (`ipc.rs` SO_PEERCRED), so the
+/// path is same-UID-controlled - a caller able to forge it can already read the
+/// user's files directly, and the read is bounded + bidi-stripped + display-only
+/// regardless (CWE-73, moot under the same-UID trust model). The one residual
+/// same-UID concern (a flood of `ai.stop` frames each spawning a bounded
+/// transcript read, CWE-770) is left as documented LOW: the per-read 4 MiB cap
+/// and the shared off-thread pool already bound it.
+fn read_transcript_path(params: &serde_json::Value) -> Option<std::path::PathBuf> {
+    let hook = params.get("hook_payload");
+    let raw = params
+        .get("transcript_path")
+        .or_else(|| hook.and_then(|h| h.get("transcript_path")))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?;
+    let path = std::path::PathBuf::from(raw);
+    path.is_absolute().then_some(path)
+}
+
+/// EP-004 US-010: pull the just-finished turn's text out of a Claude Code
+/// transcript (`<session>.jsonl`). The file is JSONL; the last OUTERMOST-agent
+/// (`isSidechain != true`) `type:"assistant"` line whose `message.content`
+/// carries a `text` block is the turn's visible result. `thinking` / `tool_use`
+/// blocks and `user`/`system`/`summary`/`result` lines are skipped. Best-effort
+/// and fully bounded: oversize -> `None` (fall back to US-009), any parse miss
+/// -> keep scanning, nothing found -> `None`. Sanitized (bidi-strip + 2 KiB cap)
+/// exactly like [`read_last_result`], since it is untrusted display-only text.
+/// Pure (path in, text out) so it is unit-tested against a fixture file.
+fn extract_last_result_from_transcript(path: &std::path::Path) -> Option<String> {
+    extract_last_result_capped(path, TRANSCRIPT_READ_CAP)
+}
+
+/// Inner with an explicit cap so the oversize-skip branch is unit-testable
+/// without writing a multi-megabyte fixture.
+fn extract_last_result_capped(path: &std::path::Path, cap: u64) -> Option<String> {
+    use std::io::Read;
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > cap {
+        return None;
+    }
+    // Hard-bound the read at `cap` via `take`, not just the metadata gate above:
+    // a transcript still being appended could grow past `cap` between the stat
+    // and the read (TOCTOU), so the cap is a guarantee, not a hope. Non-UTF-8
+    // content fails `read_to_string` -> `None`.
+    let mut content = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(cap)
+        .read_to_string(&mut content)
+        .ok()?;
+    // `rsplit('\n')` walks lines from the end with no intermediate Vec; the last
+    // assistant text block in the file is the final response of the turn.
+    for line in content.rsplit('\n') {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+            continue;
+        }
+        // Skip a subagent (Task tool) turn: we want the conductor-visible agent's
+        // own last message, not a nested leaf's.
+        if v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true) {
+            continue;
+        }
+        let Some(blocks) = v.pointer("/message/content").and_then(|c| c.as_array()) else {
+            continue;
+        };
+        let text = blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // An assistant line with only thinking/tool_use blocks carries no visible
+        // result - keep scanning earlier for the last one that does.
+        if text.trim().is_empty() {
+            continue;
+        }
+        return Some(crate::markdown::strip_bidi_zero_width(
+            text.chars().take(2048).collect(),
+        ));
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1525,6 +1626,50 @@ impl PaneFlowApp {
         .detach();
     }
 
+    /// EP-004 US-010 (agent-control-plane-hardening): read a Claude Code Stop-hook
+    /// transcript OFF the render thread and backfill the session's `last_result`
+    /// with the last assistant message. The `ai.stop` handler runs on the GPUI
+    /// thread, so the file read goes through `smol::unblock`; the result is
+    /// deposited back via `cx.update`. Best-effort: any miss leaves `last_result`
+    /// null (the conductor falls back to the US-009 file discipline). Keyed on
+    /// `(ws_id, session_key)` like the auto-clear timer, and only fills when the
+    /// slot is STILL empty, so a newer turn's inline summary is never clobbered.
+    fn schedule_transcript_read(
+        ws_id: u64,
+        session_key: u32,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let extracted =
+                    smol::unblock(move || extract_last_result_from_transcript(&path)).await;
+                let Some(text) = extracted else {
+                    return;
+                };
+                cx.update(|cx| {
+                    let _ = this.update(cx, |app, cx| {
+                        let filled = if let Some(ws) =
+                            app.workspaces.iter_mut().find(|ws| ws.id == ws_id)
+                            && let Some(s) = ws.agent_sessions.get_mut(&session_key)
+                            && s.last_result.is_none()
+                        {
+                            s.last_result = Some(text);
+                            true
+                        } else {
+                            false
+                        };
+                        if filled {
+                            app.agent_sessions_changed(cx);
+                            cx.notify();
+                        }
+                    });
+                });
+            },
+        )
+        .detach();
+    }
+
     /// EP-001 US-002 (agent-control-plane-hardening): true when `sid` is the pane
     /// a tracked agent session is bound to (`schedule_surface_resolution`
     /// populated `session.surface_id`). Used to auto-select the bracketed-paste
@@ -2657,6 +2802,7 @@ impl PaneFlowApp {
                     );
                     // US-016: the turn ended - the question is answered, no
                     // ghost message may survive into the next state.
+                    let mut transcript_to_read: Option<std::path::PathBuf> = None;
                     if let Some(s) = ws.agent_sessions.get_mut(&session_key) {
                         s.message = None;
                         // EP-004 US-015: capture a best-effort summary of the
@@ -2664,6 +2810,12 @@ impl PaneFlowApp {
                         // a conductor reads it via fleet.list / surface.status.
                         // None when the hook provides nothing (the common case).
                         s.last_result = read_last_result(params);
+                        // EP-004 US-010: the common Claude Code case carries no
+                        // inline summary, only a transcript path - capture it for
+                        // an off-thread backfill once the borrow ends.
+                        if s.last_result.is_none() {
+                            transcript_to_read = read_transcript_path(params);
+                        }
                     }
                     // EP-004 US-020: notify the user the turn ended if they're
                     // looking elsewhere. Read the title before the borrow ends.
@@ -2702,6 +2854,13 @@ impl PaneFlowApp {
                         },
                     )
                     .detach();
+
+                    // EP-004 US-010: backfill last_result from the Stop-hook
+                    // transcript off the render thread (the inline read above
+                    // stayed None because the hook carried only a path).
+                    if let Some(path) = transcript_to_read {
+                        Self::schedule_transcript_read(workspace_id, session_key, path, cx);
+                    }
 
                     serde_json::json!({"status": "idle"})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
@@ -3916,6 +4075,90 @@ mod tests {
         let p = serde_json::json!({"hook_payload": {"transcript_path": "/tmp/x.jsonl"}});
         assert!(super::read_last_result(&p).is_none());
         assert!(super::read_last_result(&serde_json::json!({})).is_none());
+    }
+
+    // EP-004 US-010: transcript backfill of last_result.
+
+    #[test]
+    fn read_transcript_path_absolute_only() {
+        use super::read_transcript_path;
+        // Top-level and hook-payload, absolute -> Some.
+        let p = serde_json::json!({"transcript_path": "/abs/a.jsonl"});
+        assert_eq!(
+            read_transcript_path(&p).as_deref(),
+            Some(std::path::Path::new("/abs/a.jsonl"))
+        );
+        let p = serde_json::json!({"hook_payload": {"transcript_path": "/abs/b.jsonl"}});
+        assert_eq!(
+            read_transcript_path(&p).as_deref(),
+            Some(std::path::Path::new("/abs/b.jsonl"))
+        );
+        // Relative / empty / absent -> None (a clobbered frame is never guessed).
+        assert!(
+            read_transcript_path(&serde_json::json!({"transcript_path": "rel/x.jsonl"})).is_none()
+        );
+        assert!(
+            read_transcript_path(&serde_json::json!({"hook_payload": {"transcript_path": ""}}))
+                .is_none()
+        );
+        assert!(read_transcript_path(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn transcript_extracts_last_outermost_assistant_text() {
+        use super::extract_last_result_from_transcript;
+        // The last OUTERMOST assistant line that carries a text block wins. The
+        // walk (from the end) must skip: the trailing `result` sentinel (not an
+        // assistant), a tool_use-only assistant (no visible text), and a
+        // sidechain (subagent) line - landing on "First answer." whose own
+        // thinking block is also ignored.
+        let jsonl = concat!(
+            r#"{"type":"user","message":{"role":"user","content":"hi"}}"#,
+            "\n",
+            r#"{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"thinking","thinking":"x"},{"type":"text","text":"First answer."}]}}"#,
+            "\n",
+            r#"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"SUBAGENT noise"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","id":"t","name":"Read","input":{}}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","stop_reason":"end_turn"}"#,
+            "\n",
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(&path, jsonl).expect("write fixture");
+        assert_eq!(
+            extract_last_result_from_transcript(&path).as_deref(),
+            Some("First answer.")
+        );
+    }
+
+    #[test]
+    fn transcript_absent_or_oversize_or_textless_is_none() {
+        use super::{extract_last_result_capped, extract_last_result_from_transcript};
+        // Absent file -> None (not an error).
+        assert!(
+            extract_last_result_from_transcript(std::path::Path::new("/no/such/transcript.jsonl"))
+                .is_none()
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Oversize (len > cap) -> None: fall back to the file discipline (US-009).
+        let big = dir.path().join("big.jsonl");
+        std::fs::write(&big, "x".repeat(64)).expect("write");
+        assert!(extract_last_result_capped(&big, 10).is_none());
+        // A transcript with no assistant text (only tool_use / user) -> None.
+        let none = dir.path().join("none.jsonl");
+        std::fs::write(
+            &none,
+            concat!(
+                r#"{"type":"user","message":{"role":"user","content":"hi"}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Read","input":{}}]}}"#,
+                "\n",
+            ),
+        )
+        .expect("write");
+        assert!(extract_last_result_from_transcript(&none).is_none());
     }
 
     #[test]
