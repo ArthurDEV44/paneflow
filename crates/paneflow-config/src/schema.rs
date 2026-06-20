@@ -70,6 +70,18 @@ pub struct PaneFlowConfig {
     /// rather than silent failure. This setting lets a user on a slow cold-start
     /// raise the delay instead of fighting the race.
     pub review_prefill_delay_ms: Option<u64>,
+    /// EP-001 US-001 (agent-control-plane-hardening): base delay in
+    /// milliseconds between writing a bracketed-paste burst to an agent and
+    /// the SEPARATE carriage-return that submits it. The split exists because
+    /// a TUI agent (Claude Code, Codex) treats a burst as an unconfirmed paste
+    /// (`[Pasted text #1]`) and swallows a `\r` that rides the same burst, so
+    /// `submit:true` silently fails. After this floor the server waits for the
+    /// agent's paste echo (an `output_generation` bump) before sending the
+    /// `\r`, capped so it never loops; this knob sets the floor only. `None`
+    /// resolves to 70 ms (mid the empirically safe 60-80 ms band); values are
+    /// clamped to `[10, 5000]`. Scheduled off the GPUI render thread, so a
+    /// larger value never blocks the UI.
+    pub submit_paste_delay_ms: Option<u64>,
     /// External editor used to open markdown links (file paths shipped
     /// by the agent as `[foo](src/foo.rs)` or `[foo](src/foo.rs:42)`).
     ///
@@ -237,6 +249,17 @@ impl PaneFlowConfig {
     /// the clipboard fallback already covers the long tail.
     pub const MAX_REVIEW_PREFILL_DELAY_MS: u64 = 10_000;
 
+    /// EP-001 US-001 (agent-control-plane-hardening): default paste->submit
+    /// floor. 70 ms sits in the middle of the 60-80 ms band that reliably lets
+    /// Claude Code / Codex finish buffering a bracketed paste before the `\r`.
+    pub const DEFAULT_SUBMIT_PASTE_DELAY_MS: u64 = 70;
+    /// Lower bound: a few ms still flush the paste write, but below ~10 ms the
+    /// `\r` can outrun the agent's paste-buffer commit on a warm path.
+    pub const MIN_SUBMIT_PASTE_DELAY_MS: u64 = 10;
+    /// Upper bound: past this the dispatch feels laggy; the echo-confirm path
+    /// already adapts to a genuinely slow agent without a huge fixed floor.
+    pub const MAX_SUBMIT_PASTE_DELAY_MS: u64 = 5_000;
+
     /// Resolve the Stalled-detection master switch (default ON).
     pub fn agent_stall_detection_enabled(&self) -> bool {
         self.agent_stall_detection.unwrap_or(true)
@@ -283,6 +306,30 @@ impl PaneFlowConfig {
                 "review_prefill_delay_ms out of range [{min}, {max}], clamped",
                 min = Self::MIN_REVIEW_PREFILL_DELAY_MS,
                 max = Self::MAX_REVIEW_PREFILL_DELAY_MS,
+            );
+        }
+        clamped
+    }
+
+    /// EP-001 US-001 (agent-control-plane-hardening): resolve
+    /// `submit_paste_delay_ms`: default 70, clamped to `[10, 5000]` with a
+    /// `warn!` so an out-of-range value is noticed.
+    pub fn resolved_submit_paste_delay_ms(&self) -> u64 {
+        let raw = self
+            .submit_paste_delay_ms
+            .unwrap_or(Self::DEFAULT_SUBMIT_PASTE_DELAY_MS);
+        let clamped = raw.clamp(
+            Self::MIN_SUBMIT_PASTE_DELAY_MS,
+            Self::MAX_SUBMIT_PASTE_DELAY_MS,
+        );
+        if clamped != raw {
+            tracing::warn!(
+                target: "paneflow_config::submit",
+                requested = raw,
+                clamped,
+                "submit_paste_delay_ms out of range [{min}, {max}], clamped",
+                min = Self::MIN_SUBMIT_PASTE_DELAY_MS,
+                max = Self::MAX_SUBMIT_PASTE_DELAY_MS,
             );
         }
         clamped
@@ -1313,6 +1360,7 @@ mod tests {
             agent_stall_detection: Some(true),
             agent_stall_threshold_secs: Some(300),
             review_prefill_delay_ms: Some(2000),
+            submit_paste_delay_ms: Some(70),
             external_editor: Some("auto".to_string()),
             claude_code_bypass_permissions: Some(false),
             ai_unrestricted: Some(true),
@@ -1422,6 +1470,48 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cfg.resolved_agent_stall_threshold_secs(), 600);
+    }
+
+    #[test]
+    fn submit_paste_delay_resolves_with_default_and_clamp() {
+        // EP-001 US-001 (agent-control-plane-hardening): default 70 ms,
+        // clamped to [10, 5000].
+        assert_eq!(
+            PaneFlowConfig::default().resolved_submit_paste_delay_ms(),
+            70
+        );
+        // Below the floor clamps up.
+        let cfg = PaneFlowConfig {
+            submit_paste_delay_ms: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_submit_paste_delay_ms(), 10);
+        // Above the ceiling clamps down.
+        let cfg = PaneFlowConfig {
+            submit_paste_delay_ms: Some(u64::MAX),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_submit_paste_delay_ms(), 5_000);
+        // In-range passes through untouched.
+        let cfg = PaneFlowConfig {
+            submit_paste_delay_ms: Some(120),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_submit_paste_delay_ms(), 120);
+    }
+
+    #[test]
+    fn submit_paste_delay_serde_roundtrips() {
+        // The knob travels through the public JSON shape unchanged
+        // (`#[serde(default)]` on the struct fills every other field).
+        let cfg: PaneFlowConfig =
+            serde_json::from_str(r#"{"submit_paste_delay_ms": 90}"#).expect("valid config");
+        assert_eq!(cfg.submit_paste_delay_ms, Some(90));
+        assert_eq!(cfg.resolved_submit_paste_delay_ms(), 90);
+        // Absent -> None -> default.
+        let cfg: PaneFlowConfig = serde_json::from_str("{}").expect("empty config");
+        assert!(cfg.submit_paste_delay_ms.is_none());
+        assert_eq!(cfg.resolved_submit_paste_delay_ms(), 70);
     }
 
     #[test]

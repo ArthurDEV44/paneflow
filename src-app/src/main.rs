@@ -100,8 +100,8 @@ pub(crate) use app::notifications::{Toast, ToastAction};
 pub(crate) use app::bootstrap::{install_macos_menu_bar, warn_if_rosetta_translated};
 pub(crate) use app::bootstrap::{system_package_update_command, warn_if_legacy_run_install};
 
-// Terminal-routing helpers (`find_first_terminal`, `find_terminal_by_surface_id`,
-// `send_text_to_first_leaf`) live in `app::ipc_handler` - its only consumer.
+// Terminal-routing helpers (`find_first_terminal`, `find_terminal_by_surface_id`)
+// live in `app::ipc_handler` - its only consumer.
 
 // ---------------------------------------------------------------------------
 // Root application view

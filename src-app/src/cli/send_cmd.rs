@@ -19,19 +19,20 @@ use serde_json::json;
 use super::selector::{resolve_all, resolve_target};
 use super::{CliError, EXIT_OK, EXIT_RUNTIME};
 
-/// `paneflow send <target> <text> [--broadcast] [--submit]`.
+/// `paneflow send <target> <text> [--broadcast] [--submit] [--paste]`.
 pub fn send(
     client: &impl IpcTransport,
     target: &str,
     text: &str,
     broadcast: bool,
     submit: bool,
+    paste: bool,
 ) -> Result<i32, CliError> {
     if broadcast {
-        return send_broadcast(client, target, text, submit);
+        return send_broadcast(client, target, text, submit, paste);
     }
     let surface_id = resolve_target(client, target)?;
-    match send_to(client, surface_id, text, submit) {
+    match send_to(client, surface_id, text, submit, paste) {
         Ok(result) => {
             super::print_json(&result)?;
             Ok(EXIT_OK)
@@ -49,11 +50,17 @@ fn send_to(
     surface_id: u64,
     text: &str,
     submit: bool,
+    paste: bool,
 ) -> Result<serde_json::Value, CliError> {
-    match client.call(
-        "surface.send_text",
-        json!({ "surface_id": surface_id, "text": text, "submit": submit }),
-    ) {
+    let mut params = json!({ "surface_id": surface_id, "text": text, "submit": submit });
+    // EP-001 US-002: only forward `paste` when the user explicitly passed
+    // `--paste`. Absent, the server auto-decides (agent pane -> bracketed paste
+    // + deferred submit, bare shell -> verbatim); sending an explicit `false`
+    // here would instead PIN the verbatim path and defeat the auto-detection.
+    if paste {
+        params["paste"] = json!(true);
+    }
+    match client.call("surface.send_text", params) {
         Ok(result) => super::reject_legacy_error(result),
         // The scripting gate is off on the running instance.
         Err(e) if e.contains("-32601") => Err(CliError::runtime(format!(
@@ -74,12 +81,13 @@ fn send_broadcast(
     target: &str,
     text: &str,
     submit: bool,
+    paste: bool,
 ) -> Result<i32, CliError> {
     let ids = resolve_all(client, target)?;
     let mut sent: Vec<u64> = Vec::new();
     let mut failed: Vec<serde_json::Value> = Vec::new();
     for id in ids {
-        match send_to(client, id, text, submit) {
+        match send_to(client, id, text, submit, paste) {
             Ok(_) => sent.push(id),
             // Gate off: abort with the hint; nothing was partially injected
             // (the very first call already failed the same way).
@@ -159,20 +167,33 @@ mod tests {
     fn send_passes_submit_flag_through() {
         let fake = ScriptedTransport::new(vec![Ok(json!({ "sent": true, "submitted": true }))]);
         assert_eq!(
-            send(&fake, "shard-api", "run", false, true).expect("ok"),
+            send(&fake, "shard-api", "run", false, true, false).expect("ok"),
             EXIT_OK
         );
         let calls = fake.calls.borrow();
         assert_eq!(calls[0].0, "surface.send_text");
         assert_eq!(calls[0].1["submit"], true);
         assert_eq!(calls[0].1["surface_id"], 12);
+        // EP-001 US-002: no `--paste` -> the key is omitted so the server
+        // auto-decides agent-vs-shell rather than being pinned to verbatim.
+        assert!(calls[0].1.get("paste").is_none());
     }
 
     #[test]
     fn send_default_is_not_submitting() {
         let fake = ScriptedTransport::new(vec![Ok(json!({ "sent": true }))]);
-        send(&fake, "shard-api", "run", false, false).expect("ok");
+        send(&fake, "shard-api", "run", false, false, false).expect("ok");
         assert_eq!(fake.calls.borrow()[0].1["submit"], false);
+    }
+
+    #[test]
+    fn paste_flag_is_forwarded_only_when_set() {
+        // EP-001 US-002 AC2: `--paste` -> the param rides through to the server.
+        let fake = ScriptedTransport::new(vec![Ok(json!({ "sent": true, "paste": true }))]);
+        send(&fake, "shard-api", "hi", false, true, true).expect("ok");
+        let calls = fake.calls.borrow();
+        assert_eq!(calls[0].1["paste"], true);
+        assert_eq!(calls[0].1["submit"], true);
     }
 
     #[test]
@@ -180,7 +201,7 @@ mod tests {
         // "shard" prefixes both panes: single-target send must refuse, not
         // pick one silently (US-003 keeps the existing single semantics).
         let fake = ScriptedTransport::new(vec![]);
-        let err = send(&fake, "shard", "x", false, false).expect_err("ambiguous");
+        let err = send(&fake, "shard", "x", false, false, false).expect_err("ambiguous");
         assert_eq!(err.code, crate::cli::EXIT_TARGET);
         assert!(fake.calls.borrow().is_empty());
     }
@@ -191,7 +212,10 @@ mod tests {
             Ok(json!({ "sent": true })),
             Ok(json!({ "sent": true })),
         ]);
-        assert_eq!(send(&fake, "shard", "x", true, false).expect("ok"), EXIT_OK);
+        assert_eq!(
+            send(&fake, "shard", "x", true, false, false).expect("ok"),
+            EXIT_OK
+        );
         let calls = fake.calls.borrow();
         let ids: Vec<&Value> = calls.iter().map(|(_, p)| &p["surface_id"]).collect();
         assert_eq!(ids, vec![&json!(12), &json!(18)]);
@@ -205,7 +229,7 @@ mod tests {
             Ok(json!({ "error": "Surface not found" })),
             Ok(json!({ "sent": true })),
         ]);
-        let code = send(&fake, "shard", "x", true, false).expect("report, not abort");
+        let code = send(&fake, "shard", "x", true, false, false).expect("report, not abort");
         assert_eq!(code, EXIT_RUNTIME);
         assert_eq!(fake.calls.borrow().len(), 2, "second pane still served");
     }
@@ -213,7 +237,7 @@ mod tests {
     #[test]
     fn broadcast_no_match_is_target_error() {
         let fake = ScriptedTransport::new(vec![]);
-        let err = send(&fake, "zzz", "x", true, false).expect_err("no match");
+        let err = send(&fake, "zzz", "x", true, false, false).expect_err("no match");
         assert_eq!(err.code, crate::cli::EXIT_TARGET);
         assert!(fake.calls.borrow().is_empty(), "no partial send");
     }
@@ -223,7 +247,7 @@ mod tests {
         let fake = ScriptedTransport::new(vec![Err(
             "server error -32601: surface.send_text disabled".to_string(),
         )]);
-        let err = send(&fake, "shard", "x", true, false).expect_err("gate off");
+        let err = send(&fake, "shard", "x", true, false, false).expect_err("gate off");
         assert_eq!(err.code, EXIT_RUNTIME);
         assert!(err.message.contains("PANEFLOW_IPC_SCRIPTING"));
         assert_eq!(fake.calls.borrow().len(), 1, "aborted after first reply");
@@ -270,7 +294,7 @@ mod tests {
             "sent": true, "length": payload.len(), "submitted": true
         }))]);
         assert_eq!(
-            send(&fake, "shard-api", &payload, false, true).expect("ok"),
+            send(&fake, "shard-api", &payload, false, true, false).expect("ok"),
             EXIT_OK
         );
         let calls = fake.calls.borrow();

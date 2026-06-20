@@ -38,6 +38,22 @@ fn open_link_modifier_held(modifiers: &gpui::Modifiers) -> bool {
     }
 }
 
+/// Sanitize and wrap `text` for a single bracketed-paste PTY write
+/// (`ESC[200~` … `ESC[201~`). ESC and C1 control bytes (U+0080..=U+009F) are
+/// stripped so the payload cannot close the paste early or smuggle a CSI
+/// escape. No carriage return is ever appended - submission stays a SEPARATE
+/// `\r` write (EP-001 US-001, agent-control-plane-hardening), so an agent that
+/// reads a burst as an unconfirmed paste never swallows the Enter. Embedded
+/// newlines are kept literal on purpose: that is the whole point of bracketed
+/// paste (the agent's input editor receives them as text, not as submit).
+pub(super) fn wrap_bracketed_paste(text: &str) -> String {
+    let sanitized: String = text
+        .chars()
+        .filter(|&c| c != '\x1b' && !(('\u{0080}'..='\u{009f}').contains(&c)))
+        .collect();
+    format!("\x1b[200~{sanitized}\x1b[201~")
+}
+
 /// Convert a slice of OS paths to a single space-joined, POSIX-shell-quoted
 /// string for pasting into a PTY (US-021). `None` when every path is filtered
 /// out (newline, carriage-return, or null bytes). Newline and CR are both
@@ -815,17 +831,32 @@ impl TerminalView {
 
     pub(super) fn write_paste_text(&self, text: &str, mode: TermMode) {
         let paste_text = if mode.contains(TermMode::BRACKETED_PASTE) {
-            // Strip ESC and C1 control chars (U+0080..U+009F) to prevent
-            // bracketed paste escape and CSI injection
-            let sanitized: String = text
-                .chars()
-                .filter(|&c| c != '\x1b' && !(('\u{0080}'..='\u{009f}').contains(&c)))
-                .collect();
-            format!("\x1b[200~{sanitized}\x1b[201~")
+            wrap_bracketed_paste(text)
         } else {
             text.replace("\r\n", "\r").replace('\n', "\r")
         };
         self.terminal.write_to_pty(paste_text.into_bytes());
+    }
+
+    /// EP-001 US-001 (agent-control-plane-hardening): deliver an automation /
+    /// agent payload while NEVER synthesizing a submit out of the body. When the
+    /// target has bracketed paste active, the bytes are wrapped (embedded
+    /// newlines stay literal inside the agent's editor); when it does NOT, they
+    /// are written VERBATIM - crucially not through the interactive `\n` -> `\r`
+    /// rewrite that `write_paste_text` applies, which would turn a multi-line
+    /// prompt into N carriage returns and defeat the single, SEPARATE deferred
+    /// `\r` that is the only sanctioned submission (US-005 human-in-loop
+    /// invariant). This is the divergence from `paste_text`: a human pressing
+    /// Ctrl+V into a bare shell still wants newline -> run, but a `send_text`
+    /// inject toward an agent that has not (yet) enabled `ESC[?2004h` must not
+    /// smuggle Enters through the burst.
+    pub fn inject_text(&self, text: &str) {
+        let mode = { *self.terminal.term.lock().mode() };
+        if mode.contains(TermMode::BRACKETED_PASTE) {
+            self.write_paste_text(text, mode);
+        } else {
+            self.send_text(text);
+        }
     }
 
     // --- Scroll handlers ---
@@ -981,8 +1012,39 @@ impl TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::paths_to_pty_text;
+    use super::{paths_to_pty_text, wrap_bracketed_paste};
     use std::path::PathBuf;
+
+    // EP-001 US-001 (agent-control-plane-hardening): the wrap is the burst that
+    // reaches an agent; the `\r` must NEVER ride inside it.
+    #[test]
+    fn bracketed_wrap_has_both_sentinels_and_no_cr() {
+        let wrapped = wrap_bracketed_paste("hello world");
+        assert!(wrapped.starts_with("\x1b[200~"), "opens with paste-start");
+        assert!(wrapped.ends_with("\x1b[201~"), "closes with paste-end");
+        assert_eq!(wrapped, "\x1b[200~hello world\x1b[201~");
+        assert!(!wrapped.contains('\r'), "no carriage return in the burst");
+    }
+
+    #[test]
+    fn bracketed_wrap_keeps_newlines_literal() {
+        // A multi-line prompt stays literal inside the sentinels (the agent's
+        // editor sees text, not N submits); crucially still no `\r` injected.
+        let wrapped = wrap_bracketed_paste("line one\nline two");
+        assert_eq!(wrapped, "\x1b[200~line one\nline two\x1b[201~");
+        assert!(!wrapped.contains('\r'));
+    }
+
+    #[test]
+    fn bracketed_wrap_strips_esc_and_c1_to_block_paste_escape() {
+        // An embedded ESC[201~ or C1 control could otherwise terminate the
+        // paste early and smuggle a CSI; both bytes are filtered out.
+        let wrapped = wrap_bracketed_paste("a\x1b[201~b\u{0085}c");
+        assert_eq!(wrapped, "\x1b[200~a[201~bc\x1b[201~");
+        // Exactly one opener and one closer survive (the wrapper's own).
+        assert_eq!(wrapped.matches("\x1b[200~").count(), 1);
+        assert_eq!(wrapped.matches("\x1b[201~").count(), 1);
+    }
 
     // US-021: shell-quoting of file-manager paths for paste.
     #[test]

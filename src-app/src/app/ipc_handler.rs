@@ -48,6 +48,15 @@ const UP_PREFILL_FLOOR: Duration = Duration::from_millis(1800);
 const UP_PREFILL_MAX: Duration = Duration::from_millis(8000);
 const UP_PREFILL_POLL: Duration = Duration::from_millis(200);
 
+/// EP-001 US-001 (agent-control-plane-hardening): cadence at which the deferred
+/// submit polls a freshly-pasted agent's `output_generation` for the paste echo
+/// that confirms the burst was consumed, after the configurable floor elapses.
+const SUBMIT_ECHO_POLL: Duration = Duration::from_millis(15);
+/// Echo-wait ceiling ON TOP of the floor: if the agent never echoes (silent, or
+/// a non-echoing TUI) the `\r` is sent anyway once `floor + SUBMIT_ECHO_EXTRA`
+/// elapses, so a dispatch can never hang. Bounds the long tail without a loop.
+const SUBMIT_ECHO_EXTRA: Duration = Duration::from_millis(500);
+
 /// A validated pane plan for `workspace.up`: the cwd is already canonicalized,
 /// so the spawn phase is infallible with respect to directories (US-012).
 struct PlannedPane {
@@ -451,23 +460,42 @@ fn send_text_gate_open(scripting_enabled: bool, unrestricted: bool) -> bool {
     scripting_enabled || unrestricted
 }
 
-/// Write text to the first leaf pane's active terminal PTY in a layout tree.
-/// US-020: silently skips markdown leaves (no PTY to write to).
-pub(crate) fn send_text_to_first_leaf(node: &LayoutTree, text: &str, cx: &App) {
-    match node {
-        LayoutTree::Leaf(pane) => {
-            if let Some(active) = pane.read(cx).active_terminal_opt() {
-                active
-                    .read(cx)
-                    .terminal
-                    .write_to_pty(text.as_bytes().to_vec());
-            }
-        }
-        LayoutTree::Container { children, .. } => {
-            if let Some(first) = children.first() {
-                send_text_to_first_leaf(&first.node, text, cx);
-            }
-        }
+/// EP-001 US-002 (agent-control-plane-hardening): decide whether a
+/// `surface.send_text` write goes through the bracketed-paste path. An explicit
+/// `paste` param always wins (the CLI `--paste` override); otherwise auto-enable
+/// it only when submitting INTO an agent pane, so a bare shell keeps the verbatim
+/// behaviour (a one-line `--submit` command still runs exactly as before). Pure
+/// truth table, extracted so the rule is unit-tested without a running app.
+fn resolve_paste_mode(paste_param: Option<bool>, submit: bool, is_agent: bool) -> bool {
+    paste_param.unwrap_or(submit && is_agent)
+}
+
+/// EP-001 US-001 (agent-control-plane-hardening): one tick of the deferred-submit
+/// echo wait, factored pure so the decision table is unit-tested without a
+/// running app. `gen_before` is the pane's `output_generation` snapshot taken
+/// right after the paste write; `gen_now` is the current value (`None` once the
+/// pane is gone). `waited`/`cap` bound the wait so a silent agent still submits.
+#[derive(Debug, PartialEq, Eq)]
+enum SubmitTick {
+    /// Keep polling: no echo yet and the cap is not reached.
+    Wait,
+    /// Send the `\r` now - the paste echo landed, or the cap elapsed.
+    Submit,
+    /// Pane vanished mid-wait: drop the submit, write nothing.
+    Abort,
+}
+
+fn submit_echo_tick(
+    gen_before: u64,
+    gen_now: Option<u64>,
+    waited: Duration,
+    cap: Duration,
+) -> SubmitTick {
+    match gen_now {
+        None => SubmitTick::Abort,
+        Some(g) if g > gen_before => SubmitTick::Submit,
+        Some(_) if waited >= cap => SubmitTick::Submit,
+        Some(_) => SubmitTick::Wait,
     }
 }
 
@@ -1479,6 +1507,72 @@ impl PaneFlowApp {
         .detach();
     }
 
+    /// EP-001 US-002 (agent-control-plane-hardening): true when `sid` is the pane
+    /// a tracked agent session is bound to (`schedule_surface_resolution`
+    /// populated `session.surface_id`). Used to auto-select the bracketed-paste
+    /// submit path for an agent while leaving a bare shell on the verbatim path.
+    fn surface_is_agent(&self, sid: u64) -> bool {
+        self.workspaces.iter().any(|ws| {
+            ws.agent_sessions
+                .values()
+                .any(|s| s.surface_id == Some(sid))
+        })
+    }
+
+    /// EP-001 US-001 (agent-control-plane-hardening): submit a just-pasted prompt
+    /// with a SEPARATE, deferred `\r`. A TUI agent (Claude Code, Codex) reads a
+    /// paste burst as an unconfirmed paste and swallows a `\r` that rides the
+    /// same burst, so `submit:true` silently fails. The carriage return therefore
+    /// waits a configurable `floor`, then for the agent's paste echo (an
+    /// `output_generation` bump past `gen_before`), then fires exactly once.
+    /// Bounded by `floor + SUBMIT_ECHO_EXTRA` so a silent agent still submits
+    /// (never an infinite loop); weak-handle guarded so a pane closed mid-wait
+    /// drops the write with no orphan or panic. Scheduled off the render thread
+    /// via `cx.spawn` (audit 2026-06-04: no blocking I/O on the GPUI thread).
+    pub(crate) fn schedule_deferred_submit(
+        terminal: &Entity<TerminalView>,
+        floor: Duration,
+        cx: &mut Context<Self>,
+    ) {
+        let weak = terminal.downgrade();
+        // Snapshot the generation NOW (synchronously, after the paste write) so
+        // the echo check compares against the pre-echo baseline. Capturing it
+        // inside the spawn would race: the echo can land before the task's first
+        // poll, leaving `gen_now > gen_before` permanently false.
+        let gen_before = terminal.read(cx).terminal.output_generation;
+        let cap = floor + SUBMIT_ECHO_EXTRA;
+        cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+            smol::Timer::after(floor).await;
+            // `AsyncApp::update` returns the closure value directly, so this is
+            // `Option<u64>`: `None` once the pane is gone.
+            let gen_now = |cx: &mut gpui::AsyncApp| -> Option<u64> {
+                cx.update(|cx| {
+                    weak.upgrade()
+                        .map(|t| t.read(cx).terminal.output_generation)
+                })
+            };
+            let mut waited = floor;
+            loop {
+                match submit_echo_tick(gen_before, gen_now(cx), waited, cap) {
+                    SubmitTick::Abort => return,
+                    SubmitTick::Submit => break,
+                    SubmitTick::Wait => {
+                        smol::Timer::after(SUBMIT_ECHO_POLL).await;
+                        waited += SUBMIT_ECHO_POLL;
+                    }
+                }
+            }
+            // Single, separate CR write. Weak-guarded: a pane that vanished
+            // between the last poll and here writes nothing.
+            cx.update(|cx| {
+                if let Some(t) = weak.upgrade() {
+                    t.read(cx).send_text("\r");
+                }
+            });
+        })
+        .detach();
+    }
+
     /// US-017 (orchestration-v2): resolve which surface (pane terminal) a
     /// session's PID lives in, by walking the process ancestor chain to a
     /// known `terminal.child_pid`. Direct children (agents launched by
@@ -2020,51 +2114,82 @@ impl PaneFlowApp {
                     .into_value();
                 }
                 let text = params.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                if text.is_empty() {
+                // US-005 (orchestration-v2): `submit: true` is the ONLY
+                // sanctioned submission path. It is unreachable unless the gate
+                // above passed (env OR free-access), so a CR can never be sent
+                // silently; the default stays strict inject-without-CR.
+                let submit = params
+                    .get("submit")
+                    .and_then(|s| s.as_bool())
+                    .unwrap_or(false);
+                // EP-001 US-002 (agent-control-plane-hardening): an explicit
+                // `paste` param forces / forbids bracketed paste (the CLI
+                // `--paste` override); absent, it is auto-decided per target.
+                let paste_param = params.get("paste").and_then(|p| p.as_bool());
+                // EP-001 US-003: an empty payload is a no-op EXCEPT as a bare
+                // submit (`send --submit ""` presses Enter on an already-filled
+                // composer). Only then is the historical text-required guard
+                // lifted; without `--submit` the refusal is unchanged.
+                if text.is_empty() && !submit {
                     return serde_json::json!({"error": "Missing 'text' parameter"});
                 }
                 const MAX_TEXT_LEN: usize = 64 * 1024; // 64 KiB
                 if text.len() > MAX_TEXT_LEN {
                     return serde_json::json!({"error": "Text exceeds 64 KiB limit"});
                 }
-                // US-005 (orchestration-v2): `submit: true` appends a CR after
-                // the text - the ONLY sanctioned submission path. It is
-                // unreachable unless the gate above passes (env OR free-access),
-                // so a submission can never happen silently; the default stays
-                // strict inject-without-CR.
-                let submit = params
-                    .get("submit")
-                    .and_then(|s| s.as_bool())
-                    .unwrap_or(false);
-                // Route by surface_id if provided, otherwise the active
-                // workspace's first writable leaf (US-020 skips markdown
-                // leaves). `wrote_sid` is the resolved pane for the US-010
-                // capability trace; the first-leaf fallback has no single id.
-                let wrote_sid: Option<u64> =
+                // Resolve the target to a single terminal entity (US-010 AC5: a
+                // vanished pane is an error, never a partial send). With no
+                // surface_id the active workspace's first terminal is used - the
+                // same default routing as `surface.send_keystroke`
+                // (`find_first_terminal` skips markdown leaves).
+                let target: Option<Entity<TerminalView>> =
                     if let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64()) {
                         match find_terminal_by_surface_id(&self.workspaces, sid, cx) {
-                            Some(terminal) => {
-                                terminal.read(cx).send_text(text);
-                                if submit {
-                                    terminal.read(cx).send_text("\r");
-                                }
-                                Some(sid)
-                            }
-                            // US-010 AC5: targeting a vanished pane is an error, not
-                            // a partial send - nothing was written above.
+                            Some(t) => Some(t),
                             None => return serde_json::json!({"error": "Surface not found"}),
                         }
-                    } else if let Some(ws) = self.active_workspace()
-                        && let Some(root) = &ws.root
-                    {
-                        send_text_to_first_leaf(root, text, cx);
-                        if submit {
-                            send_text_to_first_leaf(root, "\r", cx);
-                        }
-                        None
                     } else {
-                        return serde_json::json!({"error": "No active terminal"});
+                        self.active_workspace()
+                            .and_then(|ws| ws.root.as_ref())
+                            .and_then(|root| find_first_terminal(root, cx))
                     };
+                let Some(terminal) = target else {
+                    return serde_json::json!({"error": "No active terminal"});
+                };
+                let wrote_sid = terminal.entity_id().as_u64();
+                // EP-001 US-002: route an agent dispatch through bracketed paste
+                // (+ deferred submit); a bare shell keeps the verbatim path. The
+                // resolved `paste` flag is the single axis: paste <=> wrapped
+                // burst <=> deferred CR.
+                let paste =
+                    resolve_paste_mode(paste_param, submit, self.surface_is_agent(wrote_sid));
+                // Write the payload (skipped for a bare `--submit ""`).
+                if !text.is_empty() {
+                    if paste {
+                        // `inject_text`, NOT `paste_text`: when the agent has not
+                        // enabled bracketed paste, the latter would rewrite body
+                        // newlines to `\r` and fragment a multi-line prompt into
+                        // N submits. `inject_text` wraps when bracketed paste is
+                        // active and writes verbatim otherwise, leaving the single
+                        // deferred `\r` below as the only submission (US-001).
+                        terminal.read(cx).inject_text(text);
+                    } else {
+                        terminal.read(cx).send_text(text);
+                    }
+                }
+                // Submit. The bracketed-paste path defers the `\r` off the render
+                // thread (US-001) so the agent does not swallow it; the verbatim
+                // path (shell command, or empty-composer submit) sends it inline.
+                if submit {
+                    if paste && !text.is_empty() {
+                        let floor = std::time::Duration::from_millis(
+                            self.cached_config.resolved_submit_paste_delay_ms(),
+                        );
+                        Self::schedule_deferred_submit(&terminal, floor, cx);
+                    } else {
+                        terminal.read(cx).send_text("\r");
+                    }
+                }
                 // EP-003 US-010: trace every write granted by free-access mode
                 // as a per-pane capability grant (vs the process-wide env gate),
                 // so the octroi is never a silent global open. Re-evaluated per
@@ -2073,15 +2198,16 @@ impl PaneFlowApp {
                     tracing::info!(
                         target: "paneflow::ipc::unrestricted",
                         method = "surface.send_text",
-                        surface_id = ?wrote_sid,
+                        surface_id = wrote_sid,
                         caller_pid = ?caller_pid,
                         length = text.len() as u64,
                         submit = submit,
+                        paste = paste,
                         "ai_unrestricted: authorized PTY write to pane"
                     );
                 }
                 serde_json::json!({
-                    "sent": true, "length": text.len(), "submitted": submit
+                    "sent": true, "length": text.len(), "submitted": submit, "paste": paste
                 })
             }
             "surface.send_keystroke" => {
@@ -3425,6 +3551,47 @@ mod tests {
             "free-access mode opens it without the env gate"
         );
         assert!(super::send_text_gate_open(true, true));
+    }
+
+    #[test]
+    fn resolve_paste_mode_auto_targets_agents_only() {
+        use super::resolve_paste_mode;
+        // EP-001 US-002 AC1: a `--submit` dispatch into an agent auto-enables
+        // bracketed paste...
+        assert!(resolve_paste_mode(None, true, true));
+        // ...AC3: but a bare shell keeps the verbatim path (no auto-paste).
+        assert!(!resolve_paste_mode(None, true, false));
+        // No submit, no auto-paste either (plain inject into either target).
+        assert!(!resolve_paste_mode(None, false, true));
+        assert!(!resolve_paste_mode(None, false, false));
+        // AC2: an explicit `--paste` overrides in both directions, regardless
+        // of target or submit.
+        assert!(resolve_paste_mode(Some(true), false, false));
+        assert!(!resolve_paste_mode(Some(false), true, true));
+    }
+
+    #[test]
+    fn submit_echo_tick_decides_wait_submit_abort() {
+        use super::{SubmitTick, submit_echo_tick};
+        let cap = Duration::from_millis(570);
+        // Pane gone -> drop the submit, write nothing (US-001 AC5).
+        assert_eq!(
+            submit_echo_tick(5, None, Duration::from_millis(0), cap),
+            SubmitTick::Abort
+        );
+        // Echo observed (generation bumped past the snapshot) -> submit now.
+        assert_eq!(
+            submit_echo_tick(5, Some(6), Duration::from_millis(70), cap),
+            SubmitTick::Submit
+        );
+        // No echo yet, still under the cap -> keep polling.
+        assert_eq!(
+            submit_echo_tick(5, Some(5), Duration::from_millis(100), cap),
+            SubmitTick::Wait
+        );
+        // No echo but the cap elapsed -> submit anyway (US-001 AC3: bounded,
+        // never an infinite loop even for a silent agent).
+        assert_eq!(submit_echo_tick(5, Some(5), cap, cap), SubmitTick::Submit);
     }
 
     /// AC #4 corollary: even when scripting IS enabled,

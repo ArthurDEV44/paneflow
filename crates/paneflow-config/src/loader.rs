@@ -884,6 +884,7 @@ mod tests {
             agent_stall_detection: None,
             agent_stall_threshold_secs: None,
             review_prefill_delay_ms: None,
+            submit_paste_delay_ms: None,
             claude_code_bypass_permissions: None,
             ai_unrestricted: None,
             ai_injection_fence: None,

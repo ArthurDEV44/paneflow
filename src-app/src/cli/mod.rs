@@ -160,6 +160,14 @@ enum Commands {
         /// still requires the instance-side scripting gate.
         #[arg(long)]
         submit: bool,
+        /// Force bracketed-paste delivery: the text is wrapped in
+        /// `ESC[200~`/`ESC[201~` and, with `--submit`, the carriage return is
+        /// sent separately after a calibrated delay so a TUI agent does not
+        /// swallow it (EP-001). `--submit` toward an agent pane enables this
+        /// automatically; pass `--paste` to force it (e.g. toward a shell) or
+        /// `--paste` alone to wrap a non-submitted inject.
+        #[arg(long)]
+        paste: bool,
     },
     /// Give a targeted pane the keyboard focus (switches workspace/tab too).
     Focus {
@@ -365,7 +373,8 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             text,
             broadcast,
             submit,
-        } => send_cmd::send(client, &target, &text, broadcast, submit),
+            paste,
+        } => send_cmd::send(client, &target, &text, broadcast, submit, paste),
         Commands::Focus { target } => control_cmds::focus(client, &target),
         Commands::Key { target, keystroke } => send_cmd::key(client, &target, &keystroke),
         Commands::Flow(FlowCommand::Run {
@@ -459,13 +468,15 @@ mod tests {
 
     #[test]
     fn send_flags_default_off() {
-        // The human-in-loop default: no broadcast, no submit unless explicit.
+        // The human-in-loop default: no broadcast, no submit, no paste unless
+        // explicit (EP-001 US-002: absent `--paste`, the server auto-decides).
         let cli = Cli::try_parse_from(["paneflow", "send", "backend", "hi"]).expect("parse");
         assert!(matches!(
             cli.command,
             Some(Commands::Send {
                 broadcast: false,
                 submit: false,
+                paste: false,
                 ..
             })
         ));
@@ -476,8 +487,16 @@ mod tests {
             Some(Commands::Send {
                 broadcast: true,
                 submit: true,
+                paste: false,
                 ..
             })
+        ));
+        // EP-001 US-002 AC2: `--paste` is an explicit, parseable override.
+        let cli =
+            Cli::try_parse_from(["paneflow", "send", "--paste", "agent", "hi"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Send { paste: true, .. })
         ));
     }
 
