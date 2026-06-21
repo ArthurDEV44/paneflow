@@ -219,9 +219,37 @@ mod tests {
         c
     }
 
+    #[cfg(unix)]
+    fn stdout_command() -> Command {
+        sh("printf hello")
+    }
+
+    #[cfg(windows)]
+    fn stdout_command() -> Command {
+        sh("echo hello")
+    }
+
+    #[cfg(unix)]
+    fn sleep_command() -> Command {
+        sh("sleep 30")
+    }
+
+    #[cfg(windows)]
+    fn sleep_command() -> Command {
+        let mut c = Command::new("powershell.exe");
+        c.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep -Seconds 30",
+        ]);
+        c
+    }
+
     #[test]
     fn completes_under_deadline_and_captures_stdout() {
-        let out = run_with_timeout(sh("printf hello"), Duration::from_secs(5), 1 << 20)
+        let out = run_with_timeout(stdout_command(), Duration::from_secs(5), 1 << 20)
             .expect("fast command should complete");
         assert!(out.status.success());
         // printf has no trailing newline on Unix; cmd `echo` would add CRLF, so
@@ -238,7 +266,7 @@ mod tests {
         // A 30 s sleeper under a 150 ms deadline must return ~immediately with
         // Timeout, not block for 30 s.
         let start = Instant::now();
-        let res = run_with_timeout(sh("sleep 30"), Duration::from_millis(150), 1 << 20);
+        let res = run_with_timeout(sleep_command(), Duration::from_millis(150), 1 << 20);
         assert!(
             matches!(res, Err(ProcError::Timeout)),
             "expected Timeout, got {res:?}"

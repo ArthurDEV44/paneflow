@@ -387,37 +387,11 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
         );
     }
 
-    // `cp -R` preserves bundle structure, symlinks, and extended attributes -
-    // notably the code-signed `_CodeSignature` tree (a hand-rolled recursive
-    // copy risks corrupting it). NOTE: preserving xattrs also carries any
-    // `com.apple.quarantine` flag through to the install, which is why
-    // `strip_quarantine` runs after the swap below.
-    // Using a subprocess rather than `fs_extra` / hand-rolled recursion
-    // matches the macOS convention and sidesteps the xattr-copy corner cases.
-    let cp_out = Command::new("cp")
-        .arg("-R")
-        .arg(&source_bundle)
-        .arg(&new_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .with_context(|| {
-            format!(
-                "spawn cp -R {} {}",
-                source_bundle.display(),
-                new_dir.display()
-            )
-        })?;
-
-    if !cp_out.status.success() {
-        let stderr = String::from_utf8_lossy(&cp_out.stderr);
+    if let Err(e) = copy_bundle_to_staging(&source_bundle, &new_dir) {
         // Best-effort cleanup - if the partial copy left files behind,
         // drop them before the next try. Ignore the result (scratch dir).
         let _ = std::fs::remove_dir_all(&new_dir);
-        return Err(classify_filesystem_error(
-            &stderr,
-            &format!("copy {} → {}", source_bundle.display(), new_dir.display()),
-        ));
+        return Err(e);
     }
 
     // #9: re-verify the COPIED bundle BEFORE the swap, not just the read-only
@@ -500,6 +474,62 @@ fn copy_and_swap(mounted_volume: &Path, install_dir: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
     strip_quarantine(install_dir);
 
+    Ok(())
+}
+
+/// Copy `PaneFlow.app` into the `.new` staging path.
+///
+/// Runtime macOS uses `cp -R`, because it preserves bundle structure, symlinks,
+/// and extended attributes - notably `_CodeSignature` and quarantine xattrs.
+/// Unit tests compile on every host, though, and Windows does not provide a
+/// POSIX `cp`; tests on non-macOS hosts use a small recursive copy that is
+/// sufficient to exercise the swap/rollback logic.
+#[cfg(any(not(test), target_os = "macos"))]
+fn copy_bundle_to_staging(source_bundle: &Path, new_dir: &Path) -> Result<()> {
+    let cp_out = Command::new("cp")
+        .arg("-R")
+        .arg(source_bundle)
+        .arg(new_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| {
+            format!(
+                "spawn cp -R {} {}",
+                source_bundle.display(),
+                new_dir.display()
+            )
+        })?;
+
+    if !cp_out.status.success() {
+        let stderr = String::from_utf8_lossy(&cp_out.stderr);
+        return Err(classify_filesystem_error(
+            &stderr,
+            &format!("copy {} → {}", source_bundle.display(), new_dir.display()),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+fn copy_bundle_to_staging(source_bundle: &Path, new_dir: &Path) -> Result<()> {
+    copy_tree_for_test(source_bundle, new_dir)
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+fn copy_tree_for_test(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst).with_context(|| format!("create {}", dst.display()))?;
+    for entry in std::fs::read_dir(src).with_context(|| format!("read {}", src.display()))? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree_for_test(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)
+                .with_context(|| format!("copy {} → {}", src_path.display(), dst_path.display()))?;
+        }
+    }
     Ok(())
 }
 
