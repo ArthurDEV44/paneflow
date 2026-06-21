@@ -5,6 +5,85 @@ notes are available on the [GitHub Releases](https://github.com/ArthurDEV44/pane
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-21
+
+Paneflow Conductor. Paneflow becomes a control plane for a fleet of CLI coding
+agents running side by side in panes. A new public `paneflow` CLI discovers,
+reads, drives, and waits on those agents over the local IPC socket, never by
+scraping the screen, and a harness-agnostic conductor SKILL lets any agent
+(Claude Code, Codex, OpenCode, Gemini, ...) drive the others. Cross-platform:
+Linux, macOS, and Windows over the named-pipe transport.
+
+### Added
+
+- The `paneflow` fleet CLI. `ps` / `ls` discover the running agents and the
+  panes themselves; `status` / `read` / `search` inspect one agent's live state
+  and scrollback; `send` dispatches a prompt (pre-filled by default, `--submit`
+  to auto-submit, `--broadcast` to fan out across matching panes); `wait` and
+  `watch` block on events instead of polling; `up` spawns agents from a
+  declarative `paneflow.workspace.toml`; and `flow run` executes a declarative
+  spawn -> wait -> feed -> review pipeline. Target any pane by `surface_id`,
+  name, `cmdline:<substr>`, or `cwd:<path>`. The MCP tool names (`list_panes` /
+  `read_pane` / `search_pane`) are accepted as aliases, and a genuinely unknown
+  verb exits non-zero with an actionable error instead of opening a stray GUI
+  window.
+- Hooked agents with an authoritative state machine. Agents launched through
+  `up` / `flow` (or carrying a hook integration) are tracked turn by turn: their
+  `state` (`thinking`, `waiting_for_input`, `finished`, `errored`, `stalled`,
+  `idle`, or `unknown_running`) is real, their `ai.stop` / `ai.notification`
+  events fire, and their `last_result` is exposed. A self-diagnosing hook
+  installer reports `hooked` plus a `reason` in the fleet, so an agent that was
+  only spotted by a process scan reads `unknown_running` rather than faking a
+  derived state.
+- An outbound IPC event bus. `events.subscribe` streams `ai.*` transitions and
+  surface changes, which `paneflow watch` renders as one JSON event per line
+  with a 30s heartbeat. `wait --idle` blocks on output quiescence via the
+  monotonic `output_generation` counter; `wait --pattern` blocks on a
+  baseline-aware sentinel (it matches output produced after the wait starts, not
+  the prompt echo); `--all` / `--any` gate across many panes at once.
+- Deterministic auto-submit. `send --submit` wraps the prompt in bracketed paste
+  and sends the carriage return as a separate, calibrated write, then confirms a
+  hooked agent's turn actually started via `output_generation`. If no turn start
+  is confirmed it exits non-zero instead of returning a false `submitted:true`.
+- Structured inter-agent context. A turn's `last_result` is backfilled
+  off-thread from the Stop-hook transcript, so a full-screen (alt-screen) TUI's
+  report is captured in full rather than truncated to the viewport, and
+  `send --report-file <path>` appends a precise file contract so an agent writes
+  its complete report to disk and prints `REPORT_DONE <path>`.
+- AI access controls under Settings > AI Agent. An `ai_unrestricted` free-access
+  toggle sanctions CLI auto-submit and traced writes; an `ai_injection_fence`
+  wraps `read` output in an `<untrusted_terminal_output>` fence (drop it with
+  `read --raw` only when you trust the source). Writes are refused with a clear,
+  actionable error unless free access is on or `PANEFLOW_IPC_SCRIPTING=1` is set.
+- The harness-agnostic **Paneflow conductor** SKILL: a shell-only playbook for
+  driving the fleet (discover -> read -> wait -> dispatch -> hand back), plus a
+  committed `examples/review-pipeline.flow.toml` worked cross-vendor
+  implement -> review pipeline to copy from.
+
+### Changed
+
+- The event bus streams over Windows named pipes through a `PeekNamedPipe`
+  liveness guard, falling back to a bounded `output_generation` clock where a
+  transport cannot tick subscriptions. The `paneflow` client resolves the
+  build-profile socket path and honors `PANEFLOW_SOCKET_PATH`.
+- The inter-agent context blob is written owner-only (0600/0700). The
+  Thinking-stuck watchdog tightened to 60s, and a pane's label is applied
+  atomically at spawn so it never flashes the generic agent name first.
+- Em dashes were normalized to ASCII hyphens across the repo. A new `ABOUT.md`
+  project overview landed, and the fleet / events / flow control-plane surface is
+  documented under `docs/`.
+
+### Fixed
+
+- macOS: the parent-death reaper is guarded against PID reuse, and the shim adds
+  an orphan guard (Windows gets a Ctrl+C `ai.stop`).
+- A stale persistent hook is now ignored in favor of a project-local install.
+- The Agents environment toolbar no longer covers the embedded CLI (a top band
+  is reserved), and per-file horizontal scroll is restored in the diff body.
+- Windows: the console-subsystem binary is kept (only the lonely GUI console is
+  shed), the workspace test suite passes natively, and the macOS DMG and process
+  unit tests are made cross-platform.
+
 ## [0.5.9] - 2026-06-18
 
 A review-workflow release. The Agents diff dock and the Review view now render
