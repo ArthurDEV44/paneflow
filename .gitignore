@@ -74,3 +74,11 @@ LOG_*.text
 # Local-only distribution/growth strategy notes (personal marketing, not
 # project source) - never publish to the OSS repo.
 /DISTRIBUTION.md
+
+# Windows debug symbols emitted next to release builds (multi-MB .pdb tree).
+# Build artifact, not source.
+/pf-symbols/
+
+# Local-only diff/render audit reports (same class as /ULTRON/ above): generated
+# tool output with finding-level detail, kept out of the public repo.
+/.paneflow-audit/
