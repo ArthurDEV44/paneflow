@@ -67,6 +67,12 @@ pub(crate) fn safe_path_display(path: &Path) -> String {
         .collect()
 }
 
+fn safe_log_text(text: &str) -> String {
+    text.chars()
+        .map(|c| if (' '..='~').contains(&c) { c } else { '?' })
+        .collect()
+}
+
 /// Returns `true` iff PaneFlow's IPC channel looks usable for hook-config
 /// install. We treat "no channel" as "PaneFlow not running": in that state,
 /// installing hook config is pointless (the hooks would invoke
@@ -334,40 +340,79 @@ fn home_dir_env() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// EP-004 US-018: true iff `~/.claude/settings.json` already carries a
-/// Paneflow-managed hook (installed by `paneflow hooks setup`). When present,
-/// the persistent user-scope hooks cover this agent, so the shim skips its
-/// ephemeral project-local injection - avoiding double-fired IPC frames AND
-/// keeping `.claude/settings.local.json` out of the user's project tree
-/// (persistent wins). Detection reuses [`is_paneflow_matcher_group`], so it
-/// recognizes the byte-identical shape `paneflow-mcp-install::hooks` writes.
-fn persistent_claude_hooks_present() -> bool {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PersistentHookState {
+    Absent,
+    Alive { command: String },
+    Stale { command: Option<String> },
+}
+
+/// EP-004 US-018 + hardening US-005: state of `~/.claude/settings.json`.
+/// Persistent hooks suppress the project-local injection only when at least
+/// one managed command points at a binary we can prove exists. A stale global
+/// hook is worse than no hook: it blocks the local fallback and leaves the
+/// agent permanently `hooked:false`.
+fn persistent_claude_hooks_state() -> PersistentHookState {
     let Some(home) = home_dir_env() else {
-        return false;
+        return PersistentHookState::Absent;
     };
     let settings = home.join(".claude").join("settings.json");
     let Ok(bytes) = std::fs::read(&settings) else {
-        return false;
+        return PersistentHookState::Absent;
     };
     let Ok(root) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return false;
+        return PersistentHookState::Absent;
     };
-    settings_has_managed_hook(&root)
+    settings_managed_hook_state(&root)
 }
 
 /// Pure check: does a parsed settings tree carry a Paneflow-managed hook for
 /// any registered event? Split out so it is unit-testable without touching the
 /// real home directory.
+#[cfg(test)]
 fn settings_has_managed_hook(root: &serde_json::Value) -> bool {
+    !matches!(
+        settings_managed_hook_state(root),
+        PersistentHookState::Absent
+    )
+}
+
+fn settings_managed_hook_state(root: &serde_json::Value) -> PersistentHookState {
     let Some(hooks) = root.get("hooks").and_then(|h| h.as_object()) else {
-        return false;
+        return PersistentHookState::Absent;
     };
-    CLAUDE_HOOK_EVENTS.iter().any(|event| {
-        hooks
-            .get(*event)
-            .and_then(|a| a.as_array())
-            .is_some_and(|arr| arr.iter().any(is_paneflow_matcher_group))
-    })
+    let mut stale_command: Option<String> = None;
+    let mut saw_managed_without_command = false;
+
+    for event in CLAUDE_HOOK_EVENTS {
+        let Some(arr) = hooks.get(*event).and_then(|a| a.as_array()) else {
+            continue;
+        };
+        for group in arr {
+            if !is_paneflow_matcher_group(group) {
+                continue;
+            }
+            let commands = paneflow_hook_commands_in_group(group);
+            if commands.is_empty() {
+                saw_managed_without_command = true;
+                continue;
+            }
+            for command in commands {
+                if paneflow_hook_command_program_exists(&command) {
+                    return PersistentHookState::Alive { command };
+                }
+                stale_command.get_or_insert(command);
+            }
+        }
+    }
+
+    if stale_command.is_some() || saw_managed_without_command {
+        PersistentHookState::Stale {
+            command: stale_command,
+        }
+    } else {
+        PersistentHookState::Absent
+    }
 }
 
 pub(crate) struct HookConfigGuard {
@@ -414,26 +459,35 @@ impl HookConfigGuard {
             return None;
         }
         // EP-004 US-018: persistent user-scope hooks (`paneflow hooks setup`)
-        // take precedence. When present, skip the ephemeral project-local
-        // injection entirely and sweep any orphan it left on a prior run, so
-        // the agent fires each hook exactly once and no `.claude/
-        // settings.local.json` is planted in the project.
-        if persistent_claude_hooks_present() {
-            // EP-002 US-004: this was the ONLY `None` branch with no diagnostic
-            // at all. If the persistent hook is stale or points at a moved
-            // binary, the agent stays permanently unhooked with zero signal -
-            // name it so the log shows the suppression and points at the
-            // user-scope config to inspect.
-            crate::diagnose(
-                "claude: project-local hook install suppressed - a Paneflow-managed \
-                 persistent hook in ~/.claude/settings.json takes precedence (that hook \
-                 must be the one firing ai.* events); swept any orphan config",
-            );
-            sweep_orphan_hook_config(
-                &claude_dir.join("settings.local.json"),
-                remove_paneflow_hooks,
-            );
-            return None;
+        // take precedence only when they are actually executable. A stale
+        // global config used to suppress the local injection and strand the
+        // pane in `unknown_running`; now it falls through to `install_at`.
+        match persistent_claude_hooks_state() {
+            PersistentHookState::Alive { command } => {
+                crate::diagnose(&format!(
+                    "claude: project-local hook install suppressed - verified \
+                     Paneflow-managed persistent hook in ~/.claude/settings.json \
+                     is executable ({}); swept any orphan config",
+                    safe_log_text(&command)
+                ));
+                sweep_orphan_hook_config(
+                    &claude_dir.join("settings.local.json"),
+                    remove_paneflow_hooks,
+                );
+                return None;
+            }
+            PersistentHookState::Stale { command } => {
+                let detail = command
+                    .as_deref()
+                    .map(safe_log_text)
+                    .unwrap_or_else(|| "managed group carried no paneflow command".into());
+                crate::diagnose(&format!(
+                    "claude: ignoring stale Paneflow-managed persistent hook in \
+                     ~/.claude/settings.json ({detail}); falling back to project-local \
+                     hook install"
+                ));
+            }
+            PersistentHookState::Absent => {}
         }
         match Self::install_at(&claude_dir) {
             Some(guard) => Some(guard),
@@ -495,7 +549,7 @@ impl Drop for HookConfigGuard {
 /// detection and cleanup.
 pub(crate) fn resolve_hook_command(event: &str) -> String {
     match locate_sibling_hook_binary() {
-        Some(path) => format!("{} {}", display_hook_program(&path), event),
+        Some(path) => format!("{} {}", shell_program_path(&path), event),
         None => format!("{HOOK_COMMAND_PREFIX}{event}"),
     }
 }
@@ -514,11 +568,6 @@ pub(crate) fn resolve_hook_command(event: &str) -> String {
 /// keeps recognizing it for idempotent merge + cleanup - no detection change
 /// needed, and the legacy backslash form is still matched for cleanup.
 ///
-/// Spaces in the path are not escaped here: the binary lives under
-/// `%LOCALAPPDATA%\paneflow…\bin\<ver>\`, which is space-free for the
-/// overwhelming majority of Windows profiles; quoting is avoided because the
-/// agent's shell wrapper (single vs double quotes) is not knowable here and a
-/// stray quote would reintroduce the very breakage this fixes.
 fn display_hook_program(path: &Path) -> String {
     let rendered = path.display().to_string();
     #[cfg(windows)]
@@ -527,6 +576,22 @@ fn display_hook_program(path: &Path) -> String {
     }
     #[cfg(not(windows))]
     {
+        rendered
+    }
+}
+
+/// Render the hook program as a shell command token. This mirrors the durable
+/// writer in `paneflow-mcp-install`: macOS stable paths can live under
+/// `Application Support`, Windows users can have spaces in their profile path,
+/// and stale-hook detection already parses the single-quote escape form.
+fn shell_program_path(path: &Path) -> String {
+    let rendered = display_hook_program(path);
+    if rendered
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '\\' | '$' | '`' | ';' | '&' | '|'))
+    {
+        format!("'{}'", rendered.replace('\'', "'\\''"))
+    } else {
         rendered
     }
 }
@@ -542,12 +607,123 @@ fn display_hook_program(path: &Path) -> String {
 /// `cargo clean` between sessions) must still be recognized so cleanup can
 /// remove it on the next shim run.
 pub(crate) fn is_paneflow_hook_command(command: &str) -> bool {
-    let first_token = command.split_whitespace().next().unwrap_or("");
-    let basename = Path::new(first_token)
+    let Some(program) = command_program_token(command) else {
+        return false;
+    };
+    let basename = Path::new(&program)
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or(first_token);
+        .unwrap_or(&program);
     basename == "paneflow-ai-hook" || basename == "paneflow-ai-hook.exe"
+}
+
+fn paneflow_hook_commands_in_group(group: &serde_json::Value) -> Vec<String> {
+    group
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|hook| hook.get("command").and_then(|c| c.as_str()))
+        .filter(|command| is_paneflow_hook_command(command))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn paneflow_hook_command_program_exists(command: &str) -> bool {
+    command_program_token(command)
+        .as_deref()
+        .is_some_and(program_exists)
+}
+
+/// Parse the shell command's first program token. This is intentionally small:
+/// it supports unquoted paths, single/double quoted paths, and the shell
+/// `'\''` sequence produced by standard single-quote escaping. It does not try
+/// to evaluate a shell; if the first token cannot be parsed into a usable path,
+/// the persistent hook is treated as stale and the shim falls back locally.
+fn command_program_token(command: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = command.trim_start().chars().peekable();
+    let mut quote: Option<char> = None;
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            None => {
+                if ch.is_whitespace() {
+                    break;
+                }
+                match ch {
+                    '\'' | '"' => quote = Some(ch),
+                    '\\' if chars.peek() == Some(&'\'') => {
+                        let _ = chars.next();
+                        out.push('\'');
+                    }
+                    _ => out.push(ch),
+                }
+            }
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None;
+                } else {
+                    out.push(ch);
+                }
+            }
+            Some('"') => {
+                if ch == '"' {
+                    quote = None;
+                } else if ch == '\\' {
+                    match chars.peek().copied() {
+                        Some(next @ ('"' | '\\' | '$' | '`')) => {
+                            let _ = chars.next();
+                            out.push(next);
+                        }
+                        _ => out.push(ch),
+                    }
+                } else {
+                    out.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (!out.is_empty()).then_some(out)
+}
+
+fn program_exists(program: &str) -> bool {
+    let path = Path::new(program);
+    if path.is_file() {
+        return true;
+    }
+    if path.is_absolute() || path.parent().is_some_and(|p| !p.as_os_str().is_empty()) {
+        return false;
+    }
+    path_program_exists(program)
+}
+
+fn path_program_exists(program: &str) -> bool {
+    let Some(path) = env::var_os("PATH") else {
+        return false;
+    };
+    for dir in env::split_paths(&path) {
+        let candidate = dir.join(program);
+        if candidate.is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            if Path::new(program).extension().is_none() {
+                let pathext = env::var_os("PATHEXT")
+                    .and_then(|v| v.into_string().ok())
+                    .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+                for ext in pathext.split(';').filter(|e| !e.is_empty()) {
+                    if dir.join(format!("{program}{ext}")).is_file() {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Merge PaneFlow's hook handlers into the parsed settings tree. Idempotent:
@@ -2068,7 +2244,10 @@ pub(crate) fn run_codex_with_jsonl_tee(path: &Path, args: &[OsString]) -> (ExitC
 
 #[cfg(test)]
 mod hooks_tests {
-    use super::display_hook_program;
+    use super::{
+        command_program_token, display_hook_program, settings_managed_hook_state,
+        shell_program_path, PersistentHookState,
+    };
     // Only the `#[cfg(windows)]` round-trip test below references this; gating
     // the import keeps the non-Windows test build warning-free under `-D warnings`.
     #[cfg(windows)]
@@ -2229,5 +2408,65 @@ mod hooks_tests {
 
         // No hooks at all.
         assert!(!settings_has_managed_hook(&json!({})));
+    }
+
+    #[test]
+    fn persistent_hook_state_requires_an_existing_program() {
+        let stale = json!({
+            "hooks": { "Stop": [ {
+                "_paneflow_managed": true,
+                "hooks": [ { "type": "command", "command": "/definitely/missing/paneflow-ai-hook Stop" } ]
+            } ] }
+        });
+        assert!(matches!(
+            settings_managed_hook_state(&stale),
+            PersistentHookState::Stale { command: Some(_) }
+        ));
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let hook_name = if cfg!(windows) {
+            "paneflow-ai-hook.exe"
+        } else {
+            "paneflow-ai-hook"
+        };
+        let hook_path = dir.path().join(hook_name);
+        std::fs::File::create(&hook_path).unwrap();
+        let alive = json!({
+            "hooks": { "Stop": [ {
+                "_paneflow_managed": true,
+                "hooks": [ { "type": "command", "command": format!("{} Stop", hook_path.display()) } ]
+            } ] }
+        });
+        assert!(matches!(
+            settings_managed_hook_state(&alive),
+            PersistentHookState::Alive { .. }
+        ));
+    }
+
+    #[test]
+    fn command_program_token_handles_quoted_hook_paths() {
+        assert_eq!(
+            command_program_token("  '/tmp/with space/paneflow-ai-hook' Stop").as_deref(),
+            Some("/tmp/with space/paneflow-ai-hook")
+        );
+        assert_eq!(
+            command_program_token("'a'\\''b/paneflow-ai-hook' Stop").as_deref(),
+            Some("a'b/paneflow-ai-hook")
+        );
+    }
+
+    #[test]
+    fn shell_program_path_quotes_paths_that_shell_would_split() {
+        let path = Path::new("/tmp/Application Support/paneflow-ai-hook");
+        let command = format!("{} Stop", shell_program_path(path));
+
+        assert_eq!(
+            command_program_token(&command).as_deref(),
+            Some("/tmp/Application Support/paneflow-ai-hook")
+        );
+        assert!(
+            super::is_paneflow_hook_command(&command),
+            "quoted hook command must remain detectable: {command}"
+        );
     }
 }

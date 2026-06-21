@@ -69,23 +69,98 @@ fn managed_group(hook_path: &Path, event: &str) -> Value {
         "hooks": [
             {
                 "type": "command",
-                "command": format!("{} {event}", hook_path.display()),
+                "command": format!("{} {event}", shell_program_path(hook_path)),
                 "timeout": 5,
             }
         ]
     })
 }
 
+fn display_hook_program(path: &Path) -> String {
+    let rendered = path.display().to_string();
+    #[cfg(windows)]
+    {
+        rendered.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        rendered
+    }
+}
+
+fn shell_program_path(path: &Path) -> String {
+    let rendered = display_hook_program(path);
+    if rendered
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '\\' | '$' | '`' | ';' | '&' | '|'))
+    {
+        format!("'{}'", rendered.replace('\'', "'\\''"))
+    } else {
+        rendered
+    }
+}
+
 /// True iff `first token`'s basename is the ai-hook binary (legacy bare-name or
 /// absolute-path form, Unix or Windows). Mirror of
 /// `paneflow-shim::hooks::is_paneflow_hook_command`.
 fn is_paneflow_hook_command(command: &str) -> bool {
-    let first = command.split_whitespace().next().unwrap_or("");
-    let base = Path::new(first)
+    let Some(program) = command_program_token(command) else {
+        return false;
+    };
+    let base = Path::new(&program)
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or(first);
+        .unwrap_or(&program);
     base == "paneflow-ai-hook" || base == "paneflow-ai-hook.exe"
+}
+
+fn command_program_token(command: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = command.trim_start().chars().peekable();
+    let mut quote: Option<char> = None;
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            None => {
+                if ch.is_whitespace() {
+                    break;
+                }
+                match ch {
+                    '\'' | '"' => quote = Some(ch),
+                    '\\' if chars.peek() == Some(&'\'') => {
+                        let _ = chars.next();
+                        out.push('\'');
+                    }
+                    _ => out.push(ch),
+                }
+            }
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None;
+                } else {
+                    out.push(ch);
+                }
+            }
+            Some('"') => {
+                if ch == '"' {
+                    quote = None;
+                } else if ch == '\\' {
+                    match chars.peek().copied() {
+                        Some(next @ ('"' | '\\' | '$' | '`')) => {
+                            let _ = chars.next();
+                            out.push(next);
+                        }
+                        _ => out.push(ch),
+                    }
+                } else {
+                    out.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (!out.is_empty()).then_some(out)
 }
 
 /// True iff `group` is a Paneflow-managed matcher-group: the `_paneflow_managed`
@@ -185,7 +260,7 @@ fn collect_managed_commands(root: &Value) -> Vec<String> {
 }
 
 fn classify(found_path: &str, expected: &Path) -> StatusOutcome {
-    let expected = expected.to_string_lossy();
+    let expected = display_hook_program(expected);
     if expected.is_empty() || found_path == expected {
         StatusOutcome::Installed {
             path: found_path.to_string(),
@@ -193,7 +268,7 @@ fn classify(found_path: &str, expected: &Path) -> StatusOutcome {
     } else {
         StatusOutcome::StalePath {
             found: found_path.to_string(),
-            expected: expected.into_owned(),
+            expected,
         }
     }
 }
@@ -243,8 +318,8 @@ fn status(expected_hook_path: &Path) -> Result<StatusOutcome> {
         return Ok(StatusOutcome::NotInstalled);
     };
     // The stored command is "<path> <event>" - compare the path token.
-    let found_path = first.split_whitespace().next().unwrap_or("");
-    Ok(classify(found_path, expected_hook_path))
+    let found_path = command_program_token(first).unwrap_or_default();
+    Ok(classify(&found_path, expected_hook_path))
 }
 
 const HOOKS_USAGE: &str = "\
@@ -415,6 +490,49 @@ mod tests {
             json!("/bin/paneflow-ai-hook Stop")
         );
         assert_eq!(g["hooks"][0]["timeout"], json!(5));
+        assert!(is_managed_group(&g));
+    }
+
+    #[test]
+    fn managed_group_quotes_paths_that_shell_would_split() {
+        let path = Path::new("/tmp/Application Support/paneflow-ai-hook");
+        let g = managed_group(path, "Stop");
+        let command = g["hooks"][0]["command"].as_str().unwrap();
+        assert!(
+            command.starts_with('\''),
+            "space-bearing hook path must be shell quoted: {command}"
+        );
+        let expected = display_hook_program(path);
+        assert_eq!(
+            command_program_token(command).as_deref(),
+            Some(expected.as_str())
+        );
+        assert!(is_managed_group(&g));
+        assert!(matches!(
+            classify(&command_program_token(command).unwrap(), path),
+            StatusOutcome::Installed { .. }
+        ));
+    }
+
+    #[test]
+    fn command_program_token_handles_shell_escaped_quotes() {
+        assert_eq!(
+            command_program_token("'a'\\''b/paneflow-ai-hook' Stop").as_deref(),
+            Some("a'b/paneflow-ai-hook")
+        );
+        assert!(is_paneflow_hook_command(
+            "'/tmp/with space/paneflow-ai-hook' Stop"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_hook_paths_use_forward_slashes() {
+        let path = Path::new(r"C:\Users\Arthur\AppData\Local\paneflow\bin\paneflow-ai-hook.exe");
+        let g = managed_group(path, "Stop");
+        let command = g["hooks"][0]["command"].as_str().unwrap();
+        assert!(!command.contains('\\'), "{command}");
+        assert!(command.contains('/'), "{command}");
         assert!(is_managed_group(&g));
     }
 
