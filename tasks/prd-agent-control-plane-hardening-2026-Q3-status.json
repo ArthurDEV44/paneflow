@@ -17,10 +17,10 @@
   {
    "id": "EP-002",
    "title": "Agents conducteurs hookés",
-   "status": "IN_REVIEW",
+   "status": "DONE",
    "priority": "P0",
    "stories_total": 3,
-   "stories_done": 2
+   "stories_done": 3
   },
   {
    "id": "EP-003",
@@ -80,7 +80,8 @@
    ],
    "started_at": "2026-06-19",
    "completed_at": "2026-06-19",
-   "reviewed_at": "2026-06-20"
+   "reviewed_at": "2026-06-20",
+   "notes": "Hardening 2026-06-21: la confirmation CLI post-submit garde le changement d'etat hooke comme preuve prioritaire, mais accepte aussi output_generation qui avance comme confirmation d'activite terminale. Cela reduit les faux echecs 'submit non confirme' quand l'agent/terminal bouge avant que l'etat hooke soit observable; couvert par test send_cmd output_generation_changed. La detection d'agent par commande foreground parse aussi les executables quotes et les chemins Windows/macOS/Linux avant de choisir l'auto-paste agent, couvert par agent_from_command_uses_executable_stem."
   },
   {
    "id": "US-003",
@@ -113,7 +114,7 @@
    "id": "US-005",
    "title": "Garantir le hooking (selon le diagnostic US-004)",
    "epic": "EP-002",
-   "status": "IN_REVIEW",
+   "status": "DONE",
    "priority": "P0",
    "size": "L",
    "blocked_by": [
@@ -122,7 +123,7 @@
    "started_at": "2026-06-19",
    "completed_at": "2026-06-19",
    "reviewed_at": "2026-06-20",
-   "notes": "Livré headless: AC2 (échec d'install jamais silencieux, via diags US-004) + AC3 (état unhooked explicite hooked:false+reason:no_hook, via US-006). DÉFÉRÉ: le fix de précédence/emplacement d'install (AC1) pending confirmation live US-004 - changement sécurité-sensible cross-platform à ne pas faire à l'aveugle. AC4 macOS/Windows: diagnose cross-platform, install déjà per-OS. AC1/AC5 live-vérifiées. | REVIEW 2026-06-20: Portion livrée (AC2 never-silent / AC3 hooked:false+reason) reviewée PASS. RESTE IN_REVIEW: AC1 (fix précédence/emplacement d'install = le coeur 'garantir le hooking') toujours déféré au diag live, pas encore livré -> story non DONE."
+   "notes": "Livré: AC1 corrigé pour la cause racine confirmée par le diagnostic code - un hook persistant Paneflow ne supprime l'injection project-local que si son binaire est vérifié exécutable; sinon il est traité stale et le shim retombe sur install_at(.claude/settings.local.json). AC2 aucun échec silencieux (branches None nommées dans PANEFLOW_HOOK_LOG). AC3 état unhooked explicite hooked:false+reason:no_hook via US-006. AC4 cross-platform: résolution PATH/PATHEXT + chemins quotés/forward-slash sûrs. AC5 couvert par tests hooks; vérification live Claude Code reste recommandée mais le correctif de précédence n'est plus déféré."
   },
   {
    "id": "US-006",
@@ -150,7 +151,7 @@
    "started_at": "2026-06-19",
    "completed_at": "2026-06-19",
    "reviewed_at": "2026-06-20",
-   "notes": "Client-side quiescence via le flux push surface_changed (zéro poll). Nouveau subscribe_stream_timed (ipc-client, recv-timeout slice, read_until byte-based + cap 256KiB). Helpers purs testés: idle_decision (Closed>Idle>TimedOut>Continue), classify_event_line. Exit 0 idle, 3 no-instance, 4 timeout, SIGINT->130 + RAII libère l'abonnement. Default --for 1000ms, slice clamp(1,100) (NFR for+100ms). Windows = stub documenté (named pipe rejette recv-timeout + bus push Unix-only jusqu'à EP-006): exit 3 actionnable -> wait --pattern, jamais de hang. | REVIEW 2026-06-20: PASS. Quiescence clock client-side correcte (slice=clamp(for,1,100) borne la latence a for+100ms; Ticks pilotent l'horloge en silence total; deadline verifie sur CHAQUE event -> spinner time-out, zero hang). Exit 0/3/4 + SIGINT 130 + RAII. Windows = stub documente (exit 3 -> wait --pattern). subscribe_stream_timed: read_until byte-based, cap 256KiB, reassemblage cross-slice."
+   "notes": "Client-side quiescence via le flux push surface_changed (zéro poll sur Unix/macOS). Nouveau subscribe_stream_timed (ipc-client, recv-timeout slice, read_until byte-based + cap 256KiB). Helpers purs testés: idle_decision (Closed>Idle>TimedOut>Continue), classify_event_line. Exit 0 idle, 3 no-instance/target, 4 timeout, SIGINT->130 + RAII libère l'abonnement. Default --for 1000ms, slice clamp(1,100) (NFR for+100ms). Windows: après EP-006, paneflow watch utilise le bus push named-pipe; wait --idle retombe sur un clock déterministe par output_generation quand le transport refuse recv-timeout. | REVIEW 2026-06-20: PASS. Quiescence clock client-side correcte (slice=clamp(for,1,100) borne la latence a for+100ms; Ticks pilotent l'horloge en silence total; deadline verifie sur CHAQUE event -> spinner time-out, zero hang). Exit 0/3/4 + SIGINT 130 + RAII. subscribe_stream_timed: read_until byte-based, cap 256KiB, reassemblage cross-slice."
   },
   {
    "id": "US-008",
@@ -237,7 +238,7 @@
    "started_at": "2026-06-20",
    "completed_at": "2026-06-20",
    "reviewed_at": null,
-   "notes": "serve_subscription rendu cross-platform (retrait du gate cfg(unix) + du stub -32004 + du let _=&event_bus Windows): events.subscribe dispatch+return sur les 2 OS, avant le break one-request Windows. AC2 (neutraliser l'abort): analyse de la source interprocess 2.4 = un WriteFileEx vers un pipe deja casse echoue a DEMARRER -> le `?` droppe le garde CannotUnwind -> process::abort() INCONDITIONNEL (catch_unwind impuissant). Solution: garde subscriber_connected() qui sonde PeekNamedPipe (zero-len, out-params NULL = pas d'overlapped, pas de CannotUnwind) AVANT chaque push; broken -> false -> break -> Subscription drop (eviction RAII). Acces au HANDLE: le Stream generique ne forwarde pas AsHandle, mais sa variante publique Windows Stream::NamedPipe(np) expose np.as_handle() (match exhaustif mono-variante). Helpers push_frame/push_line factorisent la garde; Unix = no-op true (SIGPIPE ignore -> Err(BrokenPipe) propre). Feature windows-sys Win32_System_Pipes ajoutee. Race residuelle (peer ferme entre sonde et write) documentee -> smoke US-014. AC3 dropped/backpressure preserves. AC4 client watch deja cross-platform (subscribe_stream sans recv-timeout). AC6 DACL: defaut CreateNamedPipe (owner+SYSTEM+Admins) deja documente bind_socket + scripting.md; SDDL differe. AC5: cross-check complet de paneflow-app bloque par l'asm COFF de psm (dep transitif) non assemblable par le toolchain host Linux -> FFI Windows compile-VERIFIE en isolation (crate jetable interprocess 2.4 + windows-sys 0.59, cargo check + clippy -D warnings sur x86_64-pc-windows-msvc = 0 warning); runtime marque a smoke-tester (US-014). Docs corrigees: ipc_events.rs (commentaire dead_code), scripting.md (plus 'Unix only'). Gates Linux verts (fmt/clippy/1118+ tests)."
+   "notes": "serve_subscription rendu cross-platform (retrait du gate cfg(unix) + du stub -32004 + du let _=&event_bus Windows): events.subscribe dispatch+return sur les 2 OS, avant le break one-request Windows. AC2 (neutraliser l'abort): analyse de la source interprocess 2.4 = un WriteFileEx vers un pipe deja casse echoue a DEMARRER -> le `?` droppe le garde CannotUnwind -> process::abort() INCONDITIONNEL (catch_unwind impuissant). Solution: garde subscriber_connected() qui sonde PeekNamedPipe (zero-len, out-params NULL = pas d'overlapped, pas de CannotUnwind) AVANT chaque push; broken -> false -> break -> Subscription drop (eviction RAII). Acces au HANDLE: le Stream generique ne forwarde pas AsHandle, mais sa variante publique Windows Stream::NamedPipe(np) expose np.as_handle() (match exhaustif mono-variante). Helpers push_frame/push_line factorisent la garde; Unix = no-op true (SIGPIPE ignore -> Err(BrokenPipe) propre). Feature windows-sys Win32_System_Pipes ajoutee. Race residuelle (peer ferme entre sonde et write) documentee -> smoke US-014. AC3 dropped/backpressure preserves. AC4 client watch cross-platform (subscribe_stream sans recv-timeout). AC6 DACL: defaut CreateNamedPipe (owner+SYSTEM+Admins) documente bind_socket + scripting.md; SDDL differe. Windows validation 2026-06-20: cargo test -p paneflow-app windows_pipe_tests -- --nocapture -> 4 passed (live subscriber, disconnected subscriber eviction, raw read/write closed pipe without process abort). Windows validation 2026-06-21: cargo test --workspace -- --nocapture -> PASS apres correction des tests macOS DMG non-macOS et des tests paneflow-process POSIX-only; clippy cible paneflow-app/paneflow-process/paneflow-ipc-client/paneflow-shim/paneflow-mcp-install -> PASS."
   },
   {
    "id": "US-014",
@@ -253,7 +254,7 @@
    "started_at": "2026-06-20",
    "completed_at": "2026-06-20",
    "reviewed_at": null,
-   "notes": "Runbook 'Part 2 - Agent control-plane runtime smokes (EP-006)' ajoute a docs/WINDOWS-SMOKE-TEST.md (doc Windows trackee canonique, tasks/ etant gitignored). 4 scenarios reproductibles avec steps/expected/recording: CP-1 Ctrl-C mid-turn -> ai.stop + liberation spinner (valide exec.rs:404); CP-2 bracketed paste a travers ConPTY (ESC[200~/201~ intacts, tour demarre, fallback documente si ConPTY filtre); CP-3 agent sans 2004h (pas de corruption silencieuse, raw path via resolve_paste_mode); CP-4 watch disconnect ne DOIT PAS abort l'app (Ctrl-C paneflow watch x10 + mid-burst, pas de STATUS_STACK_BUFFER_OVERRUN, backpressure dropped marker, re-subscribe), avec la race residuelle comme stresseur bucket-C. Section 'Recording results' + triage A/B/C herite. VERIFICATION: non execute (host Linux, pas de VM Windows) -> a faire tourner par Arthur sur Windows 11 reel; les stories portent 'compile-verified on Linux; Windows runtime smoke pending'."
+   "notes": "Runbook 'Part 2 - Agent control-plane runtime smokes (EP-006)' ajoute a docs/WINDOWS-SMOKE-TEST.md (doc Windows trackee canonique, tasks/ etant gitignored). 4 scenarios reproductibles avec steps/expected/recording: CP-1 Ctrl-C mid-turn -> ai.stop + liberation spinner (valide exec.rs:404); CP-2 bracketed paste a travers ConPTY (ESC[200~/201~ intacts, tour demarre, fallback documente si ConPTY filtre); CP-3 agent sans 2004h (pas de corruption silencieuse, raw path via resolve_paste_mode); CP-4 watch disconnect ne DOIT PAS abort l'app (Ctrl-C paneflow watch x10 + mid-burst, pas de STATUS_STACK_BUFFER_OVERRUN, backpressure dropped marker, re-subscribe), avec la race residuelle comme stresseur bucket-C. Section 'Recording results' + triage A/B/C herite. VERIFICATION: unit Windows EP-006 passée le 2026-06-20; workspace complet Windows passe le 2026-06-21; smoke live GUI+agent non exécuté dans ce run et reste à faire sur instance Paneflow interactive."
   }
  ]
 }

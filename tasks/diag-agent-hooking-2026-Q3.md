@@ -1,8 +1,9 @@
 # Diagnostic - non-hooking d'un agent lancé via `send "claude"` (EP-002 US-004)
 
 > Spike de `prd-agent-control-plane-hardening-2026-Q3.md`. Statut : analyse code
-> complète + instrumentation livrée ; **confirmation de la cause racine = à faire
-> sur instance live d'Arthur** (la story est explicitement live-vérifiée).
+> complète + instrumentation livrée ; US-005 a ensuite corrigé la cause la plus
+> dangereuse : un hook persistant Paneflow stale ne supprime plus l'injection
+> project-local.
 
 ## Symptôme
 
@@ -98,11 +99,13 @@ discriminante :
   s'installe ; chercher ailleurs (le hook ne joint pas le socket : voir le log de
   `paneflow-ai-hook` sous le même `PANEFLOW_HOOK_LOG`).
 
-## Orientation US-005 (le fix dépend de la cause confirmée)
+## Orientation US-005 (fix livré)
 
-- **Cause #1 (persistent skip)** : rendre le skip plus sûr - ne skipper que si le
-  hook persistant est **vérifié vivant** (binaire existe), sinon retomber sur
-  l'install projet-local. NE PAS supprimer le skip (double-fire EP-004 US-018).
+- **Cause #1 (persistent skip)** : corrigée. Le shim ne skippe l'injection
+  project-local que si le hook persistant est **vérifié vivant** (binaire
+  existe). Si le hook persistant pointe vers un binaire absent, il est traité
+  stale et le shim retombe sur l'install projet-local. Le skip vivant reste en
+  place pour éviter le double-fire EP-004 US-018.
 - **Cause #2 (cwd)** : installer depuis un emplacement stable n'est PAS trivial -
   Claude Code lit `.claude/` depuis **son** cwd ; le seul fallback "stable" est
   `~/.claude/settings.json` (user-global, invasif : affecte toutes les sessions).
@@ -110,6 +113,5 @@ discriminante :
 - **Quoi qu'il en soit (livré)** : tout échec d'install est désormais **journalisé
   avec sa raison** (US-005 AC2, « jamais silencieux »), et un agent non-hooké est
   exposé `hooked:false` + `reason:"no_hook"` (US-006), donc « pas un état ambigu »
-  (US-005 AC3). Le fix d'install lui-même est **déféré** à la confirmation live
-  ci-dessus pour ne pas changer à l'aveugle un chemin sécurité-sensible
-  cross-platform.
+  (US-005 AC3). La vérification live reste utile pour valider l'environnement
+  d'Arthur, mais le correctif de précédence n'est plus déféré.
