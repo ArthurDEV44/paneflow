@@ -13,13 +13,11 @@
         clippy::panic
     )
 )]
-// Windows: build as a GUI-subsystem binary so launching PaneFlow from
-// Explorer / a shortcut / the Start Menu does NOT make the OS allocate a
-// stray console window (on Windows 11 that console is hosted by Windows
-// Terminal and pops up next to the app). The scriptable CLI keeps working
-// because `main()` re-attaches to the parent console when there is one -
-// see `attach_parent_console`. No-op on Linux/macOS (no subsystem concept).
-#![cfg_attr(windows, windows_subsystem = "windows")]
+// Windows deliberately stays a console-subsystem binary. PowerShell/cmd do not
+// wait for GUI-subsystem executables, so `paneflow ls` would otherwise return
+// immediately with no stdout/stderr and a misleading success code. GUI launches
+// still shed the auto-created one-process console at startup; see
+// `detach_lonely_windows_console_for_gui_launch`.
 //! PaneFlow - native terminal workspace for coding agents.
 //!
 //! App shell with sidebar workspace list, terminal panes, agent surfaces, and
@@ -1654,34 +1652,60 @@ fn run_update_and_exit() -> i32 {
 // App entry point
 // ---------------------------------------------------------------------------
 
-/// Re-attach the process to its parent console on Windows, when one exists.
+/// Whether a Windows startup console belongs only to PaneFlow and can be shed.
 ///
-/// PaneFlow is a GUI-subsystem binary (`windows_subsystem = "windows"`) so a
-/// GUI launch (Explorer / Start Menu) never allocates a console window. The
-/// trade-off is that a GUI-subsystem process started *from a terminal* is
-/// detached from that terminal's console, so the scriptable CLI (`paneflow mcp
-/// install`, `paneflow ls`, `--version`, …) would print into the void.
-/// [`AttachConsole(ATTACH_PARENT_PROCESS)`] re-binds stdio to the parent
-/// console when there is one (the CLI case) and fails harmlessly when there is
-/// not (the GUI case). We deliberately never call `AllocConsole`, which would
-/// recreate the very window this whole change removes.
+/// Console-subsystem executables launched from Explorer / Start Menu get a new
+/// console before Rust code runs. When that console contains only PaneFlow, the
+/// launch is a GUI launch and the console is visual noise. When it contains the
+/// parent shell too, the user is running a CLI/scriptable path and stdout,
+/// stderr, waiting, and exit codes must remain intact.
 #[cfg(windows)]
-fn attach_parent_console() {
-    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
-    // SAFETY: a plain FFI call with no aliasing or memory-safety concerns. A
-    // 0 (FALSE) return means there is no parent console - exactly the GUI
-    // launch we intentionally leave alone.
-    unsafe {
-        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+fn should_detach_windows_console(
+    is_scriptable_invocation: bool,
+    console_process_count: u32,
+) -> bool {
+    !is_scriptable_invocation && console_process_count == 1
+}
+
+/// Detach the one-process console Windows creates for Explorer/Start launches.
+#[cfg(windows)]
+fn detach_lonely_windows_console_for_gui_launch(is_scriptable_invocation: bool) {
+    use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
+
+    let mut processes = [0_u32; 2];
+    // SAFETY: GetConsoleProcessList writes at most the buffer length we pass
+    // and returns the number of attached console processes. A return larger
+    // than the buffer means "there are multiple processes", which is exactly
+    // the keep-attached case for terminal-launched CLI paths.
+    let count = unsafe { GetConsoleProcessList(processes.as_mut_ptr(), processes.len() as u32) };
+    if should_detach_windows_console(is_scriptable_invocation, count) {
+        // SAFETY: FreeConsole only detaches this process from its console. It
+        // has no Rust aliasing or lifetime implications; failure is harmless
+        // and simply leaves the console visible.
+        unsafe {
+            let _ = FreeConsole();
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_startup_console_tests {
+    use super::should_detach_windows_console;
+
+    #[test]
+    fn gui_launch_detaches_only_a_lonely_console() {
+        assert!(should_detach_windows_console(false, 1));
+        assert!(!should_detach_windows_console(false, 0));
+        assert!(!should_detach_windows_console(false, 2));
+    }
+
+    #[test]
+    fn scriptable_invocation_keeps_console_even_when_lonely() {
+        assert!(!should_detach_windows_console(true, 1));
     }
 }
 
 fn main() {
-    // Restore CLI stdout/stderr when launched from a terminal (no-op on a GUI
-    // launch). Must run before the first `println!` below - see the fn docs.
-    #[cfg(windows)]
-    attach_parent_console();
-
     // Handle --help and --version before initializing GPUI
     let args: Vec<String> = std::env::args().collect();
     // US-038: detect the `mcp` subcommand BEFORE the global flag scans. Those
@@ -1701,11 +1725,34 @@ fn main() {
     // before clap (like `mcp`) and mutates agent config files offline - so the
     // global flag scans must not eat its `--help`.
     let is_hooks_subcommand = args.get(1).map(String::as_str) == Some("hooks");
-    if !is_mcp_subcommand
+    let is_global_help = !is_mcp_subcommand
         && !is_cli_subcommand
         && !is_hooks_subcommand
-        && args.iter().any(|a| a == "--help" || a == "-h")
-    {
+        && args.iter().any(|a| a == "--help" || a == "-h");
+    let is_global_version = !is_mcp_subcommand
+        && !is_cli_subcommand
+        && !is_hooks_subcommand
+        && args.iter().any(|a| a == "--version" || a == "-v");
+    let is_update_and_exit = !is_mcp_subcommand
+        && !is_cli_subcommand
+        && !is_hooks_subcommand
+        && args.iter().any(|a| a == "--update-and-exit");
+    let is_unknown_verb = args
+        .get(1)
+        .is_some_and(|verb| cli::looks_like_unknown_verb(Some(verb.as_str())));
+
+    #[cfg(windows)]
+    detach_lonely_windows_console_for_gui_launch(
+        is_mcp_subcommand
+            || is_cli_subcommand
+            || is_hooks_subcommand
+            || is_global_help
+            || is_global_version
+            || is_update_and_exit
+            || is_unknown_verb,
+    );
+
+    if is_global_help {
         println!(
             "PaneFlow {version} - native terminal workspace for coding agents\n\
              \n\
@@ -1735,11 +1782,7 @@ fn main() {
         );
         return;
     }
-    if !is_mcp_subcommand
-        && !is_cli_subcommand
-        && !is_hooks_subcommand
-        && args.iter().any(|a| a == "--version" || a == "-v")
-    {
+    if is_global_version {
         println!("paneflow {}", env!("CARGO_PKG_VERSION"));
         return;
     }
@@ -1806,11 +1849,7 @@ fn main() {
     // `paneflow send <t> "--update-and-exit"`, `paneflow search x --update-and-exit`)
     // is captured by this `args.iter().any(...)` scan and hijacks the verb into
     // the self-updater (US-002: "pas de capture par un scan global").
-    if !is_mcp_subcommand
-        && !is_cli_subcommand
-        && !is_hooks_subcommand
-        && args.iter().any(|a| a == "--update-and-exit")
-    {
+    if is_update_and_exit {
         std::process::exit(run_update_and_exit());
     }
 
@@ -1872,9 +1911,7 @@ fn main() {
     // which would silently trip the single-instance guard. A bare `paneflow`
     // (no argv[1]) and any `-`/`--` flag are NOT flagged, so the GUI and the
     // global-flag scans keep their existing behaviour.
-    if let Some(verb) = args.get(1)
-        && cli::looks_like_unknown_verb(Some(verb.as_str()))
-    {
+    if is_unknown_verb && let Some(verb) = args.get(1) {
         eprintln!("paneflow: unknown verb '{verb}'; see `paneflow --help` for the verb list");
         std::process::exit(2);
     }
