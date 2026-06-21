@@ -624,6 +624,7 @@ enum LineRead {
 /// a line that hits the cap without a terminating newline is reported as
 /// [`LineRead::TooLong`] rather than allocated unboundedly (the DoS the cap
 /// exists to stop). Pure framing logic, unit-tested below.
+#[cfg(any(test, not(windows)))]
 fn read_capped_line(reader: &mut impl BufRead, line: &mut String) -> std::io::Result<LineRead> {
     line.clear();
     // `by_ref()` reborrows so `Take` owns a `&mut reader`, not `reader` itself
@@ -638,6 +639,61 @@ fn read_capped_line(reader: &mut impl BufRead, line: &mut String) -> std::io::Re
     Ok(LineRead::Got)
 }
 
+#[cfg(not(windows))]
+fn read_request_line(reader: &mut impl BufRead, line: &mut String) -> std::io::Result<LineRead> {
+    read_capped_line(reader, line)
+}
+
+/// Windows named-pipe read path that avoids interprocess's `ReadFileEx`
+/// `CannotUnwind` guard. A peer can connect and close before sending a frame;
+/// interprocess then aborts the process instead of returning `BrokenPipe`.
+#[cfg(windows)]
+fn read_request_line(stream: &mut Stream, line: &mut String) -> std::io::Result<LineRead> {
+    let mut bytes = Vec::new();
+    let mut scratch = [0u8; 4096];
+
+    loop {
+        let remaining = MAX_REQUEST_LEN as usize - bytes.len();
+        if remaining == 0 {
+            break;
+        }
+
+        let read_len = remaining.min(scratch.len());
+        let n = match pipe_read_some(stream, &mut scratch[..read_len]) {
+            Ok(n) => n,
+            Err(e) if closed_pipe_error(&e) => return Ok(LineRead::Eof),
+            Err(e) => return Err(e),
+        };
+        if n == 0 {
+            if bytes.is_empty() {
+                return Ok(LineRead::Eof);
+            }
+            break;
+        }
+
+        let chunk = &scratch[..n];
+        if let Some(newline) = chunk.iter().position(|b| *b == b'\n') {
+            bytes.extend_from_slice(&chunk[..=newline]);
+            break;
+        }
+        bytes.extend_from_slice(chunk);
+    }
+
+    line.clear();
+    line.push_str(
+        std::str::from_utf8(&bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
+    );
+
+    if line.is_empty() {
+        Ok(LineRead::Eof)
+    } else if bytes.len() as u64 >= MAX_REQUEST_LEN && !line.ends_with('\n') {
+        Ok(LineRead::TooLong)
+    } else {
+        Ok(LineRead::Got)
+    }
+}
+
 /// US-022 backpressure: refuse a connection once the concurrency cap is hit.
 /// Writes one JSON-RPC error envelope and drops the stream (closing it) so the
 /// peer gets a structured rejection rather than a silent hang.
@@ -647,8 +703,10 @@ fn reject_overloaded(mut stream: Stream) {
         "error": {"code": -32000, "message": "server busy: too many concurrent connections"},
         "id": Value::Null,
     });
-    let _ = writeln!(&mut stream, "{}", envelope);
-    let _ = stream.flush();
+    // Abort-safe write (CP-4): on Windows a peer that already closed must not
+    // trip interprocess's overlapped-write abort; `write_envelope` routes
+    // through our managed WriteFile. `stream` is dropped right after either way.
+    let _ = write_envelope(&mut stream, &envelope);
 }
 
 /// EP-003 US-010 (agent-control-plane): the connected peer's PID, for tracing
@@ -746,11 +804,14 @@ fn handle_connection(
     // which is acceptable - clients send a frame immediately on connect.
     let _ = stream.set_recv_timeout(Some(IPC_IDLE_TIMEOUT));
 
+    #[cfg(windows)]
+    let mut reader = stream;
+    #[cfg(not(windows))]
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
 
     loop {
-        match read_capped_line(&mut reader, &mut line) {
+        match read_request_line(&mut reader, &mut line) {
             Ok(LineRead::Eof) => break,
             Ok(LineRead::TooLong) => {
                 // US-022: oversized request → structured rejection + close,
@@ -760,8 +821,8 @@ fn handle_connection(
                     "error": {"code": -32600, "message": "request exceeds maximum length"},
                     "id": Value::Null,
                 });
-                let _ = writeln!(&mut writer, "{}", envelope);
-                let _ = writer.flush();
+                // Abort-safe write (CP-4): see `write_envelope`.
+                let _ = write_envelope(&mut writer, &envelope);
                 break;
             }
             Ok(LineRead::Got) => {}
@@ -880,14 +941,12 @@ fn handle_connection(
         };
 
         // Skip the reply for fire-and-forget `ai.*` frames (see `suppress_reply`
-        // above): the hook has already closed its pipe, and writing to it aborts
-        // the process inside `interprocess`. Other methods reply normally.
-        if !suppress_reply {
-            let mut response_str = serde_json::to_string(&response).unwrap_or_default();
-            response_str.push('\n');
-            if writer.write_all(response_str.as_bytes()).is_err() {
-                break;
-            }
+        // above): the hook closed its pipe without reading, so the reply is dead
+        // weight. The write itself is abort-safe via `write_envelope` (CP-4), so
+        // this is now an optimisation, not the abort guard it once was. Other
+        // methods reply normally.
+        if !suppress_reply && !write_envelope(&mut writer, &response) {
+            break;
         }
 
         // Windows: serve exactly ONE request per connection. Every paneflow
@@ -974,12 +1033,12 @@ fn serve_subscription(writer: &mut Stream, params: &Value, bus: &Arc<crate::ipc_
 
 /// Write one JSON value as a newline-terminated frame to a subscription stream,
 /// guarded by [`subscriber_connected`]. Returns `false` when the peer is gone or
-/// the write/flush fails - the caller breaks and the `Subscription` drops (RAII).
+/// the write fails - the caller breaks and the `Subscription` drops (RAII).
 fn push_frame(writer: &mut Stream, value: &Value) -> bool {
     if !subscriber_connected(writer) {
         return false;
     }
-    writeln!(writer, "{}", value).is_ok() && writer.flush().is_ok()
+    write_envelope(writer, value)
 }
 
 /// Like [`push_frame`] but for bytes that ALREADY carry their trailing newline
@@ -988,7 +1047,179 @@ fn push_line(writer: &mut Stream, line: &[u8]) -> bool {
     if !subscriber_connected(writer) {
         return false;
     }
-    writer.write_all(line).is_ok() && writer.flush().is_ok()
+    push_bytes(writer, line)
+}
+
+/// Serialize a JSON-RPC value as a newline-terminated frame and send it
+/// abort-safely. `true` on success. Shared by the subscription push path and the
+/// request/response + rejection writes, so every server-side write to the pipe
+/// goes through the same Windows-safe path.
+fn write_envelope(writer: &mut Stream, value: &Value) -> bool {
+    let mut frame = value.to_string();
+    frame.push('\n');
+    push_bytes(writer, frame.as_bytes())
+}
+
+/// Send raw bytes to the peer, `true` on success.
+///
+/// The `subscriber_connected` probe narrows but cannot close the disconnect
+/// window: the peer can still vanish between the probe and this write, and the
+/// rejection / reply writes have no probe at all. On Windows that previously
+/// reached interprocess's overlapped `WriteFileEx`, which turns a closed-pipe
+/// failure into a `CannotUnwind` -> `process::abort` (STATUS_STACK_BUFFER_OVERRUN
+/// 0xC0000409) that no `catch_unwind` can stop. [`pipe_write_all`] keeps the
+/// failure a returned `io::Error`. Unix writes to a closed socket return
+/// `BrokenPipe` cleanly, so the normal `Write` path is already safe there.
+fn push_bytes(writer: &mut Stream, buf: &[u8]) -> bool {
+    #[cfg(windows)]
+    {
+        pipe_write_all(writer, buf).is_ok()
+    }
+    #[cfg(not(windows))]
+    {
+        writer.write_all(buf).is_ok() && writer.flush().is_ok()
+    }
+}
+
+/// EP-006 follow-up (CP-4): write `buf` to the named pipe with our OWN overlapped
+/// `WriteFile`, bypassing interprocess's abort-on-closed-pipe `Write` impl.
+///
+/// interprocess opens the server pipe with `FILE_FLAG_OVERLAPPED`
+/// (`listener/create_instance.rs`) and sends via an alertable `WriteFileEx` +
+/// completion routine; once the peer has closed, that FFI completion path panics
+/// and interprocess's `CannotUnwind` guard aborts the whole process. We issue a
+/// plain overlapped `WriteFile` (NO completion routine, so no Rust runs in an
+/// APC) and reap it with `GetOverlappedResult`; a dead pipe then surfaces as
+/// `ERROR_NO_DATA` / `ERROR_BROKEN_PIPE`, a normal `io::Error`. A NULL
+/// `lpOverlapped` is not an option - MSDN documents it as potentially corrupting
+/// on an overlapped handle - hence the per-call manual-reset event.
+#[cfg(windows)]
+fn pipe_write_all(writer: &Stream, buf: &[u8]) -> std::io::Result<()> {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_IO_PENDING, HANDLE};
+    use windows_sys::Win32::Storage::FileSystem::WriteFile;
+    use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
+    use windows_sys::Win32::System::Threading::CreateEventW;
+
+    let Stream::NamedPipe(np) = writer;
+    let handle: HANDLE = np.as_handle().as_raw_handle() as _;
+
+    // Manual-reset, initially-unsignaled event backing the OVERLAPPED.
+    // SAFETY: default attributes/name; the returned handle is checked below.
+    let event: HANDLE = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if event.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    // Close the event on every return path.
+    struct EventGuard(HANDLE);
+    impl Drop for EventGuard {
+        fn drop(&mut self) {
+            // SAFETY: a live event handle we created and have not yet closed.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+    let _event_guard = EventGuard(event);
+
+    let mut remaining = buf;
+    while !remaining.is_empty() {
+        // SAFETY: a zeroed OVERLAPPED is valid; we attach the event we created.
+        let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
+        ov.hEvent = event;
+        let want = remaining.len().min(u32::MAX as usize) as u32;
+        // SAFETY: `handle` is a valid overlapped pipe handle borrowed from `np`
+        // for this call; `ov` carries the event; ptr/len describe `remaining`.
+        // No completion routine, so no Rust runs in an FFI callback.
+        let started = unsafe {
+            WriteFile(
+                handle,
+                remaining.as_ptr(),
+                want,
+                std::ptr::null_mut(),
+                &mut ov,
+            )
+        };
+        if started == 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+                return Err(err);
+            }
+        }
+        let mut transferred: u32 = 0;
+        // SAFETY: same handle + overlapped as the WriteFile above; `transferred`
+        // is a valid out-pointer; bWait = TRUE blocks until the write settles.
+        let reaped = unsafe { GetOverlappedResult(handle, &ov, &mut transferred, 1) };
+        if reaped == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if transferred == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "named-pipe write transferred 0 bytes",
+            ));
+        }
+        remaining = &remaining[transferred as usize..];
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn pipe_read_some(reader: &Stream, buf: &mut [u8]) -> std::io::Result<usize> {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_IO_PENDING, HANDLE};
+    use windows_sys::Win32::Storage::FileSystem::ReadFile;
+    use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
+    use windows_sys::Win32::System::Threading::CreateEventW;
+
+    let Stream::NamedPipe(np) = reader;
+    let handle: HANDLE = np.as_handle().as_raw_handle() as _;
+
+    let event: HANDLE = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if event.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    struct EventGuard(HANDLE);
+    impl Drop for EventGuard {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+    let _event_guard = EventGuard(event);
+
+    let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
+    ov.hEvent = event;
+    let want = buf.len().min(u32::MAX as usize) as u32;
+    let started = unsafe {
+        ReadFile(
+            handle,
+            buf.as_mut_ptr(),
+            want,
+            std::ptr::null_mut(),
+            &mut ov,
+        )
+    };
+    if started == 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+            return Err(err);
+        }
+    }
+
+    let mut transferred: u32 = 0;
+    let reaped = unsafe { GetOverlappedResult(handle, &ov, &mut transferred, 1) };
+    if reaped == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(transferred as usize)
+}
+
+#[cfg(windows)]
+fn closed_pipe_error(err: &std::io::Error) -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED};
+
+    matches!(
+        err.raw_os_error(),
+        Some(code) if code == ERROR_BROKEN_PIPE as i32 || code == ERROR_PIPE_NOT_CONNECTED as i32
+    )
 }
 
 /// EP-006 US-013: Unix path - a no-op `true`. A write to a closed Unix socket
@@ -1371,7 +1602,9 @@ mod dispatch_tests {
 /// closed socket returns `BrokenPipe` cleanly, no probe needed).
 #[cfg(all(test, windows))]
 mod windows_pipe_tests {
-    use super::{push_frame, push_line, subscriber_connected};
+    use super::{
+        LineRead, pipe_write_all, push_frame, push_line, read_request_line, subscriber_connected,
+    };
     use interprocess::local_socket::{
         GenericFilePath, Listener, ListenerOptions, Stream, prelude::*,
     };
@@ -1502,5 +1735,48 @@ mod windows_pipe_tests {
             !push_line(&mut server, b"{\"type\":\"ai.stop\"}\n"),
             "push_line evicts a disconnected subscriber instead of writing"
         );
+    }
+
+    #[test]
+    fn raw_write_to_closed_pipe_returns_err_without_process_abort() {
+        let (server, client, _listener) = connected_pair();
+        // Peer closes (a `paneflow watch` Ctrl-C) and the close settles.
+        drop(client);
+        assert!(
+            wait_until_disconnected(&server, Duration::from_secs(2)),
+            "peer close must settle before the write"
+        );
+
+        // Hit the raw overlapped write DIRECTLY, bypassing the
+        // `subscriber_connected` fast-path the eviction test relies on. This is
+        // the residual-race write (probe passed, peer then vanished): before
+        // CP-4's managed WriteFile it aborted the whole process
+        // (STATUS_STACK_BUFFER_OVERRUN 0xC0000409); now it must return a plain
+        // `Err`. Reaching the assert at all proves the process did not abort.
+        let r = pipe_write_all(&server, b"{\"type\":\"heartbeat\"}\n");
+        assert!(
+            r.is_err(),
+            "overlapped write to a closed pipe returns Err, never aborts"
+        );
+    }
+
+    #[test]
+    fn raw_read_from_closed_pipe_returns_eof_without_process_abort() {
+        let (mut server, client, _listener) = connected_pair();
+        // A peer can connect and close before sending a JSON-RPC frame. Before
+        // the managed ReadFile path, interprocess's ReadFileEx guard could
+        // abort the whole process on that immediate ERROR_BROKEN_PIPE.
+        drop(client);
+        assert!(
+            wait_until_disconnected(&server, Duration::from_secs(2)),
+            "peer close must settle before the read"
+        );
+
+        let mut line = String::new();
+        assert_eq!(
+            read_request_line(&mut server, &mut line).expect("closed pipe maps to EOF"),
+            LineRead::Eof
+        );
+        assert!(line.is_empty());
     }
 }

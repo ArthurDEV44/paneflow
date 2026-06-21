@@ -327,10 +327,10 @@ windows-sys = { version = "0.59", features = [
     # required; WINTRUST_FILE_INFO + the WTD_* consts live under _WinTrust.
     "Win32_Security_WinTrust",
     "Win32_Security_Cryptography",
-    # GUI-subsystem console handling: AttachConsole(ATTACH_PARENT_PROCESS) in
-    # `main()` re-binds stdio to the parent terminal for the scriptable CLI,
-    # since `windows_subsystem = "windows"` otherwise detaches it (and stops
-    # the OS from popping a stray console window on a GUI launch).
+    # Console-subsystem launch handling: GetConsoleProcessList + FreeConsole
+    # in `main()` keep scriptable CLI calls blocking/visible in PowerShell
+    # while hiding the one-process console Windows creates for Explorer /
+    # Start Menu GUI launches.
     "Win32_System_Console",
     # EP-006 US-013 (agent-control-plane-hardening): PeekNamedPipe gates every
     # events.subscribe push on the named pipe's liveness, so a disconnected
@@ -338,6 +338,15 @@ windows-sys = { version = "0.59", features = [
     # interprocess's overlapped-write CannotUnwind abort. PeekNamedPipe is under
     # Win32_System_Pipes; GetLastError + ERROR_* already live in _Foundation.
     "Win32_System_Pipes",
+    # EP-006 follow-up (CP-4): the events.subscribe / reply / rejection writes
+    # issue their OWN overlapped WriteFile + GetOverlappedResult instead of
+    # going through interprocess's WriteFileEx, so a peer that closes mid-write
+    # yields a returned io::Error (ERROR_NO_DATA / ERROR_BROKEN_PIPE) instead of
+    # the CannotUnwind process::abort (STATUS_STACK_BUFFER_OVERRUN 0xC0000409).
+    # WriteFile lives under _Storage_FileSystem; OVERLAPPED + GetOverlappedResult
+    # under _System_IO; CreateEventW is in _Threading above.
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
 ] }
 # US-003: process-wide Job Object with KILL_ON_JOB_CLOSE so a kill -9
 # of Paneflow (or any uncaught crash) takes all spawned agent CLIs and
