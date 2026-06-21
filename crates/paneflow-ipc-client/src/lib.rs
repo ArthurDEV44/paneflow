@@ -242,8 +242,8 @@ pub enum StreamEvent<'a> {
 /// best-effort: the `Tick` contract is impossible without it, and a platform
 /// that drops the timeout (Windows named pipes -> `Unsupported`) would block
 /// forever in `read_line` instead of ticking - a hang past the caller's overall
-/// deadline. So an `Unsupported` recv timeout is surfaced as `Err` (the caller
-/// degrades to a clear "use `wait --pattern`" message) rather than swallowed.
+/// deadline. So an `Unsupported` recv timeout is surfaced as `Err`; callers that
+/// still need quiescence can fall back to another deterministic clock.
 pub fn subscribe_stream_timed(
     socket: &Path,
     params: Value,
@@ -259,7 +259,7 @@ pub fn subscribe_stream_timed(
             io::Error::new(
                 io::ErrorKind::Unsupported,
                 "the event stream needs a recv-timeout-capable socket (this \
-                 platform's named pipe rejects it); use `wait --pattern` instead",
+                 platform's named pipe rejects it)",
             )
         } else {
             e
@@ -339,9 +339,9 @@ pub fn subscribe_stream_timed(
 
 /// Resolve the Paneflow IPC socket path. `PANEFLOW_SOCKET_PATH` (inherited
 /// from the Paneflow PTY through the agent that launched this process) is
-/// authoritative - it carries the exact path the running instance bound,
-/// including the debug `paneflow-dev` vs release distinction. Falls back to
-/// the release default when the env var is absent.
+/// authoritative - it carries the exact path the running instance bound.
+/// Falls back to the current build profile's default (`paneflow-dev` in debug,
+/// `paneflow` in release), mirroring `src-app/src/runtime_paths.rs`.
 pub fn resolve_socket_path() -> Option<PathBuf> {
     if let Some(p) = socket_path_from_env(std::env::var("PANEFLOW_SOCKET_PATH").ok().as_deref()) {
         return Some(p);
@@ -356,11 +356,8 @@ pub(crate) fn socket_path_from_env(raw: Option<&str>) -> Option<PathBuf> {
     path.is_absolute().then_some(path)
 }
 
-/// Best-effort default socket path, mirroring `src-app/src/runtime_paths.rs`
-/// (release profile). The caller can't know whether a debug `paneflow-dev`
-/// instance is running, so it targets the release socket; the env var above
-/// is the authoritative source and normally wins. Uses raw env (no `dirs`
-/// dep) to keep the dependency tree minimal.
+/// Best-effort default socket path, mirroring `src-app/src/runtime_paths.rs`.
+/// Uses raw env (no `dirs` dep) to keep the dependency tree minimal.
 #[cfg(unix)]
 fn default_socket_path() -> Option<PathBuf> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
@@ -376,7 +373,17 @@ fn default_socket_path() -> Option<PathBuf> {
         // is stripped (launchd/cron) returned None - "IPC unreachable" - even
         // though the server had bound under the cache dir.
         .or_else(cache_run_dir)?;
-    Some(runtime.join("paneflow").join("paneflow.sock"))
+    let subdir = if cfg!(debug_assertions) {
+        "paneflow-dev"
+    } else {
+        "paneflow"
+    };
+    let socket_file = if cfg!(debug_assertions) {
+        "paneflow-dev.sock"
+    } else {
+        "paneflow.sock"
+    };
+    Some(runtime.join(subdir).join(socket_file))
 }
 
 /// Compute `<cache_dir>/run` from raw env, mirroring the server's last-resort
@@ -400,11 +407,15 @@ fn cache_run_dir() -> Option<PathBuf> {
     }
 }
 
-/// Windows default: the release named-pipe path. Mirrors
+/// Windows default: the named-pipe path for the current build profile. Mirrors
 /// `runtime_paths::socket_path` on Windows.
 #[cfg(windows)]
 fn default_socket_path() -> Option<PathBuf> {
-    Some(PathBuf::from(r"\\.\pipe\paneflow"))
+    Some(PathBuf::from(if cfg!(debug_assertions) {
+        r"\\.\pipe\paneflow-dev"
+    } else {
+        r"\\.\pipe\paneflow"
+    }))
 }
 
 #[cfg(test)]
@@ -483,6 +494,17 @@ mod tests {
         assert_eq!(socket_path_from_env(Some("relative/path.sock")), None);
         assert_eq!(socket_path_from_env(Some("")), None);
         assert_eq!(socket_path_from_env(None), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_default_socket_path_matches_build_profile() {
+        let expected = if cfg!(debug_assertions) {
+            r"\\.\pipe\paneflow-dev"
+        } else {
+            r"\\.\pipe\paneflow"
+        };
+        assert_eq!(default_socket_path(), Some(PathBuf::from(expected)));
     }
 
     /// US-005 AC: a full request/response round-trip over a real local socket

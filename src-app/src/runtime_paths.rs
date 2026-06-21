@@ -17,9 +17,14 @@
 //! never existed in the embed set, so the helper and its PATH-injection
 //! caller were dead code.
 //!
-//! US-009 (prd-windows-port.md) - on Windows, `socket_path` returns the named
-//! pipe path `\\.\pipe\paneflow` instead. The XDG/TMPDIR chain and sun_path
-//! guard remain Unix-only.
+//! `PANEFLOW_SOCKET_PATH` overrides the computed path on every platform so
+//! isolated debug/test instances and panes launched from a running instance
+//! agree on the exact IPC endpoint. Without this, clients can point at one pipe
+//! while the server keeps binding the default one.
+//!
+//! US-009 (prd-windows-port.md) - on Windows, `socket_path` falls back to the
+//! named pipe path `\\.\pipe\paneflow` (or `paneflow-dev` in debug). The
+//! XDG/TMPDIR chain and sun_path guard remain Unix-only.
 
 use std::path::PathBuf;
 
@@ -98,17 +103,28 @@ fn runtime_dir() -> Option<PathBuf> {
 /// to resolve, no sun_path limit to enforce, and no XDG fallback chain.
 #[cfg(unix)]
 pub(crate) fn socket_path() -> Option<PathBuf> {
+    if let Some(path) = socket_path_from_env(std::env::var_os("PANEFLOW_SOCKET_PATH")) {
+        return check_sun_path_fits(&path).then_some(path);
+    }
     let path = runtime_dir()?.join(PANEFLOW_SUBDIR).join(SOCKET_FILE);
     check_sun_path_fits(&path).then_some(path)
 }
 
 #[cfg(windows)]
 pub(crate) fn socket_path() -> Option<PathBuf> {
+    if let Some(path) = socket_path_from_env(std::env::var_os("PANEFLOW_SOCKET_PATH")) {
+        return Some(path);
+    }
     Some(PathBuf::from(if cfg!(debug_assertions) {
         r"\\.\pipe\paneflow-dev"
     } else {
         r"\\.\pipe\paneflow"
     }))
+}
+
+fn socket_path_from_env(raw: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let path = PathBuf::from(raw?);
+    path.is_absolute().then_some(path)
 }
 
 /// Prepend the common per-user `bin/` directories to the process `PATH`
@@ -314,9 +330,31 @@ fn check_sun_path_fits(path: &std::path::Path) -> bool {
     }
 }
 
+#[cfg(test)]
+mod socket_env_tests {
+    use super::*;
+
+    #[test]
+    fn socket_path_env_helper_requires_absolute_path() {
+        let absolute = if cfg!(windows) {
+            r"\\.\pipe\paneflow-test"
+        } else {
+            "/tmp/paneflow-test.sock"
+        };
+        assert_eq!(
+            socket_path_from_env(Some(std::ffi::OsString::from(absolute))),
+            Some(PathBuf::from(absolute))
+        );
+        assert_eq!(
+            socket_path_from_env(Some(std::ffi::OsString::from("relative-paneflow.sock"))),
+            None
+        );
+        assert_eq!(socket_path_from_env(None), None);
+    }
+}
+
 // US-009 - these tests assert Unix socket path composition and sun_path
-// length limits; Windows `socket_path()` always returns `\\.\pipe\paneflow`
-// regardless of env vars, so the assertions here are structurally Unix-only.
+// length limits, so they are structurally Unix-only.
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -326,6 +364,7 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
+        socket: Option<String>,
         xdg: Option<String>,
         tmp: Option<String>,
         _guard: std::sync::MutexGuard<'static, ()>,
@@ -335,6 +374,7 @@ mod tests {
         fn take() -> Self {
             let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             Self {
+                socket: std::env::var("PANEFLOW_SOCKET_PATH").ok(),
                 xdg: std::env::var("XDG_RUNTIME_DIR").ok(),
                 tmp: std::env::var("TMPDIR").ok(),
                 _guard: guard,
@@ -345,6 +385,7 @@ mod tests {
             // SAFETY: serialised by ENV_LOCK; no other test or production
             // thread mutates these vars during the test window.
             unsafe {
+                std::env::remove_var("PANEFLOW_SOCKET_PATH");
                 std::env::remove_var("XDG_RUNTIME_DIR");
                 std::env::remove_var("TMPDIR");
             }
@@ -355,6 +396,10 @@ mod tests {
         fn drop(&mut self) {
             // SAFETY: serialised by ENV_LOCK (still held via _guard).
             unsafe {
+                match &self.socket {
+                    Some(v) => std::env::set_var("PANEFLOW_SOCKET_PATH", v),
+                    None => std::env::remove_var("PANEFLOW_SOCKET_PATH"),
+                }
                 match &self.xdg {
                     Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
                     None => std::env::remove_var("XDG_RUNTIME_DIR"),
@@ -365,6 +410,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn paneflow_socket_path_env_wins_when_absolute() {
+        let g = EnvGuard::take();
+        g.clear();
+        // SAFETY: ENV_LOCK held.
+        unsafe {
+            std::env::set_var("PANEFLOW_SOCKET_PATH", "/tmp/paneflow-isolated.sock");
+            std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
+        }
+        assert_eq!(
+            socket_path(),
+            Some(PathBuf::from("/tmp/paneflow-isolated.sock"))
+        );
     }
 
     #[test]
@@ -408,6 +468,54 @@ mod tests {
         assert!(
             socket_path().is_none(),
             "AC6: over-long sun_path must return None rather than a bind-time error"
+        );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        socket: Option<String>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn take() -> Self {
+            let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            Self {
+                socket: std::env::var("PANEFLOW_SOCKET_PATH").ok(),
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: serialised by ENV_LOCK (still held via _guard).
+            unsafe {
+                match &self.socket {
+                    Some(v) => std::env::set_var("PANEFLOW_SOCKET_PATH", v),
+                    None => std::env::remove_var("PANEFLOW_SOCKET_PATH"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paneflow_socket_path_env_wins_for_named_pipe() {
+        let _guard = EnvGuard::take();
+        // SAFETY: ENV_LOCK held.
+        unsafe {
+            std::env::set_var("PANEFLOW_SOCKET_PATH", r"\\.\pipe\paneflow-isolated-test");
+        }
+        assert_eq!(
+            socket_path(),
+            Some(PathBuf::from(r"\\.\pipe\paneflow-isolated-test"))
         );
     }
 }
