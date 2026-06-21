@@ -12,6 +12,8 @@
 //! closes exactly one connection, so a long `wait` never holds a socket open
 //! between polls and never approaches the server's 16-connection cap.
 
+use std::collections::{HashMap, HashSet};
+use std::io;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -29,9 +31,12 @@ const DEFAULT_TIMEOUT_SECS: u64 = 300;
 /// without false-positiving on a brief silence mid-turn (the skill combines a
 /// sentinel `--pattern` for the agent that "thinks" silently longer).
 const DEFAULT_IDLE_FOR_MS: u64 = 1000;
-/// Recv-timeout slice for the idle subscription. Caps the detection latency at
-/// `--for + IDLE_SLICE` (NFR: `<= for + 100 ms`) because the slice - not server
-/// events - drives the quiescence clock even when the pane is wholly silent.
+/// Recv-timeout slice for the idle subscription. Caps the event-stream
+/// detection latency at `--for + IDLE_SLICE` (NFR: `<= for + 100 ms`) because
+/// the slice - not server events - drives the quiescence clock even when the
+/// pane is wholly silent. Windows named pipes cannot provide that tick through
+/// `interprocess`, so `wait --idle` falls back to bounded `output_generation`
+/// sampling there instead of failing.
 const IDLE_SLICE_CAP_MS: u64 = 100;
 /// Recent scrollback window read per poll. Bounded well under the client's
 /// 256 KiB response cap.
@@ -58,6 +63,12 @@ enum PaneState {
     Gone,
 }
 
+#[derive(Clone, Debug)]
+struct ReadSnapshot {
+    text: String,
+    output_generation: u64,
+}
+
 /// `paneflow wait --match <sel> --pattern <regex> [--timeout N] [--any|--all]`.
 pub fn wait(
     client: &impl IpcTransport,
@@ -79,13 +90,18 @@ pub fn wait(
 
     let timeout = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
     let deadline = Instant::now() + timeout;
+    let baselines: HashMap<u64, Option<ReadSnapshot>> = ids
+        .iter()
+        .map(|&id| (id, read_snapshot(client, id).ok().flatten()))
+        .collect();
 
     loop {
         let mut matched_ids: Vec<u64> = Vec::new();
         let mut matches_out: Vec<Value> = Vec::new();
         let mut alive = 0usize;
         for &id in &ids {
-            match read_matches(client, id, &re)? {
+            match read_matches_since(client, id, &re, baselines.get(&id).and_then(|b| b.as_ref()))?
+            {
                 PaneState::Matched(lines) => {
                     alive += 1;
                     matched_ids.push(id);
@@ -132,7 +148,7 @@ fn is_done(mode: MatchMode, matched: usize, total: usize) -> bool {
     }
 }
 
-fn read_matches(client: &impl IpcTransport, id: u64, re: &Regex) -> Result<PaneState, CliError> {
+fn read_snapshot(client: &impl IpcTransport, id: u64) -> Result<Option<ReadSnapshot>, CliError> {
     match client.call(
         "surface.read",
         // EP-003 US-011: `wait` regex-matches raw scrollback; the untrusted
@@ -140,30 +156,75 @@ fn read_matches(client: &impl IpcTransport, id: u64, re: &Regex) -> Result<PaneS
         json!({ "surface_id": id, "lines": READ_WINDOW_LINES, "fenced": false }),
     ) {
         Ok(result) => {
+            if result.get("error").is_some() {
+                return Ok(None);
+            }
             let text = result.get("text").and_then(Value::as_str).unwrap_or("");
-            // Decide on the full window (a regex may span lines), but surface
-            // the individual matching lines for the caller (US-013 AC2).
-            Ok(if re.is_match(text) {
-                let hits = text
-                    .lines()
-                    .filter(|l| re.is_match(l))
-                    .map(str::to_string)
-                    .collect();
-                PaneState::Matched(hits)
-            } else {
-                PaneState::NoMatch
-            })
+            let output_generation = result
+                .get("output_generation")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            Ok(Some(ReadSnapshot {
+                text: text.to_string(),
+                output_generation,
+            }))
         }
         // A down instance is fatal - propagate the "is Paneflow running?" error.
         Err(e) if e.contains("unreachable") => Err(CliError::runtime(e)),
         // Anything else (e.g. -32602 surface not found) means the pane closed.
-        Err(_) => Ok(PaneState::Gone),
+        Err(_) => Ok(None),
     }
+}
+
+fn read_matches_since(
+    client: &impl IpcTransport,
+    id: u64,
+    re: &Regex,
+    baseline: Option<&ReadSnapshot>,
+) -> Result<PaneState, CliError> {
+    let Some(current) = read_snapshot(client, id)? else {
+        return Ok(PaneState::Gone);
+    };
+    let text = match baseline {
+        Some(base) if current.output_generation <= base.output_generation => {
+            return Ok(PaneState::NoMatch);
+        }
+        Some(base) => new_text_since_baseline(&base.text, &current.text),
+        None => current.text,
+    };
+    // Decide on the new text (a regex may span lines), but surface the
+    // individual matching lines for the caller (US-013 AC2).
+    Ok(if re.is_match(&text) {
+        let hits = text
+            .lines()
+            .filter(|l| re.is_match(l))
+            .map(str::to_string)
+            .collect();
+        PaneState::Matched(hits)
+    } else {
+        PaneState::NoMatch
+    })
+}
+
+fn new_text_since_baseline(baseline: &str, current: &str) -> String {
+    if current == baseline {
+        return String::new();
+    }
+    if let Some(rest) = current.strip_prefix(baseline) {
+        return rest.to_string();
+    }
+    let old_lines: HashSet<&str> = baseline.lines().collect();
+    current
+        .lines()
+        .filter(|line| !old_lines.contains(line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ---------------------------------------------------------------------------
 // EP-003 US-007/US-008: `wait --idle` - block on output quiescence via the
-// pushed `surface_changed` stream, with zero client-side polling.
+// pushed `surface_changed` stream, or a bounded output-generation clock on
+// transports that cannot tick subscriptions.
 // ---------------------------------------------------------------------------
 
 /// What a single event (or recv-timeout slice) signals to the idle wait.
@@ -242,11 +303,19 @@ fn classify_event_line(line: &str) -> IdleSignal {
     }
 }
 
-/// Best-effort "does the pane's recent scrollback match `re` right now?". Any
+/// Best-effort "did the pane emit text matching `re` after `baseline`?". Any
 /// read failure (pane gone, server unreachable) reads as `false`; a vanished
 /// server is caught by the subscription's `Closed` event instead.
-fn pane_matches(client: &impl IpcTransport, id: u64, re: &Regex) -> bool {
-    matches!(read_matches(client, id, re), Ok(PaneState::Matched(_)))
+fn pane_matches_since(
+    client: &impl IpcTransport,
+    id: u64,
+    re: &Regex,
+    baseline: Option<&ReadSnapshot>,
+) -> bool {
+    matches!(
+        read_matches_since(client, id, re, baseline),
+        Ok(PaneState::Matched(_))
+    )
 }
 
 /// `paneflow wait --idle <sel> [--for <ms>] [--timeout <s>] [--pattern <re>]`.
@@ -258,11 +327,10 @@ fn pane_matches(client: &impl IpcTransport, id: u64, re: &Regex) -> bool {
 /// to fire (US-008). Exit codes: 0 idle/match, 1 dead stream, 3 no instance /
 /// bad selector / unsupported platform, 4 timeout.
 ///
-/// Platform note: quiescence needs a recv-timeout-capable socket. On Linux and
-/// macOS (Unix domain socket) that works. On Windows the named pipe rejects the
-/// recv timeout AND the push bus is itself Unix-only until EP-006, so `--idle`
-/// fails fast (exit 3) with a pointer to the cross-platform `wait --pattern`
-/// rather than hanging - a documented stub, not a silent miss.
+/// Platform note: Unix/macOS use the pushed event stream. When a transport
+/// cannot tick a subscription (Windows named pipes), the CLI falls back to
+/// bounded `output_generation` sampling so the command remains deterministic
+/// and cross-platform instead of returning an unsupported-platform error.
 pub fn wait_idle(
     client: &IpcClient,
     target: &str,
@@ -290,14 +358,7 @@ pub fn wait_idle(
         )
     })?;
 
-    // Sentinel already present before any new output (the turn finished before
-    // we subscribed): succeed immediately (US-008 OR semantics).
-    if let Some(re) = &re
-        && pane_matches(client, id, re)
-    {
-        super::print_json(&json!({ "surface_id": id, "idle": false, "matched": true }))?;
-        return Ok(EXIT_OK);
-    }
+    let baseline = read_snapshot(client, id).ok().flatten();
 
     // Ctrl-C is a clean stop; dropping the socket frees the server-side
     // subscription on its next write (RAII), so nothing leaks (US-007 AC4).
@@ -319,7 +380,7 @@ pub fn wait_idle(
             // New output is the ONLY moment a sentinel can appear: check it
             // here, event-driven, never on a blind poll. First to fire wins.
             if let Some(re) = &re
-                && pane_matches(client, id, re)
+                && pane_matches_since(client, id, re, baseline.as_ref())
             {
                 matched = true;
                 outcome = IdleOutcome::Idle;
@@ -359,11 +420,66 @@ pub fn wait_idle(
                 "idle wait ended without a verdict (internal)",
             )),
         },
-        // A failed connect (no reachable instance) OR an unsupported recv
-        // timeout (Windows named pipe) -> exit 3. Both `e` messages are already
-        // actionable (start Paneflow / use `wait --pattern`), so surface them
-        // verbatim without a misleading "is Paneflow running?" suffix.
+        Err(e) if e.kind() == io::ErrorKind::Unsupported => wait_idle_poll(
+            client,
+            id,
+            for_window,
+            timeout,
+            re.as_ref(),
+            baseline.as_ref(),
+        ),
+        // A failed connect (no reachable instance) -> exit 3. The message is
+        // already actionable (start Paneflow / set PANEFLOW_SOCKET_PATH), so
+        // surface it verbatim without a misleading suffix.
         Err(e) => Err(CliError::target(format!("wait --idle failed: {e}"))),
+    }
+}
+
+fn wait_idle_poll(
+    client: &impl IpcTransport,
+    id: u64,
+    for_window: Duration,
+    timeout: Duration,
+    re: Option<&Regex>,
+    baseline: Option<&ReadSnapshot>,
+) -> Result<i32, CliError> {
+    let deadline = Instant::now() + timeout;
+    let mut last_generation = match read_snapshot(client, id)? {
+        Some(s) => s.output_generation,
+        None => {
+            return Err(CliError::runtime(
+                "target pane closed before idle wait started",
+            ));
+        }
+    };
+    let mut since_change = Instant::now();
+    loop {
+        sleep(Duration::from_millis(IDLE_SLICE_CAP_MS));
+        let past_deadline = Instant::now() >= deadline;
+        let Some(current) = read_snapshot(client, id)? else {
+            return Err(CliError::runtime("target pane closed before it went idle"));
+        };
+        if current.output_generation > last_generation {
+            last_generation = current.output_generation;
+            since_change = Instant::now();
+            if let Some(re) = re
+                && pane_matches_since(client, id, re, baseline)
+            {
+                super::print_json(&json!({ "surface_id": id, "idle": false, "matched": true }))?;
+                return Ok(EXIT_OK);
+            }
+        }
+        if since_change.elapsed() >= for_window {
+            super::print_json(&json!({ "surface_id": id, "idle": true, "matched": false }))?;
+            return Ok(EXIT_OK);
+        }
+        if past_deadline {
+            eprintln!(
+                "paneflow: timeout after {}s waiting for surface {id} to go idle",
+                timeout.as_secs()
+            );
+            return Ok(EXIT_TIMEOUT);
+        }
     }
 }
 
@@ -409,7 +525,16 @@ mod tests {
     /// modelling a closed pane). No real socket, no sleeps on the tested paths
     /// (each case resolves on the first poll).
     struct FakeWait {
-        read_text: Option<&'static str>,
+        reads: std::cell::RefCell<Vec<Option<&'static str>>>,
+        read_calls: std::cell::Cell<u64>,
+    }
+    impl FakeWait {
+        fn new(reads: Vec<Option<&'static str>>) -> Self {
+            Self {
+                reads: std::cell::RefCell::new(reads),
+                read_calls: std::cell::Cell::new(0),
+            }
+        }
     }
     impl IpcTransport for FakeWait {
         fn call(&self, method: &str, _params: Value) -> Result<Value, String> {
@@ -417,10 +542,20 @@ mod tests {
                 "surface.list" => Ok(json!({
                     "surfaces": [{ "surface_id": 1u64, "name": "agent", "cmd": "claude", "cwd": "/tmp" }]
                 })),
-                "surface.read" => match self.read_text {
-                    Some(t) => Ok(json!({ "text": t })),
-                    None => Err("paneflow error -32602: surface_id 1 not found".to_string()),
-                },
+                "surface.read" => {
+                    let call = self.read_calls.get() + 1;
+                    self.read_calls.set(call);
+                    let mut reads = self.reads.borrow_mut();
+                    let next = if reads.len() > 1 {
+                        reads.remove(0)
+                    } else {
+                        reads.first().copied().flatten()
+                    };
+                    match next {
+                        Some(t) => Ok(json!({ "text": t, "output_generation": call })),
+                        None => Err("paneflow error -32602: surface_id 1 not found".to_string()),
+                    }
+                }
                 other => Err(format!("unexpected method {other}")),
             }
         }
@@ -430,9 +565,10 @@ mod tests {
     fn wait_succeeds_and_surfaces_matched_line() {
         // Matches on the first poll -> EXIT_OK with no sleep. The matched line
         // is surfaced (US-013 AC2): read_matches collects it from the window.
-        let fake = FakeWait {
-            read_text: Some("compiling...\nBuild DONE in 3s\n"),
-        };
+        let fake = FakeWait::new(vec![
+            Some("compiling...\n"),
+            Some("compiling...\nBuild DONE in 3s\n"),
+        ]);
         let code = wait(&fake, "1", "DONE", Some(5), MatchMode::Single).expect("ok");
         assert_eq!(code, EXIT_OK);
     }
@@ -441,9 +577,7 @@ mod tests {
     fn wait_times_out_with_dedicated_code() {
         // No match + a zero timeout -> the first deadline check fires, returning
         // the dedicated EXIT_TIMEOUT (distinct from EXIT_TARGET / EXIT_RUNTIME).
-        let fake = FakeWait {
-            read_text: Some("still working\n"),
-        };
+        let fake = FakeWait::new(vec![Some("still working\n")]);
         let code = wait(&fake, "1", "DONE", Some(0), MatchMode::Single).expect("ok");
         assert_eq!(code, EXIT_TIMEOUT);
     }
@@ -452,9 +586,24 @@ mod tests {
     fn wait_fails_fast_when_target_pane_gone() {
         // surface.read errors (not "unreachable") -> the pane is treated as Gone;
         // with the whole watched set gone, wait fails fast instead of spinning.
-        let fake = FakeWait { read_text: None };
+        let fake = FakeWait::new(vec![None]);
         let err = wait(&fake, "1", "DONE", Some(30), MatchMode::Single).unwrap_err();
         assert!(err.message.contains("closed"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn baseline_diff_ignores_prompt_echo_sentinel() {
+        let base = "please print RENDER_AUDIT_DONE when complete\n";
+        let current = "please print RENDER_AUDIT_DONE when complete\nactual work\n";
+        assert_eq!(new_text_since_baseline(base, current), "actual work\n");
+
+        // When the scrollback window shifted, remove already-seen lines instead
+        // of matching the old sentinel line again.
+        let shifted = "actual work\nplease print RENDER_AUDIT_DONE when complete\nnew DONE\n";
+        assert_eq!(
+            new_text_since_baseline(base, shifted),
+            "actual work\nnew DONE"
+        );
     }
 
     // ---------- EP-003 US-007/US-008: idle quiescence rule ----------

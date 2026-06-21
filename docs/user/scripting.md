@@ -46,10 +46,10 @@ initialization.
 | `select <index>`                    | Select a workspace by zero-based index                                  | No                |
 | `split <h\|v>`                      | Split a pane (`--target` to pick which one)                             | No                |
 | `focus <target>`                    | Give a pane keyboard focus (switches workspace/tab too)                 | No                |
-| `send <target> <text>`              | Inject text, **never submits** without `--submit` (`--broadcast`)       | Gated             |
+| `send <target> <text>`              | Inject text; submits only with `--submit` (`--paste`, `--report-file`)  | Gated             |
 | `key <target> <keystroke>`          | Send one named keystroke (`escape`, `ctrl-c`, …)                        | Gated             |
 | `wait --match <sel> --pattern <re>` | Block until a regex appears in a pane (`--timeout`, `--any`/`--all`)    | No                |
-| `watch [--surface <sel>] [--type <t>]` | Stream lifecycle events as JSONL until Ctrl-C (Unix only)            | No                |
+| `watch [--surface <sel>] [--type <t>]` | Stream lifecycle events as JSONL until Ctrl-C                       | No                |
 | `up <file>`                         | Spawn a declarative agent workspace from TOML (`--dry-run`)             | Prefill only      |
 | `flow run <file>`                   | Execute a multi-agent pipeline from `flow.toml` (`--dry-run`, `--json`) | Gated for submits |
 
@@ -371,7 +371,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"system.capabilities","params":{},"id":
 | `surface.search`                                                                                           | `surface_id`, `pattern`, `max_matches?`                                                         | Substring search; `max_matches` clamped to 1-1000                                                |
 | `surface.rename`                                                                                           | `surface_id`, `name`                                                                            | Rename a pane                                                                                    |
 | `surface.focus`                                                                                            | `surface_id`                                                                                    | Focus a pane (switches workspace/tab)                                                            |
-| `surface.send_text`                                                                                        | `surface_id`, `text`, `submit?`                                                                 | **Gated**; 64 KiB cap; `submit` appends the carriage return                                      |
+| `surface.send_text`                                                                                        | `surface_id`, `text`, `submit?`, `paste?`                                                       | **Gated**; 64 KiB cap; `paste` wraps bracketed paste; `submit` sends a separate carriage return |
 | `surface.send_keystroke`                                                                                   | `surface_id`, `keystroke`                                                                       | **Gated**; refuses submitting keys; CRLF bytes rejected unconditionally                          |
 | `surface.split`                                                                                            | `direction`, `surface_id?`, `cwd?`, `command?`, `prompt?`, `env?`, `name?`, `managed_worktree?` | Returns the new `surface_id`; bounded by the pane cap                                            |
 | `events.subscribe`                                                                                         | `surfaces?: [id…]`, `types?: [type…]`                                                            | Turns the connection into a persistent event stream (see below). Read-only, no scripting gate. An unknown `types` value is rejected with `-32602`. Works on Linux, macOS, and Windows (the Windows named-pipe push is guarded against the disconnect abort, US-013). |
@@ -398,8 +398,9 @@ server writes one JSON object per line until the client disconnects.
   instead of aborting. The same trust check as every other connection applies
   before the stream starts: peer-UID + `0600` on Unix, the default named-pipe
   DACL (owner + SYSTEM + Administrators) on Windows. Note: `paneflow wait --idle`
-  additionally needs a recv-timeout the Windows named pipe rejects, so on Windows
-  use `paneflow watch` or a sentinel `wait --pattern` for turn-end detection.
+  additionally needs a recv-timeout the Windows named pipe rejects, so it falls
+  back to bounded `output_generation` reads there; for lowest latency on
+  Windows, prefer `paneflow watch` or pair idle with a sentinel `--pattern`.
 * **Filtering**: `surfaces` limits to those pane ids; `types` limits to those
   event types. Omit a field to match everything on that axis. A surface-scoped
   subscriber never receives an unscoped event (e.g. an unresolved-PID `ai.*`

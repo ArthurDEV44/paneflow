@@ -658,6 +658,16 @@ impl TerminalView {
         self.write_paste_text(text, mode);
     }
 
+    /// True once the foreground terminal application has enabled DEC
+    /// bracketed-paste mode (`ESC[?2004h`).
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.terminal
+            .term
+            .lock_unfair()
+            .mode()
+            .contains(TermMode::BRACKETED_PASTE)
+    }
+
     /// Send a shell command to the PTY and execute it (appends `\r`).
     /// Used by tab-bar command buttons.
     pub fn send_command(&self, command: &str) {

@@ -210,6 +210,11 @@ enum Commands {
         /// `--paste` alone to wrap a non-submitted inject.
         #[arg(long)]
         paste: bool,
+        /// Ask the agent to write its complete result to this file and print
+        /// `REPORT_DONE <path>` after the file is fully written. The path is
+        /// resolved relative to the caller's current directory.
+        #[arg(long, value_name = "PATH")]
+        report_file: Option<String>,
     },
     /// Give a targeted pane the keyboard focus (switches workspace/tab too).
     Focus {
@@ -429,7 +434,16 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             broadcast,
             submit,
             paste,
-        } => send_cmd::send(client, &target, &text, broadcast, submit, paste),
+            report_file,
+        } => send_cmd::send(
+            client,
+            &target,
+            &text,
+            broadcast,
+            submit,
+            paste,
+            report_file.as_deref(),
+        ),
         Commands::Focus { target } => control_cmds::focus(client, &target),
         Commands::Key { target, keystroke } => send_cmd::key(client, &target, &keystroke),
         Commands::Flow(FlowCommand::Run {
@@ -606,6 +620,18 @@ mod tests {
             cli.command,
             Some(Commands::Send { paste: true, .. })
         ));
+        let cli = Cli::try_parse_from([
+            "paneflow",
+            "send",
+            "--report-file",
+            "reports/out.md",
+            "agent",
+            "hi",
+        ])
+        .expect("parse");
+        assert!(
+            matches!(cli.command, Some(Commands::Send { report_file: Some(p), .. }) if p == "reports/out.md")
+        );
     }
 
     #[test]

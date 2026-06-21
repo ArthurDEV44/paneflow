@@ -12,8 +12,8 @@
 //!
 //! Scheduling is a single-threaded tick loop (no threads, no async): each
 //! tick advances the settling/polling units and starts every unit whose
-//! dependencies are READY. Wall-clock resolution is `TICK` (500 ms - the
-//! `paneflow wait` poll cycle), well under the step durations that matter.
+//! dependencies are READY. Wall-clock resolution is `TICK` (500 ms), with
+//! settling based on `output_generation` instead of text diffs.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -36,9 +36,9 @@ const TICK: Duration = Duration::from_millis(500);
 /// response cap; new output lands at the tail).
 const READ_WINDOW_LINES: u64 = 500;
 /// Settle detection before a feed: floor + stability mirror the server-side
-/// prefill constants (US-010 of cli-agent-orchestration), reimplemented over
-/// public IPC (`surface.read` stability) since `output_generation` is not
-/// exposed.
+/// prefill constants (US-010 of cli-agent-orchestration), using the public
+/// `surface.read.output_generation` signal so a large scrollback does not need
+/// to be string-compared on every tick.
 const SETTLE_FLOOR: Duration = Duration::from_millis(1800);
 const SETTLE_MAX: Duration = Duration::from_millis(8000);
 const SETTLE_WINDOW_LINES: u64 = 50;
@@ -198,7 +198,7 @@ enum State {
     /// Waiting for the target pane's output to settle before feeding text
     /// (send units, and spawn units submitting their prompt).
     Settling {
-        last: Option<String>,
+        last_generation: Option<u64>,
         stable: u8,
         since: Instant,
     },
@@ -258,7 +258,10 @@ impl UnitRun {
 
 /// What a barrier/settle poll saw.
 enum Read {
-    Text(String),
+    Snapshot {
+        text: String,
+        output_generation: u64,
+    },
     Gone,
 }
 
@@ -399,7 +402,7 @@ impl<T: IpcTransport> Engine<'_, T> {
         };
         let next = if needs_settle {
             State::Settling {
-                last: None,
+                last_generation: None,
                 stable: 0,
                 since: Instant::now(),
             }
@@ -432,7 +435,7 @@ impl<T: IpcTransport> Engine<'_, T> {
                         Read::Gone => {
                             self.fail(i, "pane closed before the pattern appeared", false);
                         }
-                        Read::Text(text) => {
+                        Read::Snapshot { text, .. } => {
                             if re.is_match(&text) {
                                 if let Some((var, lines)) = self.runs[i].unit.capture.clone() {
                                     let tail = last_lines(&text, lines as usize);
@@ -452,11 +455,11 @@ impl<T: IpcTransport> Engine<'_, T> {
                     }
                 }
                 State::Settling {
-                    last,
+                    last_generation,
                     stable,
                     since,
                 } => {
-                    let (last, mut stable, since) = (last.clone(), *stable, *since);
+                    let (last_generation, mut stable, since) = (*last_generation, *stable, *since);
                     let sid = self.runs[i].surface_id.expect("settling has a surface");
                     let elapsed = since.elapsed();
                     let mut fire = elapsed >= SETTLE_MAX;
@@ -466,8 +469,10 @@ impl<T: IpcTransport> Engine<'_, T> {
                                 self.fail(i, "pane closed before the text could be fed", false);
                                 continue;
                             }
-                            Read::Text(text) => {
-                                if last.as_deref() == Some(text.as_str()) {
+                            Read::Snapshot {
+                                output_generation, ..
+                            } => {
+                                if last_generation == Some(output_generation) {
                                     stable += 1;
                                 } else {
                                     stable = 0;
@@ -479,7 +484,7 @@ impl<T: IpcTransport> Engine<'_, T> {
                                 fire = settle_fire(elapsed, stable, SETTLE_FLOOR, SETTLE_MAX);
                                 if !fire {
                                     self.runs[i].state = State::Settling {
-                                        last: Some(text),
+                                        last_generation: Some(output_generation),
                                         stable,
                                         since,
                                     };
@@ -518,6 +523,11 @@ impl<T: IpcTransport> Engine<'_, T> {
         };
         let sid = self.runs[i].surface_id.expect("feeding has a surface");
         let submit = self.runs[i].unit.submit;
+        let before_submit = if submit {
+            super::send_cmd::status_snapshot(self.client, sid)
+        } else {
+            None
+        };
         match self.client.call(
             "surface.send_text",
             json!({ "surface_id": sid, "text": text, "submit": submit }),
@@ -527,6 +537,26 @@ impl<T: IpcTransport> Engine<'_, T> {
                     let msg = msg.to_string();
                     self.fail(i, &msg, false);
                     return Ok(());
+                }
+                if submit && result["agent_target"].as_bool().unwrap_or(false) {
+                    match super::send_cmd::wait_for_submit_start(
+                        self.client,
+                        sid,
+                        before_submit.as_ref(),
+                    ) {
+                        super::send_cmd::SubmitStart::Confirmed(_) => {}
+                        super::send_cmd::SubmitStart::Unconfirmed(reason) => {
+                            self.fail(
+                                i,
+                                &format!(
+                                    "submit was written to agent pane {sid}, but no turn start was confirmed within {}ms ({reason})",
+                                    super::send_cmd::SUBMIT_START_TIMEOUT.as_millis()
+                                ),
+                                false,
+                            );
+                            return Ok(());
+                        }
+                    }
                 }
                 let next = self.barrier_or_ready(i);
                 self.transition(i, next);
@@ -668,22 +698,26 @@ impl<T: IpcTransport> Engine<'_, T> {
     fn read_window(&self, sid: u64, lines: u64) -> Result<Read, String> {
         match self.client.call(
             "surface.read",
-            // EP-003 US-011: the settling poll compares raw output across
-            // reads, so it must NOT be fenced (the per-call id would change
-            // every read and never settle). Opt out of the injection fence.
+            // EP-003 US-011: barriers parse raw output and settling reads
+            // output_generation from the same response. The untrusted fence
+            // would corrupt regex matching, so opt out here.
             json!({ "surface_id": sid, "lines": lines, "fenced": false }),
         ) {
             Ok(result) => {
                 if result.get("error").is_some() {
                     return Ok(Read::Gone);
                 }
-                Ok(Read::Text(
-                    result
+                Ok(Read::Snapshot {
+                    text: result
                         .get("text")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
-                ))
+                    output_generation: result
+                        .get("output_generation")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                })
             }
             Err(e) if e.contains("-32602") || e.contains("not found") => Ok(Read::Gone),
             Err(e) => Err(format!("instance unreachable: {e}")),

@@ -68,7 +68,7 @@ stray GUI window.
 `output_generation` is a monotonic counter: if two reads return the same value,
 the pane produced no new output - that is your "is it idle yet?" signal, no timer
 guessing. You rarely read it by hand, though: prefer `wait --idle` (section 3),
-which watches it for you server-side.
+which watches it for you.
 
 ### Recovering a FULL result from a full-screen agent
 
@@ -90,9 +90,10 @@ ways to get the complete result:
    It is best-effort (Claude Code yes; Codex and others may be `null`) and capped,
    so treat an empty value as "not available - use the file".
 
-2. **Report-to-file (reliable, for long or alt-screen output).** Tell the agent to
-   WRITE its report to a file you name instead of printing it. You pass the path
-   in the prompt; you read the file in full - zero viewport truncation:
+2. **Report-to-file (reliable, for long or alt-screen output).** Use
+   `send --report-file <path>` so Paneflow appends a precise file contract to
+   the prompt. The agent writes the full report there, then prints
+   `REPORT_DONE <path>`; you read the file in full - zero viewport truncation:
 
    ```bash
    # mktemp -d with the X's LAST is portable across Linux (GNU) and macOS (BSD);
@@ -100,8 +101,7 @@ ways to get the complete result:
    # break on BSD mktemp.
    report_dir=$(mktemp -d "${TMPDIR:-/tmp}/paneflow-report.XXXXXX")
    report="$report_dir/report.md"
-   paneflow send reviewer "Review the backend diff. Write your FULL report to \
-   $report (overwrite it). When done, print only the line REPORT_DONE." --submit
+   paneflow send reviewer "Review the backend diff." --report-file "$report" --submit
    paneflow wait --match reviewer --idle --pattern '^REPORT_DONE' --timeout 600
    cat "$report"            # the complete report, however long it is
    rm -rf "$report_dir"     # clean up - never leak temp files
@@ -117,13 +117,15 @@ the file only when the agent runs full-screen, or the report is long.
 
 ## 3. Wait on events instead of polling
 
-Paneflow pushes; you block on the push. **Never** sit in a `status` loop, and
+Paneflow pushes on Unix/macOS and falls back to a bounded `output_generation`
+clock when a transport cannot tick subscriptions (Windows named pipes). **Never**
+sit in a home-grown `status` loop, and
 **never** write a background bash poller on `output_generation`: a shell you
 background from inside an agent does not inherit the IPC socket env, so it reads
-`NA` and stalls. Let the server tell you when something happened.
+`NA` and stalls. Let Paneflow's wait primitive tell you when something happened.
 
 `wait --idle` blocks until a pane stops producing output - the cleanest "the turn
-is over" signal, with zero client polling (it subscribes to the push stream):
+is over" signal:
 
 ```bash
 # Return once `reviewer` produced no new output for 1000 ms (the quiescence
@@ -157,10 +159,10 @@ paneflow watch                                     # every ai.* transition + sur
 
 `watch --type ai.*` and any `ai.stop`-gated flow need a **hooked** agent (section
 1) - an `unknown_running` agent emits no `ai.*` events. `wait --idle` and
-`wait --pattern` read raw output, not events, so they still work on an unhooked
-pane and are your fallback there. `watch` emits `{"type":"heartbeat"}` every 30 s
-so a dead connection is detectable. All of these are sub-100 ms and beat a
-`status` loop.
+`wait --pattern` can still work on raw output, so they are your fallback there.
+Pattern waits are baseline-aware: they match output produced after the wait
+starts, not a sentinel that was merely echoed in your prompt. `watch` emits
+`{"type":"heartbeat"}` every 30 s so a dead connection is detectable.
 
 ## 4. Dispatch work
 
@@ -220,8 +222,9 @@ cwd.
 paneflow send reviewer "Please review the diff in the backend pane."
 
 # Auto-submit toward an agent. Paneflow wraps the text in bracketed paste and
-# sends the Enter as a SEPARATE, calibrated write, so a full-screen TUI does not
-# swallow it - `--submit` toward a hooked agent is reliable, no manual Enter.
+# sends the Enter as a SEPARATE, calibrated write, then verifies a hooked agent
+# state transition. If no turn start is confirmed, the command exits non-zero
+# instead of returning a false `submitted:true`.
 # Requires writes to be allowed (PANEFLOW_IPC_SCRIPTING=1 or AI free access in
 # Settings); otherwise it is refused with a clear, actionable error.
 paneflow send reviewer "Run the tests." --submit
@@ -234,9 +237,9 @@ paneflow send reviewer "" --submit
 paneflow send 'cmdline:claude' "Status check." --broadcast
 ```
 
-After a `--submit`, **confirm the turn actually started before you chain the next
-step** - do not assume the dispatch landed. The agent should have left `idle` -
-its state should now be `thinking`:
+After a successful `--submit`, the CLI has already confirmed that a hooked agent
+state transition happened. You can still inspect state before chaining a risky
+step:
 
 ```bash
 paneflow send reviewer "Review the backend diff. ..." --submit
@@ -244,9 +247,9 @@ paneflow status reviewer --json | jq -r '.state'   # expect "thinking", not "idl
 paneflow wait --match reviewer --idle --pattern '^REPORT_DONE' --timeout 600
 ```
 
-If `state` is still `idle` a beat after `--submit`, the turn never started (a
-swallowed Enter, a closed composer): re-send rather than waiting forever on a
-turn that is not running.
+If `send --submit` exits non-zero with "no turn start was confirmed", the turn
+never started (a swallowed Enter, a closed composer, or a missing hook): fix the
+target or re-send rather than waiting forever on a turn that is not running.
 
 ## 5. The discipline (read this twice)
 

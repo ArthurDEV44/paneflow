@@ -48,6 +48,14 @@ const UP_PREFILL_FLOOR: Duration = Duration::from_millis(1800);
 const UP_PREFILL_MAX: Duration = Duration::from_millis(8000);
 const UP_PREFILL_POLL: Duration = Duration::from_millis(200);
 
+/// `workspace.up` launch-command readiness window. A newly-created PTY can be
+/// alive before its shell prompt is ready to consume typed input, especially on
+/// Windows. Launch commands are therefore delayed until the initial shell output
+/// settles, then prompts are scheduled after the command has been injected.
+const UP_LAUNCH_FLOOR: Duration = Duration::from_millis(700);
+const UP_LAUNCH_MAX: Duration = Duration::from_millis(4000);
+const UP_LAUNCH_POLL: Duration = Duration::from_millis(100);
+
 /// EP-001 US-001 (agent-control-plane-hardening): cadence at which the deferred
 /// submit polls a freshly-pasted agent's `output_generation` for the paste echo
 /// that confirms the burst was consumed, after the configurable floor elapses.
@@ -564,11 +572,54 @@ fn send_text_gate_open(scripting_enabled: bool, unrestricted: bool) -> bool {
 /// EP-001 US-002 (agent-control-plane-hardening): decide whether a
 /// `surface.send_text` write goes through the bracketed-paste path. An explicit
 /// `paste` param always wins (the CLI `--paste` override); otherwise auto-enable
-/// it only when submitting INTO an agent pane, so a bare shell keeps the verbatim
-/// behaviour (a one-line `--submit` command still runs exactly as before). Pure
-/// truth table, extracted so the rule is unit-tested without a running app.
-fn resolve_paste_mode(paste_param: Option<bool>, submit: bool, is_agent: bool) -> bool {
-    paste_param.unwrap_or(submit && is_agent)
+/// it only when submitting into a known agent OR a terminal application that has
+/// already enabled bracketed paste (`ESC[?2004h`). That second signal matters
+/// when the agent is not hooked yet, is wrapped by a shell, or has not produced
+/// a session record: the terminal mode is the ground truth that a pasted block
+/// will be understood. A bare shell with bracketed paste off keeps the verbatim
+/// path. Pure truth table, extracted so the rule is unit-tested without a
+/// running app.
+fn resolve_paste_mode(
+    paste_param: Option<bool>,
+    submit: bool,
+    is_agent: bool,
+    bracketed_paste_enabled: bool,
+) -> bool {
+    paste_param.unwrap_or(submit && (is_agent || bracketed_paste_enabled))
+}
+
+fn first_command_token(command: &str) -> Option<&str> {
+    let command = command.trim_start();
+    let mut chars = command.char_indices();
+    let (_, first) = chars.next()?;
+    if first == '"' || first == '\'' {
+        let start = first.len_utf8();
+        let end = chars
+            .find_map(|(idx, ch)| (ch == first).then_some(idx))
+            .unwrap_or(command.len());
+        let token = &command[start..end];
+        return (!token.is_empty()).then_some(token);
+    }
+    command.split_whitespace().next()
+}
+
+fn command_executable_stem(token: &str) -> &str {
+    let file_name = token.rsplit(['/', '\\']).next().unwrap_or(token);
+    for suffix in [".exe", ".cmd", ".bat"] {
+        if file_name
+            .get(file_name.len().saturating_sub(suffix.len())..)
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
+        {
+            return &file_name[..file_name.len() - suffix.len()];
+        }
+    }
+    file_name
+}
+
+fn agent_from_command(command: &str) -> Option<TerminalAgent> {
+    let token = first_command_token(command)?;
+    let stem = command_executable_stem(token);
+    TerminalAgent::from_binary(stem)
 }
 
 /// EP-001 US-001 (agent-control-plane-hardening): one tick of the deferred-submit
@@ -1072,15 +1123,27 @@ impl PaneFlowApp {
         }
         let workspace_id = params.get("workspace_id").and_then(|v| v.as_u64());
         let pid = read_session_pid(params);
+        let explicit_surface_id = read_frame_surface_id(params);
         let tool = read_tool(params);
-        let session = match (workspace_id, pid) {
-            (Some(wid), Some(p)) => self
-                .workspaces
-                .iter()
-                .find(|w| w.id == wid)
-                .and_then(|w| w.agent_sessions.get(&p)),
-            _ => None,
-        };
+        let workspace = workspace_id.and_then(|wid| self.workspaces.iter().find(|w| w.id == wid));
+        let session = workspace
+            .and_then(|w| {
+                pid.and_then(|p| w.agent_sessions.get(&p)).or_else(|| {
+                    explicit_surface_id.and_then(|sid| {
+                        w.agent_sessions
+                            .values()
+                            .find(|s| s.surface_id == Some(sid))
+                    })
+                })
+            })
+            .or_else(|| {
+                explicit_surface_id.and_then(|sid| {
+                    self.workspaces
+                        .iter()
+                        .flat_map(|w| w.agent_sessions.values())
+                        .find(|s| s.surface_id == Some(sid))
+                })
+            });
         let (state, surface_id, message, active_tool) = match session {
             Some(s) => (
                 Some(s.state.wire_str()),
@@ -1554,9 +1617,8 @@ impl PaneFlowApp {
         for (i, (terminal, command, prompt)) in launches.into_iter().enumerate() {
             surface_ids.push(terminal.entity_id().as_u64());
             if let Some(cmd) = command.filter(|c| !c.is_empty()) {
-                terminal.read(cx).send_command(&cmd);
-            }
-            if let Some(prompt) = prompt.filter(|p| !p.is_empty()) {
+                Self::schedule_launch_command(&terminal, cmd, prompt, i, cx);
+            } else if let Some(prompt) = prompt.filter(|p| !p.is_empty()) {
                 Self::schedule_prompt_prefill(&terminal, prompt, i, cx);
             }
         }
@@ -1583,34 +1645,17 @@ impl PaneFlowApp {
     ) {
         let weak = terminal.downgrade();
         cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
-            smol::Timer::after(UP_PREFILL_FLOOR).await;
-            // `AsyncApp::update` returns the closure value directly, so
-            // this is `Option<u64>`: `None` once the pane is gone.
-            let gen_now = |cx: &mut gpui::AsyncApp| -> Option<u64> {
-                cx.update(|cx| {
-                    weak.upgrade()
-                        .map(|t| t.read(cx).terminal.output_generation)
-                })
+            let Some(settled) = Self::wait_for_terminal_settle(
+                &weak,
+                UP_PREFILL_FLOOR,
+                UP_PREFILL_MAX,
+                UP_PREFILL_POLL,
+                cx,
+            )
+            .await
+            else {
+                return;
             };
-            let mut last = gen_now(cx);
-            let mut waited = UP_PREFILL_FLOOR;
-            let mut settled = false;
-            while waited < UP_PREFILL_MAX {
-                smol::Timer::after(UP_PREFILL_POLL).await;
-                waited += UP_PREFILL_POLL;
-                let now = gen_now(cx);
-                match (last, now) {
-                    // Output unchanged across a poll interval -> the
-                    // agent is idle and ready for input.
-                    (Some(a), Some(b)) if a == b => {
-                        settled = true;
-                        break;
-                    }
-                    // Pane closed mid-wait: nothing to prefill.
-                    (_, None) => break,
-                    _ => last = now,
-                }
-            }
             cx.update(|cx| {
                 if let Some(t) = weak.upgrade() {
                     if !settled {
@@ -1624,6 +1669,96 @@ impl PaneFlowApp {
             });
         })
         .detach();
+    }
+
+    fn schedule_launch_command(
+        terminal: &Entity<TerminalView>,
+        command: String,
+        prompt: Option<String>,
+        pane_label: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let prompt = prompt.filter(|p| !p.is_empty());
+        let weak = terminal.downgrade();
+        cx.spawn(async move |_, cx: &mut gpui::AsyncApp| {
+            let Some(settled) = Self::wait_for_terminal_settle(
+                &weak,
+                UP_LAUNCH_FLOOR,
+                UP_LAUNCH_MAX,
+                UP_LAUNCH_POLL,
+                cx,
+            )
+            .await
+            else {
+                return;
+            };
+            cx.update(|cx| {
+                if let Some(t) = weak.upgrade() {
+                    if !settled {
+                        log::warn!(
+                            "workspace launch: pane {pane_label} shell still producing output after \
+                             {UP_LAUNCH_MAX:?}; launch command sent best-effort"
+                        );
+                    }
+                    t.read(cx).send_command(&command);
+                }
+            });
+
+            let Some(prompt) = prompt else {
+                return;
+            };
+            let Some(settled) = Self::wait_for_terminal_settle(
+                &weak,
+                UP_PREFILL_FLOOR,
+                UP_PREFILL_MAX,
+                UP_PREFILL_POLL,
+                cx,
+            )
+            .await
+            else {
+                return;
+            };
+            cx.update(|cx| {
+                if let Some(t) = weak.upgrade() {
+                    if !settled {
+                        log::warn!(
+                            "prompt prefill: pane {pane_label} still producing output after \
+                             {UP_PREFILL_MAX:?}; prompt prefilled best-effort"
+                        );
+                    }
+                    t.read(cx).send_text(&prompt);
+                }
+            });
+        })
+        .detach();
+    }
+
+    async fn wait_for_terminal_settle(
+        weak: &gpui::WeakEntity<TerminalView>,
+        floor: Duration,
+        max: Duration,
+        poll: Duration,
+        cx: &mut gpui::AsyncApp,
+    ) -> Option<bool> {
+        smol::Timer::after(floor).await;
+        let gen_now = |cx: &mut gpui::AsyncApp| -> Option<u64> {
+            cx.update(|cx| {
+                weak.upgrade()
+                    .map(|t| t.read(cx).terminal.output_generation)
+            })
+        };
+        let mut last = gen_now(cx)?;
+        let mut waited = floor;
+        while waited < max {
+            smol::Timer::after(poll).await;
+            waited += poll;
+            let now = gen_now(cx)?;
+            if now == last {
+                return Some(true);
+            }
+            last = now;
+        }
+        Some(false)
     }
 
     /// EP-004 US-010 (agent-control-plane-hardening): read a Claude Code Stop-hook
@@ -1670,16 +1805,43 @@ impl PaneFlowApp {
         .detach();
     }
 
-    /// EP-001 US-002 (agent-control-plane-hardening): true when `sid` is the pane
-    /// a tracked agent session is bound to (`schedule_surface_resolution`
-    /// populated `session.surface_id`). Used to auto-select the bracketed-paste
-    /// submit path for an agent while leaving a bare shell on the verbatim path.
-    fn surface_is_agent(&self, sid: u64) -> bool {
-        self.workspaces.iter().any(|ws| {
-            ws.agent_sessions
-                .values()
-                .any(|s| s.surface_id == Some(sid))
-        })
+    /// Resolve a hook-provided surface id only after proving that the pane still
+    /// exists. This makes the explicit hook binding the primary path on Windows
+    /// (where PID-parent lookup is unavailable) without trusting a forged or
+    /// stale id blindly.
+    fn validated_frame_surface_id(&self, params: &serde_json::Value, cx: &App) -> Option<u64> {
+        let sid = read_frame_surface_id(params)?;
+        find_terminal_by_surface_id(&self.workspaces, sid, cx)
+            .is_some()
+            .then_some(sid)
+    }
+
+    fn bind_or_resolve_session_surface(
+        &mut self,
+        ws_id: u64,
+        session_key: u32,
+        explicit_surface_id: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(sid) = explicit_surface_id {
+            self.set_session_surface(ws_id, session_key, sid, cx);
+        } else {
+            self.schedule_surface_resolution(ws_id, session_key, cx);
+        }
+    }
+
+    fn surface_agent_hint(&self, sid: u64, cx: &App) -> Option<TerminalAgent> {
+        self.workspaces
+            .iter()
+            .flat_map(|ws| ws.agent_sessions.values())
+            .find(|s| s.surface_id == Some(sid))
+            .map(|s| s.tool)
+            .or_else(|| {
+                self.collect_surface_meta(cx)
+                    .into_iter()
+                    .find(|m| m.surface_id == sid)
+                    .and_then(|m| m.cmd.as_deref().and_then(agent_from_command))
+            })
     }
 
     /// EP-001 US-001 (agent-control-plane-hardening): submit a just-pasted prompt
@@ -2320,12 +2482,19 @@ impl PaneFlowApp {
                     return serde_json::json!({"error": "No active terminal"});
                 };
                 let wrote_sid = terminal.entity_id().as_u64();
+                let agent_hint = self.surface_agent_hint(wrote_sid, cx);
+                let terminal_bracketed_paste = terminal.read(cx).bracketed_paste_enabled();
                 // EP-001 US-002: route an agent dispatch through bracketed paste
-                // (+ deferred submit); a bare shell keeps the verbatim path. The
-                // resolved `paste` flag is the single axis: paste <=> wrapped
-                // burst <=> deferred CR.
-                let paste =
-                    resolve_paste_mode(paste_param, submit, self.surface_is_agent(wrote_sid));
+                // (+ deferred submit). If the target itself has already enabled
+                // bracketed paste, trust that terminal-mode signal even when the
+                // agent/session hint is absent. The resolved `paste` flag is the
+                // single axis: paste <=> wrapped burst <=> deferred CR.
+                let paste = resolve_paste_mode(
+                    paste_param,
+                    submit,
+                    agent_hint.is_some(),
+                    terminal_bracketed_paste,
+                );
                 // Write the payload (skipped for a bare `--submit ""`).
                 if !text.is_empty() {
                     if paste {
@@ -2369,8 +2538,22 @@ impl PaneFlowApp {
                         "ai_unrestricted: authorized PTY write to pane"
                     );
                 }
+                let submit_mode = if submit && paste && !text.is_empty() {
+                    serde_json::Value::String("deferred_paste_cr".to_string())
+                } else if submit {
+                    serde_json::Value::String("inline_cr".to_string())
+                } else {
+                    serde_json::Value::Null
+                };
                 serde_json::json!({
-                    "sent": true, "length": text.len(), "submitted": submit, "paste": paste
+                    "sent": true,
+                    "length": text.len(),
+                    "submitted": submit,
+                    "paste": paste,
+                    "submit_mode": submit_mode,
+                    "agent_target": agent_hint.is_some(),
+                    "agent_tool": agent_hint.map(|a| a.binary()),
+                    "terminal_bracketed_paste": terminal_bracketed_paste,
                 })
             }
             "surface.send_keystroke" => {
@@ -2527,9 +2710,8 @@ impl PaneFlowApp {
                     self.workspaces[ws_idx].managed_worktrees.push(mw);
                 }
                 if let Some(cmd) = spawn_command {
-                    new_terminal.read(cx).send_command(&cmd);
-                }
-                if let Some(prompt) = spawn_prompt {
+                    Self::schedule_launch_command(&new_terminal, cmd, spawn_prompt, usize::MAX, cx);
+                } else if let Some(prompt) = spawn_prompt {
                     Self::schedule_prompt_prefill(&new_terminal, prompt, usize::MAX, cx);
                 }
                 let panes = self.workspaces[ws_idx].pane_count();
@@ -2619,6 +2801,7 @@ impl PaneFlowApp {
                     // (the pre-fusion `from_name` fallback did exactly that).
                     return serde_json::json!({"error": "Unknown tool"});
                 };
+                let explicit_surface_id = self.validated_frame_surface_id(params, cx);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     let key = upsert_session_state(
@@ -2636,7 +2819,12 @@ impl PaneFlowApp {
                     if !self.loader_anim_running {
                         self.start_loader_animation(cx);
                     }
-                    self.schedule_surface_resolution(workspace_id, key, cx);
+                    self.bind_or_resolve_session_surface(
+                        workspace_id,
+                        key,
+                        explicit_surface_id,
+                        cx,
+                    );
                     self.sync_attention(cx);
                     // EP-001 US-003 (cli-cockpit): the target just turned
                     // busy - refresh the Composer chip (no flush can apply).
@@ -2672,6 +2860,7 @@ impl PaneFlowApp {
                     // (the pre-fusion `from_name` fallback did exactly that).
                     return serde_json::json!({"error": "Unknown tool"});
                 };
+                let explicit_surface_id = self.validated_frame_surface_id(params, cx);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     // tool_use implies the session is actively thinking -
@@ -2688,7 +2877,12 @@ impl PaneFlowApp {
                     if !self.loader_anim_running {
                         self.start_loader_animation(cx);
                     }
-                    self.schedule_surface_resolution(workspace_id, key, cx);
+                    self.bind_or_resolve_session_surface(
+                        workspace_id,
+                        key,
+                        explicit_surface_id,
+                        cx,
+                    );
                     self.sync_attention(cx);
                     // EP-001 US-003 (cli-cockpit): see the prompt_submit arm.
                     self.agent_sessions_changed(cx);
@@ -2718,6 +2912,7 @@ impl PaneFlowApp {
                     // (the pre-fusion `from_name` fallback did exactly that).
                     return serde_json::json!({"error": "Unknown tool"});
                 };
+                let explicit_surface_id = self.validated_frame_surface_id(params, cx);
                 let message = sanitize_notification_message(
                     hook.and_then(|h| h.get("message"))
                         .and_then(|v| v.as_str())
@@ -2746,7 +2941,12 @@ impl PaneFlowApp {
                         Some(&message),
                         cx.background_executor().clone(),
                     );
-                    self.schedule_surface_resolution(workspace_id, key, cx);
+                    self.bind_or_resolve_session_surface(
+                        workspace_id,
+                        key,
+                        explicit_surface_id,
+                        cx,
+                    );
                     self.sync_attention(cx);
                     // EP-001 US-003 (cli-cockpit): WaitingForInput is a safe
                     // prefill target - flush this pane's queued prompt now
@@ -2785,6 +2985,7 @@ impl PaneFlowApp {
                     // (the pre-fusion `from_name` fallback did exactly that).
                     return serde_json::json!({"error": "Unknown tool"});
                 };
+                let explicit_surface_id = self.validated_frame_surface_id(params, cx);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     // U-014: key the auto-clear on the RESOLVED session key, not
@@ -2822,6 +3023,12 @@ impl PaneFlowApp {
                     let ws_title = ws.title.clone();
                     cx.notify();
                     fire_turn_end_notification(&ws_title, cx.background_executor().clone());
+                    self.bind_or_resolve_session_surface(
+                        workspace_id,
+                        session_key,
+                        explicit_surface_id,
+                        cx,
+                    );
                     self.sync_attention(cx);
                     // EP-001 US-003 (cli-cockpit): the turn ended - flush any
                     // queued prompt for this pane (prefill only).
@@ -2914,6 +3121,7 @@ impl PaneFlowApp {
                     // (the pre-fusion `from_name` fallback did exactly that).
                     return serde_json::json!({"error": "Unknown tool"});
                 };
+                let explicit_surface_id = self.validated_frame_surface_id(params, cx);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     // 0 / SIGINT-and-friends → Finished (a human interrupt is
@@ -2939,7 +3147,12 @@ impl PaneFlowApp {
                         // frame: try resolving its pane while the shim (the
                         // PID anchor) is still alive, so the Errored dot can
                         // land on a tab. No-op if already resolved.
-                        self.schedule_surface_resolution(workspace_id, key, cx);
+                        self.bind_or_resolve_session_surface(
+                            workspace_id,
+                            key,
+                            explicit_surface_id,
+                            cx,
+                        );
                     }
                     // Finished (exit 0 / interrupt) intentionally fires no
                     // notification - `ai.stop` already announced the turn
@@ -3083,6 +3296,19 @@ fn read_session_pid(params: &serde_json::Value) -> Option<u32> {
         .and_then(|v| v.as_u64())
         .and_then(|n| u32::try_from(n).ok())
         .filter(|&p| p > 0 && p <= i32::MAX as u32)
+}
+
+/// Read the surface id carried by a modern hook frame. `paneflow-ai-hook`
+/// stamps the top-level params from `PANEFLOW_SURFACE_ID`; accepting the same
+/// key under `hook_payload` keeps the server tolerant of older/alternate shims.
+/// Zero is rejected because GPUI entity ids are never meaningful as 0.
+fn read_frame_surface_id(params: &serde_json::Value) -> Option<u64> {
+    let hook = params.get("hook_payload");
+    params
+        .get("surface_id")
+        .or_else(|| hook.and_then(|h| h.get("surface_id")))
+        .and_then(|v| v.as_u64())
+        .filter(|sid| *sid > 0)
 }
 
 /// Read the `tool` field from an `ai.*` IPC param object, falling back
@@ -3302,8 +3528,26 @@ pub(crate) fn canonicalize_workspace_cwd(raw: &str) -> Result<std::path::PathBuf
             "cwd is not a directory: {raw}"
         )));
     }
-    log::info!("ipc::workspace.create: canonical cwd resolved {raw:?} -> {canonical:?}");
-    Ok(canonical)
+    let spawn_cwd = strip_verbatim_prefix(canonical.clone());
+    log::info!(
+        "ipc::workspace.create: canonical cwd resolved {raw:?} -> {canonical:?}; spawn cwd {spawn_cwd:?}"
+    );
+    Ok(spawn_cwd)
+}
+
+/// Strip Windows verbatim prefixes after canonical validation.
+///
+/// Windows `canonicalize` commonly returns `\\?\C:\...`; that is useful for
+/// filesystem APIs but `cmd.exe` treats it as an unsupported UNC cwd and falls
+/// back to `C:\Windows`. Keep validation on the canonical path, then spawn with
+/// the normal DOS/UNC spelling. No-op on non-verbatim paths and Unix paths.
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let stripped = path.to_str().and_then(|s| {
+        s.strip_prefix(r"\\?\UNC\")
+            .map(|rest| PathBuf::from(format!(r"\\{rest}")))
+            .or_else(|| s.strip_prefix(r"\\?\").map(PathBuf::from))
+    });
+    stripped.unwrap_or(path)
 }
 
 /// Parse the optional `layout` field from a `workspace.create` params object.
@@ -3405,6 +3649,46 @@ mod tests {
         assert_eq!(pid(serde_json::json!(u32::MAX)), None);
         assert_eq!(pid(serde_json::json!(0)), None);
         assert_eq!(read_session_pid(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn read_frame_surface_id_accepts_top_level_or_hook_payload() {
+        assert_eq!(
+            read_frame_surface_id(&serde_json::json!({ "surface_id": 42 })),
+            Some(42)
+        );
+        assert_eq!(
+            read_frame_surface_id(&serde_json::json!({
+                "hook_payload": { "surface_id": 7 }
+            })),
+            Some(7)
+        );
+        assert_eq!(
+            read_frame_surface_id(&serde_json::json!({ "surface_id": 0 })),
+            None
+        );
+        assert_eq!(read_frame_surface_id(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn agent_from_command_uses_executable_stem() {
+        assert_eq!(
+            agent_from_command("claude --permission-mode bypassPermissions"),
+            Some(TerminalAgent::ClaudeCode)
+        );
+        assert_eq!(
+            agent_from_command(r#""codex.exe" --model x"#),
+            Some(TerminalAgent::Codex)
+        );
+        assert_eq!(
+            agent_from_command(r#""C:\Program Files\Codex\codex.exe" --model x"#),
+            Some(TerminalAgent::Codex)
+        );
+        assert_eq!(
+            agent_from_command("'/opt/OpenCode/opencode' run"),
+            Some(TerminalAgent::OpenCode)
+        );
+        assert_eq!(agent_from_command("bash -lc claude"), None);
     }
 
     // EP-004 US-010/US-011: the two new notification bodies are distinct
@@ -3731,20 +4015,24 @@ mod tests {
     }
 
     #[test]
-    fn resolve_paste_mode_auto_targets_agents_only() {
+    fn resolve_paste_mode_auto_targets_agents_or_bracketed_tuis() {
         use super::resolve_paste_mode;
         // EP-001 US-002 AC1: a `--submit` dispatch into an agent auto-enables
         // bracketed paste...
-        assert!(resolve_paste_mode(None, true, true));
-        // ...AC3: but a bare shell keeps the verbatim path (no auto-paste).
-        assert!(!resolve_paste_mode(None, true, false));
+        assert!(resolve_paste_mode(None, true, true, false));
+        // ...and the same is true when the process is not identified as an
+        // agent yet but its terminal app has enabled bracketed paste.
+        assert!(resolve_paste_mode(None, true, false, true));
+        // ...AC3: but a bare shell with bracketed paste off keeps the verbatim
+        // path (no auto-paste).
+        assert!(!resolve_paste_mode(None, true, false, false));
         // No submit, no auto-paste either (plain inject into either target).
-        assert!(!resolve_paste_mode(None, false, true));
-        assert!(!resolve_paste_mode(None, false, false));
+        assert!(!resolve_paste_mode(None, false, true, true));
+        assert!(!resolve_paste_mode(None, false, false, true));
         // AC2: an explicit `--paste` overrides in both directions, regardless
         // of target or submit.
-        assert!(resolve_paste_mode(Some(true), false, false));
-        assert!(!resolve_paste_mode(Some(false), true, true));
+        assert!(resolve_paste_mode(Some(true), false, false, false));
+        assert!(!resolve_paste_mode(Some(false), true, true, true));
     }
 
     #[test]
@@ -3837,6 +4125,39 @@ mod tests {
             .expect("real dir must canonicalize");
         // canonicalize resolves to an absolute path.
         assert!(resolved.is_absolute());
+        assert!(resolved.is_dir());
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_disk_unc_and_passthrough() {
+        assert_eq!(
+            super::strip_verbatim_prefix(PathBuf::from(r"\\?\C:\work\paneflow")),
+            PathBuf::from(r"C:\work\paneflow")
+        );
+        assert_eq!(
+            super::strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share\paneflow")),
+            PathBuf::from(r"\\server\share\paneflow")
+        );
+        assert_eq!(
+            super::strip_verbatim_prefix(PathBuf::from(r"C:\work\paneflow")),
+            PathBuf::from(r"C:\work\paneflow")
+        );
+        assert_eq!(
+            super::strip_verbatim_prefix(PathBuf::from("/tmp/paneflow")),
+            PathBuf::from("/tmp/paneflow")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn workspace_create_returns_cmd_safe_windows_cwd() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let resolved = super::canonicalize_workspace_cwd(tmp.path().to_str().expect("utf-8 path"))
+            .expect("real dir must canonicalize");
+        assert!(
+            !resolved.to_string_lossy().starts_with(r"\\?\"),
+            "workspace cwd must be safe for cmd.exe spawn, got: {resolved:?}"
+        );
         assert!(resolved.is_dir());
     }
 
