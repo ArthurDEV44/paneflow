@@ -1,7 +1,6 @@
-//! Bottom-of-sidebar "Settings" footer + popover. Both the CLI and
-//! the Agents sidebars host all of their top-level affordances inside
-//! the same trigger: a single `Settings` button at the bottom of the
-//! sidebar opens an upward popover with the relevant action list.
+//! Bottom-of-sidebar mode tabs + Settings popover. The CLI, Review, and
+//! Agents sidebars share one persistent mode switch, with Settings kept as
+//! a compact utility button at the end of the row.
 //!
 //! The popover state (`PaneFlowApp::sidebar_actions_menu_open`) is
 //! shared because only one sidebar is rendered at a time (mode toggle
@@ -204,9 +203,10 @@ impl PaneFlowApp {
         )
     }
 
-    /// Render the bottom footer: Settings on the left and a compact interface
-    /// picker on the right. Both popovers open upward and are mutually
-    /// exclusive.
+    /// Render the bottom footer: persistent interface tabs plus a compact
+    /// Settings trigger. The mode switch stays visible after selection so the
+    /// footer reads as primary navigation, while Settings remains an upward
+    /// popover scoped to the current sidebar mode.
     pub(crate) fn render_sidebar_settings_footer(
         &self,
         items: Vec<SidebarMenuItem>,
@@ -216,24 +216,28 @@ impl PaneFlowApp {
 
         let ui = crate::theme::ui_colors();
         let settings_open = self.agents_view.sidebar_actions_menu_open;
-        let mode_picker_open = self.agents_view.sidebar_mode_picker_open;
         let mode = self.mode;
 
         let settings_trigger = div()
             .id("sidebar-settings-trigger")
-            .flex_1()
+            .flex_none()
             .h(px(30.))
-            .px(px(8.))
+            .w(px(30.))
             .rounded(px(9.))
             .cursor_pointer()
             .flex()
-            .flex_row()
             .items_center()
-            .gap(px(6.))
+            .justify_center()
             .when(settings_open, |d| {
                 d.bg(crate::app::constants::sidebar_tab_active_background())
             })
             .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
+            .tooltip(move |_window, cx| {
+                cx.new(|_| crate::app::sidebar::SidebarTooltip {
+                    label: "Settings".into(),
+                })
+                .into()
+            })
             .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
                 this.agents_view.sidebar_actions_menu_open =
                     !this.agents_view.sidebar_actions_menu_open;
@@ -245,53 +249,6 @@ impl PaneFlowApp {
                     .size(px(14.))
                     .flex_none()
                     .path("icons/settings.svg")
-                    .text_color(ui.muted),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_color(ui.text)
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::NORMAL)
-                    .truncate()
-                    .child("Settings"),
-            );
-
-        let active_mode_icon = match mode {
-            AppMode::Cli => "icons/terminal.svg",
-            AppMode::Diff => "icons/git-pull-request.svg",
-            AppMode::Agents => "icons/sparkles.svg",
-        };
-        let mode_trigger_tooltip: SharedString = "Switch interface".into();
-        let mode_trigger = div()
-            .id("sidebar-mode-picker-trigger")
-            .flex_none()
-            .size(px(30.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .cursor_pointer()
-            .when(mode_picker_open, |d| {
-                d.bg(crate::app::constants::sidebar_tab_active_background())
-            })
-            .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
-            .tooltip(move |_window, cx| {
-                let label = mode_trigger_tooltip.clone();
-                cx.new(|_| crate::app::sidebar::SidebarTooltip { label })
-                    .into()
-            })
-            .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                this.agents_view.sidebar_mode_picker_open =
-                    !this.agents_view.sidebar_mode_picker_open;
-                this.agents_view.sidebar_actions_menu_open = false;
-                cx.notify();
-            }))
-            .child(
-                svg()
-                    .size(px(14.))
-                    .path(active_mode_icon)
                     .text_color(ui.muted),
             );
 
@@ -340,27 +297,29 @@ impl PaneFlowApp {
                            icon: &'static str,
                            is_active: bool,
                            activate: Activate| {
-            // Equal-width segment (icon + spelled-out name) so the three modes
-            // tile the footer row evenly. The name is always visible, so the
-            // old icon-only tooltip is gone.
+            // Equal-width compact segments keep the three primary surfaces
+            // visible without letting the Settings utility reclaim the row.
             let fg = if is_active { ui.text } else { ui.muted };
             let mut button = div()
                 .id(id)
                 .flex_1()
                 .h(px(30.))
-                .px(px(4.))
+                .min_w_0()
+                .px(px(2.))
                 .flex()
                 .flex_row()
                 .items_center()
                 .justify_center()
-                .gap(px(6.))
+                .gap(px(3.))
                 .rounded(px(8.))
-                .child(svg().size(px(14.)).flex_none().path(icon).text_color(fg))
+                .child(svg().size(px(13.)).flex_none().path(icon).text_color(fg))
                 .child(
                     div()
-                        .text_size(px(12.))
+                        .min_w_0()
+                        .text_size(px(11.))
                         .font_weight(FontWeight::NORMAL)
                         .text_color(fg)
+                        .truncate()
                         .child(label),
                 );
             // Same interaction tint as the workspace cards / thread tabs.
@@ -373,6 +332,7 @@ impl PaneFlowApp {
                     .hover(|s| s.bg(crate::app::constants::sidebar_tab_hover_background()))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         activate(this, window, cx);
+                        this.agents_view.sidebar_actions_menu_open = false;
                         this.agents_view.sidebar_mode_picker_open = false;
                         cx.notify();
                     }));
@@ -380,61 +340,36 @@ impl PaneFlowApp {
             button.into_any_element()
         };
 
-        // Interface picker, two states sharing the footer row.
-        //   Closed: the Settings trigger (flex_1) sits left of the mode trigger.
-        //   Open:   the three labeled mode buttons tile the WHOLE row as a
-        //           segmented control on the sidebar's solid background - the
-        //           mode trigger hides so "Review" / "Agents" never clip, and
-        //           every segment stays legible (the old upward popover floated
-        //           them over the translucent Diff content, where idle segments
-        //           washed out). Pick a segment or click outside to dismiss.
-        let footer_row: AnyElement = if mode_picker_open {
-            div()
-                .id("sidebar-mode-picker")
-                .mx(px(6.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(4.))
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    if this.agents_view.sidebar_mode_picker_open {
-                        this.agents_view.sidebar_mode_picker_open = false;
-                        cx.notify();
-                    }
-                }))
-                .child(mode_button(
-                    "sidebar-mode-cli",
-                    "CLI",
-                    "icons/terminal.svg",
-                    matches!(mode, AppMode::Cli),
-                    Box::new(|this, window, cx| this.enter_cli_mode(window, cx)),
-                ))
-                .child(mode_button(
-                    "sidebar-mode-diff",
-                    "Review",
-                    "icons/git-pull-request.svg",
-                    matches!(mode, AppMode::Diff),
-                    Box::new(|this, _window, cx| this.enter_diff_mode(cx)),
-                ))
-                .child(mode_button(
-                    "sidebar-mode-agents",
-                    "Agents",
-                    "icons/sparkles.svg",
-                    matches!(mode, AppMode::Agents),
-                    Box::new(|this, _window, cx| this.enter_agents_mode(cx)),
-                ))
-                .into_any_element()
-        } else {
-            div()
-                .mx(px(6.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(4.))
-                .child(settings_trigger)
-                .child(mode_trigger)
-                .into_any_element()
-        };
+        let footer_row: AnyElement = div()
+            .id("sidebar-mode-tabs")
+            .mx(px(6.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(3.))
+            .child(mode_button(
+                "sidebar-mode-cli",
+                "CLI",
+                "icons/terminal.svg",
+                matches!(mode, AppMode::Cli),
+                Box::new(|this, window, cx| this.enter_cli_mode(window, cx)),
+            ))
+            .child(mode_button(
+                "sidebar-mode-diff",
+                "Review",
+                "icons/git-pull-request.svg",
+                matches!(mode, AppMode::Diff),
+                Box::new(|this, _window, cx| this.enter_diff_mode(cx)),
+            ))
+            .child(mode_button(
+                "sidebar-mode-agents",
+                "Agents",
+                "icons/sparkles.svg",
+                matches!(mode, AppMode::Agents),
+                Box::new(|this, _window, cx| this.enter_agents_mode(cx)),
+            ))
+            .child(settings_trigger)
+            .into_any_element();
 
         let mut footer = div().relative().flex_none().py(px(6.));
         if let Some(popover) = settings_popover {
