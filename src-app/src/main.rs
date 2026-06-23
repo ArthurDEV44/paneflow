@@ -42,6 +42,7 @@ mod ipc;
 mod ipc_events;
 mod keybindings;
 mod keys;
+mod launch_cwd;
 mod layout;
 mod limits;
 mod login_shell_env;
