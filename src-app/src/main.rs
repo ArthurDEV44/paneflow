@@ -96,7 +96,9 @@ pub(crate) use app::notifications::{Toast, ToastAction};
 // Free helpers extracted to bootstrap.rs but still callable as
 // `crate::system_package_update_command` etc. from sibling modules.
 #[cfg(target_os = "macos")]
-pub(crate) use app::bootstrap::{install_macos_menu_bar, warn_if_rosetta_translated};
+pub(crate) use app::bootstrap::{
+    install_macos_menu_action_fallbacks, install_macos_menu_bar, warn_if_rosetta_translated,
+};
 pub(crate) use app::bootstrap::{system_package_update_command, warn_if_legacy_run_install};
 
 // Terminal-routing helpers (`find_first_terminal`, `find_terminal_by_surface_id`)
@@ -1098,20 +1100,20 @@ impl Render for PaneFlowApp {
                     cx.quit();
                 }),
             )
-            // US-012: macOS menu-bar actions. `Quit` mirrors `CloseWindow`.
-            // `About` is a placeholder; clicking it logs until we ship a
-            // real About surface. `Copy` / `Paste` delegate to the existing
-            // terminal clipboard actions so Edit > Copy works when a
-            // terminal pane is focused (matches the ⌘C keybinding from
-            // US-010). `SelectAll` is a no-op until the terminal exposes
-            // a select-all action.
+            // US-012: macOS menu-bar actions. `Quit` mirrors `CloseWindow`;
+            // `About` opens the in-app About dialog. `Copy` / `Paste`
+            // delegate to the existing terminal clipboard actions so Edit >
+            // Copy works when a terminal pane is focused (matches the ⌘C
+            // keybinding from US-010). `SelectAll` is a no-op until the
+            // terminal exposes a select-all action.
             .on_action(cx.listener(|this: &mut Self, _: &Quit, _window, cx| {
                 this.save_session_blocking(cx);
                 this.emit_app_exited_and_flush();
                 cx.quit();
             }))
-            .on_action(cx.listener(|_this: &mut Self, _: &About, _window, _cx| {
-                log::info!("About PaneFlow: v{}", env!("CARGO_PKG_VERSION"));
+            .on_action(cx.listener(|this: &mut Self, _: &About, _window, cx| {
+                this.show_about_dialog = true;
+                cx.notify();
             }))
             .on_action(cx.listener(|_this: &mut Self, _: &Copy, _window, cx| {
                 cx.dispatch_action(&TerminalCopy);
@@ -2050,7 +2052,10 @@ fn main() {
             // elided - GPUI's non-macOS platforms don't render a menu bar
             // and AC5 forbids any Linux UI change.
             #[cfg(target_os = "macos")]
-            install_macos_menu_bar(cx);
+            {
+                install_macos_menu_bar(cx);
+                install_macos_menu_action_fallbacks(cx);
+            }
 
             let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
             let decorations = match config.window_decorations.as_deref() {

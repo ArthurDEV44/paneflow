@@ -1087,6 +1087,88 @@ pub(crate) fn install_macos_menu_bar(cx: &mut gpui::App) {
     ]);
 }
 
+/// Register macOS menu actions as app-global fallbacks.
+///
+/// AppKit validates menu items via GPUI's `is_action_available`, which checks
+/// the focused dispatch path plus app-global listeners. PaneFlow's normal
+/// handlers live on the rendered root element so keyboard/menu dispatch works
+/// while that root is in the focused path, but macOS can validate the native
+/// menu while focus sits in a terminal/Agents surface whose current rendered
+/// path does not expose the root listeners. These fallbacks make the native
+/// menu items consistently enabled and mirror the root handlers when they are
+/// otherwise unreachable.
+#[cfg(target_os = "macos")]
+pub(crate) fn install_macos_menu_action_fallbacks(cx: &mut gpui::App) {
+    use crate::{
+        About, CloseWorkspace, Copy, NewWorkspace, NextWorkspace, OpenHelp, PaneFlowApp, Paste,
+        Quit, SelectAll, TerminalCopy, TerminalPaste,
+    };
+
+    fn with_active_paneflow_window(
+        cx: &mut gpui::App,
+        f: impl FnOnce(&mut PaneFlowApp, &mut gpui::Window, &mut Context<PaneFlowApp>),
+    ) {
+        let Some(window) = cx.active_window() else {
+            return;
+        };
+        let Some(window) = window.downcast::<PaneFlowApp>() else {
+            return;
+        };
+        if let Err(err) = window.update(cx, f) {
+            log::debug!("macOS menu fallback: active PaneFlow window unavailable: {err}");
+        }
+    }
+
+    cx.on_action(|_: &Quit, cx| {
+        with_active_paneflow_window(cx, |app, _window, cx| {
+            app.save_session_blocking(cx);
+            app.emit_app_exited_and_flush();
+            cx.quit();
+        });
+    });
+
+    cx.on_action(|_: &About, cx| {
+        with_active_paneflow_window(cx, |app, _window, cx| {
+            app.show_about_dialog = true;
+            cx.notify();
+        });
+    });
+
+    cx.on_action(|_: &Copy, cx| cx.dispatch_action(&TerminalCopy));
+    cx.on_action(|_: &Paste, cx| cx.dispatch_action(&TerminalPaste));
+    cx.on_action(|_: &SelectAll, _cx| {
+        log::debug!("Edit > Select All dispatched (terminal select-all not yet wired)");
+    });
+
+    cx.on_action(|_: &NewWorkspace, cx| {
+        with_active_paneflow_window(cx, |app, window, cx| {
+            app.create_workspace_with_picker(window, cx);
+        });
+    });
+    cx.on_action(|_: &CloseWorkspace, cx| {
+        with_active_paneflow_window(cx, |app, window, cx| {
+            app.close_workspace_at(app.active_idx, window, cx);
+        });
+    });
+    cx.on_action(|_: &NextWorkspace, cx| {
+        with_active_paneflow_window(cx, |app, window, cx| {
+            if !app.workspaces.is_empty() {
+                let next = (app.active_idx + 1) % app.workspaces.len();
+                app.select_workspace(next, window, cx);
+            }
+        });
+    });
+
+    cx.on_action(|_: &OpenHelp, cx| {
+        with_active_paneflow_window(cx, |app, _window, cx| {
+            if let Err(e) = open::that("https://github.com/ArthurDEV44/paneflow#readme") {
+                log::warn!("Help > PaneFlow Help: could not open browser: {e}");
+                app.show_toast(format!("Could not open help: {e}"), cx);
+            }
+        });
+    });
+}
+
 /// Detect whether the Apple Silicon binary is running under Rosetta 2
 /// translation on an Intel Mac (or, more commonly, an Intel binary on
 /// Apple Silicon - which Apple translates transparently). Either way it
