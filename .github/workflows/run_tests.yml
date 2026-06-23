@@ -383,10 +383,11 @@ jobs:
           SHIM_SIZE=$(stat -c%s "$SHIM_BIN")
           HOOK_SIZE=$(stat -c%s "$HOOK_BIN")
           # Hard caps (regression gate). Tighten as binaries shrink.
-          # Re-baselined 2026-06-10: the persistent-hooks precedence feature
-          # (US-016..019, hooks installer + managed-shape detection) grew the
-          # shim 423 KB -> 453 KB; same +6 % slack policy on the new baseline.
-          SHIM_HARD=491520   # ~480 KB  (measured 453 KB + 6 % slack)
+          # Re-baselined 2026-06-23: GitHub's ubuntu-22.04 image/toolchain
+          # now measures the shim at 493,712 B on main (ae0d9f2), tripping the
+          # old 480 KiB cap without any shim code change. Keep the same
+          # "measured + small slack" regression gate under the 600 KB soft cap.
+          SHIM_HARD=524288   # 512 KiB  (measured 482 KiB + ~6 % slack)
           HOOK_HARD=384000   # ~375 KB  (measured 351 KB + 6 % slack)
           # Soft caps (PRD launch targets). Warn-only until met.
           SHIM_SOFT=614400   # 600 KB
