@@ -539,16 +539,10 @@ impl TerminalState {
         // contract stays unit-testable (the mockable `PtyBackend::spawn` seam is
         // gone - EP-002 US-004).
         let env = assemble_pty_env(env, workspace_id, surface_id, merged_env);
-        // U-026: on `current_dir()` failure (deleted cwd, permission loss),
-        // fall back to the user's home dir rather than `/` - spawning a shell
-        // at the filesystem root is surprising and strands the user. `/` stays
-        // only as the absolute last resort if even the home dir is unknown.
-        let cwd = working_directory.unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|e| {
-                log::warn!("pty: current_dir() failed ({e}); falling back to home dir");
-                dirs::home_dir().unwrap_or_else(|| "/".into())
-            })
-        });
+        // U-026 + issue #11: when no cwd is explicit, avoid inheriting a GUI
+        // launch cwd that is the filesystem root. Explicit root cwd requests
+        // still arrive through `working_directory` and are preserved.
+        let cwd = working_directory.unwrap_or_else(crate::launch_cwd::implicit_launch_cwd);
         let (cols, rows) = initial_size.unwrap_or((120, 40));
         SpawnParams {
             shell,

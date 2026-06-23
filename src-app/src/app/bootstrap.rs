@@ -11,6 +11,7 @@
 use gpui::{AppContext, Context};
 use notify::Watcher;
 
+use crate::launch_cwd;
 use crate::pane::Pane;
 use crate::telemetry;
 use crate::terminal::TerminalView;
@@ -191,16 +192,16 @@ impl PaneFlowApp {
             }
             None => {
                 let ws_id = next_workspace_id();
-                let terminal = cx.new(|cx| TerminalView::new(ws_id, cx));
+                let cwd = launch_cwd::implicit_launch_cwd();
+                let terminal_cwd = cwd.clone();
+                let terminal =
+                    cx.new(|cx| TerminalView::with_cwd(ws_id, Some(terminal_cwd), None, cx));
                 cx.subscribe(&terminal, Self::handle_terminal_event)
                     .detach();
                 let pane = cx.new(|cx| Pane::new(terminal, ws_id, cx));
                 cx.subscribe(&pane, Self::handle_pane_event).detach();
-                let dir_name = std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .unwrap_or_else(|| "Terminal 1".into());
-                let ws = Workspace::with_id(ws_id, dir_name, pane);
+                let dir_name = launch_cwd::title_for_cwd_or(&cwd, "Terminal 1");
+                let ws = Workspace::with_cwd_and_id(ws_id, dir_name, cwd, pane);
                 // US-013: deferred git-stats probe off the render thread.
                 Self::spawn_initial_git_stats(ws_id, ws.cwd.clone(), cx);
                 (vec![ws], 0)

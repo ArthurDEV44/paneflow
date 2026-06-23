@@ -28,6 +28,7 @@ use gpui::{App, Entity, Window};
 use paneflow_config::schema::{ButtonCommand, LayoutNode};
 
 use crate::ai_types::AgentSession;
+use crate::launch_cwd;
 use crate::layout::LayoutTree;
 use crate::pane::Pane;
 
@@ -166,9 +167,7 @@ impl Workspace {
 
     /// Create a workspace with a pre-allocated ID (use `next_workspace_id()` to obtain one).
     pub fn with_id(id: u64, title: impl Into<String>, pane: Entity<Pane>) -> Self {
-        let cwd = std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "~".into());
+        let cwd = launch_cwd::implicit_launch_cwd().display().to_string();
         Self::build(id, title.into(), cwd, LayoutTree::Leaf(pane))
     }
 

@@ -12,6 +12,7 @@ use gpui::{App, AppContext, Context, Entity};
 use paneflow_config::schema::LayoutNode;
 
 use crate::PaneFlowApp;
+use crate::launch_cwd;
 use crate::layout::{LayoutTree, MAX_PANES};
 use crate::limits::MAX_SESSION_SIZE_BYTES;
 use crate::pane::Pane;
@@ -342,7 +343,16 @@ impl PaneFlowApp {
             );
         }
         for ws_session in session.workspaces.iter().take(MAX_WORKSPACES) {
-            let cwd = PathBuf::from(&ws_session.cwd);
+            let mut cwd = PathBuf::from(&ws_session.cwd);
+            let mut title = ws_session.title.clone();
+            if should_repair_restored_root_terminal(&title, &cwd) {
+                let repaired_cwd = launch_cwd::implicit_launch_cwd();
+                log::info!(
+                    "session restore: repairing legacy default workspace at filesystem root"
+                );
+                title = launch_cwd::title_for_cwd_or(&repaired_cwd, title);
+                cwd = repaired_cwd;
+            }
             let ws_id = next_workspace_id();
 
             // US-009 AC2 / US-011: `validate_layout` best-effort-caps the leaf
@@ -368,7 +378,7 @@ impl PaneFlowApp {
                     };
                     Self::spawn_pane_from_surfaces(ws_id, surfaces, &ws_cwd, cx)
                 });
-                Workspace::with_layout_and_id(ws_id, ws_session.title.clone(), cwd, tree)
+                Workspace::with_layout_and_id(ws_id, title.clone(), cwd, tree)
             } else {
                 let terminal =
                     cx.new(|cx| TerminalView::with_cwd(ws_id, Some(cwd.clone()), None, cx));
@@ -376,7 +386,7 @@ impl PaneFlowApp {
                     .detach();
                 let pane = cx.new(|cx| Pane::new(terminal, ws_id, cx));
                 cx.subscribe(&pane, Self::handle_pane_event).detach();
-                Workspace::with_cwd_and_id(ws_id, ws_session.title.clone(), cwd, pane)
+                Workspace::with_cwd_and_id(ws_id, title.clone(), cwd, pane)
             };
 
             workspace.custom_buttons = ws_session.custom_buttons.clone();
@@ -399,7 +409,7 @@ impl PaneFlowApp {
             workspace.files_expanded = ws_session
                 .expanded_paths
                 .iter()
-                .filter_map(|rel| rehydrate_expanded_path(&ws_session.cwd, rel))
+                .filter_map(|rel| rehydrate_expanded_path(&workspace.cwd, rel))
                 .collect();
             workspace.propagate_custom_buttons(cx);
             // US-013: kick off the deferred git-stats probe (off render thread).
@@ -621,6 +631,17 @@ fn validated_layout_within_cap(mut layout: LayoutNode) -> Option<LayoutNode> {
     Some(layout)
 }
 
+fn should_repair_restored_root_terminal(title: &str, cwd: &Path) -> bool {
+    is_numbered_terminal_title(title) && launch_cwd::is_filesystem_root(cwd)
+}
+
+fn is_numbered_terminal_title(title: &str) -> bool {
+    let Some(number) = title.strip_prefix("Terminal ") else {
+        return false;
+    };
+    !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit())
+}
+
 /// Rehydrate one persisted `expanded_paths` entry into an absolute path under
 /// `cwd`, re-asserting containment (U-030). The save side strips to a relative
 /// inside-root path, but `Path::join` does not normalize, so a hand-edited /
@@ -782,6 +803,30 @@ fn rotate_corruption_backups(dir: &Path, stem: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn platform_root() -> PathBuf {
+        std::env::current_dir()
+            .ok()
+            .and_then(|path| path.ancestors().last().map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from(std::path::MAIN_SEPARATOR.to_string()))
+    }
+
+    #[test]
+    fn restored_root_terminal_repair_only_targets_numbered_default_titles() {
+        let root = platform_root();
+        assert!(should_repair_restored_root_terminal("Terminal 1", &root));
+        assert!(should_repair_restored_root_terminal("Terminal 12", &root));
+        assert!(!should_repair_restored_root_terminal("Terminal", &root));
+        assert!(!should_repair_restored_root_terminal("Root shell", &root));
+    }
+
+    #[test]
+    fn restored_root_terminal_repair_ignores_non_root_cwd() {
+        let mut cwd = platform_root();
+        cwd.push("project");
+
+        assert!(!should_repair_restored_root_terminal("Terminal 1", &cwd));
+    }
 
     #[test]
     fn rehydrate_expanded_path_keeps_inside_root_and_drops_escapes() {
