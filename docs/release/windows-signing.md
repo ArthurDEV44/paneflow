@@ -1,11 +1,11 @@
 # Windows code signing runbook (US-024)
 
 One-time setup, secret rotation, and ACME auto-renewal tracking for the
-PaneFlow Windows release pipeline. The `release.yml` workflow signs every
-`x86_64-pc-windows-msvc` `.msi` produced by `cargo wix build` when the six
-`AZURE_*` GitHub Secrets are populated. If any secret is missing the leg
-degrades to an **unsigned** build with a banner in the job summary - by
-design (US-024 AC-5).
+PaneFlow Windows release pipeline. When the six `AZURE_*` GitHub Secrets are
+populated, `release.yml` signs the `x86_64-pc-windows-msvc` `paneflow.exe`
+before WiX packages it, then signs the final `.msi` produced by `cargo wix`.
+If any secret is missing the leg degrades to an **unsigned** build with a
+banner in the job summary - by design (US-024 AC-5).
 
 This document is operator-only. Application code never reads from any of
 the secrets described here.
@@ -14,15 +14,20 @@ the secrets described here.
 
 ## 1. What gets signed
 
-`cargo wix build` (driven by `[package.metadata.wix]` in
-`src-app/Cargo.toml` and `packaging/wix/main.wxs`) produces a single
-artifact:
+The Windows leg signs two artifacts in order:
+
+1. `target/x86_64-pc-windows-msvc/release/paneflow.exe` after the release
+   build and before WiX packaging. This is the binary installed to
+   `%ProgramFiles%\PaneFlow\paneflow.exe`, and Smart App Control evaluates it
+   directly when users launch the app.
+2. `target/wix/paneflow-<version>-x86_64.msi` after `cargo wix` packages the
+   signed executable into the installer.
 
 ```
 target/wix/paneflow-<version>-x86_64.msi
 ```
 
-`scripts/sign-windows.ps1` then:
+`scripts/sign-windows.ps1` is used for both the `.exe` and the `.msi`. It:
 
 1. **Fetches the Microsoft.ArtifactSigning.Client NuGet** (pinned to
    `1.0.128`) into a per-invocation temp directory and resolves
@@ -116,13 +121,16 @@ change.
    > `CertificateProfileName`). Keep the longer name when populating the
    > secret.
 6. **Dry-run on a test tag.** Push `vX.Y.Z-rc1`, watch the Windows leg in
-   `release.yml`. The `Verify MSI signature` step must emit the literal
+   `release.yml`. The `Sign Windows executable` step must complete before
+   `Produce MSI`, and the `Verify MSI signature` step must emit the literal
    string `Successfully verified` - that is AC-6. Download the resulting
    `paneflow-X.Y.Z-x86_64-pc-windows-msvc.msi` artifact and on a clean
-   Windows 11 VM confirm the SmartScreen prompt shows `Strivex` (not
-   "Unknown Publisher"). New publishers build SmartScreen reputation
-   over ~3,000 unique downloads or 6-8 weeks; an initial "Unknown
-   Publisher" prompt is expected and not a signing failure.
+   Windows 11 VM confirm both the installed
+   `%ProgramFiles%\PaneFlow\paneflow.exe` and the MSI report a valid
+   Authenticode signature for `O=Strivex`. New publishers build SmartScreen
+   reputation over ~3,000 unique downloads or 6-8 weeks; an initial
+   reputation prompt can still happen, but "publisher could not be verified"
+   on the installed EXE means the executable was not signed before packaging.
 
 ## 4. Secret rotation
 
@@ -160,6 +168,7 @@ This is the principal reason Azure Trusted Signing was chosen over a
 | **Cert profile deleted** | `CertificateProfile not found`. | Recreate the profile with the same name (`PaneFlow-Release`) in Azure Portal → Trusted Signing. The next sign picks up a fresh leaf via ACME. |
 | **Azure subscription suspended / billing issue** | Sign step fails immediately (`continue-on-error` absorbs it). Linux + macOS ship without a Windows asset. | Resolve billing in Azure Portal → Cost Management. Re-run via `workflow_dispatch`. |
 | **SmartScreen still flags "Unknown Publisher" after onboarding** | Users report SmartScreen warning even on signed builds. | Reputation builds over time. Per Microsoft, trust propagates after ~3,000 unique verified downloads OR within 6-8 weeks of consistent signing. **No action needed** - expected for the first month of a new publisher identity. |
+| **Smart App Control blocks `%ProgramFiles%\PaneFlow\paneflow.exe` with "publisher could not be verified"** | The MSI may be signed, but the installed EXE is unsigned or was signed after WiX packaged it. | Check the `Sign Windows executable` step ran before `Produce MSI`. Re-run the release workflow and verify `Get-AuthenticodeSignature 'C:\Program Files\PaneFlow\paneflow.exe'` returns `Valid` on a clean VM. |
 | **Runner image dropped Windows SDK** | `signtool.exe not found`. | Add an explicit `microsoft/setup-msbuild@v2` or Windows 11 SDK install step to the Windows leg, mirroring the `Preflight WiX v3 toolchain` pattern. Pin the SDK version. |
 
 ## 6. OV-cert fallback (decoupled - local script ready)
@@ -188,6 +197,8 @@ Wiring CI for OV is a fork of the Sign MSI step that swaps
 # GitHub Secret if/when CI wiring is added.
 $env:OV_CERT_PATH = 'C:\path\to\paneflow-ov.p12'
 $env:OV_CERT_PASSWORD = '<password from password manager>'
+pwsh -NoProfile -File scripts/sign-windows-ov.ps1 `
+    -InputFile target/x86_64-pc-windows-msvc/release/paneflow.exe
 pwsh -NoProfile -File scripts/sign-windows-ov.ps1 `
     -InputFile target/wix/paneflow-X.Y.Z-x86_64.msi
 ```
@@ -223,6 +234,15 @@ The output must contain:
 
 Alternatively, right-click the `.msi` → Properties → Digital Signatures.
 The "Name of signer" should display `Strivex`.
+
+Operator check after installing the MSI:
+
+```powershell
+Get-AuthenticodeSignature 'C:\Program Files\PaneFlow\paneflow.exe' |
+    Format-List Status,StatusMessage,SignerCertificate
+```
+
+`Status` must be `Valid`, and the signer subject must anchor to `O=Strivex`.
 
 ## 8. Hardening backlog (post-US-024 follow-ups)
 

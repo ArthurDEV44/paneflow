@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
-    Sign a PaneFlow MSI with an OV (Organization Validation) code-signing
-    certificate. **Local-only** fallback for the Azure Trusted Signing
-    path implemented by sign-windows.ps1.
+    Sign a PaneFlow Windows artifact with an OV (Organization Validation)
+    code-signing certificate. **Local-only** fallback for the Azure Trusted
+    Signing path implemented by sign-windows.ps1.
 
 .DESCRIPTION
     US-024 AC-4. If Azure Trusted Signing becomes unavailable
@@ -20,7 +20,7 @@
     after the OV cert itself expires.
 
 .PARAMETER InputFile
-    Path to the .msi to sign. Required.
+    Path to the .exe or .msi artifact to sign. Required.
 
 .PARAMETER CertPath
     Path to the OV cert in PKCS#12 format. Defaults to $env:OV_CERT_PATH.
@@ -37,6 +37,11 @@
     $env:OV_CERT_PATH = 'C:\paneflow-ov.p12'
     $env:OV_CERT_PASSWORD = '<from-password-manager>'
     scripts\sign-windows-ov.ps1 -InputFile .\target\wix\paneflow-0.3.0-x86_64.msi
+
+.EXAMPLE
+    $env:OV_CERT_PATH = 'C:\paneflow-ov.p12'
+    $env:OV_CERT_PASSWORD = '<from-password-manager>'
+    scripts\sign-windows-ov.ps1 -InputFile .\target\x86_64-pc-windows-msvc\release\paneflow.exe
 
 .NOTES
     See docs/release/windows-signing.md §"OV-cert fallback" for the
@@ -80,9 +85,10 @@ if (-not (Test-Path -LiteralPath $InputFile -PathType Leaf)) {
 }
 
 $resolvedInput = (Resolve-Path -LiteralPath $InputFile).Path
+$inputExtension = [System.IO.Path]::GetExtension($resolvedInput).ToLowerInvariant()
 
-if ([System.IO.Path]::GetExtension($resolvedInput).ToLowerInvariant() -ne '.msi') {
-    throw "InputFile must be an .msi artifact: $resolvedInput"
+if ($inputExtension -notin @('.exe', '.msi')) {
+    throw "InputFile must be a .exe or .msi artifact: $resolvedInput"
 }
 
 # --- Validate cert + password --------------------------------------------

@@ -912,7 +912,7 @@ jobs:
              && [ -n "${AZURE_TRUSTED_SIGNING_ENDPOINT:-}" ] \
              && [ -n "${AZURE_TRUSTED_SIGNING_ACCOUNT:-}" ] \
              && [ -n "${AZURE_TRUSTED_SIGNING_CERT_PROFILE:-}" ]; then
-              echo "All 6 Azure Trusted Signing secrets are present - will produce + sign + verify MSI."
+              echo "All 6 Azure Trusted Signing secrets are present - will sign the EXE, then produce + sign + verify MSI."
               echo "signing_available=true" >> "$GITHUB_OUTPUT"
           else
               echo "::warning title=Windows MSI packaging skipped::One or more AZURE_* secrets are missing - skipping Preflight WiX / Install cargo-wix / Produce MSI / Sign / Verify / Stage. Build/test/clippy still run for cross-platform validation. See docs/release/windows-signing.md to enable."
@@ -972,6 +972,28 @@ jobs:
         if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
         run: cargo install cargo-wix --version 0.3.9 --locked
 
+      # ─── Windows Authenticode: sign the installed executable first ───────
+      # Smart App Control evaluates the installed application binary, not just
+      # the container MSI. WiX embeds this exact release binary, so sign it
+      # before `cargo wix --no-build` packages it into Program Files.
+      - name: Sign Windows executable
+        id: sign_windows_exe
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
+        run: |
+          $exe = 'target\x86_64-pc-windows-msvc\release\paneflow.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+              throw "No Windows release executable found at $exe. The Build release binary step may have failed or emitted an unexpected path."
+          }
+          pwsh -NoProfile -File ./scripts/sign-windows.ps1 -InputFile $exe
+
       # ─── US-016 AC-1: Produce MSI ────────────────────────────────────────
       # cargo-wix reads [package.metadata.wix] in src-app/Cargo.toml (US-013)
       # and `packaging/wix/main.wxs` to drive candle → light. The
@@ -980,7 +1002,7 @@ jobs:
       # ProductVersion schema rejects `v0.1.7` and accepts only `0.1.7`.
       #
       # Output: `target/wix/paneflow-<ver>-x86_64.msi`. The `--target`
-      # flag tells cargo-wix which release binary to pick up
+      # flag tells cargo-wix which already-signed release binary to pick up
       # (`target/x86_64-pc-windows-msvc/release/paneflow.exe`) but the
       # installer output directory is always `target/wix/` regardless -
       # do NOT assume the triple folder.
